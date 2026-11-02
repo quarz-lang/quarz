@@ -7544,6 +7544,8 @@ impl Checker {
         value: &Expr,
     ) -> Type {
         self.refuse_index_block(target);
+        // `o&.w += 1` on an `o` that may be nil: nil then.
+        let mut safe_nil = false;
         // Type the current value of the target.
         let current = match target {
             LValue::Local { name, span } => match self.lookup_var(name) {
@@ -7587,10 +7589,48 @@ impl Checker {
                 }
                 t
             }
-            LValue::Attr { recv, name, .. } => {
+            LValue::Attr {
+                recv,
+                name,
+                safe_nav,
+            } => {
                 let rt = self.check_expr(recv, None);
+                // `o&.w += 1`: read and written on `o` not nil (the reader's
+                // receiver, already typed so).
+                // (`self&.w`: `self` itself, never nil, whose private
+                // reader it may call.)
+                let rt = self.resolve(&rt);
+                let nil = self.world.builtin.nil;
+                if *safe_nav && !rt.is_nothing() {
+                    safe_nil = rt
+                        .members()
+                        .iter()
+                        .any(|m| matches!(m, Type::Class(c, _) if *c == nil));
+                    if !safe_nil {
+                        self.warning("`&.` on a receiver that is never nil", expr.span);
+                    }
+                    // Always nil: nothing is read or written.
+                    if rt.without_nil(nil).is_nothing() {
+                        self.check_expr(value, None);
+                        return self.world.nil();
+                    }
+                }
+                let on = if *safe_nav && !rt.is_nothing() && !matches!(recv.kind, ExprKind::SelfRef)
+                {
+                    Some(Expr {
+                        id: OP_VALUE_ID,
+                        span: recv.span,
+                        kind: ExprKind::Nil,
+                    })
+                    .map(|e| (e, rt.without_nil(nil)))
+                } else {
+                    None
+                };
                 let getter = Call {
-                    recv: Some(recv.clone()),
+                    recv: Some(match &on {
+                        Some((e, _)) => e.clone(),
+                        None => recv.clone(),
+                    }),
                     name: name.clone(),
                     args: vec![],
                     block: None,
@@ -7599,10 +7639,15 @@ impl Checker {
                     has_parens: false,
                     type_args: vec![],
                 };
-                let _ = rt;
+                let saved_values = on
+                    .as_ref()
+                    .map(|(_, t)| std::mem::replace(&mut self.op_values, vec![t.clone()]));
                 let saved = self.take_union_record(expr.id);
                 let t = self.check_op_reader(expr, &getter);
                 self.restore_union_record(expr.id, saved);
+                if let Some(v) = saved_values {
+                    self.op_values = v;
+                }
                 t
             }
             LValue::Index { recv, args } => {
@@ -7728,9 +7773,18 @@ impl Checker {
                     }
                 }
             }
-            LValue::Attr { recv, name, .. } => {
+            LValue::Attr {
+                recv,
+                name,
+                safe_nav,
+            } => {
                 // Check that the setter accepts the result type.
                 let rt = self.resolve(&self.out.node_types[&recv.id]);
+                let rt = if *safe_nav {
+                    rt.without_nil(self.world.builtin.nil)
+                } else {
+                    rt
+                };
                 let setter = format!("{name}=");
                 self.check_op_writer(expr, recv, &rt, &setter, &[], &result);
             }
@@ -7748,6 +7802,10 @@ impl Checker {
                 }
             }
             LValue::Const(_) => {}
+        }
+        if safe_nil {
+            let nil = self.world.nil();
+            return self.join(&result, &nil);
         }
         result
     }
