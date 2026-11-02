@@ -1,0 +1,27 @@
+# Built-in classes as opaque types (design §18): their literals, `new`
+# and class methods are built-in calls typed by their declarations, as
+# are their methods on their values.
+class Tally
+  var @counts: Hash[Symbol, Int]
+
+  def initialize
+    @counts = {}
+  end
+
+  def add(key: Symbol) -> Void
+    @counts = @counts.put(key, (@counts[key]? || 0) + 1)
+  end
+
+  def count(key: Symbol) -> Int = @counts[key]? || 0
+end
+
+t = Tally.new
+t.add(:a)
+t.add(:b)
+t.add(:a)
+p t.count(:a), t.count(:c)
+r = 1..4
+p r.size
+s = Set.new([1, 2, 2, 3])
+p s.size
+p Math.sqrt(16.0)
