@@ -1,0 +1,23 @@
+# `Kernel.name(args)`: the built-in function, whatever methods of the name
+# the class around the call has (docs/01 §2): no receiver, as a call of it
+# on the implicit one.
+class Counter
+  @n: Int
+
+  def initialize(n: Int)
+    Kernel.puts("making a counter")
+    @n = n
+  end
+
+  def puts(x: Int) -> Int = @n + x
+
+  def report -> Int
+    Kernel.puts("report")
+    Kernel.print(@n.to_s)
+    Kernel.puts("")
+    puts(1)
+  end
+end
+
+c = Counter.new(41)
+Kernel.puts(c.report)

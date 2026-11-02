@@ -1457,7 +1457,19 @@ partial def matchPattern (T : Tables) (id : Nat) (v : Json) : CM Expr := do
 
 partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
   let name ← str (← field c "name")
-  let recvJ ← field c "recv"
+  -- (`Kernel.name(args)`: the built-in function, which takes no
+  -- receiver, as a call of it on the implicit one.)
+  let recvJ ← do
+    let r ← field c "recv"
+    if r == .null then pure r else
+    match T.calls.getObjVal? (toString id) with
+    | .ok t =>
+      if (t.getObjValAs? String "t").toOption != some "method" then pure r else
+      let m ← T.method (← nat (← field t "method"))
+      if (← nat (← field m "owner")) == T.kernelId && (← variant (← field r "kind")).1 == "Const" then
+        pure .null
+      else pure r
+    | .error _ => pure r
   -- (`x&.m`: nil when `x` is, not the model's call.)
   if (c.getObjVal? "safe_nav").toOption == some (.bool true) then throw "a safe navigation call"
   -- `x.m!` that the checker resolved to `m` (docs/01 §10): `x = x.m`.
@@ -1692,15 +1704,6 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
         let o ← nat (← field m' "owner")
         if (T.qclass o).isNone then return false
         pure ((← rsub T o rcid) || (← rsub T rcid o))
-      -- (A related class including the module again, with other
-      -- arguments, sees it otherwise than the receiver's, whose view
-      -- types the module's body.)
-      let includers ← T.classes.toList.filterM fun c => do
-        let cid ← nat (← field c "id")
-        if (T.qclass cid).isNone then return false
-        unless (← rsub T cid rcid) || (← rsub T rcid cid) do return false
-        (← arr (← field c "includes")).toList.anyM fun i => do pure ((← nat (← field i "id")) == owner)
-      if includers.length > 1 then throw s!"a module's method {name}, its module included twice"
       for m' in related do
         let n' ← str (← field m' "name")
         if n' == name then throw s!"a module's method {name} a program's class defines"
@@ -1815,6 +1818,9 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
             unless (← field p "default") == .bool true do throw "a built-in call leaving a parameter"
           (pos.take as.length).mapM fun p => do T.tyOrTop (← field p "type") env
       let ret ← T.tyOrTop (← field m "ret") env
+      -- (One that never returns, `exit`, `abort`: the model's call does
+      -- not end the path, the Rust checker's does.)
+      if ret.isEmpty then throw s!"built-in {name} returning Nothing"
       let (rs, rps) ← match recv with
         | some r => do
           let rt ← T.nodeTy (← nat (← field recvJ "id"))
@@ -2244,7 +2250,7 @@ def program (j : Json) : M Program := do
     let chain ← (← arr (← field c "ancestors")).toList.mapM fun a => do nat (← field a "id")
     if chain.any progModIds.contains then
       -- (A program's module's method overriding one of a prelude class or
-      -- module in the chain, `Object` and `Kernel` included: a call the
+      -- module in the chain, `Object` included: a call the
       -- checker resolved there is a built-in call, which does not
       -- dispatch to it.)
       let mut progNames : List String := []
@@ -2256,7 +2262,7 @@ def program (j : Json) : M Program := do
       if progNames.any otherNames.contains then throw "a program's module overriding a prelude's method"
       for aid in chain do
         let aj ← classById aid
-        if (← str (← field aj "kind")) == "Module" && aid != kernelId && !progModIds.contains aid &&
+        if (← str (← field aj "kind")) == "Module" && !progModIds.contains aid &&
             !(← arr (← field aj "method_names")).isEmpty then
           throw "a program's module and a prelude's"
     pure (cid, out)

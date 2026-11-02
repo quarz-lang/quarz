@@ -335,10 +335,9 @@ stricter, not unsound.
   signature than the module's (its body calls it: tree format 7 lists
   each class's and extension's method names, and holds the included
   modules' methods); an include whose module declares a name a program
-  superclass defines (the module's comes first); a program's extension;
-  a block with a receiver
-  of its own (`instance_exec`); two related classes including the
-  module (the receiver's view types its body); a prelude module's type
+  superclass defines (the module's comes first); an extension that
+  includes a module; a block with a receiver of its own
+  (`instance_exec`); a prelude module's type
   as a value. A module the program declares (stage 6a-2, design §16.4)
   is copied into each class that includes it: the copy, a class of the
   model with the class's parameters and no fields, goes between the
@@ -356,7 +355,7 @@ stricter, not unsound.
   including one, a class with both a program's module and a prelude's
   in its chain (its own or a superclass's), a program's module defining
   a name a prelude class or module in the chain defines (`to_s`,
-  `Kernel#rand`: a call the checker resolved there is a built-in call,
+  `Comparable#clamp`: a call the checker resolved there is a built-in call,
   which does not dispatch), and a program's extension
   with a program's module (it may include it in a class the copies do
   not cover);
@@ -375,6 +374,10 @@ stricter, not unsound.
   its name: `World::ext_impls`).
   `xs == nil` of an array narrows nothing (a class atom is not final),
   stricter than the Rust checker.
+  `Kernel.name(args)` is the built-in function, as `name(args)` on the
+  implicit receiver is; a built-in that returns `Nothing` (`exit`,
+  `abort`) is out of range, as the model's call of it does not end the
+  path.
   A block given to a built-in method (`each`, `map`, `times`) is the
   translator's alone (design §14, part B): scoped as a block (its own
   locals and parameters, the two-locals rule), it becomes the call,
