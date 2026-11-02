@@ -420,6 +420,7 @@ Different from Ruby:
 - All control structures are expressions (as in Ruby), but if the branches of an `if` have different types, the result is a union type. An `if` without `else` has type `T?`.
 - Truthiness is as in Ruby: only `nil` and `false` are falsy. However, a condition that is known from its type to be always true / always false (`if 3`, `if some_int`) produces a warning.
 - Variable types are narrowed by `while` and `if` conditions ([02-types.md](02-types.md) §6).
+- `break v` in a `while`/`until` loop ends it with the value `v`: the loop's type is `Nil` (its value when the condition ends it) joined with the types of its breaks, and a loop with no normal exit (`while true`) has only the breaks' types (`Nothing` without any).
 - `break v` in a block ends the call that the block was given to, with the value `v`: the call's type includes the types of its block's breaks (`xs.map! { break v }`, which is `xs = xs.map { break v }`, stores `v`). `loop { }` without a `break` never returns; with one, it may also end with `nil` at a `StopIteration`. `break` and `next` in a block or a lambda leave it, not a loop around it; `break` in a lambda is an error (use `next` or `return`).
 
 ### `for` comprehensions

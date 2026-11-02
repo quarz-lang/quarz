@@ -1797,6 +1797,39 @@ fn variables_assigned_on_some_paths_may_be_nil() {
 }
 
 #[test]
+fn loop_value_from_breaks() {
+    // A loop's value is `nil` when its condition ends it, else a break's.
+    err(
+        "def h(n: Int) -> String?\n  while n > 0\n    break 5 if n == 3\n    n -= 1\n  end\nend",
+        "method `h` returns String? but its body has type Int?",
+    );
+    ok("def f(n: Int) -> Int?\n  x = while n > 0\n    break 5 if n == 3\n    n -= 1\n  end\n  x\nend");
+    err(
+        "def f(n: Int) -> Int\n  x = while n > 0\n    break 5 if n == 3\n    n -= 1\n  end\n  x\nend",
+        "has type Int?",
+    );
+    err(
+        "def f(n: Int) -> Int\n  until n == 0\n    break 5 if n == 3\n    n -= 1\n  end\nend",
+        "has type Int?",
+    );
+    // With no normal exit, only the breaks' types.
+    ok("def f(n: Int) -> String\n  while true\n    n += 1\n    break \"s\" if n > 2\n  end\nend");
+    ok("def f(n: Int) -> String\n  until false\n    n += 1\n    break \"s\" if n > 2\n  end\nend");
+    err(
+        "def f(n: Int) -> String\n  while true\n    n += 1\n    break \"s\" if n > 2\n    break if n > 1\n  end\nend",
+        "has type String?",
+    );
+    // A bare `break` gives `nil`.
+    ok("def f(n: Int) -> Nil\n  while n > 0\n    break if n == 1\n    n -= 1\n  end\nend");
+    err(
+        "def f(n: Int) -> Int\n  while n > 0\n    break if n == 1\n    n -= 1\n  end\nend",
+        "has type Nil",
+    );
+    // A `break` in a block leaves the block's call, not the loop.
+    ok("def f -> Nil\n  while true\n    [1].each { |x| break 2 }\n    break\n  end\nend");
+}
+
+#[test]
 fn breaks_inside_expressions_and_blocks() {
     // A `break` in an argument still leaves the loop.
     no_warnings("data V = (x: Int, y: Int)\ndef f(n: Int) -> Int\n  j = 0\n  o = V.new(0, 0)\n  while true\n    j += 1\n    o = V.new(j, j > n ? (break) : 0)\n  end\n  o.x\nend\np f(2)");

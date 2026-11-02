@@ -703,6 +703,9 @@ impl Assigned {
 struct LoopExits {
     /// The narrowings at each `break`.
     breaks: Vec<Snapshot>,
+    /// The types of the breaks' values (`Nil` for a bare `break`): the
+    /// loop's value when one leaves it.
+    break_types: Vec<Type>,
     /// A `break` runs an `ensure` on its way out, which the narrowings
     /// at it do not show.
     through_ensure: bool,
@@ -5696,11 +5699,18 @@ impl Checker {
                     self.apply_facts(&exit_facts);
                 }
                 let _ = ct;
-                if infinite && !broke {
+                // The loop's value is `nil` when its condition ends it, else
+                // a `break`'s value: a loop with no normal exit has only the
+                // breaks' types (`Nothing` with none).
+                let mut t = if infinite {
                     Type::Nothing
                 } else {
                     self.world.nil()
+                };
+                for b in &exits.break_types {
+                    t = self.join(&t, b);
                 }
+                t
             }
             Case {
                 subject,
@@ -5884,6 +5894,7 @@ impl Checker {
                 if self.env.loop_depth > 0 {
                     let snap = self.snapshot();
                     self.env.loop_exits.breaks.push(snap);
+                    self.env.loop_exits.break_types.push(t);
                     self.env.loop_exits.through_ensure |= self.env.loop_exits.ensures > 0;
                 } else if let Some(b) = self.env.blocks.last_mut() {
                     b.breaks.push(t);
