@@ -495,6 +495,15 @@ stricter, not unsound.
   program's by its model name, so by dispatch; a built-in one a built-in
   call), `&f` of a local procedure the block calling it with the block's
   parameters (as many).
+  Tasks (design §23): the Shareable and capture rules (a task's or a
+  `shareable` procedure's captures by value, never assigned) are the
+  Rust checker's, taken as given (a program it refuses for them is out
+  of range, not a disagreement); a task's body is checked as a block
+  run any number of times, a block a built-in keeps (`at_exit`, `trap`)
+  as a lambda given to it (an annotated parameter of one out of range); `Task[T]` is an opaque built-in
+  class (`await` gives a `T`), `shareable (A) -> R` a procedure type,
+  `Shareable` as a type any value (`is_a?(Shareable)` and a pattern of
+  it out of range).
   `x.m!` that the checker resolved to `m` (the sugar for `x = x.m`,
   docs/01 §10, on a local) is that assignment.
   What the translator takes from the Rust checker as given, the model

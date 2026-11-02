@@ -174,6 +174,9 @@ partial def Tables.tyIn (T : Tables) (env : List (Nat × Ty)) (j : Json) : M Ty 
     | "Int" => if args.isEmpty then pure [.int] else throw "a generic type"
     | "String" => if args.isEmpty then pure [.str] else throw "a generic type"
     | "Float" => if args.isEmpty then pure [.float] else throw "a generic type"
+    -- (`Shareable`, a marker the Rust checker holds the program to: any
+    -- value here, as `Class`; calls on it are built-in ones, design §23.)
+    | "Shareable" => if args.isEmpty then pure [.cls 0 []] else throw "a generic type"
     | _ => match T.qclass id with
       | some k => pure [.cls k (← args.toList.mapM (T.tyIn env))]
       | none => match T.modCopies id with
@@ -219,7 +222,9 @@ partial def Tables.tyIn (T : Tables) (env : List (Nat × Ty)) (j : Json) : M Ty 
   | "proc" =>
     unless (← field j "recv") == .null do throw "a procedure type with a receiver"
     -- A shareable one captures by value (docs/02 §9): not the model's.
-    if (← field j "shareable") == .bool true then throw "a shareable procedure type"
+    -- (A `shareable` one captures by value and assigns nothing: the
+    -- model's procedure, which reads what it captures as declared, is no
+    -- looser; the Shareable rules are the Rust checker's, design §23.)
     let ps ← (← arr (← field j "params")).toList.mapM (T.tyIn env)
     unless ps.length ≤ procMax do throw "a procedure type of many parameters"
     pure [.cls (2 + ps.length) (ps ++ [← T.tyIn env (← field j "ret")])]
@@ -1020,6 +1025,9 @@ def patClass (T : Tables) (names : Json) : M (Nat × Atom) := do
   let cid ← nat (← field c "id")
   unless (← arr (← field c "type_params")).isEmpty do throw "a pattern of a generic class"
   if (← str (← field c "kind")) == "Enum" then throw "a pattern of an enum"
+  -- (`Shareable`: the model's `Object`, which every value is; Rust's test
+  -- sees the class.)
+  if (← str (← field c "name")) == "Shareable" then throw "a pattern of Shareable"
   pure (cid, ← classAtom T cid)
 
 /-- What a match by the classes `targets` narrows `st` to (Rust's
@@ -1505,7 +1513,6 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
     let pj ← field T.nodeTypes (toString id)
     unless (← str (← field pj "t")) == "proc" do throw "a lambda not of a procedure type"
     unless (← field pj "recv") == .null do throw "a lambda with a receiver"
-    if (← field pj "shareable") == .bool true then throw "a shareable lambda"
     let pts ← (← arr (← field pj "params")).toList.mapM fun t => (T.ty t : M Ty)
     let rj ← field pj "ret"
     let void := (← str (← field rj "t")) == "void"
@@ -1980,6 +1987,8 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     let tj ← field target "type"
     if (tj.getObjValAs? String "t").toOption == some "class_object" &&
         (tj.getObjValAs? Nat "id").toOption == some T.objectId then throw "is_a? Type"
+    if (tj.getObjValAs? String "t").toOption == some "class" then
+      if (← T.className (← nat (← field tj "id"))) == "Shareable" then throw "is_a? Shareable"
     match ← T.ty tj with
     | [.cls k as] =>
       -- (The Rust checker tests an array's elements: docs/02 §7.)
@@ -2231,13 +2240,15 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
         -- (One returning `Nothing` is dead to the model, its block too,
         -- which Rust runs.)
         if pret.isEmpty then throw s!"a block given to built-in {name} returning Nothing"
-        let ty ← match ← field m "block" with
+        let sigJ ← field m "block"
+        let ty ← match sigJ with
           | .null => throw s!"a block given to built-in {name} that takes none"
-          | sig =>
-            -- (One it keeps, `at_exit`'s, runs later: not a loop.)
-            match ← field sig "name" with
-            | .null | .str "&" => field sig "type"
-            | _ => throw s!"a block kept by built-in {name}"
+          | sig => field sig "type"
+        -- (One it keeps, `at_exit`'s, `trap`'s: run later, not a loop: a
+        -- procedure given to it, design §23.)
+        let kept := match sigJ.getObjVal? "name" with
+          | .ok .null | .ok (.str "&") | .error _ => false
+          | _ => true
         unless (← str (← field ty "t")) == "proc" do throw "a block type"
         -- (A block with a receiver of its own, `Self.() -> R`: `self` is not
         -- the enclosing one.)
@@ -2290,6 +2301,17 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
           str (← field p "name")
         -- (Fewer than it gives: the rest dropped, `3.times { ... }`.)
         unless ps.length ≤ tys.length do throw s!"a block of built-in {name}'s parameters"
+        if kept then
+          unless ps.length == tys.length do throw s!"a block kept by built-in {name} of fewer parameters"
+          -- (An annotated parameter is declared by its annotation, which
+          -- the tree keeps unresolved: out of range, as below.)
+          for pj in pjs do
+            unless (pj.getObjVal? "ty").toOption.getD .null == .null do throw "an annotated block parameter"
+          let void := (← str (← field rj "t")) == "void"
+          let lam ← lambdaOf T ps tys sret void (← arr (← field blk "body")) (some id)
+          unless tys.length ≤ procMax do throw s!"a block kept by built-in {name} of too many parameters"
+          let pt : Ty := [.cls (2 + tys.length) (tys ++ [sret])]
+          return .prim name (pargs ++ [lam]) (pparams ++ [pt]) pret
         -- (An annotated parameter is declared by its annotation, which the
         -- tree keeps unresolved: out of range.)
         for ((x, t), pj) in (ps.zip tys).zip pjs do
