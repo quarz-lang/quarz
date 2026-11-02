@@ -1,0 +1,12 @@
+# A lambda's own local (here a block's parameter in it) and a block's
+# parameter of the same name later in the method are two locals for the
+# Rust checker: the translator gives the lambda's its own name.
+class M
+  def go(&: (Int) -> Int) -> Int
+    yield(1)
+  end
+end
+m = M.new
+f = ->(x : Int) { m.go { |v| x + v } }
+p(f.call(5))
+p(m.go { |v| g = ->(y : Int) { m.go { |w| y * 2 } }; g.call(v) + 1 })

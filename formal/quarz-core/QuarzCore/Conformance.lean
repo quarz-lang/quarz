@@ -513,6 +513,84 @@ partial def hasRet : Expr → Bool
   | .ensure b e => hasRet b || hasRet e
   | _ => false
 
+/-- `e` with the locals `m` names renamed (a lambda that takes one of the
+names for its own keeps it in its body). -/
+partial def renameLocals (m : List (String × String)) : Expr → Expr
+  | .var x t => .var ((m.lookup x).getD x) t
+  | .assign x e => .assign ((m.lookup x).getD x) (renameLocals m e)
+  | .lambda ps own ret b =>
+    let mine := (ps ++ own).map (·.1)
+    .lambda ps own ret (renameLocals (m.filter fun (x, _) => !mine.contains x) b)
+  | .callBlk r f as ps b => .callBlk (renameLocals m r) f (as.map (renameLocals m))
+      (ps.map fun x => (m.lookup x).getD x) (renameLocals m b)
+  | .rescue b x h e => .rescue (renameLocals m b) ((m.lookup x).getD x) (renameLocals m h) (renameLocals m e)
+  | .setField f e => .setField f (renameLocals m e)
+  | .ret e => .ret (renameLocals m e)
+  | .raise e => .raise (renameLocals m e)
+  | .brk e => .brk (renameLocals m e)
+  | .nxt e => .nxt (renameLocals m e)
+  | .isNil e => .isNil (renameLocals m e)
+  | .isA e a => .isA (renameLocals m e) a
+  | .eqNil e => .eqNil (renameLocals m e)
+  | .neNil e => .neNil (renameLocals m e)
+  | .eqTrue e => .eqTrue (renameLocals m e)
+  | .eqFalse e => .eqFalse (renameLocals m e)
+  | .not e => .not (renameLocals m e)
+  | .new k ts as => .new k ts (as.map (renameLocals m))
+  | .superInit d as => .superInit d (as.map (renameLocals m))
+  | .yield as => .yield (as.map (renameLocals m))
+  | .prim n as ps t => .prim n (as.map (renameLocals m)) ps t
+  | .call r f as => .call (renameLocals m r) f (as.map (renameLocals m))
+  | .callProc f as => .callProc (renameLocals m f) (as.map (renameLocals m))
+  | .seq a b => .seq (renameLocals m a) (renameLocals m b)
+  | .while a b => .while (renameLocals m a) (renameLocals m b)
+  | .and a b => .and (renameLocals m a) (renameLocals m b)
+  | .or a b => .or (renameLocals m a) (renameLocals m b)
+  | .ensure a b => .ensure (renameLocals m a) (renameLocals m b)
+  | .ite c t e => .ite (renameLocals m c) (renameLocals m t) (renameLocals m e)
+  | e => e
+
+/-- Each lambda's own names (its parameters and its own locals) made its
+own (`x@λk`): a block's parameter of the method met after a lambda that
+has one of its name is another local for the Rust checker, and the
+model's lambda takes no local of its method for its own. -/
+partial def ownLambdaNames : Expr → StateM Nat Expr
+  | .lambda ps own ret b => do
+    let k ← get
+    set (k + 1)
+    let m := (ps ++ own).map fun (x, _) => (x, s!"{x}@λ{k}")
+    let b ← ownLambdaNames (renameLocals m b)
+    let r := fun (xs : List (String × Ty)) => xs.map fun (x, t) => ((m.lookup x).getD x, t)
+    return .lambda (r ps) (r own) ret b
+  | .assign x e => return .assign x (← ownLambdaNames e)
+  | .callBlk r f as ps b => return .callBlk (← ownLambdaNames r) f (← as.mapM ownLambdaNames) ps (← ownLambdaNames b)
+  | .rescue b x h e => return .rescue (← ownLambdaNames b) x (← ownLambdaNames h) (← ownLambdaNames e)
+  | .setField f e => return .setField f (← ownLambdaNames e)
+  | .ret e => return .ret (← ownLambdaNames e)
+  | .raise e => return .raise (← ownLambdaNames e)
+  | .brk e => return .brk (← ownLambdaNames e)
+  | .nxt e => return .nxt (← ownLambdaNames e)
+  | .isNil e => return .isNil (← ownLambdaNames e)
+  | .isA e a => return .isA (← ownLambdaNames e) a
+  | .eqNil e => return .eqNil (← ownLambdaNames e)
+  | .neNil e => return .neNil (← ownLambdaNames e)
+  | .eqTrue e => return .eqTrue (← ownLambdaNames e)
+  | .eqFalse e => return .eqFalse (← ownLambdaNames e)
+  | .not e => return .not (← ownLambdaNames e)
+  | .new k ts as => return .new k ts (← as.mapM ownLambdaNames)
+  | .superInit d as => return .superInit d (← as.mapM ownLambdaNames)
+  | .yield as => return .yield (← as.mapM ownLambdaNames)
+  | .prim n as ps t => return .prim n (← as.mapM ownLambdaNames) ps t
+  | .call r f as => return .call (← ownLambdaNames r) f (← as.mapM ownLambdaNames)
+  | .callProc f as => return .callProc (← ownLambdaNames f) (← as.mapM ownLambdaNames)
+  | .seq a b => return .seq (← ownLambdaNames a) (← ownLambdaNames b)
+  | .while a b => return .while (← ownLambdaNames a) (← ownLambdaNames b)
+  | .and a b => return .and (← ownLambdaNames a) (← ownLambdaNames b)
+  | .or a b => return .or (← ownLambdaNames a) (← ownLambdaNames b)
+  | .ensure a b => return .ensure (← ownLambdaNames a) (← ownLambdaNames b)
+  | .ite c t e => return .ite (← ownLambdaNames c) (← ownLambdaNames t) (← ownLambdaNames e)
+  | e => return e
+
 /-- Whether an expression tests or loops (what may narrow a path). -/
 partial def narrows : Expr → Bool
   | .ite .. | .while .. | .isNil _ | .isA .. | .eqNil _ | .neNil _ | .eqTrue _ | .eqFalse _
@@ -2349,6 +2427,7 @@ partial def unblockExpr : Expr → StateM (Nat × List (String × Ty)) Expr
 /-- A method with its blocks given to built-in methods made loops. -/
 def methodUnblock (mt : Method) : Method :=
   let (b, (_, ls)) := (unblockExpr mt.body).run (0, [])
+  let (b, _) := (ownLambdaNames b).run 0
   { mt with body := b, locals := mt.locals ++ ls }
 
 /-- The QCore program of a tree. -/
