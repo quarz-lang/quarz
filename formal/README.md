@@ -478,6 +478,11 @@ stricter, not unsound.
   method's signature), the ones a call leaves through the wrapper for
   the set it gives (`name@k<i..>`). Out of range: keyword arguments out
   of their parameters' order or after a positional one, `**`.
+  `super` outside `initialize` calls the method the checker resolved it
+  to by an alias in its class that nothing overrides (`name@of<id>`):
+  statically, as Quarz's `super` (design §20); a bare one passes the
+  method's parameters. Out of range: a target in a module, a built-in
+  target, `super` in a class method or with a block.
   `x.m!` that the checker resolved to `m` (the sugar for `x = x.m`,
   docs/01 §10, on a local) is that assignment.
   What the translator takes from the Rust checker as given, the model
