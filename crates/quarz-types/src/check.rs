@@ -164,6 +164,11 @@ pub struct Output {
     /// callee's type parameters, bound), for the signatures of what it
     /// generates.
     pub type_args: FxHashMap<NodeId, TypeArgs>,
+    /// The type arguments a call of a generic method (not a `static def`)
+    /// was resolved with: the method's own type parameters, bound (what
+    /// `--tree` shows, for the Lean model's conformance translator).
+    #[serde(default)]
+    pub call_type_args: FxHashMap<NodeId, TypeArgs>,
     /// In `initialize`: the assignments and `super` calls after which the
     /// object is usable (its required fields assigned, docs/03 §4), and
     /// the methods where it is from the start. Failing before that point,
@@ -2577,6 +2582,15 @@ impl Checker {
             if let Some(t) = self.out.node_types.get(&id) {
                 let r = self.infer.resolve(t);
                 self.out.node_types.insert(id, r);
+            }
+            // (A generic call's type arguments, this frame's only: another
+            // frame's may hold variables of its own inference table.)
+            if let Some(args) = self.out.call_type_args.get_mut(&id) {
+                for (_, t) in args.iter_mut() {
+                    if t.has_vars() {
+                        *t = self.infer.resolve(t);
+                    }
+                }
             }
         }
         for t in self
@@ -10112,17 +10126,25 @@ impl Checker {
             }
         }
         self.note_static_call(expr, m.id);
-        if m.is_static {
-            // The chosen candidate's type arguments.
-            let trials = std::mem::take(&mut self.type_args_trials);
-            if let Some((_, _, args)) = trials
-                .into_iter()
+        // The chosen candidate's type arguments: a `static def`'s, and a
+        // generic method's (`call_type_args`). The trials of this call go;
+        // those of the calls around it, still being checked, stay.
+        if m.is_static || !m.type_params.is_empty() {
+            if let Some((_, _, args)) = self
+                .type_args_trials
+                .iter()
                 .rev()
                 .find(|(id, mid, _)| *id == expr.id && *mid == m.id)
+                .cloned()
             {
-                self.out.type_args.insert(expr.id, args);
+                if m.is_static {
+                    self.out.type_args.insert(expr.id, args);
+                } else {
+                    self.out.call_type_args.insert(expr.id, args);
+                }
             }
         }
+        self.type_args_trials.retain(|(id, _, _)| *id != expr.id);
         // `loop { }` without `break` never returns.
         let broken = self.breaking_blocks.get(&expr.id).cloned();
         if m.name == "loop"
@@ -10579,6 +10601,13 @@ impl Checker {
     ) -> Result<Type, String> {
         if m.is_static {
             let args = subst.iter().map(|(k, v)| (*k, v.clone())).collect();
+            self.type_args_trials.push((expr.id, m.id, args));
+        } else if !m.type_params.is_empty() {
+            let args = m
+                .type_params
+                .iter()
+                .filter_map(|tp| subst.get(&tp.id).map(|t| (tp.id, t.clone())))
+                .collect();
             self.type_args_trials.push((expr.id, m.id, args));
         }
         // Match arguments to parameters.

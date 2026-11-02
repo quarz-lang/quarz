@@ -180,7 +180,13 @@ pub fn tree(checked: &Checked) -> Value {
             block_results.insert(id.to_string(), ty(t));
         }
         if let Some(c) = out.calls.get(&id32) {
-            calls.insert(id.to_string(), call(c, &mut methods));
+            let mut v = call(c, &mut methods);
+            // A generic method's call: the type arguments it was resolved
+            // with, in the method's order of its type parameters.
+            if let (Some(args), Value::Object(o)) = (out.call_type_args.get(&id32), &mut v) {
+                o.insert("type_args".to_string(), type_args(args));
+            }
+            calls.insert(id.to_string(), v);
         }
         if let Some(t) = out.const_targets.get(&id32) {
             let (kind, n) = match t {
@@ -236,6 +242,15 @@ pub fn tree(checked: &Checked) -> Value {
         // `Self` in a signature, a type parameter of its own.
         "self_param": SELF_PARAM,
     })
+}
+
+/// A call's type arguments: each type parameter's id and its type.
+fn type_args(args: &quarz_types::check::TypeArgs) -> Value {
+    Value::Array(
+        args.iter()
+            .map(|(p, t)| json!({"param": *p, "type": ty(t)}))
+            .collect(),
+    )
 }
 
 /// The extensions, with their type parameters (an extension's method
