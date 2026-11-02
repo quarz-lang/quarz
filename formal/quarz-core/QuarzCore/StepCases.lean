@@ -28,7 +28,7 @@ theorem ArgsPost.extend_other {c : Ctx} {ao ao' : ArgsOut} {fr : Frame}
   | broke _ s' =>
     obtain ⟨Λ', a, e, f, g⟩ := h
     exact ⟨Λ', a, (he.transW e hw).monoW fun l hl => hl.elim (h1 l) (h2 l), f, g⟩
-  | nexted s' =>
+  | nexted _ s' =>
     obtain ⟨Λ', a, e, f, g⟩ := h
     exact ⟨Λ', a, (he.transW e hw).monoW fun l hl => hl.elim (h1 l) (h2 l), f, g⟩
   | timeout => trivial
@@ -252,7 +252,7 @@ theorem args_succ : ArgsGood P orc (n + 1) := by
     | broke _ s1 =>
       obtain ⟨Λ1, a, e, f, g⟩ := this
       exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g⟩
-    | nexted s1 =>
+    | nexted _ s1 =>
       obtain ⟨Λ1, a, e, f, g⟩ := this
       exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g⟩
     | timeout => trivial
@@ -277,7 +277,7 @@ theorem args_succ : ArgsGood P orc (n + 1) := by
     | broke _ s1 =>
       obtain ⟨Λ1, a, e, f, g⟩ := this
       exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g⟩
-    | nexted s1 =>
+    | nexted _ s1 =>
       obtain ⟨Λ1, a, e, f, g⟩ := this
       exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g⟩
     | timeout => trivial
@@ -310,7 +310,7 @@ theorem args_succ : ArgsGood P orc (n + 1) := by
     | broke _ s1 =>
       obtain ⟨Λ1, a, e, f, g⟩ := this
       exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g⟩
-    | nexted s1 =>
+    | nexted _ s1 =>
       obtain ⟨Λ1, a, e, f, g⟩ := this
       exact ⟨Λ1, a, e.monoW evalWs_cons_left, f, g⟩
     | timeout => trivial
@@ -485,8 +485,9 @@ theorem block_succ : BlockGood P orc (n + 1) := by
       fun i k as h' => by rw [hbts] at h'; exact hw.builts i k as h'⟩
   have hframe : ∀ l, frameW vars ps l → ¬ chainLocs outer l := fun l ⟨x, _, hxl⟩ hc =>
     Nat.lt_irrefl _ (habove l l ⟨x, lookupVar_mem hxl⟩ hc)
-  have hf1 : FrameOK c.prog { c with inBlock := true, loop := none } Λ ⟨vars, me, sa, outer⟩ s1 ws' :=
-    ⟨((hcore.stable he1).inBlock true).withLoop none, hch'.stable he1 _ _ _ (fun l hl hw => hframe l hw hl)
+  have hf1 : FrameOK c.prog { c with inBlock := true, loop := none, nextTy := some sig0.ret } Λ
+      ⟨vars, me, sa, outer⟩ s1 ws' :=
+    ⟨((hcore.stable he1).inBlock true).recast rfl rfl, hch'.stable he1 _ _ _ (fun l hl hw => hframe l hw hl)
         (fun _ h => h.elim), habove,
       fun l hl => by rw [hlen1]; exact hin l (by simp only [chainLocs]; exact Or.inr hl),
       fun _ h => by simp at h⟩
@@ -498,7 +499,7 @@ theorem block_succ : BlockGood P orc (n + 1) := by
       obtain ⟨l, hl, hw'⟩ := hval x w hwm
       obtain ⟨d, hd, htd⟩ := hdecl x t hm
       exact ⟨l, w, d, hl, hw', hd, mono hwt, mono (hasTy_le hwf hwt (Ty.subst_leK hwf sa hcore.bounded htd))⟩
-  have := ih.eval { c with inBlock := true, loop := none } _ body ob ⟨vars, me, sa, outer⟩ s1 Λ ws' rfl hty hw1 hf1 hs1
+  have := ih.eval { c with inBlock := true, loop := none, nextTy := some sig0.ret } _ body ob ⟨vars, me, sa, outer⟩ s1 Λ ws' rfl hty hw1 hf1 hs1
   revert this
   generalize eval c.prog orc n ⟨vars, me, sa, outer⟩ s1 body = r
   intro this
@@ -516,7 +517,37 @@ theorem block_succ : BlockGood P orc (n + 1) := by
     refine ⟨Λ2, hw2, he12.monoW hblkW, hasTy_le hwf (hasTy_le hwf hv2 (Ty.subst_leK hwf sa hcore.bounded hret)) hrel.2.2, ?_,
       fun l hl => ?_⟩
     · simp only [ChainAt]
-      refine ⟨trivial, (FrameCore.ofLoop (c := { c with inBlock := true }) hf2.core).ofBlock, hf2.chain, habove, ⟨sig0, hrel, ?_, hty, hret⟩,
+      refine ⟨trivial, (hf2.core.recast (c' := { c with inBlock := true }) rfl rfl).ofBlock, hf2.chain, habove, ⟨sig0, hrel, ?_, hty, hret⟩,
+        hR.reset_typed hcore he12 (fun l h hfl => ?_) (fun _ h => List.mem_append_right _ h)⟩
+      · simp only [blockParamsOk, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq, List.all_eq_true]
+        exact ⟨⟨hlen, hnd⟩, hpd⟩
+      · rcases h with ⟨x, hx, hl⟩ | ⟨x, hx, hl⟩ | h
+        · exact ⟨x, List.mem_append_left _ (List.mem_append_left _ hx), hl⟩
+        · exact ⟨x, List.mem_append_left _ (List.mem_append_right _ hx), hl⟩
+        · obtain ⟨y, hy⟩ := hfl
+          exact absurd (habove l l ⟨y, hy⟩ (blkW_chain h)) (Nat.lt_irrefl _)
+    · simp only [chainLocs] at hl
+      rcases hl with ⟨x, hx⟩ | hl
+      · exact hf2.core.inStore x l hx
+      · exact hf2.chainIn l hl
+  | nexted v s2 =>
+    -- (`next v`: the block's value, of its result type.)
+    obtain ⟨Λ2, hw2, he2, hf2, hn⟩ := this
+    rcases hn with ⟨_, _, _, hl, _⟩ | ⟨_, τ, hτ, hv2⟩
+    · simp at hl
+    simp only [Option.some.injEq] at hτ; subst hτ
+    have he12 : Ext c.prog _ (fun _ => False) _ _ _ _ := (he1.trans he2 hw).mono (fun _ h => h)
+      (fun _ h => h.elim False.elim fun ⟨_, hb, _⟩ => by simp at hb)
+    have hblkW : ∀ l, (frameW vars ps l ∨ evalW ⟨vars, me, sa, outer⟩ body l) →
+        blkW (some (.mk vars me sa outer ps body)) l := by
+      rintro l (⟨x, hx, hl⟩ | ⟨x, hx, hl⟩ | h) <;> simp only [blkW]
+      · exact Or.inl ⟨x, List.mem_append_left _ hx, hl⟩
+      · exact Or.inl ⟨x, List.mem_append_right _ hx, hl⟩
+      · exact Or.inr h
+    refine ⟨Λ2, hw2, he12.monoW hblkW, hasTy_le hwf hv2 hrel.2.2, ?_,
+      fun l hl => ?_⟩
+    · simp only [ChainAt]
+      refine ⟨trivial, (hf2.core.recast (c' := { c with inBlock := true }) rfl rfl).ofBlock, hf2.chain, habove, ⟨sig0, hrel, ?_, hty, hret⟩,
         hR.reset_typed hcore he12 (fun l h hfl => ?_) (fun _ h => List.mem_append_right _ h)⟩
       · simp only [blockParamsOk, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq, List.all_eq_true]
         exact ⟨⟨hlen, hnd⟩, hpd⟩
@@ -544,7 +575,7 @@ theorem block_succ : BlockGood P orc (n + 1) := by
       · exact Or.inr h
     refine ⟨Λ2, hw2, he12.monoW hblkW, hv2, ?_, fun l hl => ?_⟩
     · simp only [ChainAt]
-      refine ⟨trivial, (FrameCore.ofLoop (c := { c with inBlock := true }) hf2.core).ofBlock, hf2.chain, habove, ⟨sig0, hrel, ?_, hty, hret⟩,
+      refine ⟨trivial, (hf2.core.recast (c' := { c with inBlock := true }) rfl rfl).ofBlock, hf2.chain, habove, ⟨sig0, hrel, ?_, hty, hret⟩,
         hR.reset_typed hcore he12 (fun l h hfl => ?_) (fun _ h => List.mem_append_right _ h)⟩
       · simp only [blockParamsOk, Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq, List.all_eq_true]
         exact ⟨⟨hlen, hnd⟩, hpd⟩
@@ -562,10 +593,6 @@ theorem block_succ : BlockGood P orc (n + 1) := by
   | broke _ _ =>
     obtain ⟨_, _, _, _, _, _, _, hl, _⟩ := this
     simp at hl
-  | nexted _ =>
-    obtain ⟨_, _, _, _, _, _, _, hl, _⟩ := this
-    simp at hl
-
 theorem send_succ : SendGood P orc (n + 1) := by
   intro s Λ recv k as m mt vs blk ws hw hobj hrecv hni hl hvs hblk
   have hwf := hP.classes
@@ -615,7 +642,7 @@ theorem send_succ : SendGood P orc (n + 1) := by
   obtain ⟨hwfm, o', hty, hout, _⟩ := hP.methods mt' hmem'
   -- Not `initialize` (`Program.resolve`): its own parameters only.
   have hni' : (mt'.name == "initialize") = false := by simp [hname', hni]
-  have hnotInit : (⟨P, mt', false, false, none⟩ : Ctx).inInit = false := hni'
+  have hnotInit : (⟨P, mt', false, false, none, none⟩ : Ctx).inInit = false := hni'
   rw [hni'] at hty
   simp only [Bool.false_eq_true, if_false, List.append_nil] at hty
   simp only [send, ho, Option.bind_some, hl']
@@ -625,7 +652,7 @@ theorem send_succ : SendGood P orc (n + 1) := by
   have hwfm' := hwfm
   simp only [Program.wfMethod, Bool.and_eq_true, decide_eq_true_eq] at hwfm'
   obtain ⟨⟨⟨⟨⟨_, hplen⟩, hnd⟩, hpre⟩, _⟩, _⟩ := hwfm'
-  have hcl : ∀ x d, (⟨P, mt', false, false, none⟩ : Ctx).decl x = some d →
+  have hcl : ∀ x d, (⟨P, mt', false, false, none, none⟩ : Ctx).decl x = some d →
       ∃ j, mt'.locals[j]? = some (x, d) := fun x d hd => by
     simp only [Ctx.decl, Option.map_eq_some_iff] at hd
     obtain ⟨⟨y, d'⟩, hf, hd'⟩ := hd
@@ -687,7 +714,7 @@ theorem send_succ : SendGood P orc (n + 1) := by
       fun l' o' ho' => by rw [hobjs] at ho'; exact hw.bounds l' o' ho',
       fun i p hp => by rw [hprocs] at hp; exact (hw.procs i p hp).stable he12,
       fun i k as h' => by rw [hbts] at h'; exact hw.builts i k as h'⟩
-  have hcore : FrameCore P ⟨P, mt', false, false, none⟩ (Λ ++ (mt'.locals.map (·.2)).map (Ty.subst σ))
+  have hcore : FrameCore P ⟨P, mt', false, false, none, none⟩ (Λ ++ (mt'.locals.map (·.2)).map (Ty.subst σ))
       (Store.allocVars s.locs.length (mt'.locals.map (·.1))) (.obj l) σ s2 := by
     refine ⟨fun x d hd => ?_, fun x y l' hx hy => ?_, fun x l' hm => ?_, fun _ => ?_,
       fun h => absurd h (by rw [hnotInit]; simp), ⟨l, rfl, hsa2.symm⟩, hσclosed, hσin,
@@ -708,12 +735,12 @@ theorem send_succ : SendGood P orc (n + 1) := by
       · exact Atom.le_of_ancestorArgs hwf hσ
   obtain ⟨hch0, hin⟩ := hblk
   have hch := ChainAt.weaken hwf ws blk hch0 hblk'
-  have hf2 : FrameOK P ⟨P, mt', false, false, none⟩ (Λ ++ (mt'.locals.map (·.2)).map (Ty.subst σ))
+  have hf2 : FrameOK P ⟨P, mt', false, false, none, none⟩ (Λ ++ (mt'.locals.map (·.2)).map (Ty.subst σ))
       ⟨Store.allocVars s.locs.length (mt'.locals.map (·.1)), .obj l, σ, blk⟩ s2 ws :=
     ⟨hcore, hch.stable he12 _ _ _ (fun _ _ h => h) (fun _ h => h.elim), fun l1 l2 ⟨x, hx⟩ hc => by
       have := (mem_allocVars hx).1; have := hin l2 hc; omega,
       fun l1 hc => by have := hin l1 hc; omega, fun h => absurd h (by rw [hnotInit]; simp)⟩
-  have hs2 : Sat P ⟨P, mt', false, false, none⟩ (mt'.params.map fun (x, t) => (.local x, t))
+  have hs2 : Sat P ⟨P, mt', false, false, none, none⟩ (mt'.params.map fun (x, t) => (.local x, t))
       ⟨Store.allocVars s.locs.length (mt'.locals.map (·.1)), .obj l, σ, blk⟩ s2 := by
     intro p t hp
     obtain ⟨x, rfl, hm⟩ := params_get hp
@@ -722,7 +749,7 @@ theorem send_succ : SendGood P orc (n + 1) := by
     obtain ⟨lx, hlx, hv⟩ := bindAll_val hcore.inj hb hpnd
       (fun y _ l' hl' => by have := hge y l' hl'; simp; omega) x v hvm
     exact ⟨lx, v, t, hlx, hv, hd, mono hvt, mono hvt⟩
-  have := ih.eval ⟨P, mt', false, false, none⟩ _ mt'.body o' _ s2 _ ws rfl hty hw2 hf2 hs2
+  have := ih.eval ⟨P, mt', false, false, none, none⟩ _ mt'.body o' _ s2 _ ws rfl hty hw2 hf2 hs2
   revert this
   generalize eval P orc n _ s2 mt'.body = r
   intro this
@@ -734,7 +761,7 @@ theorem send_succ : SendGood P orc (n + 1) := by
     · have := (hge x l' hx).1; omega
     · exact h
   -- The method assigns no immutable field.
-  have hnoW : ∀ {fr : Frame} l, initW ⟨P, mt', false, false, none⟩ fr l → False :=
+  have hnoW : ∀ {fr : Frame} l, initW ⟨P, mt', false, false, none, none⟩ fr l → False :=
     fun _ ⟨hi, _⟩ => by rw [hnotInit] at hi; cases hi
   cases r with
   | ok v s3 =>
@@ -764,8 +791,8 @@ theorem send_succ : SendGood P orc (n + 1) := by
   | broke _ _ =>
     obtain ⟨_, _, _, _, _, _, _, hl, _⟩ := this
     simp at hl
-  | nexted _ =>
-    obtain ⟨_, _, _, _, _, _, _, hl, _⟩ := this
-    simp at hl
+  | nexted _ _ =>
+    obtain ⟨_, _, _, _, hn⟩ := this
+    exact (NextOK.none _ rfl rfl hn).elim
 
 end QuarzCore

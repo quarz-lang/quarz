@@ -67,6 +67,10 @@ def methods : List Method :=
     -- assigns is un-narrowed).
     ⟨1, "safe_each", [("n", [.int])], [.nil], some ⟨[[.int]], [.int, .nil, .bool, .str, .cls 0 []]⟩,
       [("n", [.int]), ("ex", [.cls 0 []])], .rescue (.yield [.var "n" [.int]]) "ex" .nil .nil⟩,
+    -- A#sum(n: Int) { |Int| -> Int }: what the block gives, read as an
+    -- `Int` (a block's `next v`, design §17.7).
+    ⟨1, "sum", [("n", [.int])], [.int], some ⟨[[.int]], [.int]⟩,
+      [("n", [.int]), ("t", [.int])], .seq (.assign "t" (.yield [.var "n" [.int]])) (.var "t" [.int])⟩,
     -- A#set(s: Str): assigns the var field.
     ⟨1, "set", [("s", [.str])], [.str], none, [("s", [.str])], .setField "v" (.var "s" [.str])⟩,
     ⟨3, "==", [("o", [.nil, .bool, .cls 0 []])], [.bool], none, [("o", [.nil, .bool, .cls 0 []])], .tru⟩,
@@ -181,7 +185,7 @@ partial def genExpr : Nat → Gen Expr
        -- `break` and `next` (design §17): where the loop ends, where the
        -- next pass starts (outside a loop, rejected).
        (1, do return .while (← genTest d) (.seq (← sub) (.ite (← genTest d) (.brk (← sub)) (← sub)))),
-       (1, do return .while (← genTest d) (.seq (.ite (← genTest d) .nxt (← sub)) (← sub))),
+       (1, do return .while (← genTest d) (.seq (.ite (← genTest d) (.nxt .nil) (← sub)) (← sub))),
        (1, do return .seq (.while .tru (.seq (← sub) (.ite (← genTest d) (.brk .nil) .nil))) (← sub)),
        -- A read right after a loop left by its `break`s: what they say.
        (2, do
@@ -195,7 +199,7 @@ partial def genExpr : Nat → Gen Expr
        (2, do
          let l := Expr.while (← genTest d) (.ite (← genTest d) (.brk (← sub)) (← sub))
          return .seq (.assign x l) (.var x narrowed)),
-       (1, pure .nxt),
+       (1, do return .nxt (← sub)),
        (2, do return .call (← sub) "get" []),
        (1, do return .call (← sub) "set" [.str "t"]),
        (1, do return .call (← sub) "put" [.int 1]),
@@ -207,6 +211,9 @@ partial def genExpr : Nat → Gen Expr
        (2, do return .assign "ib" (← sub)),
        (2, do return .assign "k" (.call (← sub) "get" [])),
        (2, do return .callBlk (← sub) "each" [.int 3] ["k"] (← sub)),
+       (2, do
+         let body := Expr.seq (.ite (← genTest d) (.nxt (← sub)) .nil) (← sub)
+         return .callBlk (.new 1 [] [.int 1, .str "v"]) "sum" [.int 3] ["k"] body),
        (1, pure (.raise (.str "boom"))),
        -- `rescue`, its exception in `ex` (this table has no `Exception`:
        -- any value is one), and `ensure`.

@@ -108,7 +108,7 @@ def heldEnv (ct : ClassTable) (fs : List Field) : Env :=
 `initialize` ends with every field set, its value dropped (`new` gives
 the object). -/
 def checkMethod (P : Program) (mt : Method) : Bool :=
-  let c : Ctx := ⟨P, mt, false, false, none⟩
+  let c : Ctx := ⟨P, mt, false, false, none, none⟩
   let held := if c.inInit then heldEnv P.classes c.fields else []
   match check c (mt.params.map (fun (x, t) => (.local x, t)) ++ held) mt.body with
   | some o => (c.inInit || o.out.isNone || o.ty.le P.classes c.bounds mt.ret) &&
@@ -130,7 +130,7 @@ def wfInit (P : Program) (k : Nat) : Bool :=
 object being made, which may not be used (`Ctx.inDefault`), as in a
 block of `initialize` (no `return`, no immutable field assigned). -/
 def defaultCtx (P : Program) (k : Nat) (t : Ty) : Ctx :=
-  ⟨P, ⟨k, "initialize", [], t, none, [], .nil⟩, true, true, none⟩
+  ⟨P, ⟨k, "initialize", [], t, none, [], .nil⟩, true, true, none, none⟩
 
 /-- Each of class `k`'s own fields' defaults: of the field's type, reading
 only the fields before it that hold a value. -/

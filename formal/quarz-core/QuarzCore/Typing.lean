@@ -104,6 +104,9 @@ structure Ctx where
   what the loop's exit holds besides the condition's false side; none:
   no `break`), and what its values are (`τ`) (design §17). -/
   loop : Option (Env × Option Env × Ty)
+  /-- In a block's body (not in a loop in it): its result type, what
+  `next v` gives it (design §17.7). -/
+  nextTy : Option Ty
   deriving Inhabited
 
 namespace Ctx
@@ -187,7 +190,7 @@ def Expr.path? : Expr → Option Path
 those a loop, or a block that may run again, starts with un-narrowed. -/
 def Expr.assigned : Expr → List String
   | .assign x e => x :: e.assigned
-  | .setField _ e | .ret e | .raise e | .brk e | .isNil e | .isA e _ | .eqNil e | .neNil e
+  | .setField _ e | .ret e | .raise e | .brk e | .nxt e | .isNil e | .isA e _ | .eqNil e | .neNil e
   | .eqTrue e | .eqFalse e | .not e => e.assigned
   | .new _ _ args | .superInit _ args | .yield args | .prim _ args _ _ => assignedArgs args
   | .call r _ args => r.assigned ++ assignedArgs args
@@ -210,7 +213,7 @@ parameters included), wherever they are: what any call may change once
 one is made (design §13.10, C1). -/
 def Expr.procAssigned : Expr → List String
   | .lambda ps own _ b => (ps ++ own).map (·.1) ++ b.assigned ++ b.procAssigned
-  | .assign _ e | .setField _ e | .ret e | .raise e | .brk e | .isNil e | .isA e _ | .eqNil e | .neNil e
+  | .assign _ e | .setField _ e | .ret e | .raise e | .brk e | .nxt e | .isNil e | .isA e _ | .eqNil e | .neNil e
   | .eqTrue e | .eqFalse e | .not e => e.procAssigned
   | .new _ _ args | .superInit _ args | .yield args | .prim _ args _ _ => procArgs args
   | .call r _ args | .callProc r args => r.procAssigned ++ procArgs args
@@ -475,7 +478,7 @@ def Ctx.lambdaOk (c : Ctx) (ps own : List (String × Ty)) (body : Expr) : Bool :
 /-- A lambda's body is checked as a block of its method with the
 lambda's parameters and own locals added, no block and no `return`. -/
 def Ctx.lambdaCtx (c : Ctx) (ps own : List (String × Ty)) : Ctx :=
-  { c with inBlock := true, loop := none, meth := { c.meth with locals := ps ++ own ++ c.meth.locals, block := none } }
+  { c with inBlock := true, loop := none, nextTy := none, meth := { c.meth with locals := ps ++ own ++ c.meth.locals, block := none } }
 
 /-- The locals `Γ` has (assigned), each as declared. -/
 def Ctx.declEnv (c : Ctx) (Γ : Env) : Env :=
@@ -636,7 +639,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
         guard (blockParamsOk c ps sig)
         -- The block runs 0 or more times, during the call: its body starts
         -- with what it assigns un-narrowed, its parameters given.
-        let ob ← check { c with inBlock := true, loop := none } (blockEnv c Δ' ps sig body) body
+        let ob ← check { c with inBlock := true, loop := none, nextTy := some sig.ret } (blockEnv c Δ' ps sig body) body
         guard (ob.ty.le c.ct c.bounds sig.ret)
         -- After the call, what the block assigns un-narrowed: it may have
         -- stopped anywhere (an exception the method rescued), as the Rust
@@ -702,10 +705,21 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
       let Ψ ← Ψ
       guard (Δ.implies c.ct Ψ && o.ty.le c.ct c.bounds τ)
       some .dead
-  | .nxt => do
-    let (Γ0, _, _) ← c.loop
-    guard (Γ.implies c.ct Γ0)
-    some .dead
+  | .nxt e => do
+    let o ← check c Γ e
+    match o.out with
+    | none => some .dead
+    | some Δ =>
+      match c.loop with
+      -- (In a loop: on to its next pass, the value dropped.)
+      | some (Γ0, _, _) =>
+        guard (Δ.implies c.ct Γ0)
+        some .dead
+      -- (In a block: its value.)
+      | none =>
+        let τ ← c.nextTy
+        guard (o.ty.le c.ct c.bounds τ)
+        some .dead
   | .ret e => do
     guard (!c.inBlock)
     let o ← check c Γ e
@@ -761,7 +775,7 @@ def check (c : Ctx) (Γ : Env) : Expr → Option Out
   | .ensure b e => do
     guard (!c.inInit && !c.inDefault)
     -- (No `break` or `next` out of the body: the clause would run after.)
-    let ob ← check { c with loop := none } Γ b
+    let ob ← check { c with loop := none, nextTy := none } Γ b
     -- It runs however the body ends: with what the body assigns
     -- un-narrowed.
     let oe ← check c (c.reset Γ (b.assigned ++ c.pinned)) e

@@ -1,0 +1,18 @@
+# `next` in a block (design §17.7): out of the block with its value (a
+# program's method's block), or on to the next element (a built-in's).
+class Mapper
+  def twice(x: Int, &: (Int) -> Int) -> Int
+    yield(x) + yield(x + 1)
+  end
+end
+
+m = Mapper.new
+p(m.twice(3) { |v| next 0 if v > 3; v * 10 })
+ys = [1, 2, 3, 4].map { |v| next -v if v.even?; v }
+p ys
+total = 0
+[1, 2, 3].each do |v|
+  next if v == 2
+  total += v
+end
+p total
