@@ -522,7 +522,10 @@ stricter, not unsound.
   built-in class, a built-in class's method on a receiver whose view of
   its parameters is unknown (a union), `==`/`!=` against `nil`, `true` or
   `false` of a built-in class's value (the Rust checker narrows it as a
-  final class's), and `require_relative`.
+  final class's).
+  A program of several files (`require_relative`) runs each file's
+  top-level statements in the checker's order (a required file's
+  first), each file's locals its own (renamed apart).
   A program's class without type parameters has a metaclass in the
   model (design §19): the class of its class object, below its
   superclass's, its class methods its methods, so a class method runs

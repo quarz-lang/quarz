@@ -2837,7 +2837,6 @@ def program (j : Json) : M Program := do
       some (ownMods.filterMap fun (cid, ms) =>
         if ms.contains mid then (copyOf mid cid).map (·, generic.contains cid) else none)
     else none
-  unless units.size == 1 do throw "a required file"
   let fdefs ← arr (← field j "field_defaults")
   -- The classes' type parameters by id, and the narrowed ones.
   let classParams ← classes.toList.flatMapM fun c => do
@@ -3112,8 +3111,23 @@ def program (j : Json) : M Program := do
     | v =>
       let (bd, ls) ← ((expr T v).run ⟨true, none, none, none, none, [], none, [], [], false, false, false, false, false, false⟩).run []
       pure (some (⟨1, "const " ++ (← str (← field k "name")), [], ty, none, ls, bd⟩ : Method))
-  let some mainUnit := units.back? | throw "no unit"
-  let (mainBody, mainLocals) ← ((body T (← arr (← field mainUnit "body"))).run ⟨true, none, none, none, none, [], none, [], [], true, false, false, false, false, false⟩).run []
+  -- The program's files' top-level statements, those of a required file
+  -- first (in the order the checker gives: dependencies first), each
+  -- file's locals its own (renamed apart: `x@f<i>` but the last file's).
+  let mut mainBody : Expr := .nil
+  let mut mainLocals : Locals := []
+  let mut first := true
+  for (u, i) in units.toList.zipIdx do
+    let (b, ls) ← ((body T (← arr (← field u "body"))).run ⟨true, none, none, none, none, [], none, [], [], true, false, false, false, false, false⟩).run []
+    let last := i + 1 == units.size
+    -- (A `return` at a required file's top level ends that file only.)
+    if !last && hasRet b then throw "a return at a required file's top level"
+    let ren := if last then [] else ls.map fun (x, _) => (x, s!"{x}@f{i}")
+    let b := renameLocals ren b
+    let ls := ls.map fun (x, t) => ((ren.lookup x).getD x, t)
+    mainBody := if first then b else .seq mainBody b
+    mainLocals := mainLocals ++ ls
+    first := false
   let all : Ty := [.nil, .bool, .int, .str, .cls 0 []]
   -- A default that tests or loops, with a bounded parameter anywhere (it
   -- is checked in each inheriting class): out of range, as in `method`.
