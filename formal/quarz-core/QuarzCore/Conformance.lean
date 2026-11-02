@@ -1341,6 +1341,14 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
       -- A bare `super` passes the method's arguments.
       | .null => pure (params.map fun (x, t) => Expr.var x t)
       | a => (← arr a).toList.mapM fun a => do expr T (← positional a)
+    -- (Leaving the superclass's `initialize`'s parameters with defaults:
+    -- out of range.)
+    if let some rc := (← read).rcls then
+      if let some sj := ((← T.cls rc).getObjVal? "superclass").toOption then
+        if sj != .null then
+          if let some si ← T.nearestInit (← nat (← field sj "id")) then
+            if args.length < (← arr (← field (← T.method si) "params")).size then
+              throw "a super leaving a parameter with a default"
     return .superInit d args
   | "CaseIn" => caseIn T id v
   | "Begin" => beginE T id v false
@@ -1887,7 +1895,27 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     if T.varied.contains (.num id) then throw s!"node {id} checked with different types"
     let (q', targs) ← T.tyClass (← field T.nodeTypes (toString id))
     unless q' == q do throw "a new of another class than its type"
-    return .new q targs (← args.mapM (expr T))
+    -- (`initialize`'s parameters it leaves: their defaults, literals (which
+    -- read nothing and do nothing), after the arguments as Quarz's are.)
+    let mut extra : List Expr := []
+    if let some ii := init then
+      let mi ← T.method ii
+      let pjs := (← arr (← field mi "params")).toList
+      if args.length < pjs.length then
+        let some dj := T.defs.find? fun d => (d.getObjValAs? Nat "method").toOption == some ii
+          | throw "an initialize's definition"
+        let dps := (← arr (← field (← field (← field dj "def") "params") "list")).toList
+        for dp in dps.drop args.length do
+          let dv ← field dp "default"
+          let (dk, dvv) ← variant (← field dv "kind")
+          unless ["Int", "Float", "Str", "Nil", "True", "False", "Symbol"].contains dk do
+            throw "a new leaving a parameter whose default is not a literal"
+          -- (An interpolation is not a literal: it reads the callee's names.)
+          if dk == "Str" then
+            for pt in (← arr dvv) do
+              unless (← variant pt).1 == "Lit" do throw "a new leaving a parameter whose default interpolates"
+          extra := extra ++ [← expr T dv]
+    return .new q targs ((← args.mapM (expr T)) ++ extra)
   | "method" =>
     let m ← T.method (← nat (← field target "method"))
     -- (On a class's object: its class methods (its metaclass's) or a
@@ -2141,6 +2169,14 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
     -- a union, the members' overloads may differ.)
     let rawName := name
     let name ← T.modelName m
+    -- (A call leaving parameters with defaults: the callee's class's
+    -- wrapper of that arity, which gives them their defaults.)
+    let pjs := (← arr (← field m "params")).toList
+    let name ← if as.length < pjs.length then do
+        unless ← (pjs.drop as.length).allM (fun p => do pure ((← field p "default") == .bool true)) do
+          throw s!"a call of {rawName} leaving a parameter without a default"
+        pure s!"{name}@d{as.length}"
+      else pure name
     if name != rawName then
       if let some rj := (recvJ.getObjVal? "id").toOption then
         if (← T.nodeTy (← nat rj)).length > 1 then throw s!"an overload of {rawName} on a union receiver"
@@ -2386,7 +2422,8 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
   let name ← T.modelName m
   let params ← (← arr (← field m "params")).toList.mapM fun p => do
     if (← str (← field p "kind")) != "Positional" then throw "a parameter not positional"
-    if (← field p "default") == .bool true then throw "a parameter with a default"
+    if (← field p "default") == .bool true then
+      if (← field m "block") != .null then throw "a parameter with a default in a method with a block"
     pure (← str (← field p "name"), ← T.ty (← field p "type"))
   -- A method a `static` statement generated (docs/14 §5): its body is a
   -- block of the `static def` that made it, not in the tree.
@@ -2429,7 +2466,7 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
   let (bd, ls) ← if d == .null then do
       let some cid ← T.classId "NotImplementedError" | throw "no NotImplementedError"
       let some q := T.qclass cid | throw "NotImplementedError out of range"
-      pure (Expr.raise (.prim "new" [] [] [.cls q []]), [])
+      pure (Expr.raise (.prim "new" [] [] [.cls q []]), params)
     else ((body T (← arr (← field d "body"))).run w).run params
   -- (`-> Void`: the body's value discarded, nil returned, docs/01 §9.)
   let void := ((← field m "ret").getObjValAs? String "t").toOption == some "void"
@@ -2451,6 +2488,40 @@ def method (T : Tables) (owner : Nat) (m : Json) (d : Json) : M Method := do
     else pure none
   let bd := ivars.foldr (fun (x, t) b => .seq (.setField x (.var x t)) b) bd
   pure ⟨owner, name, params, ret, block, ls, bd⟩
+
+/-- A method's wrappers for the calls that leave its parameters with
+defaults: `name@d<k>` takes the first `k`, gives each other its default
+(evaluated in the method's class, the earlier parameters set), then
+calls the method; an override's, its own defaults (docs/01 §3). -/
+def defaultWrappers (T : Tables) (owner : Nat) (m : Json) (d : Json) : M (List Method) := do
+  let pjs := (← arr (← field m "params")).toList
+  let some k := pjs.findIdx? (fun p => (p.getObjVal? "default").toOption == some (.bool true)) | return []
+  -- (An abstract one's defaults are not in the tree: out of range.)
+  if d == .null then throw "an abstract method with a default"
+  -- (`initialize`'s: at `new`, literals only.)
+  if (← str (← field m "name")) == "initialize" then return []
+  let name ← T.modelName m
+  let ps ← pjs.mapM fun p => do pure (← str (← field p "name"), ← T.ty (← field p "type"))
+  let ret ← T.ty (← field m "ret")
+  let dps := (← arr (← field (← field d "params") "list")).toList
+  let rcls ← nat (← field m "owner")
+  let w : Where := ⟨T.qclass rcls == some 1, none, some rcls, none, none, [], none, [], [], false, false, false, false,
+    false, (← field m "singleton") == .bool true⟩
+  (List.range (pjs.length - k)).mapM fun i => do
+    let j := k + i
+    let mut body : Expr := .call .self name (ps.map fun (x, t) => .var x t)
+    for (x, t, dj) in ((ps.zip dps).drop j).reverse.map (fun ((x, t), dj) => (x, t, dj)) do
+      let dv ← field dj "default"
+      if dv == .null then throw "a default missing"
+      let (e, ls) ← ((expr T dv).run w).run ps
+      unless ls.length == ps.length do throw "a default with locals of its own"
+      body := .seq (.assign x e) body
+      let _ := t
+    -- (As `method`: a test in a class with a bounded parameter.)
+    if narrows body then
+      if ← (← arr (← field (← T.cls rcls) "type_params")).anyM (fun p => do pure !(← arr (← field p "bounds")).isEmpty) then
+        throw "a test in a default in a class with a bounded parameter"
+    pure ⟨owner, s!"{name}@d{j}", ps.take j, ret, none, ps, body⟩
 
 /-- A block given to a built-in method (`callBlk` of a `#builtin` call,
 scoped as a block: design §14), made a loop: the call first (its result
@@ -2868,14 +2939,16 @@ def program (j : Json) : M Program := do
       -- (`new` and `super` reach a module's `initialize` otherwise than the
       -- model's chain of copies would.)
       if (← str (← field m "name")) == "initialize" then throw "an initialize in a module"
-      return ← copies.mapM fun (k, _) => method T k m def_
+      return ← copies.flatMapM fun (k, _) => do pure ((← method T k m def_) :: (← defaultWrappers T k m def_))
+    let withDefaults (k : Nat) : M (List Method) := do
+      pure ((← method T k m def_) :: (← defaultWrappers T k m def_))
     if (← field m "singleton") == .bool true then
       match metaOf owner with
-      | some k => return [← method T k m def_]
+      | some k => return ← withDefaults k
       | none => throw "a class method"
     match qclass owner with
-    | some 1 => roots.mapM fun k => method T k m def_
-    | some k => pure [← method T k m def_]
+    | some 1 => roots.flatMapM withDefaults
+    | some k => withDefaults k
     | none => throw "a method of a class out of range"
   -- Each constant's initializer, checked as a method of the top level's
   -- class giving the constant's type.
@@ -2970,6 +3043,17 @@ def program (j : Json) : M Program := do
           | .ok tx, .ok ty => pure (Ty.le P.classes [] ty tx)
           | _, _ => pure true
         if accepts then throw s!"overloads of {n}: an override of other parameters"
+      -- (One taking more parameters, the extra ones with defaults, that
+      -- accepts the other's: an override for the runtime (docs/01 §3), two
+      -- overloads in the model.)
+      if blocks && kinds && pa.length != pb.length then
+        let (short, long) := if pa.length < pb.length then (pa, pb) else (pb, pa)
+        let extraDefaults ← (long.drop short.length).allM fun p => do pure ((← field p "default") == .bool true)
+        let accepts ← (short.zip long).allM fun (x, y) => do
+          match T.ty (← field x "type"), T.ty (← field y "type") with
+          | .ok tx, .ok ty => pure (Ty.le P.classes [] tx ty || Ty.le P.classes [] ty tx)
+          | _, _ => pure true
+        if extraDefaults && accepts then throw s!"overloads of {n}: an override adding parameters with defaults"
   let mainU := methodUnblock P.main
   let methodsU := P.methods.map methodUnblock
   -- (A default has no locals: one holding a built-in call's result is out
