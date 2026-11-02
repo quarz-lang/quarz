@@ -1,0 +1,19 @@
+# Generic methods (design §21): each instantiation the checker gave a call
+# has a copy with the type parameters bound, checked as such; an override
+# has its copies too, so a call through the base type dispatches as usual.
+class Box
+  def wrap[T](x: T) -> Array[T] = [x]
+  def pick[T](a: T, b: T, first: Bool) -> T = first ? a : b
+end
+
+class Loud < Box
+  def pick[T](a: T, b: T, first: Bool) -> T = first ? b : a
+end
+
+def twice[T](x: T) -> Array[T] = [x, x]
+
+ys: Array[Int | String] = Box.new.wrap(1)
+p ys
+b: Box = Loud.new
+p b.pick(1, 2, true), b.pick("x", "y", false)
+p twice(3.5), twice("s")
