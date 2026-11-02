@@ -100,6 +100,9 @@ structure Tables where
   index) that calls by keyword give, other than a first few: each a
   wrapper `name@k<i_j>` giving the others their defaults. -/
   kwMasks : List (String × List Nat) := []
+  /-- The methods a `super` outside `initialize` reaches (by Rust id): each
+  has an alias `name@of<id>` in its class, which nothing overrides. -/
+  superTargets : List Nat := []
 
 def Tables.cls (T : Tables) (id : Nat) : M Json := do
   match T.classes.find? fun c => (c.getObjValAs? Nat "id").toOption == some id with
@@ -1370,7 +1373,33 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
   | "Super" =>
     -- `super` in `initialize`, into the superclass's.
     unless (← field v "block") == .null do throw "a block given to super"
-    let some (params, d) := (← read).init | throw "super outside initialize"
+    let some (params, d) := (← read).init | do
+      -- Outside `initialize`: the method the checker resolved it to,
+      -- through its alias (a static call, as Quarz's `super`).
+      if (← read).classSide then throw "super in a class method"
+      let .ok tj := T.calls.getObjVal? (toString id) | throw "a super not resolved"
+      unless (tj.getObjValAs? String "t").toOption == some "super" do throw "a super not to a method"
+      let tid ← nat (← field tj "method")
+      let m ← T.method tid
+      let o ← nat (← field m "owner")
+      unless (T.qclass o).any (· ≥ 2) && !T.builtins.contains o && !T.excIds.contains o &&
+          (T.modCopies o).isNone && (← field m "native") != .bool true && (← str (← field m "synth")) == "None" &&
+          (← field m "singleton") != .bool true && (← field m "extension") == .null do
+        throw "super to a method out of range"
+      let args ← match ← field v "args" with
+        -- A bare `super` passes the method's own parameters.
+        | .null => do
+          let w ← read
+          let some _ := w.rcls | throw "a bare super outside a method"
+          -- (In a lambda, the locals start with its own parameters; a bare
+          -- `super` forwards the method's block too.)
+          unless w.captured.isEmpty do throw "a bare super in a lambda"
+          if w.blkProc.isSome || (← field m "block") != .null then throw "a bare super forwarding a block"
+          let ps := (← get).take (← arr (← field m "params")).size
+          pure (ps.map fun (x, t) => Expr.var x t)
+        | a => (← arr a).toList.mapM fun a => do expr T (← positional a)
+      unless args.length == (← arr (← field m "params")).size do throw "a super leaving a parameter"
+      return .call .self s!"{← T.modelName m}@of{tid}" args
     if let some rc := (← read).rcls then
       if let some sj := ((← T.cls rc).getObjVal? "superclass").toOption then
         if sj != .null then
@@ -2845,7 +2874,7 @@ def program (j : Json) : M Program := do
     fun id => (narrowedList.find? (·.1 == id)).map (·.2), selfParam, excIds,
     (j.getObjVal? "op_targets").toOption.getD Json.null,
     (j.getObjVal? "block_results").toOption.getD Json.null, [], ← arr (← field j "extensions"), modCopies,
-    builtIds, metaOf, []⟩
+    builtIds, metaOf, [], []⟩
   -- The program's overloaded names (but `initialize`, which `new` and
   -- `super` take the nearest of).
   let mine ← (← arr (← field j "methods")).toList.filterM fun m => do
@@ -2896,6 +2925,16 @@ def program (j : Json) : M Program := do
     let mn ← T.modelName m
     unless kwMasks.contains (mn, given) do kwMasks := kwMasks ++ [(mn, given)]
   let T := { T with kwMasks := kwMasks }
+  -- The methods a `super` outside `initialize` reaches.
+  let mut superTargets : List Nat := []
+  if let .obj kvs := T.calls then
+    for (_, tj) in kvs.toList do
+      if (tj.getObjValAs? String "t").toOption == some "super" then
+        if let .ok tid := tj.getObjValAs? Nat "method" then
+          let m ← T.method tid
+          if (← str (← field m "name")) != "initialize" && !superTargets.contains tid then
+            superTargets := superTargets ++ [tid]
+  let T := { T with superTargets := superTargets }
   -- (The runtime dispatches without the block's type: overloads of one
   -- class differing in their block only are out of range.)
   for a in mine do
@@ -3044,7 +3083,11 @@ def program (j : Json) : M Program := do
       if (← str (← field m "name")) == "initialize" then throw "an initialize in a module"
       return ← copies.flatMapM fun (k, _) => do pure ((← method T k m def_) :: (← defaultWrappers T k m def_))
     let withDefaults (k : Nat) : M (List Method) := do
-      pure ((← method T k m def_) :: (← defaultWrappers T k m def_))
+      let mt ← method T k m def_
+      -- (One a `super` reaches: also by its alias, design §20.)
+      let mid ← nat (← field m "id")
+      let alias := if T.superTargets.contains mid then [{ mt with name := s!"{mt.name}@of{mid}" }] else []
+      pure (mt :: alias ++ (← defaultWrappers T k m def_))
     if (← field m "singleton") == .bool true then
       match metaOf owner with
       | some k => return ← withDefaults k

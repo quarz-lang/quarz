@@ -1,0 +1,23 @@
+# `super` outside `initialize` (design §20): the method the checker
+# resolved it to, statically, whatever the receiver's class (an alias of
+# it that nothing overrides); a bare `super` passes the method's
+# parameters as they are then.
+class A
+  def f(x: Int) -> Int = x + 1
+  def g(s: String) -> String = "A" + s
+end
+
+class B < A
+  def f(x: Int) -> Int = super * 10
+  def g(s: String) -> String
+    s = s + "!"
+    [1].map { |i| super }.first.to_s + "B"
+  end
+end
+
+class C < B
+  def f(x: Int) -> Int = super(x + 1) + 3
+end
+
+p C.new.f(1), B.new.f(1), A.new.f(1)
+p C.new.g("x")
