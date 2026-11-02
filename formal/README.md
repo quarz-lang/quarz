@@ -490,6 +490,11 @@ stricter, not unsound.
   Out of range: a call checked more than once (with different types) or
   on a union receiver (the tree keeps one instantiation), an open
   instantiation, a generic method with a default.
+  A block pass to a built-in (design §22): `&:name` is the block calling
+  the method the name finds on the block parameter's class (the
+  program's by its model name, so by dispatch; a built-in one a built-in
+  call), `&f` of a local procedure the block calling it with the block's
+  parameters (as many).
   `x.m!` that the checker resolved to `m` (the sugar for `x = x.m`,
   docs/01 §10, on a local) is that assignment.
   What the translator takes from the Rust checker as given, the model
