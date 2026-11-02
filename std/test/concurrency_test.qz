@@ -51,10 +51,13 @@ class TaskTest < Test::Case
 
   def test_scope_raises_child_failure
     # The sibling is cancelled when the other child fails: it never ends.
+    # (It waits for a value never sent, not for a time a loaded machine
+    # may let pass before the other child runs.)
     ended = Atom.new(false)
+    never = Channel[Nil].new
     e = assert_raise(ArgumentError) do
       Task.scope do |s|
-        s.spawn { Task.sleep(1.second); ended.set(true) }
+        s.spawn { never.receive; ended.set(true) }
         s.spawn { raise ArgumentError, "child failed" }
       end
       nil
@@ -65,7 +68,10 @@ class TaskTest < Test::Case
   end
 
   def test_timeout
-    assert_raise(Task::Timeout) { Task.timeout(10.ms) { Task.sleep(1.second) }; nil }
+    # The block waits for a value never sent: only the timeout ends it
+    # (a second's sleep could end first on a loaded machine).
+    never = Channel[Nil].new
+    assert_raise(Task::Timeout) { Task.timeout(10.ms) { never.receive }; nil }
     assert_equal(5, Task.timeout(1.second) { 5 })
   end
 

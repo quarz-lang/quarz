@@ -1420,9 +1420,14 @@ impl Scheduler {
     }
 
     pub fn add_timer(&mut self, after: Duration, id: TaskId) -> u64 {
+        self.add_timer_at(Instant::now() + after, id)
+    }
+
+    /// A timer that fires at `when` (a deadline the caller also tests).
+    pub fn add_timer_at(&mut self, when: Instant, id: TaskId) -> u64 {
         self.timer_seq += 1;
         let seq = self.timer_seq;
-        self.timers.push(Reverse((Instant::now() + after, seq, id)));
+        self.timers.push(Reverse((when, seq, id)));
         self.pending_timers.insert(seq);
         seq
     }

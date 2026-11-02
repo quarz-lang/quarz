@@ -704,14 +704,21 @@ fn task_timeout(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 fn run_timeout(interp: &Interp, d: std::time::Duration, child: &Rc<TaskHandle>) -> EvalResult {
     let child = child.clone();
     let me = interp.current_task();
-    let timer = interp.sched.borrow_mut().add_timer(d, me.id);
-    let start = std::time::Instant::now();
+    // One deadline, which the timer fires at and the loop tests. (Taking
+    // another `now()` for the test, after arming the timer, races: a
+    // thread descheduled between the two lets the timer fire while the
+    // test still finds time left, and the loop parks again with no timer
+    // to wake it, until the block ends: `Task.timeout(10.ms) {
+    // Task.sleep(1.second) }` then gave the block's value.)
+    let deadline = std::time::Instant::now() + d;
+    let timer = interp.sched.borrow_mut().add_timer_at(deadline, me.id);
     loop {
         if child.is_done() {
             interp.sched.borrow_mut().cancel_timer(timer);
             return interp.await_task(&child);
         }
-        if start.elapsed() >= d {
+        // (The timer fired, or the deadline passed: either ends the wait.)
+        if !interp.sched.borrow().timer_pending(timer) || std::time::Instant::now() >= deadline {
             interp.cancel_task(&child);
             // Waited for even if this task is cancelled meanwhile: the
             // block is the caller's (`&:`) and must not outlive the call.
