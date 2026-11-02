@@ -1,0 +1,77 @@
+# `&:name` on values of a union (`A | B`) calls what the block
+# `{ |x| x.name }` does: each member's own method, chosen by the value's
+# class, the result being any member's.
+class Cat
+  def sound -> String = "meow"
+end
+
+class Robot
+  def sound -> Int = 404
+end
+
+pets: Array[Cat | Robot] = [Cat.new, Robot.new, Cat.new]
+p pets.map(&:sound)
+p pets.map { |x| x.sound }
+
+# Through an included module, and a class's own method.
+module Named
+  def label -> String = "named"
+end
+
+class Plain
+  include Named
+end
+
+class Custom
+  include Named
+  def label -> String = "custom"
+end
+
+items: Array[Plain | Custom] = [Custom.new, Plain.new]
+p items.map(&:label)
+p items.map { |x| x.label }
+
+# A class and its subclass, each with its own: the subclass's for its
+# values.
+class Shape
+  def name -> String = "shape"
+end
+
+class Square < Shape
+  def name -> String = "square"
+end
+
+class Point
+  def name -> String = "point"
+end
+
+shapes: Array[Square | Point] = [Square.new, Point.new]
+p shapes.map(&:name)
+shapes.each(&:name)
+
+# Checked once per type of the outer block: one check's members differ,
+# the other's share their superclass's method; each value finds its own.
+class Siblings
+  def word -> String = "sibling"
+end
+
+class Left < Siblings
+end
+
+class Right < Siblings
+end
+
+class Up
+  def word -> String = "up"
+end
+
+class Down
+  def word -> String = "down"
+end
+
+def groups(i: Int) -> Array[Array[Up | Down]] | Array[Array[Left | Right]]
+  i > 0 ? [[Up.new, Down.new]] : [[Left.new, Right.new]]
+end
+
+groups(1).each { |g| p g.map(&:word) }
+groups(0).each { |g| p g.map(&:word) }
