@@ -562,6 +562,9 @@ enum TableUndo {
     StaticCall((u32, Span, MethodId)),
     /// A node's type before a check in a block recorded another.
     NodeType(NodeId, Option<Type>),
+    /// A `def_method` block's `Output::lifted_blocks` entry before a check
+    /// recorded another (and `Checker::lifted_seen` got one more).
+    Lifted(NodeId, Option<Type>),
     /// An integer literal marked in `Output::float_literals` (`true`) or
     /// `integer_literals`, and whether that is not its default type (the
     /// overload rule's literal level, docs/01 §9).
@@ -892,6 +895,10 @@ pub struct Checker {
     infer: InferTable,
     env: Env,
     touched: Vec<NodeId>,
+    /// A `def_method` block's procedure types, one per check (the
+    /// enclosing block's, once per type), with its span: compared when its
+    /// frame's types are resolved, since the generated method has one.
+    lifted_seen: FxHashMap<NodeId, (Vec<Type>, Span, String)>,
     /// The type arguments of each candidate tried for a call of a
     /// `static def` (`try_candidate`); `finish_call` keeps the chosen one.
     type_args_trials: Vec<(NodeId, MethodId, TypeArgs)>,
@@ -1028,6 +1035,7 @@ impl Checker {
             infer: InferTable::default(),
             env,
             touched: Vec::new(),
+            lifted_seen: FxHashMap::default(),
             type_args_trials: Vec::new(),
             frame_vars: Vec::new(),
             breaking_blocks: HashMap::default(),
@@ -1996,6 +2004,15 @@ impl Checker {
                         None => self.out.node_types.remove(&id),
                     };
                 }
+                TableUndo::Lifted(id, t) => {
+                    match t {
+                        Some(t) => self.out.lifted_blocks.insert(id, t),
+                        None => self.out.lifted_blocks.remove(&id),
+                    };
+                    if let Some((seen, ..)) = self.lifted_seen.get_mut(&id) {
+                        seen.pop();
+                    }
+                }
                 TableUndo::Interp(id, t) => {
                     self.out.interp_conflicts.remove(&id);
                     match t {
@@ -2588,6 +2605,24 @@ impl Checker {
         // left with a variable unbound must not take this one's binding).
         let touched = std::mem::take(&mut self.touched);
         for id in touched {
+            if let Some((seen, span, callee)) = self.lifted_seen.remove(&id) {
+                let seen: Vec<Type> = seen.iter().map(|t| self.infer.resolve(t)).collect();
+                // (One not inferred is `static_run`'s to report.)
+                let mut seen = seen.into_iter().filter(|t| !t.has_vars());
+                let first = seen.next();
+                if let (Some(first), Some(other)) =
+                    (first.clone(), seen.find(|t| Some(t) != first.as_ref()))
+                {
+                    self.error(
+                        format!(
+                            "the block given to {callee} has a type for each check of the block around it ({} and {}): the generated method has one",
+                            self.name(&first),
+                            self.name(&other)
+                        ),
+                        span,
+                    );
+                }
+            }
             if let Some(t) = self.out.node_types.get(&id) {
                 let r = self.infer.resolve(t);
                 self.out.node_types.insert(id, r);
@@ -11500,6 +11535,7 @@ impl Checker {
             self.out.shareable_procs.insert(call_id);
         }
         let lifted = std::mem::take(&mut self.env.next_block_lifted);
+        let lifted_before = lifted.then(|| self.out.lifted_blocks.get(&call_id).cloned());
         if lifted {
             self.out.lifted_blocks.insert(call_id, proc_ty.clone());
             // The generated method's parameters are the block's, plain.
@@ -11563,7 +11599,9 @@ impl Checker {
                         format!(
                             "the block is declared `-> {}` but {} expects {}",
                             self.name(&declared),
-                            callee.map_or("the method".to_string(), |c| format!("`{c}`")),
+                            callee
+                                .as_deref()
+                                .map_or("the method".to_string(), |c| format!("`{c}`")),
                             self.name(&expected_proc)
                         ),
                         te.span,
@@ -11845,6 +11883,17 @@ impl Checker {
         match late {
             Some(snap) => self.leave_late_closure(&snap, &block.body),
             None => self.widen_assigned(&block.body),
+        }
+        if let (Some(before), Some(now)) = (lifted_before, self.out.lifted_blocks.get(&call_id)) {
+            let now = now.clone();
+            let seen = self.lifted_seen.entry(call_id).or_insert_with(|| {
+                let callee = callee
+                    .as_deref()
+                    .map_or("the method".to_string(), |c| format!("`{c}`"));
+                (Vec::new(), block.span, callee)
+            });
+            seen.0.push(now);
+            self.table_journal.push(TableUndo::Lifted(call_id, before));
         }
     }
 

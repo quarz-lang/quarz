@@ -471,3 +471,42 @@ fn self_in_a_lifted_block_is_the_class_generated_into() {
     assert!(!ok);
     assert!(err.contains("expects Post but found Model"), "{err}");
 }
+
+#[test]
+fn a_lifted_block_checked_once_per_type_must_have_one_type() {
+    // A block given to `def_method` inside a block checked once per type
+    // (here for each array type of a union): the checks found different
+    // procedure types, while the generated method has one signature (the
+    // last check's was taken, wrong for a run with the other type).
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Model\n  static def self.gen(flag: Bool) -> Void\n    xs: Array[Int] | Array[String] = flag ? [1] : [\"a\"]\n    xs.each do |v|\n      def_method(:val) do\n        v\n      end\n    end\n  end\nend\n",
+    );
+    write(
+        &d.0,
+        "same_lib.qz",
+        "class Model\n  static def self.same(flag: Bool) -> Void\n    xs: Array[Int] | Array[String] = flag ? [1] : [\"a\"]\n    xs.each do |v|\n      def_method(:one) do\n        v.to_s.size\n      end\n    end\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass Post < Model\n  gen true\nend\np Post.new.val.size\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("the block given to `def_method` has a type for each check of the block around it (Model.() -> Int and Model.() -> String)"),
+        "{err}"
+    );
+    // The same type in every check: generated.
+    let same = write(
+        &d.0,
+        "same.qz",
+        "require_relative \"same_lib\"\nclass Post < Model\n  same true\nend\np Post.new.one + 1\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", same.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "2\n");
+}
