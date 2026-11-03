@@ -29,7 +29,8 @@ use crate::*;
 /// sorting, iteration, ranges, JSON, exceptions, construction, the
 /// enumerators natives build). A new by-name call in the runtime
 /// (`Interp::send`, `call_named`, `has_user_method`, an enumerator)
-/// must add its name here.
+/// must add its name here (and, for a native's, to quarz-cli's
+/// `static_run::NATIVE_NAMES`).
 pub const RUNTIME_NAMES: &[&str] = &[
     "to_s",
     "inspect",
@@ -229,6 +230,7 @@ impl Shake<'_> {
             Ref::Regexp => self.class(self.module.world.builtin.regexp),
             Ref::Bytes => self.class(self.module.world.builtin.bytes),
             // (Only `reach_refs` gives these.)
+            Ref::Runtime(n) => self.name(n),
             Ref::Exact(m) => self.method(m),
             Ref::Construct { class, init, .. } => {
                 self.class(class);
@@ -257,6 +259,10 @@ pub enum Ref<'a> {
     Regexp,
     /// A `Bytes` constant.
     Bytes,
+    /// A method of an object's the runtime calls by this name for an
+    /// instruction (an interpolation's `to_s`, a hash literal's `hash`):
+    /// from `reach_refs` only.
+    Runtime(&'static str),
     /// A method called as it is, never an override (`super`, a
     /// function): from `reach_refs` only.
     Exact(MethodId),
@@ -280,8 +286,9 @@ pub fn refs<'a>(f: &'a Function, visit: &mut dyn FnMut(Ref<'a>)) {
 /// What `f` refers to, for what a run of it may reach (the compile-time
 /// checks of `static` code): as `refs`, but a `super` call and a
 /// function's are `Ref::Exact`, a construction is `Ref::Construct`
-/// (not every `initialize` by name), and a symbol constant is no
-/// method's name.
+/// (not every `initialize` by name), a symbol constant is no method's
+/// name, and the runtime's calls by name for an instruction are
+/// `Ref::Runtime`.
 pub fn reach_refs<'a>(f: &'a Function, visit: &mut dyn FnMut(Ref<'a>)) {
     refs_in(f, true, visit)
 }
@@ -383,6 +390,27 @@ fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
                     visit(Ref::Class(*class))
                 }
                 Inst::MakeRegexp { .. } => visit(Ref::Regexp),
+                // The runtime's calls by name an instruction makes (what a
+                // run reaches; shake keeps `RUNTIME_NAMES` anyway).
+                // (`Interp::to_s` of an array or a `data` value is its
+                // elements' and fields' `inspect`.)
+                Inst::Interpolate { .. } if exact => {
+                    visit(Ref::Runtime("to_s"));
+                    visit(Ref::Runtime("inspect"));
+                    visit(Ref::Runtime("<<"));
+                }
+                Inst::Equal { .. } if exact => visit(Ref::Runtime("==")),
+                // (`case_eq`: a range's bounds by `<=>`, else `==`.)
+                Inst::CaseEq { .. } if exact => {
+                    visit(Ref::Runtime("=="));
+                    visit(Ref::Runtime("<=>"));
+                }
+                Inst::MakeHash { .. } if exact => {
+                    visit(Ref::Runtime("hash"));
+                    visit(Ref::Runtime("=="));
+                }
+                // (Its message shows the value: `inspect`.)
+                Inst::NoMatch { .. } if exact => visit(Ref::Runtime("inspect")),
                 _ => {}
             }
         }
