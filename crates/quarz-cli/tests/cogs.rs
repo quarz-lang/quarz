@@ -240,6 +240,50 @@ fn an_application_uses_its_cogs_without_require() {
 }
 
 #[test]
+fn check_takes_a_library_as_its_users_load_it() {
+    // A cog without src/main.qz: `quarz check` checks its files, under its
+    // root module and with its dependencies; `run` and `build` have
+    // nothing to run.
+    let w = World::new();
+    w.libraries();
+    for (cwd, args) in [("httpx", &["check"][..]), (".", &["check", "httpx"][..])] {
+        let out = w.quarz(cwd, args);
+        assert!(out.ok, "{}", out.stderr);
+        assert_eq!(out.stdout, "");
+        assert!(
+            out.stderr
+                .contains("quarz: checked `httpx` as a library: no src/main.qz\n"),
+            "{}",
+            out.stderr
+        );
+    }
+    w.write(
+        "httpx/src/bad.qz",
+        "class Bad\n  def body -> String = Client.new.get(\"u\").body\nend\n",
+    );
+    let err = w.fails("httpx", &["check"]);
+    assert!(
+        err.contains("bad.qz:2:")
+            && err.contains("returns String but its body has type Tomlz::Value"),
+        "{err}"
+    );
+    w.write("httpx/src/bad.qz", "puts 1\n");
+    let err = w.fails("httpx", &["check"]);
+    assert!(
+        err.contains("a cog's files hold declarations only"),
+        "{err}"
+    );
+    std::fs::remove_file(w.path("httpx/src/bad.qz")).unwrap();
+    for cmd in ["run", "build"] {
+        let err = w.fails("httpx", &[cmd]);
+        assert!(
+            err.contains("the application `httpx` has no src/main.qz to run"),
+            "{cmd}: {err}"
+        );
+    }
+}
+
+#[test]
 fn static_defs_run_from_dependency_cogs() {
     // A library cog's `static def` runs, at compile time, from a class
     // body of the application; one of the application's own cog does not

@@ -244,9 +244,12 @@ impl Target {
 
 /// Load the target and everything it requires, then type-check. Returns
 /// the checked program and the source files by index (0 = the prelude) if
-/// there were no errors.
+/// there were no errors. With `library`, a cog without `src/main.qz` is
+/// checked as a library (as `quarz test` loads it), not refused as an
+/// application with nothing to run.
 fn load_and_check(
     target: &Target,
+    library: bool,
 ) -> Option<(quarz_types::Checked, Vec<SourceFile>, quarz_lower::Lowerer)> {
     let prelude_file = SourceFile::new("<prelude>", quarz_types::PRELUDE_SOURCE);
     let prelude = quarz_types::parse_prelude();
@@ -269,23 +272,52 @@ fn load_and_check(
                 }
             };
             // Not the cogs only dev-dependencies reach (`quarz test`'s).
-            let specs: Vec<quarz_types::CogSpec> = movement.cogs[..movement.dev_from]
-                .iter()
-                .enumerate()
-                .map(|(i, c)| quarz_types::CogSpec {
-                    name: c.name.clone(),
-                    version: c.version.clone(),
-                    module: (i > 0).then(|| c.module.clone()),
-                    module_name: c.module.clone(),
-                    src: c.dir.join("src"),
-                    imports: c
-                        .imports
-                        .iter()
-                        .map(|(k, j)| (k.clone(), *j as u32))
-                        .collect(),
-                })
-                .collect();
-            quarz_types::load_movement(&specs)
+            let cogs = &movement.cogs[..movement.dev_from];
+            let is_library = library && !root.join("src").join("main.qz").is_file();
+            // A library is cog 1, under a root of its own that imports it
+            // (and its dependencies, for their keys' sake), as `quarz test`
+            // has it.
+            let shift = u32::from(is_library);
+            let spec = |i: usize, c: &quarz_cog::CogEntry| quarz_types::CogSpec {
+                name: c.name.clone(),
+                version: c.version.clone(),
+                module: (i > 0 || is_library).then(|| c.module.clone()),
+                module_name: c.module.clone(),
+                src: c.dir.join("src"),
+                imports: c
+                    .imports
+                    .iter()
+                    .map(|(k, j)| (k.clone(), *j as u32 + shift))
+                    .collect(),
+            };
+            let mut specs: Vec<quarz_types::CogSpec> = Vec::new();
+            if is_library {
+                let lib = &cogs[0];
+                // An application that lost its main file passes `check`
+                // this way while `run` fails: say why.
+                eprintln!("quarz: checked `{}` as a library: no src/main.qz", lib.name);
+                let mut imports = vec![(lib.module.clone(), 1)];
+                for (k, j) in &lib.imports {
+                    if !imports.iter().any(|(m, _)| m == k) {
+                        imports.push((k.clone(), *j as u32 + 1));
+                    }
+                }
+                specs.push(quarz_types::CogSpec {
+                    name: format!("{}-check", lib.name),
+                    version: lib.version.clone(),
+                    module: None,
+                    module_name: lib.module.clone(),
+                    // No src/: the root has no files.
+                    src: std::path::PathBuf::new(),
+                    imports,
+                });
+            }
+            specs.extend(cogs.iter().enumerate().map(|(i, c)| spec(i, c)));
+            if is_library {
+                quarz_types::load_library(&specs)
+            } else {
+                quarz_types::load_movement(&specs)
+            }
         }
     };
     for (file, diag) in &diagnostics {
@@ -321,7 +353,7 @@ fn load_and_check(
 }
 
 fn run_file(target: &Target, argv: Vec<String>) -> ExitCode {
-    let Some((checked, files, lowerer)) = load_and_check(target) else {
+    let Some((checked, files, lowerer)) = load_and_check(target, false) else {
         return ExitCode::FAILURE;
     };
     let code = quarz_cli::run_with(checked, &files, lowerer, argv);
@@ -329,7 +361,7 @@ fn run_file(target: &Target, argv: Vec<String>) -> ExitCode {
 }
 
 fn ir_file(target: &Target) -> ExitCode {
-    let Some((checked, files, lowerer)) = load_and_check(target) else {
+    let Some((checked, files, lowerer)) = load_and_check(target, false) else {
         return ExitCode::FAILURE;
     };
     let module = quarz_cli::lower_with(&checked, &files, lowerer);
@@ -338,7 +370,7 @@ fn ir_file(target: &Target) -> ExitCode {
 }
 
 fn build_file(target: &Target, out: &std::path::Path) -> ExitCode {
-    let Some((checked, files, lowerer)) = load_and_check(target) else {
+    let Some((checked, files, lowerer)) = load_and_check(target, false) else {
         return ExitCode::FAILURE;
     };
     match quarz_cli::build_with(checked, &files, lowerer, out) {
@@ -368,7 +400,7 @@ fn check_file(target: &Target, mode: CheckOutput) -> ExitCode {
             eprintln!("quarz: {warning}");
         }
     }
-    match load_and_check(target) {
+    match load_and_check(target, true) {
         Some((checked, sources, _)) => {
             match mode {
                 CheckOutput::Tree => println!("{}", quarz_cli::tree::tree(&checked)),
