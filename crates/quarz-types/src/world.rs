@@ -1482,8 +1482,8 @@ impl World {
 
     /// Whether a call of `mid` with an implicit receiver passes no `self`
     /// of the caller: a built-in `Kernel` function (one an `extension
-    /// Kernel` adds is a method), or a top-level `def`, which runs with
-    /// its file's top-level object (docs/01 §1).
+    /// Kernel` adds is a method), or a top-level `def`, a function, which
+    /// has no `self` (docs/01 §2).
     pub fn takes_no_self(&self, mid: MethodId) -> bool {
         let m = self.method(mid);
         (m.is_native && m.owner == self.builtin.kernel)

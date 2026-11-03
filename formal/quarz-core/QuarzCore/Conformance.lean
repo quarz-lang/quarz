@@ -402,8 +402,9 @@ def Tables.methodName (T : Tables) (m : Json) : M String := do
 /-- The model's name of a program's method (`methodName`); a top-level
 `def`, a function (docs/01 §2), is a method of a name of its own,
 `name@fn`, copied into each class right below `Object` (`program`), so a
-call the checker resolved to it runs it from any class, statically, as Quarz's does (with the file's top-level object as
-`self`, which its body may not observe: `method`, `call`). -/
+call the checker resolved to it runs it from any class, statically, as Quarz's does (with the caller's `self`, which its
+body cannot read: a function has none, and the checker refuses `self`, fields, `super` and implicit calls of an object's
+methods in it; `method`, `call`). -/
 def Tables.modelName (T : Tables) (m : Json) : M String := do
   let base ← T.methodName m
   if T.qclass (← nat (← field m "owner")) == some 1 then return s!"{base}@fn"
@@ -1229,8 +1230,8 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
   | "True" => pure .tru
   | "False" => pure .fls
   | "SelfRef" =>
-    -- (In a function, `self` is the file's top-level object, the model's
-    -- the caller's.)
+    -- (A function has no `self`, which the checker refuses; the model's
+    -- would be the caller's.)
     if (← T.inFunction) then throw "self in a function"
     pure .self
   -- (Which extensions a `using` makes active is the checker's, taken as

@@ -676,7 +676,11 @@ fn classes_and_fields() {
     ok("class V\n  @x: Int\n  def initialize(@x: Int); end\n  def +(o: V) -> V = V.new(@x + o.x)\n  def x -> Int = @x\nend\nputs (V.new(1) + V.new(2)).x");
     err(
         "def f -> Int\n  @x\nend",
-        "instance variables are not available",
+        "a function has no `self`, so no fields",
+    );
+    err(
+        "@x",
+        "instance variables are not available at the top level",
     );
 }
 
@@ -3444,10 +3448,10 @@ fn a_task_blocks_next_value_must_be_shareable() {
     ok("c = true\nt = Task.spawn do\n  next 1 if c\n  raise \"x\"\nend\np t.await");
 }
 
-/// A top-level `def` runs with its file's top-level object, not the
-/// caller's `self` (docs/01 §1): calling it does not use the object, so
-/// it is allowed before `initialize` has assigned the fields, in a
-/// field's default, and in a task's block in a mutable class.
+/// A top-level `def` is a function, which has no `self` (docs/01 §2):
+/// calling it does not use the caller's, so it is allowed before
+/// `initialize` has assigned the fields, in a field's default, and in a
+/// task's block in a mutable class.
 #[test]
 fn toplevel_defs_take_no_self() {
     ok("def label -> String = \"x\"\nclass D\n  @a: String = label\n  @b: String\n  def initialize\n    @b = label\n  end\nend");
@@ -3457,6 +3461,78 @@ fn toplevel_defs_take_no_self() {
         "class Counter\n  var @n: Int = 0\n  def work -> Int = @n\n  def go -> Int = Task.spawn { work }.await\nend",
         "calling `work` uses `self`",
     );
+}
+
+/// A function has no `self` (docs/01 §2): `self`, `super`, a field and
+/// an implicit call of a method of an object are errors in its body, its
+/// parameters' defaults and its blocks and lambdas, each saying what to
+/// write instead; a block with a receiver has its receiver, and the top
+/// level keeps its `self`.
+#[test]
+fn a_function_has_no_self() {
+    let no_self = "a function has no `self`: pass what it needs as an argument";
+    err("def me -> Object = self", no_self);
+    err("def name -> String = self.class.name", no_self);
+    err("def f(x: String = self.to_s) -> String = x", no_self);
+    err("def f -> Array[Object] = [1].map { |_| self }", no_self);
+    err("def f -> Object = (-> { self }).call", no_self);
+    err(
+        "def f -> Int
+  Task.spawn { self }
+  1
+end",
+        no_self,
+    );
+    err(
+        "def shown -> String = inspect",
+        "a function has no `self`: `inspect` is a method of an object, not a function; call it on one (`x.inspect`)",
+    );
+    err(
+        "def f -> Bool = [1].all? { |x| frozen? }",
+        "a function has no `self`: `frozen?` is a method of an object",
+    );
+    err(
+        "def f -> Int = instance_exec { 1 }",
+        "a function has no `self`: `instance_exec` is a method of an object",
+    );
+    err("def f -> Bool = self == 1", no_self);
+    err(
+        "def f -> Int = @x",
+        "a function has no `self`, so no fields: keep state in an object of a class",
+    );
+    err(
+        "def f -> Void
+  @x = 1
+end",
+        "a function has no `self`, so no fields",
+    );
+    err(
+        "def f -> Void
+  @x ||= 1
+end",
+        "a function has no `self`, so no fields",
+    );
+    err(
+        "def to_s -> String = super",
+        "a function has no `self`, so no `super`",
+    );
+    // Implicit calls find the functions (a `def` of an `Object` method's
+    // name included, which an object's method no longer hides) and
+    // `Kernel`'s.
+    ok("def one -> Int = 1
+def two -> Int = one + one
+def show -> Void
+  puts two
+  p [1].map { |x| x + two }
+end
+show");
+    ok("def inspect(x: Int) -> String = x.to_s
+def f -> String = inspect(1)");
+    // A block with a receiver has one, and the top level keeps its own.
+    ok("def f -> String = 5.instance_exec { to_s + self.inspect }");
+    ok("p self, inspect, [1].map { |_| self.class }
+x = -> { self }
+p x.call");
 }
 
 #[test]

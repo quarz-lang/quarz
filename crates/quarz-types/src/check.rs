@@ -5603,6 +5603,13 @@ impl Checker {
             Nil => self.world.nil(),
             True | False => self.world.bool_(),
             SelfRef => {
+                if self.function_self() {
+                    self.error(
+                        "a function has no `self`: pass what it needs as an argument (a top-level `def` is a function, not a method of an object)",
+                        expr.span,
+                    );
+                    return Type::Nothing;
+                }
                 self.check_task_self("`self`", expr.span);
                 if self.self_is_opaque() {
                     Type::Param(SELF_PARAM)
@@ -9204,6 +9211,17 @@ impl Checker {
                         cands = self.world.lookup_methods(&own, name);
                     }
                 }
+                // A function has no `self`: an implicit call in it finds
+                // functions only (docs/01 §2).
+                let self_methods = if call.recv.is_none()
+                    && implicit_self
+                    && !self.in_outer_self
+                    && self.function_self()
+                {
+                    std::mem::take(&mut cands)
+                } else {
+                    Vec::new()
+                };
                 // Top-level functions of the cog, then `Kernel`'s built-in
                 // functions, after the methods of `self` (docs/01 §1): one
                 // set of overloads, the first of each signature kept.
@@ -9224,6 +9242,14 @@ impl Checker {
                     if let Some(t) = self.check_bang_assign(expr, call, recv_ty, expected) {
                         return t;
                     }
+                }
+                if cands.is_empty() && !self_methods.is_empty() {
+                    self.error(
+                        format!("a function has no `self`: `{name}` is a method of an object, not a function; call it on one (`x.{name}`)"),
+                        expr.span,
+                    );
+                    self.check_args_blindly(call);
+                    return Type::Nothing;
                 }
                 if cands.is_empty() {
                     let msg = if call.recv.is_none() && call.args.is_empty() && !call.has_parens {
@@ -9844,6 +9870,16 @@ impl Checker {
     /// reads like a captured variable.
     fn bind_outer_self(&mut self, expr: &Expr, k: usize) {
         let owner_frame = self.env.receivers[k].outer_frame;
+        if k == 0 && self.in_function() {
+            let name = match &expr.kind {
+                ExprKind::Call(c) => c.name.clone(),
+                _ => String::new(),
+            };
+            self.error(
+                format!("a function has no `self`: `{name}` is not a method of the block's receiver, and a function has none of its own to call it on"),
+                expr.span,
+            );
+        }
         // (A block with a receiver inside `static(...)` reaching a `self`
         // set outside it, the lexical one or an outer block's receiver:
         // captured as a variable would be.)
@@ -12671,6 +12707,21 @@ impl Checker {
             .is_some_and(|sf| !self.env.receivers.iter().any(|r| r.outer_frame + 1 >= sf))
     }
 
+    /// Whether the code being checked is in a function (a top-level `def`,
+    /// docs/01 §2), its parameters' defaults and its blocks and lambdas
+    /// included.
+    fn in_function(&self) -> bool {
+        self.env
+            .method
+            .is_some_and(|m| self.world.class(self.world.method(m).owner).kind == ClassKind::Main)
+    }
+
+    /// Whether `self` here would be a function's, which it has none of:
+    /// in a function, outside any block with a receiver.
+    fn function_self(&self) -> bool {
+        self.env.receivers.is_empty() && self.in_function()
+    }
+
     /// Fields are reachable only from their class's own body: inside a
     /// block with another receiver, `@x` is an error.
     /// Whether `self` here is the `self` of the code around the innermost
@@ -12727,6 +12778,13 @@ impl Checker {
     }
 
     fn check_ivar_access(&mut self, span: Span) -> bool {
+        if self.function_self() {
+            self.error(
+                "a function has no `self`, so no fields: keep state in an object of a class (a field in its methods), or pass it as an argument",
+                span,
+            );
+            return false;
+        }
         self.check_task_self("`self` (for its instance variables)", span);
         if !self.env.receivers.is_empty() && self.env.class_id != self.env.lexical_class {
             let recv = self.name(&self.env.self_type.clone());
@@ -13003,6 +13061,13 @@ impl Checker {
     }
 
     fn check_super(&mut self, expr: &Expr, args: Option<&[Arg]>, block: Option<&Block>) -> Type {
+        if self.in_function() && self.env.lifted_frame.is_none() {
+            self.error(
+                "a function has no `self`, so no `super`: `super` calls the overridden method from a method of a class; call another function by its name",
+                expr.span,
+            );
+            return Type::Nothing;
+        }
         // (The method's `self`, outside the block of `static(...)`.)
         if self.env.static_frame.is_some() {
             self.error(

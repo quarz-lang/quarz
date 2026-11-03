@@ -685,24 +685,19 @@ fn expansive_inheritance_closed_by_a_later_input() {
     assert!(out[3].contains("expansive inheritance"), "{out:?}");
 }
 
-/// A top-level `def` runs with the session's top-level object, the same
-/// in every input, wherever it is called from (docs/01 §1).
+/// The session's top-level object is the same in every input; a
+/// top-level `def`, a function, has no `self` (docs/01 §2).
 #[test]
-fn a_toplevel_def_runs_with_the_sessions_object() {
+fn the_sessions_top_level_object_is_one() {
     let (out, _) = values(&[
+        "x = self",
+        "x.equal?(self)",
+        "[1].map { |_| self }[0].equal?(x)",
+        "self.class.name",
         "def me -> Object = self",
-        "class C\n  def via -> Object = me\nend",
-        "x = me",
-        "me.equal?(self)",
-        "C.new.via.equal?(self)",
-        "x.equal?(me)",
-        "me.class.name",
     ]);
-    assert_eq!(
-        out[3..],
-        ["=> true", "=> true", "=> true", "=> \"main\""],
-        "{out:?}"
-    );
+    assert_eq!(out[1..4], ["=> true", "=> true", "=> \"main\""], "{out:?}");
+    assert!(out[4].contains("a function has no `self`"), "{out:?}");
 }
 
 /// A rolled-back input's top-level object does not outlive it: a file
@@ -714,12 +709,15 @@ fn a_rolled_back_inputs_toplevel_object_is_not_reused() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let file = |name: &str, text: &str| std::fs::write(dir.join(name), text).unwrap();
-    file("alib.qz", "def k -> String = \"#{self.class}\"\nclass X\n  static def self.v -> Void\n    k\n  end\nend\n");
+    file(
+        "alib.qz",
+        "K = \"#{self.class}\"\nclass X\n  static def self.v -> Void\n    K\n  end\nend\n",
+    );
     file(
         "a.qz",
         "require_relative \"alib\"\nclass W < X\n  v\nend\noops_undefined_name\n",
     );
-    file("blib.qz", "def who -> String\n  puts \"who: #{self}\"\n  \"x\"\nend\nclass Y\n  static def self.v -> Void\n    who\n  end\nend\n");
+    file("blib.qz", "def who(s: String) -> String\n  puts \"who: #{s}\"\n  \"x\"\nend\nM = self.to_s\nclass Y\n  static def self.v -> Void\n    who(M)\n  end\nend\n");
     file("b.qz", "require_relative \"blib\"\nclass Z < Y\n  v\nend\n");
     let a = format!("require_relative \"{}\"", dir.join("a").display());
     let b = format!("require_relative \"{}\"", dir.join("b").display());

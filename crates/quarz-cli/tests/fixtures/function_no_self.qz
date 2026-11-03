@@ -1,0 +1,40 @@
+# A function (a top-level `def`) has no `self` (docs/01 §2): it is
+# called the same way from anywhere, a method, a block, a lambda, a
+# task, a constant, a field's default, an `initialize` before its
+# fields are set or a block run with `instance_exec`, and calls other
+# functions and `Kernel`'s.
+def label(x: Int) -> String = "n#{x}"
+def twice(x: Int) -> String = label(x * 2)
+def shown(x: Int) -> String = twice(x).inspect + Kernel.format("%03d", x)
+def summed(xs: Array[Int]) -> Int = xs.sum { |x| x + one }
+def one -> Int = 1
+def with_default(x: String = label(7)) -> String = x
+def in_lambda -> String = (-> { twice(1) }).call
+def in_exec -> String = 5.instance_exec { to_s + label(self) }
+
+class C
+  def go -> String = twice(1)
+  def in_block -> String = [1].map { |x| twice(x) }[0]
+  def in_lambda -> String = (-> { twice(2) }).call
+  def in_exec -> String = 3.instance_exec { label(self + 1) }
+end
+
+X = twice(3)
+
+class D
+  @who: String = label(4)
+  def initialize
+    # Before `@n` is set: a function does not read the object.
+    @tag = label(5)
+    @n = 1
+  end
+  @tag: String
+  @n: Int
+  def who -> String = "#{@who} #{@tag} #{@n}"
+end
+
+p twice(1), C.new.go, C.new.in_block, C.new.in_lambda, C.new.in_exec, X, D.new.who
+p shown(4), summed([1, 2]), with_default, in_lambda, in_exec
+p Task.spawn { twice(6) }.await
+# The top level keeps its `self`, the file's top-level object.
+p self.class.name, inspect, [1].map { |_| self.to_s }

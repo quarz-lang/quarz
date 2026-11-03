@@ -420,7 +420,6 @@ pub fn heap_possible(f: &Function, methods: &[RtMethod]) -> Vec<bool> {
                 | Inst::FrameGet { dst, .. }
                 | Inst::FieldGet { dst, .. }
                 | Inst::ConstGet { dst, .. }
-                | Inst::UnitSelf { dst, .. }
                 | Inst::ClassRef { dst, .. }
                 | Inst::VariantSingleton { dst, .. }
                 | Inst::Call { dst, .. }

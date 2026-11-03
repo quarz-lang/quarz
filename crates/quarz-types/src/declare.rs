@@ -1880,7 +1880,7 @@ impl<'ast> Declarer<'ast> {
                         warnings.push((
                             m.file,
                             Diagnostic::warning(
-                                format!("`{name}` is a method of every object (`{owner}#{name}`), which a call without a receiver finds first: call this `def` as `::{name}`"),
+                                format!("`{name}` is a method of every object (`{owner}#{name}`), which a call without a receiver finds first outside a function: call this `def` as `::{name}`"),
                                 m.span,
                             ),
                         ));
