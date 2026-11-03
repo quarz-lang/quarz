@@ -1,0 +1,33 @@
+# A shareable block with a receiver captures nothing of its receiver: the
+# receiver is the object given at each call, here a mutable Counter made
+# in another task (docs/02 §9).
+class Counter
+  var @n: Int = 0
+  def bump -> Void
+    @n += 1
+  end
+  def n -> Int = @n
+end
+
+class Job
+  include Shareable
+  @step: shareable Counter.() -> Int
+  def initialize(@step: shareable Counter.() -> Int); end
+  def run_on(c: Counter) -> Int = c.instance_exec(&@step)
+end
+
+job = Job.new(->() {
+  bump
+  bump
+  n * 10
+})
+results = Task.scope do |s|
+  [1, 2, 3].map do |k|
+    s.spawn do
+      c = Counter.new
+      k.times { c.bump }
+      job.run_on(c)
+    end
+  end.map(&:await)
+end
+p results
