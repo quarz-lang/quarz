@@ -10283,6 +10283,8 @@ impl Checker {
         let inferring = pre.values().any(|t| self.infer.resolve(t).has_vars());
         let mut fits: Vec<(usize, MethodId, bool)> = Vec::new();
         let mut kept: Option<KeptFirst> = None;
+        // The candidates whose arguments passed and whose block failed.
+        let mut block_failed: Vec<(MethodId, HashMap<TypeParamId, Type>)> = Vec::new();
         for (index, (mid, class_subst)) in cands.iter().enumerate().rev() {
             if !single
                 && !inferring
@@ -10394,6 +10396,7 @@ impl Checker {
                             self.truncate_diagnostics(saved_diags);
                             self.discard_tables(saved_diags_tables);
                             failures.push(format!("{}: {message}", self.signature(&m)));
+                            block_failed.push((*mid, class_subst.clone()));
                             continue;
                         }
                     }
@@ -10588,14 +10591,61 @@ impl Checker {
             // reported nothing: say why here.
             self.error(failures.join("; "), expr.span);
         }
-        // Still type the block for its own diagnostics.
+        // Still type the block for its own diagnostics: as the one
+        // overload whose arguments passed and whose block, a block with a
+        // receiver, failed, if there is one (`def_method`'s body, docs/14
+        // §5: its `self` is the receiver, not the caller's; a `Quoted`
+        // block type is not one of these), else as a plain block.
+        if call.block.is_some() && !single {
+            let receiver_block = |m: MethodId| {
+                self.world
+                    .method(m)
+                    .block
+                    .as_ref()
+                    .is_some_and(|(_, t)| matches!(t, Type::Proc(Some(_), ..)))
+            };
+            if let [only] = block_failed.as_slice() {
+                if receiver_block(only.0) {
+                    self.resolve_pretyped_once(
+                        expr,
+                        call,
+                        recv_ty,
+                        vec![only.clone()],
+                        implicit_self,
+                        expected,
+                        is_init,
+                        pre,
+                    );
+                    return Type::Nothing;
+                }
+            }
+        }
         if let Some(b) = &call.block {
+            // (With the receiver every candidate's block has, if they
+            // agree: its calls are on it, not on the caller's `self`.)
+            let receivers: Vec<Option<Type>> = cands
+                .iter()
+                .map(|(m, subst)| match &self.world.method(*m).block {
+                    Some((_, Type::Proc(Some(r), ..))) => Some(r.subst(subst)),
+                    _ => None,
+                })
+                .collect();
+            // (Not one still naming a type parameter, `Self` or the
+            // method's: unbound here, it would mislead the block's calls.)
+            let receiver = match receivers.first() {
+                Some(Some(r))
+                    if !r.has_params() && receivers.iter().all(|x| x.as_ref() == Some(r)) =>
+                {
+                    Some(Box::new(r.clone()))
+                }
+                _ => None,
+            };
             let fresh = self.infer.fresh();
             let params: Vec<Type> = b.params.list.iter().map(|_| self.infer.fresh()).collect();
             self.check_block(
                 expr.id,
                 b,
-                &Type::Proc(None, params, Box::new(fresh), false),
+                &Type::Proc(receiver, params, Box::new(fresh), false),
             );
         }
         Type::Nothing
