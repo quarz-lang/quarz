@@ -1331,6 +1331,40 @@ fn concurrency_rules() {
 }
 
 #[test]
+fn shareable_receiver_block_self_is_not_a_capture() {
+    // The receiver of a `T.() -> R` block is given at each call: calls on
+    // it, implicit or through `self`, capture nothing, even when `T` is
+    // mutable (docs/02 §9).
+    let foo = "class Foo\n  var @x: Int = 1\n  def x -> Int = @x\n  def self.run(&b: shareable Foo.() -> Bool) -> Bool = Foo.new.instance_exec(&b)\n  def self.q(&b: Quoted[shareable Foo.() -> Bool]) -> Meta::Expr = b.expr\nend\n";
+    ok(&format!("{foo}Foo.run {{ x > 0 }}"));
+    ok(&format!("{foo}Foo.run {{ self.x > 0 }}"));
+    ok(&format!("{foo}Foo.q {{ x > 0 }}"));
+    // A call that falls through to the enclosing `self` captures it.
+    err(
+        &format!("{foo}class Bar\n  var @n: Int = 0\n  def n -> Int = @n\n  def go -> Bool = Foo.run {{ x > n }}\nend"),
+        "calling `n` uses the enclosing `self`, which has the non-shareable type Bar and cannot be captured by a shareable procedure",
+    );
+    ok(&format!("{foo}class Baz\n  include Shareable\n  def n -> Int = 0\n  def go -> Bool = Foo.run {{ x > n }}\nend"));
+    // Also from a receiver block inside a `spawn` block.
+    err(
+        &format!("{foo}class Bar\n  var @n: Int = 0\n  def n -> Int = @n\n  def go -> Void\n    Task.spawn {{ Foo.new.instance_exec {{ x > n }} }}.await\n  end\nend"),
+        "the enclosing `self`, which has the non-shareable type Bar",
+    );
+}
+
+#[test]
+fn super_in_a_task_block_captures_self() {
+    let base =
+        "class Base\n  var @m: Int = 0\n  def bump -> Int\n    @m += 1\n    @m\n  end\nend\n";
+    err(
+        &format!("{base}class Sub < Base\n  def bump -> Int\n    Task.spawn {{ super }}.await\n  end\nend"),
+        "`super` uses `self`, which has the non-shareable type Sub and cannot be captured by",
+    );
+    // A Shareable `self` may be.
+    ok("class B\n  include Shareable\n  def f -> Int = 1\nend\nclass S < B\n  def f -> Int = Task.spawn { super }.await\nend");
+}
+
+#[test]
 fn shareable_procedures() {
     let run = "def run(&h: shareable () -> Void) -> Void\n  Task.spawn { h.call }.await\nend\n";
     // A block or lambda where one is expected captures by value, like a

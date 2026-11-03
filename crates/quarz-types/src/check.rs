@@ -5720,7 +5720,9 @@ impl Checker {
                 // built-in `Kernel` function such as `puts`, or to a
                 // top-level `def`, does not use it; one an `extension
                 // Kernel` adds does).
-                if call.recv.is_none() {
+                // (A call that fell through to an enclosing `self` was
+                // checked where it bound it, `bind_outer_self`.)
+                if call.recv.is_none() && !self.out.outer_self_calls.contains(&expr.id) {
                     if let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id) {
                         let method = *method;
                         if !self.world.takes_no_self(method) {
@@ -9852,6 +9854,34 @@ impl Checker {
                 expr.span,
             );
         }
+        // An enclosing `self` from outside a task or shareable block is
+        // captured by it, as a variable would be: it must be Shareable.
+        // (That `self` is the one of the frame the `k`-th receiver block
+        // was entered from: the lexical one for the outermost, else the
+        // receiver of the block around it, which belongs to that block's
+        // frame.)
+        let self_frame = if k == 0 {
+            0
+        } else {
+            self.env.receivers[k - 1].outer_frame + 1
+        };
+        if self.env.task_frame.is_some_and(|tf| self_frame < tf) && !self.in_static_block() {
+            let name = match &expr.kind {
+                ExprKind::Call(c) => c.name.clone(),
+                _ => String::new(),
+            };
+            let outer = self.resolve(&self.env.receivers[k].outer_self.clone());
+            if !outer.has_vars() && !self.world.is_shareable(&outer) {
+                self.error(
+                    format!(
+                        "calling `{name}` uses the enclosing `self`, which has the non-shareable type {} and cannot be captured by {}",
+                        self.world.type_name(&outer),
+                        self.task_capture_name()
+                    ),
+                    expr.span,
+                );
+            }
+        }
         let frame = &mut self.env.frames[owner_frame];
         let slot = match frame.vars.iter().position(|v| v.name == SELF_SLOT) {
             Some(i) => i as u32,
@@ -12567,15 +12597,14 @@ impl Checker {
     /// receiver of a block run with `instance_exec` inside the task).
     fn self_crosses_task(&self) -> bool {
         match self.env.task_frame {
-            // A block given to `def_method` has a receiver: its `self` is
-            // the generated method's, not captured.
-            // So has the block of `static(...)`'s call when its parameter
-            // takes one: the `static def` gives it.
-            Some(tf) => !self.env.receivers.iter().any(|r| {
-                r.outer_frame >= tf
-                    || ((self.env.lifted_frame == Some(tf) || self.env.static_frame == Some(tf))
-                        && r.outer_frame + 1 == tf)
-            }),
+            // A block with a receiver, at the task block or inside it:
+            // its `self` is the receiver given at each call (a shareable
+            // `T.() -> R` block's, a block given to `def_method`, the
+            // block of `static(...)`'s call when its parameter takes
+            // one), not captured. A call that falls through to the
+            // enclosing `self` is checked where it binds it
+            // (`bind_outer_self`).
+            Some(tf) => !self.env.receivers.iter().any(|r| r.outer_frame + 1 >= tf),
             None => false,
         }
     }
@@ -12899,6 +12928,30 @@ impl Checker {
                 "a block in `static(...)` captures nothing: `super` uses the method's `self` (docs/14 §8)",
                 expr.span,
             );
+        } else if self
+            .env
+            .task_frame
+            .is_some_and(|tf| self.env.lifted_frame.is_none_or(|lf| tf > lf))
+        {
+            // The method's `self` (not a receiver's: `super` is the
+            // method's), captured by a task or shareable block around
+            // (a block given to `def_method` is the generated method's
+            // body: it captures no `self`).
+            let lexical = match self.env.receivers.first() {
+                Some(r) => r.outer_self.clone(),
+                None => self.env.self_type.clone(),
+            };
+            let t = self.resolve(&lexical);
+            if !t.has_vars() && !self.world.is_shareable(&t) {
+                self.error(
+                    format!(
+                        "`super` uses `self`, which has the non-shareable type {} and cannot be captured by {}",
+                        self.world.type_name(&t),
+                        self.task_capture_name()
+                    ),
+                    expr.span,
+                );
+            }
         }
         let Some(mid) = self.env.method else {
             self.error("`super` outside of a method", expr.span);
