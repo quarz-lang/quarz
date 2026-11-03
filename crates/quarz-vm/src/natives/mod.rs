@@ -93,6 +93,7 @@ mod bytes_search;
 mod collections;
 mod concurrency;
 mod core;
+mod digest;
 pub(crate) use self::core::system_exit;
 pub(crate) use core::raised;
 mod enumerable;
@@ -271,6 +272,7 @@ fn registry() -> Registry<NativeFn> {
     bytes_search::register(&mut m);
     time::register(&mut m);
     json::register(&mut m);
+    digest::register(&mut m);
     m
 }
 

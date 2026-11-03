@@ -1,0 +1,65 @@
+require "base64"
+require "test"
+
+# RFC 4648 §10.
+class Base64RFCTest < Test::Case
+  PAIRS = [["", ""], ["f", "Zg=="], ["fo", "Zm8="], ["foo", "Zm9v"], ["foob", "Zm9vYg=="], ["fooba", "Zm9vYmE="], ["foobar", "Zm9vYmFy"]]
+
+  def test_encode
+    PAIRS.each { |plain, coded| assert_equal(coded, Base64.encode(plain)) }
+  end
+
+  def test_decode
+    PAIRS.each { |plain, coded| assert_equal(plain.to_bytes, Base64.decode(coded)) }
+  end
+
+  def test_decode_without_padding
+    PAIRS.each { |plain, coded| assert_equal(plain.to_bytes, Base64.decode(coded.delete("="))) }
+  end
+
+  def test_all_bytes_round_trip
+    all = Bytes.from((0..255).to_a)
+    assert_equal(all, Base64.decode(Base64.encode(all)))
+    assert_equal(all, Base64.urlsafe_decode(Base64.urlsafe_encode(all)))
+    assert_equal(all, Base64.urlsafe_decode(Base64.urlsafe_encode(all, padding: false)))
+  end
+end
+
+class Base64AlphabetTest < Test::Case
+  def test_standard_and_urlsafe
+    assert_equal("+/8=", Base64.encode(b"\xfb\xff"))
+    assert_equal("-_8=", Base64.urlsafe_encode(b"\xfb\xff"))
+    assert_equal("-_8", Base64.urlsafe_encode(b"\xfb\xff", padding: false))
+    assert_equal(b"\xfb\xff", Base64.decode("+/8="))
+    assert_equal(b"\xfb\xff", Base64.urlsafe_decode("-_8="))
+    assert_equal(b"\xfb\xff", Base64.urlsafe_decode("-_8"))
+  end
+
+  def test_no_line_breaks
+    assert_false(Base64.encode("x" * 100).include?("\n"))
+  end
+
+  def test_other_alphabet_refused
+    assert_raise(ArgumentError) { Base64.decode("-_8=") }
+    assert_raise(ArgumentError) { Base64.urlsafe_decode("+/8=") }
+  end
+end
+
+class Base64MalformedTest < Test::Case
+  def test_refused
+    assert_raise(ArgumentError) { Base64.decode("Zm9v YmFy") }
+    assert_raise(ArgumentError) { Base64.decode("Zm9v\n") }
+    assert_raise(ArgumentError) { Base64.decode("Z") }
+    assert_raise(ArgumentError) { Base64.decode("Zg=") }
+    assert_raise(ArgumentError) { Base64.decode("Zg===") }
+    assert_raise(ArgumentError) { Base64.decode("Zm9v!") }
+  end
+
+  def test_trailing_bits_must_be_zero
+    assert_raise(ArgumentError) { Base64.decode("Zh==") }
+  end
+
+  def test_message
+    assert_raise_message(/invalid base64/) { Base64.decode("Z") }
+  end
+end
