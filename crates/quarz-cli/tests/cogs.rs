@@ -1540,6 +1540,50 @@ fn a_copy_of_the_application_is_no_dependency() {
 }
 
 #[test]
+fn a_dependencys_functions_at_compile_time() {
+    // docs/14 §8: a dependency cog's `public static def` function is a
+    // `static(...)` call (`static(Key.f(1))`), and a block in
+    // `static(...)` may call the functions of the cogs the file depends
+    // on, not the application's own (not yet compiled).
+    let w = World::new();
+    w.write(
+        "lib/Cog.toml",
+        "[cog]\nname = \"lib\"\nversion = \"1.0.0\"\nmodule = \"Lib\"\n",
+    );
+    w.write(
+        "lib/src/a.qz",
+        "public static def triple(n: Int) -> Int = helper(n) * 3\npublic def plus(n: Int) -> Int = n + 10\ndef helper(n: Int) -> Int = n\nclass Runs\n  static def self.run(&: () -> Int) -> Int = yield\nend\n",
+    );
+    w.commit("lib", Some("v1.0.0"));
+    let dep = format!("L = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url("lib"));
+    w.app(
+        &dep,
+        "p static(L.triple(2)), static(L::Runs.run { L.plus(1) + L.triple(1) })\n",
+    );
+    let expected = "6\n14\n";
+    assert_eq!(w.ok("app", &["run"]), expected);
+    w.ok("app", &["build", "-o", "app.bin"]);
+    let exe = Command::new(w.path("app/app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&exe.stdout), expected);
+    // The application's own functions are not compiled yet.
+    w.app(
+        &dep,
+        "def mine -> Int = 1\nstatic def own(n: Int) -> Int = n\np static(L::Runs.run { mine })\np static(own(1))\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains(
+            "`mine` is a function of the application, not yet compiled when `static(...)` runs"
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains("`own` is a `static def` of the application"),
+        "{err}"
+    );
+}
+
+#[test]
 fn a_cogs_public_functions() {
     // docs/10 §6: `public def f` is called `Key.f` from the cogs that
     // depend on the cog (and `cog.f` inside it); a `def` is private to it.

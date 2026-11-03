@@ -96,6 +96,52 @@ fn values_computed_at_compile_time() {
     assert_eq!(String::from_utf8_lossy(&run.stdout), OUT);
 }
 
+/// A `static def` function of a required file is a `static(...)` call,
+/// and a block in `static(...)` may call the functions of the files the
+/// file depends on, which have no `self` and are compiled before it
+/// (docs/14 §8): the same values interpreted and compiled.
+#[test]
+fn functions_of_a_required_file_at_compile_time() {
+    let d = dir();
+    write(&d.0, "lib.qz", LIB_FUNCTIONS);
+    write(&d.0, "app.qz", APP_FUNCTIONS);
+    let expected = OUT_FUNCTIONS;
+    let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(&d.0, &["build", "app.qz", "-o", "app.bin"], &[]);
+    assert!(ok, "{err}");
+    let run = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+}
+
+const LIB_FUNCTIONS: &str = r##"# Functions of a required file, compiled before the file that requires it.
+static def twice(n: Int) -> Int = n * 2
+static def label(n: Int, tag: String = "n") -> String = "#{tag}#{helper(n)}"
+def helper(n: Int) -> Int = n + 1
+
+class Runs
+  static def self.run(&: () -> Int) -> Int = yield
+  static def self.on(x: Int, &f: Int.() -> Int) -> Int = x.instance_exec(&f)
+end
+"##;
+
+const APP_FUNCTIONS: &str = r##"# A `static def` function of a required file is a `static(...)` call, and
+# a block in `static(...)` may call the functions of the files this file
+# depends on, which have no `self` and are compiled before it (docs/14 §8).
+require_relative "lib"
+
+p static(twice(4)), static(::twice(5)), static(label(1)), static(label(2, "m"))
+p static(twice(static(twice(3))))
+p static(Runs.run { helper(1) + twice(2) })
+p static(Runs.on(3) { helper(self) })
+p static(Runs.run { [1, 2].sum { |x| helper(x) } })
+# The same functions at run time.
+p twice(4), helper(1)
+"##;
+
+const OUT_FUNCTIONS: &str = "8\n10\n\"n2\"\n\"m3\"\n12\n6\n4\n5\n8\n2\n";
+
 #[test]
 fn what_static_refuses() {
     let d = dir();
@@ -103,7 +149,7 @@ fn what_static_refuses() {
     write(
         &d.0,
         "bad.qz",
-        "require_relative \"lib\"\nclass Own\n  static def self.mine -> Int = 1\nend\nn = 2\np static(Q.boom(n))\np static(Q.plain)\np static(1 + 2)\np static(Q.proc_of)\np static(Own.mine)\np static(Q.count { |x| x > n })\n",
+        "require_relative \"lib\"\nclass Own\n  static def self.mine -> Int = 1\nend\nn = 2\np static(Q.boom(n))\np static(Q.plain)\np static(1 + 2)\np static(Q.proc_of)\np static(Own.mine)\np static(Q.count { |x| x > n })\nstatic def own_fn(n: Int) -> Int = n\np static(own_fn(1))\n",
     );
     let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
     assert!(!ok);
@@ -114,6 +160,7 @@ fn what_static_refuses() {
         "bad.qz:9:3: error: `static(...)` gives a () -> Int, which cannot be baked",
         "bad.qz:10:10: error: `mine` is a `static def` of this file",
         "bad.qz:11:28: error: a block in `static(...)` captures nothing: `n` is not a constant",
+        "bad.qz:13:10: error: `own_fn` is a `static def` of this file",
     ] {
         assert!(err.contains(want), "{want}\n{err}");
     }
@@ -224,12 +271,7 @@ fn a_block_in_static_captures_nothing() {
         "{1 => n}.size > x",
         "y = n; x > y",
         "-> { n }.call > x",
-        "helper(x)",
-        // Nor does a block with a receiver or a shareable one inside it
-        // (tmp/repro/static-block-nested-instance-exec*.qz).
-        "5.instance_exec { helper(x) }",
         "Q.count2 { |y| y > n } > x",
-        "Q.count2 { |y| helper(y) } > x",
     ] {
         write(
             &d.0,
@@ -243,6 +285,45 @@ fn a_block_in_static_captures_nothing() {
             "{body}: {err}"
         );
     }
+}
+
+#[test]
+fn a_block_in_static_calls_only_functions_compiled_before_it() {
+    // A function has no `self`: one of a required file may be called (it
+    // is compiled before this one), one of this file may not, nor from a
+    // block with a receiver or a shareable one inside the block
+    // (tmp/repro/static-block-nested-instance-exec*.qz); `Kernel`'s may.
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        &format!("{LIB}def dep(x: Int) -> Bool = x > 2\n"),
+    );
+    for body in [
+        "helper(x)",
+        "5.instance_exec { helper(x) }",
+        "Q.count2 { |y| helper(y) } > x",
+    ] {
+        write(
+            &d.0,
+            "bad.qz",
+            &format!("require_relative \"lib\"\ndef helper(x: Int) -> Bool = x > 1\ndef f(n: Int) -> Int = static(Q.count {{ |x| {body} }})\n"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
+        assert!(!ok, "{body}");
+        assert!(
+            err.contains("`helper` is a function of this file, not yet compiled when `static(...)` runs: only functions of the cogs (or required files) this file depends on can be called here"),
+            "{body}: {err}"
+        );
+    }
+    write(
+        &d.0,
+        "good.qz",
+        "require_relative \"lib\"\np static(Q.count { |x| dep(x) }), static(Q.count { |x| 5.instance_exec { dep(x) } })\np static(Q.count { |x| Q.count2 { |y| dep(y) } > x }), static(Q.count { |x| Kernel.format(\"%d\", x) == \"1\" })\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", "good.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "2\n2\n1\n1\n");
 }
 
 #[test]

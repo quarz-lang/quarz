@@ -5759,14 +5759,19 @@ impl Checker {
                             && self.world.class(self.world.method(method).owner).kind
                                 == ClassKind::Main
                         {
-                            // A top-level `def` takes no `self`, but it is
-                            // the surrounding code's, not a constant
+                            // A function has no `self`: one compiled before
+                            // this file (of a cog or required file it
+                            // depends on) captures nothing; one of its own
+                            // is not compiled yet when the block runs
                             // (docs/14 §8), also from a block with a
                             // receiver inside the static block.
-                            self.error(
-                                format!("a block in `static(...)` captures nothing: `{}` is a top-level `def` of the code around it, not a `static def` (docs/14 §8)", call.name),
-                                expr.span,
-                            );
+                            let m = self.world.method(method).clone();
+                            if let Err(why) = self.static_stage(&m) {
+                                self.error(
+                                    format!("`{}` is a function of {why}, not yet compiled when `static(...)` runs: only functions of the cogs (or required files) this file depends on can be called here (docs/14 §8)", call.name),
+                                    expr.span,
+                                );
+                            }
                         }
                     }
                 }
@@ -9243,9 +9248,38 @@ impl Checker {
                         return t;
                     }
                 }
-                if cands.is_empty() && !self_methods.is_empty() {
+                // (An `Object` method the call would have meant, which the
+                // functions of the name do not take: `inspect` beside a
+                // `def inspect(x: Int)`; `respond_to?(:x)`, which `self`
+                // answers only written.)
+                let meant_method = !self_methods.is_empty()
+                    && (cands.is_empty()
+                        || self_methods.iter().any(|(m, _)| self.shape_fits(*m, call)))
+                    || self.function_self()
+                        && call.recv.is_none()
+                        && self_methods.is_empty()
+                        && !self.in_outer_self
+                        && (name == "respond_to?"
+                            || !self
+                                .world
+                                .lookup_methods(&self.world.object(), name)
+                                .is_empty());
+                if meant_method && !cands.iter().any(|(m, _)| self.shape_fits(*m, call)) {
+                    let args = if call.args.is_empty() { "" } else { "(...)" };
+                    let others = if cands.is_empty() {
+                        String::new()
+                    } else {
+                        let sigs: Vec<String> = cands
+                            .iter()
+                            .map(|(m, _)| self.signature(self.world.method(*m)))
+                            .collect();
+                        format!(
+                            "; the functions `{name}` take other arguments: {}",
+                            sigs.join(", ")
+                        )
+                    };
                     self.error(
-                        format!("a function has no `self`: `{name}` is a method of an object, not a function; call it on one (`x.{name}`)"),
+                        format!("a function has no `self`: `{name}` is a method of an object, not a function; call it on one (`x.{name}{args}`){others}"),
                         expr.span,
                     );
                     self.check_args_blindly(call);
@@ -9273,6 +9307,45 @@ impl Checker {
                 self.resolve_overloads(expr, call, recv_ty, cands, implicit_self, expected)
             }
         }
+    }
+
+    /// Whether a call of the shape of `call` (its number of positional
+    /// arguments, and whether it passes keywords) may go to `m`, its
+    /// argument types aside.
+    fn shape_fits(&self, m: MethodId, call: &Call) -> bool {
+        let m = self.world.method(m);
+        let mut positional = 0;
+        let mut keywords = false;
+        for a in &call.args {
+            match a {
+                Arg::Positional(_) => positional += 1,
+                Arg::Keyword { .. } => keywords = true,
+                Arg::BlockPass(_) => {}
+                // (A splat's length is not known.)
+                _ => return true,
+            }
+        }
+        let mut required = 0;
+        let mut max = Some(0);
+        let mut named = false;
+        for p in &m.params {
+            match p.kind {
+                ParamKind::Positional => {
+                    named = true;
+                    if p.default.is_none() {
+                        required += 1;
+                    }
+                    max = max.map(|n| n + 1);
+                }
+                ParamKind::Rest => max = None,
+                ParamKind::KeywordOnly | ParamKind::KeywordRest => named = true,
+                ParamKind::Block => {}
+            }
+        }
+        // (Keywords may bind positional parameters by name.)
+        (!keywords || named)
+            && (keywords || positional >= required)
+            && max.is_none_or(|n| positional <= n)
     }
 
     /// The top-level `def`s named `name` of the library cog whose root
@@ -11927,18 +12000,7 @@ impl Checker {
             );
             return t;
         }
-        // The staging rule of `static` statements (docs/14 §2).
-        let allowed = match self.repl_unit {
-            Some((file, base)) => {
-                if m.file == file && m.span.start >= base {
-                    Err("this input".to_string())
-                } else {
-                    Ok(())
-                }
-            }
-            None => self.world.static_callee_allowed(self.env.file, m.file),
-        };
-        if let Err(why) = allowed {
+        if let Err(why) = self.static_stage(&m) {
             self.error(
                 format!("`{}` is a `static def` of {why}: `static(...)` runs only those of the cogs (or required files) this file depends on", m.name),
                 inner.span,
@@ -11950,7 +12012,8 @@ impl Checker {
         let class = self.env.class_id.unwrap_or(self.world.builtin.object);
         match &call.recv {
             Some(r) => self.check_static_constant(r),
-            None if m.singleton => {}
+            // (A function, docs/01 §2: no receiver.)
+            None if m.singleton || self.world.class(m.owner).kind == ClassKind::Main => {}
             None => self.error(
                 format!(
                     "`static({})`: the receiver of an instance `static def` is written, a constant",
@@ -11982,6 +12045,23 @@ impl Checker {
                 .insert(expr.id, (self.env.file, class, inner.clone()));
         }
         t
+    }
+
+    /// The staging rule of `static` statements (docs/14 §2): whether the
+    /// code being checked may run `m` at compile time, compiled before it
+    /// (a method of the cogs or required files it depends on), or else
+    /// whose `m` is ("this file", "this cog", "this input", ...).
+    fn static_stage(&self, m: &MethodInfo) -> Result<(), String> {
+        match self.repl_unit {
+            Some((file, base)) => {
+                if m.file == file && m.span.start >= base {
+                    Err("this input".to_string())
+                } else {
+                    Ok(())
+                }
+            }
+            None => self.world.static_callee_allowed(self.env.file, m.file),
+        }
     }
 
     /// A receiver or argument of `static(...)`: a literal (of constants),
