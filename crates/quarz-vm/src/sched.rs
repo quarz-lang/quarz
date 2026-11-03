@@ -256,6 +256,10 @@ pub struct TaskHandle {
     /// Tasks waiting for this one to finish.
     pub joiners: Mutex<Vec<TaskRef>>,
     cancel_requested: AtomicBool,
+    /// Whether a wait raised `Task::Cancelled` in it: the cancellation
+    /// interrupted it (`Task.timeout` tells a block it cut short from one
+    /// that ended first, whatever the block did with the exception).
+    cancel_delivered: AtomicBool,
     /// How deep the task is in `Task.uncancellable` blocks.
     uncancellable: std::sync::atomic::AtomicU32,
     /// Whether the `exit`s of the tasks it spawns (and theirs) go to it: a
@@ -318,6 +322,7 @@ impl TaskHandle {
             result: Mutex::new(None),
             joiners: Mutex::new(Vec::new()),
             cancel_requested: AtomicBool::new(false),
+            cancel_delivered: AtomicBool::new(false),
             uncancellable: std::sync::atomic::AtomicU32::new(0),
             is_sink: AtomicBool::new(is_sink),
             sink: Mutex::new(sink),
@@ -514,6 +519,16 @@ impl TaskHandle {
 
     /// Whether a cancellation is to be raised now: cancelled, and not in
     /// `Task.uncancellable`.
+    /// Record that a wait raised `Task::Cancelled` in the task.
+    pub fn note_cancel_delivered(&self) {
+        self.cancel_delivered.store(true, Ordering::Release);
+    }
+
+    /// Whether a wait ever raised `Task::Cancelled` in the task.
+    pub fn cancel_delivered(&self) -> bool {
+        self.cancel_delivered.load(Ordering::Acquire)
+    }
+
     pub fn cancel_due(&self) -> bool {
         self.cancel_requested.load(Ordering::Acquire)
             && self.uncancellable.load(Ordering::Relaxed) == 0

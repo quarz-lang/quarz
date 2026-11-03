@@ -75,6 +75,37 @@ class TaskTest < Test::Case
     assert_equal(5, Task.timeout(1.second) { 5 })
   end
 
+  # A block that ended without being interrupted keeps its value, even when
+  # the deadline passed before its waiter looked: here the timer fires
+  # while the block waits, shielded, and the block then ends with no wait
+  # left that could raise. (So `Task.timeout(d) { ch.receive }` never loses
+  # a value it received.)
+  def test_timeout_completed_block_wins
+    v = Task.timeout(10.ms) do
+      Task.uncancellable { Task.sleep(50.ms) }
+      42
+    end
+    assert_equal(42, v)
+    # Interrupted, though the block rescued the cancellation: a timeout.
+    assert_raise(Task::Timeout) do
+      Task.timeout(10.ms) do
+        begin
+          Channel[Int].new.receive
+        rescue Task::Cancelled
+          0
+        end
+      end
+    end
+    # Interrupted after its shield: a timeout.
+    assert_raise(Task::Timeout) do
+      Task.timeout(10.ms) do
+        Task.uncancellable { Task.sleep(50.ms) }
+        Task.sleep(1.second)
+        42
+      end
+    end
+  end
+
   def test_cancel
     t = Task.spawn { Task.sleep(1.second); 1 }
     t.cancel
