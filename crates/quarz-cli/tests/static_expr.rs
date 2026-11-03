@@ -375,22 +375,23 @@ fn shared_however_the_site_was_lowered() {
     assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
 }
 
-/// A top-level `def` called at compile time runs with its file's
-/// top-level object, as it does at run time (docs/01 §1, docs/14 §3).
+/// A top-level constant read at compile time, through a function, is
+/// initialized with its file's top-level object as `self`, as it is at
+/// run time (docs/01 §2, docs/14 §3).
 #[test]
-fn a_toplevel_def_runs_with_main_at_compile_time() {
+fn a_toplevel_constant_reads_main_at_compile_time() {
     let d = dir();
     write(
         &d.0,
         "lib.qz",
-        "def zz -> Int = 5\nM = self.class.name\ndef k -> String = \"#{zz} #{self.class} #{self.nil?} #{M}\"\nclass Model\n  static def self.v -> String = k\nend\n",
+        "def zz -> Int = 5\nM = self.class.name\nN = self.nil?\ndef k -> String = \"#{zz} #{M} #{N}\"\nclass Model\n  static def self.v -> String = k\nend\n",
     );
     write(
         &d.0,
         "app.qz",
         "require_relative \"lib\"\np static(Model.v), Model.v\n",
     );
-    let expected = "\"5 main false main\"\n\"5 main false main\"\n";
+    let expected = "\"5 main false\"\n\"5 main false\"\n";
     let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
     assert!(ok, "{err}");
     assert_eq!(out, expected);

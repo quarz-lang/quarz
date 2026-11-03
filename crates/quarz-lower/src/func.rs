@@ -905,39 +905,6 @@ impl<'a> FnBuilder<'a> {
                 == quarz_types::world::ClassKind::Main
     }
 
-    /// The file and main class of the top-level `def` a call goes to, if
-    /// it does and uses its `self` (one that does not is called as before,
-    /// which costs nothing and lets it inline into a loop).
-    fn toplevel_def(&self, target: Option<&CallTarget>) -> Option<(u32, ClassId)> {
-        let Some(CallTarget::Method { method }) = target else {
-            return None;
-        };
-        let m = self.world.method(*method);
-        let owner = self.world.class(m.owner);
-        if owner.kind != quarz_types::world::ClassKind::Main {
-            return None;
-        }
-        let uses = match m.body.as_deref() {
-            Some(def) => {
-                let defaults: Vec<&ast::Expr> = def
-                    .params
-                    .list
-                    .iter()
-                    .filter_map(|p| p.default.as_ref())
-                    .collect();
-                crate::capture::uses_self(
-                    def.body.as_deref().unwrap_or(&[]),
-                    &defaults,
-                    self.out,
-                    self.world,
-                )
-            }
-            // (Generated: its body is a block elsewhere.)
-            None => true,
-        };
-        uses.then_some((owner.file, m.owner))
-    }
-
     fn self_reg(&mut self) -> Reg {
         let dst = self.reg();
         match self.self_override {
@@ -2439,21 +2406,8 @@ impl<'a> FnBuilder<'a> {
             .recv
             .as_ref()
             .filter(|_| !self.cog_function_call(call, target));
-        let toplevel = match explicit {
-            None => self.toplevel_def(target),
-            Some(_) => None,
-        };
         let recv = match explicit {
             Some(r) => Some(self.expr(r)),
-            // A top-level `def` runs with its file's top-level object as
-            // `self`, wherever it is called from (docs/01 §1), in a block
-            // with a receiver too.
-            None if toplevel.is_some() => {
-                let (file, class) = toplevel.unwrap();
-                let dst = self.reg();
-                self.emit(Inst::UnitSelf { dst, file, class });
-                Some(dst)
-            }
             // An implicit-self call inside a block with a receiver that
             // goes to an enclosing `self`: read it from its hidden slot.
             None if self.out.outer_self_calls.contains(&e.id) => {

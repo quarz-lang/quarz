@@ -113,24 +113,6 @@ pub fn captured_slots(
     captured
 }
 
-/// Whether a method whose body is `body` (with `extra`, its parameters'
-/// defaults) uses its `self`, here or in a block: a call of a top-level
-/// `def` that does not need not pass it one (`FnBuilder::toplevel_def`).
-pub fn uses_self(body: &[Expr], extra: &[&Expr], out: &Output, world: &World) -> bool {
-    let mut used = false;
-    let mut visit = |site: Site, _: Nest| used |= matches!(site, Site::SelfUse);
-    let mut cx = Cx {
-        out,
-        world,
-        visit: &mut visit,
-        real_blocks: 0,
-    };
-    for e in body.iter().chain(extra.iter().copied()) {
-        walk_expr(e, Nest::TOP, &mut cx);
-    }
-    used
-}
-
 pub fn walk_body(body: &[Expr], nest: Nest, cx: &mut Cx) {
     for e in body {
         walk_expr(e, nest, cx);

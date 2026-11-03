@@ -27,5 +27,5 @@ end
 c = C.new
 p c.via_map, c.via_named, c.via_each, c.via_times, c.via_select, c.via_reduce, c.via_index, c.nested
 
-def whoami -> String = self.class.name
+def whoami -> String = "fn"
 p [1].map { |y| 5.instance_exec { whoami + y.to_s } }[0]

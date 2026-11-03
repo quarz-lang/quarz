@@ -306,10 +306,10 @@ pub struct Global {
     consts: std::sync::Mutex<Vec<std::sync::Arc<ConstCell>>>,
     /// The values of the enum variants without fields, by class.
     variant_singletons: std::sync::Mutex<HashMap<ClassId, SharedValue>>,
-    /// The top-level object of each file (the `self` of its top level and
-    /// of its top-level `def`s), by file index: one for every worker, the
-    /// REPL's inputs and the compiler's compile-time runs
-    /// (`Interp::unit_self_of`).
+    /// The top-level object of each file (the `self` of its top-level
+    /// statements; a function has none, docs/01 §2), by file index: one
+    /// for every worker, the REPL's inputs and the compiler's
+    /// compile-time runs (`Interp::unit_self`).
     unit_selfs: std::sync::Mutex<HashMap<u32, SharedValue>>,
     at_exit: std::sync::Mutex<Vec<SharedValue>>,
     stdout: std::sync::Mutex<Box<dyn std::io::Write + Send>>,
@@ -368,8 +368,8 @@ pub(crate) const TIMEOUT_TASK: &str = "timeout";
 /// `class`, in `global`: one for all the workers, made by the first that
 /// asks (a compile-time run runs no unit's top level), and made again where
 /// the one kept is of another class (the REPL rolled back the input that
-/// made it, whose ids the next one reuses). Immortal: every task calling a
-/// top-level `def` of the file uses it.
+/// made it, whose ids the next one reuses). Immortal: the tasks the top
+/// level starts may keep it.
 fn unit_self_in(global: &Global, file: u32, class: ClassId) -> Value {
     let mut selfs = lock(&global.unit_selfs);
     let kept = selfs
@@ -782,10 +782,6 @@ pub struct Interp {
     pub program: std::sync::Arc<Program>,
     /// The frame of the REPL's top level, kept across inputs.
     pub repl_frame: Option<Rc<Frame>>,
-    /// The top-level objects this interpreter has used, by file index: a
-    /// copy of `Global::unit_selfs`'s, read without its lock
-    /// (`Interp::unit_self_of`).
-    unit_selfs: RefCell<Vec<Value>>,
     pub funcs: Rc<RefCell<Vec<Rc<FuncInfo>>>>,
     pub bodies: std::rc::Rc<std::cell::OnceCell<std::rc::Rc<dyn std::any::Any>>>,
     pub pools: Pools,
@@ -1072,7 +1068,6 @@ impl Interp {
             hot: Hot::new(),
             program,
             repl_frame,
-            unit_selfs: RefCell::new(Vec::new()),
             funcs: state.funcs,
             bodies: state.bodies,
             pools: state.pools,
@@ -1326,27 +1321,9 @@ impl Interp {
     /// The top-level object of file `file` (nil for a file without one).
     pub fn unit_self(&self, file: u32) -> Value {
         match self.program.world.file_mains.get(file as usize) {
-            Some(Some(class)) => self.unit_self_of(file, *class),
+            Some(Some(class)) => unit_self_in(&self.global, file, *class),
             _ => Value::Nil,
         }
-    }
-
-    /// The top-level object of file `file`, whose main pseudo-class is
-    /// `class` (`unit_self_in`), from this interpreter's copy: a call of
-    /// a top-level `def` takes no lock.
-    pub fn unit_self_of(&self, file: u32, class: ClassId) -> Value {
-        let mut mine = self.unit_selfs.borrow_mut();
-        if let Some(v @ Value::Object(o)) = mine.get(file as usize) {
-            if o.class == class {
-                return v.clone();
-            }
-        }
-        let v = unit_self_in(&self.global, file, class);
-        if mine.len() <= file as usize {
-            mine.resize(file as usize + 1, Value::Nil);
-        }
-        mine[file as usize] = v.clone();
-        v
     }
 
     /// Evaluate REPL input: run the function `fid` in the persistent REPL

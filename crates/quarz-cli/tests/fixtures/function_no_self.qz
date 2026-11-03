@@ -1,22 +1,31 @@
-# A top-level `def` runs with its file's top-level object as `self`
-# (docs/01 §1), wherever it is called from: not the caller's `self`.
-def whoami -> String = self.class.name
-def show -> String = inspect
+# A function (a top-level `def`) has no `self` (docs/01 §2): it is
+# called the same way from anywhere, a method, a block, a lambda, a
+# task, a constant, a field's default, an `initialize` before its
+# fields are set or a block run with `instance_exec`, and calls other
+# functions and `Kernel`'s.
+def label(x: Int) -> String = "n#{x}"
+def twice(x: Int) -> String = label(x * 2)
+def shown(x: Int) -> String = twice(x).inspect + Kernel.format("%03d", x)
+def summed(xs: Array[Int]) -> Int = xs.sum { |x| x + one }
+def one -> Int = 1
+def with_default(x: String = label(7)) -> String = x
+def in_lambda -> String = (-> { twice(1) }).call
+def in_exec -> String = 5.instance_exec { to_s + label(self) }
 
 class C
-  def go -> String = whoami
-  def in_block -> String = [1].map { |x| whoami }[0]
-  def in_lambda -> String = (-> { whoami }).call
-  def shown -> String = show
+  def go -> String = twice(1)
+  def in_block -> String = [1].map { |x| twice(x) }[0]
+  def in_lambda -> String = (-> { twice(2) }).call
+  def in_exec -> String = 3.instance_exec { label(self + 1) }
 end
 
-X = whoami
+X = twice(3)
 
 class D
-  @who: String = whoami
+  @who: String = label(4)
   def initialize
-    # Before `@n` is set: a top-level `def` does not read the object.
-    @tag = whoami
+    # Before `@n` is set: a function does not read the object.
+    @tag = label(5)
     @n = 1
   end
   @tag: String
@@ -24,22 +33,8 @@ class D
   def who -> String = "#{@who} #{@tag} #{@n}"
 end
 
-p whoami, C.new.go, C.new.in_block, C.new.in_lambda, X, D.new.who
-p show == C.new.shown
-p Task.spawn { whoami }.await
-
-# What decides whether a call passes the top-level object: a top-level
-# `def` that does not use `self` is called without it, one that calls
-# another that does still gets it there, and so does `self` in a lambda,
-# a block with a receiver or a parameter's default.
-def uses -> String = self.class.name
-def via_other -> String = uses
-def in_lambda -> String = (-> { self.class.name }).call
-def in_exec -> String = 5.instance_exec { self.to_s }
-def via_exec -> String = 5.instance_exec { uses }
-def in_default(x: String = self.class.name) -> String = x
-class E
-  def go -> Array[String] = [via_other, in_lambda, in_exec, via_exec, in_default]
-  def exec_here -> String = 5.instance_exec { uses }
-end
-p E.new.go, E.new.exec_here
+p twice(1), C.new.go, C.new.in_block, C.new.in_lambda, C.new.in_exec, X, D.new.who
+p shown(4), summed([1, 2]), with_default, in_lambda, in_exec
+p Task.spawn { twice(6) }.await
+# The top level keeps its `self`, the file's top-level object.
+p self.class.name, inspect, [1].map { |_| self.to_s }

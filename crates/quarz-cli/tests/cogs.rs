@@ -613,15 +613,15 @@ fn top_level_extensions_stay_in_their_cog() {
 fn top_level_defs_are_cog_wide() {
     let w = World::new();
     w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
-    // A library's top-level `def` is callable from its other files, with
-    // its own file's top-level object as `self`; not from the application.
+    // A library's top-level `def` is callable from its other files, and
+    // has no `self` there either; not from the application.
     w.write(
         "lib/src/a.qz",
-        "def helper(x: Int) -> Int = x * 10\ndef where_am_i -> Object = self\n",
+        "def helper(x: Int) -> Int = x * 10\ndef same(x: Object) -> Bool = x.equal?(x)\n",
     );
     w.write(
         "lib/src/b.qz",
-        "module Calc\n  def self.k -> Int = helper(4) + ::helper(0)\n  def self.same -> Bool = where_am_i.equal?(where_am_i)\nend\n",
+        "module Calc\n  def self.k -> Int = helper(4) + ::helper(0)\n  def self.same -> Bool = ::same(self)\nend\n",
     );
     w.commit("lib", Some("v0.1.0"));
     let dep = format!("Lib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("lib"));
@@ -630,17 +630,13 @@ fn top_level_defs_are_cog_wide() {
     w.app(&dep, "p helper(1)\n");
     let err = w.fails("app", &["check"]);
     assert!(err.contains("undefined method `helper`"), "{err}");
-    // The application's files see each other's; a function's `self` is
-    // its own file's object, not the caller's.
-    w.write(
-        "app/src/util.qz",
-        "def twice(x: Int) -> Int = x * 2\ndef util_self -> Object = self\n",
-    );
+    // The application's files see each other's.
+    w.write("app/src/util.qz", "def twice(x: Int) -> Int = x * 2\n");
     w.app(
         &dep,
-        "class C\n  def go -> Int = twice(5)\nend\nu = util_self\np twice(2), C.new.go, u.equal?(util_self), u.equal?(self)\n",
+        "class C\n  def go -> Int = twice(5)\nend\np twice(2), C.new.go\n",
     );
-    assert_eq!(w.ok("app", &["run"]), "4\n10\ntrue\nfalse\n");
+    assert_eq!(w.ok("app", &["run"]), "4\n10\n");
     // One set per name: the same signature in two files is an error.
     w.write("app/src/again.qz", "def twice(x: Int) -> Int = x\n");
     let err = w.fails("app", &["check"]);
@@ -660,7 +656,7 @@ fn top_level_defs_are_cog_wide() {
     assert!(run(&cached).0);
     w.write(
         "app/src/util.qz",
-        "def twice(x: String) -> String = x + x\ndef util_self -> Object = self\n",
+        "def twice(x: String) -> String = x + x\n",
     );
     let warm = run(&cached);
     let off = run(&[("QUARZ_NO_CACHE", "1")]);
@@ -671,19 +667,19 @@ fn top_level_defs_are_cog_wide() {
 #[test]
 fn a_scripts_functions_reach_what_requires_it() {
     // A script sees the top-level `def`s of the files it requires, not
-    // the other way round; each runs with its own file's object.
+    // the other way round.
     let w = World::new();
     w.write(
         "s/lib.qz",
-        "def helper(x: Int) -> Int = x * 10\ndef lib_self -> Object = self\ndef puts(s: String) -> Void = print(\"[lib] \", s, \"\\n\")\n",
+        "def helper(x: Int) -> Int = x * 10\ndef puts(s: String) -> Void = print(\"[lib] \", s, \"\\n\")\n",
     );
     w.write(
         "s/main.qz",
-        "require_relative \"lib\"\nclass C\n  def go -> Int = helper(4)\nend\na = lib_self\np helper(1), C.new.go, a.equal?(lib_self), a.equal?(self)\nputs \"hi\"\nputs 2\n::puts \"via\"\n::puts 3\nKernel.puts \"built-in\"\n",
+        "require_relative \"lib\"\nclass C\n  def go -> Int = helper(4)\nend\np helper(1), C.new.go\nputs \"hi\"\nputs 2\n::puts \"via\"\n::puts 3\nKernel.puts \"built-in\"\n",
     );
     assert_eq!(
         w.ok("s", &["run", "main.qz"]),
-        "10\n40\ntrue\nfalse\n[lib] hi\n2\n[lib] via\n3\nbuilt-in\n"
+        "10\n40\n[lib] hi\n2\n[lib] via\n3\nbuilt-in\n"
     );
     w.write("s/back.qz", "def back -> Int = only_main\n");
     w.write(
@@ -1554,7 +1550,7 @@ fn a_cogs_public_functions() {
     );
     w.write(
         "lib/src/a.qz",
-        "# Shouts `s`.\npublic def shout(s: String) -> String = helper(s) + \"!\"\npublic def shout(n: Int) -> String = \"#{n}!\"\npublic def tag -> String = \"#{self.class.name} #{TAG}\"\ndef helper(s: String) -> String = s.upcase\nTAG = \"lib\"\nclass Box\n  def go -> String = cog.shout(\"box\") + \" \" + shout(\"in\")\nend\n",
+        "# Shouts `s`.\npublic def shout(s: String) -> String = helper(s) + \"!\"\npublic def shout(n: Int) -> String = \"#{n}!\"\npublic def tag -> String = \"tag #{TAG}\"\ndef helper(s: String) -> String = s.upcase\nTAG = \"lib\"\nclass Box\n  def go -> String = cog.shout(\"box\") + \" \" + shout(\"in\")\nend\n",
     );
     w.commit("lib", Some("v1.0.0"));
     let dep = format!("L = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url("lib"));
@@ -1562,7 +1558,7 @@ fn a_cogs_public_functions() {
         &dep,
         "p L.shout(\"hi\"), L.shout(3), L.tag, L::Box.new.go\n",
     );
-    let expected = "\"HI!\"\n\"3!\"\n\"main lib\"\n\"BOX! IN!\"\n";
+    let expected = "\"HI!\"\n\"3!\"\n\"tag lib\"\n\"BOX! IN!\"\n";
     assert_eq!(w.ok("app", &["run"]), expected);
     let out = w.ok("app", &["build", "-o", "app.bin"]);
     let _ = out;

@@ -387,18 +387,15 @@ stricter, not unsound.
   stricter than the Rust checker.
   `Kernel.name(args)` is the built-in function, as `name(args)` on the
   implicit receiver is.
-  A top-level `def` is a function (docs/01 §2): it runs with its file's
-  top-level object as `self`, wherever it is called from. The model
-  has it as a method `name@fn`, copied into each class right below
-  `Object` (the top level's, the program's, the exception root), so a
-  call the checker resolved to it, from any class or as `::name`, runs
-  it statically, with the caller's object as `self`. That is the same
-  run as long as the body does not observe `self`, so a function is in
-  range only when its body has no `self` and no call of a method of
-  `self` (`Object`'s, such as `inspect`; Kernel's built-in functions
-  and other functions are not methods); a call of one in `initialize`
-  or a field's default is out of range (the model counts it as a use
-  of the object, Quarz does not). A cog's public functions (`Key.f`)
+  A top-level `def` is a function (docs/01 §2), which has no `self`:
+  the checker refuses `self`, fields, `super` and implicit calls of a
+  method of an object in its body. The model has it as a method
+  `name@fn`, copied into each class right below `Object` (the top
+  level's, the program's, the exception root), so a call the checker
+  resolved to it, from any class or as `::name`, runs it statically,
+  with the caller's object as `self`, which its body never reads; a
+  call of one in `initialize` or a field's default is out of range (the
+  model counts it as a use of the object, Quarz does not). A cog's public functions (`Key.f`)
   stay out of range, with every program of more than one file.
   A block given to a built-in method (`each`, `map`, `times`) is the
   translator's alone (design §14, part B): scoped as a block (its own
