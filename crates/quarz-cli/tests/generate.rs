@@ -1498,3 +1498,90 @@ end
     let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
     assert!(!ok && err.contains("undefined method `skip?`"), "{err}");
 }
+
+/// A generated method's body calls the receiver's methods, public and
+/// private, without `self.` (docs/14 §5: its `self` is the receiver); an
+/// error elsewhere in a body is reported once, not also as calls on the
+/// `Meta::ClassDef` of the `static def`.
+#[test]
+fn generated_bodies_call_the_receivers_methods_implicitly() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r##"class Store
+  def pub_get(name: Symbol) -> String = "pub #{name}"
+  private def priv_get(name: Symbol) -> String = "priv #{name}"
+  static def self.both(name: Symbol) -> Void
+    def_method(name) do -> String
+      pub_get(name) + " " + priv_get(name)
+    end
+  end
+end
+"##,
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass S < Store\n  both :x\nend\nputs S.new.x\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "pub x priv x\n");
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let out = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "pub x priv x\n");
+    write(
+        &d.0,
+        "lib.qz",
+        r##"class Store
+  def pub_get(name: Symbol) -> String = "pub #{name}"
+  static def self.both(name: Symbol) -> Void
+    def_method(name) do -> String
+      x: Int = "oops"
+      pub_get(name)
+    end
+  end
+end
+"##,
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("lib.qz:5:16: error: cannot assign String to `x` of type Int"),
+        "{err}"
+    );
+    assert!(!err.contains("for Meta::ClassDef"), "{err}");
+    // The same with a block declaring fewer parameters than its type, and
+    // with an argument of the wrong type (no overload reaches the block).
+    for args in [", :a", ", 3"] {
+        write(
+            &d.0,
+            "lib.qz",
+            &format!(
+                r##"class Store
+  def pub_get(name: Symbol) -> String = "pub #{{name}}"
+  static def self.both(name: Symbol) -> Void
+    def_method(name{args}) do -> String
+      x: Int = "oops"
+      pub_get(name)
+    end
+  end
+end
+"##
+            ),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        assert!(!ok);
+        assert!(
+            err.contains("lib.qz:5:16: error: cannot assign String"),
+            "{args}: {err}"
+        );
+        assert!(!err.contains("for Meta::ClassDef"), "{args}: {err}");
+    }
+}
