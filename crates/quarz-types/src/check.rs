@@ -106,6 +106,16 @@ pub struct Output {
     /// enclosing `self` instead: the receiver of the call is read from
     /// the hidden slot `var_refs[span]`.
     pub outer_self_calls: rustc_hash::FxHashSet<NodeId>,
+    /// For each of `outer_self_calls`, how many blocks with a receiver
+    /// out the `self` it reaches is (1: the receiver of the block around
+    /// the innermost one; past the outermost, the lexical `self`): a
+    /// quoted tree's `SelfRef(depth)` (docs/14 §6).
+    #[serde(default)]
+    pub outer_self_depths: FxHashMap<NodeId, u32>,
+    /// Calls whose block literal is checked with a receiver
+    /// (`T.() -> R`): a quoted tree counts them for `SelfRef(depth)`.
+    #[serde(default)]
+    pub receiver_blocks: rustc_hash::FxHashSet<NodeId>,
     /// Calls on a union-typed receiver whose members resolve to different
     /// methods with no common ancestor declaring the name: looked up by
     /// name on the receiver's class at run time.
@@ -589,6 +599,9 @@ enum TableUndo {
     /// A call's `Output::quoted_blocks` entry and `Checker::quoted_seen`
     /// before a check changed them (docs/14 §6).
     Quoted(NodeId, Option<bool>, Option<bool>, Option<(u32, Span)>),
+    /// A call's `Output::receiver_blocks` membership before a check
+    /// changed it.
+    ReceiverBlock(NodeId, bool),
     /// `Checker::logical_seen` of a node before a check changed it.
     Logical(NodeId, Option<LogicalSeen>),
     /// `Output::logical_calls` of a node before a check changed it.
@@ -2013,6 +2026,13 @@ impl Checker {
                 }
                 TableUndo::Varied(id) => {
                     self.out.varied_types.remove(&id);
+                }
+                TableUndo::ReceiverBlock(id, was) => {
+                    if was {
+                        self.out.receiver_blocks.insert(id);
+                    } else {
+                        self.out.receiver_blocks.remove(&id);
+                    }
                 }
                 TableUndo::Literal(id, float, _) => {
                     if float {
@@ -9870,6 +9890,9 @@ impl Checker {
         self.out.var_refs.insert(expr.span, VarRef { depth, slot });
         self.out.self_slots.insert(owner, slot);
         self.out.outer_self_calls.insert(expr.id);
+        self.out
+            .outer_self_depths
+            .insert(expr.id, (self.env.receivers.len() - k) as u32);
     }
 
     fn check_constructor(
@@ -11412,6 +11435,14 @@ impl Checker {
                 {
                     self.quoted_conflicts
                         .insert(expr.id, (self.env.file, expr.span));
+                }
+                let was = self.out.receiver_blocks.contains(&expr.id);
+                self.table_journal
+                    .push(TableUndo::ReceiverBlock(expr.id, was));
+                if matches!(self.infer.resolve(&resolved), Type::Proc(Some(_), ..)) {
+                    self.out.receiver_blocks.insert(expr.id);
+                } else {
+                    self.out.receiver_blocks.remove(&expr.id);
                 }
                 self.block_callee = Some(call.name.clone());
                 self.check_block_as(expr.id, b, &resolved, is_task);

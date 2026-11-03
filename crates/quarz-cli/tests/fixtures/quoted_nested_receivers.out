@@ -1,0 +1,12 @@
+{|| self@0.User#age().Int#>(18)}
+{|| self@0.User#age().Int#>(18)}
+{|u| Post.Post#where() {|| self@0.Post#user_id().Int#==(u@1.User#id())}.Object#!=(nil)}
+[]
+{|| (User.User#where() {|| (self@0.User#age().Int#>(1) && self@0.User#id().Int#==(0))}.Object#!=(nil) && self@0.User#age().Int#>(2))}
+{|| Post.Post#where() {|| self@0.Post#user_id().Int#==(self@1.User#id())}.Object#!=(nil)}
+{|| self@0.User#age().Int#>($self.Report#label().String#size())}
+[Report]
+{|| self@0.User#age().Int#>($self.Report#label().String#size().Int#+($self.Wrap#wlen()))}
+[Report, Wrap]
+{|| (-.main#helper(self@0.User#age()).Int#>(1) && -.Kernel#rand(3).Int#>=(0))}
+[]
