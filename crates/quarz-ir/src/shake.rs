@@ -279,8 +279,9 @@ pub fn refs<'a>(f: &'a Function, visit: &mut dyn FnMut(Ref<'a>)) {
 
 /// What `f` refers to, for what a run of it may reach (the compile-time
 /// checks of `static` code): as `refs`, but a `super` call and a
-/// function's are `Ref::Exact`, and a construction is `Ref::Construct`
-/// (not every `initialize` by name).
+/// function's are `Ref::Exact`, a construction is `Ref::Construct`
+/// (not every `initialize` by name), and a symbol constant is no
+/// method's name.
 pub fn reach_refs<'a>(f: &'a Function, visit: &mut dyn FnMut(Ref<'a>)) {
     refs_in(f, true, visit)
 }
@@ -288,6 +289,17 @@ pub fn reach_refs<'a>(f: &'a Function, visit: &mut dyn FnMut(Ref<'a>)) {
 fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
     for c in &f.consts {
         match c {
+            // A symbol is a method's name only where a call says so: the
+            // instructions that call by name (`CallKind::Send`, `&:name`
+            // and `.:name` without a method, `BinOp`) carry their names
+            // themselves, and no native calls a method a `Symbol` value
+            // names (`Meta::Method#bind` in a generated body is replaced
+            // by the call of its method; the runtime's own calls by name,
+            // `RUNTIME_NAMES`, use names of its own). So what a run
+            // reaches does not count a symbol value (`:count` as a hash
+            // key or a tag); shake keeps the methods of every symbol's
+            // name all the same.
+            Constant::Symbol(_) if exact => {}
             Constant::Symbol(s) => visit(Ref::Name(s)),
             Constant::Regexp { .. } => visit(Ref::Regexp),
             Constant::Bytes(_) => visit(Ref::Bytes),
@@ -356,6 +368,15 @@ fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
                 Inst::MethodRef {
                     method: Some(m), ..
                 } => visit(Ref::Method(*m)),
+                // `.:name` the checks could not choose a method for: by
+                // name at run time.
+                Inst::MethodRef {
+                    method: None, name, ..
+                } => {
+                    if let Some(Constant::Str(n)) = f.consts.get(*name as usize) {
+                        visit(Ref::Name(n));
+                    }
+                }
                 Inst::MakeBlock { func, .. } => visit(Ref::Func(*func)),
                 Inst::ConstGet { id, .. } => visit(Ref::Const(*id)),
                 Inst::ClassRef { class, .. } | Inst::VariantSingleton { class, .. } => {

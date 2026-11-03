@@ -322,6 +322,41 @@ fn a_construction_reaches_its_own_initialize() {
     }
 }
 
+/// A symbol is a method's name only where a call says so: a symbol value
+/// (`:count` as a hash key) reaches no method of its name, while a call
+/// by name (a union's members' methods, `&:name`) reaches them all
+/// (tmp/repro/static-reach-symbol-constant.qz).
+#[test]
+fn a_symbol_value_reaches_no_method() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Counter\n  def count -> Int = STDIN.read_bytes(1).size\nend\nclass A\n  def go -> Int = 1\nend\nclass B\n  def go -> Int = STDIN.read_bytes(1).size\nend\nclass Base\n  static def self.make -> Void\n    h = {count: 1, to_s: 2}\n    k = h[:count]? || 0\n    def_class_method(:k) { k }\n  end\n  static def self.union(flag: Bool) -> Void\n    x: A | B = flag ? A.new : B.new\n    k = x.go\n    def_class_method(:u) { k }\n  end\n  static def self.procs -> Void\n    xs: Array[A | B] = [A.new]\n    k = xs.map(&:go).sum\n    def_class_method(:p) { k }\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass C < Base\n  make\nend\np C.k\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "1\n");
+    for call in ["union true", "procs"] {
+        let app = write(
+            &d.0,
+            "byname.qz",
+            &format!("require_relative \"lib\"\nclass C < Base\n  {call}\nend\n"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        assert!(!ok, "{call}");
+        assert!(
+            err.contains("reaches `IO#read_bytes` (via B#go), which cannot run at compile time"),
+            "{call}: {err}"
+        );
+    }
+}
+
 #[test]
 fn compile_time_only_calls_through_operators_and_symbol_procs() {
     let d = dir();
