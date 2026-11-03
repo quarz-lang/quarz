@@ -203,7 +203,15 @@ pub fn load_files(paths: &[PathBuf], std: &[&str]) -> (Vec<LoadedUnit>, Vec<Load
 /// the one file allowed statements. The units come back dependencies
 /// first, with the cog declarations the checker needs.
 pub fn load_movement(cogs: &[CogSpec]) -> (Vec<LoadedUnit>, Vec<CogDecl>, Vec<LoadDiagnostic>) {
-    load_cogs(cogs, None)
+    load_cogs(cogs, Load::Run)
+}
+
+/// Load a library to check it (`quarz check` in a cog without
+/// `src/main.qz`): `cogs[0]` is a root of its own (its `src` absent)
+/// importing the library, as [`load_movement_tests`] has it, without
+/// test files.
+pub fn load_library(cogs: &[CogSpec]) -> (Vec<LoadedUnit>, Vec<CogDecl>, Vec<LoadDiagnostic>) {
+    load_cogs(cogs, Load::Library)
 }
 
 /// Load a movement to test (`quarz test`): `tests` are loaded as a
@@ -215,13 +223,27 @@ pub fn load_movement_tests(
     cogs: &[CogSpec],
     tests: &[PathBuf],
 ) -> (Vec<LoadedUnit>, Vec<CogDecl>, Vec<LoadDiagnostic>) {
-    load_cogs(cogs, Some(tests))
+    load_cogs(cogs, Load::Tests(tests))
 }
 
-fn load_cogs(
-    cogs: &[CogSpec],
-    tests: Option<&[PathBuf]>,
-) -> (Vec<LoadedUnit>, Vec<CogDecl>, Vec<LoadDiagnostic>) {
+/// What a movement is loaded for.
+#[derive(Clone, Copy)]
+enum Load<'a> {
+    /// The application, `src/main.qz` last and the only file with
+    /// statements.
+    Run,
+    /// These test files, with the application's declarations or a
+    /// library under a root of its own.
+    Tests(&'a [PathBuf]),
+    /// A library under a root of its own.
+    Library,
+}
+
+fn load_cogs(cogs: &[CogSpec], load: Load) -> (Vec<LoadedUnit>, Vec<CogDecl>, Vec<LoadDiagnostic>) {
+    let tests = match load {
+        Load::Tests(tests) => Some(tests),
+        Load::Run | Load::Library => None,
+    };
     let mut loader = Loader {
         units: Vec::new(),
         diagnostics: Vec::new(),
@@ -255,7 +277,7 @@ fn load_cogs(
             module: cog.module_name.clone(),
         };
         let mut files = Vec::new();
-        if i == 0 && tests.is_some() && !cog.src.is_dir() {
+        if i == 0 && !matches!(load, Load::Run) && !cog.src.is_dir() {
             continue;
         }
         if let Err(e) = qz_files(&cog.src, &mut files) {

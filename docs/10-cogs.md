@@ -170,7 +170,7 @@ A class body's `static` statement ([14-metaprogramming.md](14-metaprogramming.md
 | `quarz cog tree` | Print the resolved dependency graph |
 | `quarz cog outdated` | Show, for each cog, the newest tag beyond the locked version |
 | `quarz cog verify` | Check the cache and `vendor/` against the lock's hashes |
-| `quarz run`/`build`/`check`/`ir` [`--locked`] [`--offline`] [TARGET] | TARGET is the application's directory, its `src/main.qz`, or nothing for the application around the current directory (`quarz run -- ARGS`); a `.qz` file elsewhere is a script. Use the lock, or resolve and write it; `--locked` fails instead of writing, `--offline` fetches nothing. `quarz build` writes the executable next to the manifest, named after the cog, unless `-o` says otherwise |
+| `quarz run`/`build`/`check`/`ir` [`--locked`] [`--offline`] [TARGET] | TARGET is the application's directory, its `src/main.qz`, or nothing for the application around the current directory (`quarz run -- ARGS`); a `.qz` file elsewhere is a script. Use the lock, or resolve and write it; `--locked` fails instead of writing, `--offline` fetches nothing. `quarz build` writes the executable next to the manifest, named after the cog, unless `-o` says otherwise. In a library (a cog without `src/main.qz`), `quarz check` checks its files as its users load them, its root module wrapping them, and the others refuse it: there is nothing to run |
 
 ## 8. Design Notes
 
