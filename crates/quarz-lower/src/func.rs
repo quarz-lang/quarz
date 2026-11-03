@@ -2499,6 +2499,14 @@ impl<'a> FnBuilder<'a> {
             (None, None)
         };
         let value = self.call_value(e, call, target, recv);
+        // `a != b` as `!(a == b)` with an extension's `==` (docs/01 §3).
+        let value = if self.out.ne_negated.get(&e.id) == Some(&true) {
+            let dst = self.reg();
+            self.emit(Inst::Not { dst, src: value });
+            dst
+        } else {
+            value
+        };
         match (res, nil_join) {
             (Some(res), Some(join)) => {
                 self.emit(Inst::Move {
