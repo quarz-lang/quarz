@@ -1784,6 +1784,7 @@ impl Interp {
 
     pub fn check_cancel(&self, task: &TaskHandle) -> Result<(), Flow> {
         if task.cancel_due() {
+            task.note_cancel_delivered();
             return Err(self.raise(self.program.exc.cancelled, "task cancelled"));
         }
         match self.own_exit(task) {

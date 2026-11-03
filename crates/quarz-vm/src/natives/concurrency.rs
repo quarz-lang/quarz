@@ -723,9 +723,20 @@ fn run_timeout(interp: &Interp, d: std::time::Duration, child: &Rc<TaskHandle>) 
             // Waited for even if this task is cancelled meanwhile: the
             // block is the caller's (`&:`) and must not outlive the call.
             let exit = wait_out(interp, &child).or_else(|| own_exit(interp, &child));
-            return Err(
-                exit.unwrap_or_else(|| interp.raise(interp.program.exc.timeout, "timed out"))
-            );
+            if let Some(exit) = exit {
+                return Err(exit);
+            }
+            // A block the cancellation interrupted (a wait raised
+            // `Task::Cancelled` in it, whatever it then did with it) timed
+            // out. One that ended without being interrupted (it finished
+            // before the cancellation reached it, which a waiter woken
+            // late cannot tell from `is_done` above) keeps its outcome:
+            // `Task.timeout(d) { ch.receive }` must not lose a value it
+            // received.
+            if child.cancel_delivered() {
+                return Err(interp.raise(interp.program.exc.timeout, "timed out"));
+            }
+            return interp.await_task(&child);
         }
         {
             let mut joiners = lock(&child.joiners);
