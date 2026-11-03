@@ -287,8 +287,10 @@ module Meta
     # A parameter of the `depth`-th enclosing `Block` (0: the innermost;
     # the quoted block itself is the outermost).
     variant Arg(name: Symbol, depth: Int, line: Int)
-    # The block's `self`, when its procedure type has a receiver.
-    variant SelfRef(line: Int)
+    # The `self` of the `depth`-th enclosing `Block` that has a receiver
+    # (0: the innermost; the quoted block itself counts when its
+    # procedure type has one).
+    variant SelfRef(depth: Int, line: Int)
     # A call of a method the checker chose.
     variant Call(recv: Expr?, method: MethodRef, args: Array[Expr], block: Expr?, line: Int)
     # The built-in `&&`, `||` and `!`.

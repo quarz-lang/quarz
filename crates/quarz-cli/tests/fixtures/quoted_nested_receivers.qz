@@ -1,0 +1,74 @@
+# Quoted blocks with receivers inside one another (docs/14 §6): every call
+# on a receiver is `Call(SelfRef(depth), ...)`, the depth counting the
+# enclosing blocks that have a receiver (0: the innermost); a call that
+# falls through to an enclosing receiver gets that one's depth, and one
+# that falls through to the code around the quoted block captures its
+# `self`.
+class Post
+  def user_id -> Int = 1
+  def self.where(&c: Quoted[Self.() -> Bool]) -> Meta::Expr = c.expr
+end
+
+class User
+  def id -> Int = 1
+  def age -> Int = 30
+  def self.where(&c: Quoted[Self.() -> Bool]) -> Meta::Expr = c.expr
+  def self.where_q(&c: Quoted[Self.() -> Bool]) -> Quoted[Self.() -> Bool] = c
+  def self.where1(&c: Quoted[(Self) -> Bool]) -> Quoted[(Self) -> Bool] = c
+end
+
+def show(e: Meta::Expr) -> String
+  case e
+  in Meta::Expr::Lit(value: v) then v.inspect
+  in Meta::Expr::Capture(name: n) then "$#{n}"
+  in Meta::Expr::Arg(name: n, depth: d) then "#{n}@#{d}"
+  in Meta::Expr::SelfRef(depth: d) then "self@#{d}"
+  in Meta::Expr::Call(recv: r, method: m, args: a, block: b)
+    rs = r ? show(r) + "." : "-."
+    bs = b ? " " + show(b) : ""
+    "#{rs}#{m.owner.name}##{m.name}(#{a.map { |x| show(x) }.join(", ")})#{bs}"
+  in Meta::Expr::And(left: l, right: r) then "(#{show(l)} && #{show(r)})"
+  in Meta::Expr::Or(left: l, right: r) then "(#{show(l)} || #{show(r)})"
+  in Meta::Expr::Not(operand: o) then "!#{show(o)}"
+  in Meta::Expr::Block(params: ps, body: b) then "{|#{ps.join(",")}| #{b.map { |x| show(x) }.join("; ")}}"
+  else "?"
+  end
+end
+
+def helper(n: Int) -> Int = n
+
+class Wrap
+  def wlen -> Int = 4
+  def with[R](&b: Wrap.() -> R) -> R = instance_exec(&b)
+end
+
+class Report
+  def label -> String = "r"
+  # Past a receiver block outside the quote: the `self` the call reads.
+  def wrapped -> Quoted[User.() -> Bool] = Wrap.new.with { User.where_q { age > label.size + wlen } }
+  # A call that falls through to the method's `self`: a capture.
+  def tree -> Quoted[User.() -> Bool] = User.where_q { age > label.size }
+end
+
+puts show(User.where { age > 18 })
+puts show(User.where { self.age > 18 })
+q = User.where1 { |u| Post.where { user_id == u.id } != nil }
+puts show(q.expr)
+p q.captures
+# A self-join: inside the inner block, `age` and `id` are the inner
+# User's (`SelfRef(0)` there); after it, `age` is the outer one's
+# (`SelfRef(0)` at its own level): the levels tell them apart.
+puts show(User.where { User.where { age > 1 && id == 0 } != nil && age > 2 })
+# Falling through to the enclosing receiver: `id` is User's, reached
+# from inside Post's block.
+puts show(User.where { Post.where { user_id == id } != nil })
+r = Report.new.tree
+puts show(r.expr)
+p r.captures.map { |c| c.class }
+w = Report.new.wrapped
+puts show(w.expr)
+p w.captures.map { |c| c.class }
+# A function (a top-level `def`, a `Kernel` function) has no receiver.
+f = User.where_q { helper(age) > 1 && rand(3) >= 0 }
+puts show(f.expr)
+p f.captures

@@ -74,7 +74,7 @@ def show(e: Meta::Expr) -> String
   in Meta::Expr::Lit(value: v) then v.inspect
   in Meta::Expr::Capture(name: n) then "$#{n}"
   in Meta::Expr::Arg(name: n, depth: d) then "#{n}@#{d}"
-  in Meta::Expr::SelfRef then "self"
+  in Meta::Expr::SelfRef(depth: d) then "self@#{d}"
   in Meta::Expr::Call(recv: r, method: m, args: a, block: b)
     rs = r ? show(r) + "." : ""
     bs = b ? " " + show(b) : ""
@@ -107,7 +107,7 @@ q5 = r.map { |x| (c && Cond.new("b")).sql }
 p show(q5.expr), q5.proc.call(0)
 "##;
 
-const TREES_OUT: &str = r##""{|| ((views().>(5) && !tags().empty?()) || views().==($n))}"
+const TREES_OUT: &str = r##""{|| ((self@0.views().>(5) && !self@0.tags().empty?()) || self@0.views().==($n))}"
 [2]
 true
 "{|x| (x@0.>(1) ? \"\"big \"x@0\" : \"small\")}"

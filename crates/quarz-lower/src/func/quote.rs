@@ -16,8 +16,9 @@ struct Quote<'a> {
     /// The quoted levels entered (the block itself first): a variable
     /// reference less deep than this is a parameter of one of them.
     levels: u32,
-    /// Whether the block's procedure type has a receiver (`SelfRef`).
-    receiver: bool,
+    /// How many of the quoted levels entered have a receiver: a `self`
+    /// less deep than this is one of theirs (`SelfRef(depth)`).
+    receivers: u32,
 }
 
 /// Where a capture's value is read at the call.
@@ -46,7 +47,7 @@ impl<'a> FnBuilder<'a> {
         let mut q = Quote {
             captures: Vec::new(),
             levels: 0,
-            receiver,
+            receivers: 0,
         };
         let params: Vec<&'a str> = b.params.list.iter().map(|p| p.name.as_str()).collect();
         let tree = if self.lw.quoted_once {
@@ -68,7 +69,7 @@ impl<'a> FnBuilder<'a> {
                 None,
                 self.class_id,
             );
-            let tree = t.quote_block(&mut q, b, &params);
+            let tree = t.quote_block(&mut q, b, &params, receiver);
             t.term(Term::Return(tree));
             let f = t.finish();
             self.lw.set_func(id, f);
@@ -78,7 +79,7 @@ impl<'a> FnBuilder<'a> {
             self.emit(Inst::ConstGet { dst, id: cid });
             dst
         } else {
-            self.quote_block(&mut q, b, &params)
+            self.quote_block(&mut q, b, &params, receiver)
         };
         // The captures, read here, at the call.
         let regs: Vec<Reg> = q
@@ -135,9 +136,17 @@ impl<'a> FnBuilder<'a> {
     }
 
     /// A `Meta::Expr::Block` of `b`'s statements, its parameters `params`.
-    fn quote_block<'q: 'a>(&mut self, q: &mut Quote<'q>, b: &'q AstBlock, params: &[&str]) -> Reg {
+    fn quote_block<'q: 'a>(
+        &mut self,
+        q: &mut Quote<'q>,
+        b: &'q AstBlock,
+        params: &[&str],
+        receiver: bool,
+    ) -> Reg {
         q.levels += 1;
+        q.receivers += u32::from(receiver);
         let body: Vec<Reg> = b.body.iter().map(|e| self.quote_expr(q, e)).collect();
+        q.receivers -= u32::from(receiver);
         q.levels -= 1;
         let names: Vec<Reg> = params
             .iter()
@@ -180,14 +189,7 @@ impl<'a> FnBuilder<'a> {
                 let l = self.int(line);
                 self.node("Interp", vec![parts, l])
             }
-            ExprKind::SelfRef => {
-                if q.receiver {
-                    let l = self.int(line);
-                    self.node("SelfRef", vec![l])
-                } else {
-                    self.capture(q, "self".to_string(), "self", Source::SelfValue, line)
-                }
-            }
+            ExprKind::SelfRef => self.quote_self(q, 0, line),
             ExprKind::Local(name) => match self.var_ref(e.span) {
                 // A parameter of a quoted level.
                 Some(r) if r.depth < q.levels => {
@@ -355,11 +357,40 @@ impl<'a> FnBuilder<'a> {
         let method = self.method_ref(e.id);
         let recv = match recv.or(call.recv.as_ref()) {
             Some(r) => self.quote_expr(q, r),
-            // The block's `self`: a `SelfRef` (written as `nil`) when its
-            // procedure type has a receiver, else the `self` of the code
-            // around it, captured as `self` written would be.
-            None if q.receiver => self.nil(),
-            None => self.capture(q, "self".to_string(), "self", Source::SelfValue, line),
+            // The `self` of the innermost quoted level with a receiver,
+            // or, for a call that falls through to an enclosing one
+            // (docs/01 §9), of the level it reaches; past them all, the
+            // `self` of the code around the block, captured as `self`
+            // written would be.
+            // A function (a `Kernel` function, a top-level or cog `def`)
+            // takes no `self`: no receiver.
+            None if matches!(
+                self.out.calls.get(&e.id),
+                Some(CallTarget::Method { method }) if self.world.takes_no_self(*method)
+            ) =>
+            {
+                self.nil()
+            }
+            None => match self.out.outer_self_depths.get(&e.id).copied() {
+                Some(depth) if depth >= q.receivers => {
+                    // Past the tree's receivers: the `self` the call reads
+                    // at run time, from the hidden slot of the code around
+                    // the block that holds it (not necessarily that code's
+                    // own `self`).
+                    match self.out.var_refs.get(&e.span).copied() {
+                        Some(r) if r.depth >= q.levels => {
+                            let r = VarRef {
+                                depth: r.depth - q.levels,
+                                slot: r.slot,
+                            };
+                            let key = format!("{}:{}", r.depth, r.slot);
+                            self.capture(q, key, "self", Source::Var(r), line)
+                        }
+                        _ => self.quote_self(q, depth, line),
+                    }
+                }
+                depth => self.quote_self(q, depth.unwrap_or(0), line),
+            },
         };
         let mut args = Vec::new();
         let mut block = None;
@@ -380,12 +411,26 @@ impl<'a> FnBuilder<'a> {
         }
         if let Some(b) = &call.block {
             let names: Vec<&str> = b.params.list.iter().map(|p| p.name.as_str()).collect();
-            block = Some(self.quote_block(q, b, &names));
+            let receiver = self.out.receiver_blocks.contains(&e.id);
+            block = Some(self.quote_block(q, b, &names, receiver));
         }
         let args = self.array_of(args);
         let block = block.unwrap_or_else(|| self.nil());
         let l = self.int(line);
         self.node("Call", vec![recv, method, args, block, l])
+    }
+
+    /// The `self` of the `depth`-th quoted level with a receiver
+    /// (`SelfRef(depth)`), or the captured `self` of the code around the
+    /// block when there is none that deep.
+    fn quote_self<'q: 'a>(&mut self, q: &mut Quote<'q>, depth: u32, line: i64) -> Reg {
+        if depth < q.receivers {
+            let d = self.int(depth as i64);
+            let l = self.int(line);
+            self.node("SelfRef", vec![d, l])
+        } else {
+            self.capture(q, "self".to_string(), "self", Source::SelfValue, line)
+        }
     }
 
     /// `&:name` as a block: `Block([:x], [Call(Arg(:x, 0), name)])`.

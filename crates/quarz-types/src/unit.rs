@@ -203,6 +203,8 @@ pub(crate) fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> 
         const_targets: map!(const_targets),
         var_refs: spans!(var_refs),
         outer_self_calls: set!(outer_self_calls),
+        outer_self_depths: map!(outer_self_depths),
+        receiver_blocks: set!(receiver_blocks),
         dynamic_calls: set!(dynamic_calls),
         union_calls: map!(union_calls),
         union_conflicts: set!(union_conflicts),
@@ -329,6 +331,8 @@ pub(crate) fn merge_output(out: &mut Output, o: Output) {
     out.const_targets.extend(o.const_targets);
     out.var_refs.extend(o.var_refs);
     out.outer_self_calls.extend(o.outer_self_calls);
+    out.outer_self_depths.extend(o.outer_self_depths);
+    out.receiver_blocks.extend(o.receiver_blocks);
     out.dynamic_calls.extend(o.dynamic_calls);
     out.union_calls.extend(o.union_calls);
     out.union_conflicts.extend(o.union_conflicts);
