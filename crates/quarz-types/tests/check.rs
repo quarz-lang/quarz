@@ -3528,6 +3528,20 @@ end
 show");
     ok("def inspect(x: Int) -> String = x.to_s
 def f -> String = inspect(1)");
+    // An `Object` method the bare call would mean, beside functions of
+    // its name that take other arguments, or a special form.
+    err(
+        "def inspect(x: Int) -> String = x.to_s\ndef f -> String = inspect",
+        "a function has no `self`: `inspect` is a method of an object, not a function; call it on one (`x.inspect`); the functions `inspect` take other arguments: inspect(x: Int) -> String",
+    );
+    err(
+        "def f -> Bool = respond_to?(:size)",
+        "a function has no `self`: `respond_to?` is a method of an object, not a function; call it on one (`x.respond_to?(...)`)",
+    );
+    err(
+        "def f -> String = to_s(16)",
+        "a function has no `self`: `to_s` is a method of an object, not a function; call it on one (`x.to_s(...)`)",
+    );
     // A block with a receiver has one, and the top level keeps its own.
     ok("def f -> String = 5.instance_exec { to_s + self.inspect }");
     ok("p self, inspect, [1].map { |_| self.class }
