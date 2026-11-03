@@ -293,6 +293,9 @@ fn load_and_check(
             let mut specs: Vec<quarz_types::CogSpec> = Vec::new();
             if is_library {
                 let lib = &cogs[0];
+                // An application that lost its main file passes `check`
+                // this way while `run` fails: say why.
+                eprintln!("quarz: checked `{}` as a library: no src/main.qz", lib.name);
                 let mut imports = vec![(lib.module.clone(), 1)];
                 for (k, j) in &lib.imports {
                     if !imports.iter().any(|(m, _)| m == k) {

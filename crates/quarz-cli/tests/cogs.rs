@@ -246,8 +246,17 @@ fn check_takes_a_library_as_its_users_load_it() {
     // nothing to run.
     let w = World::new();
     w.libraries();
-    assert_eq!(w.ok("httpx", &["check"]), "");
-    assert_eq!(w.ok(".", &["check", "httpx"]), "");
+    for (cwd, args) in [("httpx", &["check"][..]), (".", &["check", "httpx"][..])] {
+        let out = w.quarz(cwd, args);
+        assert!(out.ok, "{}", out.stderr);
+        assert_eq!(out.stdout, "");
+        assert!(
+            out.stderr
+                .contains("quarz: checked `httpx` as a library: no src/main.qz\n"),
+            "{}",
+            out.stderr
+        );
+    }
     w.write(
         "httpx/src/bad.qz",
         "class Bad\n  def body -> String = Client.new.get(\"u\").body\nend\n",
