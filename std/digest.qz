@@ -1,0 +1,72 @@
+# Digest: message digests (SHA-256, MD5), HMAC-SHA-256 and PBKDF2.
+#
+# ```
+# require "digest"
+# Digest::SHA256.hexdigest("abc")[0, 16]        # => "ba7816bf8f01cfea"
+# Digest::HMAC.sha256("key", "message").size   # => 32
+# ```
+#
+# Each function takes its data as `Bytes` or as a `String` (its UTF-8
+# bytes) and gives the digest as `Bytes`, or as lowercase hexadecimal from
+# `hexdigest`.
+module Digest
+  # SHA-256 (FIPS 180-4).
+  module SHA256
+    # The 32-byte SHA-256 digest of `data`.
+    #
+    # ```
+    # Digest::SHA256.digest("").hex[0, 8]   # => "e3b0c442"
+    # ```
+    native def self.digest(data: Bytes | String) -> Bytes
+
+    # The SHA-256 digest of `data` in lowercase hexadecimal (64 digits).
+    #
+    # ```
+    # Digest::SHA256.hexdigest("abc")[-8, 8]   # => "f20015ad"
+    # ```
+    native def self.hexdigest(data: Bytes | String) -> String
+  end
+
+  # MD5 (RFC 1321). Broken as a cryptographic hash: here for protocols
+  # that still use it, such as PostgreSQL's `md5` authentication.
+  module MD5
+    # The 16-byte MD5 digest of `data`.
+    #
+    # ```
+    # Digest::MD5.digest("abc").size   # => 16
+    # ```
+    native def self.digest(data: Bytes | String) -> Bytes
+
+    # The MD5 digest of `data` in lowercase hexadecimal (32 digits).
+    #
+    # ```
+    # Digest::MD5.hexdigest("abc")   # => "900150983cd24fb0d6963f7d28e17f72"
+    # ```
+    native def self.hexdigest(data: Bytes | String) -> String
+  end
+
+  # HMAC (RFC 2104).
+  module HMAC
+    # The HMAC-SHA-256 of `data` under `key`: 32 bytes.
+    #
+    # ```
+    # Digest::HMAC.sha256("key", "The quick brown fox jumps over the lazy dog").hex[0, 16]
+    # # => "f7bc83f430538424"
+    # ```
+    native def self.sha256(key: Bytes | String, data: Bytes | String) -> Bytes
+  end
+
+  # PBKDF2 (RFC 8018), the key derivation of SCRAM and of password storage.
+  module PBKDF2
+    # `length` bytes derived from `password` and `salt` with
+    # HMAC-SHA-256 over `iterations` rounds. Raises `ArgumentError` when
+    # `iterations` is not positive, or `length` is negative or larger than
+    # RFC 8018 allows ((2^32 - 1) * 32 bytes) or memory holds.
+    #
+    # ```
+    # Digest::PBKDF2.sha256("password", "salt", 1, 32).hex[0, 16]   # => "120fb6cffcf8b32c"
+    # Digest::PBKDF2.sha256("password", "salt", 0, 32)              # raises ArgumentError
+    # ```
+    native def self.sha256(password: Bytes | String, salt: Bytes | String, iterations: Int, length: Int) -> Bytes
+  end
+end

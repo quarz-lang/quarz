@@ -24,6 +24,8 @@ use crate::declare::CogDecl;
 /// Standard library modules available to `require`, by name.
 pub const STD_MODULES: &[(&str, &str)] = &[
     ("json", include_str!("../../../std/json.qz")),
+    ("digest", include_str!("../../../std/digest.qz")),
+    ("base64", include_str!("../../../std/base64.qz")),
     ("time", include_str!("../../../std/time.qz")),
     ("socket", include_str!("../../../std/socket.qz")),
     ("http", include_str!("../../../std/http.qz")),

@@ -1,0 +1,79 @@
+require "digest"
+require "test"
+
+# Vectors from FIPS 180-4's examples, RFC 1321, RFC 4231 and RFC 7914.
+class DigestSHA256Test < Test::Case
+  def test_vectors
+    assert_equal("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", Digest::SHA256.hexdigest(""))
+    assert_equal("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", Digest::SHA256.hexdigest("abc"))
+    assert_equal("248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+                 Digest::SHA256.hexdigest("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"))
+    assert_equal("cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0", Digest::SHA256.hexdigest("a" * 1_000_000))
+  end
+
+  def test_digest_is_the_bytes_of_hexdigest
+    d = Digest::SHA256.digest("abc")
+    assert_equal(32, d.size)
+    assert_equal(Digest::SHA256.hexdigest("abc"), d.hex)
+  end
+
+  def test_string_is_its_utf8_bytes
+    assert_equal(Digest::SHA256.digest("é😀".to_bytes), Digest::SHA256.digest("é😀"))
+    assert_equal(Digest::SHA256.hexdigest(b"\x00\xff"), Digest::SHA256.digest(Bytes[0, 255]).hex)
+  end
+end
+
+class DigestMD5Test < Test::Case
+  def test_vectors
+    assert_equal("d41d8cd98f00b204e9800998ecf8427e", Digest::MD5.hexdigest(""))
+    assert_equal("0cc175b9c0f1b6a831c399e269772661", Digest::MD5.hexdigest("a"))
+    assert_equal("900150983cd24fb0d6963f7d28e17f72", Digest::MD5.hexdigest("abc"))
+    assert_equal("f96b697d7cb7938d525a2f31aaf161d0", Digest::MD5.hexdigest("message digest"))
+    assert_equal("57edf4a22be3c955ac49da2e2107b67a", Digest::MD5.hexdigest("1234567890" * 8))
+  end
+
+  def test_digest
+    assert_equal(16, Digest::MD5.digest("abc").size)
+    assert_equal("900150983cd24fb0d6963f7d28e17f72", Digest::MD5.digest(b"abc").hex)
+  end
+end
+
+class DigestHMACTest < Test::Case
+  def test_rfc4231
+    assert_equal("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
+                 Digest::HMAC.sha256(Bytes.from_hex("0b" * 20), "Hi There").hex)
+    assert_equal("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+                 Digest::HMAC.sha256("Jefe", "what do ya want for nothing?").hex)
+    # A key longer than SHA-256's block is hashed first.
+    assert_equal("60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+                 Digest::HMAC.sha256(Bytes.from_hex("aa" * 131), "Test Using Larger Than Block-Size Key - Hash Key First").hex)
+  end
+
+  def test_empty_key
+    assert_equal("b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad", Digest::HMAC.sha256("", "").hex)
+  end
+end
+
+class DigestPBKDF2Test < Test::Case
+  def test_vectors
+    assert_equal("55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783",
+                 Digest::PBKDF2.sha256("passwd", "salt", 1, 64).hex)
+    assert_equal("120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b",
+                 Digest::PBKDF2.sha256("password", "salt", 1, 32).hex)
+    assert_equal("c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a",
+                 Digest::PBKDF2.sha256("password", b"salt", 4096, 32).hex)
+  end
+
+  def test_lengths
+    assert_equal(0, Digest::PBKDF2.sha256("password", "salt", 1, 0).size)
+    assert_equal("120fb6cf", Digest::PBKDF2.sha256("password", "salt", 1, 4).hex)
+  end
+
+  def test_bad_arguments
+    assert_raise(ArgumentError) { Digest::PBKDF2.sha256("p", "s", 0, 32) }
+    assert_raise(ArgumentError) { Digest::PBKDF2.sha256("p", "s", -1, 32) }
+    assert_raise(ArgumentError) { Digest::PBKDF2.sha256("p", "s", 1, -1) }
+    assert_raise(ArgumentError) { Digest::PBKDF2.sha256("p", "s", 1, 1 << 62) }
+    assert_raise(ArgumentError) { Digest::PBKDF2.sha256("p", "s", 1, 4294967295 * 32 + 1) }
+  end
+end

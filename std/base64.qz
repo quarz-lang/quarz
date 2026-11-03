@@ -1,0 +1,46 @@
+# Base64: the encodings of RFC 4648, standard and URL-safe.
+#
+# ```
+# require "base64"
+# Base64.encode("quarz")                # => "cXVhcno="
+# Base64.decode("cXVhcno=").decode      # => "quarz"
+# Base64.urlsafe_encode(b"\xfb\xff")    # => "-_8="
+# ```
+#
+# Each encoder takes `Bytes` or a `String` (its UTF-8 bytes) and gives a
+# `String` without line breaks; each decoder gives `Bytes` and raises
+# `ArgumentError` on a character outside its alphabet or a malformed end.
+module Base64
+  # `data` in the standard alphabet (`+` and `/`), padded with `=`.
+  #
+  # ```
+  # Base64.encode("ab")   # => "YWI="
+  # ```
+  native def self.encode(data: Bytes | String) -> String
+
+  # The bytes `text` encodes in the standard alphabet. The padding may be
+  # left out, but not cut short; whitespace is not allowed.
+  #
+  # ```
+  # Base64.decode("YWI=")    # => b"ab"
+  # Base64.decode("YWI")     # => b"ab"
+  # Base64.decode("Zg=")    # raises ArgumentError
+  # Base64.decode("Y W I")   # raises ArgumentError
+  # ```
+  native def self.decode(text: String) -> Bytes
+
+  # `data` in the URL-safe alphabet (`-` and `_`), padded with `=` unless
+  # `padding` is false.
+  #
+  # ```
+  # Base64.urlsafe_encode("ab", padding: false)   # => "YWI"
+  # ```
+  native def self.urlsafe_encode(data: Bytes | String, *, padding: Bool = true) -> String
+
+  # The bytes `text` encodes in the URL-safe alphabet, padded or not.
+  #
+  # ```
+  # Base64.urlsafe_decode("-_8")   # => b"\xfb\xff"
+  # ```
+  native def self.urlsafe_decode(text: String) -> Bytes
+end
