@@ -875,6 +875,7 @@ impl Runner {
                     }
                     _ => {}
                 },
+                true,
             );
             if found.is_some() {
                 return found;
@@ -917,6 +918,7 @@ impl Runner {
                     shake::Ref::Const(c) => consts.push(c),
                     _ => {}
                 },
+                false,
             );
             for m in methods {
                 let rm = &world.methods[m as usize];
@@ -952,20 +954,31 @@ impl Runner {
 /// at run time, and for a construction the `initialize` it runs: the
 /// class's own (or inherited) for `C.new`, and those of its subclasses
 /// too for `new` on a class method's receiver, which may be one. The
-/// other references go to `other`.
+/// other references go to `other`. With `by_runtime`, also the methods
+/// the runtime calls by name for the instructions and the natives among
+/// them (for `bad_reach` only).
 fn reached<'a>(
     world: &RtWorld,
     by_name: &HashMap<&str, Vec<MethodId>>,
     f: &'a quarz_ir::Function,
     methods: &mut Vec<MethodId>,
     other: &mut dyn FnMut(shake::Ref<'a>),
+    by_runtime: bool,
 ) {
+    let first = methods.len();
+    // The names the runtime calls for the instructions.
+    let mut runtime: Vec<&'static str> = Vec::new();
     shake::reach_refs(f, &mut |r| match r {
         shake::Ref::Method(m) => {
             methods.push(m);
             methods.extend(overrides_of(world, by_name, m));
         }
         shake::Ref::Exact(m) => methods.push(m),
+        shake::Ref::Runtime(n) => {
+            if by_runtime {
+                runtime.push(n);
+            }
+        }
         shake::Ref::Name(n) => {
             if let Some(ms) = by_name.get(n) {
                 methods.extend(ms.iter().copied().filter(|&o| !denied_owner(world, o)));
@@ -1018,7 +1031,138 @@ fn reached<'a>(
         }
         r => other(r),
     });
+    // (Only for the check that no method with errors runs, `bad_reach`:
+    // by name, without the values' types, these reach far more than runs,
+    // a prelude `inspect` iterating to any `each`. What reaches IO through
+    // them is stopped where the native is called, `Interp::invoke`.)
+    if !by_runtime {
+        return;
+    }
+    // Then what the runtime calls by name: for the instructions, and for
+    // the natives among the methods (found so too). A native found by a
+    // name is one the runtime calls for that name (`Object#to_s` for
+    // `to_s`), which calls what that name's calls do; another, what its
+    // own kind calls (`native_calls`). Each method once.
+    let mut seen: rustc_hash::FxHashSet<MethodId> = methods[first..].iter().copied().collect();
+    let mut work: Vec<(MethodId, Option<&'static str>)> =
+        methods[first..].iter().map(|&m| (m, None)).collect();
+    let mut add = |n: &'static str,
+                   work: &mut Vec<(MethodId, Option<&'static str>)>,
+                   methods: &mut Vec<MethodId>| {
+        if let Some(ms) = by_name.get(n) {
+            for &o in ms {
+                if !world.methods[o as usize].singleton && !denied_owner(world, o) && seen.insert(o)
+                {
+                    methods.push(o);
+                    work.push((o, Some(n)));
+                }
+            }
+        }
+    };
+    for n in runtime {
+        add(n, &mut work, methods);
+    }
+    while let Some((m, by)) = work.pop() {
+        if world.methods[m as usize].native_key.is_none() {
+            continue;
+        }
+        let names = match by {
+            Some(n) => calls_for(n),
+            None => native_calls(world, m),
+        };
+        for n in names {
+            add(n, &mut work, methods);
+        }
+    }
 }
+
+/// What a native the runtime calls by `name` calls by name in turn: the
+/// printing ones each other's (`Object#to_s` of an array is its
+/// elements' `inspect`), `==` and `hash` each other's (a key's), `<=>`
+/// itself; the other names, all.
+fn calls_for(name: &str) -> &'static [&'static str] {
+    match name {
+        "to_s" | "inspect" | "<<" => &["to_s", "inspect"],
+        "==" | "hash" => &["==", "hash"],
+        "<=>" => &["<=>"],
+        _ => NATIVE_NAMES,
+    }
+}
+
+/// The names of the methods native `m` may call by name on the values
+/// it is given (`Interp::to_s`, `inspect`, `values_equal`, `compare`,
+/// the keys' `==` and `hash`, enumerators): none for a method that is no
+/// native, or a native of a class whose methods take only built-in
+/// values (an `Int`'s, `Math`'s), the printing ones for `Kernel`'s
+/// printing functions, and every name a native calls by
+/// (`NATIVE_NAMES`) for the others, which are not told apart.
+fn native_calls(world: &RtWorld, m: MethodId) -> &'static [&'static str] {
+    let Some(key) = world.methods[m as usize].native_key.as_deref() else {
+        return &[];
+    };
+    let (class, name) = key
+        .split_once('#')
+        .or_else(|| key.split_once('.'))
+        .unwrap_or(("", key));
+    match (class, name) {
+        // (A string's `sub` and `gsub` with a block, and a builder's
+        // `<<`, make strings of what they are given.)
+        ("String", "sub" | "gsub" | "sub!" | "gsub!" | "%") | ("String::Builder", _) => {
+            &["to_s", "inspect"]
+        }
+        (
+            "Int" | "Float" | "Integer" | "Math" | "Duration" | "Time" | "Bytes" | "Regexp"
+            | "MatchData" | "Symbol" | "Bool" | "Nil" | "String" | "Type",
+            _,
+        ) => &[],
+        // (Compile-time natives: names and types, no values of a program's.)
+        (c, _) if c.starts_with("Meta::") => &[],
+        // An object's own: what it is for.
+        ("Object", "to_s" | "inspect") => &["to_s", "inspect"],
+        ("Object", "==" | "!=" | "hash") => &["==", "hash"],
+        ("Object", _) => &[],
+        // A collection's elements are printed, compared, hashed and
+        // ordered, not iterated by name (those taking a collection,
+        // `Set#merge`, iterate a built-in one).
+        (
+            "Array" | "Hash" | "Set" | "Range" | "Array::Builder" | "Hash::Builder"
+            | "Set::Builder",
+            _,
+        ) => &["to_s", "inspect", "==", "hash", "<=>"],
+        ("Kernel", "p" | "pp" | "puts" | "print" | "warn" | "format" | "sprintf") => {
+            &["to_s", "inspect"]
+        }
+        _ => NATIVE_NAMES,
+    }
+}
+
+/// The names natives call methods of the values they are given by: what
+/// `Interp::to_s`, `inspect`, `values_equal`, `compare` and the keys'
+/// `==` and `hash` (`crate::keys`) look up, and what `Interp::send` and
+/// `has_user_method` are given in the natives (an `Enumerable`'s `each`,
+/// `next` and `rewind`, `to_json`, and the methods enumerators made by
+/// natives call on their receiver). A native that calls another name
+/// must add it here (and to `shake::RUNTIME_NAMES`).
+const NATIVE_NAMES: &[&str] = &[
+    "to_s",
+    "inspect",
+    "==",
+    "hash",
+    "<=>",
+    "each",
+    "next",
+    "rewind",
+    "to_json",
+    "status",
+    "each_with_index_pairs",
+    "each_slice",
+    "each_cons",
+    "each_char",
+    "times",
+    "upto",
+    "downto",
+    "step",
+];
 
 /// The methods that override `m` in subclasses of its owner (same name,
 /// same side), which a call of `m` may run instead.
@@ -1712,6 +1856,7 @@ pub fn compile_time_only_calls_in(
                                 work.push(f)
                             }
                         },
+                        false,
                     );
                     for mm in methods {
                         let rm = &rt.methods[mm as usize];

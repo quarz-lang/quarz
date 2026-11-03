@@ -357,6 +357,68 @@ fn a_symbol_value_reaches_no_method() {
     }
 }
 
+/// The runtime's own calls by name count as reached for the check that
+/// no method with errors runs: an interpolation's `to_s` of a class whose
+/// `to_s` failed its check is refused before the statement runs (it ran
+/// before). A sort's `<=>`, an interpolation's `to_s` or a key's `==`
+/// reaching IO is stopped at the native, as before.
+#[test]
+fn a_method_with_errors_does_not_run_through_the_runtime() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class B\n  include Comparable[B]\n  def <=>(o: B) -> Int = STDIN.read_bytes(1).size\nend\nclass S\n  def to_s -> String = STDIN.read_bytes(1).to_s\nend\nclass K\n  def ==(o: Object) -> Bool = STDIN.read_bytes(1).size > 0\n  def hash -> Int = 1\nend\nclass Base\n  static def self.sorting -> Void\n    k = [B.new, B.new].sort.size\n    def_class_method(:a) { k }\n  end\n  static def self.interp -> Void\n    k = \"#{S.new}\".size\n    def_class_method(:b) { k }\n  end\n  static def self.hashing -> Void\n    k = {K.new => 1, K.new => 2}.size\n    def_class_method(:c) { k }\n  end\nend\n",
+    );
+    write(
+        &d.0,
+        "lib_bad.qz",
+        "class Bad\n  def to_s -> String\n    n: Int = \"oops\"\n    \"bad\"\n  end\nend\nclass BadBase\n  static def self.broken -> Void\n    k = \"#{Bad.new}\".size\n    def_class_method(:d) { k }\n  end\nend\n",
+    );
+    for (call, want) in [
+        (
+            "sorting",
+            "`sorting` raised RuntimeError: `Process.stdin` cannot run at compile time",
+        ),
+        (
+            "interp",
+            "`interp` raised RuntimeError: `Process.stdin` cannot run at compile time",
+        ),
+        (
+            "hashing",
+            "`hashing` raised RuntimeError: `Process.stdin` cannot run at compile time",
+        ),
+        (
+            "broken",
+            "`broken` did not run: it reaches `Bad#to_s`, which has errors",
+        ),
+    ] {
+        let (lib, base) = if call == "broken" {
+            ("lib_bad", "BadBase")
+        } else {
+            ("lib", "Base")
+        };
+        let app = write(
+            &d.0,
+            "app.qz",
+            &format!("require_relative \"{lib}\"\nclass C < {base}\n  {call}\nend\n"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        assert!(!ok, "{call}");
+        assert!(err.contains(want), "{call}: {err}");
+    }
+    // What reaches nothing of the kind still runs.
+    write(&d.0, "lib2.qz", "class Fine\n  def to_s -> String = \"fine\"\nend\nclass Base\n  static def self.fine -> Void\n    k = \"#{Fine.new} #{[3, 1].sort} #{{1 => 2}}\"\n    def_class_method(:e) { k }\n  end\nend\n");
+    let app = write(
+        &d.0,
+        "fine.qz",
+        "require_relative \"lib2\"\nclass C < Base\n  fine\nend\np C.e\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "\"fine [1, 3] {1 => 2}\"\n");
+}
+
 #[test]
 fn compile_time_only_calls_through_operators_and_symbol_procs() {
     let d = dir();
