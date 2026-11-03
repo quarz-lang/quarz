@@ -858,26 +858,24 @@ impl Runner {
             seen[fid as usize] = true;
             let mut methods: Vec<MethodId> = Vec::new();
             let mut found: Option<String> = None;
-            shake::refs(&self.lowerer.done[fid as usize], &mut |r| match r {
-                shake::Ref::Method(m) => {
-                    methods.push(m);
-                    methods.extend(overrides_of(world, &by_name, m));
-                }
-                shake::Ref::Name(n) => {
-                    if let Some(ms) = by_name.get(n) {
-                        methods.extend(ms.iter().copied().filter(|&o| !denied_owner(world, o)));
+            reached(
+                world,
+                &by_name,
+                &self.lowerer.done[fid as usize],
+                &mut methods,
+                &mut |r| match r {
+                    shake::Ref::Func(f) => work.push(f),
+                    shake::Ref::Const(c) => {
+                        if self.bad_consts.contains(&c) {
+                            found = Some(world.consts[c as usize].name.clone());
+                        } else if let Some(init) = world.consts.get(c as usize).and_then(|c| c.init)
+                        {
+                            work.push(init);
+                        }
                     }
-                }
-                shake::Ref::Func(f) => work.push(f),
-                shake::Ref::Const(c) => {
-                    if self.bad_consts.contains(&c) {
-                        found = Some(world.consts[c as usize].name.clone());
-                    } else if let Some(init) = world.consts.get(c as usize).and_then(|c| c.init) {
-                        work.push(init);
-                    }
-                }
-                _ => {}
-            });
+                    _ => {}
+                },
+            );
             if found.is_some() {
                 return found;
             }
@@ -909,22 +907,17 @@ impl Runner {
             let mut methods: Vec<MethodId> = Vec::new();
             let mut funcs: Vec<FuncId> = Vec::new();
             let mut consts: Vec<u32> = Vec::new();
-            shake::refs(&self.lowerer.done[fid as usize], &mut |r| match r {
-                // A method and its overrides: a subclass's runs in its
-                // place.
-                shake::Ref::Method(m) => {
-                    methods.push(m);
-                    methods.extend(overrides_of(world, &by_name, m));
-                }
-                shake::Ref::Name(n) => {
-                    if let Some(ms) = by_name.get(n) {
-                        methods.extend(ms.iter().copied().filter(|&o| !denied_owner(world, o)));
-                    }
-                }
-                shake::Ref::Func(f) => funcs.push(f),
-                shake::Ref::Const(c) => consts.push(c),
-                _ => {}
-            });
+            reached(
+                world,
+                &by_name,
+                &self.lowerer.done[fid as usize],
+                &mut methods,
+                &mut |r| match r {
+                    shake::Ref::Func(f) => funcs.push(f),
+                    shake::Ref::Const(c) => consts.push(c),
+                    _ => {}
+                },
+            );
             for m in methods {
                 let rm = &world.methods[m as usize];
                 let mut p = path.clone();
@@ -951,6 +944,80 @@ impl Runner {
         }
         None
     }
+}
+
+/// The methods a run of `f` may call, into `methods`: a method called as
+/// resolved and its overrides (a subclass's runs in its place), one
+/// called exactly (`super`, a function) alone, those of a name looked up
+/// at run time, and for a construction the `initialize` it runs: the
+/// class's own (or inherited) for `C.new`, and those of its subclasses
+/// too for `new` on a class method's receiver, which may be one. The
+/// other references go to `other`.
+fn reached<'a>(
+    world: &RtWorld,
+    by_name: &HashMap<&str, Vec<MethodId>>,
+    f: &'a quarz_ir::Function,
+    methods: &mut Vec<MethodId>,
+    other: &mut dyn FnMut(shake::Ref<'a>),
+) {
+    shake::reach_refs(f, &mut |r| match r {
+        shake::Ref::Method(m) => {
+            methods.push(m);
+            methods.extend(overrides_of(world, by_name, m));
+        }
+        shake::Ref::Exact(m) => methods.push(m),
+        shake::Ref::Name(n) => {
+            if let Some(ms) = by_name.get(n) {
+                methods.extend(ms.iter().copied().filter(|&o| !denied_owner(world, o)));
+            }
+        }
+        shake::Ref::Construct { class, init, recv } => {
+            match init {
+                Some(m) => methods.push(m),
+                // (None: the class has no `initialize`, and none runs;
+                // counted all the same, any ancestor's overload.)
+                None => {
+                    for &a in &world.classes[class as usize].ancestors {
+                        if let Some(ms) = world.classes[a as usize].methods.get("initialize") {
+                            methods.extend(ms.iter().copied());
+                            break;
+                        }
+                    }
+                }
+            }
+            if recv {
+                if let Some(ms) = by_name.get("initialize") {
+                    methods.extend(ms.iter().copied().filter(|&o| {
+                        let om = &world.methods[o as usize];
+                        !om.singleton
+                            && om.owner != class
+                            && world.class_is_a(om.owner, class)
+                            && !denied_owner(world, o)
+                    }));
+                }
+            }
+            // The classes it may build: their fields' defaults run, and
+            // their `deinitialize` when the object is released.
+            for (c, rc) in world.classes.iter().enumerate() {
+                let c = c as ClassId;
+                if c != class && !(recv && world.class_is_a(c, class)) {
+                    continue;
+                }
+                for f in &rc.fields {
+                    if let Some(d) = f.default {
+                        other(shake::Ref::Func(d));
+                    }
+                }
+                for &a in &rc.ancestors {
+                    if let Some(ms) = world.classes[a as usize].methods.get("deinitialize") {
+                        methods.extend(ms.iter().copied());
+                    }
+                }
+            }
+            other(shake::Ref::Class(class));
+        }
+        r => other(r),
+    });
 }
 
 /// The methods that override `m` in subclasses of its owner (same name,
@@ -1635,20 +1702,17 @@ pub fn compile_time_only_calls_in(
                     }
                     seen[fid as usize] = true;
                     let mut methods: Vec<MethodId> = Vec::new();
-                    shake::refs(&functions[fid as usize], &mut |r| match r {
-                        shake::Ref::Method(mm) => {
-                            methods.push(mm);
-                            methods.extend(overrides_of(&rt, &by_name, mm));
-                        }
-                        shake::Ref::Name(n) => {
-                            if let Some(ms) = by_name.get(n) {
-                                methods
-                                    .extend(ms.iter().copied().filter(|&o| !denied_owner(&rt, o)));
+                    reached(
+                        &rt,
+                        &by_name,
+                        &functions[fid as usize],
+                        &mut methods,
+                        &mut |r| {
+                            if let shake::Ref::Func(f) = r {
+                                work.push(f)
                             }
-                        }
-                        shake::Ref::Func(f) => work.push(f),
-                        _ => {}
-                    });
+                        },
+                    );
                     for mm in methods {
                         let rm = &rt.methods[mm as usize];
                         if rm.native_key.as_deref().is_some_and(compile_time_only) {

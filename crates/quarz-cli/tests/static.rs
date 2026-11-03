@@ -253,6 +253,75 @@ fn what_a_statement_reaches_is_checked_and_lowered_on_demand() {
     assert_eq!(out, "\"P\"\n");
 }
 
+/// What a construction reaches at compile time: `C.new` runs `C`'s own
+/// `initialize` (and those it calls with `super`), not every class's,
+/// while `new` on a class method's receiver may build a subclass, whose
+/// `initialize` counts (tmp/repro/static-reach-initialize-overapprox.qz).
+#[test]
+fn a_construction_reaches_its_own_initialize() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Reader\n  @first: Bytes\n  def initialize(io: IO)\n    @first = io.read_bytes(1)\n  end\nend\nclass Box\n  @n: Int\n  def initialize(@n: Int); end\n  def n -> Int = @n\nend\nclass Child < Box\n  def initialize(n: Int)\n    super(n + 1)\n  end\nend\nclass Base\n  static def self.make(n: Int) -> Void\n    k = Box.new(n).n + Child.new(n).n\n    raise ArgumentError, \"negative\" if k < 0\n    def_class_method(:k) { k }\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass C < Base\n  make 3\nend\np C.k\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "7\n");
+    // `new` in a class method builds the class it is called on, which may
+    // be a subclass reaching the outside world.
+    write(
+        &d.0,
+        "lib3.qz",
+        "class Base\n  def initialize; end\n  def self.build -> Base = new\n  static def self.make -> Void\n    build\n    def_class_method(:k) { 1 }\n  end\nend\nclass Reader < Base\n  @first: Bytes = b\"\"\n  def initialize\n    @first = STDIN.read_bytes(1)\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "build.qz",
+        "require_relative \"lib3\"\nclass C < Base\n  make\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("build.qz:3:3: error: `make` reaches `IO#read_bytes` (via Base.build, Reader#initialize), which cannot run at compile time"),
+        "{err}"
+    );
+    // What building an object also runs: its fields' defaults, and its
+    // `deinitialize` when it is released.
+    for (body, want) in [
+        (
+            "@r: Bytes = STDIN.read_bytes(1)",
+            "`make` reaches `IO#read_bytes`, which",
+        ),
+        (
+            "def deinitialize\n    STDOUT.puts \"bye\"\n  end",
+            "`make` reaches `IO#puts` (via Holder#deinitialize), which",
+        ),
+    ] {
+        write(
+            &d.0,
+            "lib4.qz",
+            &format!("class Holder\n  {body}\n  def n -> Int = 1\nend\nclass Base\n  static def self.make -> Void\n    k = Holder.new.n\n    def_class_method(:k) {{ k }}\n  end\nend\n"),
+        );
+        let app = write(
+            &d.0,
+            "held.qz",
+            "require_relative \"lib4\"\nclass C < Base\n  make\nend\n",
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        assert!(!ok, "{body}");
+        assert!(
+            err.contains(&format!("held.qz:3:3: error: {want}")),
+            "{body}: {err}"
+        );
+    }
+}
+
 #[test]
 fn compile_time_only_calls_through_operators_and_symbol_procs() {
     let d = dir();

@@ -228,6 +228,15 @@ impl Shake<'_> {
             Ref::Class(c) => self.class(c),
             Ref::Regexp => self.class(self.module.world.builtin.regexp),
             Ref::Bytes => self.class(self.module.world.builtin.bytes),
+            // (Only `reach_refs` gives these.)
+            Ref::Exact(m) => self.method(m),
+            Ref::Construct { class, init, .. } => {
+                self.class(class);
+                self.name("initialize");
+                if let Some(m) = init {
+                    self.method(m);
+                }
+            }
         });
     }
 }
@@ -248,10 +257,35 @@ pub enum Ref<'a> {
     Regexp,
     /// A `Bytes` constant.
     Bytes,
+    /// A method called as it is, never an override (`super`, a
+    /// function): from `reach_refs` only.
+    Exact(MethodId),
+    /// `Class.new(...)` (`recv` false: an instance of `class` itself) or
+    /// `new` on the receiver of a class method (`recv`: of `class` or a
+    /// subclass), built with `init` when it is `class`'s (its own or an
+    /// inherited `initialize`): from
+    /// `reach_refs` only.
+    Construct {
+        class: ClassId,
+        init: Option<MethodId>,
+        recv: bool,
+    },
 }
 
 /// Visit what `f` refers to.
 pub fn refs<'a>(f: &'a Function, visit: &mut dyn FnMut(Ref<'a>)) {
+    refs_in(f, false, visit)
+}
+
+/// What `f` refers to, for what a run of it may reach (the compile-time
+/// checks of `static` code): as `refs`, but a `super` call and a
+/// function's are `Ref::Exact`, and a construction is `Ref::Construct`
+/// (not every `initialize` by name).
+pub fn reach_refs<'a>(f: &'a Function, visit: &mut dyn FnMut(Ref<'a>)) {
+    refs_in(f, true, visit)
+}
+
+fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
     for c in &f.consts {
         match c {
             Constant::Symbol(s) => visit(Ref::Name(s)),
@@ -267,6 +301,17 @@ pub fn refs<'a>(f: &'a Function, visit: &mut dyn FnMut(Ref<'a>)) {
         for inst in &blk.insts {
             match inst {
                 Inst::Call { kind, .. } => match kind {
+                    CallKind::Super(m) | CallKind::Function(m) if exact => visit(Ref::Exact(*m)),
+                    CallKind::Construct { init, class } if exact => visit(Ref::Construct {
+                        class: *class,
+                        init: *init,
+                        recv: false,
+                    }),
+                    CallKind::ConstructRecv { init, class } if exact => visit(Ref::Construct {
+                        class: *class,
+                        init: *init,
+                        recv: true,
+                    }),
                     CallKind::Method(m) | CallKind::Super(m) | CallKind::Function(m) => {
                         visit(Ref::Method(*m))
                     }
