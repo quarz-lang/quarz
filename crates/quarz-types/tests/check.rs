@@ -2495,10 +2495,8 @@ fn equality_takes_an_object() {
         "class P\n  def ==(o: Object, strict: Bool = false) -> Bool = true\nend",
         "`==` takes one parameter of type `Object`",
     );
-    err(
-        "extension String\n  def ==(o: String) -> Bool = true\nend",
-        "`==` takes one parameter of type `Object`",
-    );
+    // (An extension's `==` is an ordinary method, docs/01 §3.)
+    ok("extension String\n  def ==(o: String) -> Bool = true\nend");
     err(
         "class P\n  def same(o: P) -> Bool = true\n  alias == same\nend",
         "`==` takes one parameter of type `Object`",
@@ -4537,5 +4535,37 @@ fn a_case_arm_sees_the_subject_without_the_earlier_arms_matches() {
     err(
         "class Base\n  @a: Int\n  def initialize(@a: Int); end\nend\nclass Sub < Base\n  @b: Int\n  def initialize(a: Int, @b: Int)\n    super(a)\n  end\nend\ndef f(x: Base | Int) -> Int\n  case x\n  in Base(a) then a\n  in n then n * 3\n  end\nend\np f(Sub.new(1, 2))",
         "undefined method `*` for Base",
+    );
+}
+
+#[test]
+fn an_extensions_equality_is_an_ordinary_method() {
+    // A class's own `==`/`!=` keep the rule: one `Object` parameter,
+    // a `Bool` result.
+    err(
+        "class Cond\nend\nclass A\n  def ==(other: Object) -> Cond = Cond.new\nend",
+        "`==` returns Cond but `Object#==`, which it overrides, returns Bool",
+    );
+    err(
+        "class A\n  def ==(other: String) -> Bool = true\nend",
+        "`==` takes one parameter of type `Object`",
+    );
+    // In an extension: any parameters and result, overloads.
+    ok("class Cond\nend\nclass Col\nend\nmodule M\n  extension Col\n    def ==(other: String) -> Cond = Cond.new\n    def ==(other: Int) -> Cond = Cond.new\n    def !=(other: String) -> Cond = Cond.new\n  end\nend\nusing M\nc = Col.new\nx: Cond = c == \"a\"\ny: Cond = c == 1\nz: Cond = c != \"b\"");
+    // `!=` is `!(a == b)`: not of a condition.
+    err(
+        "class Cond\nend\nclass Col\nend\nmodule M\n  extension Col\n    def ==(other: String) -> Cond = Cond.new\n  end\nend\nusing M\nc = Col.new\np c != \"x\"",
+        "`!=` on Col is `!(a == b)`, but the extension's `==` returns Cond: define `!=` in the extension",
+    );
+    ok("class Col\nend\nmodule M\n  extension Col\n    def ==(other: String) -> Bool = true\n  end\nend\nusing M\nc = Col.new\nb: Bool = c != \"x\"");
+    // No narrowing by an extension's `==`: the branch keeps the type.
+    err(
+        "class Cond\nend\nmodule M\n  extension Nil\n    def ==(other: Nil) -> Cond = Cond.new\n  end\nend\nusing M\ndef f(x: Int?) -> Int\n  if x == nil\n    0\n  else\n    x + 1\n  end\nend",
+        "undefined method `+` for Nil",
+    );
+    // Implementing an abstract `==` is still checked as an override.
+    err(
+        "class Cond\nend\nabstract class Base\n  abstract def ==(other: Object) -> Bool\n  def hash -> Int = 0\nend\nextension Shape\n  def ==(other: String) -> Cond = Cond.new\nend\nclass Shape < Base\nend",
+        "`==` takes String for `other` but `Base#==`, which it overrides, is given Object",
     );
 }

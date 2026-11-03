@@ -1,0 +1,122 @@
+# An extension's `==` and `!=` are ordinary methods (docs/01 §3, §7): a
+# query DSL gives `Column[T]` overloads that build a condition, chosen
+# statically where the extension is in scope; `Array#==`, `include?`,
+# `Hash` keys and `case`/`when` keep the class's own (identity here).
+class Cond
+  @sql: String
+
+  def initialize(@sql: String); end
+
+  def to_s -> String = @sql
+
+  def &&(&rhs: () -> Cond) -> Cond = Cond.new("(#{@sql} AND #{rhs.call})")
+
+  def ||(&rhs: () -> Cond) -> Cond = Cond.new("(#{@sql} OR #{rhs.call})")
+
+  def ! -> Cond = Cond.new("NOT #{@sql}")
+end
+
+class Column[T]
+  @name: String
+
+  def initialize(@name: String); end
+
+  def name -> String = @name
+end
+
+module SqlDSL
+  extension Column[T]
+    def ==(other: T) -> Cond = Cond.new("#{name} = #{other.inspect}")
+    def ==(other: Column[T]) -> Cond = Cond.new("#{name} = #{other.name}")
+    def !=(other: T) -> Cond = Cond.new("#{name} <> #{other.inspect}")
+    def !=(other: Column[T]) -> Cond = Cond.new("#{name} <> #{other.name}")
+  end
+end
+
+class Users
+  def name -> Column[String] = Column[String].new("name")
+
+  def age -> Column[Int] = Column[Int].new("age")
+
+  def nick -> Column[String] = Column[String].new("nick")
+end
+
+def filter(&: (Users) -> Cond using SqlDSL) -> String
+  "WHERE #{yield(Users.new)}"
+end
+
+puts filter { |u| u.name == "x" && u.age != 0 }
+puts filter { |u| u.name == u.nick || !(u.age == 3) }
+puts filter { |u| u.name != u.nick }
+
+col = Column[Int].new("id")
+col2 = Column[Int].new("id")
+# Outside `using`: the class's own `==`, identity.
+p col == col2
+p col == col
+p [col] == [col]
+p [col].include?(col2)
+h = {col => "first"}
+p h[col]
+p h.key?(col2)
+case col
+when col then p "same column"
+end
+
+def inside(a: Column[Int], b: Column[Int]) -> Array[Bool]
+  using SqlDSL
+  # The runtime's callers keep the class's own inside `using` too.
+  [[a] == [b], [a].include?(a), {a => 1}.key?(b)]
+end
+
+p inside(col, col2)
+
+def cond(a: Column[Int]) -> String
+  using SqlDSL
+  (a == 7).to_s + " / " + (a != a).to_s
+end
+
+puts cond(col)
+
+# `!=` without the extension's own, its `==` returning a `Bool`: `!(a == b)`,
+# per type in a block checked once for each.
+class Apple
+end
+
+class Pear
+end
+
+module Fruit
+  extension Apple
+    def ==(other: Int) -> Bool = other == 1
+  end
+
+  extension Pear
+    def ==(other: Int) -> Bool = other == 2
+  end
+end
+
+def basket(i: Int) -> Array[Apple] | Array[Pear]
+  i > 0 ? [Apple.new] : [Pear.new]
+end
+
+def odd(i: Int) -> Array[Bool]
+  using Fruit
+  basket(i).map { |f| f != 1 }
+end
+
+p odd(1)
+p odd(0)
+
+# Checked once per union type: each check `!(a == b)`, by the members.
+def mixed(i: Int) -> Array[Apple | Pear] | Array[Apple | String]
+  i == 0 ? [Apple.new, Pear.new] : [Apple.new, "s"]
+end
+
+def odd_mixed(i: Int) -> Array[Bool]
+  using Fruit
+  mixed(i).map { |f| f != 2 }
+end
+
+p odd_mixed(0)
+p odd_mixed(1)

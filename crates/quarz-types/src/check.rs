@@ -136,6 +136,11 @@ pub struct Output {
     /// A compound assignment's reader and operator (`f.w += 1`: `w` and
     /// `+`); its writer is the node's `calls` entry.
     pub op_getters: HashMap<NodeId, MethodId>,
+    /// `a != b` where an extension's `==` (with a `Bool` result) is the
+    /// method `a == b` finds and the extension defines no `!=` that fits:
+    /// `!(a == b)`, the node's `calls` entry being that `==` (true), or
+    /// the `!=` found (false, recorded to tell the checks of a block).
+    pub ne_negated: HashMap<NodeId, bool>,
     pub op_operators: HashMap<NodeId, MethodId>,
     /// A compound assignment's reader on a union receiver (`o.w += 1` on
     /// `Cat | Dog`): its table and conflict flag, as `union_calls` and
@@ -311,6 +316,10 @@ pub(crate) type Facts = Vec<(VarKey, Type)>;
 /// with (`[]=(index..., value)`), counting down from this one, outside
 /// every file's range and the zsuper locals'.
 const OP_VALUE_ID: NodeId = u32::MAX - 0x10000;
+
+/// The node of a call checked only to see which method it resolves to
+/// (`Checker::probe_method`), outside every file's range.
+const PROBE_ID: NodeId = u32::MAX - 0x20000;
 
 /// `Checker::union_symbol`'s answer: the method the procedure calls (the
 /// common one, or the first member's where a table chooses), each member
@@ -596,6 +605,8 @@ enum TableUndo {
     StaticCall((u32, Span, MethodId)),
     /// A node's type before a check in a block recorded another.
     NodeType(NodeId, Option<Type>),
+    /// An `!=`'s `Output::ne_negated` entry before a check changed it.
+    NeNegated(NodeId, Option<bool>),
     /// A compound assignment's reader record (`Output::op_getter_tables`)
     /// before a check changed it.
     OpGetterTable(NodeId, Option<(Vec<(Type, MethodId)>, bool)>),
@@ -2046,6 +2057,12 @@ impl Checker {
                     match t {
                         Some(t) => self.out.node_types.insert(id, t),
                         None => self.out.node_types.remove(&id),
+                    };
+                }
+                TableUndo::NeNegated(id, t) => {
+                    match t {
+                        Some(t) => self.out.ne_negated.insert(id, t),
+                        None => self.out.ne_negated.remove(&id),
                     };
                 }
                 TableUndo::OpGetterTable(id, t) => {
@@ -8333,7 +8350,34 @@ impl Checker {
         // whose members found different methods: this check's method is
         // still one the table must choose for its type.)
         let dynamic_before = self.out.dynamic_calls.contains(&expr.id);
+        // (What earlier checks of an `!=` recorded on its node, which a
+        // check of it as `!(a == b)` starts from.)
+        let ne_before = (call.name == "!=").then(|| {
+            (
+                self.out.union_calls.get(&expr.id).cloned(),
+                self.out.union_conflicts.contains(&expr.id),
+                self.out.dynamic_calls.contains(&expr.id),
+            )
+        });
+        // (Earlier checks took it as `!(a == b)`: their records are the
+        // `==`'s, which this check's `!=` must not be merged into; they
+        // are restored for its own check as `==`.)
+        if ne_before.is_some() && self.out.ne_negated.get(&expr.id) == Some(&true) {
+            self.restore_union_record(expr.id, (None, false));
+            self.out.dynamic_calls.remove(&expr.id);
+        }
         let result = self.check_call_on(expr, call, &recv_ty, implicit_self, expected);
+        let result = match (
+            call.name.as_str(),
+            call.args.as_slice(),
+            &call.recv,
+            ne_before,
+        ) {
+            ("!=", [Arg::Positional(arg)], Some(_), Some(before)) if call.block.is_none() => {
+                self.ne_by_extension_eq(expr, &recv_ty, arg, result, before)
+            }
+            _ => result,
+        };
         // In a block, checked again for each type of what it is given: a
         // call may resolve differently each time (`union_calls`).
         let rt = self.resolve(&recv_ty);
@@ -8352,6 +8396,184 @@ impl Checker {
         } else {
             result
         }
+    }
+
+    /// `a != b` where, for a type of `a`, `a == b` takes an extension's
+    /// `==` and `a != b` no extension's `!=` (docs/01 §3): the call is
+    /// `!(a == b)` (`Output::ne_negated`), checked as that `==` (on a
+    /// union, per member: the others' `Object#!=` is `!(a == b)` too) and
+    /// refused where the result is not a `Bool`, or where a member's own
+    /// `!=` would be bypassed.
+    fn ne_by_extension_eq(
+        &mut self,
+        expr: &Expr,
+        recv_ty: &Type,
+        arg: &Expr,
+        result: Type,
+        records: (Option<Vec<(Type, MethodId)>>, bool, bool),
+    ) -> Type {
+        // (Only where an extension in scope defines an `==` of its own.)
+        let any = self.world.active_extension_ids().iter().any(|e| {
+            self.world.extensions[*e as usize]
+                .methods
+                .get("==")
+                .is_some_and(|ms| ms.iter().any(|m| !self.world.method(*m).is_native))
+        });
+        if !any && !self.out.ne_negated.contains_key(&expr.id) {
+            return result;
+        }
+        let Some(at) = self.out.node_types.get(&arg.id).cloned() else {
+            return result;
+        };
+        let at = self.resolve(&at);
+        let recv_ty = self.resolve(recv_ty);
+        let members = recv_ty.members();
+        let mut negate = false;
+        let mut own_ne = None;
+        for m in &members {
+            let eq = self.probe_method(m, "==", &at);
+            let ne = self.probe_method(m, "!=", &at);
+            let ext =
+                |k: Option<MethodId>, w: &World| k.is_some_and(|k| w.method(k).extension.is_some());
+            if ext(eq, &self.world) && !ext(ne, &self.world) {
+                negate = true;
+            }
+            // A class's own `!=` (not `Object#!=`, which is `!(a == b)`).
+            if let Some(k) = ne {
+                let ki = self.world.method(k);
+                if ki.extension.is_none() && !ki.is_native {
+                    own_ne = Some(m.clone());
+                }
+            }
+        }
+        let before = self.out.ne_negated.get(&expr.id).copied();
+        if before.is_some_and(|b| b != negate) {
+            self.error(
+                "cannot tell at run time whether `!=` is an extension's `!(a == b)` or the class's own (give the value one type first)",
+                expr.span,
+            );
+        }
+        self.table_journal
+            .push(TableUndo::NeNegated(expr.id, before));
+        self.out.ne_negated.insert(expr.id, negate);
+        if !negate {
+            return result;
+        }
+        if let (Some(m), true) = (own_ne, members.len() > 1) {
+            self.error(
+                format!(
+                    "`!=` on {} is `!(a == b)` for a type whose `==` is an extension's, but {} has a `!=` of its own: define `!=` in the extension",
+                    self.name(&recv_ty),
+                    self.name(&m)
+                ),
+                expr.span,
+            );
+            return result;
+        }
+        // Checked again as `a == b`, the operands as typed.
+        let call = Call {
+            recv: Some(Expr {
+                id: OP_VALUE_ID,
+                span: expr.span,
+                kind: ExprKind::Nil,
+            }),
+            name: "==".to_string(),
+            args: vec![Arg::Positional(Expr {
+                id: OP_VALUE_ID - 1,
+                span: arg.span,
+                kind: ExprKind::Nil,
+            })],
+            block: None,
+            safe_nav: false,
+            function: false,
+            has_parens: true,
+            type_args: vec![],
+        };
+        let saved = std::mem::replace(&mut self.op_values, vec![recv_ty.clone(), at]);
+        // (The node's records as earlier checks left them: this check's
+        // `!=` is replaced, theirs kept, as a block checked once per type
+        // needs.)
+        let (table, conflict, dynamic) = records;
+        self.restore_union_record(expr.id, (table, conflict));
+        if dynamic {
+            self.out.dynamic_calls.insert(expr.id);
+        } else {
+            self.out.dynamic_calls.remove(&expr.id);
+        }
+        self.out.calls.remove(&expr.id);
+        let eq_ty = self.check_call_on(expr, &call, &recv_ty, false, None);
+        self.op_values = saved;
+        // (Never called by name: that would be `!=`, then negated.)
+        debug_assert!(
+            !self.out.dynamic_calls.contains(&expr.id)
+                || self.out.union_calls.contains_key(&expr.id)
+        );
+        let eq_ty = self.resolve(&eq_ty);
+        let bool_ = self.world.bool_();
+        if !self.world.is_subtype(&eq_ty, &bool_) {
+            self.error(
+                format!(
+                    "`!=` on {} is `!(a == b)`, but the extension's `==` returns {}: define `!=` in the extension",
+                    self.name(&recv_ty),
+                    self.name(&eq_ty)
+                ),
+                expr.span,
+            );
+            return result;
+        }
+        bool_
+    }
+
+    /// The method `recv.name(arg)` resolves to on a value of type `recv`
+    /// with an argument of type `arg`, as the call would choose it,
+    /// leaving no trace of the trial.
+    fn probe_method(&mut self, recv: &Type, name: &str, arg: &Type) -> Option<MethodId> {
+        let id = PROBE_ID;
+        let call = Call {
+            recv: Some(Expr {
+                id: OP_VALUE_ID,
+                span: Span::new(0, 0),
+                kind: ExprKind::Nil,
+            }),
+            name: name.to_string(),
+            args: vec![Arg::Positional(Expr {
+                id: OP_VALUE_ID - 1,
+                span: Span::new(0, 0),
+                kind: ExprKind::Nil,
+            })],
+            block: None,
+            safe_nav: false,
+            function: false,
+            has_parens: true,
+            type_args: vec![],
+        };
+        let probe = Expr {
+            id,
+            span: Span::new(0, 0),
+            kind: ExprKind::Nil,
+        };
+        let saved = std::mem::replace(&mut self.op_values, vec![recv.clone(), arg.clone()]);
+        let mark = self.table_mark();
+        let ndiag = self.diagnostics.len();
+        let infer = self.infer.save();
+        let touched = self.touched.len();
+        self.check_call_on(&probe, &call, recv, false, None);
+        let found = match self.out.calls.remove(&id) {
+            Some(CallTarget::Method { method }) => Some(method),
+            _ => None,
+        };
+        self.discard_tables(mark);
+        self.truncate_diagnostics(ndiag);
+        self.infer.restore(infer);
+        self.touched.truncate(touched);
+        self.op_values = saved;
+        self.out.union_calls.remove(&id);
+        self.out.union_conflicts.remove(&id);
+        self.out.dynamic_calls.remove(&id);
+        self.out.node_types.remove(&id);
+        self.out.type_args.remove(&id);
+        self.out.call_type_args.remove(&id);
+        found
     }
 
     #[allow(clippy::too_many_arguments)]

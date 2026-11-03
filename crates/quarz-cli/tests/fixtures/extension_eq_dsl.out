@@ -1,0 +1,16 @@
+WHERE (name = "x" AND age <> 0)
+WHERE (name = nick OR NOT age = 3)
+WHERE name <> nick
+false
+true
+true
+false
+"first"
+false
+"same column"
+[false, true, false]
+id = 7 / id <> id
+[false]
+[true]
+[true, false]
+[true, true]

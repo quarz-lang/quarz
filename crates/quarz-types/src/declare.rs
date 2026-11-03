@@ -4701,7 +4701,10 @@ impl<'ast> Declarer<'ast> {
         ) {
             self.error(message, def.span);
         }
-        if !def.singleton {
+        // (An extension's `==`/`!=` are ordinary methods, chosen
+        // statically where it is in scope and never by the runtime's
+        // callers by name, which use the class's own: docs/01 §3, §7.)
+        if !def.singleton && extension.is_none() {
             self.check_equality_params(&def.name, &params, block.is_some(), def.span);
         }
         if def.name == "deinitialize" && !def.singleton {
