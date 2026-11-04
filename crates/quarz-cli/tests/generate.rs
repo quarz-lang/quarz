@@ -1829,3 +1829,60 @@ fn a_generated_method_builds_its_class_through_type() {
         "{err}"
     );
 }
+
+/// A generated method overriding a method that says `Self` keeps `Self`
+/// (docs/01 §3): rotor's `Model#restore -> Self` overridden by a generated
+/// `restore` whose block gives the class (`-> C`) is refused at the
+/// statement; one declared `-> Self` is accepted.
+#[test]
+fn a_generated_override_keeps_self() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r##"class Model
+  @n: Int
+  def initialize(@n: Int); end
+  def n -> Int = @n
+  def self.rebuild(n: Int) -> Self = new(n)
+  def restore -> Self = raise "abstract"
+  def twice -> Self = restore
+  static def self.gen -> Void
+    cls = type
+    def_method(:restore) do -> Self
+      cls.rebuild(n * 2)
+    end
+  end
+  static def self.gen_self -> Void
+    def_method(:restore) do -> Self
+      self
+    end
+  end
+end
+"##,
+    );
+    let bad = write(
+        &d.0,
+        "bad.qz",
+        "require_relative \"lib\"\nclass C < Model\n  gen\nend\nclass D < C\n  @tag: String = \"d\"\n  def tag -> String = @tag\nend\ny: D = D.new(1).twice\np y.tag\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", bad.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("`restore` returns C but `Model#restore`, which it overrides, returns Self: write `Self`"),
+        "{err}"
+    );
+    // A generated signature names the class where its block says `Self`
+    // (docs/14 §5), so even a block giving `self` is refused there.
+    let other = write(
+        &d.0,
+        "other.qz",
+        "require_relative \"lib\"\nclass C < Model\n  gen_self\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", other.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("`restore` returns C but `Model#restore`"),
+        "{err}"
+    );
+}

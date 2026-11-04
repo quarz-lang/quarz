@@ -2980,6 +2980,15 @@ impl World {
         }
     }
 
+    /// Whether no class can inherit from `id` (a `data` type, an enum
+    /// variant, a built-in value class): there `Self` is the class itself
+    /// (docs/01 §3). (Not an enum: its variants are its subclasses.)
+    pub fn has_no_subclass(&self, id: ClassId) -> bool {
+        matches!(self.class(id).kind, ClassKind::Data | ClassKind::Variant)
+            || self.is_value_class(id)
+            || id == self.builtin.integer
+    }
+
     /// The built-in classes whose values are the runtime's own (no user
     /// fields, no `deinitialize`): what they hold is their type
     /// arguments.

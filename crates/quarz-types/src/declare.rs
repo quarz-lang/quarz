@@ -91,6 +91,9 @@ pub struct Declarer<'ast> {
     /// How the class brings the module whose method `check_override_pair`
     /// checks (`within`): "includes", or "extends".
     override_via: &'static str,
+    /// While `check_override_pair` compares with `Self` opaque: the
+    /// overriding class (for the hint to write `Self`).
+    self_opaque_class: Option<ClassId>,
     /// The user's compilation units (files), in load order.
     pub units: Vec<UnitDecl<'ast>>,
     class_usings: HashMap<ClassId, Vec<(&'ast ConstPath, u32)>>,
@@ -197,6 +200,7 @@ impl<'ast> Declarer<'ast> {
             override_pairs: HashSet::default(),
             override_span: None,
             override_via: "includes",
+            self_opaque_class: None,
             units: Vec::new(),
             class_usings: HashMap::default(),
             ext_includes: Vec::new(),
@@ -2256,6 +2260,48 @@ impl<'ast> Declarer<'ast> {
         if om.owner == self.world.builtin.kernel {
             return true;
         }
+        // Where the overridden signature says `Self`, the override says
+        // `Self` too (docs/01 §3): compared opaquely, `Self` bounded by the
+        // class, unless no class can inherit from it (`Self` is then the
+        // class itself). Its own name there would reach a subclass typed
+        // as that subclass.
+        // (Only where both sides' `Self` is the same type: a class method
+        // overriding an `Object`/`Type` method has the class value there,
+        // `Type[C]`, and its own `Self` the instance.)
+        let own_class = match (mine_subst.get(&SELF_PARAM), subst.get(&SELF_PARAM)) {
+            (Some(Type::Class(c, a)), Some(Type::Class(d, b))) if c == d && a == b => Some(*c),
+            (Some(Type::ClassObject(c, a)), Some(Type::ClassObject(d, b))) if c == d && a == b => {
+                Some(*c)
+            }
+            _ => None,
+        };
+        if let Some(c) = own_class.filter(|c| !self.world.has_no_subclass(*c)) {
+            let mut subst = subst.clone();
+            let mut mine_subst = mine_subst.clone();
+            let own = mine_subst.remove(&SELF_PARAM);
+            subst.remove(&SELF_PARAM);
+            let bound = own.map(|t| match t {
+                Type::ClassObject(c, args) => Type::Class(c, args),
+                t => t,
+            });
+            let saved = std::mem::replace(&mut self.world.self_bound, bound);
+            let saved_self = self.self_opaque_class.replace(c);
+            let ok = self.check_override_pair_in(&subst, &mine_subst, within, m, om);
+            self.self_opaque_class = saved_self;
+            self.world.self_bound = saved;
+            return ok;
+        }
+        self.check_override_pair_in(subst, mine_subst, within, m, om)
+    }
+
+    fn check_override_pair_in(
+        &mut self,
+        subst: &HashMap<TypeParamId, Type>,
+        mine_subst: &HashMap<TypeParamId, Type>,
+        within: Option<String>,
+        m: MethodInfo,
+        om: MethodInfo,
+    ) -> bool {
         let owner = self.world.class(om.owner).name.clone();
         let sep = if om.singleton { "." } else { "#" };
         // (`M#f` against `A#f` in `C`, which includes `M`.)
@@ -2404,9 +2450,10 @@ impl<'ast> Declarer<'ast> {
             if !self.world.is_subtype(&theirs, &mine) {
                 let (mine_s, theirs_s) =
                     (self.world.type_name(&mine), self.world.type_name(&theirs));
+                let hint = self.write_self_hint(&theirs, &mine);
                 self.error(
                     format!(
-                        "`{mname}` takes a block of type {mine_s} but `{owner}{sep}{mname}`, which it overrides{context}, is given one of type {theirs_s}"
+                        "`{mname}` takes a block of type {mine_s} but `{owner}{sep}{mname}`, which it overrides{context}, is given one of type {theirs_s}{hint}"
                     ),
                     span,
                 );
@@ -2430,9 +2477,9 @@ impl<'ast> Declarer<'ast> {
                 self.world.type_name(&theirs),
             );
             let hint = if m.ret == Type::Void {
-                " (a `-> Void` method, as one without a return type, returns nil)"
+                " (a `-> Void` method, as one without a return type, returns nil)".to_string()
             } else {
-                ""
+                self.write_self_hint(&theirs, &mine_ret)
             };
             self.error(
                 format!(
@@ -2443,6 +2490,27 @@ impl<'ast> Declarer<'ast> {
             return false;
         }
         true
+    }
+
+    /// Where an override compared with `Self` opaque fails on a signature
+    /// that says `Self`: write `Self` (docs/01 §3).
+    fn write_self_hint(&self, theirs: &Type, mine: &Type) -> String {
+        // (Where the override names the class, or its type would fit
+        // with `Self` as the class.)
+        let fits_as_class = |c: ClassId| {
+            let mut as_class: HashMap<TypeParamId, Type> = HashMap::default();
+            as_class.insert(SELF_PARAM, Type::class(c));
+            self.world.is_subtype(mine, &theirs.subst(&as_class))
+        };
+        match self.self_opaque_class {
+            Some(c) if theirs.mentions_param(SELF_PARAM) && fits_as_class(c) => {
+                let name = &self.world.class(c).name;
+                format!(
+                    ": write `Self` where it says `Self` (`{name}` there would hand a subclass of `{name}` a `{name}` typed as that subclass)"
+                )
+            }
+            _ => String::new(),
+        }
     }
 
     /// Whether a method may keep its block is part of its signature: an

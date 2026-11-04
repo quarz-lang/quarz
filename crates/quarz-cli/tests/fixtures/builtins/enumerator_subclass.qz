@@ -11,7 +11,7 @@ class Cd < Enumerator[Int]
     @n -= 1
     @n + 1
   end
-  def rewind -> Cd
+  def rewind -> Self
     @n = @from
     self
   end
