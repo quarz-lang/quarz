@@ -1706,3 +1706,126 @@ puts Person.make(name: "e", age: 1)
         assert!(err.contains(expected), "{cols}: {err}");
     }
 }
+
+/// `type` in a `static def` (docs/14 §4): the class the statement runs on
+/// as a plain class value, which a generated method captures to call the
+/// class's class methods, `Self` there being the class generated into
+/// (a subclass that inherits the method gets that class). `self` itself
+/// stays uncapturable.
+#[test]
+fn a_generated_method_builds_its_class_through_type() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Base\n  include Shareable\n  @n: Int\n  def initialize; @n = 0; end\n  def initialize(@n: Int); end\n  def n -> Int = @n\n  def self.rebuild(n: Int) -> Self = new(n)\n  static def self.gen -> Void\n    cls = type\n    def_method(:bump) do -> Self\n      cls.rebuild(n + 1)\n    end\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass C < Base\n  gen\nend\nclass D < C\nend\nc: C = C.new.bump.bump\np c.n, c.class.name, D.new.bump.class.name\n",
+    );
+    let expected = "2\n\"C\"\n\"C\"\n";
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let out = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+    // The inherited method gives the class it was generated into.
+    let bad = write(
+        &d.0,
+        "bad.qz",
+        "require_relative \"lib\"\nclass C < Base\n  gen\nend\nclass D < C\nend\ny: D = D.new.bump\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", bad.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(err.contains("cannot assign C to `y` of type D"), "{err}");
+    // Another class's `Meta::ClassDef` is that class, not `Self`.
+    write(
+        &d.0,
+        "lib3.qz",
+        "class Base\n  include Shareable\n  @n: Int\n  def initialize; @n = 0; end\n  def initialize(@n: Int); end\n  def n -> Int = @n\n  def self.rebuild(n: Int) -> Self = new(n)\n  static def self.me -> Meta::ClassDef[Base] = self\n  static def self.gen -> Void\n    c = Other.me.type\n    def_method(:bump) do -> Self\n      c.rebuild(n + 1)\n    end\n  end\nend\nclass Other < Base\nend\n",
+    );
+    let app3 = write(
+        &d.0,
+        "app3.qz",
+        "require_relative \"lib3\"\nclass C < Base\n  gen\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app3.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("block returns Base but is declared `-> Self`"),
+        "{err}"
+    );
+    // Nor is `type` captured by a method generated into another class.
+    write(
+        &d.0,
+        "lib5.qz",
+        "class Base\n  include Shareable\n  @n: Int\n  def initialize; @n = 0; end\n  def initialize(@n: Int); end\n  def n -> Int = @n\n  def self.rebuild(n: Int) -> Self = new(n)\n  static def self.me -> Meta::ClassDef[Base] = self\n  static def self.gen -> Void\n    cls = type\n    Other.me.def_method(:bump) do -> Self\n      cls.rebuild(n + 1)\n    end\n  end\nend\nclass Other < Base\nend\n",
+    );
+    let app5 = write(
+        &d.0,
+        "app5.qz",
+        "require_relative \"lib5\"\nclass C < Base\n  gen\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app5.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("but the method is generated into another class"),
+        "{err}"
+    );
+    // ... nor through a block run on another class's `Meta::ClassDef`.
+    write(
+        &d.0,
+        "lib6.qz",
+        "class Base\n  include Shareable\n  @n: Int\n  def initialize; @n = 0; end\n  def initialize(@n: Int); end\n  def n -> Int = @n\n  def self.rebuild(n: Int) -> Self = new(n)\n  static def self.me -> Meta::ClassDef[Base] = self\n  static def self.gen -> Void\n    t = type\n    Other.me.instance_exec do\n      def_method(:bump) do -> Self\n        t.rebuild(n + 1)\n      end\n    end\n  end\nend\nclass Other < Base\nend\n",
+    );
+    let app6 = write(
+        &d.0,
+        "app6.qz",
+        "require_relative \"lib6\"\nclass C < Base\n  gen\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app6.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("but the method is generated into another class"),
+        "{err}"
+    );
+    // In the static def itself, `type` is a `Type[Self]` of the class.
+    write(
+        &d.0,
+        "lib4.qz",
+        "class Base\n  include Shareable\n  @n: Int\n  def initialize; @n = 0; end\n  def initialize(@n: Int); end\n  def n -> Int = @n\n  def self.rebuild(n: Int) -> Self = new(n)\n  def self.take(t: Type[Base]) -> String = t.name\n  static def self.gen -> Void\n    k: Type[Base] = type\n    v = type.rebuild(3).n + take(type).size\n    def_class_method(:v) { v }\n  end\nend\n",
+    );
+    let app4 = write(
+        &d.0,
+        "app4.qz",
+        "require_relative \"lib4\"\nclass C < Base\n  gen\nend\np C.v\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app4.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "4\n");
+    // `self` is not captured.
+    write(
+        &d.0,
+        "lib2.qz",
+        "class Base\n  static def self.gen -> Void\n    me = self\n    def_method(:k) { me.name }\n  end\nend\n",
+    );
+    let app2 = write(
+        &d.0,
+        "app2.qz",
+        "require_relative \"lib2\"\nclass C < Base\n  gen\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app2.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("cannot be baked into a generated method"),
+        "{err}"
+    );
+}
