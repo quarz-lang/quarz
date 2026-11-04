@@ -143,13 +143,24 @@ pub fn type_sexp(ty: &TypeExpr) -> String {
             params,
             ret,
             shareable,
+            keywords,
         } => format!(
             "{}{}({}) -> {}",
             if *shareable { "shareable " } else { "" },
             recv.as_ref()
                 .map(|r| format!("{}.", type_sexp(r)))
                 .unwrap_or_default(),
-            params.iter().map(type_sexp).collect::<Vec<_>>().join(", "),
+            params
+                .iter()
+                .map(type_sexp)
+                .chain((!keywords.is_empty()).then(|| "*".to_string()))
+                .chain(
+                    keywords
+                        .iter()
+                        .map(|k| format!("{}: {}", k.name, type_sexp(&k.ty)))
+                )
+                .collect::<Vec<_>>()
+                .join(", "),
             type_sexp(ret)
         ),
         TypeExprKind::SelfType => "self".to_string(),

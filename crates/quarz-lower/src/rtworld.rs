@@ -468,10 +468,11 @@ fn rt_sig_type(world: &World, m: &types::MethodInfo, t: &Type) -> Option<String>
             Type::Class(_, args) | Type::ClassObject(_, args) => args.iter().any(|a| open(m, a)),
             Type::Union(ts) | Type::Tuple(ts) => ts.iter().any(|a| open(m, a)),
             Type::TypeOf(t) => open(m, t),
-            Type::Proc(r, ps, ret, _) => {
+            Type::Proc(r, ps, ret, _, kws) => {
                 r.as_deref().is_some_and(|r| open(m, r))
                     || ps.iter().any(|a| open(m, a))
                     || open(m, ret)
+                    || kws.iter().any(|k| open(m, &k.ty))
             }
             Type::Nothing | Type::Void => false,
         }
@@ -502,11 +503,11 @@ fn classes_in(t: &Type, out: &mut Vec<ClassId>) {
                 classes_in(t, out);
             }
         }
-        Type::Proc(recv, params, ret, _) => {
+        Type::Proc(recv, params, ret, _, kws) => {
             if let Some(r) = recv {
                 classes_in(r, out);
             }
-            for p in params {
+            for p in params.iter().chain(kws.iter().map(|k| &k.ty)) {
                 classes_in(p, out);
             }
             classes_in(ret, out);

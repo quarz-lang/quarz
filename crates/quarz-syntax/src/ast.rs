@@ -535,12 +535,23 @@ pub enum TypeExprKind {
         ret: Box<TypeExpr>,
         /// `shareable (A) -> R`: a procedure any task may call.
         shareable: bool,
+        /// `(A, *, k: B) -> R`: keyword-only parameters, after `*`.
+        #[serde(default)]
+        keywords: Vec<ProcKeyword>,
     },
     SelfType,
     Nothing,
     /// `Void`: a result whose value is discarded (callers see `Nil`);
     /// written only as a method's or a procedure type's result.
     Void,
+}
+
+/// A keyword-only parameter of a procedure type: `k: B` after `*`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProcKeyword {
+    pub name: String,
+    pub ty: TypeExpr,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

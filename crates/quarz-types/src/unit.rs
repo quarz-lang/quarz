@@ -295,8 +295,14 @@ pub(crate) fn collect_narrowed(
                 }
             }
             Type::TypeOf(t) => visit(world, t, seen, list),
-            Type::Proc(r, ps, ret, _) => {
-                for t in r.iter().map(|t| &**t).chain(ps.iter()).chain([&**ret]) {
+            Type::Proc(r, ps, ret, _, kws) => {
+                for t in r
+                    .iter()
+                    .map(|t| &**t)
+                    .chain(ps.iter())
+                    .chain([&**ret])
+                    .chain(kws.iter().map(|k| &k.ty))
+                {
                     visit(world, t, seen, list);
                 }
             }

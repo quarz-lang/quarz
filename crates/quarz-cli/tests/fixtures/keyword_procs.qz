@@ -1,0 +1,104 @@
+# Keyword-only parameters in procedure types (docs/02 §1, docs/01 §9).
+
+# `yield` with keywords, to a literal block.
+def scaled(&: (Int, *, scale: Int) -> Int) -> Int
+  yield 2, scale: 10
+end
+puts scaled { |x, *, scale| x * scale }
+# A keyword the type does not list, with a default.
+puts scaled { |x, *, scale: Int, offset: Int = 5| x * scale + offset }
+
+# A kept block, called in each way.
+def keep(&blk: (Int, *, scale: Int) -> Int) -> Int
+  blk.call(3, scale: 100) + blk.(1, scale: 1) + blk[1, scale: 2]
+end
+puts keep { |x, *, scale| x * scale }
+
+# A lambda with an optional keyword: its own type takes it or not.
+f = ->(x: Int, *, k: Int = 7) { x + k }
+puts f.call(1)
+puts f.call(1, k: 2)
+g: (Int, *, k: Int) -> Int = f
+puts g.call(10, k: 1)
+h: (Int) -> Int = f
+puts h.call(10)
+# The default reads earlier parameters and the enclosing scope.
+base = 100
+d = ->(x: Int, *, k: Int = x + base) { k }
+puts d.call(1)
+puts d.call(1, k: 3)
+
+# A native runs a block without keywords: an optional one takes its default.
+p [1, 2, 3].map { |x, *, k: Int = 10| x * k }
+p [1, 2].each_with_index.map { |x, i, *, k: String = "-"| "#{x}#{k}#{i}" }
+
+# A handle takes the method's required keywords; a defaulted one keeps
+# its default.
+class Greeter
+  def greet(name: String, *, punct: String, times: Int = 2) -> String
+    "hi #{name}#{punct * times}"
+  end
+end
+m = Greeter.new.:greet
+puts m.call("bob", punct: "!")
+call_it = ->(q: (String, *, punct: String) -> String) { q.call("ann", punct: "?") }
+puts call_it.call(m)
+
+# A DSL-style block of keywords only.
+class Form
+  var @fields: Array[String] = []
+  def field(&b: (*, name: String, size: Int) -> String) -> Void
+    @fields = @fields.push(b.call(name: "email", size: 40))
+    @fields = @fields.push(b.call(size: 8, name: "zip"))
+  end
+  def to_s -> String = @fields.join(", ")
+end
+form = Form.new
+form.field do |*, name, size|
+  "#{name}(#{size})"
+end
+puts form
+
+# Keyword arguments evaluated in the order written.
+def trace(s: String, v: Int) -> Int
+  puts s
+  v
+end
+def both(&: (*, a: Int, b: Int) -> Int) -> Int = yield(b: trace("b", 2), a: trace("a", 1))
+puts both { |*, a, b| a * 10 + b }
+
+# `break` and `next` from a keyword block.
+def twice(&: (Int, *, k: Int) -> Int) -> Array[Int]
+  [yield(1, k: 1), yield(2, k: 2)]
+end
+p twice { |x, *, k| next x * 100 if k == 2; x }
+r = [1, 2, 3].each do |x|
+  v = twice { |y, *, k| break [x, y, k] if k == 2; y }
+  break v
+end
+p r
+
+# A block with a receiver and keywords, run by `instance_exec`.
+class Html
+  var @parts: Array[String] = []
+  def tag(s: String) -> Void
+    @parts = @parts.push("<#{s}>")
+  end
+  def render -> String = @parts.join
+end
+def page(&b: Html.(Int, *, name: String) -> Void) -> String
+  h = Html.new
+  h.instance_exec(2, name: "p", &b)
+  h.render
+end
+puts page { |n, *, name| n.times { tag(name) } }
+puts 5.instance_exec(k: 3) { |*, k| self * k }
+puts 5.instance_exec(k: 3) { |*, k: Int, j: Int = 1| self * k + j }
+
+# A procedure with keywords stored and returned.
+def maker(n: Int) -> (*, times: Int) -> String
+  ->(*, times: Int) { "#{n}" * times }
+end
+mk = maker(4)
+puts mk.call(times: 3)
+p mk.arity

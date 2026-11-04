@@ -245,10 +245,12 @@ impl Interp {
             let f = &funcs[fid as usize];
             if f.frame_size > 0
                 || f.param_kinds.len() >= 64
+                // (A keyword parameter is bound by name, or takes its
+                // default: `call_block_kw`.)
                 || !f
                     .param_kinds
                     .iter()
-                    .all(|k| matches!(k, RtParamKind::Positional | RtParamKind::KeywordOnly))
+                    .all(|k| matches!(k, RtParamKind::Positional))
             {
                 return None;
             }
@@ -1371,12 +1373,25 @@ impl Interp {
     /// Call a block/procedure value with arguments. `next` yields the
     /// block's value; `break` propagates to the call that received it.
     pub fn call_block(&self, proc: &Value, args: ArgVec) -> EvalResult {
-        self.call_block_on(proc, None, args)
+        self.call_block_kw(proc, None, args, Vec::new())
     }
 
     /// Call a block, with `self` replaced by `recv` when given (a block
     /// with a receiver, run by `instance_exec`).
-    pub fn call_block_on(&self, proc: &Value, recv: Option<Value>, mut args: ArgVec) -> EvalResult {
+    pub fn call_block_on(&self, proc: &Value, recv: Option<Value>, args: ArgVec) -> EvalResult {
+        self.call_block_kw(proc, recv, args, Vec::new())
+    }
+
+    /// Call a block with keyword arguments too (`p.call(1, k: 2)`, `yield
+    /// 1, k: 2`), bound to its keyword-only parameters by name (docs/02
+    /// §9); the checker saw that it takes each.
+    pub fn call_block_kw(
+        &self,
+        proc: &Value,
+        recv: Option<Value>,
+        mut args: ArgVec,
+        kw: Vec<(Symbol, Value)>,
+    ) -> EvalResult {
         // What a key's own `==` or `hash` raised is raised before any more
         // Quarz code runs (`crate::keys`).
         crate::keys::check()?;
@@ -1407,10 +1422,10 @@ impl Interp {
                 self.resolve_dynamic(recv, *m)?,
                 recv.clone(),
                 args,
-                Vec::new(),
+                kw,
                 None,
             ),
-            ClosureBody::BoundMethod { recv, name, .. } => self.send(recv, name, args, None),
+            ClosureBody::BoundMethod { recv, name, .. } => self.send_kw(recv, name, args, kw, None),
             ClosureBody::Native(f) => f(self, args),
             ClosureBody::Func(fid) => {
                 if sched::stack_exhausted() {
@@ -1441,13 +1456,15 @@ impl Interp {
                     && nparams < 64
                     && f.param_kinds
                         .iter()
-                        .all(|k| matches!(k, RtParamKind::Positional | RtParamKind::KeywordOnly));
+                        .all(|k| matches!(k, RtParamKind::Positional));
                 let (mut bound, provided) = if simple {
                     (args, (1u64 << nparams) - 1)
                 } else {
                     let mut bound: ArgVec = ArgVec::with_capacity(nparams);
                     let mut provided = 0u64;
                     let mut it = args.into_iter();
+                    let mut kw = kw;
+                    let mut kw_index = 0;
                     for (i, kind) in f.param_kinds.iter().enumerate() {
                         match kind {
                             RtParamKind::Rest => {
@@ -1456,6 +1473,21 @@ impl Interp {
                                 provided |= 1 << i.min(63);
                             }
                             RtParamKind::Block => bound.push(Value::Nil),
+                            // By name; one not given takes its default.
+                            RtParamKind::KeywordOnly => {
+                                let name = f.kw_names.get(kw_index).map(String::as_str);
+                                kw_index += 1;
+                                let found = kw
+                                    .iter()
+                                    .position(|(k, _)| Some(&*self.symbol_name(*k)) == name);
+                                match found {
+                                    Some(j) => {
+                                        bound.push(kw.swap_remove(j).1);
+                                        provided |= 1 << i.min(63);
+                                    }
+                                    None => bound.push(Value::Nil),
+                                }
+                            }
                             _ => match it.next() {
                                 Some(v) => {
                                     bound.push(v);

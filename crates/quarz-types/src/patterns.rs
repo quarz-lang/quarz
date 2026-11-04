@@ -393,11 +393,12 @@ impl Checker {
             Type::ClassObject(_, args) => args.iter().all(|a| !a.mentions_param(id)),
             // `Type[T]` is covariant in `T`.
             Type::TypeOf(t) => self.only_covariant(t, id, pos, visiting),
-            Type::Proc(rc, ps, r, _) => {
+            Type::Proc(rc, ps, r, _, kws) => {
                 rc.as_ref()
                     .is_none_or(|t| self.only_covariant(t, id, !pos, visiting))
                     && ps
                         .iter()
+                        .chain(kws.iter().map(|k| &k.ty))
                         .all(|p| self.only_covariant(p, id, !pos, visiting))
                     && self.only_covariant(r, id, pos, visiting)
             }

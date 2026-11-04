@@ -4464,18 +4464,135 @@ fn a_symbol_procedure_on_class_objects_follows_the_blocks_rule() {
 }
 
 #[test]
-fn a_handle_cannot_pass_a_required_keyword() {
+fn a_handle_has_the_methods_required_keywords() {
     err(
         "class C\n  def k(*, x: Int) -> Int = x\nend\np C.new.:k.call",
-        "`k` needs the keyword `x`: a handle cannot pass keywords; wrap it in a block",
+        "missing keyword `x`: the procedure requires it",
     );
+    ok("class C\n  def k(*, x: Int) -> Int = x\nend\np C.new.:k.call(x: 2)\nf: (*, x: Int) -> Int = C.new.:k");
     // Through an overload whose keyword is required.
     err(
         "class A\n  def k(*, x: Int = 1) -> Int = x\nend\nclass B < A\n  def k(*, x: Int) -> Int = x\nend\nb = B.new\np b.:k.call",
-        "`k` needs the keyword `x`",
+        "missing keyword `x`",
     );
-    // A defaulted keyword: the handle calls with the default.
-    ok("class C\n  def k(*, x: Int = 4) -> Int = x\nend\np C.new.:k.call");
+    // A defaulted keyword: out of the handle's type, which calls with the
+    // default.
+    ok("class C\n  def k(*, x: Int = 4) -> Int = x\nend\np C.new.:k.call\nf: () -> Int = C.new.:k");
+    err(
+        "class C\n  def k(*, x: Int = 4) -> Int = x\nend\np C.new.:k.call(x: 1)",
+        "unknown keyword `x` for the procedure: it takes none",
+    );
+}
+
+/// Keyword-only parameters in procedure types (docs/02 §1).
+#[test]
+fn keyword_parameters_in_procedure_types() {
+    let run = "def run(&: (Int, *, k: Int) -> Int) -> Int = yield(2, k: 3)\n";
+    ok(&format!(
+        "{run}p run {{ |x, *, k| x * k }}\np run {{ |x, *, k: Int, j: Int = 1| x * k + j }}"
+    ));
+    // The block declares each keyword the type lists.
+    err(
+        &format!("{run}p run {{ |x| x }}"),
+        "`run` passes the block the keyword `k`: declare it",
+    );
+    // Any other needs a default.
+    err(
+        &format!("{run}p run {{ |x, *, k, j: Int| x }}"),
+        "the block requires the keyword `j`, which `run` does not pass",
+    );
+    err(
+        "[1].each { |x, *, k: Int| x }",
+        "the block requires the keyword `k`, which `each` does not pass",
+    );
+    ok("p [1].map { |x, *, k: Int = 1| x + k }");
+    err(
+        &format!("{run}p run {{ |x, *, k: String| x }}"),
+        "block keyword `k` is annotated String but receives Int",
+    );
+    // `yield` and procedure calls: required once, no unknown one.
+    err(
+        "def run(&: (Int, *, k: Int) -> Int) -> Int = yield(2)",
+        "missing keyword `k`: the block requires it",
+    );
+    err(
+        "def run(&: (Int, *, k: Int) -> Int) -> Int = yield(2, k: 1, j: 2)",
+        "unknown keyword `j` for the block: it takes `k`",
+    );
+    err(
+        "def run(&: (Int, *, k: Int) -> Int) -> Int = yield(2, k: \"a\")",
+        "keyword `k` takes Int but found String",
+    );
+    let f = "f = ->(x: Int, *, k: Int) { x + k }\n";
+    ok(&format!("{f}p f.call(1, k: 2) + f.(1, k: 2) + f[1, k: 2]"));
+    err(
+        &format!("{f}p f.call(1)"),
+        "missing keyword `k`: the procedure requires it",
+    );
+    err(
+        &format!("{f}p f.call(1, k: 1, k: 2)"),
+        "keyword `k` is given twice",
+    );
+    err(
+        &format!("{f}p f.call(1, **{{k: 1}})"),
+        "a procedure takes no `**hash`",
+    );
+    // An assignment in a keyword's default counts as the closure's.
+    err(
+        "def nothing -> Int?\n  nil\nend\ndef go(y: Int?) -> Void\n  x = y\n  f = ->(*, k: Int = (x = nothing; 1)) { k }\n  if x\n    f.call\n    p x + 1\n  end\nend",
+        "undefined method `+` for Nil",
+    );
+    // A class's own `instance_exec` is called as any method.
+    ok("class Foo\n  def instance_exec(*, k: Int) -> Int = k * 2\nend\np Foo.new.instance_exec(k: 4)");
+    // The result of `instance_exec` with keywords: `next`, `break`, `return`.
+    ok("r = 7.instance_exec(1, k: 2) { |a, *, k| next self + a + k }\np r * 100\ndef m -> Int\n  7.instance_exec(1, k: 2) { |a, *, k| return self + a + k }\nend");
+    // Subtyping: a lambda's optional keyword may be left out, or listed.
+    let g = "g = ->(x: Int, *, k: Int = 1) { x + k }\n";
+    ok(&format!(
+        "{g}a: (Int) -> Int = g\nb: (Int, *, k: Int) -> Int = g\np g.call(1) + g.call(1, k: 2)"
+    ));
+    err(
+        &format!("{f}a: (Int) -> Int = f"),
+        "cannot assign (Int, *, k: Int) -> Int to `a` of type (Int) -> Int",
+    );
+    err(
+        &format!("{f}a: (Int, *, j: Int) -> Int = f"),
+        "cannot assign",
+    );
+    err(
+        &format!("{g}a: (Int, *, k: Int, j: Int) -> Int = g"),
+        "cannot assign",
+    );
+    // Keyword types are contravariant.
+    ok("f = ->(*, k: Object) { 1 }\na: (*, k: Int) -> Int = f");
+    err(
+        "f = ->(*, k: Int) { 1 }\na: (*, k: Object) -> Int = f",
+        "cannot assign",
+    );
+    // No common procedure type: the union keeps both, and a call checks each.
+    err(
+        &format!("{f}h = true ? f : ->(x: Int) {{ x }}\np h.call(1)"),
+        "missing keyword `k`",
+    );
+    // `&:name` passes no keywords.
+    err(
+        "def sym(&: (Int, *, k: Int) -> String) -> String = yield(1, k: 2)\nsym(&:to_s)",
+        "`&:to_s` passes no keywords, and the block takes `k`",
+    );
+    // A block type with other keywords is another signature: an overload.
+    ok("class A\n  def e(&: (Int, *, k: Int) -> Void) -> Void = yield(1, k: 2)\nend\nclass B < A\n  def e(&: (Int) -> Void) -> Void = yield(1)\nend");
+    // A block with a receiver is run by `instance_exec` with its keywords.
+    ok("class H\n  def t(s: String) -> Void = puts(s)\nend\ndef page(&b: H.(Int, *, name: String) -> Void) -> Void = H.new.instance_exec(2, name: \"x\", &b)\np 5.instance_exec(k: 3) { |*, k| self * k }");
+    err(
+        "class H\nend\ndef page(&b: H.(*, name: String) -> Void) -> Void = H.new.instance_exec(&b)",
+        "no overload of `instance_exec`",
+    );
+    err(
+        "class H\nend\ndef page(&b: H.(*, name: String) -> Void) -> Void = 5.instance_exec(name: \"x\", &b)",
+        "the block runs with a receiver of type H, not Int",
+    );
+    // `[]` on anything but a procedure takes no keyword.
+    err("p [1][0, k: 1]", "`[]` takes no keyword arguments");
 }
 
 #[test]

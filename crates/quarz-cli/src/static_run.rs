@@ -292,7 +292,7 @@ impl Runner {
                 .get(&call_id)
                 .cloned()
                 .ok_or_else(not_literal)?;
-            let Type::Proc(_, param_types, ret, _) = proc_ty else {
+            let Type::Proc(_, param_types, ret, _, _) = proc_ty else {
                 return Err(not_literal());
             };
             if param_types.len() != g.params.len() {
@@ -531,12 +531,18 @@ impl Runner {
                             world.type_name(&Type::Param(t))
                         ));
                     }
-                    let Type::Proc(None, ps, ret, _) = &p else {
+                    let Type::Proc(None, ps, ret, _, kws) = &p else {
                         return Err(format!(
                             "{at}: the handle to `{shown}` is made with `{}`, which is not a procedure type (`(A, B) -> R`)",
                             world.type_name(&p)
                         ));
                     };
+                    if !kws.is_empty() {
+                        return Err(format!(
+                            "{at}: the handle to `{shown}` is made with `{}`, which takes keywords: a handle names a method whose parameters are all positional",
+                            world.type_name(&p)
+                        ));
+                    }
                     let own = Type::Class(
                         owner,
                         world
@@ -1524,10 +1530,11 @@ fn free_param(t: &Type, own: &[TypeParamId]) -> Option<TypeParamId> {
         }
         Type::TypeOf(inner) => free_param(inner, own),
         Type::Union(ms) | Type::Tuple(ms) => ms.iter().find_map(|m| free_param(m, own)),
-        Type::Proc(recv, ps, r, _) => recv
+        Type::Proc(recv, ps, r, _, kws) => recv
             .as_deref()
             .and_then(|r| free_param(r, own))
             .or_else(|| ps.iter().find_map(|p| free_param(p, own)))
+            .or_else(|| kws.iter().find_map(|k| free_param(&k.ty, own)))
             .or_else(|| free_param(r, own)),
         Type::Var(_) | Type::Nothing | Type::Void => None,
     }
@@ -1629,9 +1636,10 @@ fn mentions_class(t: &Type, cid: ClassId) -> bool {
         Type::ClassObject(_, args) => args.iter().any(|a| mentions_class(a, cid)),
         Type::TypeOf(inner) => mentions_class(inner, cid),
         Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(|m| mentions_class(m, cid)),
-        Type::Proc(recv, ps, r, _) => {
+        Type::Proc(recv, ps, r, _, kws) => {
             recv.as_deref().is_some_and(|r| mentions_class(r, cid))
                 || ps.iter().any(|p| mentions_class(p, cid))
+                || kws.iter().any(|k| mentions_class(&k.ty, cid))
                 || mentions_class(r, cid)
         }
         Type::Param(_) | Type::Var(_) | Type::Nothing | Type::Void => false,

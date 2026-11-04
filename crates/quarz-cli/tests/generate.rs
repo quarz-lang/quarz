@@ -1232,6 +1232,11 @@ fn method_handles_call_generated_methods() {
             "    f = field_ref[Int](:nope)\n",
             "names no field of `Comment`",
         ),
+        // A handle names a method of positional parameters only.
+        (
+            "    m = method_ref[(Int, *, k: Int) -> Int](:thrice)\n",
+            "which takes keywords: a handle names a method whose parameters are all positional",
+        ),
         (
             "    m = def_method(:one) do -> Int\n      1\n    end\n    def_method(:bad, :o) do |o: Model| -> Int\n      m.bind(o).call\n    end\n",
             "takes the generated method's `self`",

@@ -2988,6 +2988,7 @@ impl<B: Builder> Gen<'_, B> {
                     // (Invoked as is, as `super` is.)
                     CallKind::Super(m) | CallKind::Function(m) => (6, *m, 0, ""),
                     CallKind::Raise => (7, 0, 0, ""),
+                    CallKind::InstanceExec => (8, 0, 0, ""),
                 };
                 let mut desc = vec![
                     *dst,

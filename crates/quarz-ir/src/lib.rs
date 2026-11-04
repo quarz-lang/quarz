@@ -79,6 +79,10 @@ pub struct Function {
     /// The parameters a block body declares, in binding order (methods
     /// are bound from their `RtMethod` instead).
     pub param_kinds: Vec<RtParamKind>,
+    /// The names of a block body's keyword-only parameters, in order (a
+    /// call binds keyword arguments by name, docs/02 §9).
+    #[serde(default)]
+    pub kw_names: Vec<String>,
     /// `Proc#arity` of a block body.
     pub arity: i32,
     pub consts: Vec<Constant>,
@@ -99,6 +103,8 @@ pub struct FuncInfo {
     pub nregs: u32,
     pub frame_size: u32,
     pub param_kinds: Vec<RtParamKind>,
+    #[serde(default)]
+    pub kw_names: Vec<String>,
     pub arity: i32,
     pub consts: Vec<Constant>,
     pub inlined: Vec<InlineOrigin>,
@@ -138,6 +144,7 @@ impl Function {
             nregs: 0,
             frame_size: 0,
             param_kinds: Vec::new(),
+            kw_names: Vec::new(),
             arity: 0,
             consts: Vec::new(),
             blocks: Vec::new(),
@@ -177,6 +184,7 @@ impl Function {
             nregs: self.nregs,
             frame_size: self.frame_size,
             param_kinds: self.param_kinds,
+            kw_names: self.kw_names,
             arity: self.arity,
             consts: self.consts,
             inlined: self.inlined,
@@ -296,6 +304,10 @@ pub enum CallKind {
     ProcCall,
     /// `yield`: calls the enclosing method's block.
     Yield,
+    /// `recv.instance_exec(args, k: v, &b)` with keyword arguments: runs
+    /// the block (`block`) with `self` = the receiver, passing it the
+    /// arguments and keywords (docs/01 §9).
+    InstanceExec,
     /// `super`: the superclass method, on `self`.
     Super(MethodId),
     /// A function: this method, never looked up again on the receiver
@@ -1728,6 +1740,7 @@ impl Droppable for FuncInfo {
             nregs: 1,
             frame_size: 0,
             param_kinds: Vec::new(),
+            kw_names: Vec::new(),
             arity: 0,
             consts: Vec::new(),
             inlined: Vec::new(),

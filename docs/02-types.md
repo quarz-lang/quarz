@@ -18,7 +18,7 @@ Design principles:
 | Nilable | `String?` | Shorthand for `String \| Nil` |
 | Union | `Int \| String \| Nil` | |
 | Tuple | `[Int, String]` | Fixed length and per-element types |
-| Procedure | `(Int, String) -> Bool`, `() -> Void` | Type of blocks and lambdas |
+| Procedure | `(Int, String) -> Bool`, `() -> Void`, `(Int, *, scale: Int) -> Int` | Type of blocks and lambdas; keyword-only parameters after `*` (below) |
 | Top | `Object` | Supertype of every type |
 | Bottom | `Nothing` | Type of `raise`, `exit` and infinite loops. Subtype of every type |
 | Discarded result | `Void` | Only as a result (`-> Void`, `(Int) -> Void`): the body's value is discarded and a caller gets `nil`, so a call's type is `Nil`, and `(Int) -> Void` is the same type as `(Int) -> Nil`. Not a value's type: `Void?`, `Array[Void]` or a parameter of type `Void` is an error. A `(T) -> Void` block (`&:name` too) discards its value, as does a block declared `-> Void` (01-syntax.md §9), and `next value` in it is an error (01-syntax.md §9) |
@@ -35,6 +35,15 @@ Writing `Array[Int]` in expression context yields an expression denoting the typ
 - A `Type[T]` value has `name`, `==` and `<=` (whether it is the other class or a subclass of it, or includes it: `Int <= Comparable`), and the class methods of `T`'s upper bound when the bound is a class (a module's singleton methods are not inherited), with `Self` standing for `T` (`def make[T <: Model](t: Type[T]) -> T = t.make`, for `def self.make -> Self` in `Model`). At compile time only, in a `static def` or a `static` statement, it also has the reflection `fields`, `field`, `methods`, `method?` and `includes?` ([14-metaprogramming.md](14-metaprogramming.md) §4).
 - `new` is typed only where the class is written (`Point.new`, `Array[Int].new`) or on the receiver of a class method (`new` in `def self.build -> Self`): a `Type[Point]` held in a variable, a parameter or a field may be a subclass whose `initialize` takes other arguments, and `t.new` on a `Type[T]` has no signature to check against, so both are errors.
 - At run time a class value carries no type arguments: `Array[Int] == Array[String]` is true, `Array[Int] <= Array[String]` is true and `name` is `"Array"`, while the static types `Type[Array[Int]]` and `Type[Array[String]]` differ.
+
+A procedure type lists its parameters' types, positional and unnamed, then, after `*`, its **keyword-only parameters** by name: `(Int, *, scale: Int, label: String) -> String`. The names are part of the type (their order is not), and a call passes each by name, `p.call(2, scale: 3, label: "x")`, `yield 2, scale: 3, label: "x"` (01-syntax.md §9):
+
+- A block or a lambda declares them as a method does, `{ |x, *, scale: Int| ... }`, `->(x: Int, *, scale: Int = 1) { ... }`, and only these take a default. A keyword with a default is optional for that procedure: the lambda above has the type `(Int, *, scale: Int = _) -> R`, called with or without `scale`. A written type lists required keywords only (`(Int, *, scale: Int = 1) -> R` is an error): what a caller of the type may count on.
+- A procedure `V` is a `T` when, besides the positional parameters (contravariant) and the result (covariant), every keyword `T` lists is one `V` takes (optional in `V` where `T` has it optional), every keyword `V` requires is one `T` lists, and each keyword's type is contravariant. So `->(x: Int, *, scale: Int = 1) { }` is a `(Int) -> R` and a `(Int, *, scale: Int) -> R`, while a `(Int, *, scale: Int) -> R` is not a `(Int) -> R` (its callers would leave `scale` out), nor a `(Int, *, scale: Int, label: String) -> R`.
+- A block given where `(T, *, k: U) -> R` is expected must declare `k` (with a default or not), and any other keyword it declares needs a default; a method that runs its block without keywords (`each`, `map`, any native) so cannot be given a block requiring one.
+- Keyword sets never merge: two procedure types with different keywords, neither a subtype of the other, have no common procedure type (their union stays one, and calling it checks each member), as two classes without a common ancestor meet at `Object`.
+- There is no `**rest` through a procedure (`|**opts|` is an error, and so is `**h` in its call): its type names every keyword it takes. `&:name` passes none, so it is no block for a type with keywords.
+- A handle to a method (`obj.:name`, `Type.:name`) has the method's required keyword-only parameters in its type; one with a default stays out, and the handle uses the default.
 
 ## 2. Built-in Types
 

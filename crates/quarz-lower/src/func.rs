@@ -558,13 +558,19 @@ impl<'a> FnBuilder<'a> {
                 ParamKind::Block => RtParamKind::Block,
             })
             .collect();
+        b.func.kw_names = params
+            .iter()
+            .filter(|p| p.kind == ParamKind::KeywordOnly)
+            .map(|p| p.name.clone())
+            .collect();
         let required = params
             .iter()
             .filter(|p| p.kind == ParamKind::Positional && p.default.is_none())
             .count() as i32;
-        let optional = params
-            .iter()
-            .any(|p| p.kind == ParamKind::Rest || p.default.is_some());
+        // (Keywords leave the arity alone: it counts positional arguments.)
+        let optional = params.iter().any(|p| {
+            p.kind == ParamKind::Rest || (p.kind == ParamKind::Positional && p.default.is_some())
+        });
         b.func.arity = if optional { -(required + 1) } else { required };
         for (i, p) in params.iter().enumerate() {
             let slot = i as u32;
@@ -3712,6 +3718,7 @@ impl<'a> FnBuilder<'a> {
                 }
             }
             Some(CallTarget::ProcCall) => CallKind::ProcCall,
+            Some(CallTarget::InstanceExec) => CallKind::InstanceExec,
             Some(CallTarget::Raise { .. }) => CallKind::Raise,
             Some(CallTarget::Super { method }) => CallKind::Super(*method),
             Some(CallTarget::IsA(_))
