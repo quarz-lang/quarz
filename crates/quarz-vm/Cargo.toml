@@ -32,7 +32,7 @@ sha2 = "0.10"
 hmac = "0.12"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 md5 = { package = "md-5", version = "0.10" }
-base64 = "0.22"
+base64 = "0.23"
 # The allocator (see `src/alloc.rs`): C sources built with the system's
 # compiler.
 # Pinned with libmimalloc-sys: `alloc.rs` sets an option by its number in
