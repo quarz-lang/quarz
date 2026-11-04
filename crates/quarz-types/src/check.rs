@@ -6642,7 +6642,7 @@ impl Checker {
                 }
             }
         } else if path.absolute {
-            self.world.top.get(&path.names[0]).copied()
+            self.world.resolve_absolute(namespace, &path.names[0])
         } else {
             self.world.resolve_member(namespace, &path.names[0])
         };

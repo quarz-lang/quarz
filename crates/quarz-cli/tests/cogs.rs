@@ -1103,6 +1103,60 @@ fn a_local_copy_asking_for_more_than_the_lock() {
     );
 }
 
+/// docs/10 §6: inside a cog, `::Key` (and `cog::Key`) is its own
+/// manifest's key, never the application's: a library reaches a key that
+/// a nested declaration hides, `::` a standard class its own declaration
+/// hides, and an application and a dependency with the same key for
+/// different cogs each reach their own.
+#[test]
+fn a_cogs_absolute_names_are_its_own() {
+    let w = World::new();
+    for (repo, module) in [("inner", "Inner"), ("other", "Other")] {
+        w.write(
+            &format!("{repo}/Cog.toml"),
+            &format!("[cog]\nname = \"{repo}\"\nversion = \"1.0.0\"\nmodule = \"{module}\"\n"),
+        );
+        w.write(
+            &format!("{repo}/src/who.qz"),
+            &format!("public def who -> String = \"{repo}\"\n"),
+        );
+        w.commit(repo, Some("v1.0.0"));
+    }
+    w.write(
+        "lib/Cog.toml",
+        &format!(
+            "[cog]\nname = \"lib\"\nversion = \"1.0.0\"\n\n[dependencies]\nX = {{ git = \"{}\", tag = \"v1.0.0\" }}\n",
+            w.url("inner")
+        ),
+    );
+    // `Wrap::X` hides the key `X` inside `Wrap`.
+    w.write(
+        "lib/src/wrap.qz",
+        "class Duration\nend\nmodule Wrap\n  class X\n  end\n  def self.a -> String = ::X.who\n  def self.b -> String = cog::X.who\n  def self.c -> String = X.name\n  def self.e -> String = ::Duration.name + \" \" + cog::Duration.name\nend\npublic def d -> String = ::X.who\n",
+    );
+    w.commit("lib", Some("v1.0.0"));
+    let lib = format!("Lib = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url("lib"));
+    // An application that does not list the key.
+    // (`::Duration` is the standard class the cog's own hides.)
+    w.app(
+        &lib,
+        "puts Lib::Wrap.a, Lib::Wrap.b, Lib::Wrap.c, Lib.d, Lib::Wrap.e\n",
+    );
+    assert_eq!(
+        w.ok("app", &["run"]),
+        "inner\ninner\nLib::Wrap::X\ninner\nDuration Lib::Duration\n"
+    );
+    // One whose key `X` is another cog: each `::X` is its own.
+    w.app(
+        &format!(
+            "{lib}X = {{ git = \"{}\", tag = \"v1.0.0\" }}\n",
+            w.url("other")
+        ),
+        "puts Lib::Wrap.a, Lib.d, ::X.who, X.who\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "inner\ninner\nother\nother\n");
+}
+
 /// `quarz cog init` keeps `Cog.local.toml` out of version control, once.
 #[test]
 fn cog_init_ignores_the_local_file() {
