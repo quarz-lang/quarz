@@ -31,6 +31,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 | `eql?` | Separate from `==` | Dropped. Only `==`/`hash` |
 | Global variables `$x`, class variables `@@x` | Exist | Do not exist. Constants + `Atom` |
 | Constants | Reassignment is a warning | Cannot be reassigned; must be Shareable |
+| `self.class.new(...)` | Builds an instance of the receiver's class | `Self.new(...)`, typed `Self`; a subclass inheriting the method keeps a compatible `initialize` or overrides it (01-syntax.md §9) |
 | `Proc.new`, `proc` | Exist | Only `->` and blocks. Procedures always have lambda semantics |
 | `it`, numbered parameters | `it` (3.4) in any parameterless block or lambda; `_1`, `_2` | `it` in a parameterless block whose type takes one argument (`xs.map { it * 2 }`); an error in a lambda, a block with parameters, or a block type taking none or two or more; a nested block's `it` hiding an enclosing one warns. No numbered parameters (01-syntax.md §9) |
 | Block and lambda parameter defaults | `{ \|x, y = 1\| }`, `->(x, y = 1) { }` | None for positional ones: the procedure type decides how many arguments a block gets and their types. Keyword-only ones may have one (`->(x: Int, *, k: Int = 1) { }`), which makes the keyword optional |

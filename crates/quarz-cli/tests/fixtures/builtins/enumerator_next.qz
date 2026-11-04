@@ -98,7 +98,7 @@ class CdTwo < Enumerator[Int]
     @n -= 1
     @n + 1
   end
-  def rewind -> CdTwo
+  def rewind -> Self
     @n = @from
     self
   end

@@ -911,6 +911,33 @@ impl<'a> FnBuilder<'a> {
                 == quarz_types::world::ClassKind::Main
     }
 
+    /// `self.class`: the class of the method's `self` (`Self.new`).
+    fn class_of_self(&mut self) -> Reg {
+        let recv = self.self_reg();
+        let method = self
+            .world
+            .class(self.world.builtin.object)
+            .methods
+            .get("class")
+            .and_then(|ids| ids.first().copied())
+            .expect("Object#class");
+        let dst = self.reg();
+        // (`Object#class` itself, not an override a class may write:
+        // the class that builds must be `self`'s own.)
+        self.emit(Inst::Call {
+            dst,
+            kind: CallKind::Function(method),
+            recv: Some(recv),
+            args: Vec::new(),
+            splat: false,
+            kw: Vec::new(),
+            kw_splat: None,
+            block: None,
+            moved: 0,
+        });
+        dst
+    }
+
     fn self_reg(&mut self) -> Reg {
         let dst = self.reg();
         match self.self_override {
@@ -2413,6 +2440,21 @@ impl<'a> FnBuilder<'a> {
             .as_ref()
             .filter(|_| !self.cog_function_call(call, target));
         let recv = match explicit {
+            // `Self.new(...)` in an instance method (docs/01 §9): built by
+            // `self`'s class, as `new` in a class method by its receiver.
+            Some(r)
+                if matches!(&r.kind, ExprKind::Const(p) if p.names == ["Self"])
+                    && self.out.self_new.contains(&e.id) =>
+            {
+                Some(self.class_of_self())
+            }
+            // (A class no class inherits from: built as written.)
+            Some(r)
+                if matches!(&r.kind, ExprKind::Const(p) if p.names == ["Self"])
+                    && matches!(target, Some(CallTarget::Constructor { .. })) =>
+            {
+                None
+            }
             Some(r) => Some(self.expr(r)),
             // An implicit-self call inside a block with a receiver that
             // goes to an enclosing `self`: read it from its hidden slot.

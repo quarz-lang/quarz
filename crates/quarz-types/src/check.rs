@@ -1022,6 +1022,9 @@ pub struct Checker {
     /// (`resolve_pretyped`).
     last_winner: Option<(NodeId, MethodId)>,
     self_news: Vec<SelfNew>,
+    /// `check_constructor` for `Self.new` (`check_self_new`): an abstract
+    /// class may be built, the receiver's class being concrete.
+    constructing_self: bool,
     /// Set by `check_body` for the statement it checks next: its value is
     /// not used (a statement before the last, or the last of a body that
     /// discards it). `check_expr` takes it, so only that statement itself
@@ -1133,6 +1136,7 @@ impl Checker {
             checking_bound: false,
             last_winner: None,
             self_news: Vec::new(),
+            constructing_self: false,
             stmt_unused: false,
             next_body_void: false,
         }
@@ -1484,6 +1488,14 @@ impl Checker {
         let mut reported = HashSet::default();
         for (cid, init, method, _, _) in sites {
             let mname = self.world.method(method).name.clone();
+            // How the method and its `new` are named: `C.build`'s `new`, or
+            // `Self.new` in `C#copy`.
+            let singleton = self.world.method(method).singleton;
+            let (sep, new_in) = if singleton {
+                (".", "`new`")
+            } else {
+                ("#", "`Self.new`")
+            };
             let nclasses = self.world.classes.len() as ClassId;
             for sid in 0..nclasses {
                 if sid == cid
@@ -1520,7 +1532,14 @@ impl Checker {
                     // name (`super(args)` may choose another overload of
                     // the parent's: counted, conservatively).
                     let site = self.world.method(method);
-                    if let Some(ids) = class.singleton_methods.get(&mname) {
+                    // (`Self.new` in an instance method: its overrides are
+                    // instance methods.)
+                    let table = if site.singleton {
+                        &class.singleton_methods
+                    } else {
+                        &class.methods
+                    };
+                    if let Some(ids) = table.get(&mname) {
                         if ids.iter().any(|&o| self.replaces_at_run_time(o, site.id)) {
                             overrides = true;
                             let with_super = ids
@@ -1571,7 +1590,7 @@ impl Checker {
                             self.diagnostics.push((
                                 near.file,
                                 Diagnostic::error(
-                                    format!("`super` in `{oname}.{mname}` runs `new` in `{cname}.{mname}` with `{sname}` for `self`, but `{sname}#initialize` does not take its arguments: keep the parameters of `{iname}#initialize` in an `initialize` of `{sname}`, or do not call `super`"),
+                                    format!("`super` in `{oname}{sep}{mname}` runs {new_in} in `{cname}{sep}{mname}` with `{sname}` for `self`, but `{sname}#initialize` does not take its arguments: keep the parameters of `{iname}#initialize` in an `initialize` of `{sname}`, or do not call `super`"),
                                     *at,
                                 ),
                             ));
@@ -1605,7 +1624,7 @@ impl Checker {
                     self.diagnostics.push((
                         s.file,
                         Diagnostic::error(
-                            format!("`{sname}#initialize` does not take the arguments of `new` in `{cname}.{mname}`, which `{sname}` inherits: keep the parameters of `{iname}#initialize`, their names and whether they are optional (adding only optional ones), or override `self.{mname}` in `{sname}`"),
+                            format!("`{sname}#initialize` does not take the arguments of {new_in} in `{cname}{sep}{mname}`, which `{sname}` inherits: keep the parameters of `{iname}#initialize`, their names and whether they are optional (adding only optional ones), or override `{}{mname}` in `{sname}`", if singleton { "self." } else { "" }),
                             s.span,
                         ),
                     ));
@@ -8334,6 +8353,14 @@ impl Checker {
                 );
             }
         }
+        // `Self.new(...)` in an instance method (docs/01 §9).
+        if call.name == "new"
+            && call.recv.as_ref().is_some_and(|r| {
+                matches!(&r.kind, ExprKind::Const(p) if !p.absolute && !p.cog && p.names == ["Self"])
+            })
+        {
+            return self.check_self_new(expr, call, expected);
+        }
         // Special forms.
         if call.recv.is_none() && call.name == "raise" {
             return self.check_raise(expr, call);
@@ -10114,6 +10141,91 @@ impl Checker {
             .insert(expr.id, (self.env.receivers.len() - k) as u32);
     }
 
+    /// `Self.new(args)` in an instance method, or a block or lambda in it
+    /// (docs/01 §9): an instance of `self`'s run-time class, built with its
+    /// `initialize`, as `new` in a class method builds the receiver's. A
+    /// subclass inheriting the method keeps a compatible `initialize` or
+    /// overrides the method (`check_inherited_constructors`). Typed `Self`
+    /// where `self` is the opaque `Self`, else the class.
+    fn check_self_new(&mut self, expr: &Expr, call: &Call, expected: Option<&Type>) -> Type {
+        let refuse = |this: &mut Self, why: &str| {
+            this.error(format!("`Self.new` {why}"), expr.span);
+            this.check_args_blindly(call);
+            Type::Nothing
+        };
+        let lifted = self.env.lifted_frame.is_some();
+        // The class: the method's, or the one a lifted block's method is
+        // generated into (bounded by the block's receiver type).
+        let instance = match self.env.method {
+            Some(_) if lifted => match (&self.env.self_type, &self.world.self_bound) {
+                (Type::Param(SELF_PARAM), Some(Type::Class(c, args))) => Some((*c, args.clone())),
+                _ => None,
+            },
+            Some(m) if !self.world.method(m).singleton && !self.in_function() => {
+                let owner = self.world.method(m).owner;
+                let args = self
+                    .world
+                    .class(owner)
+                    .type_params
+                    .iter()
+                    .map(|p| Type::Param(p.id))
+                    .collect();
+                Some((owner, args))
+            }
+            _ => None,
+        };
+        let Some((cid, args)) = instance else {
+            let why = if self.in_function() {
+                "in a function: a function has no `self` whose class `Self` would be"
+            } else {
+                "is written in an instance method (in a class method, `new` builds the receiver's class)"
+            };
+            return refuse(self, why);
+        };
+        if !self.own_self() {
+            return refuse(
+                self,
+                "builds the class of the method's `self`, which a block with another receiver hides: build it outside the block",
+            );
+        }
+        if self.world.class(cid).kind == ClassKind::Module {
+            return refuse(
+                self,
+                "in a module's method: the classes that include it may each take other arguments in `initialize`",
+            );
+        }
+        let m = self.env.method.expect("in a method");
+        // (It reads `self`, which a task's block or `static(...)` cannot
+        // capture unless it is Shareable.)
+        self.check_task_self("`self`, whose class `Self.new` builds,", expr.span);
+        let saved = std::mem::replace(&mut self.constructing_self, true);
+        let t = self.check_constructor(expr, call, cid, &args, expected);
+        self.constructing_self = saved;
+        // Built by the receiver's class at run time (a subclass, perhaps):
+        // not where no class can inherit from it.
+        if !self.world.has_no_subclass(cid) {
+            if let Some(CallTarget::Constructor { init, .. }) =
+                self.out.calls.get(&expr.id).cloned()
+            {
+                self.out.self_new.insert(expr.id);
+                // (A lifted block's: recorded when its method is generated,
+                // `StaticHost::generated_new`.)
+                if !lifted {
+                    self.self_news
+                        .push((cid, init, m, expr.span, self.env.file));
+                }
+            }
+        }
+        if t.is_nothing() {
+            return t;
+        }
+        if self.env.self_opaque {
+            Type::Param(SELF_PARAM)
+        } else {
+            t
+        }
+    }
+
     fn check_constructor(
         &mut self,
         expr: &Expr,
@@ -10123,7 +10235,13 @@ impl Checker {
         expected: Option<&Type>,
     ) -> Type {
         let class = self.world.class(cid).clone();
-        if class.is_abstract || matches!(class.kind, ClassKind::Module | ClassKind::Enum) {
+        // (`Self.new` builds the receiver's class, which is concrete; taken
+        // first, so that a construction among its arguments is checked as
+        // any.)
+        let constructing_self = std::mem::take(&mut self.constructing_self);
+        if (class.is_abstract && !constructing_self)
+            || matches!(class.kind, ClassKind::Module | ClassKind::Enum)
+        {
             self.error(format!("cannot instantiate `{}`", class.name), expr.span);
             self.check_args_blindly(call);
             return Type::Nothing;
@@ -14747,8 +14865,13 @@ impl crate::StaticHost for Checker {
                 } else {
                     format!("`{oname}#initialize`, which `{cname}` builds with,")
                 };
+                let (new_in, sep) = if self.world.method(method).singleton {
+                    ("`new`", ".")
+                } else {
+                    ("`Self.new`", "#")
+                };
                 return Err(format!(
-                    "{which} does not take the arguments of `new` in the generated `{cname}.{mname}`"
+                    "{which} does not take the arguments of {new_in} in the generated `{cname}{sep}{mname}`"
                 ));
             }
         }

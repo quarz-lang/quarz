@@ -3426,7 +3426,7 @@ fn an_override_with_wider_parameters_keeps_the_result_and_block_types() {
     );
     err(
         "class A\n  def me -> Self = self\nend\nclass B < A\n  def me -> Int = 5\nend",
-        "`me` returns Int but `A#me`, which it overrides, returns B",
+        "`me` returns Int but `A#me`, which it overrides, returns Self",
     );
     // A block the overridden method may go without, the override must too.
     err(
@@ -4808,5 +4808,114 @@ fn an_extensions_equality_is_an_ordinary_method() {
     err(
         "class Cond\nend\nabstract class Base\n  abstract def ==(other: Object) -> Bool\n  def hash -> Int = 0\nend\nextension Shape\n  def ==(other: String) -> Cond = Cond.new\nend\nclass Shape < Base\nend",
         "`==` takes String for `other` but `Base#==`, which it overrides, is given Object",
+    );
+}
+
+/// An override or implementation keeps `Self` where the overridden
+/// signature says it (docs/01 §3), unless no class can inherit from the
+/// overriding one (`data`, variants, built-in value classes).
+#[test]
+fn an_override_keeps_self() {
+    let base = "class Base\n  def initialize; end\n  def twice -> Self = self\n  def each_me(&: (Self) -> Void) -> Void = yield(self)\nend\n";
+    // The result: the class's own name is refused, `Self` accepted.
+    err(
+        &format!("{base}class C < Base\n  def twice -> C = C.new\nend\nclass D < C\nend\ndef f[T <: Base](t: T) -> T = t.twice\np f(D.new)"),
+        "`twice` returns C but `Base#twice`, which it overrides, returns Self: write `Self` where it says `Self`",
+    );
+    ok(&format!(
+        "{base}class C < Base\n  def twice -> Self = self\nend"
+    ));
+    // A block's parameter.
+    err(
+        &format!("{base}class C < Base\n  def each_me(&: (C) -> Void) -> Void = yield(self)\nend"),
+        "takes a block of type (C) -> Void but `Base#each_me`, which it overrides, is given one of type (Self) -> Void: write `Self`",
+    );
+    ok(&format!(
+        "{base}class C < Base\n  def each_me(&: (Self) -> Void) -> Void = yield(self)\nend"
+    ));
+    // A module's method, implemented.
+    let dup = "module Dup\n  abstract def dup2 -> Self\nend\n";
+    err(
+        &format!("{dup}class K\n  include Dup\n  def dup2 -> K = K.new\nend"),
+        "`dup2` returns K but `Dup#dup2`, which it overrides, returns Self",
+    );
+    // No class inherits from a `data` type or a variant: its name is `Self`.
+    ok(&format!(
+        "{dup}data P(x: Int)\n  include Dup\n  def dup2 -> P = P.new(x)\nend"
+    ));
+    // An enum's variants are its subclasses (tmp/repro/override-self-enum-variant.qz).
+    err(
+        &format!("{dup}enum E\n  include Dup\n  variant A\n  variant B\n  def dup2 -> E = E::B\nend\ndef g[T <: Dup](t: T) -> T = t.dup2\ny: E::A = g(E::A)"),
+        "`dup2` returns E but `Dup#dup2`, which it overrides, returns Self",
+    );
+    ok(&format!(
+        "{dup}enum E\n  include Dup\n  variant A\n  variant B\n  def dup2 -> Self = self\nend"
+    ));
+    // A class method alike.
+    err(
+        "class Base\n  def initialize; end\n  def self.build -> Self = new\nend\nclass C < Base\n  def self.build -> C = C.new\nend",
+        "`build` returns C but `Base.build`, which it overrides, returns Self",
+    );
+    // A class method overriding `Object#dup` has the class value there.
+    err(
+        "class C\n  def initialize; end\n  def self.dup -> Self = new\nend",
+        "`dup` returns C but `Object#dup`, which it overrides, returns Type[C]",
+    );
+    ok("class C\n  def initialize; end\n  def self.dup -> Type[C] = self\nend");
+    // Another type is not told to write `Self`.
+    let errs = diagnostics(&format!(
+        "{base}class C < Base\n  def twice -> Int = 1\nend"
+    ))
+    .join("\n");
+    assert!(
+        errs.contains("returns Int but `Base#twice`") && !errs.contains("write `Self`"),
+        "{errs}"
+    );
+}
+
+/// `Self.new(...)` in an instance method (docs/01 §9): typed `Self`; a
+/// subclass inheriting the method keeps a compatible `initialize` or
+/// overrides the method; refused where there is no such `self`.
+#[test]
+fn self_new_in_instance_methods() {
+    let base = "class Base\n  @n: Int\n  def initialize(@n: Int); end\n  def twice -> Self = Self.new(@n * 2)\nend\n";
+    // A `-> Self` override whose body is `Self.new(...)`.
+    ok(&format!("{base}class C < Base\n  def twice -> Self = Self.new(3)\nend\nclass D < C\nend\ny: D = D.new(1).twice"));
+    // An incompatible `initialize` is refused at the subclass.
+    err(
+        &format!("{base}class Bad < Base\n  @s: String\n  def initialize(@s: String)\n    super(1)\n  end\nend"),
+        "`Bad#initialize` does not take the arguments of `Self.new` in `Base#twice`, which `Bad` inherits",
+    );
+    // A compatible one (an optional parameter added), or an override.
+    ok(&format!("{base}class Fine < Base\n  @s: String\n  def initialize(n: Int, s: String = \"x\")\n    @s = s\n    super(n)\n  end\nend"));
+    ok(&format!("{base}class Over < Base\n  @s: String\n  def initialize(@s: String)\n    super(1)\n  end\n  def twice -> Self = self\nend"));
+    // The arguments are checked against the class's `initialize`.
+    err(
+        "class Base\n  @n: Int\n  def initialize(@n: Int); end\n  def bad -> Self = Self.new(\"x\")\nend",
+        "expects Int but found String",
+    );
+    // Where there is no instance method's `self` to build the class of.
+    err(
+        "module M\n  def mk -> Self = Self.new\nend",
+        "`Self.new` in a module's method",
+    );
+    err(
+        "class K\n  def go -> Int\n    5.instance_exec { Self.new(1) }\n    1\n  end\nend",
+        "which a block with another receiver hides",
+    );
+    err("def g -> Int = Self.new(1)", "`Self.new` in a function");
+    // A construction among its arguments is checked as any.
+    err(
+        "abstract class Shape\n  abstract def area -> Int\nend\nclass Base\n  @s: Shape\n  def initialize(@s: Shape); end\n  def make -> Self = Self.new(Shape.new)\nend",
+        "cannot instantiate `Shape`",
+    );
+    // It reads `self`: a task's block captures it only if Shareable.
+    err(
+        "class Base\n  var @n: Int\n  def initialize(@n: Int); end\n  def n -> Int = @n\n  def spawned -> Int\n    t = Task.spawn { Self.new(3).n }\n    t.await\n  end\nend",
+        "`self`, whose class `Self.new` builds, has the non-shareable type Base",
+    );
+    err(
+        "class K\n  def initialize; end\n  def self.mk -> Self = Self.new\nend",
+        "`Self.new` is written in an instance method",
     );
 }
