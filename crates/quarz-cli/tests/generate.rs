@@ -1886,3 +1886,43 @@ end
         "{err}"
     );
 }
+
+/// `Self.new` in a block given to `def_method` (docs/14 §5): the generated
+/// method builds its receiver's class; a subclass inheriting it keeps a
+/// compatible `initialize`, as for a written one.
+#[test]
+fn self_new_in_a_generated_method() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Model\n  @n: Int\n  def initialize(@n: Int); end\n  def n -> Int = @n\n  static def self.gen -> Void\n    def_method(:copy) do -> Self\n      Self.new(n + 1)\n    end\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass C < Model\n  gen\nend\nclass D < C\nend\nx = D.new(1).copy\np x.class, x.n\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "D\n2\n");
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let out = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "D\n2\n");
+    let bad = write(
+        &d.0,
+        "bad.qz",
+        "require_relative \"lib\"\nclass C < Model\n  gen\nend\nclass E < C\n  @s: String\n  def initialize(@s: String)\n    super(1)\n  end\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", bad.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("`E#initialize` does not take the arguments of `Self.new` in `C#copy`, which `E` inherits"),
+        "{err}"
+    );
+}

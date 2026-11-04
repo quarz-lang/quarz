@@ -4872,3 +4872,50 @@ fn an_override_keeps_self() {
         "{errs}"
     );
 }
+
+/// `Self.new(...)` in an instance method (docs/01 §9): typed `Self`; a
+/// subclass inheriting the method keeps a compatible `initialize` or
+/// overrides the method; refused where there is no such `self`.
+#[test]
+fn self_new_in_instance_methods() {
+    let base = "class Base\n  @n: Int\n  def initialize(@n: Int); end\n  def twice -> Self = Self.new(@n * 2)\nend\n";
+    // A `-> Self` override whose body is `Self.new(...)`.
+    ok(&format!("{base}class C < Base\n  def twice -> Self = Self.new(3)\nend\nclass D < C\nend\ny: D = D.new(1).twice"));
+    // An incompatible `initialize` is refused at the subclass.
+    err(
+        &format!("{base}class Bad < Base\n  @s: String\n  def initialize(@s: String)\n    super(1)\n  end\nend"),
+        "`Bad#initialize` does not take the arguments of `Self.new` in `Base#twice`, which `Bad` inherits",
+    );
+    // A compatible one (an optional parameter added), or an override.
+    ok(&format!("{base}class Fine < Base\n  @s: String\n  def initialize(n: Int, s: String = \"x\")\n    @s = s\n    super(n)\n  end\nend"));
+    ok(&format!("{base}class Over < Base\n  @s: String\n  def initialize(@s: String)\n    super(1)\n  end\n  def twice -> Self = self\nend"));
+    // The arguments are checked against the class's `initialize`.
+    err(
+        "class Base\n  @n: Int\n  def initialize(@n: Int); end\n  def bad -> Self = Self.new(\"x\")\nend",
+        "expects Int but found String",
+    );
+    // Where there is no instance method's `self` to build the class of.
+    err(
+        "module M\n  def mk -> Self = Self.new\nend",
+        "`Self.new` in a module's method",
+    );
+    err(
+        "class K\n  def go -> Int\n    5.instance_exec { Self.new(1) }\n    1\n  end\nend",
+        "which a block with another receiver hides",
+    );
+    err("def g -> Int = Self.new(1)", "`Self.new` in a function");
+    // A construction among its arguments is checked as any.
+    err(
+        "abstract class Shape\n  abstract def area -> Int\nend\nclass Base\n  @s: Shape\n  def initialize(@s: Shape); end\n  def make -> Self = Self.new(Shape.new)\nend",
+        "cannot instantiate `Shape`",
+    );
+    // It reads `self`: a task's block captures it only if Shareable.
+    err(
+        "class Base\n  var @n: Int\n  def initialize(@n: Int); end\n  def n -> Int = @n\n  def spawned -> Int\n    t = Task.spawn { Self.new(3).n }\n    t.await\n  end\nend",
+        "`self`, whose class `Self.new` builds, has the non-shareable type Base",
+    );
+    err(
+        "class K\n  def initialize; end\n  def self.mk -> Self = Self.new\nend",
+        "`Self.new` is written in an instance method",
+    );
+}

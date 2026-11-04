@@ -1,0 +1,48 @@
+# `Self.new(...)` in instance methods (docs/01 §9): built by the
+# receiver's run-time class, typed `Self`; from a block and a lambda; in
+# an abstract class; through a generic.
+abstract class Base
+  @n: Int
+  def initialize(@n: Int); end
+  def n -> Int = @n
+  def twice -> Self = Self.new(@n * 2)
+  def copies(k: Int) -> Array[Self] = (1..k).map { |i| Self.new(@n + i) }
+  def lam -> Self
+    f = -> { Self.new(0) }
+    f.call
+  end
+end
+class C < Base
+end
+class D < C
+  @tag: String = "d"
+  def tag -> String = @tag
+end
+y: D = D.new(1).twice
+p y.n, y.tag
+p D.new(5).copies(2).map { |x| [x.class, x.n] }
+p C.new(3).twice.class, D.new(1).lam.class
+def f[T <: Base](t: T) -> T = t.twice
+p f(D.new(4)).tag
+# A subclass with an `initialize` of its own that takes the arguments
+# (adding an optional one).
+class E < Base
+  @s: String
+  def initialize(n: Int, s: String = "e")
+    @s = s
+    super(n)
+  end
+  def s -> String = @s
+end
+e = E.new(10, "x").twice
+p e.class, e.n, e.s
+# A class without subclasses: `Self.new` is the class itself.
+data Pt(x: Int)
+  def moved -> Pt = Self.new(x + 1)
+end
+p Pt.new(1).moved
+# A class overriding `class` still builds its own instances.
+class Liar < Base
+  def class -> Class = Base
+end
+p Liar.new(2).twice.is_a?(Liar)

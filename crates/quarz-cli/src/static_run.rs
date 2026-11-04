@@ -412,8 +412,7 @@ impl Runner {
                     .collect(),
             };
             let keyword_hash = g.keywords.is_some();
-            let (func, class, captures, singleton) =
-                (g.func, g.class, g.captures.clone(), g.singleton);
+            let (func, class, captures) = (g.func, g.class, g.captures.clone());
             let info = MethodInfo {
                 id: 0,
                 name: g.name.clone(),
@@ -450,14 +449,13 @@ impl Runner {
                 .add_generated(info)
                 .map_err(|why| fail(format!("{at}: {why}")))?;
             declared[index] = Some(mid);
-            // A class method that builds an instance of its receiver
-            // (`new` in the block): the class's `initialize` and its
-            // subclasses' must take what `new` passes.
-            if singleton {
-                for (from, init) in receiver_news(&self.lowerer.done, func) {
-                    host.generated_new(class, from, mid, init, (stmt.file, stmt.span))
-                        .map_err(|why| fail(format!("{at}: {why}")))?;
-                }
+            // A method that builds an instance of its receiver's class
+            // (`new` in a class method's block, `Self.new` in an instance
+            // method's): the class's `initialize` and its subclasses' must
+            // take what `new` passes.
+            for (from, init) in receiver_news(&self.lowerer.done, func) {
+                host.generated_new(class, from, mid, init, (stmt.file, stmt.span))
+                    .map_err(|why| fail(format!("{at}: {why}")))?;
             }
             generated.push((Some(func), class, Some(mid), captures, at.clone()));
             if !classes.contains(&g.class) {
