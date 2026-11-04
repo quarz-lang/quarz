@@ -1590,3 +1590,119 @@ end
         assert!(!err.contains("for Meta::ClassDef"), "{args}: {err}");
     }
 }
+
+/// `def_method(name, keywords:)` (docs/14 §5): a method of keyword
+/// parameters computed at compile time, as rotor's `with` on a model;
+/// the body gets the hash of the keywords given. And `def_field(...,
+/// nullable: true)`. Interpreted and compiled, cold and warm.
+#[test]
+fn generated_keyword_methods_and_nullable_fields() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r##"class Model
+  static def self.columns(cols: Array[Meta::Keyword]) -> Void
+    names = cols.map { |c| c.name }
+    def_method(:with, keywords: cols) do |given|
+      names.filter { |n| given.key?(n) }.map { |n| "#{n}=#{given[n].inspect}" }.join(" ")
+    end
+    def_class_method(:make, keywords: cols) do |given|
+      "#{name} #{given.size}"
+    end
+    r = def_field(:note, String, nil, nullable: true, var: true, reader: true)
+    def_method(:note!, :s) do |s: String?| -> Void
+      r.set(self, s)
+    end
+  end
+end
+"##,
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class Person < Model
+  columns [
+    Meta::Keyword.new(:name, String, true),
+    Meta::Keyword.new(:age, Int, false),
+    Meta::Keyword.new(:email, String, false, nullable: true),
+  ]
+end
+x = Person.new
+puts x.with(name: "a", age: 3)
+puts x.with(age: 4, name: "b")
+puts x.with(name: "c", email: nil)
+puts x.with(name: "d", email: "d@e")
+p x.note
+x.note!("hi")
+p x.note
+puts Person.make(name: "e", age: 1)
+"#,
+    );
+    let expected = "name=\"a\" age=3\nname=\"b\" age=4\nname=\"c\" email=nil\nname=\"d\" email=\"d@e\"\nnil\n\"hi\"\nPerson 2\n";
+    let cache = d.0.join("cache");
+    let env = [("QUARZ_CACHE_DIR", cache.to_str().unwrap())];
+    let cold = quarz(&d.0, &["check", app.to_str().unwrap()], &env);
+    assert!(cold.0, "{}", cold.2);
+    let warm = quarz(&d.0, &["check", app.to_str().unwrap()], &env);
+    assert_eq!(warm, cold);
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &env);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &env,
+    );
+    assert!(ok, "{err}");
+    let out = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+    // The signature, as `--expand` shows it.
+    let (ok, out, err) = quarz(&d.0, &["check", "--expand", app.to_str().unwrap()], &env);
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("def with(*, name: String, age: Int = …, email: String? = …) -> String"),
+        "{out}"
+    );
+    // A call is checked as any keyword call.
+    for (call, expected) in [
+        ("x.with(name: 3)", "expects String but found Int"),
+        (
+            "x.with(name: \"a\", height: 2)",
+            "has no parameter `height`",
+        ),
+        ("x.with(age: 1)", "is missing the argument `name`"),
+        ("x.with(name: \"a\", age: nil)", "expects Int but found Nil"),
+    ] {
+        let bad = write(
+            &d.0,
+            "bad.qz",
+            &format!("require_relative \"lib\"\nclass Person < Model\n  columns [Meta::Keyword.new(:name, String, true), Meta::Keyword.new(:age, Int, false)]\nend\nx = Person.new\n{call}\n"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", bad.to_str().unwrap()], &[]);
+        assert!(!ok, "{call}");
+        assert!(err.contains(expected), "{call}: {err}");
+    }
+    // What the statement refuses.
+    for (cols, expected) in [
+        (
+            "[Meta::Keyword.new(:xs, Array, true)]",
+            "the keyword `xs` is typed `Array`, which takes type arguments",
+        ),
+        (
+            "[Meta::Keyword.new(:a, Int, true), Meta::Keyword.new(:a, Int, false)]",
+            "the keyword `a` is given twice",
+        ),
+        ("[]", "keywords: is empty"),
+    ] {
+        let bad = write(
+            &d.0,
+            "bad.qz",
+            &format!("require_relative \"lib\"\nclass Person < Model\n  columns {cols}\nend\n"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", bad.to_str().unwrap()], &[]);
+        assert!(!ok, "{cols}");
+        assert!(err.contains(expected), "{cols}: {err}");
+    }
+}

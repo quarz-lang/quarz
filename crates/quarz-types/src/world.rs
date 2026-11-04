@@ -122,6 +122,11 @@ pub struct Generated {
     pub block: Span,
     /// The `doc` text given before `def_method`.
     pub doc: Option<String>,
+    /// Made with `keywords:` (docs/14 §5): the method's keyword
+    /// parameters are bound at run time as one `**` parameter, the hash
+    /// of those a call passed, which the body (the block) takes.
+    #[serde(default)]
+    pub keywords: bool,
 }
 
 /// A compile-time value a generated method embeds as a constant (docs/14

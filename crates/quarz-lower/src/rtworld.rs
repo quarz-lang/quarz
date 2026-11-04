@@ -289,6 +289,7 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
                 } else {
                     Vec::new()
                 },
+                keyword_hash: m.generated.as_ref().is_some_and(|g| g.keywords),
             }
         })
         .collect();

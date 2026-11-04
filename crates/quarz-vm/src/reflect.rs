@@ -81,6 +81,8 @@ pub struct FieldRequest {
     pub mutable: bool,
     pub reader: bool,
     pub writer: bool,
+    /// `nullable: true`: the field is a `ty?`.
+    pub nullable: bool,
 }
 
 /// A method `def_method` asks for: the block lifted to it, with the
@@ -96,4 +98,15 @@ pub struct GenRequest {
     pub visibility: String,
     pub func: FuncId,
     pub captures: Vec<(u32, u32, Value)>,
+    /// `keywords:` (`Meta::Keyword` values): the method's keyword
+    /// parameters, the block taking the hash of those a call passed.
+    pub keywords: Option<Vec<KeywordRequest>>,
+}
+
+/// A `Meta::Keyword`: name, type (a class), required, nullable.
+pub struct KeywordRequest {
+    pub name: String,
+    pub ty: ClassId,
+    pub required: bool,
+    pub nullable: bool,
 }
