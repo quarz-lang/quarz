@@ -1977,9 +1977,9 @@ impl<'src> Parser<'src> {
         r
     }
 
-    /// A block's or a lambda's parameters take no default: the procedure
-    /// type it is given for decides how many arguments it gets, and of
-    /// which types (docs/01 §9).
+    /// A block's or a lambda's parameters take no default but its
+    /// keyword-only ones: the procedure type it is given for decides how
+    /// many arguments it gets, and of which types (docs/01 §9).
     fn refuse_defaults(&mut self, params: &Params, block: bool) {
         let message = if block {
             "a block's parameters take no default: the block's type gives every argument"
@@ -1987,9 +1987,22 @@ impl<'src> Parser<'src> {
             "a lambda's parameters take no default: each call gives every argument"
         };
         for p in &params.list {
-            if let Some(d) = &p.default {
+            // (A keyword-only parameter's default makes the keyword
+            // optional for that procedure.)
+            if let Some(d) = p
+                .default
+                .as_ref()
+                .filter(|_| p.kind != ParamKind::KeywordOnly)
+            {
                 let span = d.span;
                 self.error_at(message, span);
+            }
+            if p.kind == ParamKind::KeywordRest {
+                let span = p.span;
+                self.error_at(
+                    "a procedure takes no `**rest`: its type lists each keyword it takes (`*, k: Int`)",
+                    span,
+                );
             }
         }
     }
@@ -3743,18 +3756,7 @@ impl<'src> Parser<'src> {
         {
             self.bump();
             self.expect(&T::LParen, "`(`")?;
-            let mut items = Vec::new();
-            loop {
-                self.skip_newlines();
-                if self.at(&T::RParen) {
-                    break;
-                }
-                items.push(self.parse_nested_type()?);
-                self.skip_newlines();
-                if !self.eat(&T::Comma) {
-                    break;
-                }
-            }
+            let (items, keywords) = self.parse_proc_type_items()?;
             self.expect(&T::RParen, "`)`")?;
             self.expect(&T::Arrow, "`->`")?;
             let ret = self.parse_type_postfix()?;
@@ -3766,6 +3768,7 @@ impl<'src> Parser<'src> {
                     params: items,
                     ret: Box::new(ret),
                     shareable: false,
+                    keywords: keywords.unwrap_or_default(),
                 },
             };
         }
@@ -3854,18 +3857,8 @@ impl<'src> Parser<'src> {
             }
             T::LParen => {
                 self.bump();
-                let mut items = Vec::new();
-                loop {
-                    self.skip_newlines();
-                    if self.at(&T::RParen) {
-                        break;
-                    }
-                    items.push(self.parse_nested_type()?);
-                    self.skip_newlines();
-                    if !self.eat(&T::Comma) {
-                        break;
-                    }
-                }
+                let (mut items, keywords) = self.parse_proc_type_items()?;
+                let star = keywords.as_ref().map(|_| self.peek().span);
                 self.expect(&T::RParen, "`)`")?;
                 if self.at(&T::Arrow) {
                     self.bump();
@@ -3878,8 +3871,15 @@ impl<'src> Parser<'src> {
                             params: items,
                             ret: Box::new(ret),
                             shareable: false,
+                            keywords: keywords.unwrap_or_default(),
                         },
                     });
+                }
+                if let Some(span) = star {
+                    return Err(self.error_at(
+                        "expected `->` after a procedure type's parameters (`*` starts its keyword parameters)",
+                        span,
+                    ));
                 }
                 if items.len() == 1 {
                     return Ok(items.pop().unwrap());
@@ -3889,6 +3889,60 @@ impl<'src> Parser<'src> {
             }
             _ => Err(self.error_expected("a type")),
         }
+    }
+
+    /// A procedure type's parameters, up to `)`: types, then after `*`
+    /// keyword-only parameters (`k: T`), `Some` when a `*` was written.
+    #[allow(clippy::type_complexity)]
+    fn parse_proc_type_items(&mut self) -> PResult<(Vec<TypeExpr>, Option<Vec<ProcKeyword>>)> {
+        let mut items = Vec::new();
+        let mut keywords: Option<Vec<ProcKeyword>> = None;
+        loop {
+            self.skip_newlines();
+            if self.at(&T::RParen) {
+                break;
+            }
+            if keywords.is_none() && self.at(&T::Star) {
+                let star = self.peek().span;
+                self.bump();
+                if !matches!(self.kind(), T::Comma | T::RParen) {
+                    return Err(self.error_at(
+                        "a procedure type has no `*rest` parameter: `*` alone starts its keyword parameters (`(Int, *, k: Int) -> R`)",
+                        star,
+                    ));
+                }
+                keywords = Some(Vec::new());
+            } else if let Some(kws) = keywords.as_mut() {
+                let start = self.peek().span;
+                let T::Ident(name) = self.kind().clone() else {
+                    return Err(self.error_expected(
+                        "a keyword parameter (`name: Type`) after `*` in a procedure type",
+                    ));
+                };
+                self.bump();
+                self.expect(&T::Colon, "`:` and the keyword's type")?;
+                let ty = self.parse_nested_type()?;
+                if self.at(&T::Assign) {
+                    let at = self.peek().span;
+                    return Err(self.error_at(
+                        "a procedure type lists its required keywords only: a keyword with a default is optional, and callers of the type cannot rely on it",
+                        at,
+                    ));
+                }
+                let span = self.span_from(start);
+                if kws.iter().any(|k| k.name == name) {
+                    self.error_at(format!("keyword `{name}` is listed twice"), span);
+                }
+                kws.push(ProcKeyword { name, ty, span });
+            } else {
+                items.push(self.parse_nested_type()?);
+            }
+            self.skip_newlines();
+            if !self.eat(&T::Comma) {
+                break;
+            }
+        }
+        Ok((items, keywords))
     }
 
     fn parse_type_args(&mut self) -> PResult<Vec<TypeExpr>> {

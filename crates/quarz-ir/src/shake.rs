@@ -345,7 +345,10 @@ fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
                             visit(Ref::Method(*m));
                         }
                     }
-                    CallKind::ProcCall | CallKind::Yield | CallKind::Raise => {}
+                    CallKind::ProcCall
+                    | CallKind::Yield
+                    | CallKind::InstanceExec
+                    | CallKind::Raise => {}
                 },
                 Inst::OwnedCall { method, .. } => visit(Ref::Method(*method)),
                 Inst::BinOp { method, op, .. } => {
@@ -426,6 +429,7 @@ pub fn empty_function(name: String, kind: FuncKind, file: u32, arity: i32) -> Fu
         nregs: 1,
         frame_size: 0,
         param_kinds: Vec::new(),
+        kw_names: Vec::new(),
         arity,
         consts: Vec::new(),
         blocks: vec![Block {

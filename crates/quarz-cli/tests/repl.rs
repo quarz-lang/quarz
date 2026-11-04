@@ -731,3 +731,27 @@ fn a_rolled_back_inputs_toplevel_object_is_not_reused() {
     assert_eq!(out[2], "", "{out:?}");
     assert_eq!(printed, "who: main\n");
 }
+
+/// Keyword parameters in procedure types (docs/02 §1) across inputs: a
+/// lambda, a method yielding keywords and a block given in a later input.
+#[test]
+fn keyword_procedures_across_inputs() {
+    let (out, _) = values(&[
+        "f = ->(x: Int, *, k: Int = 2) { x * k }",
+        "f.call(3)",
+        "f.call(3, k: 5)",
+        "def run(&: (Int, *, k: Int) -> Int) -> Int = yield(4, k: 10)",
+        "run { |x, *, k| x + k }",
+        "run { |x| x }",
+        "g: (Int, *, k: Int) -> Int = f",
+        "g.call(1, k: 7)",
+    ]);
+    assert_eq!(out[1], "=> 6");
+    assert_eq!(out[2], "=> 15");
+    assert_eq!(out[4], "=> 14");
+    assert!(
+        out[5].contains("passes the block the keyword `k`"),
+        "{out:?}"
+    );
+    assert_eq!(out[7], "=> 7");
+}

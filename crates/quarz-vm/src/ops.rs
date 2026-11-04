@@ -28,6 +28,7 @@ pub enum CallOp<'a> {
     },
     ProcCall,
     Yield,
+    InstanceExec,
     Super(MethodId),
     /// `CallKind::Function`: this method, not looked up on the receiver.
     Function(MethodId),
@@ -49,6 +50,7 @@ impl<'a> CallOp<'a> {
             },
             CallKind::ProcCall => CallOp::ProcCall,
             CallKind::Yield => CallOp::Yield,
+            CallKind::InstanceExec => CallOp::InstanceExec,
             CallKind::Super(m) => CallOp::Super(*m),
             CallKind::Function(m) => CallOp::Function(*m),
             CallKind::Raise => CallOp::Raise,
@@ -256,16 +258,23 @@ impl Interp {
                 self.catch_break(&block, r)
             }
             CallOp::ProcCall => {
-                let r = self.call_block(&recv, pos);
+                let r = self.call_block_kw(&recv, None, pos, kw);
                 self.catch_break(&block, r)
             }
             CallOp::Yield => {
                 if act.block.is_nil() {
                     Err(self.raise(self.program.exc.runtime_error, "no block given (yield)"))
                 } else {
-                    self.call_block(&act.block, pos)
+                    self.call_block_kw(&act.block, None, pos, kw)
                 }
             }
+            CallOp::InstanceExec => match &block {
+                Some(b) => {
+                    let r = self.call_block_kw(b, Some(recv), pos, kw);
+                    self.catch_break(&block, r)
+                }
+                None => Err(self.err_type("instance_exec without a block")),
+            },
             CallOp::Super(mid) | CallOp::Function(mid) => {
                 let r = self.invoke(mid, recv, pos, kw, block.clone());
                 self.catch_break(&block, r)

@@ -221,6 +221,8 @@ partial def Tables.tyIn (T : Tables) (env : List (Nat × Ty)) (j : Json) : M Ty 
   -- classes 2 to 2 + `procMax`.
   | "proc" =>
     unless (← field j "recv") == .null do throw "a procedure type with a receiver"
+    -- Keyword-only parameters (docs/02 §1): not translated yet.
+    if (j.getObjVal? "keywords").toOption.isSome then throw "a procedure type with keywords"
     -- A shareable one captures by value (docs/02 §9): not the model's.
     -- (A `shareable` one captures by value and assigns nothing: the
     -- model's procedure, which reads what it captures as declared, is no

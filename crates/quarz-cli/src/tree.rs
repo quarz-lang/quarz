@@ -342,13 +342,24 @@ fn ty(t: &Type) -> Value {
         Type::TypeOf(inner) => json!({ "t": "type_of", "of": ty(inner) }),
         Type::Union(ms) => json!({ "t": "union", "members": all(ms) }),
         Type::Tuple(ms) => json!({ "t": "tuple", "members": all(ms) }),
-        Type::Proc(recv, params, ret, shareable) => json!({
-            "t": "proc",
-            "recv": recv.as_deref().map(ty),
-            "params": all(params),
-            "ret": ty(ret),
-            "shareable": shareable,
-        }),
+        Type::Proc(recv, params, ret, shareable, kws) => {
+            let mut j = json!({
+                "t": "proc",
+                "recv": recv.as_deref().map(ty),
+                "params": all(params),
+                "ret": ty(ret),
+                "shareable": shareable,
+            });
+            // (Only where there are some, so that a type without keywords
+            // reads as before.)
+            if !kws.is_empty() {
+                j["keywords"] = kws
+                    .iter()
+                    .map(|k| json!({ "name": k.name, "ty": ty(&k.ty), "required": k.required }))
+                    .collect();
+            }
+            j
+        }
         Type::Param(id) => json!({ "t": "param", "id": id }),
         Type::Var(v) => json!({ "t": "var", "id": format!("{v:?}") }),
     }
@@ -369,6 +380,7 @@ fn call(c: &CallTarget, methods: &mut Vec<MethodId>) -> Value {
             json!({ "t": "constructor", "class": class, "init": init })
         }
         CallTarget::ProcCall => json!({ "t": "proc_call" }),
+        CallTarget::InstanceExec => json!({ "t": "instance_exec" }),
         CallTarget::IsA(t) => json!({ "t": "is_a", "type": ty(t) }),
         CallTarget::As { ty: t, optional } => {
             json!({ "t": "as", "type": ty(t), "optional": optional })

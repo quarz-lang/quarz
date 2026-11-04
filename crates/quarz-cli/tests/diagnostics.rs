@@ -252,3 +252,24 @@ fn positional_after_keyword() {
     assert_eq!(out.matches(msg).count(), 2, "{out}");
     assert!(out.contains(":2:14:") && out.contains(":3:22:"), "{out}");
 }
+
+/// What a procedure type's keywords and a block's or a lambda's keyword
+/// parameters cannot be (docs/02 §1): a default in a written type, a
+/// `*rest` in a type, `**` in a block, a duplicate, a missing `->`.
+#[test]
+fn procedure_type_keyword_syntax() {
+    let out = common::diagnostics(
+        "a: (Int, *, k: Int = 1) -> Int = ->(x: Int, *, k: Int = 1) { x }\nb: (*xs) -> Int = -> { 1 }\nc = [1].map { |x, **o| x }\nd: (*, k: Int, k: Int) -> Int = ->(*, k: Int) { k }\ne: (Int, *, k: Int) = 1\nok = ->(x: Int, *, k: Int = 2) { x + k }\n",
+    )
+    .join("\n");
+    for msg in [
+        "a procedure type lists its required keywords only",
+        "a procedure type has no `*rest` parameter",
+        "a procedure takes no `**rest`",
+        "keyword `k` is listed twice",
+        "expected `->` after a procedure type's parameters",
+    ] {
+        assert!(out.contains(msg), "{msg:?} in {out}");
+    }
+    assert!(!out.contains("take no default"), "{out}");
+}

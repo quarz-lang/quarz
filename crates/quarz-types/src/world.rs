@@ -759,11 +759,12 @@ impl World {
             Type::TypeOf(t) => Type::type_of(self.erase_narrowed(t)),
             Type::Union(ms) => Type::union_of(ms.iter().map(|m| self.erase_narrowed(m)).collect()),
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(|m| self.erase_narrowed(m)).collect()),
-            Type::Proc(rc, ps, r, sh) => Type::Proc(
+            Type::Proc(rc, ps, r, sh, kws) => Type::Proc(
                 rc.as_ref().map(|t| Box::new(self.erase_narrowed(t))),
                 ps.iter().map(|p| self.erase_narrowed(p)).collect(),
                 Box::new(self.erase_narrowed(r)),
                 *sh,
+                ProcKw::map(kws, |t| self.erase_narrowed(t)),
             ),
             Type::Nothing | Type::Void | Type::Var(_) => t.clone(),
         }
@@ -895,11 +896,12 @@ impl World {
             Type::TypeOf(t) => Type::type_of(self.devoid(t)),
             Type::Union(ms) => Type::union_of(ms.iter().map(|m| self.devoid(m)).collect()),
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(|m| self.devoid(m)).collect()),
-            Type::Proc(rc, ps, r, sh) => Type::Proc(
+            Type::Proc(rc, ps, r, sh, kws) => Type::Proc(
                 rc.as_ref().map(|t| Box::new(self.devoid(t))),
                 ps.iter().map(|p| self.devoid(p)).collect(),
                 Box::new(self.devoid(r)),
                 *sh,
+                ProcKw::map(kws, |t| self.devoid(t)),
             ),
         }
     }
@@ -960,7 +962,7 @@ impl World {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            Type::Proc(rc, ps, r, sh) => format!(
+            Type::Proc(rc, ps, r, sh, kws) => format!(
                 "{}{}({}) -> {}",
                 if *sh { "shareable " } else { "" },
                 rc.as_ref()
@@ -968,6 +970,15 @@ impl World {
                     .unwrap_or_default(),
                 ps.iter()
                     .map(|t| self.type_name(t))
+                    .chain((!kws.is_empty()).then(|| "*".to_string()))
+                    // (An optional keyword, of a block's or a lambda's
+                    // own type, shows its default as `_`.)
+                    .chain(kws.iter().map(|k| format!(
+                        "{}: {}{}",
+                        k.name,
+                        self.type_name(&k.ty),
+                        if k.required { "" } else { " = _" }
+                    )))
                     .collect::<Vec<_>>()
                     .join(", "),
                 self.type_name(r)
@@ -1807,10 +1818,15 @@ impl World {
                 self.class_is_a(self.builtin.array, *b)
                     && self.keeps_shareable(self.builtin.array, &[Type::union_of(xs.clone())], *b)
             }
-            (Type::Proc(ra, ps, r, sa), Type::Proc(rb, qs, s, sb)) => {
+            (Type::Proc(ra, ps, r, sa, ka), Type::Proc(rb, qs, s, sb, kb)) => {
                 // A shareable procedure is a procedure; not the reverse.
                 if *sb && !*sa {
                     return false;
+                }
+                // Keywords by name, contravariant (docs/02 §9).
+                match ProcKw::accepts(ka, kb) {
+                    Some(pairs) if pairs.iter().all(|(v, t)| self.is_subtype(t, v)) => {}
+                    _ => return false,
                 }
                 // Receivers, like parameters, are contravariant.
                 let recv_ok = match (ra, rb) {
@@ -1909,10 +1925,11 @@ impl World {
                 }
                 Type::Union(ts) | Type::Tuple(ts) => ts.iter().any(|a| open(m, a)),
                 Type::TypeOf(t) => open(m, t),
-                Type::Proc(r, ps, ret, _) => {
+                Type::Proc(r, ps, ret, _, kws) => {
                     r.as_deref().is_some_and(|r| open(m, r))
                         || ps.iter().any(|a| open(m, a))
                         || open(m, ret)
+                        || kws.iter().any(|k| open(m, &k.ty))
                 }
                 Type::Nothing | Type::Void => false,
             }
@@ -2904,7 +2921,7 @@ impl World {
             }
             Type::ClassObject(_, _) | Type::TypeOf(_) => true,
             Type::Union(ms) | Type::Tuple(ms) => ms.clone().iter().all(|m| self.is_shareable(m)),
-            Type::Proc(_, _, _, shareable) => *shareable,
+            Type::Proc(_, _, _, shareable, _) => *shareable,
             // `Self`: as shareable as the class it stands for.
             Type::Param(p) if *p == u32::MAX => match self.self_bound.clone() {
                 Some(b) => self.is_shareable(&b),
@@ -3230,7 +3247,7 @@ impl World {
                     // (Only where the argument can make the field's value
                     // non-Shareable: not in a `Type[T]` or a shareable
                     // procedure's type.)
-                    let unshareable = Type::Proc(None, Vec::new(), Box::new(Type::Nothing), false);
+                    let unshareable = Type::proc_(None, Vec::new(), Box::new(Type::Nothing), false);
                     let witness: HashMap<TypeParamId, Type> =
                         [(p, unshareable)].into_iter().collect();
                     if ty.mentions_param(p)

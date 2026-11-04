@@ -48,6 +48,9 @@ pub enum CallTarget {
     },
     /// Calling a procedure value.
     ProcCall,
+    /// `recv.instance_exec(args, k: v, &b)` with keyword arguments: the
+    /// block run with `self` = the receiver (docs/01 §9).
+    InstanceExec,
     /// `x.is_a?(T)`
     IsA(Type),
     /// `x.as(T)` / `x.as?(T)`
@@ -843,11 +846,12 @@ impl InferTable {
             Type::TypeOf(t) => Type::type_of(self.resolve(t)),
             Type::Union(ms) => Type::union_of(ms.iter().map(|m| self.resolve(m)).collect()),
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| self.resolve(t)).collect()),
-            Type::Proc(rc, ps, r, sh) => Type::Proc(
+            Type::Proc(rc, ps, r, sh, kws) => Type::Proc(
                 rc.as_ref().map(|t| Box::new(self.resolve(t))),
                 ps.iter().map(|p| self.resolve(p)).collect(),
                 Box::new(self.resolve(r)),
                 *sh,
+                ProcKw::map(kws, |t| self.resolve(t)),
             ),
         }
     }
@@ -1350,11 +1354,13 @@ impl Checker {
             Type::Union(ms) | Type::Tuple(ms) => {
                 ms.iter().for_each(|m| self.check_bounds_deep(m, span))
             }
-            Type::Proc(rc, ps, r, _) => {
+            Type::Proc(rc, ps, r, _, kws) => {
                 if let Some(rc) = rc {
                     self.check_bounds_deep(rc, span);
                 }
-                ps.iter().for_each(|p| self.check_bounds_deep(p, span));
+                ps.iter()
+                    .chain(kws.iter().map(|k| &k.ty))
+                    .for_each(|p| self.check_bounds_deep(p, span));
                 self.check_bounds_deep(r, span);
             }
             Type::Nothing | Type::Void | Type::Param(_) | Type::Var(_) => {}
@@ -3336,10 +3342,23 @@ impl Checker {
                 self.world.class_is_a(array, *eid)
                     && self.world.keeps_shareable(array, &[elems], *eid)
             }
-            (Type::Proc(ra, ps, r, sa), Type::Proc(rb, qs, s, sb)) => {
+            (Type::Proc(ra, ps, r, sa, ka), Type::Proc(rb, qs, s, sb, kb)) => {
                 // A shareable procedure is a procedure; not the reverse.
                 if ps.len() != qs.len() || (*sb && !*sa) {
                     return false;
+                }
+                // Keywords by name (docs/02 §9), contravariant.
+                let Some(pairs) = ProcKw::accepts(ka, kb) else {
+                    return false;
+                };
+                let pairs: Vec<(Type, Type)> = pairs
+                    .into_iter()
+                    .map(|(v, t)| (v.clone(), t.clone()))
+                    .collect();
+                for (v, t) in &pairs {
+                    if !self.coerce(t, v) {
+                        return false;
+                    }
                 }
                 // Receivers are contravariant, and a block with one is
                 // not a block without one.
@@ -4290,9 +4309,10 @@ impl Checker {
             }
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().for_each(|x| Self::vars_in(x, out)),
             Type::TypeOf(x) => Self::vars_in(x, out),
-            Type::Proc(rc, ps, r, _) => {
+            Type::Proc(rc, ps, r, _, kws) => {
                 rc.iter().for_each(|x| Self::vars_in(x, out));
                 ps.iter().for_each(|x| Self::vars_in(x, out));
+                kws.iter().for_each(|k| Self::vars_in(&k.ty, out));
                 Self::vars_in(r, out);
             }
             _ => {}
@@ -4597,11 +4617,12 @@ impl Checker {
                 args.iter().for_each(|a| self.settle_in(a));
             }
             Type::TypeOf(t) => self.settle_in(t),
-            Type::Proc(rc, ps, r, _) => {
+            Type::Proc(rc, ps, r, _, kws) => {
                 if let Some(rc) = rc {
                     self.settle_in(rc);
                 }
                 ps.iter().for_each(|p| self.settle_in(p));
+                kws.iter().for_each(|k| self.settle_in(&k.ty));
                 self.settle_in(r);
             }
             Type::Var(_) | Type::Nothing | Type::Void | Type::Param(_) => {}
@@ -5798,22 +5819,6 @@ impl Checker {
                     );
                     return Type::Nothing;
                 }
-                // A handle passes positional arguments only: a required
-                // keyword would be left out (a defaulted one takes its
-                // default).
-                if let Some(k) = m
-                    .params
-                    .iter()
-                    .find(|p| p.kind == ParamKind::KeywordOnly && p.default.is_none())
-                {
-                    self.error(
-                        format!(
-                            "`{name}` needs the keyword `{}`: a handle cannot pass keywords; wrap it in a block",
-                            k.name
-                        ),
-                        expr.span,
-                    );
-                }
                 let mut subst = subst;
                 subst.insert(SELF_PARAM, Self::self_binding(&self.world, &m, &rt));
                 let params: Vec<Type> = m
@@ -5821,6 +5826,19 @@ impl Checker {
                     .iter()
                     .filter(|p| p.kind == ParamKind::Positional)
                     .map(|p| p.ty.subst(&subst))
+                    .collect();
+                // The method's required keywords are the handle's (docs/02
+                // §9); one with a default stays out of its type, and the
+                // handle takes the default.
+                let keywords: Vec<ProcKw> = m
+                    .params
+                    .iter()
+                    .filter(|p| p.kind == ParamKind::KeywordOnly && p.default.is_none())
+                    .map(|p| ProcKw {
+                        name: p.name.clone(),
+                        ty: p.ty.subst(&subst),
+                        required: true,
+                    })
                     .collect();
                 let ret = self.method_ret(mid).subst(&subst);
                 // A block checked once per type of what it is given may
@@ -5837,7 +5855,7 @@ impl Checker {
                     .calls
                     .insert(expr.id, CallTarget::Method { method: mid });
                 self.note_static_call(expr, mid);
-                Type::Proc(None, params, Box::new(ret), false)
+                Type::Proc(None, params, Box::new(ret), false, ProcKw::sorted(keywords))
             }
             Yield(args) => self.check_yield(expr, args),
             Super { args, block } => self.check_super(expr, args.as_deref(), block.as_deref()),
@@ -8257,8 +8275,12 @@ impl Checker {
         _quiet: bool,
     ) -> Type {
         // An operator method takes no keyword argument (docs/01 §9): its
-        // parameters' names are not part of what callers write.
-        if quarz_syntax::positional_only_name(&call.name) {
+        // parameters' names are not part of what callers write. (`p[1,
+        // k: 2]` calls a procedure, by its receiver's type:
+        // `check_call_on`.)
+        if quarz_syntax::positional_only_name(&call.name)
+            && !(call.name == "[]" && call.recv.is_some())
+        {
             if let Some(Arg::Keyword { value, .. }) =
                 call.args.iter().find(|a| matches!(a, Arg::Keyword { .. }))
             {
@@ -8798,6 +8820,31 @@ impl Checker {
         expected: Option<&Type>,
     ) -> Type {
         let name = call.name.as_str();
+        // (`Object#instance_exec`, the native: a method of the name a
+        // class declares is called as any.)
+        if name == "instance_exec"
+            && call.args.iter().any(|a| matches!(a, Arg::Keyword { .. }))
+            && {
+                let found = self.world.lookup_methods(recv_ty, name);
+                !found.is_empty()
+                    && found.iter().all(|(m, _)| {
+                        let m = self.world.method(*m);
+                        m.is_native && m.owner == self.world.builtin.object
+                    })
+            }
+        {
+            return self.check_instance_exec_kw(expr, call, recv_ty, expected);
+        }
+        if name == "[]" && !matches!(self.resolve(recv_ty), Type::Proc(..) | Type::Union(_)) {
+            if let Some(Arg::Keyword { value, .. }) =
+                call.args.iter().find(|a| matches!(a, Arg::Keyword { .. }))
+            {
+                self.error(
+                    "`[]` takes no keyword arguments: an operator's are positional",
+                    value.span,
+                );
+            }
+        }
         // `new` on a `Meta::ClassDef[C]` (a `static` class method's `self`,
         // docs/14) constructs `C`, as on the class.
         if name == "new" {
@@ -8966,38 +9013,10 @@ impl Checker {
                 Type::Nothing
             }
             // `f.call(x)`, `f.(x)` and `f[x]` all call the procedure.
-            Type::Proc(None, params, ret, _) if name == "call" || name == "[]" => {
-                let params = params.clone();
+            Type::Proc(None, params, ret, _, kws) if name == "call" || name == "[]" => {
+                let (params, kws) = (params.clone(), kws.clone());
                 let ret = self.world.unvoid(ret);
-                let positional: Vec<&Expr> = call
-                    .args
-                    .iter()
-                    .filter_map(|a| match a {
-                        Arg::Positional(e) => Some(e),
-                        _ => None,
-                    })
-                    .collect();
-                if positional.len() != params.len() || positional.len() != call.args.len() {
-                    self.error(
-                        format!(
-                            "procedure takes {} argument(s), {} given",
-                            params.len(),
-                            call.args.len()
-                        ),
-                        expr.span,
-                    );
-                    self.check_args_blindly(call);
-                    return ret;
-                }
-                for (e, p) in positional.iter().zip(params.iter()) {
-                    let t = self.check_expr(e, Some(p));
-                    if !self.coerce(&t, p) {
-                        self.error(
-                            format!("expected {} but found {}", self.name(p), self.name(&t)),
-                            e.span,
-                        );
-                    }
-                }
+                self.check_proc_args(&call.args, &params, &kws, expr.span, false);
                 if call.block.is_some() {
                     self.error("a procedure call does not take a block", expr.span);
                 }
@@ -10803,11 +10822,35 @@ impl Checker {
                 _ => None,
             };
             let fresh = self.infer.fresh();
-            let params: Vec<Type> = b.params.list.iter().map(|_| self.infer.fresh()).collect();
+            let params: Vec<Type> = b
+                .params
+                .list
+                .iter()
+                .filter(|p| p.kind != ParamKind::KeywordOnly)
+                .map(|_| self.infer.fresh())
+                .collect();
+            // (Its keywords as it declares them: no more errors about them.)
+            let kws: Vec<ProcKw> = b
+                .params
+                .list
+                .iter()
+                .filter(|p| p.kind == ParamKind::KeywordOnly)
+                .map(|p| ProcKw {
+                    name: p.name.clone(),
+                    ty: self.infer.fresh(),
+                    required: p.default.is_none(),
+                })
+                .collect();
             self.check_block(
                 expr.id,
                 b,
-                &Type::Proc(receiver, params, Box::new(fresh), false),
+                &Type::Proc(
+                    receiver,
+                    params,
+                    Box::new(fresh),
+                    false,
+                    ProcKw::sorted(kws),
+                ),
             );
         }
         Type::Nothing
@@ -10996,8 +11039,8 @@ impl Checker {
         // fewest above it (`{ "0" }` takes `(String)` over `(String,
         // MatchData)`).
         let rank = |m: &MethodInfo| match (&m.block, block_arity) {
-            (Some((_, Type::Proc(_, ps, _, _))), Some(n)) if ps.len() == n => Some(0),
-            (Some((_, Type::Proc(_, ps, _, _))), Some(n)) if ps.len() > n => Some(ps.len()),
+            (Some((_, Type::Proc(_, ps, _, _, _))), Some(n)) if ps.len() == n => Some(0),
+            (Some((_, Type::Proc(_, ps, _, _, _))), Some(n)) if ps.len() > n => Some(ps.len()),
             _ => None,
         };
         match (rank(a), rank(b)) {
@@ -11657,9 +11700,19 @@ impl Checker {
                             }
                             return Err(msg);
                         }
-                        let Type::Proc(_, params, ret, _) = resolved else {
+                        let Type::Proc(_, params, ret, _, kws) = resolved else {
                             return Err("invalid block type".to_string());
                         };
+                        if !kws.is_empty() {
+                            let msg = format!(
+                                "`&:{name}` passes no keywords, and the block takes `{}`: write the block",
+                                kws[0].name
+                            );
+                            if report {
+                                self.error(msg.clone(), e.span);
+                            }
+                            return Err(msg);
+                        }
                         if params.len() != 1 {
                             return Err(format!("`&:{name}` needs a block with one parameter"));
                         }
@@ -12353,6 +12406,28 @@ impl Checker {
         Some((base, each, table))
     }
 
+    /// What a block or a lambda runs, for the scans of what it assigns:
+    /// its keyword parameters' defaults, then its body.
+    fn closure_code(block: &Block) -> std::borrow::Cow<'_, [Expr]> {
+        let defaults: Vec<&Expr> = block
+            .params
+            .list
+            .iter()
+            .filter_map(|p| p.default.as_ref())
+            .collect();
+        if defaults.is_empty() {
+            std::borrow::Cow::Borrowed(&block.body)
+        } else {
+            std::borrow::Cow::Owned(
+                defaults
+                    .into_iter()
+                    .chain(block.body.iter())
+                    .cloned()
+                    .collect(),
+            )
+        }
+    }
+
     /// Check a block against the procedure type it is passed as.
     fn check_block(&mut self, call_id: NodeId, block: &Block, proc_ty: &Type) {
         self.check_block_as(call_id, block, proc_ty, false)
@@ -12360,7 +12435,7 @@ impl Checker {
 
     fn check_block_as(&mut self, call_id: NodeId, block: &Block, proc_ty: &Type, is_task: bool) {
         let callee = self.block_callee.take();
-        let Type::Proc(recv, params, ret, shareable0) = proc_ty else {
+        let Type::Proc(recv, params, ret, shareable0, kws) = proc_ty else {
             self.error("internal: block type is not a procedure", block.span);
             return;
         };
@@ -12428,6 +12503,7 @@ impl Checker {
                         params.clone(),
                         Box::new(expected_ret.clone()),
                         shareable,
+                        kws.clone(),
                     );
                     self.error(
                         format!(
@@ -12455,6 +12531,7 @@ impl Checker {
                             params.clone(),
                             Box::new(declared.clone()),
                             *shareable0,
+                            kws.clone(),
                         ),
                     );
                 }
@@ -12462,13 +12539,13 @@ impl Checker {
             }
             None => expected_ret,
         };
-        self.widen_assigned(&block.body);
-        self.prescan_repeated(&block.body, true);
+        let code = Self::closure_code(block);
+        self.widen_assigned(&code);
+        self.prescan_repeated(code.iter(), true);
         // A block the method may keep may run later, as a lambda may.
         let escapes = std::mem::take(&mut self.env.next_block_escapes);
         let elsewhere = std::mem::take(&mut self.env.next_block_elsewhere);
-        let late =
-            (escapes && !shareable && !is_task).then(|| self.enter_late_closure(&block.body));
+        let late = (escapes && !shareable && !is_task).then(|| self.enter_late_closure(&code));
         // A task's block copies the locals it captures, but reads `self`'s
         // fields live, as their declared types (as a late closure does).
         let saved_ivars =
@@ -12533,7 +12610,7 @@ impl Checker {
             .params
             .list
             .iter()
-            .filter(|p| p.kind != ParamKind::Block)
+            .filter(|p| !matches!(p.kind, ParamKind::Block | ParamKind::KeywordOnly))
             .collect();
         let mut param_types: Vec<Type> = params.clone();
         if declared.len() > 1 && params.len() == 1 {
@@ -12604,6 +12681,8 @@ impl Checker {
             }
             self.declare_var(&p.name, t, p.span);
         }
+        let kws = kws.clone();
+        self.check_block_keywords(block, &kws, callee.as_deref());
         let void = self.infer.resolve(&ret) == Type::Void;
         self.next_body_void = void;
         let bt = self.check_body(&block.body, if void { None } else { Some(&ret) });
@@ -12715,8 +12794,8 @@ impl Checker {
             self.env.ivar_narrow = ivars;
         }
         match late {
-            Some(snap) => self.leave_late_closure(&snap, &block.body),
-            None => self.widen_assigned(&block.body),
+            Some(snap) => self.leave_late_closure(&snap, &code),
+            None => self.widen_assigned(&code),
         }
         if let (Some(before), Some(now)) = (lifted_before, self.out.lifted_blocks.get(&call_id)) {
             let now = now.clone();
@@ -12729,6 +12808,105 @@ impl Checker {
             seen.0.push(now);
             self.table_journal.push(TableUndo::Lifted(call_id, before));
         }
+    }
+
+    /// A block's keyword-only parameters, against the keywords of the
+    /// procedure type it is given for (docs/02 §9): it declares each
+    /// (optional where the type's is), and any other has a default.
+    /// Declares them, typed by their annotation, else the type's, else
+    /// their default's.
+    fn check_block_keywords(&mut self, block: &Block, kws: &[ProcKw], callee: Option<&str>) {
+        let callee = callee.map_or("the method".to_string(), |c| format!("`{c}`"));
+        let own: Vec<&Param> = block
+            .params
+            .list
+            .iter()
+            .filter(|p| p.kind == ParamKind::KeywordOnly)
+            .collect();
+        for k in kws {
+            match own.iter().find(|p| p.name == k.name) {
+                None => self.error(
+                    format!(
+                        "{callee} passes the block the keyword `{}`: declare it (`|..., *, {}: {}|`)",
+                        k.name,
+                        k.name,
+                        self.name(&k.ty)
+                    ),
+                    block.span,
+                ),
+                Some(p) if p.default.is_none() && !k.required => self.error(
+                    format!(
+                        "the keyword `{}` is optional for {callee}: give it a default",
+                        k.name
+                    ),
+                    p.span,
+                ),
+                Some(_) => {}
+            }
+        }
+        for p in own {
+            let expected = kws.iter().find(|k| k.name == p.name).map(|k| k.ty.clone());
+            if expected.is_none() && p.default.is_none() {
+                self.error(
+                    format!(
+                        "the block requires the keyword `{}`, which {callee} does not pass: give it a default, or leave it out",
+                        p.name
+                    ),
+                    p.span,
+                );
+            }
+            self.declare_keyword_param(p, expected.as_ref(), "block");
+        }
+    }
+
+    /// Declare a block's or a lambda's keyword-only parameter `p`, typed
+    /// by its annotation (which must take `expected`, the type a caller
+    /// passes), else `expected`, else its default's type; its default is
+    /// checked against that type.
+    fn declare_keyword_param(&mut self, p: &Param, expected: Option<&Type>, what: &str) -> Type {
+        let annotated = p.ty.as_ref().and_then(|te| {
+            let scope = self.env.scope.clone();
+            self.resolve_type_expr(te, &scope)
+        });
+        if let (Some(a), Some(e), Some(te)) = (&annotated, expected, &p.ty) {
+            if !self.coerce(e, a) {
+                self.error(
+                    format!(
+                        "{what} keyword `{}` is annotated {} but receives {}",
+                        p.name,
+                        self.name(a),
+                        self.name(e)
+                    ),
+                    te.span,
+                );
+            }
+        }
+        let mut t = annotated.or_else(|| expected.cloned());
+        if let Some(d) = &p.default {
+            let dt = self.check_expr(d, t.as_ref());
+            match &t {
+                Some(t) => {
+                    if !self.coerce(&dt, t) {
+                        self.error(
+                            format!(
+                                "the default of keyword `{}` is {}, not {}",
+                                p.name,
+                                self.name(&dt),
+                                self.name(t)
+                            ),
+                            d.span,
+                        );
+                    }
+                }
+                None => t = Some(self.resolve(&dt)),
+            }
+        }
+        let t = t.unwrap_or_else(|| {
+            self.error(format!("{what} keyword `{}` needs a type", p.name), p.span);
+            Type::Nothing
+        });
+        self.declare_var(&p.name, t.clone(), p.span);
+        t
     }
 
     /// Make `recv` the `self` of the block being checked (nothing for
@@ -12901,15 +13079,16 @@ impl Checker {
             }
             other => other,
         };
-        let (expected_recv, expected_proc, shareable) = match expected_proc_type {
-            Some(Type::Proc(rc, ps, r, sh)) => (rc.map(|t| *t), Some((ps, *r)), sh),
-            _ => (None, None, false),
+        let (expected_recv, expected_proc, shareable, expected_kws) = match expected_proc_type {
+            Some(Type::Proc(rc, ps, r, sh, kws)) => (rc.map(|t| *t), Some((ps, *r)), sh, kws),
+            _ => (None, None, false, Box::default()),
         };
-        self.widen_assigned(&block.body);
-        self.prescan_repeated(&block.body, true);
+        let code = Self::closure_code(block);
+        self.widen_assigned(&code);
+        self.prescan_repeated(code.iter(), true);
         // A lambda may run later, after what it captures has changed (a
         // shareable one copies what it captures, and assigns none of it).
-        let late = (!shareable).then(|| self.enter_late_closure(&block.body));
+        let late = (!shareable).then(|| self.enter_late_closure(&code));
         // A shareable one reads `self`'s fields live, as a task's block.
         let saved_ivars = (shareable && !self.fields_fixed_at_construction())
             .then(|| std::mem::take(&mut self.env.ivar_narrow));
@@ -12957,7 +13136,24 @@ impl Checker {
             std::mem::take(&mut self.env.loop_depth),
             std::mem::take(&mut self.env.loop_exits),
         );
-        for (i, p) in block.params.list.iter().enumerate() {
+        let mut keywords = Vec::new();
+        let mut i = 0;
+        for p in &block.params.list {
+            if p.kind == ParamKind::KeywordOnly {
+                let expected = expected_kws
+                    .iter()
+                    .find(|k| k.name == p.name)
+                    .map(|k| k.ty.clone());
+                let ty = self.declare_keyword_param(p, expected.as_ref(), "lambda");
+                keywords.push(ProcKw {
+                    name: p.name.clone(),
+                    ty,
+                    required: p.default.is_none(),
+                });
+                continue;
+            }
+            i += 1;
+            let i = i - 1;
             let t = match &p.ty {
                 Some(te) => {
                     let scope = self.env.scope.clone();
@@ -13009,7 +13205,7 @@ impl Checker {
             self.env.ivar_narrow = ivars;
         }
         if let Some(snap) = late {
-            self.leave_late_closure(&snap, &block.body);
+            self.leave_late_closure(&snap, &code);
         }
         self.out.frame_sizes.insert(id, frame.vars.len() as u32);
         let ret = self.infer.resolve(&ret_var);
@@ -13018,6 +13214,7 @@ impl Checker {
             param_types,
             Box::new(ret),
             shareable,
+            ProcKw::sorted(keywords),
         )
     }
 
@@ -13083,7 +13280,7 @@ impl Checker {
             });
             return Type::Nothing;
         };
-        let Type::Proc(recv, params, ret, _) = bt else {
+        let Type::Proc(recv, params, ret, _, kws) = bt else {
             return Type::Nothing;
         };
         if recv.is_some() {
@@ -13103,6 +13300,146 @@ impl Checker {
             });
             return Type::Nothing;
         }
+        self.check_proc_args(args, &params, &kws, expr.span, true);
+        self.world.unvoid(&ret)
+    }
+
+    /// `recv.instance_exec(args, k: v, &b)`, with keyword arguments: a
+    /// call of the block, with `self` = `recv` (docs/01 §9). A block
+    /// passed with `&` takes the arguments as a procedure call does, its
+    /// receiver type taking `recv`; a literal block is checked as the
+    /// procedure type the arguments make (`Recv.(A, *, k: B) -> R`).
+    /// (Without keywords, `instance_exec` is the native.)
+    fn check_instance_exec_kw(
+        &mut self,
+        expr: &Expr,
+        call: &Call,
+        recv_ty: &Type,
+        expected: Option<&Type>,
+    ) -> Type {
+        let recv_ty = self.resolve(recv_ty);
+        let passed = call.args.iter().find_map(|a| match a {
+            Arg::BlockPass(e) => Some(e),
+            _ => None,
+        });
+        let args: Vec<Arg> = call
+            .args
+            .iter()
+            .filter(|a| !matches!(a, Arg::BlockPass(_)))
+            .cloned()
+            .collect();
+        let ret = match (&call.block, passed) {
+            (None, Some(e)) => {
+                let bt = self.check_expr(e, None);
+                match self.resolve(&bt) {
+                    Type::Proc(Some(r), ps, ret, _, kws) => {
+                        if !self.coerce(&recv_ty, &r) {
+                            self.error(
+                                format!(
+                                    "the block runs with a receiver of type {}, not {}",
+                                    self.name(&r),
+                                    self.name(&recv_ty)
+                                ),
+                                e.span,
+                            );
+                        }
+                        self.check_proc_args(&args, &ps, &kws, expr.span, false);
+                        self.world.unvoid(&ret)
+                    }
+                    t => {
+                        self.error(
+                            format!(
+                                "`instance_exec` with keywords runs a block with a receiver (`Recv.(*, k: T) -> R`), not {}",
+                                self.name(&t)
+                            ),
+                            e.span,
+                        );
+                        self.check_args_blindly(call);
+                        Type::Nothing
+                    }
+                }
+            }
+            (Some(b), None) => {
+                let mut params = Vec::new();
+                let mut kws: Vec<ProcKw> = Vec::new();
+                for a in &args {
+                    match a {
+                        Arg::Positional(e) => {
+                            let t = self.check_expr(e, None);
+                            params.push(self.resolve(&t));
+                        }
+                        Arg::Keyword { name, value, span } => {
+                            let t = self.check_expr(value, None);
+                            if kws.iter().any(|k| k.name == *name) {
+                                self.error(format!("keyword `{name}` is given twice"), *span);
+                                continue;
+                            }
+                            kws.push(ProcKw {
+                                name: name.clone(),
+                                ty: self.resolve(&t),
+                                required: true,
+                            });
+                        }
+                        Arg::Splat(e) | Arg::DoubleSplat(e) | Arg::BlockPass(e) => {
+                            self.error(
+                                "`instance_exec` with keywords takes plain arguments (no `*` or `**`)",
+                                e.span,
+                            );
+                            self.check_expr(e, None);
+                        }
+                    }
+                }
+                // (The expected type, where there is one, as for a
+                // method's result `R`.)
+                let fresh = match expected {
+                    Some(e) if !self.resolve(e).has_vars() => self.resolve(e),
+                    _ => self.infer.fresh(),
+                };
+                let proc_ty = Type::Proc(
+                    Some(Box::new(recv_ty.clone())),
+                    params,
+                    Box::new(fresh.clone()),
+                    false,
+                    ProcKw::sorted(kws),
+                );
+                self.block_callee = Some("instance_exec".to_string());
+                self.check_block(expr.id, b, &proc_ty);
+                // What a `break` gives is the call's value too; a body
+                // that only leaves (`return`, `raise`) gives `Nothing`.
+                let broken = self.breaking_blocks.get(&expr.id).cloned();
+                let r = match (self.resolve(&fresh), broken) {
+                    (Type::Var(_), b) => {
+                        let t = b.unwrap_or(Type::Nothing);
+                        self.coerce(&fresh, &t);
+                        t
+                    }
+                    (r, Some(b)) => self.join(&r, &b),
+                    (r, None) => r,
+                };
+                self.world.unvoid(&r)
+            }
+            _ => {
+                self.error("`instance_exec` runs one block", expr.span);
+                self.check_args_blindly(call);
+                Type::Nothing
+            }
+        };
+        self.out.calls.insert(expr.id, CallTarget::InstanceExec);
+        ret
+    }
+
+    /// The arguments of a call of a procedure (`p.call(...)`, `p.(...)`,
+    /// `p[...]`) or of `yield` (`yielding`): positional ones by place,
+    /// keyword ones by name, each required keyword once, no other
+    /// (docs/02 §9).
+    fn check_proc_args(
+        &mut self,
+        args: &[Arg],
+        params: &[Type],
+        kws: &[ProcKw],
+        span: Span,
+        yielding: bool,
+    ) {
         let positional: Vec<&Expr> = args
             .iter()
             .filter_map(|a| match a {
@@ -13110,34 +13447,128 @@ impl Checker {
                 _ => None,
             })
             .collect();
-        if positional.len() != params.len() {
-            self.error(
-                format!(
-                    "the block takes {} argument(s), `yield` passes {}",
-                    params.len(),
-                    positional.len()
-                ),
-                expr.span,
-            );
-            for e in positional {
-                self.check_expr(e, None);
+        let other = args
+            .iter()
+            .any(|a| !matches!(a, Arg::Positional(_) | Arg::Keyword { .. }));
+        let blindly = |this: &mut Self| {
+            for a in args {
+                match a {
+                    Arg::Positional(e)
+                    | Arg::Splat(e)
+                    | Arg::DoubleSplat(e)
+                    | Arg::BlockPass(e)
+                    | Arg::Keyword { value: e, .. } => {
+                        this.check_expr(e, None);
+                    }
+                }
             }
-            return self.world.unvoid(&ret);
+        };
+        if positional.len() != params.len() || other {
+            if let Some(a) = args.iter().find(|a| matches!(a, Arg::DoubleSplat(_))) {
+                self.error(
+                    "a procedure takes no `**hash`: its type names each keyword, passed by name",
+                    a.span(),
+                );
+                blindly(self);
+                return;
+            }
+            let given = args
+                .iter()
+                .filter(|a| !matches!(a, Arg::Keyword { .. }))
+                .count();
+            let message = if yielding {
+                format!(
+                    "the block takes {} argument(s), `yield` passes {given}",
+                    params.len()
+                )
+            } else {
+                format!(
+                    "procedure takes {} argument(s), {given} given",
+                    params.len()
+                )
+            };
+            self.error(message, span);
+            blindly(self);
+            return;
         }
         for (e, p) in positional.iter().zip(params.iter()) {
             let t = self.check_expr(e, Some(p));
             if !self.coerce(&t, p) {
-                self.error(
+                let message = if yielding {
                     format!(
                         "`yield` passes {} where the block expects {}",
                         self.name(&t),
                         self.name(p)
+                    )
+                } else {
+                    format!("expected {} but found {}", self.name(p), self.name(&t))
+                };
+                self.error(message, e.span);
+            }
+        }
+        let mut given: Vec<&str> = Vec::new();
+        for a in args {
+            let Arg::Keyword {
+                name,
+                value,
+                span: kspan,
+            } = a
+            else {
+                continue;
+            };
+            let Some(k) = kws.iter().find(|k| k.name == *name) else {
+                let takes = if kws.is_empty() {
+                    "it takes none".to_string()
+                } else {
+                    format!(
+                        "it takes {}",
+                        kws.iter()
+                            .map(|k| format!("`{}`", k.name))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
+                let whose = if yielding {
+                    "the block"
+                } else {
+                    "the procedure"
+                };
+                self.error(
+                    format!("unknown keyword `{name}` for {whose}: {takes}"),
+                    *kspan,
+                );
+                self.check_expr(value, None);
+                continue;
+            };
+            if given.contains(&name.as_str()) {
+                self.error(format!("keyword `{name}` is given twice"), *kspan);
+            }
+            given.push(name);
+            let t = self.check_expr(value, Some(&k.ty));
+            if !self.coerce(&t, &k.ty) {
+                self.error(
+                    format!(
+                        "keyword `{name}` takes {} but found {}",
+                        self.name(&k.ty),
+                        self.name(&t)
                     ),
-                    e.span,
+                    value.span,
                 );
             }
         }
-        self.world.unvoid(&ret)
+        for k in kws {
+            if k.required && !given.contains(&k.name.as_str()) {
+                let whose = if yielding {
+                    "the block"
+                } else {
+                    "the procedure"
+                };
+                self.error(
+                    format!("missing keyword `{}`: {whose} requires it", k.name),
+                    span,
+                );
+            }
+        }
     }
 
     fn check_super(&mut self, expr: &Expr, args: Option<&[Arg]>, block: Option<&Block>) -> Type {

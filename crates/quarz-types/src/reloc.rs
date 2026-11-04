@@ -82,10 +82,13 @@ impl Remap for Type {
             }
             Type::TypeOf(t) => t.remap(m),
             Type::Union(ts) | Type::Tuple(ts) => ts.remap(m),
-            Type::Proc(recv, ps, r, _) => {
+            Type::Proc(recv, ps, r, _, kws) => {
                 recv.remap(m);
                 ps.remap(m);
                 r.remap(m);
+                for k in kws.iter_mut() {
+                    k.ty.remap(m);
+                }
             }
             Type::Param(p) => {
                 // The `Self` marker and the like stay.
@@ -113,7 +116,7 @@ impl Remap for CallTarget {
                     method(m, i);
                 }
             }
-            CallTarget::ProcCall | CallTarget::Constant(_) => {}
+            CallTarget::ProcCall | CallTarget::InstanceExec | CallTarget::Constant(_) => {}
         }
     }
 }

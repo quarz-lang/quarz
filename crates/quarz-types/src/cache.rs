@@ -69,12 +69,20 @@ fn unplaced(t: &mut quarz_syntax::ast::TypeExpr) {
         }
         K::Nilable(x) => unplaced(x),
         K::Proc {
-            recv, params, ret, ..
+            recv,
+            params,
+            ret,
+            keywords,
+            ..
         } => {
             if let Some(r) = recv {
                 unplaced(r);
             }
             params.iter_mut().for_each(unplaced);
+            for k in keywords {
+                k.span = Default::default();
+                unplaced(&mut k.ty);
+            }
             unplaced(ret);
         }
         K::SelfType | K::Nothing | K::Void => {}

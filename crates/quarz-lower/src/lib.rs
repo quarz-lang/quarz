@@ -386,6 +386,7 @@ impl Lowerer {
             nregs,
             frame_size: 0,
             param_kinds: Vec::new(),
+            kw_names: Vec::new(),
             arity: 0,
             consts,
             blocks: vec![Block {

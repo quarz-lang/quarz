@@ -1247,12 +1247,13 @@ impl<'ast> Declarer<'ast> {
                         walk(m, params, from, slot, edges);
                     }
                 }
-                Type::Proc(rc, ps, r, _) => {
+                Type::Proc(rc, ps, r, _, kws) => {
                     for x in rc
                         .iter()
                         .map(|b| &**b)
                         .chain(ps)
                         .chain(std::iter::once(&**r))
+                        .chain(kws.iter().map(|k| &k.ty))
                     {
                         walk(x, params, from, slot, edges);
                     }
@@ -2389,8 +2390,14 @@ impl<'ast> Declarer<'ast> {
             // (A block whose result is `Void` takes any: its result is
             // dropped, as where one is given.)
             let theirs = match (&theirs, &mine) {
-                (Type::Proc(r, ps, _, sh), Type::Proc(_, _, v, _)) if **v == Type::Void => {
-                    Type::Proc(r.clone(), ps.clone(), Box::new(Type::Void), *sh)
+                (Type::Proc(r, ps, _, sh, kws), Type::Proc(_, _, v, _, _)) if **v == Type::Void => {
+                    Type::Proc(
+                        r.clone(),
+                        ps.clone(),
+                        Box::new(Type::Void),
+                        *sh,
+                        kws.clone(),
+                    )
                 }
                 _ => theirs,
             };
@@ -2774,11 +2781,11 @@ impl<'ast> Declarer<'ast> {
             }
             // `Type[T]` is covariant in `T`.
             Type::TypeOf(t) => self.variance_walk(t, pol, params, report),
-            Type::Proc(recv, ps, r, _) => {
+            Type::Proc(recv, ps, r, _, kws) => {
                 if let Some(recv) = recv {
                     self.variance_walk(recv, -pol, params, report);
                 }
-                for p in ps {
+                for p in ps.iter().chain(kws.iter().map(|k| &k.ty)) {
                     self.variance_walk(p, -pol, params, report);
                 }
                 self.variance_walk(r, pol, params, report);
@@ -4964,6 +4971,7 @@ impl<'ast> Declarer<'ast> {
                 params,
                 ret,
                 shareable,
+                keywords,
             } => {
                 let rc = match recv {
                     Some(t) => Some(Box::new(self.resolve_type(t, scope)?)),
@@ -4973,8 +4981,23 @@ impl<'ast> Declarer<'ast> {
                 for p in params {
                     ps.push(self.resolve_type(p, scope)?);
                 }
+                // (A written type lists required keywords only.)
+                let mut kws = Vec::new();
+                for k in keywords {
+                    kws.push(ProcKw {
+                        name: k.name.clone(),
+                        ty: self.resolve_type(&k.ty, scope)?,
+                        required: true,
+                    });
+                }
                 let r = self.resolve_result_type(ret, scope)?;
-                Some(Type::Proc(rc, ps, Box::new(r), *shareable))
+                Some(Type::Proc(
+                    rc,
+                    ps,
+                    Box::new(r),
+                    *shareable,
+                    ProcKw::sorted(kws),
+                ))
             }
             TypeExprKind::Named { path, args } => {
                 // A type parameter in scope?
@@ -5096,11 +5119,16 @@ fn self_against_variance(t: &TypeExpr, covariant: bool) -> Option<Span> {
             ts.iter().find_map(|a| self_against_variance(a, covariant))
         }
         TypeExprKind::Proc {
-            recv, params, ret, ..
+            recv,
+            params,
+            ret,
+            keywords,
+            ..
         } => recv
             .iter()
             .map(|r| &**r)
             .chain(params.iter())
+            .chain(keywords.iter().map(|k| &k.ty))
             .find_map(|a| self_against_variance(a, !covariant))
             .or_else(|| self_against_variance(ret, covariant)),
         TypeExprKind::Nothing | TypeExprKind::Void => None,
@@ -5159,8 +5187,8 @@ fn logical_operator_rule(
     if name != "&&" && name != "||" {
         return None;
     }
-    let only_block =
-        nparams == 1 && matches!(block, Some(Type::Proc(_, ps, _, _)) if ps.is_empty());
+    let only_block = nparams == 1
+        && matches!(block, Some(Type::Proc(_, ps, _, _, kws)) if ps.is_empty() && kws.is_empty());
     if !only_block || singleton {
         return Some(format!(
         "`{name}` takes only a block with no parameters, the right operand (`def {name}(&: () -> T) -> R`)"

@@ -31,8 +31,9 @@ pub enum Type {
     /// A procedure: the receiver (`self` inside, for `Recv.(A) -> R`),
     /// the parameters, the result, and whether it is Shareable
     /// (`shareable (A) -> R`: it captured Shareable values by copy, so any
-    /// task may call it).
-    Proc(Option<Box<Type>>, Vec<Type>, Box<Type>, bool),
+    /// task may call it), and its keyword-only parameters (`(A, *, k: B)
+    /// -> R`), sorted by name.
+    Proc(Option<Box<Type>>, Vec<Type>, Box<Type>, bool, Box<[ProcKw]>),
     /// A generic type parameter of the enclosing class or method.
     Param(TypeParamId),
     /// An inference variable, bound by unification during checking.
@@ -43,7 +44,69 @@ pub enum Type {
     Void,
 }
 
+/// A keyword-only parameter of a procedure type (docs/02 §9): `k: T`.
+/// A written type lists required ones only; a block's or a lambda's own
+/// type has its keywords with a default as optional (`required: false`),
+/// which a call may leave out.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ProcKw {
+    pub name: String,
+    pub ty: Type,
+    pub required: bool,
+}
+
+impl ProcKw {
+    /// Keywords sorted by name, as a procedure type keeps them.
+    pub fn sorted(mut kws: Vec<ProcKw>) -> Box<[ProcKw]> {
+        kws.sort_by(|a, b| a.name.cmp(&b.name));
+        kws.into_boxed_slice()
+    }
+
+    /// The same keywords with each type mapped.
+    pub fn map(kws: &[ProcKw], mut f: impl FnMut(&Type) -> Type) -> Box<[ProcKw]> {
+        kws.iter()
+            .map(|k| ProcKw {
+                name: k.name.clone(),
+                ty: f(&k.ty),
+                required: k.required,
+            })
+            .collect()
+    }
+
+    /// Whether a procedure with keywords `v` can be called as one with
+    /// keywords `t` (docs/02 §9): every keyword `t` lists is one `v`
+    /// takes (optional in `v` where it is in `t`), and every keyword `v`
+    /// requires is listed by `t`. The pairs (`v`'s type, `t`'s type) to
+    /// compare, contravariantly, or `None`.
+    pub fn accepts<'a>(v: &'a [ProcKw], t: &'a [ProcKw]) -> Option<Vec<(&'a Type, &'a Type)>> {
+        let mut pairs = Vec::new();
+        for tk in t {
+            let vk = v.iter().find(|k| k.name == tk.name)?;
+            if vk.required && !tk.required {
+                return None;
+            }
+            pairs.push((&vk.ty, &tk.ty));
+        }
+        if v.iter()
+            .any(|vk| vk.required && !t.iter().any(|tk| tk.name == vk.name))
+        {
+            return None;
+        }
+        Some(pairs)
+    }
+}
+
 impl Type {
+    /// A procedure type without keywords.
+    pub fn proc_(
+        recv: Option<Box<Type>>,
+        params: Vec<Type>,
+        ret: Box<Type>,
+        shareable: bool,
+    ) -> Type {
+        Type::Proc(recv, params, ret, shareable, Box::default())
+    }
+
     pub fn class(id: ClassId) -> Type {
         Type::Class(id, Vec::new())
     }
@@ -121,11 +184,12 @@ impl Type {
             Type::TypeOf(t) => Type::type_of(t.subst(map)),
             Type::Union(ms) => Type::union_of(ms.iter().map(|m| m.subst(map)).collect()),
             Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| t.subst(map)).collect()),
-            Type::Proc(rc, ps, r, sh) => Type::Proc(
+            Type::Proc(rc, ps, r, sh, kws) => Type::Proc(
                 rc.as_ref().map(|t| Box::new(t.subst(map))),
                 ps.iter().map(|p| p.subst(map)).collect(),
                 Box::new(r.subst(map)),
                 *sh,
+                ProcKw::map(kws, |t| t.subst(map)),
             ),
             Type::Param(id) => match map.get(id) {
                 Some(t) => t.clone(),
@@ -142,10 +206,11 @@ impl Type {
             Type::Class(_, args) | Type::ClassObject(_, args) => args.iter().any(Type::has_vars),
             Type::TypeOf(t) => t.has_vars(),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(Type::has_vars),
-            Type::Proc(rc, ps, r, _) => {
+            Type::Proc(rc, ps, r, _, kws) => {
                 rc.as_ref().is_some_and(|t| t.has_vars())
                     || ps.iter().any(Type::has_vars)
                     || r.has_vars()
+                    || kws.iter().any(|k| k.ty.has_vars())
             }
         }
     }
@@ -160,10 +225,11 @@ impl Type {
             }
             Type::TypeOf(t) => t.mentions_var(v),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(|m| m.mentions_var(v)),
-            Type::Proc(rc, ps, r, _) => {
+            Type::Proc(rc, ps, r, _, kws) => {
                 rc.as_ref().is_some_and(|t| t.mentions_var(v))
                     || ps.iter().any(|p| p.mentions_var(v))
                     || r.mentions_var(v)
+                    || kws.iter().any(|k| k.ty.mentions_var(v))
             }
         }
     }
@@ -178,10 +244,11 @@ impl Type {
             }
             Type::TypeOf(t) => t.mentions_any_param(),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(Type::mentions_any_param),
-            Type::Proc(rc, ps, r, _) => {
+            Type::Proc(rc, ps, r, _, kws) => {
                 rc.as_ref().is_some_and(|t| t.mentions_any_param())
                     || ps.iter().any(Type::mentions_any_param)
                     || r.mentions_any_param()
+                    || kws.iter().any(|k| k.ty.mentions_any_param())
             }
         }
     }
@@ -196,10 +263,11 @@ impl Type {
             }
             Type::TypeOf(t) => t.mentions_param(id),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(|m| m.mentions_param(id)),
-            Type::Proc(rc, ps, r, _) => {
+            Type::Proc(rc, ps, r, _, kws) => {
                 rc.as_ref().is_some_and(|t| t.mentions_param(id))
                     || ps.iter().any(|p| p.mentions_param(id))
                     || r.mentions_param(id)
+                    || kws.iter().any(|k| k.ty.mentions_param(id))
             }
         }
     }
@@ -211,10 +279,11 @@ impl Type {
             Type::Class(_, args) | Type::ClassObject(_, args) => args.iter().any(Type::has_params),
             Type::TypeOf(t) => t.has_params(),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(Type::has_params),
-            Type::Proc(rc, ps, r, _) => {
+            Type::Proc(rc, ps, r, _, kws) => {
                 rc.as_ref().is_some_and(|t| t.has_params())
                     || ps.iter().any(Type::has_params)
                     || r.has_params()
+                    || kws.iter().any(|k| k.ty.has_params())
             }
         }
     }
@@ -228,12 +297,13 @@ impl Type {
             }
             Type::TypeOf(t) => t.for_each_var(f),
             Type::Union(ms) | Type::Tuple(ms) => ms.iter().for_each(|m| m.for_each_var(f)),
-            Type::Proc(rc, ps, r, _) => {
+            Type::Proc(rc, ps, r, _, kws) => {
                 if let Some(t) = rc {
                     t.for_each_var(f);
                 }
                 ps.iter().for_each(|p| p.for_each_var(f));
                 r.for_each_var(f);
+                kws.iter().for_each(|k| k.ty.for_each_var(f));
             }
         }
     }
