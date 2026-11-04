@@ -2613,6 +2613,28 @@ impl World {
         self.top.get(name).copied()
     }
 
+    /// The first name of an absolute path (`::X`) in `scope`: the top
+    /// level as the code there sees it. Inside a library cog, the keys of
+    /// its own manifest, then the top level without the application's
+    /// names (its own declarations are `cog::X`); elsewhere, the top
+    /// level. A cog's `::X` thus means what its own manifest says, whatever
+    /// the application calls its cogs, and reaches a key or a standard
+    /// class that a declaration of the cog hides (docs/10 §6).
+    pub fn resolve_absolute(&self, scope: Option<ClassId>, name: &str) -> Option<Member> {
+        let Some(root) = self.cog_root(scope) else {
+            return self.top.get(name).copied();
+        };
+        if let Some(cog) = self.class(root).cog {
+            if let Some(dep) = self.cogs[cog as usize].imports.get(name) {
+                return Some(Member::Class(*dep));
+            }
+        }
+        if self.app_names.contains(name) {
+            return None;
+        }
+        self.top.get(name).copied()
+    }
+
     /// The root module of the library cog that `scope` is in; `None` in
     /// the application, a script or the standard library.
     pub fn cog_root(&self, scope: Option<ClassId>) -> Option<ClassId> {
@@ -2644,8 +2666,15 @@ impl World {
                 ),
             };
         };
+        // (A library's own declarations, then its manifest's keys.)
         let found = match root {
-            Some(root) => self.class(root).members.get(first).copied(),
+            Some(root) => self.class(root).members.get(first).copied().or_else(|| {
+                let cog = self.class(root).cog?;
+                self.cogs[cog as usize]
+                    .imports
+                    .get(first)
+                    .map(|d| Member::Class(*d))
+            }),
             None => self.top.get(first).copied(),
         };
         found.ok_or_else(|| match root {
@@ -2770,7 +2799,7 @@ impl World {
         let mut member = if path.cog {
             self.resolve_cog_path_start(info.owner, path).ok()?
         } else if path.absolute {
-            self.top.get(path.names.first()?).copied()?
+            self.resolve_absolute(info.owner, path.names.first()?)?
         } else {
             self.resolve_member(info.owner, path.names.first()?)?
         };

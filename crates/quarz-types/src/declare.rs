@@ -777,7 +777,7 @@ impl<'ast> Declarer<'ast> {
         // be the application's top level.
         if path.absolute && self.world.cog_root(namespace).is_some() {
             self.error(
-                "a cog declares only in its root module: `::` would declare at the application's top level",
+                "a cog declares only in its root module: `::` is the top level (its dependencies and the standard library); write `cog::` or nest the declaration",
                 span,
             );
             return None;
@@ -4826,7 +4826,7 @@ impl<'ast> Declarer<'ast> {
                 }
             }
         } else if path.absolute {
-            self.world.top.get(&path.names[0]).copied()
+            self.world.resolve_absolute(namespace, &path.names[0])
         } else {
             self.world.resolve_member(namespace, &path.names[0])
         };
