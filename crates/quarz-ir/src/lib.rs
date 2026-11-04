@@ -1475,6 +1475,11 @@ pub struct RtMethod {
     /// out (see `shake`).
     #[serde(default)]
     pub makes: Vec<ClassId>,
+    /// A method `def_method` generated with `keywords:` (docs/14 §5):
+    /// its body takes one argument, the hash of the keywords a call
+    /// passed (`Interp::bind_params`), not its parameters one by one.
+    #[serde(default)]
+    pub keyword_hash: bool,
 }
 
 impl RtMethod {
@@ -1712,6 +1717,7 @@ impl Droppable for RtMethod {
             ret: None,
             overrides: Vec::new(),
             makes: Vec::new(),
+            keyword_hash: false,
         }
     }
 }

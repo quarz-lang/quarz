@@ -250,6 +250,8 @@ pub fn typed_sigs(functions: &[Function], methods: &[RtMethod]) -> Vec<Option<Ty
                 || m.is_abstract
                 || m.native_key.is_some()
                 || m.synth != RtSynth::None
+                // (Bound as one hash: `RtMethod::keyword_hash`.)
+                || m.keyword_hash
                 || m.params.len() > 6
                 || f.frame_size != 0
             {

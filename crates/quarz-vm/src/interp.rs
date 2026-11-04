@@ -3415,6 +3415,19 @@ impl Interp {
                 provided |= bit(n);
             }
         }
+        // A method generated with `keywords:` (docs/14 §5): its body takes
+        // the hash of the keywords given, in the order of its parameters.
+        if m.keyword_hash {
+            let mut map = ValueMap::default();
+            for (i, p) in m.params.iter().enumerate() {
+                if provided & bit(i) != 0 {
+                    let v = std::mem::replace(&mut values[i], Value::Nil);
+                    map.insert(Value::Symbol(self.intern(&p.name)), v);
+                }
+            }
+            let hash = Value::Hash(Rc::new(crate::value::HashData::from(map)));
+            return Ok((smallvec![hash], 1));
+        }
         let _ = recv;
         Ok((values, provided))
     }

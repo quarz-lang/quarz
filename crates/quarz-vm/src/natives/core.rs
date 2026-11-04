@@ -105,7 +105,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             return Err(i.err_type("def_field takes the field's type as a class"));
         };
         let default = a.arg(2).clone();
-        if !i.program.world.class_is_a(i.class_of(&default), *ty) {
+        if !default.is_nil() && !i.program.world.class_is_a(i.class_of(&default), *ty) {
             return Err(i.err_type(&format!(
                 "the default of `@{}` is a {}, not a {}",
                 i.symbol_name(*name),
@@ -121,6 +121,17 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             }
         };
         let (mutable, reader, writer) = (flag("var")?, flag("reader")?, flag("writer")?);
+        let nullable = flag("nullable")?;
+        if default.is_nil()
+            && !nullable
+            && !i.program.world.class_is_a(i.program.world.builtin.nil, *ty)
+        {
+            return Err(i.err_type(&format!(
+                "the default of `@{}` is nil, which a {} field does not take: give `nullable: true`",
+                i.symbol_name(*name),
+                i.program.world.class(*ty).name
+            )));
+        }
         if writer && !mutable {
             return Err(i.err_arg("writer: needs var: true, an assignable field"));
         }
@@ -132,6 +143,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             mutable,
             reader,
             writer,
+            nullable,
         };
         reflect_of(i)?
             .def_field(i, request)
@@ -353,6 +365,50 @@ fn def_method(interp: &Interp, recv: &Value, a: &Args, singleton: bool) -> EvalR
             _ => Err(interp.err_type(&format!("{what} takes parameter names as symbols"))),
         }
     };
+    let keywords = match a.kw(interp, "keywords") {
+        None => None,
+        Some(Value::Array(items)) => {
+            let mut out: Vec<crate::reflect::KeywordRequest> = Vec::new();
+            for v in items.iter() {
+                let Value::Object(o) = &v else {
+                    return Err(interp.err_type("keywords: takes `Meta::Keyword` values"));
+                };
+                let (
+                    Value::Symbol(n),
+                    Value::Class(ty),
+                    Value::Bool(required),
+                    Value::Bool(nullable),
+                ) = (
+                    interp.logical_get(o, 0),
+                    interp.logical_get(o, 1),
+                    interp.logical_get(o, 2),
+                    interp.logical_get(o, 3),
+                )
+                else {
+                    return Err(interp.err_type("keywords: takes `Meta::Keyword` values"));
+                };
+                let name = interp.symbol_name(n).to_string();
+                if out.iter().any(|k| k.name == name) {
+                    return Err(interp.err_arg(&format!("the keyword `{name}` is given twice")));
+                }
+                out.push(crate::reflect::KeywordRequest {
+                    name,
+                    ty,
+                    required,
+                    nullable,
+                });
+            }
+            // (A method of no keyword would be one of no parameter, whose
+            // body still takes the hash: it has the other form.)
+            if out.is_empty() {
+                return Err(interp.err_arg(&format!(
+                    "keywords: is empty: a method of no parameters is `{what}(name) {{ ... }}`"
+                )));
+            }
+            Some(out)
+        }
+        Some(_) => return Err(interp.err_type("keywords: takes an array of `Meta::Keyword`")),
+    };
     let params: Vec<String> = match a.pos.len() {
         1 => Vec::new(),
         2 => match a.arg(1) {
@@ -401,10 +457,17 @@ fn def_method(interp: &Interp, recv: &Value, a: &Args, singleton: bool) -> EvalR
         visibility,
         func: *func,
         captures,
+        keywords,
     };
+    let keyword_form = request.keywords.is_some();
     let at = reflect_of(interp)?
         .generate(interp, request)
         .map_err(|m| interp.err_runtime(&m))?;
+    // (The keyword form gives no handle: its signature is known only
+    // when the statement runs, docs/14 §5.)
+    if keyword_form {
+        return Ok(Value::Nil);
+    }
     // The method's handle, resolved to the method when the statement has
     // run (by its generation's position).
     method_handle(interp, class, symbol_name, 0, singleton, -(at as i64) - 1)

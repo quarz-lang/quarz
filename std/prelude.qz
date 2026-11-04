@@ -171,6 +171,10 @@ module Meta
   data Param = (name: Symbol, type: Type[Object], kind: ParamKind)
   # A method's signature: no body is visible.
   data MethodSig = (name: Symbol, params: Array[Param], result: Type[Object], static: Bool)
+  # A keyword parameter of a method `def_method` generates with
+  # `keywords:` (docs/14 §5): its name, its type (`T?` with `nullable:`),
+  # and whether a call must pass it.
+  data Keyword = (name: Symbol, type: Type[Object], required: Bool, nullable: Bool = false)
 
   # The class being declared, as a `static` statement and the `static`
   # class method it calls see it through `self`: a `Type[T]` (the class
@@ -189,8 +193,16 @@ module Meta
     static native def def_method[R](name: Symbol, *, visibility: Symbol = :public, &body: T.() -> R) -> Method[T, () -> R]
     static native def def_method[A, R](name: Symbol, param: Symbol, *, visibility: Symbol = :public, &body: T.(A) -> R) -> Method[T, (A) -> R]
     static native def def_method[A, B, R](name: Symbol, params: [Symbol, Symbol], *, visibility: Symbol = :public, &body: T.(A, B) -> R) -> Method[T, (A, B) -> R]
+    # A method of keyword parameters computed at compile time,
+    # `name(*, k1: T1, k2: T2, ...)` (`keywords:`, each typed and
+    # required or not as its `Meta::Keyword` says): the block receives a
+    # hash of exactly the keywords a call passed (an optional one left
+    # out is absent). No handle: the method's signature is known only
+    # when the statement runs.
+    static native def def_method[R](name: Symbol, *, keywords: Array[Keyword], visibility: Symbol = :public, &body: T.(Hash[Symbol, Object]) -> R) -> Nil
     # The same for a class method: the block's `self` is the class.
     static native def def_class_method[R](name: Symbol, *, visibility: Symbol = :public, &body: Type[T].() -> R) -> Method[Type[T], () -> R]
+    static native def def_class_method[R](name: Symbol, *, keywords: Array[Keyword], visibility: Symbol = :public, &body: Type[T].(Hash[Symbol, Object]) -> R) -> Nil
     # A field `@name` of the class, of a class type without type
     # parameters, with `default` (a value made at compile time, baked
     # into the class), assignable when `var:` is true, with the accessors
@@ -198,6 +210,9 @@ module Meta
     # Its result is a handle to the field (`Meta::FieldRef`), for the
     # methods the statement generates to read and write it.
     static native def def_field[U](name: Symbol, type: Type[U], default: U, *, var: Bool = false, reader: Bool = false, writer: Bool = false) -> FieldRef[T, U]
+    # The same for a field of type `U?` (`nullable: true`), whose
+    # default may be `nil`.
+    static native def def_field[U](name: Symbol, type: Type[U], default: U?, *, nullable: Bool, var: Bool = false, reader: Bool = false, writer: Bool = false) -> FieldRef[T, U?]
     # A handle to the field `@name` of the class, its own, inherited or
     # generated (by this statement or another), whose declared type is
     # exactly `U` (written as the type argument: `field_ref[Int](:views)`),

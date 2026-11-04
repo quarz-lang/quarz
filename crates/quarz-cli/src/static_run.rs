@@ -173,9 +173,15 @@ impl Runner {
                             world.class(f.ty).name
                         )));
                     }
+                    // (`nullable: true`: a `U?`.)
+                    let ty = if f.nullable {
+                        Type::union_of(vec![Type::Class(f.ty, Vec::new()), world.nil()])
+                    } else {
+                        Type::Class(f.ty, Vec::new())
+                    };
                     let field = FieldInfo {
                         name: f.name.clone(),
-                        ty: Type::Class(f.ty, Vec::new()),
+                        ty: ty.clone(),
                         mutable: f.mutable,
                         default: None,
                         baked_default: Some(f.default),
@@ -185,7 +191,6 @@ impl Runner {
                         .map_err(|why| fail(format!("{at}: {why}")))?;
                     // The accessors asked for, as `attr_reader`/`attr_writer`
                     // make them.
-                    let ty = Type::Class(f.ty, Vec::new());
                     let accessor =
                         |name: String, params: Vec<ParamInfo>, synth: Synth| MethodInfo {
                             id: 0,
@@ -295,7 +300,7 @@ impl Runner {
             let Type::Proc(_, param_types, ret, _, _) = proc_ty else {
                 return Err(not_literal());
             };
-            if param_types.len() != g.params.len() {
+            if g.keywords.is_none() && param_types.len() != g.params.len() {
                 return Err(fail(format!(
                     "{at}: the block takes {} parameter(s) but {} name(s) were given",
                     param_types.len(),
@@ -356,19 +361,57 @@ impl Runner {
                 "protected" => Visibility::Protected,
                 _ => Visibility::Public,
             };
-            let params = g
-                .params
-                .iter()
-                .zip(param_types)
-                .map(|(name, ty)| ParamInfo {
-                    name: name.clone(),
-                    kind: ParamKind::Positional,
-                    ty,
-                    default: None,
-                    assigns_ivar: false,
-                    span: stmt.span,
-                })
-                .collect();
+            let params = match &g.keywords {
+                // `name(*, k1: T1, k2: T2 = <absent>, ...)`: an optional
+                // keyword has a default of its own, which the method never
+                // evaluates (the body gets the hash of those passed:
+                // `Generated::keywords`).
+                Some(ks) => {
+                    let mut params = Vec::new();
+                    for (name, ty, required, nullable) in ks {
+                        if !world.class(*ty).type_params.is_empty() {
+                            return Err(fail(format!(
+                                "{at}: the keyword `{name}` is typed `{}`, which takes type arguments a `Type` value does not carry: a keyword's type is a class without them",
+                                world.class(*ty).name
+                            )));
+                        }
+                        let t = Type::Class(*ty, Vec::new());
+                        params.push(ParamInfo {
+                            name: name.clone(),
+                            kind: ParamKind::KeywordOnly,
+                            ty: if *nullable {
+                                Type::union_of(vec![t, world.nil()])
+                            } else {
+                                t
+                            },
+                            default: (!required).then(|| {
+                                std::rc::Rc::new(quarz_syntax::ast::Expr {
+                                    id: 0,
+                                    span: stmt.span,
+                                    kind: quarz_syntax::ast::ExprKind::Nil,
+                                })
+                            }),
+                            assigns_ivar: false,
+                            span: stmt.span,
+                        });
+                    }
+                    params
+                }
+                None => g
+                    .params
+                    .iter()
+                    .zip(param_types)
+                    .map(|(name, ty)| ParamInfo {
+                        name: name.clone(),
+                        kind: ParamKind::Positional,
+                        ty,
+                        default: None,
+                        assigns_ivar: false,
+                        span: stmt.span,
+                    })
+                    .collect(),
+            };
+            let keyword_hash = g.keywords.is_some();
             let (func, class, captures, singleton) =
                 (g.func, g.class, g.captures.clone(), g.singleton);
             let info = MethodInfo {
@@ -400,6 +443,7 @@ impl Runner {
                     by: (stmt.file, stmt.span),
                     block: block_span,
                     doc: g.doc,
+                    keywords: keyword_hash,
                 }),
             };
             let mid = host
@@ -706,12 +750,32 @@ impl Runner {
                         "{at}: the handle to `@{name}` names no field of `{class}` (none was declared or generated by the end of the statement)"
                     ));
                 };
-                let wanted = host
-                    .output()
-                    .type_args
-                    .get(&(*site as quarz_syntax::ast::NodeId))
-                    .and_then(|args| args.iter().find(|(p, _)| own_u.contains(p)))
-                    .map(|(_, t)| t.subst(&call_args));
+                let site_id = *site as quarz_syntax::ast::NodeId;
+                let site_args = host.output().type_args.get(&site_id);
+                // The handle's type as the overload called gives it
+                // (`FieldRef[T, U?]` for `def_field(..., nullable: true)`),
+                // else `U`.
+                let declared = match host.output().calls.get(&site_id) {
+                    Some(quarz_types::check::CallTarget::Method { method }) => {
+                        match &world.method(*method).ret {
+                            Type::Class(_, args) if args.len() == 2 => Some(args[1].clone()),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                let wanted = site_args.and_then(|args| {
+                    let (p, t) = args.iter().find(|(p, _)| own_u.contains(p))?;
+                    let u = match &declared {
+                        Some(d) if d.mentions_param(*p) => {
+                            let map: rustc_hash::FxHashMap<TypeParamId, Type> =
+                                std::iter::once((*p, t.clone())).collect();
+                            d.subst(&map)
+                        }
+                        _ => t.clone(),
+                    };
+                    Some(u.subst(&call_args))
+                });
                 if let Some(u) = wanted {
                     // `U` is concrete or the statement's own type arguments:
                     // a helper's type parameter has no value here.
@@ -1430,6 +1494,7 @@ struct PendingField {
     mutable: bool,
     reader: bool,
     writer: bool,
+    nullable: bool,
 }
 
 /// A `def_method` call's request, its captured values baked.
@@ -1442,6 +1507,8 @@ struct PendingGen {
     func: FuncId,
     captures: Vec<(u32, u32, Baked)>,
     doc: Option<String>,
+    /// `keywords:`: (name, class, required, nullable).
+    keywords: Option<Vec<(String, ClassId, bool, bool)>>,
 }
 
 /// A compile-time value as a generated method embeds it (docs/14 §5),
@@ -1716,6 +1783,11 @@ impl Reflect for WorldReflect {
             func: request.func,
             captures,
             doc: self.doc.borrow_mut().take(),
+            keywords: request.keywords.map(|ks| {
+                ks.into_iter()
+                    .map(|k| (k.name, k.ty, k.required, k.nullable))
+                    .collect()
+            }),
         }));
         Ok(generated.len() - 1)
     }
@@ -1731,6 +1803,7 @@ impl Reflect for WorldReflect {
                 mutable: request.mutable,
                 reader: request.reader,
                 writer: request.writer,
+                nullable: request.nullable,
             }));
         Ok(())
     }

@@ -549,7 +549,16 @@ fn class_type(world: &World, id: ClassId) -> String {
 pub(crate) fn method_signature(world: &World, mid: MethodId, as_new: Option<&str>) -> String {
     let m = world.method(mid);
     let mut params: Vec<String> = Vec::new();
-    for p in &m.params {
+    for (i, p) in m.params.iter().enumerate() {
+        // `*` before the first keyword-only parameter, unless a `*rest`
+        // stands there.
+        if p.kind == ParamKind::KeywordOnly
+            && !m.params[..i]
+                .iter()
+                .any(|q| matches!(q.kind, ParamKind::KeywordOnly | ParamKind::Rest))
+        {
+            params.push("*".to_string());
+        }
         let default = if p.default.is_some() { " = …" } else { "" };
         let ty = world.type_name(&p.ty);
         params.push(match p.kind {
