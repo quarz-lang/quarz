@@ -230,6 +230,14 @@ module Meta
     static native def class_method_ref[P](name: Symbol) -> Method[Type[T], P]
     # The documentation comment of the next method generated.
     static native def doc(text: String) -> Void
+    # The class being declared as a plain class value, `Type[T]`: unlike
+    # `self`, a block given to `def_method` may capture it (baked into
+    # the generated method, as any class is), to call the class's class
+    # methods from an instance method (`cls = type; def_method(:copy)
+    # { cls.rebuild(...) }`). It is the class the statement ran on: a
+    # subclass that inherits the generated method gets that class, not
+    # its own.
+    static def type -> Type[T] = self
   end
 
   # A field of `T` of type `U` as a value (docs/14 §5): what

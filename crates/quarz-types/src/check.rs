@@ -537,6 +537,12 @@ struct Env {
     static_frame: Option<usize>,
     /// The next block checked is one (set by the call's check).
     next_block_lifted: bool,
+    /// ... given to a generating call on another class's `Meta::ClassDef`
+    /// than the `static def`'s own `self`.
+    next_block_foreign: bool,
+    /// The innermost lifted block is such a one: its `Self` is that
+    /// class, not the `static def`'s.
+    lifted_foreign: bool,
     /// The locals of this body that may change after a closure captures
     /// them (assigned in two places or more, or parameters assigned):
     /// inside a closure that may run later, their narrowings from outside
@@ -1081,6 +1087,8 @@ impl Checker {
             lifted_frame: None,
             static_frame: None,
             next_block_lifted: false,
+            next_block_foreign: false,
+            lifted_foreign: false,
         };
         Checker {
             zsuper_forwards: None,
@@ -2638,6 +2646,8 @@ impl Checker {
             lifted_frame: None,
             static_frame: None,
             next_block_lifted: false,
+            next_block_foreign: false,
+            lifted_foreign: false,
         }
     }
 
@@ -2923,7 +2933,14 @@ impl Checker {
         };
         env.self_opaque = opaque;
         env.self_is_self = Self::self_binding(&self.world, &info, &self_type) == self_type;
-        let bound = opaque.then(|| Self::self_binding(&self.world, &info, &self_type));
+        // (A class's `static def self.` binds it too: its `type` is a
+        // `Type[Self]`, `Self` a subclass of the class.)
+        let static_class = info.singleton
+            && info.is_static
+            && !info.is_native
+            && matches!(&self_type, Type::Class(c, _) if *c == self.world.builtin.meta_classdef);
+        let bound =
+            (opaque || static_class).then(|| Self::self_binding(&self.world, &info, &self_type));
         let saved_bound = std::mem::replace(&mut self.world.self_bound, bound);
         env.ret_expected = Some(info.ret.subst(&self_subst));
         env.block_type = info.block.as_ref().map(|(_, t)| t.subst(&self_subst));
@@ -4155,6 +4172,18 @@ impl Checker {
             return;
         }
         if self.env.lifted_frame.is_some() && self.env.lifted_frame == self.env.task_frame {
+            // (`type`'s `Self` is the class the `static def` runs on: in a
+            // method generated into another class, it is not that `Self`.)
+            if self.env.lifted_foreign && rt.mentions_param(SELF_PARAM) {
+                self.error(
+                    format!(
+                        "`{name}` has type {}, of the class this `static def` runs on, but the method is generated into another class: generate it from that class's own `static def` (`type` is the class its statement runs on)",
+                        self.world.type_name(&rt)
+                    ),
+                    span,
+                );
+                return;
+            }
             if !self.bakeable_type(&rt) {
                 self.error(
                     format!(
@@ -5378,6 +5407,18 @@ impl Checker {
         m.params.iter().any(|p| is(&p.ty))
             || m.block.as_ref().is_some_and(|(_, t)| is(t))
             || is(&m.ret)
+    }
+
+    /// Whether the code is a class's `static def self.` (its own `self`,
+    /// a `Meta::ClassDef` of the class), outside blocks.
+    fn static_class_self(&self) -> bool {
+        self.env.is_static
+            && self.env.receivers.is_empty()
+            && self
+                .env
+                .method
+                .is_some_and(|m| self.world.method(m).singleton)
+            && matches!(&self.env.self_type, Type::Class(c, _) if *c == self.world.builtin.meta_classdef)
     }
 
     /// Whether `self` is the method's own `self` with the opaque type
@@ -8423,6 +8464,26 @@ impl Checker {
             self.out.dynamic_calls.remove(&expr.id);
         }
         let result = self.check_call_on(expr, call, &recv_ty, implicit_self, expected);
+        // `type` in a class's `static def`: the class it runs on, as a
+        // class value whose instances are `Self` (docs/14 §4), so that a
+        // block given to `def_method` that captures it builds the class
+        // generated into (`cls.rebuild(...)` giving `Self`).
+        let result = match self.out.calls.get(&expr.id) {
+            // (On the `static def`'s own `self` only: another class's
+            // `Meta::ClassDef` is that class, not `Self`.)
+            Some(CallTarget::Method { method })
+                if call.name == "type"
+                    && self.world.method(*method).owner == self.world.builtin.meta_classdef
+                    && self.static_class_self()
+                    && call
+                        .recv
+                        .as_ref()
+                        .is_none_or(|r| matches!(r.kind, ExprKind::SelfRef)) =>
+            {
+                Type::TypeOf(Box::new(Type::Param(SELF_PARAM)))
+            }
+            _ => result,
+        };
         let result = match (
             call.name.as_str(),
             call.args.as_slice(),
@@ -11636,6 +11697,15 @@ impl Checker {
                 // becomes a method's body (docs/14 §5).
                 self.env.next_block_lifted =
                     m.is_native && m.owner == self.world.builtin.meta_classdef;
+                // (Own only on the `static def`'s own `self`, outside any
+                // block run with another receiver: `instance_exec` on
+                // another class's `Meta::ClassDef` makes its `self` that.)
+                self.env.next_block_foreign = self.env.next_block_lifted
+                    && (!self.env.receivers.is_empty()
+                        || call
+                            .recv
+                            .as_ref()
+                            .is_some_and(|r| !matches!(r.kind, ExprKind::SelfRef)));
                 // `&cond: Quoted[P]`: the block is checked as a `P` and
                 // given as its tree (docs/14 §6).
                 // Recorded through the journal, so that a trial of an
@@ -12444,6 +12514,7 @@ impl Checker {
             self.out.shareable_procs.insert(call_id);
         }
         let lifted = std::mem::take(&mut self.env.next_block_lifted);
+        let foreign = std::mem::take(&mut self.env.next_block_foreign);
         let lifted_before = lifted.then(|| self.out.lifted_blocks.get(&call_id).cloned());
         if lifted {
             self.out.lifted_blocks.insert(call_id, proc_ty.clone());
@@ -12582,10 +12653,15 @@ impl Checker {
         }
         // A lifted block's body is run-time code (the generated method's),
         // whatever the `static def` around it may call.
-        let saved_lifted = (self.env.lifted_frame, self.env.is_static);
+        let saved_lifted = (
+            self.env.lifted_frame,
+            self.env.is_static,
+            self.env.lifted_foreign,
+        );
         if lifted {
             self.env.lifted_frame = Some(self.env.frames.len() - 1);
             self.env.is_static = false;
+            self.env.lifted_foreign = foreign;
         }
         self.env.blocks.push(BlockCtx {
             ret: ret.clone(),
@@ -12779,7 +12855,11 @@ impl Checker {
         (self.env.loop_depth, self.env.loop_exits) = saved_loop;
         (self.env.task_frame, self.env.task_shareable_proc) = saved_task_frame;
         self.env.static_frame = saved_static;
-        (self.env.lifted_frame, self.env.is_static) = saved_lifted;
+        (
+            self.env.lifted_frame,
+            self.env.is_static,
+            self.env.lifted_foreign,
+        ) = saved_lifted;
         self.leave_receiver(saved_self);
         if let Some((bound, scope_self, opaque, is_self)) = saved_lifted_self {
             self.world.self_bound = bound;
