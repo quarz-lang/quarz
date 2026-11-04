@@ -11,12 +11,12 @@ pub mod lock;
 pub mod manifest;
 pub mod version;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use git::Mirror;
 use lock::{Lock, LockedCog, LOCK};
-use manifest::{Dependency, Manifest, Ref, Source, MANIFEST};
+use manifest::{Dependency, Manifest, Ref, Source, LOCAL_MANIFEST, MANIFEST};
 use version::Version;
 
 /// The language version manifests' `quarz` is compared with.
@@ -83,6 +83,10 @@ pub struct CogEntry {
     pub dev_imports: Vec<(String, usize)>,
     /// Where it comes from; `None` for the application and a `[patch]`.
     pub source: Option<Source>,
+    /// A `[patch]` of `Cog.local.toml`'s.
+    pub local_patch: bool,
+    /// For such a cog, the version `Cog.lock` holds for its source.
+    pub locked_version: Option<String>,
     pub rev: Option<String>,
 }
 
@@ -133,6 +137,13 @@ struct Ctx<'a> {
     opts: &'a Options,
     /// `[patch]`: sources replaced by local directories.
     patches: HashMap<Source, PathBuf>,
+    /// Those of `patches` that `Cog.local.toml` gives.
+    local_patches: HashSet<Source>,
+    /// The lock as written (without `Cog.local.toml`), for the versions
+    /// locally patched cogs are locked at.
+    base_lock: Option<Lock>,
+    /// A resolution for the build alone: no warnings about the cogs.
+    quiet: bool,
     /// `vendor/`, when it exists: the cogs are read from there.
     vendor: Option<PathBuf>,
     /// `git ls-remote` results by URL.
@@ -181,7 +192,54 @@ pub fn author_version_warning(root: &Path) -> Option<String> {
 pub fn open(root: &Path, opts: &Options) -> Result<Movement, Error> {
     let manifest = Manifest::read(root)?;
     manifest.check_language(LANGUAGE_VERSION)?;
-    let mut ctx = Ctx::new(root, &manifest, opts)?;
+    // (`Cog.local.toml` read and checked before anything is written.)
+    let mut ctx = Ctx::new(root, &manifest, opts, true)?;
+    let base = open_locked(root, &manifest, opts)?;
+    // The build, with `Cog.local.toml`'s patches over the lock.
+    if ctx.local_patches.is_empty() {
+        return Ok(base);
+    }
+    let lock = base.lock.clone().unwrap_or_else(empty_lock);
+    ctx.base_lock = base.lock.clone();
+    let built =
+        ctx.movement_from_lock(&manifest, &lock)
+            .and_then(|m| match ctx.local_needs_more(&lock) {
+                Some(reason) => Err(LockProblem::Stale(reason)),
+                None => Ok(m),
+            });
+    let mut movement = match built {
+        Ok(m) => m,
+        Err(LockProblem::Fatal(e)) => return Err(e),
+        // A local copy needs what the lock does not have: resolved for this
+        // build, not written.
+        Err(LockProblem::Stale(reason)) => {
+            if opts.locked || opts.offline {
+                return Err(Error::new(format!(
+                    "a cog {LOCAL_MANIFEST} patches needs what Cog.lock does not have ({reason}), which is resolved without {LOCAL_MANIFEST}{}",
+                    if opts.locked { " (--locked)" } else { ": drop --offline" }
+                )));
+            }
+            // (Its warnings were the lock's to give.)
+            ctx.quiet = true;
+            let resolved = ctx.resolve(&manifest)?;
+            ctx.movement_from_lock(&manifest, &resolved)
+                .map_err(|p| match p {
+                    LockProblem::Stale(s) => {
+                        Error::new(format!("the resolved lock does not hold: {s}"))
+                    }
+                    LockProblem::Fatal(e) => e,
+                })?
+        }
+    };
+    movement.lock = base.lock;
+    Ok(movement)
+}
+
+/// The movement with `Cog.toml`'s patches only, from `Cog.lock` when it
+/// matches the manifests, else resolved and written: what the lock is.
+fn open_locked(root: &Path, manifest: &Manifest, opts: &Options) -> Result<Movement, Error> {
+    let manifest = manifest.clone();
+    let mut ctx = Ctx::new(root, &manifest, opts, false)?;
     let existing = Lock::read(root)?;
     if manifest.dependencies.is_empty()
         && manifest.dev_dependencies.is_empty()
@@ -286,9 +344,25 @@ struct Node {
 }
 
 impl<'a> Ctx<'a> {
-    fn new(root: &'a Path, manifest: &Manifest, opts: &'a Options) -> Result<Ctx<'a>, Error> {
+    /// `local`: with `Cog.local.toml`'s patches (for the build; the lock
+    /// is resolved, verified and written without them).
+    fn new(
+        root: &'a Path,
+        manifest: &Manifest,
+        opts: &'a Options,
+        local: bool,
+    ) -> Result<Ctx<'a>, Error> {
         let mut patches = HashMap::new();
-        for (key, patch) in &manifest.patch {
+        let mut local_patches = HashSet::new();
+        // `Cog.local.toml`'s entries over `Cog.toml`'s.
+        let local = if local {
+            manifest.local_patches(root)?
+        } else {
+            BTreeMap::new()
+        };
+        let mut all = manifest.patch.clone();
+        all.extend(local.clone());
+        for (key, patch) in &all {
             let dep = manifest
                 .dependencies
                 .get(key)
@@ -298,10 +372,18 @@ impl<'a> Ctx<'a> {
             let dir = root.join(&patch.path);
             let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
             if !dir.join(MANIFEST).is_file() {
+                let file = if local.contains_key(key) {
+                    LOCAL_MANIFEST
+                } else {
+                    MANIFEST
+                };
                 return Err(Error::new(format!(
-                    "[patch] `{key}`: {} has no Cog.toml",
+                    "[patch] `{key}` of {file}: {} has no Cog.toml",
                     dir.display()
                 )));
+            }
+            if local.contains_key(key) {
+                local_patches.insert(dep.source());
             }
             patches.insert(dep.source(), dir);
         }
@@ -311,9 +393,69 @@ impl<'a> Ctx<'a> {
             cache: cache_dir(),
             opts,
             patches,
+            local_patches,
+            base_lock: None,
+            quiet: false,
             vendor,
             remotes: HashMap::new(),
         })
+    }
+
+    /// What a locally patched cog's manifest asks for that `lock` does not
+    /// hold: a later version of a locked cog (`tag`), or another commit
+    /// (`rev`). (A source the lock lacks is found building the movement.)
+    fn local_needs_more(&self, lock: &Lock) -> Option<String> {
+        let mut dirs: Vec<&PathBuf> = self
+            .patches
+            .iter()
+            .filter(|(s, _)| self.local_patches.contains(*s))
+            .map(|(_, d)| d)
+            .collect();
+        dirs.sort();
+        for dir in dirs {
+            let m = Manifest::read(dir).ok()?;
+            for dep in m.dependencies.values() {
+                let source = dep.source();
+                if self.patches.contains_key(&source) {
+                    continue;
+                }
+                let s = source.to_lock_string();
+                let Some(locked) = lock.cogs.iter().find(|c| c.source == s) else {
+                    continue;
+                };
+                let short = match dep.reference() {
+                    Ref::Tag(t) => {
+                        match (Version::parse_tag(&t), Version::parse(&locked.version)) {
+                            (Some(want), Some(have)) => want > have,
+                            _ => false,
+                        }
+                    }
+                    Ref::Rev(r) => r != locked.rev,
+                    Ref::Branch(_) | Ref::Head => false,
+                };
+                if short {
+                    return Some(format!(
+                        "{} asks for {source} at {}, the lock holds {}",
+                        m.cog.name,
+                        describe_ref(&dep.reference()),
+                        locked.version
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    /// The version the written lock holds for a locally patched source.
+    fn locked_version(&self, source: &Source) -> Option<String> {
+        if !self.local_patches.contains(source) {
+            return None;
+        }
+        let s = source.to_lock_string();
+        self.base_lock
+            .as_ref()
+            .and_then(|l| l.cogs.iter().find(|c| c.source == s))
+            .map(|c| c.version.clone())
     }
 
     /// Build the movement from `lock`, which `open` has found to be the
@@ -377,6 +519,8 @@ impl<'a> Ctx<'a> {
             dev_imports: Vec::new(),
             source: None,
             rev: None,
+            local_patch: false,
+            locked_version: None,
         }];
         let mut manifests = vec![manifest.clone()];
         let mut index: HashMap<Source, usize> = HashMap::new();
@@ -422,6 +566,8 @@ impl<'a> Ctx<'a> {
                                 dev_imports: Vec::new(),
                                 source: None,
                                 rev: None,
+                                local_patch: self.local_patches.contains(&source),
+                                locked_version: self.locked_version(&source),
                             };
                             manifests.push(m);
                             entry
@@ -452,6 +598,8 @@ impl<'a> Ctx<'a> {
                                 dev_imports: Vec::new(),
                                 source: Some(source.clone()),
                                 rev: Some(locked.rev.clone()),
+                                local_patch: false,
+                                locked_version: None,
                             };
                             manifests.push(m);
                             entry
@@ -882,13 +1030,20 @@ impl<'a> Ctx<'a> {
                 )));
             }
         }
-        // A chosen cog's `[patch]` with a path, a copy of the application,
-        // and a cycle among the cogs (patched ones included), before
-        // anything is fetched or written.
+        // A chosen cog's own `[patch]` (not read: a warning), a copy of the
+        // application, and a cycle among the cogs (patched ones included),
+        // before anything is fetched or written.
         for source in &reached {
             let (version, rev) = &chosen[source];
             let m = &nodes[&(source.clone(), rev.clone())].manifest;
-            check_local_patches(source, m)?;
+            // (Its `[patch]` is its author's, for working on it: only the
+            // application's applies.)
+            if !git::is_local_url(&source.url) && !m.patch.is_empty() && !self.quiet {
+                eprintln!(
+                    "quarz: warning: {} {}: its [patch] is not read; only the application's applies ({source})",
+                    m.cog.name, version
+                );
+            }
             // A version tag on a commit whose manifest writes another
             // version: the tag decides, which its author may not know.
             // (Printed whether or not the progress is: a warning.)
@@ -1076,24 +1231,7 @@ fn check_local_deps(source: &Source, m: &Manifest) -> Result<(), Error> {
             return Err(local_dep_error(&m.cog.name, &d.source()));
         }
     }
-    check_local_patches(source, m)
-}
-
-/// A `[patch]` names a directory on this machine, which a cog fetched from
-/// elsewhere may not; only the application's patches apply in any case.
-fn check_local_patches(source: &Source, m: &Manifest) -> Result<(), Error> {
-    if git::is_local_url(&source.url) {
-        return Ok(());
-    }
-    match m.patch.iter().next() {
-        Some((key, p)) => Err(Error::new(format!(
-            "{} {} has a [patch] `{key}` naming {}, a directory on this machine, which a cog fetched from elsewhere may not name (and only the application's [patch] applies)",
-            m.cog.name,
-            m.cog.version,
-            p.path.display()
-        ))),
-        None => Ok(()),
-    }
+    Ok(())
 }
 
 fn local_dep_error(from: &str, dep: &Source) -> Error {
@@ -1208,7 +1346,33 @@ pub fn init(dir: &Path) -> Result<String, Error> {
         std::fs::write(&main, "puts \"Hello from #{cog.name}!\"\n")
             .map_err(|e| Error::new(format!("{}: {e}", main.display())))?;
     }
+    ignore_local_manifest(dir)?;
     Ok(name)
+}
+
+/// `Cog.local.toml` in `dir/.gitignore` (made when there is none), once:
+/// it names directories of this machine.
+fn ignore_local_manifest(dir: &Path) -> Result<(), Error> {
+    let path = dir.join(".gitignore");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(Error::new(format!("{}: {e}", path.display()))),
+    };
+    let line = format!("/{LOCAL_MANIFEST}");
+    if text
+        .lines()
+        .any(|l| l.trim() == line || l.trim() == LOCAL_MANIFEST)
+    {
+        return Ok(());
+    }
+    let mut out = text;
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&line);
+    out.push('\n');
+    std::fs::write(&path, out).map_err(|e| Error::new(format!("{}: {e}", path.display())))
 }
 
 /// What `quarz cog add` is given.
@@ -1228,7 +1392,7 @@ pub struct AddRequest {
 /// key and what was written.
 pub fn add(root: &Path, req: &AddRequest, opts: &Options) -> Result<(String, String), Error> {
     let manifest = Manifest::read(root)?;
-    let mut ctx = Ctx::new(root, &manifest, opts)?;
+    let mut ctx = Ctx::new(root, &manifest, opts, false)?;
     let source = Source {
         url: req.url.clone(),
         subdir: req.subdir.clone(),
@@ -1349,6 +1513,13 @@ pub fn tree(movement: &Movement) -> String {
         let place = match (&c.source, i) {
             (_, 0) => String::new(),
             (Some(s), _) => format!(" ({s})"),
+            (None, _) if c.local_patch => match &c.locked_version {
+                Some(v) => format!(
+                    " (patched: {}, {LOCAL_MANIFEST}; locked {v})",
+                    c.dir.display()
+                ),
+                None => format!(" (patched: {}, {LOCAL_MANIFEST})", c.dir.display()),
+            },
             (None, _) => format!(" (patched: {})", c.dir.display()),
         };
         let again = !seen.insert(i);
@@ -1408,7 +1579,7 @@ pub fn verify(root: &Path) -> Result<Vec<String>, Error> {
         offline: true,
         ..Options::default()
     };
-    let ctx = Ctx::new(root, &manifest, &opts)?;
+    let ctx = Ctx::new(root, &manifest, &opts, false)?;
     let mut problems = Vec::new();
     for c in &lock.cogs {
         let dir = match &ctx.vendor {
@@ -1448,7 +1619,10 @@ pub fn vendor(root: &Path, opts: &Options) -> Result<usize, Error> {
         ignore_vendor: true,
         ..opts.clone()
     };
-    let movement = open(root, &opts)?;
+    // (The locked commits: without `Cog.local.toml`.)
+    let manifest = Manifest::read(root)?;
+    manifest.check_language(LANGUAGE_VERSION)?;
+    let movement = open_locked(root, &manifest, &opts)?;
     let vendor = root.join("vendor");
     let tmp = root.join(format!(".vendor.tmp{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);

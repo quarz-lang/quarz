@@ -11,6 +11,19 @@ use crate::Error;
 /// The manifest's file name.
 pub const MANIFEST: &str = "Cog.toml";
 
+/// The file of local replacements beside it: a `[patch]` table of this
+/// machine's, merged over the manifest's at the root of a movement, kept
+/// out of version control.
+pub const LOCAL_MANIFEST: &str = "Cog.local.toml";
+
+/// `Cog.local.toml`: a `[patch]` table and nothing else.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalManifest {
+    #[serde(default)]
+    patch: BTreeMap<String, Patch>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
@@ -198,6 +211,33 @@ impl Manifest {
         let text = std::fs::read_to_string(&path)
             .map_err(|e| Error::new(format!("{}: {e}", path.display())))?;
         Manifest::parse(&text).map_err(|e| Error::new(format!("{}: {}", path.display(), e.0)))
+    }
+
+    /// The `[patch]` entries of `dir/Cog.local.toml` (none when there is
+    /// no such file), each a dependency of the manifest.
+    pub fn local_patches(&self, dir: &Path) -> Result<BTreeMap<String, Patch>, Error> {
+        let path = dir.join(LOCAL_MANIFEST);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+            Err(e) => return Err(Error::new(format!("{}: {e}", path.display()))),
+        };
+        let local: LocalManifest = toml::from_str(&text).map_err(|e| {
+            Error::new(format!(
+                "{}: {} ({LOCAL_MANIFEST} holds a [patch] table only)",
+                path.display(),
+                e.message()
+            ))
+        })?;
+        for key in local.patch.keys() {
+            if !self.dependencies.contains_key(key) && !self.dev_dependencies.contains_key(key) {
+                return Err(Error::new(format!(
+                    "{}: [patch] `{key}` is not a dependency of this cog",
+                    path.display()
+                )));
+            }
+        }
+        Ok(local.patch)
     }
 
     pub fn parse(text: &str) -> Result<Manifest, Error> {

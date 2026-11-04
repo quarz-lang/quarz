@@ -918,6 +918,217 @@ fn the_lock_is_verified_reused_and_vendored() {
     assert!(err.contains("--offline"), "{err}");
 }
 
+/// docs/10 §2: `Cog.local.toml` holds a `[patch]` table of this machine's,
+/// merged over `Cog.toml`'s at the root of the movement (the application,
+/// or a library under `quarz test`), not locked, marked by `cog tree`.
+#[test]
+fn cog_local_toml_patches_at_the_root() {
+    let w = World::new();
+    w.libraries();
+    let dep = format!(
+        "Tomlz = {{ git = \"{}\", tag = \"v0.8.1\" }}\n",
+        w.url("tomlz")
+    );
+    w.app(&dep, "puts Tomlz.parse(\" x \")\n");
+    assert_eq!(w.ok("app", &["run"]), "Value(x)\n");
+    // A local copy, patched by the local file alone.
+    std::fs::create_dir_all(w.path("tomlz-dev/src")).unwrap();
+    w.write(
+        "tomlz-dev/Cog.toml",
+        "[cog]\nname = \"tomlz\"\nversion = \"0.8.1\"\n",
+    );
+    w.write(
+        "tomlz-dev/src/value.qz",
+        "public def parse(text: String) -> String = \"local #{text.strip}\"\n",
+    );
+    let lock = std::fs::read_to_string(w.path("app/Cog.lock")).unwrap();
+    w.write(
+        "app/Cog.local.toml",
+        "[patch]\nTomlz = { path = \"../tomlz-dev\" }\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "local x\n");
+    // The lock is resolved without it: unchanged, and `--locked` holds.
+    let read_lock = || std::fs::read_to_string(w.path("app/Cog.lock")).unwrap();
+    assert_eq!(read_lock(), lock);
+    assert_eq!(w.ok("app", &["run", "--locked"]), "local x\n");
+    let tree = w.ok("app", &["cog", "tree"]);
+    assert!(
+        tree.contains("tomlz 0.8.1 (patched: ") && tree.contains(", Cog.local.toml; locked 0.8.1)"),
+        "{tree}"
+    );
+    // A local copy that needs what the lock does not have: resolved for
+    // the build, not written; refused with `--locked`.
+    w.write(
+        "extra/Cog.toml",
+        "[cog]\nname = \"extra\"\nversion = \"1.0.0\"\n",
+    );
+    w.write("extra/src/e.qz", "E = 1\n");
+    w.commit("extra", Some("v1.0.0"));
+    w.write(
+        "tomlz-dev/Cog.toml",
+        &format!(
+            "[cog]\nname = \"tomlz\"\nversion = \"0.8.1\"\n\n[dependencies]\nExtra = {{ git = \"{}\", tag = \"v1.0.0\" }}\n",
+            w.url("extra")
+        ),
+    );
+    assert_eq!(w.ok("app", &["run"]), "local x\n");
+    assert_eq!(read_lock(), lock);
+    let err = w.fails("app", &["run", "--locked"]);
+    assert!(
+        err.contains("a cog Cog.local.toml patches needs what Cog.lock does not have")
+            && err.contains("(--locked)"),
+        "{err}"
+    );
+    w.write(
+        "tomlz-dev/Cog.toml",
+        "[cog]\nname = \"tomlz\"\nversion = \"0.8.1\"\n",
+    );
+    // Over `Cog.toml`'s own entry for the same key.
+    std::fs::create_dir_all(w.path("tomlz-other/src")).unwrap();
+    w.write(
+        "tomlz-other/Cog.toml",
+        "[cog]\nname = \"tomlz\"\nversion = \"0.8.1\"\n",
+    );
+    w.write(
+        "tomlz-other/src/value.qz",
+        "public def parse(text: String) -> String = \"other\"\n",
+    );
+    w.app(
+        &format!("{dep}\n[patch]\nTomlz = {{ path = \"../tomlz-other\" }}\n"),
+        "puts Tomlz.parse(\" x \")\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "local x\n");
+    std::fs::remove_file(w.path("app/Cog.local.toml")).unwrap();
+    assert_eq!(w.ok("app", &["run"]), "other\n");
+    let tree = w.ok("app", &["cog", "tree"]);
+    assert!(!tree.contains("Cog.local.toml"), "{tree}");
+    // A table other than `[patch]`, and a key that is no dependency.
+    w.write(
+        "app/Cog.local.toml",
+        "[dependencies]\nX = { git = \"x\" }\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("Cog.local.toml holds a [patch] table only"),
+        "{err}"
+    );
+    w.write(
+        "app/Cog.local.toml",
+        "[patch]\nNope = { path = \"../tomlz-dev\" }\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("[patch] `Nope` is not a dependency of this cog"),
+        "{err}"
+    );
+    std::fs::remove_file(w.path("app/Cog.local.toml")).unwrap();
+    // A library under `quarz test`: its own local file applies.
+    w.write(
+        "lib/Cog.toml",
+        &format!("[cog]\nname = \"lib\"\nversion = \"0.1.0\"\n\n[dependencies]\n{dep}"),
+    );
+    w.write(
+        "lib/src/lib.qz",
+        "public def shown -> String = Tomlz.parse(\" y \").to_s\n",
+    );
+    w.write(
+        "lib/test/lib_test.qz",
+        "require \"test\"\nclass LibTest < Test::Case\n  def test_shown -> Void = assert_equal(\"local y\", Lib.shown)\nend\n",
+    );
+    w.write(
+        "lib/Cog.local.toml",
+        "[patch]\nTomlz = { path = \"../tomlz-dev\" }\n",
+    );
+    let out = w.ok("lib", &["test"]);
+    assert!(out.contains("1 tests, 1 assertions, 0 failures"), "{out}");
+}
+
+/// A local copy that asks for a later version of a locked cog than the
+/// lock holds builds with that version (resolved for the build alone),
+/// and `--locked` refuses it.
+#[test]
+fn a_local_copy_asking_for_more_than_the_lock() {
+    let w = World::new();
+    w.write(
+        "extra/Cog.toml",
+        "[cog]\nname = \"extra\"\nversion = \"1.0.0\"\n",
+    );
+    w.write("extra/src/e.qz", "public def ver -> String = \"e1.0\"\n");
+    w.commit("extra", Some("v1.0.0"));
+    w.write(
+        "extra/Cog.toml",
+        "[cog]\nname = \"extra\"\nversion = \"1.1.0\"\n",
+    );
+    w.write("extra/src/e.qz", "public def ver -> String = \"e1.1\"\n");
+    w.commit("extra", Some("v1.1.0"));
+    let needs = |tag: &str| {
+        format!(
+            "[cog]\nname = \"base\"\nversion = \"0.1.0\"\n\n[dependencies]\nExtra = {{ git = \"{}\", tag = \"{tag}\" }}\n",
+            w.url("extra")
+        )
+    };
+    w.write("base/Cog.toml", &needs("v1.0.0"));
+    w.write(
+        "base/src/b.qz",
+        "public def show -> String = \"git #{Extra.ver}\"\n",
+    );
+    w.commit("base", Some("v0.1.0"));
+    w.write("base-dev/Cog.toml", &needs("v1.1.0"));
+    w.write(
+        "base-dev/src/b.qz",
+        "public def show -> String = \"local #{Extra.ver}\"\n",
+    );
+    w.app(
+        &format!(
+            "Base = {{ git = \"{}\", tag = \"v0.1.0\" }}\n",
+            w.url("base")
+        ),
+        "puts Base.show\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "git e1.0\n");
+    let lock = std::fs::read_to_string(w.path("app/Cog.lock")).unwrap();
+    w.write(
+        "app/Cog.local.toml",
+        "[patch]\nBase = { path = \"../base-dev\" }\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "local e1.1\n");
+    assert_eq!(
+        std::fs::read_to_string(w.path("app/Cog.lock")).unwrap(),
+        lock
+    );
+    let err = w.fails("app", &["run", "--locked"]);
+    assert!(
+        err.contains("base asks for") && err.contains("at tag v1.1.0, the lock holds 1.0.0"),
+        "{err}"
+    );
+}
+
+/// `quarz cog init` keeps `Cog.local.toml` out of version control, once.
+#[test]
+fn cog_init_ignores_the_local_file() {
+    let w = World::new();
+    std::fs::create_dir_all(w.path("a")).unwrap();
+    w.ok("a", &["cog", "init"]);
+    assert_eq!(
+        std::fs::read_to_string(w.path("a/.gitignore")).unwrap(),
+        "/Cog.local.toml\n"
+    );
+    std::fs::create_dir_all(w.path("b")).unwrap();
+    w.write("b/.gitignore", "/target");
+    w.ok("b", &["cog", "init"]);
+    assert_eq!(
+        std::fs::read_to_string(w.path("b/.gitignore")).unwrap(),
+        "/target\n/Cog.local.toml\n"
+    );
+    std::fs::create_dir_all(w.path("c")).unwrap();
+    w.write("c/.gitignore", "Cog.local.toml\n");
+    w.ok("c", &["cog", "init"]);
+    assert_eq!(
+        std::fs::read_to_string(w.path("c/.gitignore")).unwrap(),
+        "Cog.local.toml\n"
+    );
+}
+
 #[test]
 fn cog_add_writes_a_tag_or_a_rev() {
     let w = World::new();
@@ -1386,8 +1597,8 @@ fn a_new_users_walk() {
     );
     assert_eq!(run("app", &["run"]).stdout, "Hello, Quarz!\n");
     std::fs::remove_file(w.path("app/test/team_test.qz")).unwrap();
-    // Errors a user meets: a missing tag, a mistyped URL, a fetched cog
-    // patching with a path.
+    // Errors a user meets: a missing tag, a mistyped URL; and a fetched
+    // cog's own `[patch]`, which is not read (a warning).
     w.app(&greet.replace("v1.0.0", "v9.9.9"), "puts 1\n");
     let err = run("app", &["check"]).stderr;
     assert!(
@@ -1411,7 +1622,6 @@ fn a_new_users_walk() {
     w.commit("pathy", Some("v1.0.0"));
     w.app(greet, "puts 1\n");
     assert!(run("app", &["check"]).ok);
-    let lock = std::fs::read_to_string(w.path("app/Cog.lock")).unwrap();
     let out = run(
         "app",
         &[
@@ -1423,18 +1633,18 @@ fn a_new_users_walk() {
         ],
     );
     assert!(
-        !out.ok
+        out.ok
             && out.stderr.contains(
-                "pathy 1.0.0 has a [patch] `Greet` naming ../greet, a directory on this machine"
+                "quarz: warning: pathy 1.0.0: its [patch] is not read; only the application's applies"
             ),
         "{}",
         out.stderr
     );
-    // Refused before anything is written.
-    assert_eq!(
-        std::fs::read_to_string(w.path("app/Cog.lock")).unwrap(),
-        lock
-    );
+    w.write("app/src/main.qz", "puts Pathy::Z\n");
+    let out = run("app", &["run"]);
+    assert_eq!(out.stdout, "1\n", "{}", out.stderr);
+    // (Once, when it is resolved: not again from the lock.)
+    assert!(!out.stderr.contains("[patch]"), "{}", out.stderr);
     // The application may patch with a path.
     w.app(
         &format!("{greet}\n[patch]\nGreet = {{ path = \"../greet\" }}\n"),

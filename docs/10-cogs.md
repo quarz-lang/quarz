@@ -10,6 +10,7 @@ This is the design, and it is implemented (crates `quarz-cog` for manifests, loc
 httpx/                      a cog
 ├── Cog.toml                its manifest
 ├── Cog.lock                its lock file (committed by an application, optional for a library)
+├── Cog.local.toml          this machine's [patch] (optional, never committed, §2)
 ├── src/                    every .qz file under here is part of the cog
 │   ├── client.qz
 │   ├── response.qz
@@ -52,7 +53,8 @@ Httpx = { path = "../httpx" }
 - The key of a dependency is the constant under which this cog sees it: a module name, so it is capitalized. When it equals the module the dependency declares (`[cog] module`), nothing more is said; when it differs, it is an alias of that module (§6). A key that is the name of a built-in or standard library module (`JSON`, `Socket`, `Array`) is an error.
 - `tag`, `rev` and `branch` say where to look; the commit actually used is recorded in the lock file (§3). A `branch` moves with every `quarz cog update`, so it is for development; `quarz cog add` writes a `tag` or `rev`, never a `branch`.
 - Dependency keys are local to the cog that declares them: another cog may see the same repository under another name.
-- A cog fetched from elsewhere may not name a repository on this machine (a `file://` URL or a path, its `[patch]` included): only the application, a patched cog and a cog that is itself local may. Only the application's `[patch]` applies (as in Cargo): another cog's is not read.
+- A cog fetched from elsewhere may not name a repository on this machine in its dependencies (a `file://` URL): only the application, a patched cog and a cog that is itself local may. Only the application's `[patch]` applies (as in Cargo): another cog's is not read, and a fetched cog's gets a warning when it is resolved (`rotor 0.1.0: its [patch] is not read; only the application's applies (SOURCE)`), its author's setting for working on it.
+- **`Cog.local.toml`**, beside `Cog.toml`, holds a `[patch]` table and nothing else (another table is an error naming the file): this machine's replacements, kept out of version control (`quarz cog init` lists it in `.gitignore`), so that a cog developed against a local copy of a dependency commits no path. Its entries are merged over `Cog.toml`'s `[patch]`, the local file's entry taking a key both name, and apply where a `[patch]` does: at the root of the movement (the application, or the cog itself under `quarz test`). A cog that depends on another under development writes `[patch] PG = { path = "../pg" }` there. The lock is resolved, checked and written as if the file were not there (as Go's `go.work` leaves `go.mod` alone): the build uses the local directories, `Cog.lock` keeps the git sources' commits, and `quarz cog vendor` copies those; switching a local patch on or off changes no committed file. A local copy that needs what the lock does not hold (a cog it lacks, a later version, another commit) is resolved afresh for the build, without writing the lock (each build, then: the lock's warnings are not repeated, and `quarz cog outdated` knows only the lock's cogs), and refused with `--locked` (or `--offline`), which names the file; `quarz cog tree` shows a locally patched cog's directory and the version the lock holds for its source.
 - `quarz` is the minimum language version the cog needs (as `go 1.21` in a `go.mod` and `minimum_zig_version` in Zig); a program refuses to build with an older `quarz`.
 - A cog with `extern "C"` declarations will need to name the C libraries to link; `[cog] link = ["ssl"]` is reserved for that and not designed further here.
 
@@ -86,7 +88,7 @@ dependencies = []
 - A cog is identified by its `source` (the URL, with the `subdir` when there is one); the keys the manifests use for it are not recorded, since each manifest has its own. Two spellings of one source are one cog: a `subdir` of `a`, `a/` or `./a`, and URLs that differ only in the case of the scheme and host or in a trailing `/` or `.git`.
 - `inputs` is a digest of the dependency tables of the manifests that can change: the application's and the patched cogs' (every other manifest is pinned by its commit). The lock is the resolution of those inputs: while the digest matches, it is used as it is; when the manifests list other dependencies, it is resolved again.
 - `rev` is the key for fetching, `hash` the key for verification: a hash of the cog's files at that commit (`Cog.toml` and everything under `src/`): one line per file in path order, its SHA-256 in hex, two spaces and its path, and the base64 of the SHA-256 of those lines (as Go's module hashes). The two are kept apart because a git commit id is a SHA-1 of the repository's history, not of the files Quarz compiles: after fetching, a tree whose hash differs from the lock (a rewritten history, a force-pushed tag, a tampered mirror) is refused. The `h1:` prefix names the algorithm so it can change.
-- The lock lists only what the resolution chose: one entry per cog, whatever the manifests asked for. `[patch]` entries are not recorded.
+- The lock lists only what the resolution chose: one entry per cog, whatever the manifests asked for. `[patch]` entries are not recorded. `Cog.local.toml` takes no part in the lock at all (§2): `inputs` and the entries are what `Cog.toml` alone resolves to.
 
 ## 4. Version Resolution
 
@@ -162,12 +164,12 @@ A class body's `static` statement ([14-metaprogramming.md](14-metaprogramming.md
 
 | Command | Behavior |
 |---|---|
-| `quarz cog init` | Write a `Cog.toml` for the current directory |
+| `quarz cog init` | Write a `Cog.toml` for the current directory, and list `Cog.local.toml` in its `.gitignore` |
 | `quarz cog add <git-url> [--tag v1.4.0 \| --rev <hash>] [--as Key] [--subdir dir] [--dev]` | Add a dependency and resolve; the key is the module the cog declares unless `--as` says otherwise, and a `--tag` or the default branch's head is recorded as a `tag` or `rev`; a cog already in the other table (`[dependencies]` for `--dev`, `[dev-dependencies]` without it) is refused, naming the table |
 | `quarz cog update [Key]` | Re-resolve (one cog or all) and rewrite the lock |
 | `quarz cog fetch` | Fetch and verify everything the lock names, compiling nothing |
 | `quarz cog vendor` | Copy the locked cogs into `vendor/` |
-| `quarz cog tree` | Print the resolved dependency graph |
+| `quarz cog tree` | Print the resolved dependency graph (a patched cog with its directory, and `Cog.local.toml` when that file patches it) |
 | `quarz cog outdated` | Show, for each cog, the newest tag beyond the locked version |
 | `quarz cog verify` | Check the cache and `vendor/` against the lock's hashes |
 | `quarz run`/`build`/`check`/`ir` [`--locked`] [`--offline`] [TARGET] | TARGET is the application's directory, its `src/main.qz`, or nothing for the application around the current directory (`quarz run -- ARGS`); a `.qz` file elsewhere is a script. Use the lock, or resolve and write it; `--locked` fails instead of writing, `--offline` fetches nothing. `quarz build` writes the executable next to the manifest, named after the cog, unless `-o` says otherwise. In a library (a cog without `src/main.qz`), `quarz check` checks its files as its users load them, its root module wrapping them (saying on standard error that it checked a library), and the others refuse it: there is nothing to run |
