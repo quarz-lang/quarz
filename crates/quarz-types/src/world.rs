@@ -1725,6 +1725,18 @@ impl World {
         })
     }
 
+    /// Whether `Type` includes the module `m` (one without type
+    /// parameters, `Shareable`): then every class value is an `m`.
+    pub fn type_includes(&self, m: ClassId) -> bool {
+        m != self.builtin.class_
+            && self.class(m).kind == ClassKind::Module
+            && self.class(m).type_params.is_empty()
+            && self
+                .ancestors(self.builtin.class_, &[self.object()])
+                .iter()
+                .any(|(anc, _)| *anc == m)
+    }
+
     pub fn is_subtype(&self, sub: &Type, sup: &Type) -> bool {
         if sub == sup || sub.is_nothing() {
             return true;
@@ -1792,6 +1804,13 @@ impl World {
                     (Some(a), Some(arg)) => self.is_subtype(&a, arg),
                     _ => true,
                 }
+            }
+            // A class value is a `Type`, so what `Type` includes it is
+            // too: a `Shareable`.
+            (Type::ClassObject(..) | Type::TypeOf(_), Type::Class(b, _))
+                if self.type_includes(*b) =>
+            {
+                true
             }
             // `Meta::ClassDef[X]` is a `Type[X]`.
             (Type::Class(..), Type::ClassObject(..) | Type::TypeOf(_)) => {
@@ -2923,6 +2942,10 @@ impl World {
                 let id = *id;
                 if !self.class_shareable(id) {
                     return false;
+                }
+                // A handle's type arguments are no values (docs/14 §5).
+                if id == self.builtin.meta_field_ref || id == self.builtin.meta_method {
+                    return true;
                 }
                 // Generic containers are shareable when their arguments are.
                 args.clone().iter().all(|a| self.is_shareable(a))

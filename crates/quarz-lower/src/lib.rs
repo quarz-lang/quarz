@@ -107,6 +107,10 @@ pub struct Lowerer {
     pub(crate) quoted_once: bool,
     /// Those constants, after the world's: each builds a tree.
     pub(crate) quoted_consts: Vec<RtConst>,
+    /// The number the next quoted call site lowered gets (`Quoted#site`):
+    /// kept across REPL inputs, and from the compile-time runs into the
+    /// final lowering, so that no two sites of a process share one.
+    pub(crate) next_quoted_site: i64,
     /// The constant each `static(...)` site's value was made into, in
     /// the final lowering (`FnBuilder::static_constant`).
     pub(crate) static_consts: HashMap<quarz_syntax::ast::NodeId, ConstId>,

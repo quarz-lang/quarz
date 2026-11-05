@@ -108,6 +108,9 @@ impl<'a> FnBuilder<'a> {
             .map(|f| f.name.clone())
             .unwrap_or_default();
         let file = self.load_const(Constant::Str(file));
+        let site = self.lw.next_quoted_site;
+        self.lw.next_quoted_site += 1;
+        let site = self.int(site);
         // By its `initialize`, which takes the arguments over (field
         // stores would leave the captures referenced from here).
         let quoted = self.world.builtin.quoted;
@@ -125,7 +128,7 @@ impl<'a> FnBuilder<'a> {
                 init,
             },
             recv: None,
-            args: vec![tree, captures, proc_reg, file],
+            args: vec![tree, captures, proc_reg, file, site],
             splat: false,
             kw: Vec::new(),
             kw_splat: None,

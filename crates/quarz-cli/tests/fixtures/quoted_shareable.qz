@@ -1,0 +1,53 @@
+# A shareable quoted block's tree, captures and site (docs/14 §6): the
+# tree is Shareable (a `Lit` holds a `Shareable`), so is a class holding
+# it with its captures (an `Array[Shareable]`), and one site has one
+# number, the key of a process-wide table.
+data Col = (name: String)
+TABLE = Col.new("t")
+TREES = Atom.new(Hash[Meta::Expr, String].new)
+SITES = Atom.new(Hash[Int, String].new)
+
+class Plan
+  include Shareable
+  @q: Quoted[shareable (Int) -> Bool]
+  @captures: Array[Shareable]
+  def initialize(@q: Quoted[shareable (Int) -> Bool]); @captures = @q.captures; end
+  def q -> Quoted[shareable (Int) -> Bool] = @q
+  def captures -> Array[Shareable] = @captures
+end
+
+def plan(&q: Quoted[shareable (Int) -> Bool]) -> Plan = Plan.new(q)
+def site(&q: Quoted[shareable (Int) -> Bool]) -> Int = q.site
+def forward(&q: Quoted[shareable (Int) -> Bool]) -> Int = site(&q)
+
+def at(n: Int) -> Plan = plan { |x| x > n && TABLE.name == "t" && [:a, 1.5, nil, Int, /r/, b"b"].size == 6 }
+
+# Built in one task, kept in the tables, read in another.
+Task.spawn do
+  pl = at(1)
+  TREES.update { |h| h.merge({pl.q.expr => "first"}) }
+  SITES.update { |h| h.merge({pl.q.site => "at"}) }
+end.await
+p Task.spawn { TREES.get[at(2).q.expr]? }.await
+p Task.spawn { SITES.get[at(3).q.site]? }.await
+p TREES.get[plan { |x| x > 0 }.q.expr]?
+p SITES.get[plan { |x| x > 0 }.q.site]?
+# The captures differ by call, the site does not.
+p [at(4).captures, at(5).captures]
+p at(4).q.site == at(5).q.site
+# `&q` passes the site on; each site has its own.
+p forward { |x| x > 0 } != forward { |x| x > 0 }
+sites = [1, 2, 3].map { |i| site { |x| x > i } }
+p sites.uniq.size
+# The `Lit`s, each a `Shareable`.
+def lits(e: Meta::Expr) -> Array[Shareable]
+  case e
+  in Meta::Expr::Lit(v, _) then [v]
+  in Meta::Expr::Block(_, body, _) then body.flat_map { |x| lits(x) }
+  in Meta::Expr::And(l, r, _) then lits(l) + lits(r)
+  in Meta::Expr::ArrayLit(items, _) then items.flat_map { |x| lits(x) }
+  in Meta::Expr::Call(r, _, args, _, _) then (r ? lits(r) : []) + args.flat_map { |x| lits(x) }
+  else []
+  end
+end
+p Task.spawn { lits(at(6).q.expr) }.await

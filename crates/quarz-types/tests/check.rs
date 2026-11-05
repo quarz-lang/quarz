@@ -1357,6 +1357,37 @@ fn shareable_receiver_block_self_is_not_a_capture() {
 }
 
 #[test]
+fn quoted_trees_and_shareable_captures_are_shareable() {
+    // docs/14 §6: `Meta::Expr` (a `Lit` holds a `Shareable`) and
+    // `Meta::MethodRef` are Shareable; a `Quoted[shareable P]`'s
+    // `captures` are an `Array[Shareable]`, a plain one's `Array[Object]`.
+    let defs = "def take(&q: Quoted[shareable (Int) -> Bool]) -> Quoted[shareable (Int) -> Bool] = q\ndef plain(&q: Quoted[(Int) -> Bool]) -> Quoted[(Int) -> Bool] = q\n";
+    ok("TREES = Atom.new(Hash[Meta::Expr, Int].new)\nREFS = Atom.new(Array[Meta::MethodRef].new)");
+    ok(&format!("{defs}class Holder\n  include Shareable\n  @q: Quoted[shareable (Int) -> Bool]\n  @c: Array[Shareable]\n  def initialize(@q: Quoted[shareable (Int) -> Bool]); @c = @q.captures; end\nend\nn = 1\nh = Holder.new(take {{ |x| x > n }})\nTask.spawn {{ h }}.await"));
+    ok(&format!("{defs}n = 1\nq = take {{ |x| x > n }}\nc = q.captures\nTask.spawn {{ [q.expr, c] }}.await\nall: Array[Object] = q.captures\ns: Int = q.site"));
+    err(
+        &format!("{defs}class Holder\n  include Shareable\n  @c: Array[Shareable]\n  def initialize(q: Quoted[(Int) -> Bool]); @c = q.captures; end\nend"),
+        "cannot assign Array[Object] to `@c` of type Array[Shareable]",
+    );
+    err(
+        &format!("{defs}class Holder\n  include Shareable\n  @q: Quoted[(Int) -> Bool]\n  def initialize(@q: Quoted[(Int) -> Bool]); end\nend"),
+        "its field `@q` has the non-shareable type Quoted[(Int) -> Bool]",
+    );
+    err(
+        &format!("{defs}n = 1\nc = plain {{ |x| x > n }}.captures\nTask.spawn {{ c }}"),
+        "`c` has the non-shareable type Array[Object]",
+    );
+    // A `Lit` holds each bakeable kind as a `Shareable`.
+    ok("data P = (x: Int)\nenum E\n  variant A\n  variant B(n: Int)\nend\nl = [Meta::Expr::Lit.new(nil, 1), Meta::Expr::Lit.new(1.5, 1), Meta::Expr::Lit.new(\"s\", 1), Meta::Expr::Lit.new(:s, 1), Meta::Expr::Lit.new(/a/, 1), Meta::Expr::Lit.new(b\"x\", 1), Meta::Expr::Lit.new(Int, 1), Meta::Expr::Lit.new(E::A, 1), Meta::Expr::Lit.new(E::B.new(1), 1), Meta::Expr::Lit.new(P.new(1), 1), Meta::Expr::Lit.new([1, 2], 1), Meta::Expr::Lit.new({a: 1}, 1), Meta::Expr::Lit.new(1..2, 1)]\nTask.spawn { l }.await");
+    err(
+        "class C\n  var @n: Int = 0\nend\nMeta::Expr::Lit.new(C.new, 1)",
+        "expects Shareable but found C",
+    );
+    // Field and method handles, which can be baked, are Shareable too.
+    ok("class H\n  include Shareable\n  @f: Meta::FieldRef[Object, Int]?\n  @m: Meta::Method[Object, () -> Int]?\n  def initialize(@f: Meta::FieldRef[Object, Int]?, @m: Meta::Method[Object, () -> Int]?); end\nend\nh = H.new(nil, nil)\nTask.spawn { h }.await");
+}
+
+#[test]
 fn super_in_a_task_block_captures_self() {
     let base =
         "class Base\n  var @m: Int = 0\n  def bump -> Int\n    @m += 1\n    @m\n  end\nend\n";

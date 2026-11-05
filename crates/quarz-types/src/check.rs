@@ -3492,6 +3492,13 @@ impl Checker {
                     _ => true,
                 }
             }
+            // A class value is a `Type`, and so what `Type` includes: a
+            // `Shareable`.
+            (Type::ClassObject(..) | Type::TypeOf(_), Type::Class(eid, _))
+                if self.world.type_includes(*eid) =>
+            {
+                true
+            }
             // `Meta::ClassDef[X]` to `Type[Y]`: `X` to `Y`.
             (Type::Class(..), Type::ClassObject(..) | Type::TypeOf(_))
                 if self.world.class_object_instance(actual).is_some() =>
@@ -11330,6 +11337,24 @@ impl Checker {
             }
         }
         self.type_args_trials.retain(|(id, _, _)| *id != expr.id);
+        // A `Quoted[shareable P]`'s captures passed the shareable-capture
+        // check: an `Array[Shareable]` (docs/14 §6).
+        let ret = if m.owner == self.world.builtin.quoted && m.name == "captures" {
+            let recv = call
+                .recv
+                .as_ref()
+                .and_then(|r| self.out.node_types.get(&r.id).cloned())
+                .map(|t| self.resolve(&t));
+            match recv {
+                Some(t) if self.quoted_shareable(&t) => Type::Class(
+                    self.world.builtin.array,
+                    vec![Type::Class(self.world.builtin.shareable, Vec::new())],
+                ),
+                _ => ret,
+            }
+        } else {
+            ret
+        };
         // `loop { }` without `break` never returns.
         let broken = self.breaking_blocks.get(&expr.id).cloned();
         if m.name == "loop"
@@ -11344,6 +11369,18 @@ impl Checker {
             return self.join(&ret, &t);
         }
         ret
+    }
+
+    /// Whether `t` is a `Quoted` of a `shareable` procedure type (each
+    /// member of a union one): its block captured Shareable values only.
+    fn quoted_shareable(&mut self, t: &Type) -> bool {
+        match self.resolve(t) {
+            Type::Class(c, args) if c == self.world.builtin.quoted && args.len() == 1 => {
+                matches!(self.resolve(&args[0]), Type::Proc(_, _, _, true, _))
+            }
+            Type::Union(ms) => !ms.is_empty() && ms.iter().all(|m| self.quoted_shareable(m)),
+            _ => false,
+        }
     }
 
     /// The parameters of a call's literal block, for telling overloads
