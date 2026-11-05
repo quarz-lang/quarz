@@ -46,12 +46,14 @@ when the local one is older.
 - Do not put a `Claude-Session:` line in commit messages, nor a Claude
   session URL (`https://claude.ai/code/session_...`) in pull request
   descriptions (leave the ones already there as they are).
-- Review every commit with an agent before making it: give a fresh
-  subagent the diff (not your own conclusions) and ask it for
-  correctness bugs. Fix the findings that need no decision from the
-  user, then commit. Keep the ones that do (a change of the language or
-  its specification, a trade-off, more scope) and go on with the work;
-  when all of it is done, ask the user about them together.
+- Review the work with an agent before the pull request leaves draft
+  (commits on a draft are fine without it): give a fresh subagent the
+  branch's diff (not your own conclusions) and ask it for correctness
+  bugs. Fix the findings that need no decision from the user (amend,
+  rebase or add commits while the PR is a draft). Keep the ones that do
+  (a change of the language or its specification, a trade-off, more
+  scope) and go on with the work; when all of it is done, ask the user
+  about them together.
 
 ## Pull requests
 
@@ -59,8 +61,9 @@ when the local one is older.
   while the local checks run: CI then runs in parallel with `cargo test`.
 - While it is a draft, force-pushing after the subagent review or the
   local checks changed the commits is fine (amend or rebase as needed).
-- Mark it ready for review only when the subagent review and every local
-  check above have passed; from then on add commits, never force-push.
+- Mark it ready for review only when the subagent review of the branch's
+  diff and every local check above have passed; from then on add
+  commits, never force-push, and review each of them before pushing.
 - The description says what was verified.
 
 ## Tests
