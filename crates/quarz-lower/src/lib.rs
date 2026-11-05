@@ -111,6 +111,11 @@ pub struct Lowerer {
     /// kept across REPL inputs, and from the compile-time runs into the
     /// final lowering, so that no two sites of a process share one.
     pub(crate) next_quoted_site: i64,
+    /// The site and the tree's constant (when built once) of each quoted
+    /// call lowered in this round, by file and node: a body lowered more
+    /// than once (an `ensure`'s, on each way out) is one site. A new round
+    /// (its world grown) numbers its sites anew.
+    pub(crate) quoted_sites: HashMap<(u32, quarz_syntax::ast::NodeId), (i64, Option<ConstId>)>,
     /// The constant each `static(...)` site's value was made into, in
     /// the final lowering (`FnBuilder::static_constant`).
     pub(crate) static_consts: HashMap<quarz_syntax::ast::NodeId, ConstId>,
@@ -268,6 +273,7 @@ impl Lowerer {
     ) -> Delta {
         self.static_mode = false;
         self.round_base = self.next_func;
+        self.quoted_sites.clear();
         self.pending.clear();
         self.files = files;
         self.overridden = overridden_methods(world);
@@ -670,6 +676,7 @@ impl Lowerer {
         self.unchecked.clear();
         self.unchecked_consts.clear();
         self.round_base = self.next_func;
+        self.quoted_sites.clear();
         self.pending.clear();
         self.files = files;
         self.overridden = overridden_methods(world);

@@ -39,6 +39,27 @@ p at(4).q.site == at(5).q.site
 p forward { |x| x > 0 } != forward { |x| x > 0 }
 sites = [1, 2, 3].map { |i| site { |x| x > i } }
 p sites.uniq.size
+# An `ensure` body is lowered once for each way out: one site, one tree.
+SEEN = Atom.new(Array[[Int, Meta::Expr]].new)
+def guarded(early: Bool) -> Int
+  begin
+    return 1 if early
+    raise "no" if !early && SEEN.get.size == 1
+    2
+  ensure
+    q = plan { |x| x > 0 }.q
+    SEEN.update { |a| a + [[q.site, q.expr]] }
+  end
+end
+guarded(true)
+begin
+  guarded(false)
+rescue RuntimeError
+end
+guarded(false)
+p SEEN.get.map { |s| s[0] }.uniq.size
+p SEEN.get.map { |s| s[1] }.uniq.size
+p SEEN.get[0][1].equal?(SEEN.get[2][1])
 # The `Lit`s, each a `Shareable`.
 def lits(e: Meta::Expr) -> Array[Shareable]
   case e

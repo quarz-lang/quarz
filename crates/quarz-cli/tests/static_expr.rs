@@ -209,6 +209,78 @@ fn a_cached_file_sees_its_dependencys_change() {
 }
 
 #[test]
+fn only_data_of_shareable_fields_is_baked() {
+    // docs/14 §5: every bakeable value is Shareable, so a `Lit`'s
+    // `Shareable` value answers `is_a?(Shareable)` as its type says.
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r##"data W = (o: Object)
+data V = (n: Int, s: Array[String])
+enum E
+  variant A
+  variant B(o: Object)
+end
+class K
+  static def self.w -> W = W.new(1)
+  static def self.e -> E = E::A
+  static def self.o -> Object = W.new(1)
+  static def self.v -> V = V.new(1, ["a"])
+  static def self.ov -> Object = V.new(2, [])
+end
+"##,
+    );
+    write(
+        &d.0,
+        "ok.qz",
+        "require_relative \"lib\"\nclass RQ\n  def where(&c: Quoted[(Int) -> Bool]) -> Meta::Expr = c.expr\nend\np static(K.v), static(K.ov)\np RQ.new.where { |x| static(K.v).n == x }\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", "ok.qz"], &[]);
+    assert!(ok, "{err}");
+    assert!(
+        out.starts_with("V(n: 1, s: [\"a\"])\nV(n: 2, s: [])\n"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Meta::Expr::Lit(value: V(n: 1, s: [\"a\"])"),
+        "{out}"
+    );
+    write(
+        &d.0,
+        "bad.qz",
+        "require_relative \"lib\"\np static(K.w)\np static(K.e)\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
+    assert!(!ok);
+    for expected in [
+        "bad.qz:2:3: error: `static(...)` gives a W, which cannot be baked into the program (`W` holds `@o: Object`, which is not Shareable, so a `W` cannot be baked)",
+        "bad.qz:3:3: error: `static(...)` gives a E, which cannot be baked into the program (`E::B` holds `@o: Object`, which is not Shareable, so a `E::B` cannot be baked)",
+    ] {
+        assert!(err.contains(expected), "missing {expected:?} in\n{err}");
+    }
+    // Captured by a generated method.
+    write(
+        &d.0,
+        "gen.qz",
+        "require_relative \"lib\"\nclass Gen\n  static def self.gen(w: W) -> Void\n    def_method(:w) { w.o }\n  end\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "gen.qz"], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("gen.qz:4:22: error: `w` has type W, whose values cannot be baked into a generated method (`W` holds `@o: Object`, which is not Shareable, so a `W` cannot be baked)"),
+        "{err}"
+    );
+    write(&d.0, "run.qz", "require_relative \"lib\"\np static(K.o)\n");
+    let (ok, _, err) = quarz(&d.0, &["check", "run.qz"], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("run.qz:2:10: error: `static(...)` gives a value that cannot be baked into the program: a `W` holds a field that is not Shareable"),
+        "{err}"
+    );
+}
+
+#[test]
 fn in_a_quoted_block_a_literal() {
     // docs/14 §6, §8: its value is a `Lit` of the tree.
     let d = dir();
