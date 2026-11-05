@@ -2187,10 +2187,11 @@ fn a_later_def_initialize_is_checked_against_generated_news() {
     );
 }
 
-/// `initialize` has no method handle (docs/14 §5): bound to a made
-/// object, it would assign its immutable fields again.
+/// `initialize` and `deinitialize` have no method handle (docs/14 §5):
+/// bound to a made object, the one would assign its immutable fields
+/// again, the other run before the release that runs it.
 #[test]
-fn initialize_has_no_method_handle() {
+fn initialize_and_deinitialize_have_no_method_handle() {
     let d = dir();
     write(
         &d.0,
@@ -2208,4 +2209,50 @@ fn initialize_has_no_method_handle() {
         err.contains("app.qz:3:3: error: `ctor` raised ArgumentError: `initialize` has no handle: it runs only from `new` and from `super` in an `initialize`"),
         "{err}"
     );
+    // Nor has `deinitialize`, run once, when the object is released.
+    write(
+        &d.0,
+        "lib.qz",
+        "class Base\n  def deinitialize -> Void = puts \"bye\"\n  static def self.ctor -> Void\n    r = method_ref[() -> Void](:deinitialize)\n    def_method(:bye) { r.bind(self).call }\n  end\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("app.qz:3:3: error: `ctor` raised ArgumentError: `deinitialize` has no handle: it runs when the object is released; it cannot be called"),
+        "{err}"
+    );
+}
+
+/// `initialize` and `deinitialize` are no field names (docs/01 §3), for
+/// `def_field` too; a generated `initialize` calls `super` once per path.
+#[test]
+fn reserved_field_names_and_one_super_when_generating() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Base\n  @n: Int\n  def initialize(@n: Int); end\n  static def self.field(name: Symbol) -> Void\n    def_field(name, Int, 0, reader: true)\n  end\n  static def self.twice -> Void\n    def_initialize(:x) do |x: Int|\n      super(x)\n      super(x)\n    end\n  end\nend\n",
+    );
+    let (ok, _, err) = quarz(
+        &d.0,
+        &[
+            "check",
+            write(
+                &d.0,
+                "app.qz",
+                "require_relative \"lib\"\nclass C < Base\n  field :deinitialize\nend\nclass D < Base\n  field :initialize\nend\n",
+            )
+            .to_str()
+            .unwrap(),
+        ],
+        &[],
+    );
+    assert!(!ok);
+    for want in [
+        "app.qz:3:3: error: `def_field(:deinitialize)`: `deinitialize` is a reserved name: the runtime runs it when the object is released",
+        "app.qz:6:3: error: `def_field(:initialize)`: `initialize` is a reserved name: `new` runs it to make the object",
+        "lib.qz:10:7: error: `super` runs the parent's `initialize` once: it is already called on this path",
+    ] {
+        assert!(err.contains(want), "{want}\n{err}");
+    }
 }

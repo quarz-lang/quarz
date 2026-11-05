@@ -1,0 +1,11 @@
+in scope
+Res#deinitialize a
+Logged#deinitialize
+Res#deinitialize b
+Res#deinitialize c
+after scope
+2 in the array
+Res#deinitialize x1
+Logged#deinitialize
+Res#deinitialize x2
+end

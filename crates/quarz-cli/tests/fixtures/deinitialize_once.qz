@@ -1,0 +1,36 @@
+# `deinitialize` runs once per object, when it is released (docs/03 §4),
+# and nowhere else: a subclass's chains its parent's with `super`.
+class Res
+  @name: String
+  def initialize(@name: String); end
+  def deinitialize -> Void
+    puts "Res#deinitialize #{@name}"
+  end
+end
+
+class Logged < Res
+  def deinitialize -> Void
+    puts "Logged#deinitialize"
+    super
+  end
+end
+
+class Plain < Res
+end
+
+def scope -> Void
+  a = Res.new("a")
+  b = Logged.new("b")
+  c = Plain.new("c")
+  puts "in scope"
+end
+
+def in_array -> Void
+  xs = [Res.new("x1"), Logged.new("x2")]
+  puts "#{xs.size} in the array"
+end
+
+scope
+puts "after scope"
+in_array
+puts "end"

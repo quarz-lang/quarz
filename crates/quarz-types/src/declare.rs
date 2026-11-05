@@ -3955,6 +3955,9 @@ impl<'ast> Declarer<'ast> {
         };
         if let Some(fields) = header_fields {
             for f in fields {
+                if let Some(why) = reserved_field_name(&f.name) {
+                    self.error(why, f.span);
+                }
                 if let Some(ty) = self.resolve_type(&f.ty, &scope) {
                     self.world.class_mut(id).fields.push(FieldInfo {
                         name: f.name.clone(),
@@ -4014,6 +4017,9 @@ impl<'ast> Declarer<'ast> {
                     if self.world.class(id).fields.iter().any(|x| x.name == f.name) {
                         self.error(format!("field `@{}` is already declared", f.name), f.span);
                         continue;
+                    }
+                    if let Some(why) = reserved_field_name(&f.name) {
+                        self.error(why, f.span);
                     }
                     if let Some(ty) = self.resolve_type(&f.ty, &scope) {
                         self.world.class_mut(id).fields.push(FieldInfo {
@@ -4280,6 +4286,15 @@ impl<'ast> Declarer<'ast> {
                     if new_name == "initialize" || old_name == "initialize" {
                         self.error(
                             "`initialize` cannot be aliased: it runs only from `new` and `super`",
+                            expr.span,
+                        );
+                        continue;
+                    }
+                    // Nor `deinitialize`, run only by the runtime at the
+                    // release (an alias of it would run it again before).
+                    if new_name == "deinitialize" || old_name == "deinitialize" {
+                        self.error(
+                            "`deinitialize` cannot be aliased: it runs when the object is released; it cannot be called",
                             expr.span,
                         );
                         continue;
@@ -5271,6 +5286,21 @@ fn logical_operator_rule(
 /// generated at compile time (docs/14 §5): the rules above, and that the
 /// constructor and destructor names are written (their bodies are held
 /// to rules of their own, docs/03 §4).
+/// A field (and so its reader) cannot be named after a method only the
+/// runtime calls (docs/01 §3): its reader would be that method.
+pub fn reserved_field_name(name: &str) -> Option<String> {
+    match name {
+        "initialize" => {
+            Some("`initialize` is a reserved name: `new` runs it to make the object".to_string())
+        }
+        "deinitialize" => Some(
+            "`deinitialize` is a reserved name: the runtime runs it when the object is released"
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
 pub fn method_name_rule(
     world: &World,
     name: &str,
