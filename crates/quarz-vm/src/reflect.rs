@@ -104,6 +104,9 @@ pub struct GenRequest {
     /// `def_initialize`: an `initialize` overload (`name` is
     /// `initialize`).
     pub initialize: bool,
+    /// Called in a generic method: the classes its carried type
+    /// parameters stand for (`quarz_ir::TYPE_ARG_VALUES`).
+    pub type_args: Vec<ClassId>,
 }
 
 /// A `Meta::Keyword`: name, type (a class), required, nullable.

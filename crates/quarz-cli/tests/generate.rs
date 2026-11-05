@@ -186,11 +186,11 @@ abstract class Model
     def_method(name) { 1 }
     def_method(name) { 2 }
   end
-  static def self.helper[U <: Model](name: Symbol, t: Type[U]) -> Void
+  static def self.helper[U <: Model](name: Symbol, t: Type[U], u: U?) -> Void
     def_method(name) { t }
   end
   static def self.free_param(target: Type[Model]) -> Void
-    helper(:via_helper, target)
+    helper(:via_helper, target, nil)
   end
   static def self.private_one -> Void
     def_method(:secret, visibility: :private) { 1 }
@@ -2254,5 +2254,296 @@ fn reserved_field_names_and_one_super_when_generating() {
         "lib.qz:10:7: error: `super` runs the parent's `initialize` once: it is already called on this path",
     ] {
         assert!(err.contains(want), "{want}\n{err}");
+    }
+}
+
+/// A generic method a `static def` calls carries the type parameters its
+/// `Type[T]` parameters give (docs/14 §5): the generated signature says
+/// the class the parameter had (`Box[Post]`), interpreted and compiled,
+/// and the checker holds callers to it. A class that takes type
+/// arguments cannot stand for one.
+#[test]
+fn a_helper_carries_the_classes_of_its_type_parameters() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r##"class Box[T]
+  @v: T?
+  def initialize(@v: T?); end
+  def get -> T? = @v
+end
+class Base
+  static def self.many(ts: Array[Type[Base]]) -> Void
+    ts.each { |t| gen(t) }
+  end
+  private static def self.gen[T <: Base](t: Type[T]) -> Void
+    def_method(t.name.downcase.to_sym) { Box[T].new(nil) }
+    def_initialize(t.name.downcase.to_sym) { |x: T| }
+    nested(t)
+  end
+  private static def self.nested[U](u: Type[U]) -> Void
+    def_class_method("#{u.name.downcase}_class".to_sym) { u }
+  end
+  static def self.erased(t: Type[Object]) -> Void
+    nested(t)
+  end
+end
+"##,
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class Post < Base; end
+class Note < Base; end
+class User < Base
+  many [Post, Note]
+end
+u = User.new(Post.new)
+a: Box[Post] = u.post
+b: Box[Note] = User.new(Note.new).note
+c: Type[Post] = User.post_class
+p a.get, b.class, c, u.class
+"#,
+    );
+    let expected = "nil\nBox\nPost\nUser\n";
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let out = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+    let bad = write(
+        &d.0,
+        "bad.qz",
+        "require_relative \"lib\"\nclass Post < Base; end\nclass User < Base\n  many [Post]\nend\nx: Box[User] = User.new(Post.new).post\nUser.new(User.new(Post.new))\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", bad.to_str().unwrap()], &[]);
+    assert!(!ok);
+    for expected in [
+        "bad.qz:6:16: error: cannot assign Box[Post] to `x` of type Box[User]",
+        "bad.qz:7:10: error: argument `post` of initialize(post: Post) -> Void expects Post but found User",
+    ] {
+        assert!(err.contains(expected), "missing {expected:?} in\n{err}");
+    }
+    let generic = write(
+        &d.0,
+        "generic.qz",
+        "require_relative \"lib\"\nclass User < Base\n  erased Box\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", generic.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("generic.qz:3:3: error: `def_class_method(:box_class)`: `U` is `Box`, whose type arguments are not known here: pass them at the statement's call or use a class without type arguments"),
+        "{err}"
+    );
+}
+
+/// The statement's type arguments hold for a `static def` nothing but
+/// statements call (a generic class keeps its arguments there); one that
+/// code also calls (recursively, or in a statement's arguments) takes the
+/// classes its `Type[T]` parameter holds in every invocation, and so do
+/// a module's helpers, whose bounds name the module's `T`. What could let
+/// another value of `T` in is not carried: a bound relating `T` to
+/// another type parameter, a lower bound, an assignment of the
+/// parameter, a call in a parameter's default; nor is a handle made with
+/// a `T` there.
+#[test]
+fn carried_type_params_by_invocation_and_what_is_not_carried() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r##"class Box[X]
+  def initialize; end
+end
+class Base
+  static def self.rec[T](t: Type[T], n: Int, others: Array[Type[Object]]) -> Void
+    def_method("item#{n}".to_sym) do -> Type[T]
+      t
+    end
+    rec(others[0], n - 1, others) if n > 0
+  end
+  static def self.holder[T](t: Type[T]) -> Void
+    def_method(:held, :y) do |y: T| -> String
+      y.class.name
+    end
+  end
+  static def self.counted[T](t: Type[T], n: Int = 0) -> Int
+    def_method("counted#{n}".to_sym) do -> Type[T]
+      t
+    end
+    n + 1
+  end
+  static def self.lower(ts: Array[Type[Dog]]) -> Void
+    ts.each { |t| via_lower(t) }
+  end
+  private static def self.via_lower[T >: Dog](t: Type[T]) -> Void
+    def_method(:lower_item) do -> T
+      Dog.new
+    end
+  end
+  static def self.handle[T](t: Type[T], n: Int) -> Void
+    r = field_ref[T](:x)
+    def_method("read#{n}".to_sym) do -> T
+      r.get(self)
+    end
+    handle(t, n - 1) if n > 0
+  end
+  static def self.bounded(t: Type[Object]) -> Void
+    via_bound(t, 42)
+  end
+  private static def self.via_bound[T, U <: T](t: Type[T], u: U) -> Void
+    x: T = u
+    def_method(:bound_item) do -> T
+      x
+    end
+  end
+  static def self.assigned(t: Type[Object]) -> Void
+    via_assign(t)
+  end
+  private static def self.via_assign[T](t: Type[T]) -> Void
+    t = t
+    def_method(:assigned_item) do -> Type[T]
+      t
+    end
+  end
+  static def self.defaulted(t: Type[Object]) -> Void
+    via_default(t: t)
+  end
+  private static def self.via_default[T](x: Int = def_method(:zz, :y) { |y: T| 1 }.name.size, *, t: Type[T]) -> Void
+  end
+end
+module Macros[T]
+  static def many(us: Array[Type[T]]) -> Void
+    us.each { |u| has(u) }
+  end
+  static def has[U <: T](u: Type[U]) -> Void
+    def_method(:macro_class) do -> Type[U]
+      u
+    end
+  end
+end
+class Animal; end
+class Dog < Animal; end
+class Puppy < Dog; end
+"##,
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class User < Base
+  rec String, 1, [Int]
+  holder Box[Int]
+  counted String, counted(Int, 5)
+end
+class Post
+  extend Macros[Post]
+  many [Post]
+end
+a: Type[String] = User.new.item1
+b: Type[Int] = User.new.item0
+c: Type[Int] = User.new.counted5
+e: Type[String] = User.new.counted6
+p a, b, User.new.held(Box[Int].new), c, e, Post.new.macro_class
+"#,
+    );
+    let expected = "String\nInt\n\"Box\"\nInt\nString\nPost\n";
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let out = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+    let bad = write(
+        &d.0,
+        "bad.qz",
+        "require_relative \"lib\"\nclass User < Base\n  bounded String\n  assigned String\n  defaulted String\n  lower [Puppy]\n  @x: String = \"s\"\n  handle String, 1\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", bad.to_str().unwrap()], &[]);
+    assert!(!ok);
+    for expected in [
+        "bad.qz:3:3: error: `def_method(:bound_item)`: the block's type mentions `T`, a type parameter the generated method cannot carry",
+        "bad.qz:4:3: error: `def_method(:assigned_item)`: the block's type mentions `T`, a type parameter the generated method cannot carry",
+        "bad.qz:5:3: error: `def_method(:zz)`: the block's type mentions `T`, a type parameter the generated method cannot carry",
+        "bad.qz:6:3: error: `def_method(:lower_item)`: the block's type mentions `T`, a type parameter the generated method cannot carry",
+        "bad.qz:8:3: error: `field_ref(:x)`: the handle to `@x` is made with `T`",
+    ] {
+        assert!(err.contains(expected), "missing {expected:?} in\n{err}");
+    }
+}
+
+/// What a carried class could otherwise slip past: a `def_method` handle
+/// typed by the generic method's `T` as its caller sees it (wider than
+/// the method it names), a bound naming `Self` of a generic class, and a
+/// `Type[T]` parameter rebound by a bang call.
+#[test]
+fn carried_classes_refused_where_they_could_mislead() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r##"extension Object
+  def me -> Self = self
+end
+class Animal; end
+class Dog < Animal; end
+class Base
+  static def self.go(t: Type[Animal]) -> Void
+    h = inner(t)
+    def_method(:m1, :y) do |y: Animal| -> String
+      h.bind(self).call(y)
+    end
+  end
+  private static def self.inner[U](u: Type[U]) -> Meta::Method[Base, (U) -> String]
+    def_method(:m0, :y) do |y: U| -> String
+      "base"
+    end
+  end
+  static def self.selfish(t: Type[Base]) -> Void
+    via_self(t)
+  end
+  private static def self.via_self[T <: Self](t: Type[T]) -> Void
+    def_method(:item, :y) do |y: T| -> Self
+      y
+    end
+  end
+  static def self.banged(t: Type[Object]) -> Void
+    via_bang(t)
+  end
+  private static def self.via_bang[T](t: Type[T]) -> Void
+    t.me!
+    def_method(:bang_item) do -> Type[T]
+      t
+    end
+  end
+end
+"##,
+    );
+    let bad = write(
+        &d.0,
+        "bad.qz",
+        "require_relative \"lib\"\nclass Post < Base; end\nclass User < Base\n  go Dog\n  banged String\nend\nclass Box[E] < Base\n  def initialize; end\n  selfish Post\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", bad.to_str().unwrap()], &[]);
+    assert!(!ok);
+    for expected in [
+        "bad.qz:4:3: error: `def_method(:m1)`: the handle to `User#m0` is typed with a type parameter its method took a carried class for",
+        "bad.qz:5:3: error: `def_method(:bang_item)`: the block's type mentions `T`, a type parameter the generated method cannot carry",
+        "bad.qz:9:3: error: `def_method(:item)`: `T` is `Post` here, which is not a `Box[E]`",
+    ] {
+        assert!(err.contains(expected), "missing {expected:?} in\n{err}");
     }
 }

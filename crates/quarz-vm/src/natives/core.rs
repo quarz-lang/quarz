@@ -503,6 +503,19 @@ fn gen_request(
             captures.push((depth as u32, slot, frame.get(depth as u32, slot)));
         }
     }
+    // (The classes the calling method's type parameters stand for,
+    // which the lowering passes: `Lowerer::carried_type_params`.)
+    let type_args = match a.kw(interp, quarz_ir::TYPE_ARG_VALUES) {
+        None => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| match v {
+                Value::Class(c) => Ok(c),
+                _ => Err(interp.err_type("internal: a type argument that is not a class")),
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err(interp.err_type("internal: type arguments that are not an array")),
+    };
     Ok(crate::reflect::GenRequest {
         class,
         name,
@@ -513,6 +526,7 @@ fn gen_request(
         captures,
         keywords,
         initialize,
+        type_args,
     })
 }
 

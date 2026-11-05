@@ -203,6 +203,13 @@ pub const KW_SPLAT: &str = "**";
 /// `#field_ref`, their call's node (docs/14 §5): no parameter has it.
 pub const FIELD_REF_SITE: &str = "__site";
 
+/// The keyword the lowering passes `Meta::ClassDef#def_method`,
+/// `#def_class_method` and `#def_initialize` called in a generic method:
+/// the values of its `Type[T]` parameters, the classes its type
+/// parameters stand for in this run (docs/14 §5,
+/// `Lowerer::carried_type_params`). No parameter has it.
+pub const TYPE_ARG_VALUES: &str = "__type_args";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Constant {
     Nil,

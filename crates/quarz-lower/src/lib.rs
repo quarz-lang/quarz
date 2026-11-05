@@ -90,6 +90,13 @@ pub struct Lowerer {
     /// The call each block function was written at, and the block's
     /// span, for the generation of methods from blocks (docs/14 §5).
     pub block_calls: HashMap<FuncId, (quarz_syntax::ast::NodeId, quarz_syntax::Span)>,
+    /// A generating call (`def_method`, `def_class_method`,
+    /// `def_initialize`) written in the body of a generic method: the
+    /// type parameters the values it is passed under
+    /// `quarz_ir::TYPE_ARG_VALUES` stand for, in order, with their
+    /// bounds (docs/14 §5).
+    pub carried_type_params:
+        HashMap<quarz_syntax::ast::NodeId, Vec<(quarz_types::TypeParamId, Vec<quarz_types::Type>)>>,
     pub(crate) method_funcs: Vec<Option<FuncId>>,
     pub(crate) const_funcs: Vec<Option<FuncId>>,
     /// Whether a quoted block's tree is built once, by a constant of its

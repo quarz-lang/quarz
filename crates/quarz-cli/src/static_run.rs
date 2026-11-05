@@ -141,6 +141,11 @@ impl Runner {
         // The method each generation declared, by its position (what a
         // `def_method`'s handle names).
         let mut declared: Vec<Option<MethodId>> = vec![None; pending.len()];
+        let stmt_args = statement_type_args(host, stmt);
+        // Which of them took a carried class into their signature: a
+        // handle to one, typed by the generic method's `T` as its caller
+        // sees it, may be wider than the method.
+        let mut carried_gen: Vec<bool> = vec![false; pending.len()];
         for (index, g) in pending.into_iter().enumerate() {
             let g = match g {
                 Pending::Method(g) => g,
@@ -322,21 +327,66 @@ impl Runner {
                 )));
             }
             // The signature: the block's type with the `static def`'s type
-            // arguments (those of the statement's call) and `Self` (the
-            // class generated into) substituted.
+            // arguments (those of the statement's call, when they hold:
+            // `statement_type_args`) and `Self` (the class generated into)
+            // substituted.
             let world = host.world();
-            let mut subst: rustc_hash::FxHashMap<TypeParamId, Type> = host
-                .output()
-                .type_args
-                .get(&stmt.expr.id)
-                .map(|args| args.iter().cloned().collect())
-                .unwrap_or_default();
+            let mut subst = stmt_args.clone();
             let target = world.class(g.class);
             let own: Vec<TypeParamId> = target.type_params.iter().map(|p| p.id).collect();
             subst.insert(
                 SELF_PARAM,
                 Type::Class(g.class, own.iter().map(|p| Type::Param(*p)).collect()),
             );
+            // And those of the generic method the call is written in,
+            // carried by its `Type[T]` parameters: the classes they had
+            // (where the statement's call does not give them).
+            if let Some(carried) = self.lowerer.carried_type_params.get(&call_id) {
+                let mut checked: Vec<(TypeParamId, &Vec<Type>, ClassId)> = Vec::new();
+                for ((p, bounds), c) in carried.iter().zip(&g.type_args) {
+                    if subst.contains_key(p) {
+                        continue;
+                    }
+                    let k = world.class(*c);
+                    if !k.type_params.is_empty() {
+                        return Err(fail(format!(
+                            "{at}: `{}` is `{}`, whose type arguments are not known here: pass them at the statement's call or use a class without type arguments",
+                            world.type_name(&Type::Param(*p)),
+                            k.name
+                        )));
+                    }
+                    subst.insert(*p, Type::Class(*c, Vec::new()));
+                    checked.push((*p, bounds, *c));
+                }
+                // (Only when the signature says one of them.)
+                carried_gen[index] = checked.iter().any(|(p, _, _)| {
+                    param_types
+                        .iter()
+                        .chain(std::iter::once(&*ret))
+                        .any(|t| t.mentions_param(*p))
+                });
+                for (p, bounds, c) in checked {
+                    let t = Type::Class(c, Vec::new());
+                    // (A bound naming a type parameter nothing gives here, a
+                    // module's own `T` that `extend` binds, holds of the
+                    // class the call was checked with: the class is one.
+                    // One naming only the target's own, `Self` of a generic
+                    // class, is decided with them as they are.)
+                    if let Some(b) = bounds
+                        .iter()
+                        .map(|b| b.subst(&subst))
+                        .filter(|b| free_param(b, &own).is_none())
+                        .find(|b| !world.is_subtype(&t, b))
+                    {
+                        return Err(fail(format!(
+                            "{at}: `{}` is `{}` here, which is not a `{}`",
+                            world.type_name(&Type::Param(p)),
+                            world.class(c).name,
+                            world.type_name(&b)
+                        )));
+                    }
+                }
+            }
             let param_types: Vec<Type> = param_types.iter().map(|t| t.subst(&subst)).collect();
             // (An `initialize`'s result is discarded, as a written one's.)
             let ret = if g.initialize {
@@ -350,7 +400,7 @@ impl Runner {
                 .find_map(|t| free_param(t, &own))
             {
                 return Err(fail(format!(
-                    "{at}: the block's type mentions `{}`, a type parameter the generated method cannot carry (only the `static def` the statement calls has its type arguments)",
+                    "{at}: the block's type mentions `{}`, a type parameter the generated method cannot carry (the `static def` the statement calls has the statement's type arguments when nothing else calls it; a generic method, the class its `Type[T]` parameter holds, when no other parameter mentions `T`, no bound relates `T` to another type parameter, `T` has no lower bound, the parameter is never assigned, and the call is in its body)",
                     world.type_name(&Type::Param(p))
                 )));
             }
@@ -487,7 +537,7 @@ impl Runner {
             }
         }
         self.check_handles(host, stmt, &generated).map_err(fail)?;
-        self.resolve_method_handles(host, stmt, &generated, &declared)
+        self.resolve_method_handles(host, stmt, &generated, &declared, &carried_gen)
             .map_err(fail)
     }
 
@@ -581,13 +631,9 @@ impl Runner {
         stmt: &StaticStmt,
         generated: &[GeneratedHandles],
         declared: &[Option<MethodId>],
+        carried_gen: &[bool],
     ) -> Result<(), String> {
-        let call_args: rustc_hash::FxHashMap<TypeParamId, Type> = host
-            .output()
-            .type_args
-            .get(&stmt.expr.id)
-            .map(|args| args.iter().cloned().collect())
-            .unwrap_or_default();
+        let call_args = statement_type_args(host, stmt);
         let world = host.world();
         let handle = world.builtin.meta_method;
         // `P` of `method_ref[P]` and `class_method_ref[P]`, as recorded.
@@ -639,6 +685,11 @@ impl Runner {
                 let found = if *method < 0 {
                     // `def_method`'s: the method that generation declared.
                     let i = (-*method - 1) as usize;
+                    if carried_gen.get(i).copied().unwrap_or(false) {
+                        return Err(format!(
+                            "{at}: the handle to `{shown}` is typed with a type parameter its method took a carried class for: use the method by name (`method_ref`) with its type written"
+                        ));
+                    }
                     match declared.get(i).copied().flatten() {
                         Some(m) => m,
                         None => {
@@ -795,12 +846,7 @@ impl Runner {
     ) -> Result<(), String> {
         // The statement's call's type arguments, which a handle's `U` may
         // mention (`def_field(n, t, d)` in a `static def gen[V]`).
-        let call_args: rustc_hash::FxHashMap<TypeParamId, Type> = host
-            .output()
-            .type_args
-            .get(&stmt.expr.id)
-            .map(|args| args.iter().cloned().collect())
-            .unwrap_or_default();
+        let call_args = statement_type_args(host, stmt);
         let world = host.world();
         let handle = world.builtin.meta_field_ref;
         let Some(set) = world
@@ -1610,6 +1656,9 @@ struct PendingGen {
     keywords: Option<Vec<(String, ClassId, bool, bool)>>,
     /// `def_initialize` (docs/14 §5).
     initialize: bool,
+    /// The classes the calling method's carried type parameters stand
+    /// for (`Lowerer::carried_type_params`).
+    type_args: Vec<ClassId>,
 }
 
 /// A compile-time value as a generated method embeds it (docs/14 §5),
@@ -1687,6 +1736,50 @@ fn bake(interp: &Interp, v: &Value) -> Result<Baked, String> {
         }
         _ => return cannot(interp, v),
     })
+}
+
+/// The type arguments of a statement's call (docs/14 §5), which hold in
+/// every invocation of its `static def` only when nothing but statements'
+/// own calls calls it: a call of it in Quarz code checked so far (its own
+/// body, another method, a statement's arguments; what the statement's
+/// run reaches is checked before it runs) may pass other classes, so its
+/// signatures and handles then take only what the `Type[T]` parameters
+/// carry. (A call of a method it overrides counts: it may dispatch to it.)
+fn statement_type_args(
+    host: &dyn StaticHost,
+    stmt: &StaticStmt,
+) -> rustc_hash::FxHashMap<TypeParamId, Type> {
+    let out = host.output();
+    let world = host.world();
+    let Some(quarz_types::check::CallTarget::Method { method }) = out.calls.get(&stmt.expr.id)
+    else {
+        return Default::default();
+    };
+    let callee = world.method(*method);
+    let same = |m: MethodId| {
+        m == *method || {
+            let m = world.method(m);
+            m.name == callee.name
+                && m.singleton == callee.singleton
+                && world.class_is_a(callee.owner, m.owner)
+        }
+    };
+    let tops: rustc_hash::FxHashSet<quarz_syntax::ast::NodeId> =
+        world.static_stmts.iter().map(|s| s.expr.id).collect();
+    let in_code = out.calls.iter().any(|(id, t)| {
+        !tops.contains(id)
+            && matches!(t, quarz_types::check::CallTarget::Method { method } if same(*method))
+    }) || out
+        .union_calls
+        .iter()
+        .any(|(id, ts)| !tops.contains(id) && ts.iter().any(|(_, m)| same(*m)));
+    if in_code {
+        return Default::default();
+    }
+    out.type_args
+        .get(&stmt.expr.id)
+        .map(|args| args.iter().cloned().collect())
+        .unwrap_or_default()
 }
 
 /// A type parameter `t` mentions that is not one of `own`.
@@ -1890,6 +1983,7 @@ impl Reflect for WorldReflect {
                     .collect()
             }),
             initialize: request.initialize,
+            type_args: request.type_args,
         }));
         Ok(generated.len() - 1)
     }
