@@ -53,6 +53,16 @@ when the local one is older.
   its specification, a trade-off, more scope) and go on with the work;
   when all of it is done, ask the user about them together.
 
+## Pull requests
+
+- Open a draft pull request as soon as the branch has its first commit,
+  while the local checks run: CI then runs in parallel with `cargo test`.
+- While it is a draft, force-pushing after the subagent review or the
+  local checks changed the commits is fine (amend or rebase as needed).
+- Mark it ready for review only when the subagent review and every local
+  check above have passed; from then on add commits, never force-push.
+- The description says what was verified.
+
 ## Tests
 
 - `crates/quarz-cli/tests/fixtures/**/*.qz` with `.out` files: the VM's
