@@ -127,6 +127,9 @@ pub struct Generated {
     /// of those a call passed, which the body (the block) takes.
     #[serde(default)]
     pub keywords: bool,
+    /// Made by `def_initialize` (docs/14 §5): an `initialize` overload.
+    #[serde(default)]
+    pub initialize: bool,
 }
 
 /// A compile-time value a generated method embeds as a constant (docs/14
@@ -2257,7 +2260,7 @@ impl World {
         out
     }
 
-    fn param_bounds(&self, id: TypeParamId) -> Vec<Type> {
+    pub(crate) fn param_bounds(&self, id: TypeParamId) -> Vec<Type> {
         if let Some(bounds) = self.narrowed_params.get(&id) {
             return bounds.clone();
         }

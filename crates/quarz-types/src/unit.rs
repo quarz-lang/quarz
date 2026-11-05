@@ -193,6 +193,7 @@ pub(crate) fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> 
         op_targets: map!(op_targets),
         block_results: map!(block_results),
         lifted_blocks: map!(lifted_blocks),
+        init_blocks: map!(init_blocks),
         quoted_blocks: map!(quoted_blocks),
         quoted_lits: set!(quoted_lits),
         static_exprs: map!(static_exprs),
@@ -356,6 +357,7 @@ pub(crate) fn merge_output(out: &mut Output, o: Output) {
     out.self_slots.extend(o.self_slots);
     out.static_calls.extend(o.static_calls);
     out.lifted_blocks.extend(o.lifted_blocks);
+    out.init_blocks.extend(o.init_blocks);
     out.quoted_blocks.extend(o.quoted_blocks);
     out.quoted_lits.extend(o.quoted_lits);
     out.static_exprs.extend(o.static_exprs);

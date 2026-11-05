@@ -4919,3 +4919,56 @@ fn self_new_in_instance_methods() {
         "`Self.new` is written in an instance method",
     );
 }
+
+#[test]
+fn a_def_initialize_block_is_checked_as_an_initialize() {
+    // docs/14 §5: the block given to `def_initialize` assigns the
+    // bound's fields on every path, before the object is used, with
+    // `super` directly in it (and not bare).
+    let class = |body: &str| {
+        format!(
+            "class Base\n  @a: Int\n  @b: String? = nil\n  @c: String?\n  def initialize(@a: Int); @c = nil; end\n  def show -> Void = puts \"a\"\n  static def self.gen -> Void\n    def_initialize(:x) do |x: Int|\n      {body}\n    end\n  end\nend\n"
+        )
+    };
+    ok(&class("@c = nil\n      @a = x\n      show"));
+    ok(&class("super(x)\n      @a = 2"));
+    ok(&class(
+        "raise \"no\" if x < 0\n      @c = \"c\"\n      @a = x",
+    ));
+    err(
+        &class("@c = nil\n      if x > 0\n        @a = x\n      end"),
+        "field `@a` is not assigned on every path through the generated `initialize`",
+    );
+    err(
+        &class("@c = nil\n      next if x > 0\n      @a = x"),
+        "field `@a` is not assigned on every path through the generated `initialize`",
+    );
+    err(
+        &class("@c = nil\n      p self\n      @a = x"),
+        "the object is used before field `@a` is assigned",
+    );
+    err(
+        &class("@c = nil\n      show\n      @a = x"),
+        "the object is used before field `@a` is assigned",
+    );
+    err(
+        &class("@a = x"),
+        "field `@c` must be assigned in the generated `initialize`",
+    );
+    err(
+        &class("@c = nil\n      @a = x\n      f = -> { @a = 2 }"),
+        "a closure that may run later, after `initialize`, cannot assign it",
+    );
+    err(
+        &class("super"),
+        "a bare `super` forwards a method's parameters",
+    );
+    err(
+        &class("[1].each { super(x) }"),
+        "`super` in `initialize` must be called directly, not from a block or lambda",
+    );
+    err(
+        &class("super(\"s\")"),
+        "argument `a` of initialize(a: Int) -> Void expects Int but found String",
+    );
+}

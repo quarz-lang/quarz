@@ -614,6 +614,16 @@ impl<'a> FnBuilder<'a> {
                 }
             }
         }
+        // A block given to `def_initialize` whose object is usable from
+        // the start (docs/14 §5; an `initialize`'s, below).
+        if self.out.init_blocks.contains_key(&call_id)
+            && self
+                .out
+                .usable_on_entry
+                .contains(&SelfOwner::Block(call_id))
+        {
+            b.mark_usable();
+        }
         b.store_self_slot(SelfOwner::Block(call_id));
         let v = b.body(&block.body);
         b.term(Term::Return(v));
@@ -3862,6 +3872,13 @@ impl<'a> FnBuilder<'a> {
                     is_lambda: false,
                 });
                 Some(self.block_value(e.id, b, dst))
+            }
+            // (In a block given to `def_initialize`, the generated
+            // `initialize`'s `super`: it has no block to pass on.)
+            None if matches!(self.owner, Some(SelfOwner::Block(id))
+                if self.out.init_blocks.contains_key(&id)) =>
+            {
+                None
             }
             None => {
                 let dst = self.reg();

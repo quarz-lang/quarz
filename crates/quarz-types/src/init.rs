@@ -114,6 +114,23 @@ impl<'a> InitCheck<'a> {
         );
     }
 
+    /// Check a block given to `def_initialize` (docs/14 §5), the body of
+    /// an `initialize` whose parameters assign no field: a `next` at its
+    /// top level ends it, as a `return` would a written one.
+    pub fn lifted_block(&mut self, body: &[Expr], span: Span) {
+        let st: St = Some(BTreeSet::new());
+        self.usable_on_entry = self.complete(&st);
+        self.exits.push(None);
+        let end = self.body(body, st);
+        let nexts = self.exits.pop().flatten();
+        let st = Self::join(end, nexts);
+        self.check_complete(
+            &st,
+            span,
+            "is not assigned on every path through the generated `initialize`",
+        );
+    }
+
     /// Check a field's default, run when the fields in `set` are: it may
     /// read those, and not use the object otherwise (docs/01 §3), even
     /// once it has assigned every field.
