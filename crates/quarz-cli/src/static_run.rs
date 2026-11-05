@@ -1580,7 +1580,7 @@ impl StaticRunner for Runner {
         // The handles it made are checked as a statement's are.
         let mut classes = Vec::new();
         self.generate_each(host, stmt, pending, &mut classes)?;
-        bake(&interp, &value).map_err(|why| {
+        bake(&interp, &unshareable_data(host.world()), &value).map_err(|why| {
             fail(format!(
                 "`static(...)` gives a value that cannot be baked into the program: {why}"
             ))
@@ -1619,6 +1619,9 @@ struct WorldReflect {
     /// The first refusal (`reflect_refusal`), which fails the statement
     /// whatever its run rescued.
     refused: RefCell<Option<String>>,
+    /// The `data` types and enums with a field that is not Shareable,
+    /// whose values cannot be baked (`bake`).
+    unshareable: rustc_hash::FxHashSet<ClassId>,
 }
 
 /// A generation a statement's run asked for, in call order.
@@ -1663,7 +1666,30 @@ struct PendingGen {
 
 /// A compile-time value as a generated method embeds it (docs/14 §5),
 /// or why it cannot.
-fn bake(interp: &Interp, v: &Value) -> Result<Baked, String> {
+/// The `data` types and enums of `world` that are not Shareable (a field
+/// that is not): their values cannot be baked, so that every baked value
+/// is Shareable (docs/14 §5).
+fn unshareable_data(world: &World) -> rustc_hash::FxHashSet<ClassId> {
+    world
+        .classes
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.kind,
+                quarz_types::ClassKind::Data
+                    | quarz_types::ClassKind::Enum
+                    | quarz_types::ClassKind::Variant
+            ) && c.shareable != Some(true)
+        })
+        .map(|c| c.id)
+        .collect()
+}
+
+fn bake(
+    interp: &Interp,
+    unshareable: &rustc_hash::FxHashSet<ClassId>,
+    v: &Value,
+) -> Result<Baked, String> {
     let cannot = |interp: &Interp, v: &Value| {
         Err(format!(
             "a value of class `{}` cannot be baked into the program: only immutable values can (literals, classes, `data` of such)",
@@ -1689,20 +1715,20 @@ fn bake(interp: &Interp, v: &Value) -> Result<Baked, String> {
         },
         Value::Array(a) => Baked::Array(
             a.iter()
-                .map(|x| bake(interp, &x))
+                .map(|x| bake(interp, unshareable, &x))
                 .collect::<Result<_, _>>()?,
         ),
         Value::Hash(h) => Baked::Hash(
             h.as_map()
                 .iter()
-                .map(|(k, v)| Ok((bake(interp, k)?, bake(interp, v)?)))
+                .map(|(k, v)| Ok((bake(interp, unshareable, k)?, bake(interp, unshareable, v)?)))
                 .collect::<Result<_, String>>()?,
         ),
         Value::Range(r) => {
             let bound = |b: &Value| -> Result<Option<Box<Baked>>, String> {
                 Ok(match b {
                     Value::Nil => None,
-                    other => Some(Box::new(bake(interp, other)?)),
+                    other => Some(Box::new(bake(interp, unshareable, other)?)),
                 })
             };
             Baked::Range {
@@ -1721,14 +1747,23 @@ fn bake(interp: &Interp, v: &Value) -> Result<Baked, String> {
                     o.class,
                     o.fields()
                         .iter()
-                        .map(|f| bake(interp, f))
+                        .map(|f| bake(interp, unshareable, f))
                         .collect::<Result<_, _>>()?,
                 ),
+                RtClassKind::Data | RtClassKind::Variant
+                    if unshareable.contains(&o.class)
+                        || class.variant_of.is_some_and(|e| unshareable.contains(&e)) =>
+                {
+                    return Err(format!(
+                        "a `{}` holds a field that is not Shareable, so it cannot be baked (only literals, classes and `data` of Shareable fields can)",
+                        interp.class_name(v)
+                    ));
+                }
                 RtClassKind::Data | RtClassKind::Variant => Baked::Data(
                     o.class,
                     o.fields()
                         .iter()
-                        .map(|f| bake(interp, f))
+                        .map(|f| bake(interp, unshareable, f))
                         .collect::<Result<_, _>>()?,
                 ),
                 _ => return cannot(interp, v),
@@ -1983,6 +2018,7 @@ impl WorldReflect {
             methods.insert(class.id, vec![Rc::from(ms)]);
         }
         WorldReflect {
+            unshareable: unshareable_data(world),
             fields,
             methods,
             generated: RefCell::new(Vec::new()),
@@ -2086,7 +2122,7 @@ impl Reflect for WorldReflect {
         let captures = request
             .captures
             .iter()
-            .map(|(d, s, v)| Ok((*d, *s, bake(interp, v)?)))
+            .map(|(d, s, v)| Ok((*d, *s, bake(interp, &self.unshareable, v)?)))
             .collect::<Result<Vec<_>, String>>()?;
         let mut generated = self.generated.borrow_mut();
         generated.push(Pending::Method(PendingGen {
@@ -2109,7 +2145,7 @@ impl Reflect for WorldReflect {
         Ok(generated.len() - 1)
     }
     fn def_field(&self, interp: &Interp, request: FieldRequest) -> Result<(), String> {
-        let default = bake(interp, &request.default)?;
+        let default = bake(interp, &self.unshareable, &request.default)?;
         self.generated
             .borrow_mut()
             .push(Pending::Field(PendingField {
@@ -2142,7 +2178,7 @@ impl Reflect for WorldReflect {
         Some(why)
     }
     fn made_handle(&self, interp: &Interp, handle: &Value) -> Result<(), String> {
-        let handle = bake(interp, handle)?;
+        let handle = bake(interp, &self.unshareable, handle)?;
         self.generated.borrow_mut().push(Pending::Handle(handle));
         Ok(())
     }

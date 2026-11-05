@@ -4285,19 +4285,30 @@ impl Checker {
     /// type parameter and a module type may hold such a value; the
     /// statement's run decides for them.
     fn bakeable_type(&mut self, t: &Type) -> bool {
+        self.bake_refusal(t).is_none()
+    }
+
+    /// Why a value of type `t` cannot be baked (`bakeable_type`): `None`
+    /// when it can; an empty reason for what is not a literal or data;
+    /// for a `data` type or enum with a field that is not Shareable, that
+    /// field (every bakeable value is Shareable, so that a `Lit`'s
+    /// `Shareable` value answers `is_a?(Shareable)` as its type says).
+    fn bake_refusal(&mut self, t: &Type) -> Option<String> {
         let t = self.resolve(t);
         match &t {
-            Type::Nothing | Type::Void | Type::Var(_) | Type::Param(_) => true,
-            Type::ClassObject(_, _) | Type::TypeOf(_) => true,
-            Type::Union(ms) | Type::Tuple(ms) => ms.clone().iter().all(|m| self.bakeable_type(m)),
-            Type::Proc(..) => false,
+            Type::Nothing | Type::Void | Type::Var(_) | Type::Param(_) => None,
+            Type::ClassObject(_, _) | Type::TypeOf(_) => None,
+            Type::Union(ms) | Type::Tuple(ms) => {
+                ms.clone().iter().find_map(|m| self.bake_refusal(m))
+            }
+            Type::Proc(..) => Some(String::new()),
             // A field handle names a field: its type arguments are no
             // values (docs/14 §5).
             Type::Class(id, _)
                 if *id == self.world.builtin.meta_field_ref
                     || *id == self.world.builtin.meta_method =>
             {
-                true
+                None
             }
             Type::Class(id, args) => {
                 let id = *id;
@@ -4308,15 +4319,53 @@ impl Checker {
                 ]
                 .contains(&id);
                 let class = self.world.class(id);
-                let ok = literal
-                    || id == b.object
-                    || matches!(
-                        class.kind,
-                        ClassKind::Data | ClassKind::Enum | ClassKind::Variant | ClassKind::Module
-                    );
-                ok && args.clone().iter().all(|a| self.bakeable_type(a))
+                let data = matches!(
+                    class.kind,
+                    ClassKind::Data | ClassKind::Enum | ClassKind::Variant
+                );
+                if !(literal || data || id == b.object || class.kind == ClassKind::Module) {
+                    return Some(String::new());
+                }
+                if data && self.world.shareable_violation(id).is_some() {
+                    return Some(self.unshareable_field(id));
+                }
+                args.clone().iter().find_map(|a| self.bake_refusal(a))
             }
         }
+    }
+
+    /// What makes the `data` type, enum or variant `id` not Shareable,
+    /// for `bake_refusal`: "`W` holds `@o: Object`, which is not
+    /// Shareable, so a `W` cannot be baked".
+    fn unshareable_field(&mut self, id: ClassId) -> String {
+        let class = self.world.class(id).clone();
+        let name = class.name.clone();
+        let enum_params = class
+            .variant_of
+            .map(|e| self.world.class(e).type_params.clone());
+        let erase: rustc_hash::FxHashMap<TypeParamId, Type> = class
+            .type_params
+            .iter()
+            .chain(enum_params.iter().flatten())
+            .map(|p| (p.id, Type::Nothing))
+            .collect();
+        for (f, subst) in self.world.all_fields(id) {
+            let ty = f.ty.subst(&subst).subst(&erase);
+            if !self.world.is_shareable(&ty) {
+                return format!(
+                    "`{name}` holds `@{}: {}`, which is not Shareable, so a `{name}` cannot be baked",
+                    f.name,
+                    self.world.type_name(&ty)
+                );
+            }
+        }
+        for v in class.variants.clone() {
+            if self.world.shareable_violation(v).is_some() {
+                return self.unshareable_field(v);
+            }
+        }
+        let why = self.world.shareable_violation(id).unwrap_or_default();
+        format!("`{name}` cannot be baked: {why}")
     }
 
     /// Whether a variable `depth` frames up lives outside the innermost
@@ -4371,10 +4420,15 @@ impl Checker {
                 );
                 return;
             }
-            if !self.bakeable_type(&rt) {
+            if let Some(why) = self.bake_refusal(&rt) {
+                let why = if why.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({why})")
+                };
                 self.error(
                     format!(
-                        "`{name}` has type {}, whose values cannot be baked into a generated method; a block given to `def_method` captures only immutable values (literals, classes, `data`)",
+                        "`{name}` has type {}, whose values cannot be baked into a generated method{why}; a block given to `def_method` captures only immutable values (literals, classes, `data` of Shareable fields)",
                         self.world.type_name(&rt)
                     ),
                     span,
@@ -11344,7 +11398,15 @@ impl Checker {
                 .recv
                 .as_ref()
                 .and_then(|r| self.out.node_types.get(&r.id).cloned())
-                .map(|t| self.resolve(&t));
+                .map(|t| self.resolve(&t))
+                // (`q&.captures` calls it on the `Quoted` only.)
+                .map(|t| {
+                    if call.safe_nav {
+                        t.without_nil(self.world.builtin.nil)
+                    } else {
+                        t
+                    }
+                });
             match recv {
                 Some(t) if self.quoted_shareable(&t) => Type::Class(
                     self.world.builtin.array,
@@ -12523,9 +12585,14 @@ impl Checker {
             }
         }
         let rt = self.resolve(&t);
-        if !self.bakeable_type(&rt) {
+        if let Some(why) = self.bake_refusal(&rt) {
+            let why = if why.is_empty() {
+                String::new()
+            } else {
+                format!(" ({why})")
+            };
             self.error(
-                format!("`static(...)` gives a {}, which cannot be baked into the program: its value must be a literal, a class or `data` of such (docs/14 §5)", self.world.type_name(&rt)),
+                format!("`static(...)` gives a {}, which cannot be baked into the program{why}: its value must be a literal, a class or `data` of Shareable fields (docs/14 §5)", self.world.type_name(&rt)),
                 expr.span,
             );
         }

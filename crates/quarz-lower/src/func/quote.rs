@@ -50,6 +50,18 @@ impl<'a> FnBuilder<'a> {
             receivers: 0,
         };
         let params: Vec<&'a str> = b.params.list.iter().map(|p| p.name.as_str()).collect();
+        // A call lowered again in this round (an `ensure` body, copied on
+        // each way out) is the same site, with the same tree.
+        let key = (self.file, call_id);
+        let known = self.lw.quoted_sites.get(&key).copied();
+        let site = match known {
+            Some((site, _)) => site,
+            None => {
+                let site = self.lw.next_quoted_site;
+                self.lw.next_quoted_site += 1;
+                site
+            }
+        };
         let tree = if self.lw.quoted_once {
             // Built once, by a constant of its own that the final lowering
             // adds after the checker's (docs/14 §6): its initializer only
@@ -73,12 +85,21 @@ impl<'a> FnBuilder<'a> {
             t.term(Term::Return(tree));
             let f = t.finish();
             self.lw.set_func(id, f);
-            let line = self.line_of(b.span);
-            let cid = self.lw.add_quoted_const(self.world, self.file, line, id);
+            // (Built again for its captures, which the walk collects; the
+            // first constant is kept.)
+            let cid = match known {
+                Some((_, Some(cid))) => cid,
+                _ => {
+                    let line = self.line_of(b.span);
+                    self.lw.add_quoted_const(self.world, self.file, line, id)
+                }
+            };
+            self.lw.quoted_sites.insert(key, (site, Some(cid)));
             let dst = self.reg();
             self.emit(Inst::ConstGet { dst, id: cid });
             dst
         } else {
+            self.lw.quoted_sites.insert(key, (site, None));
             self.quote_block(&mut q, b, &params, receiver)
         };
         // The captures, read here, at the call.
@@ -108,8 +129,6 @@ impl<'a> FnBuilder<'a> {
             .map(|f| f.name.clone())
             .unwrap_or_default();
         let file = self.load_const(Constant::Str(file));
-        let site = self.lw.next_quoted_site;
-        self.lw.next_quoted_site += 1;
         let site = self.int(site);
         // By its `initialize`, which takes the arguments over (field
         // stores would leave the captures referenced from here).

@@ -1364,7 +1364,7 @@ fn quoted_trees_and_shareable_captures_are_shareable() {
     let defs = "def take(&q: Quoted[shareable (Int) -> Bool]) -> Quoted[shareable (Int) -> Bool] = q\ndef plain(&q: Quoted[(Int) -> Bool]) -> Quoted[(Int) -> Bool] = q\n";
     ok("TREES = Atom.new(Hash[Meta::Expr, Int].new)\nREFS = Atom.new(Array[Meta::MethodRef].new)");
     ok(&format!("{defs}class Holder\n  include Shareable\n  @q: Quoted[shareable (Int) -> Bool]\n  @c: Array[Shareable]\n  def initialize(@q: Quoted[shareable (Int) -> Bool]); @c = @q.captures; end\nend\nn = 1\nh = Holder.new(take {{ |x| x > n }})\nTask.spawn {{ h }}.await"));
-    ok(&format!("{defs}n = 1\nq = take {{ |x| x > n }}\nc = q.captures\nTask.spawn {{ [q.expr, c] }}.await\nall: Array[Object] = q.captures\ns: Int = q.site"));
+    ok(&format!("{defs}n = 1\nq = take {{ |x| x > n }}\nc = q.captures\nTask.spawn {{ [q.expr, c] }}.await\nall: Array[Object] = q.captures\ns: Int = q.site\nm: Quoted[shareable (Int) -> Bool]? = q\nsafe: Array[Shareable]? = m&.captures"));
     err(
         &format!("{defs}class Holder\n  include Shareable\n  @c: Array[Shareable]\n  def initialize(q: Quoted[(Int) -> Bool]); @c = q.captures; end\nend"),
         "cannot assign Array[Object] to `@c` of type Array[Shareable]",
