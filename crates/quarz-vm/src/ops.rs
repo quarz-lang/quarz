@@ -479,7 +479,12 @@ impl Interp {
         } else if optional {
             Value::Nil
         } else {
-            return Err(self.err_type(&format!("cannot cast {} to {name}", self.class_name(&v))));
+            // A class value by its class (`Type[Int]`), as `Type[Model]` is.
+            let what = match &v {
+                Value::Class(c) => format!("Type[{}]", self.program.world.class(*c).name),
+                _ => self.class_name(&v),
+            };
+            return Err(self.err_type(&format!("cannot cast {what} to {name}")));
         };
         Ok(())
     }

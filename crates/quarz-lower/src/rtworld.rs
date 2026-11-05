@@ -35,6 +35,9 @@ pub fn rt_type_checked(world: &World, t: &Type) -> RtType {
                 args.iter().map(|a| rt_type_checked(world, a)).collect(),
             )
         }
+        // A class value of a class without type parameters: tested for
+        // the class (`Type[Model]`; the checker refuses a generic one).
+        Type::ClassObject(id, _) if *id != b.object => RtType::ClassOf(*id),
         Type::Union(ms) => RtType::Union(ms.iter().map(|m| rt_type_checked(world, m)).collect()),
         Type::Tuple(ts) => RtType::Tuple(ts.iter().map(|m| rt_type_checked(world, m)).collect()),
         _ => rt_type(t),

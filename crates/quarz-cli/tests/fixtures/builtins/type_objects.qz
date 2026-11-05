@@ -50,3 +50,38 @@ def kind(x: Object) -> String
   end
 end
 p kind(Post), kind(1), kind("s")
+
+# A class value narrows to `Type[C]`, for a `C` without type parameters:
+# the test is for a class that is `C` or a subclass of it (or includes
+# it), not for type arguments.
+module Tagged
+end
+class Note < Model
+  include Tagged
+end
+def table_or_none(x: Object) -> String
+  if t = x.as?(Type[Model])
+    table_of(t)
+  else
+    "none"
+  end
+end
+p table_or_none(Post), table_or_none(Note), table_or_none(Int), table_or_none(1)
+p Note.is_a?(Type[Tagged]), Post.is_a?(Type[Tagged]), "s".is_a?(Type[String])
+classes: Array[Class] = [Post, Int, Note]
+p classes.select { |k| k.is_a?(Type[Model]) }.map { |k| k.as(Type[Model]).table }
+begin
+  Int.as(Object).as(Type[Model])
+rescue TypeError => e
+  p e.message
+end
+
+# The test narrows what may be such a class: a `Type` of a module, a
+# `Type[T]`, a class's `self` in a `static def` (a `Meta::ClassDef`).
+def table_if_model(x: Type[Tagged]) -> String = x.is_a?(Type[Model]) ? x.table : "no"
+def table_if_post[T](x: Type[T]) -> String = x.is_a?(Type[Post]) ? x.table : "no"
+p table_if_model(Note), table_if_post(Post), table_if_post(Int)
+class Probe
+  static def self.tagged? -> Bool = self.is_a?(Type[Tagged])
+end
+p Probe.tagged?

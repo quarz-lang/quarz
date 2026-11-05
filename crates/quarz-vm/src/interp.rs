@@ -2431,6 +2431,9 @@ impl Interp {
                     }
             }
             RtType::ClassObject => matches!(v, Value::Class(_)),
+            RtType::ClassOf(cid) => {
+                matches!(v, Value::Class(c) if self.program.world.class_is_a(*c, *cid))
+            }
             RtType::Union(ms) => ms.iter().any(|m| self.is_a(v, m)),
             RtType::Tuple(ts) => matches!(v, Value::Array(a)
                 if a.len() == ts.len()

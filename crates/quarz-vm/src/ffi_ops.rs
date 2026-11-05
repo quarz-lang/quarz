@@ -80,6 +80,10 @@ fn decode_type(w: &[u32], at: &mut usize) -> RtType {
             *at += 2;
             RtType::Elems(c, (0..n).map(|_| decode_type(w, at)).collect())
         }
+        8 => {
+            *at += 1;
+            RtType::ClassOf(w[*at - 1])
+        }
         _ => RtType::Any,
     }
 }
@@ -116,6 +120,7 @@ pub fn encode_type(ty: &RtType, out: &mut Vec<u32>) {
         RtType::Nothing => out.push(0),
         RtType::Class(c) => out.extend([1, *c]),
         RtType::ClassObject => out.push(2),
+        RtType::ClassOf(c) => out.extend([8, *c]),
         RtType::Union(ms) => {
             out.extend([3, ms.len() as u32]);
             for m in ms {

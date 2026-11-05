@@ -7342,6 +7342,12 @@ impl Checker {
                 // test can succeed, the value then being a `tgt`.
                 yes.push(tgt);
                 no.push(m);
+            } else if matches!(&tgt, Type::ClassObject(tid, _) if self.class_value_may_be(&m, *tid))
+            {
+                // A class value that may be of the class: a `Type[M]` of a
+                // module, a `Type[T]`, a `Cog` (a `Type` subclass).
+                yes.push(tgt.clone());
+                no.push(m);
             } else if let (Type::Class(mid, _), Type::Class(tid, _)) = (&m, &tgt) {
                 // Unrelated classes may still overlap via a module.
                 if self.world.class(*tid).kind == ClassKind::Module
@@ -7355,6 +7361,22 @@ impl Checker {
             }
         }
         (Type::union_of(yes), Type::union_of(no))
+    }
+
+    /// Whether a value of type `m`, not a `Type[C]` nor a supertype of
+    /// one, may still be a class value whose class is `<= c`: through a
+    /// module (`Type[Tagged]` holding a `Model`), a type parameter
+    /// (`Type[T]`), or a subclass of `Type` (`Cog`).
+    fn class_value_may_be(&self, m: &Type, c: ClassId) -> bool {
+        match m {
+            Type::ClassObject(mid, _) => {
+                self.world.class(*mid).kind == ClassKind::Module
+                    || self.world.class(c).kind == ClassKind::Module
+            }
+            Type::TypeOf(_) => true,
+            Type::Class(mid, _) => self.world.class_is_a(*mid, self.world.builtin.class_),
+            _ => false,
+        }
     }
 
     /// Union members, with enums expanded to their variants.
@@ -14723,8 +14745,10 @@ impl Checker {
                 .iter()
                 .enumerate()
                 .any(|(i, a)| !(object(a) && self.world.param_admits_object(*id, i))),
-            // A class value is tested as "a class": `Type[Object]` only.
-            Type::ClassObject(id, _) => *id != b.object,
+            // A class value is tested for its class (`Type[Model]`: a class
+            // `<= Model`), not for type arguments, which it does not carry:
+            // a generic class (`Type[Box[Int]]`) is refused.
+            Type::ClassObject(id, _) => !self.world.class(*id).type_params.is_empty(),
             Type::Tuple(ts) | Type::Union(ts) => ts.iter().any(|m| self.unverifiable(m)),
             Type::Proc(..) => true,
             // A type parameter is not known at run time (`o.as(T)`).
@@ -14760,7 +14784,9 @@ impl Checker {
             // `Object` or a `Type` may hold one.
             (Type::ClassObject(..) | Type::TypeOf(_), Type::Class(id, _))
             | (Type::Class(id, _), Type::ClassObject(..) | Type::TypeOf(_)) => {
-                *id == self.world.builtin.class_ || *id == self.world.builtin.object
+                // (A `Cog` is a `Type`: a class value too.)
+                *id == self.world.builtin.object
+                    || self.world.class_is_a(*id, self.world.builtin.class_)
             }
             _ => match (class_of(m), class_of(t)) {
                 (Some(mc), Some(tc)) => {
