@@ -12,6 +12,7 @@ const STD_SETS: &[&[&str]] = &[
     &["socket"],
     &["json", "socket", "http"],
     &["test"],
+    &["sorted_map"],
 ];
 
 fn main() {

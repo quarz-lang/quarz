@@ -30,6 +30,7 @@ pub const STD_MODULES: &[(&str, &str)] = &[
     ("socket", include_str!("../../../std/socket.qz")),
     ("http", include_str!("../../../std/http.qz")),
     ("test", include_str!("../../../std/test.qz")),
+    ("sorted_map", include_str!("../../../std/sorted_map.qz")),
 ];
 
 /// The constants each standard library module declares at the top level,

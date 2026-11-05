@@ -1,0 +1,276 @@
+require "sorted_map"
+require "test"
+
+# Checks a tree's red-black invariants: keys in strictly increasing order
+# within (lo, hi), no red node with a red child, the same number of black
+# nodes on every path. Returns that number.
+def sorted_map_test_black_height(t: SortedMap::Node[Int, Int]?, lo: Int?, hi: Int?) -> Int
+  return 1 if t.nil?
+  raise "out of order at #{t.key}" if (lo && t.key <= lo) || (hi && t.key >= hi)
+  if t.red
+    l = t.left
+    r = t.right
+    raise "red #{t.key} has a red child" if (l && l.red) || (r && r.red)
+  end
+  a = sorted_map_test_black_height(t.left, lo, t.key)
+  b = sorted_map_test_black_height(t.right, t.key, hi)
+  raise "black heights differ at #{t.key}: #{a} and #{b}" unless a == b
+  t.red ? a : a + 1
+end
+
+def sorted_map_test_size(t: SortedMap::Node[Int, Int]?) -> Int
+  t.nil? ? 0 : 1 + sorted_map_test_size(t.left) + sorted_map_test_size(t.right)
+end
+
+# Checks `m`'s invariants and that it has `model`'s pairs.
+def sorted_map_test_check(m: SortedMap[Int, Int], model: Hash[Int, Int]) -> Void
+  root = m.root
+  raise "red root" if root && root.red
+  sorted_map_test_black_height(root, nil, nil)
+  raise "size #{m.size}, #{sorted_map_test_size(root)} nodes" unless sorted_map_test_size(root) == m.size
+  raise "#{m.to_a} is not #{model.to_a.sort}" unless m.to_a == model.to_a.sort
+end
+
+class SortedMapBasicsTest < Test::Case
+  @m: SortedMap[String, Int] = SortedMap[String, Int].new.put("b", 2).put("a", 1).put("d", 4)
+
+  def test_empty
+    e = SortedMap[String, Int].new
+    assert_equal(0, e.size)
+    assert_true(e.empty?)
+    assert_nil(e.first)
+    assert_nil(e.last)
+    assert_nil(e["a"]?)
+    assert_equal("SortedMap{}", e.inspect)
+  end
+
+  def test_lookup
+    assert_equal(2, @m["b"])
+    assert_nil(@m["c"]?)
+    assert_equal(0, @m.fetch("c", 0))
+    assert_equal(3, @m.fetch("ccc") { |k| k.size })
+    assert_true(@m.key?("a"))
+    assert_false(@m.has_key?("c"))
+    error = assert_raise(KeyError) { @m["c"] }
+    assert_equal("key not found: \"c\"", error.message)
+  end
+
+  def test_order
+    assert_equal(["a", "b", "d"], @m.keys)
+    assert_equal([1, 2, 4], @m.values)
+    assert_equal([["a", 1], ["b", 2], ["d", 4]], @m.to_a)
+    assert_equal({"a" => 1, "b" => 2, "d" => 4}, @m.to_h)
+    assert_equal(["a", 1], @m.first)
+    assert_equal(["d", 4], @m.last)
+    seen = Array::Builder[String].new
+    @m.reverse_each { |k, v| seen << "#{k}#{v}" }
+    assert_equal(["d4", "b2", "a1"], seen.to_a)
+    pairs = Array::Builder[String].new
+    @m.each_pair { |k, v| pairs << k * v }
+    assert_equal(["a", "bb", "dddd"], pairs.to_a)
+  end
+
+  def test_enumerable
+    assert_equal(["a1", "b2", "d4"], @m.map { |k, v| "#{k}#{v}" })
+    assert_equal(7, @m.sum { |_, v| v })
+    assert_equal(["d", 4], @m.max_by { |_, v| v })
+    assert_equal(3, @m.count)
+  end
+
+  def test_navigation
+    assert_equal(["b", 2], @m.floor("c"))
+    assert_equal(["b", 2], @m.floor("b"))
+    assert_nil(@m.floor("0"))
+    assert_equal(["d", 4], @m.ceil("c"))
+    assert_equal(["b", 2], @m.ceil("b"))
+    assert_nil(@m.ceil("e"))
+    assert_equal(["a", 1], @m.lower("b"))
+    assert_nil(@m.lower("a"))
+    assert_equal(["d", 4], @m.higher("b"))
+    assert_nil(@m.higher("d"))
+  end
+
+  def test_put_and_delete_leave_the_receiver
+    m2 = @m.put("c", 3)
+    assert_equal(["a", "b", "c", "d"], m2.keys)
+    assert_equal(3, @m.size)
+    assert_equal(4, m2.size)
+    m3 = m2.put("c", 30)
+    assert_equal(4, m3.size)
+    assert_equal(30, m3["c"])
+    assert_equal(3, m2["c"])
+    m4 = m3.delete("a")
+    assert_equal(["b", "c", "d"], m4.keys)
+    assert_equal(4, m3.size)
+    assert_same(m4, m4.delete("zz"))
+  end
+
+  def test_put_widens_the_values
+    m: SortedMap[String, Int | String] = @m.put("e", "five")
+    assert_true(m["e"] == "five")
+    assert_true(m["a"] == 1)
+  end
+
+  def test_update_and_merge
+    assert_equal(20, @m.update("b") { |v| (v || 0) * 10 }["b"])
+    assert_equal(1, @m.update("z") { |v| (v || 0) + 1 }["z"])
+    other = SortedMap.from([["b", 20], ["c", 30]])
+    assert_equal([["a", 1], ["b", 20], ["c", 30], ["d", 4]], @m.merge(other).to_a)
+    assert_equal([["a", 1], ["b", 22], ["c", 30], ["d", 4]], @m.merge(other) { |_, a, b| a + b }.to_a)
+  end
+
+  def test_select_reject_range
+    assert_equal(["b", "d"], @m.select { |_, v| v.even? }.keys)
+    assert_equal(["a"], @m.reject { |_, v| v.even? }.keys)
+    assert_same(@m, @m.filter { |_, _| true })
+    assert_equal(["b", "d"], @m.range("b"..).keys)
+    assert_equal(["a", "b"], @m.range(.."b").keys)
+    assert_equal(["a"], @m.range(..."b").keys)
+    assert_equal(["b"], @m.range("aa"..."c").keys)
+    assert_equal(Array[String].new, @m.range("e"..).keys)
+    assert_same(@m, @m.range("a".."d"))
+  end
+
+  def test_transform_values
+    assert_equal([["a", "a1"], ["b", "b2"], ["d", "d4"]], @m.transform_values { |k, v| "#{k}#{v}" }.to_a)
+  end
+
+  def test_equality_and_hash
+    same = SortedMap.from([["d", 4], ["b", 2], ["a", 1]])
+    assert_equal(@m, same)
+    assert_equal(@m.hash, same.hash)
+    assert_false(@m == @m.put("a", 0))
+    assert_false(@m == @m.delete("a"))
+    assert_false(@m == @m.to_h)
+    assert_equal(1, {@m => 1}[same])
+  end
+
+  def test_inspect
+    assert_equal("SortedMap{\"a\" => 1, \"b\" => 2, \"d\" => 4}", @m.inspect)
+    assert_equal(@m.inspect, @m.to_s)
+  end
+
+  def test_shareable
+    shared: Shareable = @m
+    assert_equal(@m, shared)
+    m = @m
+    sum = Task.spawn { m.values.sum }
+    assert_equal(7, sum.await)
+  end
+end
+
+class SortedMapBuilderTest < Test::Case
+  def test_build
+    m = SortedMap[Int, String].build do |b|
+      b[3] = "c"
+      b[1] = "a"
+      b.store(2, "b")
+      b[1] = "A"
+    end
+    assert_equal(SortedMap.from([[1, "A"], [2, "b"], [3, "c"]]), m)
+  end
+
+  def test_mutation
+    b = SortedMap::Builder[Int, String].new
+    assert_true(b.empty?)
+    b[2] = "b"
+    b[1] = "a"
+    assert_equal("a", b[1])
+    assert_nil(b[5]?)
+    assert_equal("z", b.fetch(5, "z"))
+    assert_equal([1, 2], b.keys)
+    assert_equal(["a", "b"], b.values)
+    assert_equal([1, "a"], b.first)
+    assert_equal([2, "b"], b.last)
+    assert_equal("a", b.delete(1))
+    assert_nil(b.delete(1))
+    b.update(2) { |v| (v || "") + "!" }.update(7) { |v| v || "new" }
+    assert_equal([[2, "b!"], [7, "new"]], b.to_a)
+    b.merge!(SortedMap.from([[0, "zero"]]))
+    assert_equal([0, 2, 7], b.keys)
+    assert_true(b.key?(0))
+    assert_equal("SortedMap::Builder{0 => \"zero\", 2 => \"b!\", 7 => \"new\"}", b.inspect)
+    assert_equal(0, b.clear.size)
+  end
+
+  def test_snapshot_and_freeze
+    b = SortedMap::Builder[Int, Int].new
+    b[1] = 1
+    snap = b.snapshot
+    b[2] = 2
+    assert_equal([1], snap.keys)
+    assert_equal([1, 2], b.keys)
+    m = b.freeze
+    assert_equal([1, 2], m.keys)
+    assert_true(b.empty?)
+    b[3] = 3
+    assert_equal([1, 2], m.keys)
+  end
+end
+
+class SortedMapTreeTest < Test::Case
+  # Random puts and deletes, checked against a `Hash` after each step.
+  def test_random_against_hash
+    rng = Random.new(42)
+    m = SortedMap[Int, Int].new
+    model = Hash[Int, Int].new
+    2000.times do |i|
+      k = rng.rand(300)
+      if rng.rand(3) == 0
+        m = m.delete(k)
+        model = model.delete(k)
+      else
+        m = m.put(k, i)
+        model = model.put(k, i)
+      end
+      sorted_map_test_check(m, model)
+    end
+  end
+
+  # Ascending and descending keys, then deleting them all, in each order.
+  def test_monotonic
+    [(0...200).to_a, (0...200).to_a.reverse].each do |order|
+      m = SortedMap[Int, Int].new
+      model = Hash[Int, Int].new
+      order.each do |k|
+        m = m.put(k, k)
+        model = model.put(k, k)
+        sorted_map_test_check(m, model)
+      end
+      order.each do |k|
+        m = m.delete(k)
+        model = model.delete(k)
+        sorted_map_test_check(m, model)
+      end
+      assert_true(m.empty?)
+    end
+  end
+
+  # Maps built from sorted pairs (`from`, `select`, `range`) of every size
+  # up to 70.
+  def test_built_from_sorted
+    (0..70).each do |n|
+      full = SortedMap.from((0...n).map { |k| -> [Int, Int] [k * 2, k] })
+      model = Hash[Int, Int].new
+      (0...n).each { |k| model = model.put(k * 2, k) }
+      sorted_map_test_check(full, model)
+      odd = full.select { |_, v| v.odd? }
+      sorted_map_test_check(odd, model.select { |_, v| v.odd? })
+      sorted_map_test_check(full.range(n / 2..), model.select { |k, _| k >= n / 2 })
+      sorted_map_test_check(odd.put(1, 1).delete(1), model.select { |_, v| v.odd? })
+    end
+  end
+
+  # Navigation agrees with a scan of the sorted keys.
+  def test_navigation_against_scan
+    rng = Random.new(7)
+    keys = (0...60).map { rng.rand(200) }.uniq.sort
+    m = SortedMap.from(keys.map { |k| -> [Int, Int] [k, k] })
+    (-1..201).each do |q|
+      assert_equal(keys.select { |k| k <= q }.last?, m.floor(q)&.first)
+      assert_equal(keys.select { |k| k < q }.last?, m.lower(q)&.first)
+      assert_equal(keys.find { |k| k >= q }, m.ceil(q)&.first)
+      assert_equal(keys.find { |k| k > q }, m.higher(q)&.first)
+    end
+  end
+end

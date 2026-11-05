@@ -1,0 +1,709 @@
+# SortedMap: an immutable map that keeps its keys in order.
+#
+# ```
+# m = SortedMap[String, Int].new.put("b", 2).put("a", 1).put("c", 3)
+# m.keys          # => ["a", "b", "c"]
+# m.first         # => ["a", 1]
+# m.ceil("bb")    # => ["c", 3]
+# m.delete("b")   # => SortedMap{"a" => 1, "c" => 3}
+# ```
+#
+# The keys are ordered by their `<=>`: `K` is `Comparable[K]`, and two
+# keys are the same key when `<=>` gives 0. The map is a persistent
+# red-black tree: an update returns a new map in O(log n), sharing all
+# but the path it changed with the receiver, which is left as it was.
+# Like `Hash`, a map is `Shareable` when its keys and values are, and
+# `SortedMap::Builder` is its mutable, task-local counterpart.
+data SortedMap[K <: Comparable[K], out V](root: SortedMap::Node[K, V]?, size: Int)
+  include Enumerable[[K, V]]
+  include SortedMap::Untyped
+
+  # What `==` sees of a map whatever its type arguments, which a run-time
+  # test cannot check.
+  module Untyped
+    # The number of pairs.
+    abstract def size -> Int
+    # The pairs, in key order.
+    abstract def untyped_pairs -> Array[Object]
+  end
+
+  # A node of the tree: the representation of a map, not an API. A
+  # `SortedMap` holds its root, black, or `nil` when it is empty; every
+  # path from the root down to a missing child goes through the same
+  # number of black nodes, and no red node has a red child.
+  data Node[K <: Comparable[K], out V](red: Bool, left: Node[K, V]?, key: K, value: V, right: Node[K, V]?)
+    # The node for `key` in `t`, or `nil`.
+    def self.find(t: Node[K, V]?, key: K) -> Node[K, V]?
+      n = t
+      while n
+        c = key <=> n.key
+        return n if c == 0
+        n = c < 0 ? n.left : n.right
+      end
+      nil
+    end
+
+    # The node with the greatest key at most `key` (`below`: less than
+    # `key`), or `nil`.
+    def self.floor(t: Node[K, V]?, key: K, below: Bool) -> Node[K, V]?
+      found: Node[K, V]? = nil
+      n = t
+      while n
+        c = key <=> n.key
+        if c > 0 || (c == 0 && !below)
+          found = n
+          return n if c == 0
+          n = n.right
+        else
+          n = n.left
+        end
+      end
+      found
+    end
+
+    # The node with the least key at least `key` (`above`: greater than
+    # `key`), or `nil`.
+    def self.ceil(t: Node[K, V]?, key: K, above: Bool) -> Node[K, V]?
+      found: Node[K, V]? = nil
+      n = t
+      while n
+        c = key <=> n.key
+        if c < 0 || (c == 0 && !above)
+          found = n
+          return n if c == 0
+          n = n.left
+        else
+          n = n.right
+        end
+      end
+      found
+    end
+
+    # The leftmost (`right`: rightmost) node of `t`, or `nil`.
+    def self.edge(t: Node[K, V]?, right: Bool) -> Node[K, V]?
+      n = t
+      while n
+        nxt = right ? n.right : n.left
+        return n if nxt.nil?
+        n = nxt
+      end
+      nil
+    end
+
+    # Calls the block with each node of `t`, in key order (`reverse`:
+    # the reverse order).
+    def self.each(t: Node[K, V]?, reverse: Bool, &: (Node[K, V]) -> Void) -> Void
+      stack = Array::Builder[Node[K, V]].new
+      n = t
+      loop do
+        while n
+          stack << n
+          n = reverse ? n.right : n.left
+        end
+        top = stack.pop
+        break if top.nil?
+        yield top
+        n = reverse ? top.left : top.right
+      end
+    end
+
+    # A red node.
+    def self.r(l: Node[K, V]?, k: K, v: V, r: Node[K, V]?) -> Node[K, V] = Node[K, V].new(true, l, k, v, r)
+    # A black node.
+    def self.b(l: Node[K, V]?, k: K, v: V, r: Node[K, V]?) -> Node[K, V] = Node[K, V].new(false, l, k, v, r)
+
+    # `t`, black.
+    def self.blacken(t: Node[K, V]?) -> Node[K, V]?
+      t && t.red ? b(t.left, t.key, t.value, t.right) : t
+    end
+
+    # The black node of `l`, `k`, `v` and `r`, unless one of `l` and `r`
+    # is red with a red child: then the red node that resolves it, with
+    # black children (Okasaki's balance, with Kahrs's case of two red
+    # children, which deletion needs).
+    def self.balance(l: Node[K, V]?, k: K, v: V, r: Node[K, V]?) -> Node[K, V]
+      if l && l.red
+        if r && r.red
+          return r(b(l.left, l.key, l.value, l.right), k, v, b(r.left, r.key, r.value, r.right))
+        end
+        ll = l.left
+        if ll && ll.red
+          return r(b(ll.left, ll.key, ll.value, ll.right), l.key, l.value, b(l.right, k, v, r))
+        end
+        lr = l.right
+        if lr && lr.red
+          return r(b(l.left, l.key, l.value, lr.left), lr.key, lr.value, b(lr.right, k, v, r))
+        end
+      end
+      if r && r.red
+        rr = r.right
+        if rr && rr.red
+          return r(b(l, k, v, r.left), r.key, r.value, b(rr.left, rr.key, rr.value, rr.right))
+        end
+        rl = r.left
+        if rl && rl.red
+          return r(b(l, k, v, rl.left), rl.key, rl.value, b(rl.right, r.key, r.value, r.right))
+        end
+      end
+      b(l, k, v, r)
+    end
+
+    # `t` with `key` mapped to `value`, before its root is made black. A
+    # key already there stays, with the new value.
+    def self.insert(t: Node[K, V]?, key: K, value: V) -> Node[K, V]
+      return r(nil, key, value, nil) if t.nil?
+      c = key <=> t.key
+      if c < 0
+        l = insert(t.left, key, value)
+        t.red ? r(l, t.key, t.value, t.right) : balance(l, t.key, t.value, t.right)
+      elsif c > 0
+        rt = insert(t.right, key, value)
+        t.red ? r(t.left, t.key, t.value, rt) : balance(t.left, t.key, t.value, rt)
+      else
+        Node[K, V].new(t.red, t.left, t.key, value, t.right)
+      end
+    end
+
+    # `t` without `key`, which it has, before its root is made black
+    # (Kahrs's deletion).
+    def self.delete(t: Node[K, V]?, key: K) -> Node[K, V]?
+      return nil if t.nil?
+      c = key <=> t.key
+      if c < 0
+        l = t.left
+        if l && !l.red
+          balance_left(delete(l, key), t.key, t.value, t.right)
+        else
+          r(delete(l, key), t.key, t.value, t.right)
+        end
+      elsif c > 0
+        rt = t.right
+        if rt && !rt.red
+          balance_right(t.left, t.key, t.value, delete(rt, key))
+        else
+          r(t.left, t.key, t.value, delete(rt, key))
+        end
+      else
+        join(t.left, t.right)
+      end
+    end
+
+    # The node of `l` (one black node short), `k`, `v` and `r`, with the
+    # black heights restored.
+    def self.balance_left(l: Node[K, V]?, k: K, v: V, r: Node[K, V]?) -> Node[K, V]
+      return r(b(l.left, l.key, l.value, l.right), k, v, r) if l && l.red
+      if r
+        return balance(l, k, v, r(r.left, r.key, r.value, r.right)) unless r.red
+        rl = r.left
+        if rl && !rl.red
+          return r(b(l, k, v, rl.left), rl.key, rl.value, balance(rl.right, r.key, r.value, redden(r.right)))
+        end
+      end
+      raise RuntimeError, "SortedMap: broken red-black tree"
+    end
+
+    # The node of `l`, `k`, `v` and `r` (one black node short), with the
+    # black heights restored.
+    def self.balance_right(l: Node[K, V]?, k: K, v: V, r: Node[K, V]?) -> Node[K, V]
+      return r(l, k, v, b(r.left, r.key, r.value, r.right)) if r && r.red
+      if l
+        return balance(r(l.left, l.key, l.value, l.right), k, v, r) unless l.red
+        lr = l.right
+        if lr && !lr.red
+          return r(balance(redden(l.left), l.key, l.value, lr.left), lr.key, lr.value, b(lr.right, k, v, r))
+        end
+      end
+      raise RuntimeError, "SortedMap: broken red-black tree"
+    end
+
+    # `t`, black, made red.
+    def self.redden(t: Node[K, V]?) -> Node[K, V]
+      return r(t.left, t.key, t.value, t.right) if t && !t.red
+      raise RuntimeError, "SortedMap: broken red-black tree"
+    end
+
+    # The nodes of `a` and then those of `b`, whose keys all come after
+    # `a`'s, in one tree of their black height.
+    def self.join(a: Node[K, V]?, b: Node[K, V]?) -> Node[K, V]?
+      return b if a.nil?
+      return a if b.nil?
+      if a.red && b.red
+        m = join(a.right, b.left)
+        if m && m.red
+          r(r(a.left, a.key, a.value, m.left), m.key, m.value, r(m.right, b.key, b.value, b.right))
+        else
+          r(a.left, a.key, a.value, r(m, b.key, b.value, b.right))
+        end
+      elsif !a.red && !b.red
+        m = join(a.right, b.left)
+        if m && m.red
+          r(b(a.left, a.key, a.value, m.left), m.key, m.value, b(m.right, b.key, b.value, b.right))
+        else
+          balance_left(a.left, a.key, a.value, b(m, b.key, b.value, b.right))
+        end
+      elsif b.red
+        r(join(a, b.left), b.key, b.value, b.right)
+      else
+        r(a.left, a.key, a.value, join(a.right, b))
+      end
+    end
+
+    # A tree of the pairs `keys[lo...hi]` and `values[lo...hi]`, whose
+    # keys are in strictly increasing order: balanced, black but for the
+    # nodes at `red_level`, the last level when it is not full.
+    def self.build(keys: Array[K], values: Array[V], lo: Int, hi: Int, level: Int, red_level: Int) -> Node[K, V]?
+      return nil if lo >= hi
+      mid = (lo + hi) / 2
+      l = build(keys, values, lo, mid, level + 1, red_level)
+      r = build(keys, values, mid + 1, hi, level + 1, red_level)
+      Node[K, V].new(level == red_level, l, keys[mid], values[mid], r)
+    end
+
+    # A tree of `keys` and `values`, the keys in strictly increasing
+    # order.
+    def self.from_sorted(keys: Array[K], values: Array[V]) -> Node[K, V]?
+      # The level of the deepest nodes when the last level is not full,
+      # else one past them (Java's `TreeMap.computeRedLevel`).
+      red_level = 0
+      m = keys.size - 1
+      while m >= 0
+        red_level += 1
+        m = m / 2 - 1
+      end
+      build(keys, values, 0, keys.size, 0, red_level)
+    end
+
+    # `t` with each value replaced by the block's result.
+    def self.map_values[W](t: Node[K, V]?, &blk: (K, V) -> W) -> Node[K, W]?
+      return nil if t.nil?
+      l = Node[K, V].map_values(t.left, &blk)
+      w = blk.call(t.key, t.value)
+      Node[K, W].new(t.red, l, t.key, w, Node[K, V].map_values(t.right, &blk))
+    end
+  end
+
+  # An empty map, as `SortedMap[String, Int].new`.
+  def initialize
+    @root = nil
+    @size = 0
+  end
+
+  # The map of `root`, a tree of `size` nodes that keeps the invariants
+  # of `Node`: the representation, for this file, not an API (nothing
+  # checks them).
+  def initialize(@root: Node[K, V]?, @size: Int); end
+
+  # The root of the tree, `nil` when the map is empty: the representation,
+  # for tests of its invariants, not an API.
+  def root -> Node[K, V]? = @root
+
+  # (`data`'s `with` would make a map of any root and size.)
+  private def with(*, root: Node[K, V]? = @root, size: Int = @size) -> SortedMap[K, V] = SortedMap[K, V].new(root, size)
+
+  # A map of `pairs`; of pairs with the same key, the last wins.
+  #
+  # ```
+  # SortedMap.from([[2, "b"], [1, "a"]])   # => SortedMap{1 => "a", 2 => "b"}
+  # ```
+  def self.from(pairs: Enumerable[[K, V]]) -> SortedMap[K, V]
+    m = SortedMap[K, V].new
+    pairs.each { |k, v| m = m.put(k, v) }
+    m
+  end
+
+  # Calls the block with a new `SortedMap::Builder` and returns what it
+  # holds afterwards.
+  #
+  # ```
+  # SortedMap[String, Int].build { |b| %w[yy x].each { |s| b[s] = s.size } }
+  # # => SortedMap{"x" => 1, "yy" => 2}
+  # ```
+  def self.build(&: (SortedMap::Builder[K, V]) -> Void) -> SortedMap[K, V]
+    b = SortedMap::Builder[K, V].new
+    yield b
+    b.to_sorted_map
+  end
+
+  # The value for `key`.
+  #
+  # Raises `KeyError` when there is none: `#[]?` returns `nil` and
+  # `#fetch` takes a default instead.
+  def [](key: K) -> V
+    n = Node.find(root, key)
+    raise KeyError, "key not found: #{key.inspect}" if n.nil?
+    n.value
+  end
+
+  # The value for `key`, or `nil` when there is none. A `nil` value looks
+  # the same: `#key?` tells them apart.
+  def []?(key: K) -> V?
+    n = Node.find(root, key)
+    n ? n.value : nil
+  end
+
+  # The value for `key`, or `default` when there is none.
+  def fetch[W >: V](key: K, default: W) -> W
+    n = Node.find(root, key)
+    n ? n.value : default
+  end
+
+  # The value for `key`, or the block's result, called with `key`, when
+  # there is none.
+  def fetch[W >: V](key: K, &: (K) -> W) -> W
+    n = Node.find(root, key)
+    n ? n.value : yield(key)
+  end
+
+  # Whether `key` is a key.
+  def key?(key: K) -> Bool = !Node.find(root, key).nil?
+  # Whether `key` is a key: the same as `#key?`.
+  def has_key?(key: K) -> Bool = key?(key)
+
+  # The number of pairs: the same as `#size`.
+  def length -> Int = size
+  # Whether there is no pair.
+  def empty? -> Bool = size == 0
+
+  # Calls the block with each `[key, value]` pair, in key order; a block
+  # with two parameters takes the pair apart.
+  def each(&: ([K, V]) -> Void) -> Void
+    Node.each(root, false) { |n| yield [n.key, n.value] }
+  end
+
+  # Calls the block with each pair, in the reverse order of the keys.
+  def reverse_each(&: ([K, V]) -> Void) -> Void
+    Node.each(root, true) { |n| yield [n.key, n.value] }
+  end
+
+  # Calls the block with each key and its value, in key order.
+  def each_pair(&: (K, V) -> Void) -> Void
+    Node.each(root, false) { |n| yield n.key, n.value }
+  end
+
+  # Calls the block with each key, in order.
+  def each_key(&: (K) -> Void) -> Void
+    Node.each(root, false) { |n| yield n.key }
+  end
+
+  # Calls the block with each value, in the order of the keys.
+  def each_value(&: (V) -> Void) -> Void
+    Node.each(root, false) { |n| yield n.value }
+  end
+
+  # The keys, in order.
+  def keys -> Array[K]
+    Array[K].build { |b| Node.each(root, false) { |n| b << n.key } }
+  end
+
+  # The values, in the order of the keys.
+  def values -> Array[V]
+    Array[V].build { |b| Node.each(root, false) { |n| b << n.value } }
+  end
+
+  # The pairs, in key order.
+  def to_a -> Array[[K, V]]
+    Array[[K, V]].build { |b| Node.each(root, false) { |n| b << [n.key, n.value] } }
+  end
+
+  # The pairs as a `Hash`, inserted in key order.
+  def to_h -> Hash[K, V]
+    Hash[K, V].build { |b| Node.each(root, false) { |n| b[n.key] = n.value } }
+  end
+
+  # The pair with the least key, or `nil` when the map is empty.
+  def first -> [K, V]?
+    n = Node.edge(root, false)
+    n ? [n.key, n.value] : nil
+  end
+
+  # The pair with the greatest key, or `nil` when the map is empty.
+  def last -> [K, V]?
+    n = Node.edge(root, true)
+    n ? [n.key, n.value] : nil
+  end
+
+  # The pair with the greatest key at most `key`, or `nil`.
+  #
+  # ```
+  # m = SortedMap.from([[1, "a"], [3, "c"]])
+  # m.floor(2)   # => [1, "a"]
+  # m.floor(3)   # => [3, "c"]
+  # m.floor(0)   # => nil
+  # ```
+  def floor(key: K) -> [K, V]?
+    n = Node.floor(root, key, false)
+    n ? [n.key, n.value] : nil
+  end
+
+  # The pair with the least key at least `key`, or `nil`.
+  def ceil(key: K) -> [K, V]?
+    n = Node.ceil(root, key, false)
+    n ? [n.key, n.value] : nil
+  end
+
+  # The pair with the greatest key less than `key`, or `nil`.
+  def lower(key: K) -> [K, V]?
+    n = Node.floor(root, key, true)
+    n ? [n.key, n.value] : nil
+  end
+
+  # The pair with the least key greater than `key`, or `nil`.
+  def higher(key: K) -> [K, V]?
+    n = Node.ceil(root, key, true)
+    n ? [n.key, n.value] : nil
+  end
+
+  # The map with `key` mapped to `value`. A key already there stays (the
+  # key the map holds, not `key`), with the new value.
+  def put[W >: V](key: K, value: W) -> SortedMap[K, W]
+    grows = Node.find(root, key).nil?
+    t = Node[K, W].blacken(Node[K, W].insert(root, key, value))
+    SortedMap[K, W].new(t, grows ? size + 1 : size)
+  end
+
+  # The map without `key`; the receiver when it has no such key.
+  def delete(key: K) -> SortedMap[K, V]
+    return self if Node.find(root, key).nil?
+    SortedMap[K, V].new(Node.blacken(Node.delete(root, key)), size - 1)
+  end
+
+  # The map with the pairs of `other` put in, in its order.
+  def merge[W >: V](other: SortedMap[K, W]) -> SortedMap[K, W]
+    m: SortedMap[K, W] = self
+    other.each_pair { |k, v| m = m.put(k, v) }
+    m
+  end
+
+  # The map with the pairs of `other` put in, as `#merge` without a block,
+  # but for a key already there, the block's result, called with the key,
+  # the old value and the value of `other`.
+  def merge[W >: V](other: SortedMap[K, W], &: (K, W, W) -> W) -> SortedMap[K, W]
+    m: SortedMap[K, W] = self
+    other.each_pair do |k, v|
+      n = Node.find(m.root, k)
+      m = m.put(k, n ? yield(k, n.value, v) : v)
+    end
+    m
+  end
+
+  # The map with `key` mapped to the block's result, called with the value
+  # for `key` or `nil` when there is none.
+  def update[W >: V](key: K, &: (V?) -> W) -> SortedMap[K, W]
+    put(key, yield(self[key]?))
+  end
+
+  # The pairs the block is truthy for.
+  def select(&: (K, V) -> Object) -> SortedMap[K, V]
+    ks = Array::Builder[K].new
+    vs = Array::Builder[V].new
+    Node.each(root, false) do |n|
+      if yield(n.key, n.value)
+        ks << n.key
+        vs << n.value
+      end
+    end
+    return self if ks.size == size
+    SortedMap[K, V].sorted(ks.to_a, vs.to_a)
+  end
+
+  # The pairs the block is truthy for: the same as `#select`.
+  def filter(&: (K, V) -> Object) -> SortedMap[K, V] = select { |k, v| yield(k, v) }
+
+  # The pairs the block is falsy for.
+  def reject(&: (K, V) -> Object) -> SortedMap[K, V] = select { |k, v| !yield(k, v) }
+
+  # The pairs whose keys are in `range`, whose ends may be open (`1..`,
+  # `..3`).
+  #
+  # ```
+  # m = SortedMap.from([[1, "a"], [2, "b"], [3, "c"]])
+  # m.range(2..)    # => SortedMap{2 => "b", 3 => "c"}
+  # m.range(1...3)  # => SortedMap{1 => "a", 2 => "b"}
+  # ```
+  def range(range: Range[K]) -> SortedMap[K, V]
+    lo = range.begin
+    hi = range.end
+    ks = Array::Builder[K].new
+    vs = Array::Builder[V].new
+    # The nodes whose keys are at least `lo` on the way down to it: the
+    # last is the first pair, and each one's successors that are not in
+    # its right subtree are those below it on the stack.
+    stack = Array::Builder[Node[K, V]].new
+    t = root
+    while t
+      if lo.nil? || (lo <=> t.key) <= 0
+        stack << t
+        t = t.left
+      else
+        t = t.right
+      end
+    end
+    loop do
+      top = stack.pop
+      break if top.nil?
+      if hi
+        c = top.key <=> hi
+        break if c > 0 || (c == 0 && range.exclude_end?)
+      end
+      ks << top.key
+      vs << top.value
+      t = top.right
+      while t
+        stack << t
+        t = t.left
+      end
+    end
+    return self if ks.size == size
+    SortedMap[K, V].sorted(ks.to_a, vs.to_a)
+  end
+
+  # The map with each value replaced by the block's result, called with
+  # the key and the value. The tree keeps its shape: O(n), not
+  # O(n log n).
+  def transform_values[W](&blk: (K, V) -> W) -> SortedMap[K, W]
+    SortedMap[K, W].new(Node[K, V].map_values(root, &blk), size)
+  end
+
+  # The map of `keys` and `values`, the keys in strictly increasing order,
+  # built in O(n).
+  def self.sorted(keys: Array[K], values: Array[V]) -> SortedMap[K, V]
+    SortedMap[K, V].new(Node[K, V].from_sorted(keys, values), keys.size)
+  end
+
+  # Whether `other` is a `SortedMap` with the same pairs, compared with
+  # `==`. Maps of the same pairs are equal whatever the shapes of their
+  # trees.
+  def ==(other: Object) -> Bool
+    return false unless other.is_a?(SortedMap::Untyped)
+    other.size == size && other.untyped_pairs == untyped_pairs
+  end
+
+  # The pairs, for `==`.
+  def untyped_pairs -> Array[Object] = to_a
+
+  # A hash code, the same for equal maps.
+  def hash -> Int = to_a.hash
+
+  # The pairs, as `SortedMap{1 => "a", 2 => "b"}`.
+  def inspect -> String
+    "SortedMap{" + to_a.map { |k, v| "#{k.inspect} => #{v.inspect}" }.join(", ") + "}"
+  end
+
+  # The same as `#inspect`.
+  def to_s -> String = inspect
+
+  # A mutable map with sorted keys, the counterpart of `SortedMap` as
+  # `Hash::Builder` is `Hash`'s: it is not `Shareable`, and `#to_sorted_map`
+  # hands its pairs over as a `SortedMap` without copying.
+  #
+  # ```
+  # b = SortedMap::Builder[Int, String].new
+  # b[2] = "b"
+  # b[1] = "a"
+  # b.to_sorted_map   # => SortedMap{1 => "a", 2 => "b"}
+  # ```
+  class Builder[K <: Comparable[K], V]
+    include Unshareable
+    include Enumerable[[K, V]]
+
+    var @map: SortedMap[K, V]
+
+    # An empty builder, as `SortedMap::Builder[String, Int].new`.
+    def initialize
+      @map = SortedMap[K, V].new
+    end
+
+    # The value for `key`. Raises `KeyError` when there is none: `#[]?`
+    # returns `nil` and `#fetch` takes a default instead.
+    def [](key: K) -> V = @map[key]
+    # The value for `key`, or `nil` when there is none.
+    def []?(key: K) -> V? = @map[key]?
+    # The value for `key`, or `default` when there is none. Nothing is
+    # stored.
+    def fetch(key: K, default: V) -> V = @map.fetch(key, default)
+
+    # Maps `key` to `value` and returns `value`. A key already there stays,
+    # with the new value.
+    def []=(key: K, value: V) -> V
+      @map = @map.put(key, value)
+      value
+    end
+
+    # Maps `key` to `value` and returns `value`: the same as `#[]=`.
+    def store(key: K, value: V) -> V
+      self[key] = value
+    end
+
+    # Removes `key` and returns its value, or `nil` when there was none.
+    def delete(key: K) -> V?
+      v = @map[key]?
+      @map = @map.delete(key)
+      v
+    end
+
+    # Whether `key` is a key.
+    def key?(key: K) -> Bool = @map.key?(key)
+    # The keys, in order.
+    def keys -> Array[K] = @map.keys
+    # The values, in the order of the keys.
+    def values -> Array[V] = @map.values
+    # The number of pairs.
+    def size -> Int = @map.size
+    # Whether there is no pair.
+    def empty? -> Bool = @map.empty?
+    # The pair with the least key, or `nil`.
+    def first -> [K, V]? = @map.first
+    # The pair with the greatest key, or `nil`.
+    def last -> [K, V]? = @map.last
+
+    # Removes every pair and returns the builder.
+    def clear -> Self
+      @map = SortedMap[K, V].new
+      self
+    end
+
+    # Stores the pairs of `other` and returns the builder.
+    def merge!(other: SortedMap[K, V]) -> Self
+      @map = @map.merge(other)
+      self
+    end
+
+    # Maps `key` to the block's result, called with the value for `key` or
+    # `nil` when there is none, and returns the builder.
+    def update(key: K, &: (V?) -> V) -> Self
+      @map = @map.put(key, yield(@map[key]?))
+      self
+    end
+
+    # Calls the block with each `[key, value]` pair, in key order.
+    def each(&: ([K, V]) -> Void) -> Void
+      @map.each { |pair| yield pair }
+    end
+
+    # Calls the block with each key and its value, in key order.
+    def each_pair(&: (K, V) -> Void) -> Void
+      @map.each_pair { |k, v| yield k, v }
+    end
+
+    # The pairs as a `SortedMap`, leaving the builder empty: O(1).
+    def to_sorted_map -> SortedMap[K, V]
+      m = @map
+      @map = SortedMap[K, V].new
+      m
+    end
+
+    # The same as `#to_sorted_map`.
+    def freeze -> SortedMap[K, V] = to_sorted_map
+
+    # The pairs as a `SortedMap`, keeping them in the builder. The tree is
+    # persistent, so this is O(1) too: later changes to the builder build
+    # new paths and leave the snapshot as it is.
+    def snapshot -> SortedMap[K, V] = @map
+
+    # The pairs, as `SortedMap::Builder{1 => "a"}`.
+    def inspect -> String = "SortedMap::Builder" + @map.inspect.delete_prefix("SortedMap")
+
+    # The same as `#inspect`.
+    def to_s -> String = inspect
+  end
+end

@@ -1,0 +1,15 @@
+# `SortedMap` (std/sorted_map.qz), loaded without `require`: an update
+# leaves the map it was made from as it was.
+words = %w[pear fig apple kiwi banana fig]
+counts = SortedMap[String, Int].build do |b|
+  words.each { |w| b.update(w) { |n| (n || 0) + 1 } }
+end
+p counts
+p counts.first, counts.last, counts.floor("grape"), counts.higher("kiwi")
+fewer = counts.delete("fig").put("cherry", 7)
+p fewer.keys
+p counts.keys
+p counts.range("b"..."l")
+p counts.select { |_, n| n > 1 }
+p counts.transform_values { |w, n| w.size * n }.values
+p counts == SortedMap.from(counts.to_a.reverse), counts == fewer
