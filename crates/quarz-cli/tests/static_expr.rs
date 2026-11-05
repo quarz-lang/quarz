@@ -221,8 +221,11 @@ data V = (n: Int, s: Array[String])
 enum E
   variant A
   variant B(o: Object)
+  variant C(n: Int)
 end
 class K
+  static def self.c -> E::C = E::C.new(1)
+  static def self.oc -> Object = E::C.new(2)
   static def self.w -> W = W.new(1)
   static def self.e -> E = E::A
   static def self.o -> Object = W.new(1)
@@ -234,12 +237,13 @@ end
     write(
         &d.0,
         "ok.qz",
-        "require_relative \"lib\"\nclass RQ\n  def where(&c: Quoted[(Int) -> Bool]) -> Meta::Expr = c.expr\nend\np static(K.v), static(K.ov)\np RQ.new.where { |x| static(K.v).n == x }\n",
+        "require_relative \"lib\"\nclass RQ\n  def where(&c: Quoted[(Int) -> Bool]) -> Meta::Expr = c.expr\nend\np static(K.v), static(K.ov)\np static(K.c), static(K.oc)\np RQ.new.where { |x| static(K.v).n == x }\n",
     );
     let (ok, out, err) = quarz(&d.0, &["run", "ok.qz"], &[]);
     assert!(ok, "{err}");
     assert!(
-        out.starts_with("V(n: 1, s: [\"a\"])\nV(n: 2, s: [])\n"),
+        // (A variant by its own fields.)
+        out.starts_with("V(n: 1, s: [\"a\"])\nV(n: 2, s: [])\nE::C(n: 1)\nE::C(n: 2)\n"),
         "{out}"
     );
     assert!(
@@ -254,8 +258,8 @@ end
     let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
     assert!(!ok);
     for expected in [
-        "bad.qz:2:3: error: `static(...)` gives a W, which cannot be baked into the program (`W` holds `@o: Object`, which is not Shareable, so a `W` cannot be baked)",
-        "bad.qz:3:3: error: `static(...)` gives a E, which cannot be baked into the program (`E::B` holds `@o: Object`, which is not Shareable, so a `E::B` cannot be baked)",
+        "bad.qz:2:3: error: `static(...)` gives a W, which cannot be baked into the program (`W` holds `@o: Object`, which is not Shareable, so its values cannot be baked)",
+        "bad.qz:3:3: error: `static(...)` gives a E, which cannot be baked into the program (`E::B` holds `@o: Object`, which is not Shareable, so its values cannot be baked)",
     ] {
         assert!(err.contains(expected), "missing {expected:?} in\n{err}");
     }
@@ -268,14 +272,14 @@ end
     let (ok, _, err) = quarz(&d.0, &["check", "gen.qz"], &[]);
     assert!(!ok);
     assert!(
-        err.contains("gen.qz:4:22: error: `w` has type W, whose values cannot be baked into a generated method (`W` holds `@o: Object`, which is not Shareable, so a `W` cannot be baked)"),
+        err.contains("gen.qz:4:22: error: `w` has type W, whose values cannot be baked into a generated method (`W` holds `@o: Object`, which is not Shareable, so its values cannot be baked)"),
         "{err}"
     );
     write(&d.0, "run.qz", "require_relative \"lib\"\np static(K.o)\n");
     let (ok, _, err) = quarz(&d.0, &["check", "run.qz"], &[]);
     assert!(!ok);
     assert!(
-        err.contains("run.qz:2:10: error: `static(...)` gives a value that cannot be baked into the program: a `W` holds a field that is not Shareable"),
+        err.contains("run.qz:2:10: error: `static(...)` gives a value that cannot be baked into the program: `W` holds `@o: Object`, which is not Shareable, so its values cannot be baked"),
         "{err}"
     );
 }
