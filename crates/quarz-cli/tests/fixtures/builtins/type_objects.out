@@ -31,3 +31,16 @@ false
 "a class: Post"
 "an int"
 "other"
+"posts"
+"models"
+"none"
+"none"
+true
+false
+false
+["posts", "models"]
+"cannot cast Type[Int] to Type[Model]"
+"models"
+"posts"
+"no"
+false

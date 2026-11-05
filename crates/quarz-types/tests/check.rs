@@ -2667,10 +2667,17 @@ fn new_only_where_the_class_is_written() {
 
 #[test]
 fn class_values_in_tests_and_patterns() {
-    // Only "a class" is testable at run time: not the class's arguments.
+    // A class value is testable for its class, not for the class's
+    // arguments: `Type[C]` for a `C` without type parameters.
+    ok("def g(y: Object) -> Bool = y.is_a?(Type[Int])\nmodule Named; end\ndef g2(y: Class) -> Bool = y.is_a?(Type[Named])");
+    ok("class M\n  def self.label -> String = \"m\"\nend\nclass N < M; end\ndef f(y: Object) -> String\n  if y.is_a?(Type[M])\n    y.label\n  elsif k = y.as?(Type[M])\n    k.label\n  else\n    y.as(Type[N]).label\n  end\nend");
     err(
-        "def g(y: Object) -> Bool = y.is_a?(Type[Int])",
-        "cannot check at run time that a value of type Object is a Type[Int]",
+        "def g(y: Object) -> Bool = y.is_a?(Type[Array[Int]])",
+        "cannot check at run time that a value of type Object is a Type[Array[Int]]",
+    );
+    err(
+        "class Box[T]; end\ndef g(y: Class) -> Type[Box[Int]] = y.as(Type[Box[Int]])",
+        "cannot check at run time that a value of type Type[Object] is a Type[Box[Int]]",
     );
     ok("def g(y: Object) -> Bool = y.is_a?(Class)\ndef g2(y: Object) -> Bool = y.is_a?(Type)\ndef g3(y: Object) -> Class? = y.as?(Type)\ndef h(y: Object) -> String = case y\n  in Type then y.name\n  else \"no\"\nend");
     // The bound's class methods come before `Type`'s own, as a class

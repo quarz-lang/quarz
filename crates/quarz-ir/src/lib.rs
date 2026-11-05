@@ -432,7 +432,11 @@ pub enum RtType {
     /// types (`Array[String]`: one, `Hash[K, V]`: two), for `as`/`is_a?`
     /// with type arguments.
     Elems(ClassId, Vec<RtType>),
+    /// A class value (`Type[Object]`).
     ClassObject,
+    /// A class value that is the class or a subclass of it, or includes
+    /// it (`Type[Model]`, for `as`/`is_a?`).
+    ClassOf(ClassId),
     Union(Vec<RtType>),
     /// An array of this many elements, of these types.
     Tuple(Vec<RtType>),
