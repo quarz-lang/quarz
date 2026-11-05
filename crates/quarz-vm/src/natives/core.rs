@@ -96,6 +96,11 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Meta::ClassDef#def_class_method", |i, r, a| {
         def_method(i, r, &a, true)
     });
+    native!(
+        m,
+        "Meta::ClassDef#def_initialize",
+        |i, r, a| def_initialize(i, r, &a)
+    );
     native!(m, "Meta::ClassDef#def_field", |i, r, a| {
         let class = reflected_class(i, r)?;
         let Value::Symbol(name) = a.arg(0) else {
@@ -359,6 +364,54 @@ fn def_method(interp: &Interp, recv: &Value, a: &Args, singleton: bool) -> EvalR
     };
     let symbol_name = *symbol_name;
     let name = interp.symbol_name(symbol_name).to_string();
+    let request = gen_request(interp, a, what, class, name, 1, singleton, false)?;
+    let keyword_form = request.keywords.is_some();
+    let at = reflect_of(interp)?
+        .generate(interp, request)
+        .map_err(|m| interp.err_runtime(&m))?;
+    // (The keyword form gives no handle: its signature is known only
+    // when the statement runs, docs/14 §5.)
+    if keyword_form {
+        return Ok(Value::Nil);
+    }
+    // The method's handle, resolved to the method when the statement has
+    // run (by its generation's position).
+    method_handle(interp, class, symbol_name, 0, singleton, -(at as i64) - 1)
+}
+
+/// `def_initialize(params?, *, keywords:, visibility:) { }` (docs/14 §5):
+/// an `initialize` overload whose body is the block. No handle.
+fn def_initialize(interp: &Interp, recv: &Value, a: &Args) -> EvalResult {
+    let class = reflected_class(interp, recv)?;
+    let request = gen_request(
+        interp,
+        a,
+        "def_initialize",
+        class,
+        "initialize".to_string(),
+        0,
+        false,
+        true,
+    )?;
+    reflect_of(interp)?
+        .generate(interp, request)
+        .map_err(|m| interp.err_runtime(&m))?;
+    Ok(Value::Nil)
+}
+
+/// What a generating call asks for: its parameter names (the positional
+/// arguments from `first`), keywords, visibility and block.
+#[allow(clippy::too_many_arguments)]
+fn gen_request(
+    interp: &Interp,
+    a: &Args,
+    what: &str,
+    class: ClassId,
+    name: String,
+    first: usize,
+    singleton: bool,
+    initialize: bool,
+) -> Result<crate::reflect::GenRequest, Flow> {
     let symbol = |v: &Value| -> Result<String, Flow> {
         match v {
             Value::Symbol(s) => Ok(interp.symbol_name(*s).to_string()),
@@ -402,16 +455,17 @@ fn def_method(interp: &Interp, recv: &Value, a: &Args, singleton: bool) -> EvalR
             // body still takes the hash: it has the other form.)
             if out.is_empty() {
                 return Err(interp.err_arg(&format!(
-                    "keywords: is empty: a method of no parameters is `{what}(name) {{ ... }}`"
+                    "keywords: is empty: a method of no parameters is `{what}{}{{ ... }}`",
+                    if initialize { " " } else { "(name) " }
                 )));
             }
             Some(out)
         }
         Some(_) => return Err(interp.err_type("keywords: takes an array of `Meta::Keyword`")),
     };
-    let params: Vec<String> = match a.pos.len() {
-        1 => Vec::new(),
-        2 => match a.arg(1) {
+    let params: Vec<String> = match a.pos.len().checked_sub(first) {
+        Some(0) => Vec::new(),
+        Some(1) => match a.arg(first) {
             Value::Array(items) => items.iter().map(|v| symbol(&v)).collect::<Result<_, _>>()?,
             v => vec![symbol(v)?],
         },
@@ -449,7 +503,7 @@ fn def_method(interp: &Interp, recv: &Value, a: &Args, singleton: bool) -> EvalR
             captures.push((depth as u32, slot, frame.get(depth as u32, slot)));
         }
     }
-    let request = crate::reflect::GenRequest {
+    Ok(crate::reflect::GenRequest {
         class,
         name,
         params,
@@ -458,19 +512,8 @@ fn def_method(interp: &Interp, recv: &Value, a: &Args, singleton: bool) -> EvalR
         func: *func,
         captures,
         keywords,
-    };
-    let keyword_form = request.keywords.is_some();
-    let at = reflect_of(interp)?
-        .generate(interp, request)
-        .map_err(|m| interp.err_runtime(&m))?;
-    // (The keyword form gives no handle: its signature is known only
-    // when the statement runs, docs/14 §5.)
-    if keyword_form {
-        return Ok(Value::Nil);
-    }
-    // The method's handle, resolved to the method when the statement has
-    // run (by its generation's position).
-    method_handle(interp, class, symbol_name, 0, singleton, -(at as i64) - 1)
+        initialize,
+    })
 }
 
 /// `Meta::ClassDef#method_ref`/`#class_method_ref` (docs/14 §5): resolved

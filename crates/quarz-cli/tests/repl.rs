@@ -755,3 +755,65 @@ fn keyword_procedures_across_inputs() {
     );
     assert_eq!(out[7], "=> 7");
 }
+
+#[test]
+fn generated_initializes_in_the_session() {
+    // docs/14 §5: an input's `def_initialize` runs when it is entered; a
+    // later input's `new` sees the overloads.
+    let (out, printed) = values(&[
+        "class Base",
+        "  @n: Int",
+        "  def initialize(@n: Int); end",
+        "  def n -> Int = @n",
+        "  static def self.ctor -> Void",
+        "    def_initialize(:s) { |s: String| @n = s.size }",
+        "  end",
+        "end",
+        "class C < Base",
+        "  ctor",
+        "end",
+        "C.new(\"abc\").n",
+        "C.new(1)",
+    ]);
+    let mut expected = vec!["..."; 7];
+    expected.extend(["", "...", "...", "", "=> 3"]);
+    assert_eq!(&out[..12], &expected[..]);
+    assert!(
+        out[12]
+            .contains("argument `s` of initialize(s: String) -> Void expects String but found Int"),
+        "{out:?}"
+    );
+    assert_eq!(printed, "");
+}
+
+#[test]
+fn a_failed_inputs_generated_news_are_rolled_back() {
+    // A failed input's generated `Self.new` is forgotten with it: a later
+    // input's `def_initialize` does not check its class against it.
+    let (out, _) = values(&[
+        "class Base",
+        "  @n: Int",
+        "  def initialize(@n: Int); end",
+        "  def n -> Int = @n",
+        "  static def self.dupper -> Void",
+        "    def_method(:dup2) do -> Self",
+        "      Self.new(n + 1)",
+        "    end",
+        "  end",
+        "  static def self.ctor -> Void",
+        "    def_initialize(:s) { |s: String| @n = s.size }",
+        "  end",
+        "end",
+        "class S < Base",
+        "  def a -> Int = 1",
+        "  def b -> Int = 2",
+        "  dupper",
+        "end; undefined_thing_xyz",
+        "class T < Base",
+        "  ctor",
+        "end",
+        "T.new(\"ab\").n",
+    ]);
+    assert!(out[17].starts_with("error: "), "{out:?}");
+    assert_eq!(&out[18..], &["...", "...", "", "=> 2"], "{out:?}");
+}

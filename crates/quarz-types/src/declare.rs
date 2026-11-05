@@ -5285,7 +5285,13 @@ pub fn method_name_rule(
         matches!(name, "initialize" | "deinitialize")
     };
     if special {
-        return Some(format!("`{name}` cannot be generated"));
+        // (`def_initialize` makes `initialize` overloads, docs/14 §5.)
+        let hint = if name == "initialize" {
+            ": `def_initialize` generates its overloads"
+        } else {
+            ""
+        };
+        return Some(format!("`{name}` cannot be generated{hint}"));
     }
     if !singleton {
         if let Some(m) = sealed_name(name) {

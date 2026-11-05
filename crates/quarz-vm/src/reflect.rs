@@ -101,6 +101,9 @@ pub struct GenRequest {
     /// `keywords:` (`Meta::Keyword` values): the method's keyword
     /// parameters, the block taking the hash of those a call passed.
     pub keywords: Option<Vec<KeywordRequest>>,
+    /// `def_initialize`: an `initialize` overload (`name` is
+    /// `initialize`).
+    pub initialize: bool,
 }
 
 /// A `Meta::Keyword`: name, type (a class), required, nullable.

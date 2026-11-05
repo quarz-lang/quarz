@@ -229,6 +229,7 @@ pub fn compile_time_only(key: &str) -> bool {
             | "Type#includes?"
             | "Meta::ClassDef#def_method"
             | "Meta::ClassDef#def_class_method"
+            | "Meta::ClassDef#def_initialize"
             | "Meta::ClassDef#def_field"
             | "Meta::ClassDef#field_ref"
             | "Meta::ClassDef#method_ref"
