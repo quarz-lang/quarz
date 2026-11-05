@@ -2547,3 +2547,84 @@ end
         assert!(err.contains(expected), "missing {expected:?} in\n{err}");
     }
 }
+
+/// Whether a statement's type arguments hold does not depend on the
+/// order of the statements: a `static def` the program also calls by its
+/// name elsewhere takes only carried classes, whichever statement comes
+/// first. A module's `static def` calling itself on its own `self` keeps
+/// the module's `T`.
+#[test]
+fn statement_type_args_whatever_the_order() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r##"class Box[X]
+  def initialize; end
+end
+class Base
+  static def self.useit -> Void
+    holder[String](:s) if 1 > 2
+  end
+  static def self.holder[T](name: Symbol) -> Void
+    def_method(name) do -> Box[T]
+      Box[T].new
+    end
+  end
+end
+module Macros[T]
+  static def keep(n: Int) -> Void
+    def_method("m#{n}".to_sym) do -> T?
+      nil
+    end
+    keep(n - 1) if n > 0
+  end
+end
+"##,
+    );
+    let mut errs = Vec::new();
+    for order in [
+        "class Post < Base\n  useit\nend\nclass User < Base\n  holder[Int](:ints)\nend\n",
+        "class User < Base\n  holder[Int](:ints)\nend\nclass Post < Base\n  useit\nend\n",
+    ] {
+        let app = write(
+            &d.0,
+            "app.qz",
+            &format!("require_relative \"lib\"\n{order}"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        assert!(!ok, "{order}");
+        assert!(
+            err.contains("`def_method(:ints)`: the block's type mentions `T`, a type parameter the generated method cannot carry"),
+            "{err}"
+        );
+        errs.push(err.lines().filter(|l| l.contains("error")).count());
+    }
+    assert_eq!(errs[0], errs[1]);
+    // A statement calling an alias: the original's name is not scanned,
+    // so its type arguments do not hold.
+    write(
+        &d.0,
+        "alias_lib.qz",
+        "module Again[T]\n  static def keep[U](name: Symbol, v: U) -> Void\n    def_method(name) do -> U\n      v\n    end\n    keep[String](:s, \"str\") if name == :ints\n  end\n  alias again keep\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "alias.qz",
+        "require_relative \"alias_lib\"\nclass User\n  extend Again[User]\n  again[Int](:ints, 1)\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("`def_method(:ints)`: the block's type mentions `U`, a type parameter the generated method cannot carry"),
+        "{err}"
+    );
+    let app = write(
+        &d.0,
+        "mod.qz",
+        "require_relative \"lib\"\nclass Note\n  extend Macros[Note]\n  keep 1\nend\nb: Note? = Note.new.m0\np b, Note.new.m1\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "nil\nnil\n");
+}

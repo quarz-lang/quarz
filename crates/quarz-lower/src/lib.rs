@@ -13,6 +13,7 @@ use quarz_types::{Checked, Output, World};
 
 mod borrow;
 mod capture;
+pub use capture::call_sites;
 mod cha;
 mod copyprop;
 mod devirt;

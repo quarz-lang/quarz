@@ -400,7 +400,7 @@ impl Runner {
                 .find_map(|t| free_param(t, &own))
             {
                 return Err(fail(format!(
-                    "{at}: the block's type mentions `{}`, a type parameter the generated method cannot carry (the `static def` the statement calls has the statement's type arguments when nothing else calls it; a generic method, the class its `Type[T]` parameter holds, when no other parameter mentions `T`, no bound relates `T` to another type parameter, `T` has no lower bound, the parameter is never assigned, and the call is in its body)",
+                    "{at}: the block's type mentions `{}`, a type parameter the generated method cannot carry (the `static def` the statement calls has the statement's type arguments unless the program calls it elsewhere by its name; a generic method, the class its `Type[T]` parameter holds, when no other parameter mentions `T`, no bound relates `T` to another type parameter, `T` has no lower bound, the parameter is never assigned, and the call is in its body)",
                     world.type_name(&Type::Param(p))
                 )));
             }
@@ -1738,48 +1738,169 @@ fn bake(interp: &Interp, v: &Value) -> Result<Baked, String> {
     })
 }
 
-/// The type arguments of a statement's call (docs/14 §5), which hold in
-/// every invocation of its `static def` only when nothing but statements'
-/// own calls calls it: a call of it in Quarz code checked so far (its own
-/// body, another method, a statement's arguments; what the statement's
-/// run reaches is checked before it runs) may pass other classes, so its
-/// signatures and handles then take only what the `Type[T]` parameters
-/// carry. (A call of a method it overrides counts: it may dispatch to it.)
+/// The type arguments of a statement's call (docs/14 §5) that hold in
+/// every invocation of its `static def`: all of them when no code of the
+/// program names it as called (a call, `x.:m`, `&:m`, a compound
+/// assignment's reader, a `super` in a method of its name, an alias of
+/// it) but statements' own calls; the receiver's (a module's `T`, which
+/// `extend` fixes) when the only others are calls of it on its own
+/// `self` in its own body; none otherwise, the `Type[T]` parameters then
+/// carrying what they hold. By name over the whole program, so that the
+/// result does not depend on what was checked first (more refusals than
+/// following what the run reaches, never fewer). A name the runtime
+/// calls everywhere, or an operator's, counts as called.
 fn statement_type_args(
     host: &dyn StaticHost,
     stmt: &StaticStmt,
 ) -> rustc_hash::FxHashMap<TypeParamId, Type> {
+    use quarz_types::check::CallTarget;
     let out = host.output();
     let world = host.world();
-    let Some(quarz_types::check::CallTarget::Method { method }) = out.calls.get(&stmt.expr.id)
-    else {
+    let Some(CallTarget::Method { method }) = out.calls.get(&stmt.expr.id) else {
         return Default::default();
     };
-    let callee = world.method(*method);
-    let same = |m: MethodId| {
-        m == *method || {
-            let m = world.method(m);
-            m.name == callee.name
-                && m.singleton == callee.singleton
-                && world.class_is_a(callee.owner, m.owner)
-        }
-    };
-    let tops: rustc_hash::FxHashSet<quarz_syntax::ast::NodeId> =
-        world.static_stmts.iter().map(|s| s.expr.id).collect();
-    let in_code = out.calls.iter().any(|(id, t)| {
-        !tops.contains(id)
-            && matches!(t, quarz_types::check::CallTarget::Method { method } if same(*method))
-    }) || out
-        .union_calls
-        .iter()
-        .any(|(id, ts)| !tops.contains(id) && ts.iter().any(|(_, m)| same(*m)));
-    if in_code {
-        return Default::default();
-    }
-    out.type_args
+    let callee_id = *method;
+    let callee = world.method(callee_id);
+    let all: rustc_hash::FxHashMap<TypeParamId, Type> = out
+        .type_args
         .get(&stmt.expr.id)
         .map(|args| args.iter().cloned().collect())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if all.is_empty() {
+        return all;
+    }
+    let name = callee.name.as_str();
+    let plain = name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphabetic() || c == '_');
+    if !plain || quarz_ir::shake::RUNTIME_NAMES.contains(&name) {
+        return Default::default();
+    }
+    // (An alias, or a method that has one: its other names are calls of
+    // it the scan by name does not see.)
+    if callee.alias_of.is_some()
+        || world
+            .methods
+            .iter()
+            .any(|m| m.alias_of.is_some_and(|a| world.method(a).name == name) && m.name != name)
+    {
+        return Default::default();
+    }
+    let own: Vec<TypeParamId> = callee.type_params.iter().map(|p| p.id).collect();
+    let keep = |kind: Called| match kind {
+        Called::No => all.clone(),
+        Called::OnSelf => all
+            .iter()
+            .filter(|(p, _)| !own.contains(p))
+            .map(|(p, t)| (*p, t.clone()))
+            .collect(),
+        Called::Yes => Default::default(),
+    };
+    // (The scan, once per callee and program: what it reads only grows
+    // with declarations, which the key counts.)
+    let key = (
+        callee_id,
+        world.methods.len(),
+        world.static_stmts.len(),
+        world.consts.len(),
+        world.classes.len(),
+    );
+    if let Some(kind) = CALLED.with(|c| c.borrow().get(&key).copied()) {
+        return keep(kind);
+    }
+    let kind = called_by_name(host, callee_id);
+    CALLED.with(|c| c.borrow_mut().insert(key, kind));
+    keep(kind)
+}
+
+/// Whether the program names a `static def` as called (`statement_type_args`).
+#[derive(Clone, Copy)]
+enum Called {
+    No,
+    OnSelf,
+    Yes,
+}
+
+type CalledKey = (MethodId, usize, usize, usize, usize);
+
+thread_local! {
+    static CALLED: std::cell::RefCell<rustc_hash::FxHashMap<CalledKey, Called>> =
+        Default::default();
+}
+
+fn called_by_name(host: &dyn StaticHost, callee_id: MethodId) -> Called {
+    let out = host.output();
+    let world = host.world();
+    let callee = world.method(callee_id);
+    let name = callee.name.as_str();
+    let tops: rustc_hash::FxHashSet<quarz_syntax::ast::NodeId> =
+        world.static_stmts.iter().map(|s| s.expr.id).collect();
+    let mut on_self = false;
+    // Whether `exprs` name it otherwise than allowed (`own`: the callee's
+    // own body, where a call on `self` is allowed).
+    let mut named = |exprs: &[quarz_syntax::ast::Expr],
+                     extra: &[&quarz_syntax::ast::Expr],
+                     own: bool,
+                     method_name: Option<&str>|
+     -> bool {
+        let (sites, supers) = quarz_lower::call_sites(exprs, extra, out, world);
+        if supers && method_name == Some(name) && !own {
+            return true;
+        }
+        for (id, self_call, n) in sites {
+            if n != name || tops.contains(&id) {
+                continue;
+            }
+            if own && self_call {
+                on_self = true;
+            } else {
+                return true;
+            }
+        }
+        false
+    };
+    for m in &world.methods {
+        let Some(def) = m.body.clone() else {
+            continue;
+        };
+        let body: &[quarz_syntax::ast::Expr] = def.body.as_deref().unwrap_or(&[]);
+        let defaults: Vec<&quarz_syntax::ast::Expr> = def
+            .params
+            .list
+            .iter()
+            .filter_map(|p| p.default.as_ref())
+            .collect();
+        if named(body, &defaults, m.id == callee_id, Some(m.name.as_str())) {
+            return Called::Yes;
+        }
+    }
+    for st in &world.static_stmts {
+        if named(std::slice::from_ref(&*st.expr), &[], false, None) {
+            return Called::Yes;
+        }
+    }
+    for c in &world.consts {
+        if let Some(v) = &c.value {
+            if named(std::slice::from_ref(&**v), &[], false, None) {
+                return Called::Yes;
+            }
+        }
+    }
+    for k in &world.classes {
+        for f in &k.fields {
+            if let Some(v) = &f.default {
+                if named(std::slice::from_ref(&**v), &[], false, None) {
+                    return Called::Yes;
+                }
+            }
+        }
+    }
+    if on_self {
+        Called::OnSelf
+    } else {
+        Called::No
+    }
 }
 
 /// A type parameter `t` mentions that is not one of `own`.
