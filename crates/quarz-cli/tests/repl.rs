@@ -817,3 +817,21 @@ fn a_failed_inputs_generated_news_are_rolled_back() {
     assert!(out[17].starts_with("error: "), "{out:?}");
     assert_eq!(&out[18..], &["...", "...", "", "=> 2"], "{out:?}");
 }
+
+#[test]
+fn quoted_sites_differ_across_inputs() {
+    // docs/14 §6: each input's sites are numbered after the previous
+    // inputs', so no two sites of a session share a number.
+    let (out, _) = values(&[
+        "def site(&q: Quoted[shareable (Int) -> Bool]) -> Int = q.site",
+        "a = site { |x| x > 0 }",
+        "b = site { |x| x > 0 }",
+        "def again -> Int = site { |x| x > 1 }",
+        "[a == b, a == again, again == again, [a, b].include?(site { |x| x > 2 })]",
+    ]);
+    assert_eq!(
+        out.last().unwrap(),
+        "=> [false, false, true, false]",
+        "{out:?}"
+    );
+}
