@@ -523,6 +523,14 @@ fn method_ref(interp: &Interp, recv: &Value, a: &Args, singleton: bool) -> EvalR
     let Value::Symbol(name) = a.arg(0) else {
         return Err(interp.err_type("a method handle takes the method's name as a symbol"));
     };
+    // `initialize` runs only from `new` and from `super` in an
+    // `initialize` (docs/01 §3): bound to a made object, it would assign
+    // its immutable fields again.
+    if !singleton && &*interp.symbol_name(*name) == "initialize" {
+        return Err(interp.err_arg(
+            "`initialize` has no handle: it runs only from `new` and from `super` in an `initialize`",
+        ));
+    }
     let Some(Value::Int(site)) = a.kw(interp, quarz_ir::FIELD_REF_SITE) else {
         return Err(interp.err_runtime("internal: a method handle without its call"));
     };

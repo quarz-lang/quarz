@@ -2186,3 +2186,26 @@ fn a_later_def_initialize_is_checked_against_generated_news() {
         "{err}"
     );
 }
+
+/// `initialize` has no method handle (docs/14 §5): bound to a made
+/// object, it would assign its immutable fields again.
+#[test]
+fn initialize_has_no_method_handle() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Base\n  @n: Int\n  def initialize(@n: Int); end\n  def n -> Int = @n\n  static def self.ctor -> Void\n    r = method_ref[(Int) -> Void](:initialize)\n    def_method(:re) do\n      r.bind(self).call(99)\n    end\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass C < Base\n  ctor\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("app.qz:3:3: error: `ctor` raised ArgumentError: `initialize` has no handle: it runs only from `new` and from `super` in an `initialize`"),
+        "{err}"
+    );
+}
