@@ -78,3 +78,22 @@ class LoggedMore < Logged
 end
 LoggedMore.new(1)
 LoggedMore.build
+
+# A class that inherits its `initialize` takes its superclass's alone:
+# those the superclass's hide stay hidden (`Leaf.new` is `Mid`'s, not
+# ambiguous with `Root`'s `initialize()`).
+class Root
+  @n: Int
+  def initialize
+    @n = 0
+  end
+  def n -> Int = @n
+end
+class Mid < Root
+  def initialize(*, k: Int = 1)
+    @n = k
+  end
+end
+class Leaf < Mid
+end
+p Mid.new.n, Leaf.new.n, Leaf.new(k: 3).n

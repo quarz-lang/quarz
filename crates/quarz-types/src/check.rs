@@ -10528,12 +10528,12 @@ impl Checker {
                 !m.singleton && self.constructs(cid, m)
             })
             .collect();
-        // The class's own `initialize` hides its ancestors' (docs/01 §9).
-        if cands
-            .iter()
-            .any(|(m, _)| self.world.method(*m).owner == cid)
-        {
-            cands.retain(|(m, _)| self.world.method(*m).owner == cid);
+        // The class's own `initialize` hides its ancestors' (docs/01 §9):
+        // the nearest that has one (in lookup order), so a class that
+        // inherits them takes its superclass's alone, not those the
+        // superclass's hide in turn.
+        if let Some(nearest) = cands.first().map(|(m, _)| self.world.method(*m).owner) {
+            cands.retain(|(m, _)| self.world.method(*m).owner == nearest);
         }
         if cands.is_empty() {
             if !call.args.is_empty() || call.block.is_some() {
