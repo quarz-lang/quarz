@@ -16,6 +16,9 @@ use quarz_types::{Output, VarRef, World};
 #[derive(Clone, Copy, Debug)]
 pub enum Site {
     Var(Span),
+    /// A variable assigned or bound (an assignment's target, a pattern's
+    /// binding, a declaration, a rescue clause's variable).
+    Write(Span),
     ZSuper,
     /// A use of the function's `self`: `self`, a field, `super`, a call on
     /// the implicit receiver that passes it.
@@ -83,7 +86,7 @@ pub fn captured_slots(
             return;
         }
         match site {
-            Site::Var(span) => {
+            Site::Var(span) | Site::Write(span) => {
                 if let Some(VarRef { depth, slot }) = out.var_refs.get(&span) {
                     if *depth == nest.actual {
                         captured.insert(*slot);
@@ -111,6 +114,41 @@ pub fn captured_slots(
         walk_expr(e, Nest::TOP, &mut cx);
     }
     captured
+}
+
+/// Whether the function whose body is `body` (with `extra`, its
+/// parameter defaults) assigns its variable `slot` anywhere, in a block
+/// of it included.
+pub fn assigns_slot(
+    body: &[Expr],
+    extra: &[&Expr],
+    out: &Output,
+    world: &World,
+    slot: u32,
+) -> bool {
+    let mut found = false;
+    let mut visit = |site: Site, nest: Nest| {
+        if let Site::Write(span) = site {
+            if out.var_refs.get(&span)
+                == Some(&VarRef {
+                    depth: nest.actual,
+                    slot,
+                })
+            {
+                found = true;
+            }
+        }
+    };
+    let mut cx = Cx {
+        out,
+        world,
+        visit: &mut visit,
+        real_blocks: 0,
+    };
+    for e in body.iter().chain(extra.iter().copied()) {
+        walk_expr(e, Nest::TOP, &mut cx);
+    }
+    found
 }
 
 pub fn walk_body(body: &[Expr], nest: Nest, cx: &mut Cx) {
@@ -153,7 +191,7 @@ fn walk_block(block: &Block, nest: Nest, cx: &mut Cx, inlined: bool) {
 
 fn walk_lvalue(lv: &LValue, nest: Nest, cx: &mut Cx) {
     match lv {
-        LValue::Local { span, .. } => (cx.visit)(Site::Var(*span), nest),
+        LValue::Local { span, .. } => (cx.visit)(Site::Write(*span), nest),
         LValue::IVar(_) | LValue::Const(_) => {}
         LValue::Attr { recv, .. } => walk_expr(recv, nest, cx),
         LValue::Index { recv, args } => {
@@ -176,10 +214,10 @@ fn walk_multi(targets: &[MultiTarget], nest: Nest, cx: &mut Cx) {
 pub fn walk_pattern(pat: &Pattern, nest: Nest, cx: &mut Cx) {
     match &pat.kind {
         PatternKind::Value(e) | PatternKind::Pin(e) => walk_expr(e, nest, cx),
-        PatternKind::Bind(_) => (cx.visit)(Site::Var(pat.span), nest),
+        PatternKind::Bind(_) => (cx.visit)(Site::Write(pat.span), nest),
         PatternKind::Capture(inner, _) => {
             walk_pattern(inner, nest, cx);
-            (cx.visit)(Site::Var(pat.span), nest);
+            (cx.visit)(Site::Write(pat.span), nest);
         }
         PatternKind::Alt(alts) => {
             for a in alts {
@@ -200,10 +238,10 @@ pub fn walk_pattern(pat: &Pattern, nest: Nest, cx: &mut Cx) {
                 walk_pattern(p, nest, cx);
             }
             if pre_rest.is_some() {
-                (cx.visit)(Site::Var(pat.span), nest);
+                (cx.visit)(Site::Write(pat.span), nest);
             }
             if post_rest.is_some() {
-                (cx.visit)(Site::Var(Span::empty(pat.span.end as usize)), nest);
+                (cx.visit)(Site::Write(Span::empty(pat.span.end as usize)), nest);
             }
         }
         PatternKind::Range { lo, hi, .. } => {
@@ -222,7 +260,7 @@ fn walk_array_pattern(ap: &ArrayPattern, span: Span, nest: Nest, cx: &mut Cx) {
         walk_pattern(p, nest, cx);
     }
     if let Some(Some(_)) = &ap.rest {
-        (cx.visit)(Site::Var(span), nest);
+        (cx.visit)(Site::Write(span), nest);
     }
 }
 
@@ -230,11 +268,11 @@ fn walk_hash_pattern(hp: &HashPattern, span: Span, nest: Nest, cx: &mut Cx) {
     for pair in &hp.pairs {
         match &pair.pattern {
             Some(p) => walk_pattern(p, nest, cx),
-            None => (cx.visit)(Site::Var(pair.span), nest),
+            None => (cx.visit)(Site::Write(pair.span), nest),
         }
     }
     if let Some(HashPatternRest::Bind(_)) = &hp.rest {
-        (cx.visit)(Site::Var(span), nest);
+        (cx.visit)(Site::Write(span), nest);
     }
 }
 
@@ -300,33 +338,21 @@ pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
         }
         Lambda(block) => walk_block(block, nest, cx, false),
         Local(_) => (cx.visit)(Site::Var(e.span), nest),
-        Call(call) => {
-            if let Some(r) = &call.recv {
-                walk_expr(r, nest, cx);
-            } else if cx.out.outer_self_calls.contains(&e.id) {
-                // Reads an enclosing function's `self` from its hidden slot.
-                (cx.visit)(Site::Var(e.span), nest);
-                if !matches!(
-                    cx.out.calls.get(&e.id),
-                    Some(quarz_types::CallTarget::Method { method }) if cx.world.takes_no_self(*method)
-                ) {
-                    (cx.visit)(Site::SelfUse, nest);
+        Call(call) if cx.out.bang_assign.contains(&e.id) => {
+            // `x.f!` (and `x.f!.g!`) assigns the chain's root variable.
+            let mut root: &Expr = e;
+            while let Call(c) = &root.kind {
+                match &c.recv {
+                    Some(r) if cx.out.bang_assign.contains(&root.id) => root = r,
+                    _ => break,
                 }
-            } else if !matches!(
-                cx.out.calls.get(&e.id),
-                Some(quarz_types::CallTarget::Method { method }) if cx.world.takes_no_self(*method)
-            ) {
-                (cx.visit)(Site::SelfUse, nest);
             }
-            walk_args(&call.args, nest, cx);
-            if let Some(b) = &call.block {
-                // `xs.map! { }` passes a real block (see `FnBuilder::call`).
-                let inlined = !cx.out.bang_assign.contains(&e.id)
-                    && (crate::iter::shape(e, call, cx.out, cx.world).is_some()
-                        || crate::iter::exec_shape(e, call, cx.out, cx.world).is_some());
-                walk_block(b, nest, cx, inlined);
+            if let Local(_) = root.kind {
+                (cx.visit)(Site::Write(root.span), nest);
             }
+            walk_call(e, call, nest, cx);
         }
+        Call(call) => walk_call(e, call, nest, cx),
         MethodRef { recv, .. } => walk_expr(recv, nest, cx),
         Yield(args) => walk_args(args, nest, cx),
         Super { args, block } => {
@@ -352,7 +378,7 @@ pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
             walk_expr(value, nest, cx);
         }
         TypedDecl { value, .. } => {
-            (cx.visit)(Site::Var(e.span), nest);
+            (cx.visit)(Site::Write(e.span), nest);
             walk_expr(value, nest, cx);
         }
         And(a, b) | Or(a, b) => {
@@ -411,7 +437,7 @@ pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
             walk_body(&block.body, nest, cx);
             for r in &block.rescues {
                 if r.var.is_some() {
-                    (cx.visit)(Site::Var(r.span), nest);
+                    (cx.visit)(Site::Write(r.span), nest);
                 }
                 walk_body(&r.body, nest, cx);
             }
@@ -442,5 +468,33 @@ pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
         | TypeAlias { .. }
         | ConstAssign { .. }
         | Extern { .. } => {}
+    }
+}
+
+fn walk_call(e: &Expr, call: &Call, nest: Nest, cx: &mut Cx) {
+    if let Some(r) = &call.recv {
+        walk_expr(r, nest, cx);
+    } else if cx.out.outer_self_calls.contains(&e.id) {
+        // Reads an enclosing function's `self` from its hidden slot.
+        (cx.visit)(Site::Var(e.span), nest);
+        if !matches!(
+            cx.out.calls.get(&e.id),
+            Some(quarz_types::CallTarget::Method { method }) if cx.world.takes_no_self(*method)
+        ) {
+            (cx.visit)(Site::SelfUse, nest);
+        }
+    } else if !matches!(
+        cx.out.calls.get(&e.id),
+        Some(quarz_types::CallTarget::Method { method }) if cx.world.takes_no_self(*method)
+    ) {
+        (cx.visit)(Site::SelfUse, nest);
+    }
+    walk_args(&call.args, nest, cx);
+    if let Some(b) = &call.block {
+        // `xs.map! { }` passes a real block (see `FnBuilder::call`).
+        let inlined = !cx.out.bang_assign.contains(&e.id)
+            && (crate::iter::shape(e, call, cx.out, cx.world).is_some()
+                || crate::iter::exec_shape(e, call, cx.out, cx.world).is_some());
+        walk_block(b, nest, cx, inlined);
     }
 }

@@ -138,6 +138,9 @@ pub struct FnBuilder<'a> {
     rescuing: Vec<Reg>,
     method: Option<MethodId>,
     class_id: Option<ClassId>,
+    /// While the method's parameters are bound (their defaults lowered):
+    /// a later parameter holds no value yet.
+    binding_params: bool,
     is_block: bool,
     is_lambda: bool,
     file: u32,
@@ -197,6 +200,7 @@ impl<'a> FnBuilder<'a> {
             }],
             retry_targets: Vec::new(),
             rescuing: Vec::new(),
+            binding_params: false,
             method,
             class_id,
             is_block: false,
@@ -353,6 +357,7 @@ impl<'a> FnBuilder<'a> {
         b.owner = Some(SelfOwner::Method(mid));
         // Parameters: bound by the runtime into argument slots in order;
         // the `&block` parameter comes last.
+        b.binding_params = true;
         for (i, p) in m.params.iter().enumerate() {
             let slot = i as u32;
             let r = VarRef { depth: 0, slot };
@@ -401,6 +406,7 @@ impl<'a> FnBuilder<'a> {
             b.emit(Inst::BlockParam { dst: v });
             b.store_var(VarRef { depth: 0, slot }, v);
         }
+        b.binding_params = false;
         // `def initialize(@x: Int)`.
         for (i, p) in m.params.iter().enumerate() {
             if p.assigns_ivar {
@@ -1113,6 +1119,95 @@ impl<'a> FnBuilder<'a> {
             depth,
             slot: r.slot,
         }
+    }
+
+    /// A generating call written in the body of a generic method (not
+    /// in a block of it): the classes its type parameters stand for in
+    /// this run, passed under `quarz_ir::TYPE_ARG_VALUES` (docs/14 §5).
+    /// A type parameter `T` is carried when exactly one parameter of the
+    /// method mentions it, a `Type[T]` the method never assigns, no bound
+    /// relates `T` to another of the method's type parameters, and `T`
+    /// has no lower bound:
+    /// every value of a type mentioning `T` the method has then comes
+    /// from that class (`as` cannot check a `T`), so the generated
+    /// signature may say it.
+    fn pass_carried_type_args(&mut self, call: ast::NodeId, a: &mut Args) {
+        let Some(mid) = self.method else {
+            return;
+        };
+        if self.is_block || !self.inline.is_empty() || self.binding_params {
+            return;
+        }
+        let m = self.world.method(mid);
+        let Some(def) = m.body.clone() else {
+            return;
+        };
+        let body: &[Expr] = def.body.as_deref().unwrap_or(&[]);
+        let defaults: Vec<&Expr> = def
+            .params
+            .list
+            .iter()
+            .filter_map(|p| p.default.as_ref())
+            .collect();
+        let others = |tp: &quarz_types::TypeParamInfo, of: &quarz_types::TypeParamInfo| {
+            of.bounds
+                .iter()
+                .chain(of.lower.iter())
+                .any(|b| b.mentions_param(tp.id))
+        };
+        let mut carried = Vec::new();
+        let mut slots = Vec::new();
+        for tp in &m.type_params {
+            let mut mentions = m
+                .params
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.ty.mentions_param(tp.id));
+            let (Some((i, p)), None) = (mentions.next(), mentions.next()) else {
+                continue;
+            };
+            if !matches!(&p.ty, Type::TypeOf(inner) if **inner == Type::Param(tp.id)) {
+                continue;
+            }
+            if m.block
+                .as_ref()
+                .is_some_and(|(_, t)| t.mentions_param(tp.id))
+            {
+                continue;
+            }
+            // (`U <: T` would let a `T` in through a `U`; `T <: U` a
+            // `Type[U]` value assigned to the `Type[T]` parameter.)
+            if m.type_params
+                .iter()
+                .any(|o| o.id != tp.id && (others(tp, o) || others(o, tp)))
+            {
+                continue;
+            }
+            // (`T >: Dog` holds a `Dog` where `T` is a subclass of it.)
+            if tp.lower.is_some() {
+                continue;
+            }
+            if crate::capture::assigns_slot(body, &defaults, self.out, self.world, i as u32) {
+                continue;
+            }
+            carried.push((tp.id, tp.bounds.clone()));
+            slots.push(i as u32);
+        }
+        if carried.is_empty() {
+            return;
+        }
+        let items: Vec<ArrayItem> = slots
+            .into_iter()
+            .map(|slot| ArrayItem {
+                reg: self.load_var(VarRef { depth: 0, slot }),
+                splat: false,
+            })
+            .collect();
+        let dst = self.reg();
+        self.emit(Inst::MakeArray { dst, items });
+        let s = self.sym_const(quarz_ir::TYPE_ARG_VALUES);
+        a.kw.push((s, dst));
+        self.lw.carried_type_params.insert(call, carried);
     }
 
     fn load_var(&mut self, r: VarRef) -> Reg {
@@ -3626,6 +3721,15 @@ impl<'a> FnBuilder<'a> {
                 let site = self.load_const(Constant::Int(e.id as i64));
                 let s = self.sym_const(quarz_ir::FIELD_REF_SITE);
                 a.kw.push((s, site));
+            }
+            if m.owner == self.world.builtin.meta_classdef
+                && m.is_native
+                && matches!(
+                    m.name.as_str(),
+                    "def_method" | "def_class_method" | "def_initialize"
+                )
+            {
+                self.pass_carried_type_args(e.id, &mut a);
             }
         }
         if let Some(b) = &call.block {
