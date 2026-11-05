@@ -2305,6 +2305,7 @@ impl Checker {
                 stmts.push((i, stmt.clone()));
             }
         }
+        let stmts = self.superclass_first(stmts);
         for (i, stmt) in stmts {
             // Done once it ran: until then its class, and the classes
             // under it, may still get members from it
@@ -2339,6 +2340,63 @@ impl Checker {
             self.world = std::mem::take(&mut declarer.world);
             self.world.freeze_ancestors(true);
         }
+    }
+
+    /// The statements `stmts` (in file name order, then text order) in
+    /// the order they run (docs/14 §2): a class's or module's after every
+    /// statement among them of its ancestors (superclasses and the
+    /// modules it includes or extends, transitively), so that its own
+    /// see what theirs generated; otherwise in the order given.
+    fn superclass_first(&self, stmts: Vec<(usize, StaticStmt)>) -> Vec<(usize, StaticStmt)> {
+        let mut ancestors: HashMap<ClassId, HashSet<ClassId>> = HashMap::default();
+        for (_, stmt) in &stmts {
+            ancestors
+                .entry(stmt.class)
+                .or_insert_with(|| self.statement_ancestors(stmt.class));
+        }
+        let mut todo: Vec<Option<(usize, StaticStmt)>> = stmts.into_iter().map(Some).collect();
+        let mut out = Vec::with_capacity(todo.len());
+        while out.len() < todo.len() {
+            // The first statement left none of whose class's ancestors
+            // has one left. The hierarchy has no cycle; were there one,
+            // the first left would run.
+            let waits = |c: ClassId, todo: &[Option<(usize, StaticStmt)>]| {
+                let own = &ancestors[&c];
+                todo.iter()
+                    .flatten()
+                    .any(|(_, s)| s.class != c && own.contains(&s.class))
+            };
+            let pick = (0..todo.len())
+                .find(|&k| matches!(&todo[k], Some((_, s)) if !waits(s.class, &todo)))
+                .or_else(|| (0..todo.len()).find(|&k| todo[k].is_some()))
+                .expect("a statement left");
+            out.push(todo[pick].take().expect("not taken"));
+        }
+        out
+    }
+
+    /// The classes and modules a class's statements run after (docs/14
+    /// §2): its superclasses and the modules it includes or extends,
+    /// theirs, and so on.
+    fn statement_ancestors(&self, class: ClassId) -> HashSet<ClassId> {
+        let mut seen: HashSet<ClassId> = HashSet::default();
+        let mut stack = vec![class];
+        while let Some(c) = stack.pop() {
+            let info = self.world.class(c);
+            let edges = info
+                .superclass
+                .iter()
+                .chain(&info.includes)
+                .chain(&info.extends);
+            for t in edges {
+                if let Type::Class(id, _) = t {
+                    if *id != class && seen.insert(*id) {
+                        stack.push(*id);
+                    }
+                }
+            }
+        }
+        seen
     }
 
     /// The `static` statements of a unit that failed to declare (the
