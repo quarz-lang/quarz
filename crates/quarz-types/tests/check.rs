@@ -4972,3 +4972,165 @@ fn a_def_initialize_block_is_checked_as_an_initialize() {
         "argument `a` of initialize(a: Int) -> Void expects Int but found String",
     );
 }
+
+#[test]
+fn deinitialize_cannot_be_called() {
+    // docs/03 §4: the runtime runs `deinitialize` when the object is
+    // released; any other call would run it again.
+    let class = "class K\n  def deinitialize -> Void\n    puts \"bye\"\n  end\n  def self.deinitialize -> Void = puts \"class\"\nend\n";
+    let msg = "`deinitialize` runs when the object is released; it cannot be called";
+    err(&format!("{class}K.new.deinitialize"), msg);
+    err(
+        "class J\n  def deinitialize -> Void = puts \"j\"\n  def go -> Void = deinitialize\nend\n",
+        msg,
+    );
+    err(
+        "class J\n  def deinitialize -> Void = puts \"j\"\n  def go -> Void = self.deinitialize\nend\n",
+        msg,
+    );
+    err(&format!("{class}f = K.new.:deinitialize"), msg);
+    err(&format!("{class}[K.new].each(&:deinitialize)"), msg);
+    err(
+        "class J\n  def deinitialize -> Void = puts \"j\"\n  alias bye deinitialize\nend\n",
+        "`deinitialize` cannot be aliased",
+    );
+    // `super` in a block or lambda could run the parent's again, or after
+    // the release.
+    err(
+        &format!(
+            "{class}class L < K\n  def deinitialize -> Void\n    3.times {{ super }}\n  end\nend\n"
+        ),
+        "`super` in `deinitialize` must be called directly, not from a block or lambda",
+    );
+    // `super` in a `deinitialize` chains the parent's; a class method of
+    // the name is an ordinary one.
+    ok(&format!("{class}class L < K\n  def deinitialize -> Void\n    puts \"l\"\n    super\n  end\nend\nK.deinitialize\n"));
+}
+
+#[test]
+fn super_runs_once_per_path() {
+    // docs/01 §3: in `initialize` and `deinitialize`, a second `super` on
+    // a path is an error; one per branch is fine.
+    let class = |init: &str, deinit: &str| {
+        format!(
+            "class P\n  @a: Int\n  def initialize(@a: Int); end\n  def deinitialize -> Void = puts \"p\"\nend\nclass C < P\n  def initialize(x: Int)\n    {init}\n  end\n  def deinitialize -> Void\n    {deinit}\n  end\nend\n"
+        )
+    };
+    let again = "runs the parent's `initialize` once: it is already called on this path";
+    let again_d = "runs the parent's `deinitialize` once: it is already called on this path";
+    ok(&class(
+        "if x > 0\n      super(1)\n    else\n      super(2)\n    end",
+        "if 1 > 0\n      super\n    else\n      super\n    end",
+    ));
+    ok(&class(
+        "if x > 0\n      super(1)\n      return\n    end\n    super(2)",
+        "super",
+    ));
+    err(&class("super(1)\n    super(2)", "super"), again);
+    err(&class("super(1)", "super\n    super()"), again_d);
+    err(
+        &class("if x > 0\n      super(1)\n    end\n    super(2)", "super"),
+        again,
+    );
+    err(
+        &class("super(1)", "if 1 > 0\n      super\n    end\n    super"),
+        again_d,
+    );
+    err(
+        &class(
+            "i = 0\n    while i < x\n      super(i)\n      i += 1\n    end\n    @a = 1",
+            "super",
+        ),
+        "`super` runs the parent's `initialize` once: it is called in a loop",
+    );
+    err(
+        &class(
+            "super(1)",
+            "i = 0\n    while i < 2\n      super\n      i += 1\n    end",
+        ),
+        "`super` runs the parent's `deinitialize` once: it is called in a loop",
+    );
+    err(
+        &class(
+            "begin\n      super(1)\n    rescue\n      super(2)\n    end",
+            "super",
+        ),
+        again,
+    );
+    err(
+        &class(
+            "super(1)",
+            "begin\n      super\n    ensure\n      super\n    end",
+        ),
+        again_d,
+    );
+    err(
+        &class("begin\n      super(1)\n    rescue\n      retry\n    end", "super"),
+        "`super` runs the parent's `initialize` once: `retry` runs the `begin` body and this clause, which call it, again",
+    );
+    // A `super` in the rescue clause, which a `retry` runs again.
+    err(
+        &class(
+            "begin\n      @a = x\n    rescue\n      super(1)\n      retry\n    end",
+            "begin\n      p 1\n    rescue\n      super\n      retry\n    end",
+        ),
+        "`retry` runs the `begin` body and this clause, which call it, again",
+    );
+    // A guard (or pattern) that called `super` and did not match leaves
+    // it called for the next arm; so does a parameter default.
+    err(
+        &class(
+            "case x\n    in 1 if (super(1); false)\n      p 1\n    in _\n      super(2)\n    end",
+            "super",
+        ),
+        again,
+    );
+    err(
+        &class(
+            "super(1)",
+            "case 1\n    in 1 if (super; false)\n      p 1\n    else\n      super\n    end",
+        ),
+        again_d,
+    );
+    err(
+        "class P\n  def initialize; end\nend\nclass C < P\n  def initialize(x: Int = (super(); 1))\n    super()\n  end\nend\n",
+        again,
+    );
+    // Two defaults, or two pins of one pattern, each calling `super`.
+    err(
+        "class P\n  def initialize; end\nend\nclass C < P\n  def initialize(a: Int = (super(); 1), b: Int = (super(); 2))\n  end\nend\n",
+        again,
+    );
+    err(
+        "class P\n  def initialize(x: Int = 0); end\nend\nclass C < P\n  def initialize\n    case [nil, nil]\n    in [^(super()), ^(super())] then 1\n    else 2\n    end\n  end\nend\n",
+        again,
+    );
+    // An `ensure` that always raises leaves nothing after the `begin`.
+    ok(&class(
+        "begin\n      super(1)\n    ensure\n      raise \"x\" if x > 0\n    end",
+        "begin\n      super\n    ensure\n      raise \"x\"\n    end\n    super",
+    ));
+    // A branch that called `super` and returned does not fall through
+    // the `ensure`.
+    ok(&class(
+        "begin\n      if x > 0\n        super(1)\n        return\n      end\n    ensure\n      p 1\n    end\n    super(2)",
+        "begin\n      if 1 > 0\n        super\n        return\n      end\n    ensure\n      p 1\n    end\n    super",
+    ));
+}
+
+#[test]
+fn initialize_and_deinitialize_are_not_field_names() {
+    // docs/01 §3: a field's reader would be the method only the runtime
+    // (or `new`) calls.
+    let d = "`deinitialize` is a reserved name: the runtime runs it when the object is released";
+    let i = "`initialize` is a reserved name: `new` runs it to make the object";
+    err("data D = (deinitialize: Int)", d);
+    err("data D = (initialize: Int)", i);
+    err("enum E\n  variant V(deinitialize: Int)\nend", d);
+    err("class K\n  @deinitialize: Int = 1\nend", d);
+    err(
+        "class K\n  @deinitialize: Int = 1\n  attr_reader :deinitialize\nend",
+        d,
+    );
+    err("class K\n  @initialize: Int = 1\nend", i);
+}

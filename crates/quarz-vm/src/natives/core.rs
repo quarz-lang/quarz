@@ -531,6 +531,13 @@ fn method_ref(interp: &Interp, recv: &Value, a: &Args, singleton: bool) -> EvalR
             "`initialize` has no handle: it runs only from `new` and from `super` in an `initialize`",
         ));
     }
+    // Nor `deinitialize`, run by the runtime when the object is released
+    // (docs/03 §4).
+    if !singleton && &*interp.symbol_name(*name) == "deinitialize" {
+        return Err(interp.err_arg(
+            "`deinitialize` has no handle: it runs when the object is released; it cannot be called",
+        ));
+    }
     let Some(Value::Int(site)) = a.kw(interp, quarz_ir::FIELD_REF_SITE) else {
         return Err(interp.err_runtime("internal: a method handle without its call"));
     };

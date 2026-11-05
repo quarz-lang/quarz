@@ -917,6 +917,10 @@ pub struct ReplSnapshot {
     generated_news: Vec<(ClassId, ClassId, MethodId, Option<MethodId>)>,
 }
 
+/// Why a call of `deinitialize` is refused (docs/03 §4).
+const DEINITIALIZE_CALLED: &str =
+    "`deinitialize` runs when the object is released; it cannot be called";
+
 /// The deepest `coerce` recursion: a defensive limit (see
 /// `World::is_subtype`).
 const COERCE_DEPTH: u32 = 256;
@@ -3207,6 +3211,24 @@ impl Checker {
             }
         }
 
+        // `deinitialize`: its `super` once per path, as `initialize`'s
+        // (docs/01 §3), and nothing else to check there.
+        if info.name == "deinitialize" && !info.singleton {
+            let none = std::collections::BTreeSet::new();
+            let errors = {
+                let calls = |id: NodeId| self.out.calls.get(&id).cloned();
+                let uses_self = |_: MethodId| false;
+                let diverges = |mid: MethodId| self.world.method(mid).ret.is_nothing();
+                let mut c =
+                    crate::init::InitCheck::new(&none, &none, &calls, &uses_self, &diverges);
+                c.what = "deinitialize";
+                c.method(&[], &body, info.span);
+                c.errors
+            };
+            for (msg, span) in errors {
+                self.error(msg, span);
+            }
+        }
         if self.env.in_initialize {
             let (required, own) = self.required_fields(owner);
             let params: Vec<(Option<&Expr>, Option<String>)> = info
@@ -6019,6 +6041,13 @@ impl Checker {
                 if name == "initialize" && !m.singleton {
                     self.error(
                         "`initialize` is called only by `new` and by `super` in `initialize` (in `.:initialize`)",
+                        expr.span,
+                    );
+                    return Type::Nothing;
+                }
+                if name == "deinitialize" && !m.singleton {
+                    self.error(
+                        format!("{DEINITIALIZE_CALLED} (in `.:deinitialize`)"),
                         expr.span,
                     );
                     return Type::Nothing;
@@ -10810,6 +10839,13 @@ impl Checker {
                 );
                 continue;
             }
+            // `deinitialize` is run by the runtime when the object is
+            // released (and by `super` in a `deinitialize`): called
+            // otherwise, it would run again at the release.
+            if m.name == "deinitialize" && !m.singleton && !is_init {
+                failures.push(DEINITIALIZE_CALLED.to_string());
+                continue;
+            }
             // Visibility.
             if m.visibility == Visibility::Private && !implicit_self && !is_init {
                 failures.push(format!("`{}` is private", m.name));
@@ -12092,8 +12128,16 @@ impl Checker {
                             }
                             return Err(msg);
                         };
-                        // `initialize` runs only from `new` and `super`
+                        // `deinitialize` runs only at the release (docs/03
+                        // §4), `initialize` only from `new` and `super`
                         // (docs/01 §3).
+                        if name == "deinitialize" && !self.world.method(mid).singleton {
+                            let msg = format!("{DEINITIALIZE_CALLED} (in `&:{name}`)");
+                            if report {
+                                self.error(msg.clone(), e.span);
+                            }
+                            return Err(msg);
+                        }
                         if name == "initialize" && !self.world.method(mid).singleton {
                             let msg = format!(
                                 "`initialize` is called only by `new` and by `super` in `initialize` (in `&:{name}`)"
@@ -14031,12 +14075,20 @@ impl Checker {
                 );
             }
         }
-        if m.name == "initialize" && !m.singleton && !self.env.blocks.is_empty() {
+        // (`deinitialize` likewise: a block or lambda may run its `super`
+        // again, or after the release, docs/03 §4.)
+        if matches!(m.name.as_str(), "initialize" | "deinitialize")
+            && !m.singleton
+            && !self.env.blocks.is_empty()
+        {
             // A block or lambda may run after `initialize` (its callee or
             // a field may keep it) and would then assign the immutable
             // inherited fields again (as Swift's `super.init`; docs/01 §3).
             self.error(
-                "`super` in `initialize` must be called directly, not from a block or lambda",
+                format!(
+                    "`super` in `{}` must be called directly, not from a block or lambda",
+                    m.name
+                ),
                 expr.span,
             );
             self.check_args_blindly(&Call {
@@ -14178,7 +14230,9 @@ impl Checker {
             cands,
             true,
             None,
-            m.name == "initialize",
+            // (`super` in `deinitialize` chains the parent's, the one
+            // other call of it, docs/03 §4.)
+            m.name == "initialize" || (m.name == "deinitialize" && !m.singleton),
         );
         self.zsuper_forwards = saved;
         if let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id).cloned() {
@@ -15152,6 +15206,9 @@ impl crate::StaticHost for Checker {
         self.add_generated_other(info)
     }
     fn add_generated_field(&mut self, class: ClassId, field: FieldInfo) -> Result<(), String> {
+        if let Some(why) = crate::declare::reserved_field_name(&field.name) {
+            return Err(why);
+        }
         let info = self.world.class(class);
         if info.kind != ClassKind::Class {
             return Err(format!(

@@ -26,7 +26,12 @@ use crate::check::CallTarget;
 use crate::types::MethodId;
 
 /// Assigned fields at a point; `None` once control cannot reach it.
+/// It also holds `NO_SUPER` while `super` has been called on no path to
+/// the point (joins intersect, so it stays only where no path called it).
 type St = Option<BTreeSet<String>>;
+
+/// In a state: no path to the point called `super` (no field name).
+const NO_SUPER: &str = "\0super";
 
 pub struct InitCheck<'a> {
     /// Every required field, own and inherited.
@@ -56,6 +61,21 @@ pub struct InitCheck<'a> {
     lambdas: u32,
     /// One "used before" error is enough.
     reported: HashSet<&'static str>,
+    /// The method checked, for messages: `initialize`, or `deinitialize`
+    /// (checked for its `super` only, with no field required).
+    pub what: &'static str,
+    /// The `super` calls seen so far, and the `while` loops around the
+    /// expression: `super` runs the parent's once (docs/01 §3).
+    supers: u32,
+    loops: u32,
+    /// For each `rescue` clause being checked (innermost last): whether
+    /// its `begin` body may have called `super`, which a `retry` would
+    /// call again, and whether no `super` was called on entering the
+    /// clause (one the clause calls before a `retry` runs again too).
+    rescues: Vec<(bool, bool)>,
+    /// The `super` calls seen when the pattern being checked began
+    /// (`pattern_st`): one of its expressions sees those after as called.
+    pattern_supers: u32,
 }
 
 impl<'a> InitCheck<'a> {
@@ -79,6 +99,11 @@ impl<'a> InitCheck<'a> {
             exits: Vec::new(),
             lambdas: 0,
             reported: HashSet::default(),
+            what: "initialize",
+            supers: 0,
+            loops: 0,
+            rescues: Vec::new(),
+            pattern_supers: 0,
         }
     }
 
@@ -90,16 +115,23 @@ impl<'a> InitCheck<'a> {
         body: &[Expr],
         span: Span,
     ) {
-        let mut st: St = Some(BTreeSet::new());
+        let mut st: St = Some(BTreeSet::from([NO_SUPER.to_string()]));
         // A default runs only when its argument is left out: what it
         // assigns does not count, nor is the object usable after it (it
         // runs before `initialize` proper, as Swift's default arguments).
         // The `@x` parameters are assigned after all the parameters.
         let noted = self.usable_after.len();
+        let supers = self.supers;
         for (default, _) in params {
             if let Some(d) = default {
-                self.expr(d, st.clone());
+                // (After another default's `super`, as called.)
+                let at = self.since(&st, supers);
+                self.expr(d, at);
             }
+        }
+        // (A `super` in a default may have run before the body.)
+        if self.supers != supers {
+            st = Self::called(st);
         }
         self.usable_after.truncate(noted);
         if let Some(s) = st.as_mut() {
@@ -118,7 +150,7 @@ impl<'a> InitCheck<'a> {
     /// an `initialize` whose parameters assign no field: a `next` at its
     /// top level ends it, as a `return` would a written one.
     pub fn lifted_block(&mut self, body: &[Expr], span: Span) {
-        let st: St = Some(BTreeSet::new());
+        let st: St = Some(BTreeSet::from([NO_SUPER.to_string()]));
         self.usable_on_entry = self.complete(&st);
         self.exits.push(None);
         let end = self.body(body, st);
@@ -231,11 +263,13 @@ impl<'a> InitCheck<'a> {
     fn pattern(&mut self, p: &Pattern, st: &St) {
         match &p.kind {
             PatternKind::Value(e) | PatternKind::Pin(e) => {
-                self.expr(e, st.clone());
+                let at = self.since(st, self.pattern_supers);
+                self.expr(e, at);
             }
             PatternKind::Range { lo, hi, .. } => {
                 for e in [lo, hi].into_iter().flatten() {
-                    self.expr(e, st.clone());
+                    let at = self.since(st, self.pattern_supers);
+                    self.expr(e, at);
                 }
             }
             PatternKind::Capture(p, _) => self.pattern(p, st),
@@ -264,6 +298,38 @@ impl<'a> InitCheck<'a> {
                 self.pattern(p, st);
             }
         }
+    }
+
+    /// `pattern`, giving the state after it: what its expressions assign
+    /// does not count, but a `super` in one has been called.
+    fn pattern_st(&mut self, p: &Pattern, st: St) -> St {
+        let supers = self.supers;
+        let outer = std::mem::replace(&mut self.pattern_supers, supers);
+        self.pattern(p, &st);
+        self.pattern_supers = outer;
+        if self.supers != supers {
+            Self::called(st)
+        } else {
+            st
+        }
+    }
+
+    /// `st`, or, when a `super` was seen since `supers` (in an expression
+    /// whose state is not carried on), `st` where it may have been called.
+    fn since(&self, st: &St, supers: u32) -> St {
+        if self.supers != supers {
+            Self::called(st.clone())
+        } else {
+            st.clone()
+        }
+    }
+
+    /// `st` where `super` may have been called.
+    fn called(st: St) -> St {
+        st.map(|mut s| {
+            s.remove(NO_SUPER);
+            s
+        })
     }
 
     fn join(a: St, b: St) -> St {
@@ -341,7 +407,6 @@ impl<'a> InitCheck<'a> {
             | ExprKind::Local(_)
             | ExprKind::Const(_)
             | ExprKind::TypeApp(_)
-            | ExprKind::Retry
             | ExprKind::ClassDef(_)
             | ExprKind::ModuleDef(_)
             | ExprKind::DataDef(_)
@@ -445,6 +510,26 @@ impl<'a> InitCheck<'a> {
                     Some(a) => self.args(a, st),
                     None => st,
                 };
+                // Once per path (docs/01 §3): not again after one, nor in a
+                // loop.
+                self.supers += 1;
+                let again = if self.loops > 0 {
+                    Some("it is called in a loop")
+                } else if st.as_ref().is_some_and(|s| !s.contains(NO_SUPER)) {
+                    Some("it is already called on this path")
+                } else {
+                    None
+                };
+                if let Some(why) = again {
+                    self.errors.push((
+                        format!("`super` runs the parent's `{}` once: {why}", self.what),
+                        e.span,
+                    ));
+                }
+                let st = st.map(|mut s| {
+                    s.remove(NO_SUPER);
+                    s
+                });
                 if let Some(f) = self.missing(&st, self.own) {
                     self.errors.push((
                         format!("field `@{f}` must be assigned before `super`"),
@@ -526,7 +611,9 @@ impl<'a> InitCheck<'a> {
                 do_while,
                 ..
             } => {
-                if *do_while {
+                let supers = self.supers;
+                self.loops += 1;
+                let out = if *do_while {
                     // A `next` goes to the test and a `break` out of the
                     // loop, with what was assigned where they are.
                     self.exits.push(None);
@@ -542,6 +629,13 @@ impl<'a> InitCheck<'a> {
                     self.body(body, st.clone());
                     self.exits.pop();
                     st
+                };
+                self.loops -= 1;
+                // (A `super` in it may have run.)
+                if self.supers != supers {
+                    Self::called(out)
+                } else {
+                    out
                 }
             }
             ExprKind::Case {
@@ -573,19 +667,22 @@ impl<'a> InitCheck<'a> {
             ExprKind::CaseIn { subject, arms, els } => {
                 let st = self.expr(subject, st);
                 let mut out: St = None;
+                // What reaches the next arm's test: a pattern or guard
+                // tested before may have called `super` and not matched.
+                let mut cur = st;
                 for arm in arms {
-                    self.pattern(&arm.pattern, &st);
-                    let mut a = st.clone();
+                    let mut a = self.pattern_st(&arm.pattern, cur.clone());
                     if let Some(g) = &arm.guard {
                         a = self.expr(&g.cond, a);
                     }
+                    cur = Self::join(cur, a.clone());
                     let b = self.body(&arm.body, a);
                     out = Self::join(out, b);
                 }
                 // No arm matching raises unless there is an `else`.
                 match els {
                     Some(els) => {
-                        let e = self.body(els, st);
+                        let e = self.body(els, cur);
                         Self::join(out, e)
                     }
                     None => out,
@@ -593,28 +690,74 @@ impl<'a> InitCheck<'a> {
             }
             ExprKind::MatchPattern { value, pattern, .. } => {
                 let st = self.expr(value, st);
-                self.pattern(pattern, &st);
-                st
+                self.pattern_st(pattern, st)
             }
             ExprKind::Begin(b) => {
                 let entry = st.clone();
+                let supers = self.supers;
                 let mut end = self.body(&b.body, st);
+                // A `super` in the body may have run before a rescue
+                // clause (and `retry` would run it again).
+                let body_super = self.supers != supers;
+                let entry = if body_super {
+                    Self::called(entry)
+                } else {
+                    entry
+                };
                 if let Some(els) = &b.else_body {
                     end = self.body(els, end);
                 }
                 for r in &b.rescues {
                     // Raised from anywhere in the body.
+                    let fresh = entry.as_ref().is_some_and(|s| s.contains(NO_SUPER));
+                    self.rescues.push((body_super, fresh));
                     let rescued = self.body(&r.body, entry.clone());
+                    self.rescues.pop();
                     end = Self::join(end, rescued);
                 }
                 if let Some(ens) = &b.ensure {
-                    // Runs on every exit, possibly right after the entry.
+                    // Runs on every exit, possibly right after the entry
+                    // (or after a `super` anywhere before it).
+                    let entry = if self.supers != supers {
+                        Self::called(entry)
+                    } else {
+                        entry
+                    };
+                    let before = self.supers;
                     let at_ensure = self.body(ens, entry);
+                    // (What falls through called `super` if it did before
+                    // the `ensure`, or the `ensure` does.)
+                    let ensure_super = self.supers != before;
+                    // (An `ensure` that never completes leaves nothing
+                    // after the `begin`.)
+                    if at_ensure.is_none() {
+                        end = None;
+                    }
                     if let (Some(e), Some(a)) = (end.as_mut(), at_ensure) {
+                        let had = e.contains(NO_SUPER);
                         e.extend(a);
+                        if !had || ensure_super {
+                            e.remove(NO_SUPER);
+                        }
                     }
                 }
                 end
+            }
+            ExprKind::Retry => {
+                let again = self.rescues.last().is_some_and(|&(body, fresh)| {
+                    body || (fresh && st.as_ref().is_some_and(|s| !s.contains(NO_SUPER)))
+                });
+                if again {
+                    self.errors.push((
+                        format!(
+                            "`super` runs the parent's `{}` once: `retry` runs the `begin` body and this clause, which call it, again",
+                            self.what
+                        ),
+                        e.span,
+                    ));
+                }
+                // Control goes back to the `begin`, not past it.
+                None
             }
             ExprKind::Return(v) => {
                 let st = match v {
