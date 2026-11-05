@@ -1454,8 +1454,8 @@ impl StaticRunner for Runner {
 }
 
 /// The declarations, as the reflection natives read them: taken when a
-/// statement runs, so that every statement of a cog sees the same
-/// (docs/14 §2).
+/// statement runs, with what the statements run before it generated (its
+/// class's ancestors' among them, docs/14 §2).
 struct WorldReflect {
     fields: HashMap<ClassId, Vec<Rc<[ReflectField]>>>,
     methods: HashMap<ClassId, Vec<Rc<[ReflectMethod]>>>,

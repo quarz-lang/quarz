@@ -327,6 +327,69 @@ fn static_defs_run_from_dependency_cogs() {
 }
 
 #[test]
+fn statements_run_after_their_ancestors() {
+    // docs/14 §2: within a cog, a class's statements run after those of
+    // its superclasses, wherever these are written; unrelated classes
+    // keep file name order.
+    let w = World::new();
+    w.write(
+        "orm/Cog.toml",
+        "[cog]\nname = \"orm\"\nversion = \"0.1.0\"\n",
+    );
+    w.write(
+        "orm/src/model.qz",
+        "class Model\n  static def self.gen(n: Symbol) -> Void\n    def_method(n) { 1 }\n  end\n  static def self.gens(n: Symbol) -> Void\n    def_method(n) { \"s\" }\n  end\n  static def self.show -> Void\n    puts \"#{name}: #{methods.map(&:name).select { |m| m.to_s.start_with?(\"g_\") }.inspect}\"\n  end\nend\n",
+    );
+    w.commit("orm", Some("v0.1.0"));
+    w.app(
+        &format!("Orm = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("orm")),
+        "p Sub.new.g_base\n",
+    );
+    // `a_sub.qz` sorts before the file declaring `Sub`'s superclass.
+    w.write(
+        "app/src/a_sub.qz",
+        "class Sub < Base\n  show\nend\nclass Lone < Orm::Model\n  gen :g_lone\n  show\nend\n",
+    );
+    w.write(
+        "app/src/b_base.qz",
+        "class Base < Orm::Model\n  gen :g_base\nend\nclass Other < Orm::Model\n  show\nend\n",
+    );
+    let said = |out: &Out| -> Vec<String> {
+        out.stderr
+            .lines()
+            .filter(|l| !l.starts_with("quarz: "))
+            .map(str::to_string)
+            .collect()
+    };
+    // `Sub`'s statement waits for `Base`'s, then runs before `Other`'s,
+    // whose file sorts after its own.
+    let expected = ["Lone: [:g_lone]", "Sub: [:g_base]", "Other: []"];
+    // The same with the check cache cold and warm.
+    for _ in 0..2 {
+        let out = w.quarz("app", &["run"]);
+        assert!(out.ok, "{}", out.stderr);
+        assert_eq!(out.stdout, "1\n");
+        assert_eq!(said(&out), expected);
+    }
+    // A subclass's statement generating an override of what its
+    // superclass's generates is checked against it, though its file
+    // sorts first.
+    w.write(
+        "app/src/a_sub.qz",
+        "class Sub < Base\n  gens :g_base\nend\n",
+    );
+    for _ in 0..2 {
+        let out = w.quarz("app", &["check"]);
+        assert!(!out.ok);
+        assert!(
+            out.stderr.contains("a_sub.qz:2:3: error: `g_base` returns String but `Base#g_base`, which it overrides, returns Int"),
+            "{}",
+            out.stderr
+        );
+    }
+}
+
+#[test]
 fn keys_name_cogs_and_scopes_are_closed() {
     let w = World::new();
     w.libraries();
