@@ -4291,8 +4291,8 @@ impl Checker {
     /// Why a value of type `t` cannot be baked (`bakeable_type`): `None`
     /// when it can; an empty reason for what is not a literal or data;
     /// for a `data` type or enum with a field that is not Shareable, that
-    /// field (every bakeable value is Shareable, so that a `Lit`'s
-    /// `Shareable` value answers `is_a?(Shareable)` as its type says).
+    /// field (every bakeable value is Shareable, as a `Lit`'s `value` is
+    /// typed).
     fn bake_refusal(&mut self, t: &Type) -> Option<String> {
         let t = self.resolve(t);
         match &t {
@@ -4336,7 +4336,7 @@ impl Checker {
 
     /// What makes the `data` type, enum or variant `id` not Shareable,
     /// for `bake_refusal`: "`W` holds `@o: Object`, which is not
-    /// Shareable, so a `W` cannot be baked".
+    /// Shareable, so its values cannot be baked".
     fn unshareable_field(&mut self, id: ClassId) -> String {
         let class = self.world.class(id).clone();
         let name = class.name.clone();
@@ -4353,7 +4353,7 @@ impl Checker {
             let ty = f.ty.subst(&subst).subst(&erase);
             if !self.world.is_shareable(&ty) {
                 return format!(
-                    "`{name}` holds `@{}: {}`, which is not Shareable, so a `{name}` cannot be baked",
+                    "`{name}` holds `@{}: {}`, which is not Shareable, so its values cannot be baked",
                     f.name,
                     self.world.type_name(&ty)
                 );

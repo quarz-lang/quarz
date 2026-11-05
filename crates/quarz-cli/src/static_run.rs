@@ -1621,7 +1621,7 @@ struct WorldReflect {
     refused: RefCell<Option<String>>,
     /// The `data` types and enums with a field that is not Shareable,
     /// whose values cannot be baked (`bake`).
-    unshareable: rustc_hash::FxHashSet<ClassId>,
+    unshareable: rustc_hash::FxHashMap<ClassId, String>,
 }
 
 /// A generation a statement's run asked for, in call order.
@@ -1669,25 +1669,81 @@ struct PendingGen {
 /// The `data` types and enums of `world` that are not Shareable (a field
 /// that is not): their values cannot be baked, so that every baked value
 /// is Shareable (docs/14 §5).
-fn unshareable_data(world: &World) -> rustc_hash::FxHashSet<ClassId> {
+fn unshareable_data(world: &World) -> rustc_hash::FxHashMap<ClassId, String> {
+    use quarz_types::ClassKind;
     world
         .classes
         .iter()
         .filter(|c| {
             matches!(
                 c.kind,
-                quarz_types::ClassKind::Data
-                    | quarz_types::ClassKind::Enum
-                    | quarz_types::ClassKind::Variant
+                ClassKind::Data | ClassKind::Enum | ClassKind::Variant
             ) && c.shareable != Some(true)
         })
-        .map(|c| c.id)
+        .map(|c| {
+            // The field that is not Shareable (its type parameters, which
+            // the arguments decide, erased), as the checker names it.
+            let enum_params = c.variant_of.map(|e| world.class(e).type_params.clone());
+            let erase: HashMap<TypeParamId, Type> = c
+                .type_params
+                .iter()
+                .chain(enum_params.iter().flatten())
+                .map(|p| (p.id, Type::Nothing))
+                .collect();
+            let erase: rustc_hash::FxHashMap<TypeParamId, Type> = erase.into_iter().collect();
+            let field = world.all_fields(c.id).into_iter().find_map(|(f, subst)| {
+                let ty = f.ty.subst(&subst).subst(&erase);
+                (!shareable_as_declared(world, &ty))
+                    .then(|| format!("`@{}: {}`", f.name, world.type_name(&ty)))
+            });
+            let why = match field {
+                Some(f) => format!(
+                    "`{}` holds {f}, which is not Shareable, so its values cannot be baked",
+                    c.name
+                ),
+                None => format!(
+                    "`{}` is not Shareable, so its values cannot be baked",
+                    c.name
+                ),
+            };
+            (c.id, why)
+        })
         .collect()
+}
+
+/// `World::is_shareable` for a declared program, without its memo
+/// (which needs the world mutable): a `data` type's or enum's answer as
+/// declared (`ensure_shareable_known`), a class's or module's promise
+/// (one that breaks it is an error where it is declared), a `shareable`
+/// procedure, and collections by their arguments.
+fn shareable_as_declared(world: &World, t: &Type) -> bool {
+    use quarz_types::ClassKind;
+    match t {
+        Type::Nothing | Type::Void | Type::Var(_) => true,
+        Type::ClassObject(..) | Type::TypeOf(_) => true,
+        Type::Union(ms) | Type::Tuple(ms) => ms.iter().all(|m| shareable_as_declared(world, m)),
+        Type::Proc(_, _, _, shareable, _) => *shareable,
+        Type::Param(_) => false,
+        Type::Class(id, args) => {
+            let b = &world.builtin;
+            if *id == b.meta_field_ref || *id == b.meta_method {
+                return true;
+            }
+            let class = world.class(*id);
+            let own = match class.kind {
+                ClassKind::Data | ClassKind::Enum | ClassKind::Variant => {
+                    class.shareable == Some(true)
+                }
+                _ => world.shareable_promise(*id).is_some(),
+            };
+            own && args.iter().all(|a| shareable_as_declared(world, a))
+        }
+    }
 }
 
 fn bake(
     interp: &Interp,
-    unshareable: &rustc_hash::FxHashSet<ClassId>,
+    unshareable: &rustc_hash::FxHashMap<ClassId, String>,
     v: &Value,
 ) -> Result<Baked, String> {
     let cannot = |interp: &Interp, v: &Value| {
@@ -1750,13 +1806,12 @@ fn bake(
                         .map(|f| bake(interp, unshareable, f))
                         .collect::<Result<_, _>>()?,
                 ),
-                RtClassKind::Data | RtClassKind::Variant
-                    if unshareable.contains(&o.class)
-                        || class.variant_of.is_some_and(|e| unshareable.contains(&e)) =>
-                {
+                // (A variant by its own fields, as `is_a?(Shareable)`
+                // answers for it.)
+                RtClassKind::Data | RtClassKind::Variant if unshareable.contains_key(&o.class) => {
                     return Err(format!(
-                        "a `{}` holds a field that is not Shareable, so it cannot be baked (only literals, classes and `data` of Shareable fields can)",
-                        interp.class_name(v)
+                        "{} (only literals, classes and `data` of Shareable fields can be)",
+                        unshareable[&o.class]
                     ));
                 }
                 RtClassKind::Data | RtClassKind::Variant => Baked::Data(
