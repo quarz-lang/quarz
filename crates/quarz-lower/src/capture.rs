@@ -14,11 +14,18 @@ use quarz_types::{Output, VarRef, World};
 /// A place where the checker recorded a variable reference, or an
 /// implicit reference to every parameter (`super` without arguments).
 #[derive(Clone, Copy, Debug)]
-pub enum Site {
+pub enum Site<'a> {
     Var(Span),
     /// A variable assigned or bound (an assignment's target, a pattern's
     /// binding, a declaration, a rescue clause's variable).
     Write(Span),
+    /// A method named as called (a call, a method reference `x.:m`, a
+    /// block pass `&:m`, the reader of a compound assignment `x.m += 1`),
+    /// whether its receiver is the function's `self` (none written, or
+    /// `self`), and the name.
+    Call(quarz_syntax::ast::NodeId, bool, &'a str),
+    /// A `super` call.
+    Super,
     ZSuper,
     /// A use of the function's `self`: `self`, a field, `super`, a call on
     /// the implicit receiver that passes it.
@@ -98,7 +105,7 @@ pub fn captured_slots(
                     captured.insert(i);
                 }
             }
-            Site::SelfUse => {}
+            Site::SelfUse | Site::Call(..) | Site::Super => {}
         }
     };
     let mut cx = Cx {
@@ -151,6 +158,37 @@ pub fn assigns_slot(
     found
 }
 
+/// The methods `body` (with `extra`, its parameter defaults) names as
+/// called (`Site::Call`): each site's node, whether it is on the
+/// function's own `self` outside any block (whose `self` may be
+/// another), and the name; and whether it calls `super`.
+pub fn call_sites(
+    body: &[Expr],
+    extra: &[&Expr],
+    out: &Output,
+    world: &World,
+) -> (Vec<(quarz_syntax::ast::NodeId, bool, String)>, bool) {
+    let mut found = Vec::new();
+    let mut supers = false;
+    let mut visit = |site: Site, nest: Nest| match site {
+        Site::Call(id, on_self, name) => {
+            found.push((id, on_self && nest.actual == 0, name.to_string()))
+        }
+        Site::Super => supers = true,
+        _ => {}
+    };
+    let mut cx = Cx {
+        out,
+        world,
+        visit: &mut visit,
+        real_blocks: 0,
+    };
+    for e in body.iter().chain(extra.iter().copied()) {
+        walk_expr(e, Nest::TOP, &mut cx);
+    }
+    (found, supers)
+}
+
 pub fn walk_body(body: &[Expr], nest: Nest, cx: &mut Cx) {
     for e in body {
         walk_expr(e, nest, cx);
@@ -168,9 +206,13 @@ fn walk_parts(parts: &[StrPart], nest: Nest, cx: &mut Cx) {
 fn walk_args(args: &[Arg], nest: Nest, cx: &mut Cx) {
     for a in args {
         match a {
-            Arg::Positional(e) | Arg::Splat(e) | Arg::DoubleSplat(e) | Arg::BlockPass(e) => {
+            Arg::BlockPass(e) => {
+                if let ExprKind::Symbol(name) = &e.kind {
+                    (cx.visit)(Site::Call(e.id, false, name), nest);
+                }
                 walk_expr(e, nest, cx)
             }
+            Arg::Positional(e) | Arg::Splat(e) | Arg::DoubleSplat(e) => walk_expr(e, nest, cx),
             Arg::Keyword { value, .. } => walk_expr(value, nest, cx),
         }
     }
@@ -193,7 +235,10 @@ fn walk_lvalue(lv: &LValue, nest: Nest, cx: &mut Cx) {
     match lv {
         LValue::Local { span, .. } => (cx.visit)(Site::Write(*span), nest),
         LValue::IVar(_) | LValue::Const(_) => {}
-        LValue::Attr { recv, .. } => walk_expr(recv, nest, cx),
+        LValue::Attr { recv, name, .. } => {
+            (cx.visit)(Site::Call(recv.id, false, name), nest);
+            walk_expr(recv, nest, cx)
+        }
         LValue::Index { recv, args } => {
             walk_expr(recv, nest, cx);
             walk_args(args, nest, cx);
@@ -353,9 +398,13 @@ pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
             walk_call(e, call, nest, cx);
         }
         Call(call) => walk_call(e, call, nest, cx),
-        MethodRef { recv, .. } => walk_expr(recv, nest, cx),
+        MethodRef { recv, name } => {
+            (cx.visit)(Site::Call(e.id, false, name), nest);
+            walk_expr(recv, nest, cx)
+        }
         Yield(args) => walk_args(args, nest, cx),
         Super { args, block } => {
+            (cx.visit)(Site::Super, nest);
             (cx.visit)(Site::SelfUse, nest);
             match args {
                 Some(args) => walk_args(args, nest, cx),
@@ -472,6 +521,11 @@ pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
 }
 
 fn walk_call(e: &Expr, call: &Call, nest: Nest, cx: &mut Cx) {
+    let on_self = match &call.recv {
+        None => true,
+        Some(r) => matches!(r.kind, ExprKind::SelfRef),
+    };
+    (cx.visit)(Site::Call(e.id, on_self, &call.name), nest);
     if let Some(r) = &call.recv {
         walk_expr(r, nest, cx);
     } else if cx.out.outer_self_calls.contains(&e.id) {
