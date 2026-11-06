@@ -1063,8 +1063,8 @@ impl Runner {
 
     /// Why a statement whose lowering found errors (`errors_before` the
     /// count before it) did not run: a method checked for it with errors,
-    /// which the lowering reached by its name (the runner's own walk,
-    /// `bad_reach`, follows calls more closely and did not find it), named
+    /// which the lowering reached (a call's target or an override of it,
+    /// or a method of a name called by name: docs/14 §7), named
     /// with its first error, the one checked first; else what was found.
     fn blocked_message(
         &self,
@@ -1072,17 +1072,31 @@ impl Runner {
         callee_name: &str,
         errors_before: usize,
     ) -> String {
-        let world = host.world();
         let blocking = self
             .bad_methods
             .iter()
             .filter(|(_, (n, _))| *n >= errors_before)
             .min_by_key(|(_, (n, _))| *n);
-        let Some((&m, (_, errors))) = blocking else {
+        let Some((&m, _)) = blocking else {
             return format!(
                 "`{callee_name}` did not run: what it reaches has errors (reported above)"
             );
         };
+        format!(
+            "`{callee_name}` did not run: {}",
+            self.describe_bad(host, m)
+        )
+    }
+
+    /// `m`, a method with errors a statement may reach, where it is, and its
+    /// first error.
+    fn describe_bad(&self, host: &dyn StaticHost, m: MethodId) -> String {
+        let world = host.world();
+        let errors: &[(u32, Diagnostic)] = self
+            .bad_methods
+            .get(&m)
+            .map(|(_, e)| e.as_slice())
+            .unwrap_or(&[]);
         let info = world.method(m);
         let name = format!(
             "{}{}{}",
@@ -1109,22 +1123,23 @@ impl Runner {
         });
         match (own, errors.first()) {
             (Some((_, d)), _) => format!(
-                "`{callee_name}` did not run: `{name}`{place}, which it may reach by name, has errors: {}",
+                "it may reach `{name}`{place}, which has errors: {}",
                 d.message
             ),
             (None, Some((f, d))) => format!(
-                "`{callee_name}` did not run: `{name}`{place}, which it may reach by name, uses what has errors: {} ({})",
+                "it may reach `{name}`{place}, which uses what has errors: {} ({})",
                 d.message,
                 at(*f, d.span)
             ),
-            (None, None) => format!(
-                "`{callee_name}` did not run: `{name}`{place}, which it may reach by name, has errors (reported with it)"
-            ),
+            (None, None) => {
+                format!("it may reach `{name}`{place}, which has errors (reported with it)")
+            }
         }
     }
 
-    /// A method or constant with errors that the statement reaches, named.
-    fn bad_reach(&self, root: FuncId) -> Option<String> {
+    /// A method (`Ok`) or constant (`Err`, named) with errors that the
+    /// statement reaches.
+    fn bad_reach(&self, root: FuncId) -> Option<Result<MethodId, String>> {
         if self.bad_methods.is_empty() && self.bad_consts.is_empty() {
             return None;
         }
@@ -1138,7 +1153,7 @@ impl Runner {
             }
             seen[fid as usize] = true;
             let mut methods: Vec<MethodId> = Vec::new();
-            let mut found: Option<String> = None;
+            let mut found: Option<Result<MethodId, String>> = None;
             reached(
                 world,
                 &by_name,
@@ -1148,7 +1163,7 @@ impl Runner {
                     shake::Ref::Func(f) => work.push(f),
                     shake::Ref::Const(c) => {
                         if self.bad_consts.contains(&c) {
-                            found = Some(world.consts[c as usize].name.clone());
+                            found = Some(Err(world.consts[c as usize].name.clone()));
                         } else if let Some(init) = world.consts.get(c as usize).and_then(|c| c.init)
                         {
                             work.push(init);
@@ -1163,7 +1178,7 @@ impl Runner {
             }
             for m in methods {
                 if self.bad_methods.contains_key(&m) {
-                    return Some(method_name(world, m));
+                    return Some(Ok(m));
                 }
                 if let Some(f) = world.methods[m as usize].func {
                     work.push(f);
@@ -1463,16 +1478,59 @@ fn overrides_of(
         .map(|ms| {
             ms.iter()
                 .copied()
-                .filter(|&o| {
-                    let om = &world.methods[o as usize];
-                    o != m
-                        && om.singleton == rm.singleton
-                        && world.class_is_a(om.owner, rm.owner)
-                        && !denied_owner(world, o)
-                })
+                .filter(|&o| o != m && !denied_owner(world, o) && may_dispatch_to(world, o, m))
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Whether a call resolved to `m` may run `o` (of its name), as a
+/// receiver's lookup may find it (`is_override` in the lowering, alike):
+/// for a module's method or `Object`'s, any; for `Type`'s, a class
+/// method or an extended module's; for a class method, one of a class below it, or of a
+/// module a class below it extends; for another class's instance method,
+/// one of a class below it, or of a module a class below it includes.
+fn may_dispatch_to(world: &RtWorld, o: MethodId, m: MethodId) -> bool {
+    let (om, rm) = (&world.methods[o as usize], &world.methods[m as usize]);
+    let owner = rm.owner;
+    let module = |c: ClassId| world.classes[c as usize].kind == RtClassKind::Module;
+    if rm.singleton {
+        return if om.singleton {
+            world.class_is_a(om.owner, owner)
+        } else {
+            module(om.owner)
+                && world.classes.iter().enumerate().any(|(c, rc)| {
+                    world.class_is_a(c as ClassId, owner)
+                        && rc.extends.iter().any(|&m| world.class_is_a(m, om.owner))
+                })
+        };
+    }
+    // An abstract method's implementation may come from above its owner
+    // (a superclass's method of the name).
+    if rm.is_abstract && !om.singleton && world.class_is_a(owner, om.owner) {
+        return true;
+    }
+    // `Type`'s (or a subclass's, `Meta::ClassDef`'s), on class objects: a
+    // class's own `def self.`, or an extended module's.
+    if world.class_is_a(owner, world.builtin.class_) {
+        return om.singleton
+            || world.class_is_a(om.owner, owner)
+            || (module(om.owner)
+                && world
+                    .classes
+                    .iter()
+                    .any(|rc| rc.extends.iter().any(|&m| world.class_is_a(m, om.owner))));
+    }
+    if module(owner) || owner == world.builtin.object {
+        return true;
+    }
+    if om.singleton {
+        return false;
+    }
+    world.class_is_a(om.owner, owner)
+        || (world.classes[om.owner as usize].kind == RtClassKind::Module
+            && (0..world.classes.len() as ClassId)
+                .any(|c| world.class_is_a(c, owner) && world.class_is_a(c, om.owner)))
 }
 
 /// Whether `m` belongs to a class denied at compile time: a receiver of
@@ -1519,8 +1577,17 @@ impl Runner {
         // statement reaching a method or constant with errors, nor one
         // whose lowering found errors elsewhere (a field default).
         if let Some(bad) = self.bad_reach(fid) {
+            let message = match bad {
+                Ok(m) => format!(
+                    "`{callee_name}` did not run: {}",
+                    self.describe_bad(host, m)
+                ),
+                Err(c) => format!(
+                    "`{callee_name}` did not run: it reaches `{c}`, which has errors (reported above)"
+                ),
+            };
             return Err(StaticFailure {
-                message: format!("`{callee_name}` did not run: it reaches `{bad}`, which has errors (reported above)"),
+                message,
                 notes: Vec::new(),
             });
         }
