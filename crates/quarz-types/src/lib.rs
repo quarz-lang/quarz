@@ -643,6 +643,8 @@ pub trait StaticHost {
     /// The errors reported so far: a run is skipped when the checks it
     /// asked for added some.
     fn error_count(&self) -> usize;
+    /// The errors reported after the first `n`, with their files.
+    fn errors_after(&self, n: usize) -> Vec<(u32, Diagnostic)>;
     /// The classes whose statements have not all run yet (the one
     /// running included): the lowering reaches their methods, and their
     /// descendants', only through a call that resolves to one.

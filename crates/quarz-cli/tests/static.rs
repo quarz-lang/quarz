@@ -420,6 +420,58 @@ fn a_method_with_errors_does_not_run_through_the_runtime() {
 }
 
 #[test]
+fn a_statement_blocked_by_a_method_reached_by_name_names_it() {
+    // The statement's `String.build` reaches every `build` by name: a
+    // test class's, whose body uses what the statement would generate.
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Model\n  static def self.table(name: String) -> Void\n    s = String.build { |b| b << name }\n    def_method(:table_name) { s }\n  end\nend\n",
+    );
+    write(
+        &d.0,
+        "m.qz",
+        "require_relative \"lib\"\nclass Post < Model\n  table \"posts\"\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "spec.qz",
+        "require_relative \"m\"\nclass Spec\n  def build -> String = Post.new.table_name\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("`table` did not run: `Spec#build` (spec.qz:3), which it may reach by name, has errors: undefined method `table_name` for Post"),
+        "{err}"
+    );
+    // A method without errors of its own that uses a constant whose
+    // initializer has some: the constant's is quoted, as what it uses.
+    let app2 = write(
+        &d.0,
+        "spec2.qz",
+        "require_relative \"m\"\nK = nosuch_thing\nclass Spec\n  def build -> String\n    puts K\n    \"x\"\n  end\nend\n",
+    );
+    let (ok, _, err2) = quarz(
+        &d.0,
+        &["check", app2.to_str().unwrap()],
+        &[("QUARZ_NO_CACHE", "1")],
+    );
+    assert!(!ok);
+    assert!(
+        err2.contains("`table` did not run: `Spec#build` (spec2.qz:4), which it may reach by name, uses what has errors: undefined local variable or method `nosuch_thing` for main (spec2.qz:2)"),
+        "{err2}"
+    );
+    // The method's own error is reported, once.
+    assert_eq!(
+        err.matches("spec.qz:3:25: error: undefined method `table_name` for Post")
+            .count(),
+        1,
+        "{err}"
+    );
+}
+
+#[test]
 fn compile_time_only_calls_through_operators_and_symbol_procs() {
     let d = dir();
     let app = write(

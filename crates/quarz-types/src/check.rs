@@ -15318,6 +15318,14 @@ impl crate::StaticHost for Checker {
     fn error_count(&self) -> usize {
         Checker::error_count(self)
     }
+    fn errors_after(&self, n: usize) -> Vec<(u32, Diagnostic)> {
+        self.diagnostics
+            .iter()
+            .filter(|(_, d)| d.is_error())
+            .skip(n)
+            .cloned()
+            .collect()
+    }
     fn pending_classes(&self) -> Vec<ClassId> {
         self.pending_statement_classes()
     }
