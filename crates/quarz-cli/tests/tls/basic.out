@@ -1,0 +1,29 @@
+true
+taken over: closed stream
+"http/1.1"
+true
+true
+true
+TLSSocket
+#<TLSSocket localhost 127.0.0.1:PORT>
+"hello\n"
+"ab\n"
+"c\n"
+"b\"d\\n\""
+100001
+"abcde"
+"zabcd\n"
+true
+"bye\n"
+nil
+""
+true
+true
+closed: closed stream
+"bye\n"
+""
+"last\n"
+"1.3\n"
+nil
+after close_write: not opened for writing
+reader: closed stream

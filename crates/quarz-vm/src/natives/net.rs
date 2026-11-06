@@ -638,7 +638,7 @@ fn listener_accept(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
 
 // ----- stream operations (used by the IO natives) ---------------------------------
 
-fn socket<'a>(interp: &Interp, v: &'a Value) -> Result<&'a IoCell<SocketState>, Flow> {
+pub(crate) fn socket<'a>(interp: &Interp, v: &'a Value) -> Result<&'a IoCell<SocketState>, Flow> {
     match &io_of(interp, v)?.kind {
         IoKind::Socket(st) => Ok(st),
         _ => Err(interp.err_type("not a stream socket")),
@@ -673,35 +673,91 @@ fn udp_fd(interp: &Interp, st: &IoCell<UdpState>) -> Result<RawFd, Flow> {
     }
 }
 
-/// Read from the socket until `take` can take what it wants from the
-/// buffer (it sees `eof` once the stream has ended). Taking, and reading
+/// A stream the read natives take from: the bytes read but not yet
+/// taken, whether the stream has ended, and how to read more without
+/// waiting (a socket, or a TLS connection over one).
+pub(crate) trait Readable: Watched {
+    fn buffer(&mut self) -> (&mut Vec<u8>, bool);
+    fn fill(&mut self, chunk: &mut [u8]) -> Fill;
+}
+
+/// What reading more without waiting gave.
+pub(crate) enum Fill {
+    /// Bytes, or the end of the stream: look again.
+    More,
+    /// Nothing until the descriptor is readable.
+    Wait(RawFd),
+    Closed,
+    Failed(StreamError),
+}
+
+/// A failure of a stream, made into an exception once its state's lock
+/// is released.
+pub(crate) enum StreamError {
+    Os(std::io::Error, &'static str),
+    Tls(super::tls_io::TlsFailure),
+}
+
+pub(crate) fn stream_error(interp: &Interp, e: StreamError) -> Flow {
+    match e {
+        StreamError::Os(e, what) => os_error(interp, e, what),
+        StreamError::Tls(f) => super::tls_io::tls_error(interp, f),
+    }
+}
+
+pub(crate) fn closed_stream(interp: &Interp) -> Flow {
+    interp.raise(interp.program.exc.io_error, "closed stream")
+}
+
+impl Readable for SocketState {
+    fn buffer(&mut self) -> (&mut Vec<u8>, bool) {
+        (&mut self.rbuf, self.eof)
+    }
+
+    fn fill(&mut self, chunk: &mut [u8]) -> Fill {
+        let Some(stream) = self.stream.as_mut() else {
+            return Fill::Closed;
+        };
+        match stream.read(chunk) {
+            Ok(0) => self.eof = true,
+            Ok(n) => self.rbuf.extend_from_slice(&chunk[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Fill::Wait(stream.fd()),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Fill::Failed(StreamError::Os(e, "read")),
+        }
+        Fill::More
+    }
+}
+
+/// Read from the stream until `take` can take what it wants from the
+/// buffer (it sees whether the stream has ended). Taking, and reading
 /// more when it cannot, happen under the state's lock, released only to
-/// wait for the socket: with tasks on several threads, a read call takes
-/// a whole unit (a line, all of the rest) however they interleave.
-fn read_with<R>(
+/// wait for the descriptor: with tasks on several threads, a read call
+/// takes a whole unit (a line, all of the rest) however they interleave.
+fn read_with<S: Readable, R>(
     interp: &Interp,
-    st: &IoCell<SocketState>,
-    mut take: impl FnMut(&mut SocketState) -> Option<R>,
+    st: &IoCell<S>,
+    mut take: impl FnMut(&mut Vec<u8>, bool) -> Option<R>,
 ) -> Result<R, Flow> {
     let mut chunk = [0u8; 8192];
     loop {
         let fd = {
             let mut s = st.borrow_mut();
             loop {
-                if let Some(r) = take(&mut s) {
+                let (buf, ended) = s.buffer();
+                if let Some(r) = take(buf, ended) {
                     return Ok(r);
                 }
-                let Some(stream) = s.stream.as_mut() else {
-                    return Err(interp.raise(interp.program.exc.io_error, "closed stream"));
-                };
-                match stream.read(&mut chunk) {
-                    Ok(0) => s.eof = true,
-                    Ok(n) => s.rbuf.extend_from_slice(&chunk[..n]),
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break stream.fd(),
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(e) => {
+                match s.fill(&mut chunk) {
+                    Fill::More => {}
+                    Fill::Wait(fd) => break fd,
+                    Fill::Closed => {
                         drop(s);
-                        return Err(os_error(interp, e, "read"));
+                        return Err(closed_stream(interp));
+                    }
+                    Fill::Failed(e) => {
+                        drop(s);
+                        return Err(stream_error(interp, e));
                     }
                 }
             }
@@ -711,83 +767,125 @@ fn read_with<R>(
 }
 
 /// One line including its newline; `None` at the end of the stream.
-pub fn socket_gets(interp: &Interp, st: &IoCell<SocketState>) -> Result<Option<String>, Flow> {
-    read_with(interp, st, |s| {
-        if let Some(pos) = s.rbuf.iter().position(|b| *b == b'\n') {
-            let line: Vec<u8> = s.rbuf.drain(..=pos).collect();
+pub(crate) fn socket_gets<S: Readable>(
+    interp: &Interp,
+    st: &IoCell<S>,
+) -> Result<Option<String>, Flow> {
+    read_with(interp, st, |buf, ended| {
+        if let Some(pos) = buf.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = buf.drain(..=pos).collect();
             return Some(Some(String::from_utf8_lossy(&line).into_owned()));
         }
-        if !s.eof {
+        if !ended {
             return None;
         }
-        if s.rbuf.is_empty() {
+        if buf.is_empty() {
             return Some(None);
         }
-        let rest = std::mem::take(&mut s.rbuf);
+        let rest = std::mem::take(buf);
         Some(Some(String::from_utf8_lossy(&rest).into_owned()))
     })
 }
 
 /// Everything up to the end of the stream, or up to `limit` bytes.
-pub fn socket_read(
+pub(crate) fn socket_read<S: Readable>(
     interp: &Interp,
-    st: &IoCell<SocketState>,
+    st: &IoCell<S>,
     limit: Option<usize>,
 ) -> Result<Vec<u8>, Flow> {
-    read_with(interp, st, |s| {
+    read_with(interp, st, |buf, ended| {
         if let Some(n) = limit {
-            if s.rbuf.len() >= n {
-                return Some(s.rbuf.drain(..n).collect());
+            if buf.len() >= n {
+                return Some(buf.drain(..n).collect());
             }
         }
-        s.eof.then(|| std::mem::take(&mut s.rbuf))
+        ended.then(|| std::mem::take(buf))
     })
 }
 
 /// Whatever is available, up to `max` bytes (one read when the buffer is
 /// empty); `None` at the end of the stream.
-pub fn socket_read_partial(
+pub(crate) fn socket_read_partial<S: Readable>(
     interp: &Interp,
-    st: &IoCell<SocketState>,
+    st: &IoCell<S>,
     max: usize,
 ) -> Result<Option<Vec<u8>>, Flow> {
-    read_with(interp, st, |s| {
-        if !s.rbuf.is_empty() {
-            let n = max.min(s.rbuf.len());
-            return Some(Some(s.rbuf.drain(..n).collect()));
+    read_with(interp, st, |buf, ended| {
+        if !buf.is_empty() {
+            let n = max.min(buf.len());
+            return Some(Some(buf.drain(..n).collect()));
         }
-        s.eof.then_some(None)
+        ended.then_some(None)
     })
 }
 
-/// Write all of `data`. A write that has to wait for the socket keeps
-/// its turn: another task's write waits until this one is done, so the
-/// bytes of one call are never interleaved with another's.
-pub fn socket_write(interp: &Interp, st: &IoCell<SocketState>, data: &[u8]) -> Result<(), Flow> {
+pub(crate) fn socket_eof<S: Readable>(interp: &Interp, st: &IoCell<S>) -> Result<bool, Flow> {
+    read_with(interp, st, |buf, ended| {
+        if !buf.is_empty() {
+            return Some(false);
+        }
+        ended.then_some(true)
+    })
+}
+
+/// A stream whose writers take turns: one write call goes out whole.
+pub(crate) trait WriteTurn {
+    /// Whether a task is in the middle of a write, and the writers
+    /// waiting for their turn.
+    fn turn(
+        &mut self,
+    ) -> (
+        &mut bool,
+        &mut std::collections::VecDeque<crate::sched::TaskRef>,
+    );
+}
+
+impl WriteTurn for SocketState {
+    fn turn(
+        &mut self,
+    ) -> (
+        &mut bool,
+        &mut std::collections::VecDeque<crate::sched::TaskRef>,
+    ) {
+        (&mut self.writing, &mut self.write_waiters)
+    }
+}
+
+/// Run `body` (a write) in this task's turn: a write that has to wait
+/// for the descriptor keeps its turn, and another task's write waits
+/// until this one is done, so the bytes of one call are never
+/// interleaved with another's.
+pub(crate) fn with_write_turn<S: WriteTurn, R>(
+    interp: &Interp,
+    st: &IoCell<S>,
+    body: impl FnOnce() -> Result<R, Flow>,
+) -> Result<R, Flow> {
     let me = interp.sched.borrow().current_ref();
     loop {
         {
             let mut s = st.borrow_mut();
-            if !s.writing {
-                s.writing = true;
+            let (writing, waiters) = s.turn();
+            if !*writing {
+                *writing = true;
                 break;
             }
             // Woken by something else (a cancellation, uncancellable),
             // it may be listed already.
-            if !s.write_waiters.contains(&me) {
-                s.write_waiters.push_back(me);
+            if !waiters.contains(&me) {
+                waiters.push_back(me);
             }
         }
         if let Err(flow) = interp.park() {
-            // Leaving: a turn this task was woken for (the socket free)
+            // Leaving: a turn this task was woken for (the stream free)
             // goes to the next writer, or nobody would wake it.
             let next = {
                 let mut s = st.borrow_mut();
-                s.write_waiters.retain(|t| *t != me);
-                if s.writing {
+                let (writing, waiters) = s.turn();
+                waiters.retain(|t| *t != me);
+                if *writing {
                     None
                 } else {
-                    s.write_waiters.pop_front()
+                    waiters.pop_front()
                 }
             };
             if let Some(next) = next {
@@ -796,16 +894,22 @@ pub fn socket_write(interp: &Interp, st: &IoCell<SocketState>, data: &[u8]) -> R
             return Err(flow);
         }
     }
-    let r = socket_write_all(interp, st, data);
+    let r = body();
     let next = {
         let mut s = st.borrow_mut();
-        s.writing = false;
-        s.write_waiters.pop_front()
+        let (writing, waiters) = s.turn();
+        *writing = false;
+        waiters.pop_front()
     };
     if let Some(next) = next {
         interp.wake_ref(next);
     }
     r
+}
+
+/// Write all of `data`, in this task's write turn.
+pub fn socket_write(interp: &Interp, st: &IoCell<SocketState>, data: &[u8]) -> Result<(), Flow> {
+    with_write_turn(interp, st, || socket_write_all(interp, st, data))
 }
 
 fn socket_write_all(interp: &Interp, st: &IoCell<SocketState>, data: &[u8]) -> Result<(), Flow> {
@@ -815,7 +919,7 @@ fn socket_write_all(interp: &Interp, st: &IoCell<SocketState>, data: &[u8]) -> R
         let r = {
             let mut s = st.borrow_mut();
             let Some(stream) = s.stream.as_mut() else {
-                return Err(interp.raise(interp.program.exc.io_error, "closed stream"));
+                return Err(closed_stream(interp));
             };
             stream.write(&data[written..])
         };
@@ -830,19 +934,11 @@ fn socket_write_all(interp: &Interp, st: &IoCell<SocketState>, data: &[u8]) -> R
     Ok(())
 }
 
-pub fn socket_eof(interp: &Interp, st: &IoCell<SocketState>) -> Result<bool, Flow> {
-    read_with(interp, st, |s| {
-        if !s.rbuf.is_empty() {
-            return Some(false);
-        }
-        s.eof.then_some(true)
-    })
-}
-
 /// `readpartial` / `read_bytes` for any stream kind.
 fn read_partial(interp: &Interp, recv: &Value, max: usize) -> Result<Option<Vec<u8>>, Flow> {
     match &io_of(interp, recv)?.kind {
         IoKind::Socket(st) => socket_read_partial(interp, st, max),
+        IoKind::Tls(st) => socket_read_partial(interp, st, max),
         _ => {
             let text = super::io::read_limited(interp, recv, max)?;
             Ok(text.map(|t| t.into_bytes()))
@@ -851,14 +947,48 @@ fn read_partial(interp: &Interp, recv: &Value, max: usize) -> Result<Option<Vec<
 }
 
 fn shutdown(interp: &Interp, recv: &Value, how: std::net::Shutdown) -> Result<(), Flow> {
-    let st = socket(interp, recv)?;
-    let s = st.borrow();
-    let r = match &s.stream {
-        Some(Stream::Tcp(t)) => t.shutdown(how),
-        Some(Stream::Unix(u)) => u.shutdown(how),
-        None => return Err(interp.raise(interp.program.exc.io_error, "closed stream")),
+    let r = match &io_of(interp, recv)?.kind {
+        IoKind::Socket(st) => shutdown_stream(&st.borrow(), how),
+        IoKind::Tls(st) => {
+            if how == std::net::Shutdown::Write {
+                return super::tls_io::close_write(interp, st);
+            }
+            shutdown_stream(&st.borrow().sock, how)
+        }
+        _ => return Err(interp.err_type("not a stream socket")),
     };
-    r.map_err(|e| os_error(interp, e, "shutdown"))
+    match r {
+        Some(r) => r.map_err(|e| os_error(interp, e, "shutdown")),
+        None => Err(closed_stream(interp)),
+    }
+}
+
+/// Shut down one side of a socket's stream; `None` once it is closed.
+pub(crate) fn shutdown_stream(
+    s: &SocketState,
+    how: std::net::Shutdown,
+) -> Option<std::io::Result<()>> {
+    Some(match s.stream.as_ref()? {
+        Stream::Tcp(t) => t.shutdown(how),
+        Stream::Unix(u) => u.shutdown(how),
+    })
+}
+
+/// Close a stream socket's state: deregister the descriptor from the
+/// reactor and release it. The tasks waiting on it, returned, are to be
+/// woken (they find it closed).
+pub(crate) fn close_stream(interp: &Interp, s: &mut SocketState) -> Vec<crate::sched::TaskRef> {
+    if let Some(stream) = s.stream.take() {
+        interp.sched.borrow_mut().deregister(stream.fd());
+        let _ = match &stream {
+            Stream::Tcp(t) => t.shutdown(std::net::Shutdown::Both),
+            Stream::Unix(u) => u.shutdown(std::net::Shutdown::Both),
+        };
+    }
+    s.closed = true;
+    let mut w = std::mem::take(&mut s.watch.waiters);
+    w.extend(s.write_waiters.drain(..));
+    w
 }
 
 /// Close any socket kind: deregister from the reactor, then release the
@@ -867,20 +997,8 @@ pub fn close(interp: &Interp, recv: &Value) -> Result<(), Flow> {
     // The tasks waiting on the descriptor, on whatever worker: woken, they
     // find it closed.
     let waiters = match &io_of(interp, recv)?.kind {
-        IoKind::Socket(st) => {
-            let mut s = st.borrow_mut();
-            if let Some(stream) = s.stream.take() {
-                interp.sched.borrow_mut().deregister(stream.fd());
-                let _ = match &stream {
-                    Stream::Tcp(t) => t.shutdown(std::net::Shutdown::Both),
-                    Stream::Unix(u) => u.shutdown(std::net::Shutdown::Both),
-                };
-            }
-            s.closed = true;
-            let mut w = std::mem::take(&mut s.watch.waiters);
-            w.extend(s.write_waiters.drain(..));
-            w
-        }
+        IoKind::Socket(st) => close_stream(interp, &mut st.borrow_mut()),
+        IoKind::Tls(st) => super::tls_io::close(interp, st),
         IoKind::Listener(st) => {
             let mut s = st.borrow_mut();
             if let Some(listener) = s.listener.take() {
@@ -911,6 +1029,7 @@ pub fn close(interp: &Interp, recv: &Value) -> Result<(), Flow> {
 pub fn is_closed(io: &IoVal) -> bool {
     match &io.kind {
         IoKind::Socket(st) => st.borrow().closed,
+        IoKind::Tls(st) => st.borrow().sock.closed,
         IoKind::Listener(st) => st.borrow().closed,
         IoKind::Udp(st) => st.borrow().closed,
         IoKind::File(f) => f.borrow().closed,
@@ -1021,6 +1140,14 @@ pub fn inspect_socket(interp: &Interp, io: &Rc<IoVal>) -> String {
                 .map(|a| a.to_string())
                 .unwrap_or_default()
         ),
+        IoKind::Tls(st) => {
+            let s = st.borrow();
+            format!(
+                "#<TLSSocket {} {}{closed}>",
+                s.server_name,
+                s.sock.peer.map(|a| a.to_string()).unwrap_or_default()
+            )
+        }
         _ => interp.class_name(&Value::Io(io.clone())),
     }
 }

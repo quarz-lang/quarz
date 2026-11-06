@@ -1,0 +1,18 @@
+localhost: ok, verified: true
+true
+127.0.0.1: ok, verified: true
+true
+wrong.example: TLS::CertificateError: certificate verify failed (name mismatch)
+true
+localhost: TLS::CertificateError: certificate verify failed (unknown issuer)
+true
+wrong.example: ok, verified: false
+true
+true
+from_pem: no certificate in the PEM
+min_version: :tls12 or :tls13, not :ssl3
+not a server name: not a name!
+handshake timed out
+true
+connection closed during the TLS handshake
+closed socket: closed stream

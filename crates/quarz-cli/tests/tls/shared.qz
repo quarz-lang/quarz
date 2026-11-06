@@ -1,0 +1,40 @@
+# One TLSSocket shared by tasks (tests/tls.rs runs it with one worker and
+# with four): each write goes out whole, in records of its own, and each
+# read takes a whole line. ARGV is the server's port and the
+# certificates' directory.
+require "tls"
+
+port = ARGV[0].to_i
+ca = TLS::Roots.from_pem(File.read(File.join(ARGV[1], "ca.pem")))
+tls = TLSSocket.connect(TCPSocket.new("127.0.0.1", port), "localhost", TLS::Config.new(roots: ca))
+
+# Two writers, lines of 20 000 bytes (more than a record) and short ones;
+# two readers taking the echoes.
+LINES = 40
+writers = ["a", "b"].map do |w|
+  Task.spawn do
+    LINES.times do |i|
+      size = i.even? ? 20_000 : 10
+      tls.puts "#{w} #{i} #{w * size}"
+    end
+  end
+end
+readers = 2.times.map do
+  Task.spawn do
+    got: Array[String] = []
+    while got.size < LINES
+      got = got + [tls.gets.chomp]
+    end
+    got
+  end
+end
+writers.each(&:await)
+lines = readers.flat_map(&:await)
+bad = lines.reject do |l|
+  w, i, body = l.split(" ")
+  size = i.to_i.even? ? 20_000 : 10
+  body == w * size
+end
+p lines.size, bad.size
+p lines.map { |l| l.split(" ").take(2).join(" ") }.sort == (["a", "b"].flat_map { |w| LINES.times.map { |i| "#{w} #{i}" } }).sort
+tls.close

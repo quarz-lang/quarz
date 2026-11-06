@@ -110,6 +110,9 @@ mod steps;
 mod string;
 mod text;
 pub mod time;
+#[cfg(feature = "tls")]
+mod tls;
+pub mod tls_io;
 
 /// Natives with their keys (`Type#name`) and symbols, in the order they
 /// are registered (a later one with the same key wins). Only what
@@ -178,6 +181,7 @@ pub fn compile_time_denied_class(class: &str) -> bool {
         "UNIXSocket",
         "UNIXServer",
         "Socket",
+        "TLSSocket",
         "Time",
     ];
     DENIED_CLASSES.contains(&class)
@@ -274,7 +278,23 @@ fn registry() -> Registry<NativeFn> {
     time::register(&mut m);
     json::register(&mut m);
     digest::register(&mut m);
+    tls_io::register(&mut m);
+    #[cfg(feature = "tls")]
+    tls::register(&mut m);
+    #[cfg(not(feature = "tls"))]
+    no_tls(&mut m);
     m
+}
+
+/// Without the `tls` feature: making a TLS connection raises.
+#[cfg(not(feature = "tls"))]
+fn no_tls(m: &mut Registry<NativeFn>) {
+    native!(m, ["TLSSocket.handshake", "TLS::Roots.check"], |i, _, _| {
+        Err(i.raise(
+            i.program.exc.not_implemented,
+            "TLS is not built in (the `tls` feature of quarz-vm)",
+        ))
+    });
 }
 
 /// Natives with a by-reference version.

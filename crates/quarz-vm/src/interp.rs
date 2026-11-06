@@ -491,6 +491,8 @@ pub struct ExcClasses {
     pub io_error: ClassId,
     pub system_call_error: ClassId,
     pub socket_error: ClassId,
+    pub tls_error: ClassId,
+    pub tls_certificate_error: ClassId,
     pub eof_error: ClassId,
     pub not_implemented: ClassId,
     pub system_exit: ClassId,
@@ -511,6 +513,7 @@ pub struct RtClasses {
     pub udp_socket: ClassId,
     pub unix_socket: ClassId,
     pub unix_server: ClassId,
+    pub tls_socket: ClassId,
     pub random: ClassId,
     pub file: ClassId,
     pub math: ClassId,
@@ -972,6 +975,8 @@ impl Interp {
             io_error: class_by_name("IOError"),
             system_call_error: class_by_name("SystemCallError"),
             socket_error: library_class("SocketError"),
+            tls_error: library_class("TLS::Error"),
+            tls_certificate_error: library_class("TLS::CertificateError"),
             eof_error: class_by_name("EOFError"),
             not_implemented: class_by_name("NotImplementedError"),
             system_exit: class_by_name("SystemExit"),
@@ -989,6 +994,7 @@ impl Interp {
             udp_socket: library_class("UDPSocket"),
             unix_socket: library_class("UNIXSocket"),
             unix_server: library_class("UNIXServer"),
+            tls_socket: library_class("TLSSocket"),
             random: class_by_name("Random"),
             file: class_by_name("File"),
             math: class_by_name("Math"),
@@ -2307,6 +2313,7 @@ impl Interp {
                     }
                 }
                 IoKind::Udp(_) => self.program.rt.udp_socket,
+                IoKind::Tls(_) => self.program.rt.tls_socket,
                 _ => self.program.rt.io,
             },
             Value::Bytes(_) => b.bytes,
@@ -3893,7 +3900,7 @@ impl Interp {
                         if f.closed { " (closed)" } else { "" }
                     )
                 }
-                IoKind::Socket(_) | IoKind::Listener(_) | IoKind::Udp(_) => {
+                IoKind::Socket(_) | IoKind::Listener(_) | IoKind::Udp(_) | IoKind::Tls(_) => {
                     natives::net::inspect_socket(self, io)
                 }
             },

@@ -33,6 +33,10 @@ hmac = "0.13"
 pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
 md5 = { package = "md-5", version = "0.11" }
 base64 = "0.23"
+# `std/tls.qz` (the `tls` feature): rustls with ring as its crypto
+# provider (no cmake), and the system's root certificates.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
 # The allocator (see `src/alloc.rs`): C sources built with the system's
 # compiler.
 # Pinned with libmimalloc-sys: `alloc.rs` sets an option by its number in
@@ -41,8 +45,14 @@ mimalloc = { version = "=0.1.52", optional = true }
 libmimalloc-sys = { version = "=0.1.49", features = ["extended"], optional = true }
 
 [features]
-default = ["mimalloc"]
+default = ["mimalloc", "tls"]
 mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
+# TLS (`TLSSocket`, `std/tls.qz`): without it, connecting raises.
+tls = ["dep:rustls", "dep:rustls-native-certs", "dep:openssl-probe"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Where the `tls` feature says it looked for the system's certificates.
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+openssl-probe = { version = "0.2", optional = true }
