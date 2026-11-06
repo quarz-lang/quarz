@@ -1,0 +1,106 @@
+require "socket"
+
+# (The overview is the comment of `module TLS`, below.)
+
+# A TLS connection over a TCP connection: `TLSSocket.connect` makes one.
+# Every `IO` method works on it, so whatever takes an `IO` takes it.
+#
+# ```quarz no_run
+# sock = TCPSocket.new("example.com", 443)
+# tls = TLSSocket.connect(sock, "example.com")
+# tls.write("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+# puts tls.gets
+# tls.close
+# ```
+class TLSSocket < IO
+  # Takes `socket` over and runs the TLS handshake with its peer, as
+  # `server_name` (the name sent as SNI and the one its certificate is
+  # verified against; an IP address is allowed). When it returns, the
+  # handshake is done. `socket` is closed for the program from then on:
+  # its descriptor belongs to the `TLSSocket`. Only the calling task
+  # waits; `Task.timeout` and `cancel` interrupt the handshake, closing
+  # the connection. Raises `TLS::CertificateError` when the peer's
+  # certificate is refused, `TLS::Error` for another failure.
+  def self.connect(socket: TCPSocket, server_name: String, config: TLS::Config = TLS::Config.default) -> TLSSocket = handshake(socket, server_name, config)
+  private native def self.handshake(socket: TCPSocket, server_name: String, config: TLS::Config) -> TLSSocket
+  # The protocol agreed on by ALPN (`"h2"`, `"http/1.1"`), nil when none
+  # was.
+  native def alpn -> String?
+  # The peer's certificate (DER), nil when it sent none.
+  native def peer_certificate -> Bytes?
+  # Whether the peer's certificate was verified: false with
+  # `verify: false` in the config.
+  native def verified? -> Bool
+end
+
+# TLS: `require "tls"`. A `TLSSocket` is a TLS connection over a
+# `TCPSocket`, through rustls; `TLS::Config` says what to trust and what
+# to offer. Reads, writes and the handshake suspend only the calling task,
+# as a socket's do, and a `TLSSocket` is Shareable as every `IO`: one
+# write call goes out whole (in records of its own), one read call takes
+# a whole unit.
+module TLS
+  # A TLS failure: a handshake the peer refused, a protocol error.
+  class Error < IOError
+  end
+
+  # A peer certificate refused: the message names the reason (unknown
+  # issuer, name mismatch, expired).
+  class CertificateError < Error
+  end
+
+  # The certificates trusted as roots.
+  data Roots(
+    # A PEM bundle, nil for the system's store.
+    pem: Bytes?
+  )
+    # The system's store, read once at the first connection that uses it
+    # (the environment variables SSL_CERT_FILE and SSL_CERT_DIR override
+    # where it is looked for).
+    # Without one, that connection raises `TLS::Error` naming the places
+    # tried.
+    def self.system -> Roots = new(nil)
+
+    # The certificates of a PEM bundle (a database's CA, say). Raises
+    # `TLS::Error` when it holds none, or one that does not parse.
+    def self.from_pem(pem: Bytes) -> Roots = new(check(pem))
+    # :ditto:
+    def self.from_pem(pem: String) -> Roots = new(check(pem.to_bytes))
+
+    private native def self.check(pem: Bytes) -> Bytes
+  end
+
+  # What a client connection trusts and offers. Immutable, so one config
+  # serves any number of connections and tasks; the configuration built
+  # from it is kept, so connecting again does not read the roots again.
+  #
+  # ```quarz no_run
+  # config = TLS::Config.new(roots: TLS::Roots.from_pem(File.read("ca.pem")),
+  #                          alpn: ["h2", "http/1.1"], min_version: :tls13)
+  # ```
+  data Config(
+    # The roots the peer's certificate must chain to.
+    roots: Roots,
+    # The protocols offered by ALPN, preferred first.
+    alpn: Array[String],
+    # The oldest version accepted: `:tls12` or `:tls13`.
+    min_version: Symbol,
+    # Whether the peer's certificate is verified. `false` keeps the
+    # connection encrypted but drops the peer's authentication: for tests
+    # and local setups only (`TLSSocket#verified?` says so).
+    verify: Bool
+  )
+    def initialize(*, roots: Roots = Roots.system, alpn: Array[String] = [], min_version: Symbol = :tls12, verify: Bool = true)
+      unless min_version == :tls12 || min_version == :tls13
+        raise ArgumentError, "min_version: :tls12 or :tls13, not #{min_version.inspect}"
+      end
+      @roots = roots
+      @alpn = alpn
+      @min_version = min_version
+      @verify = verify
+    end
+
+    # The system's roots, no ALPN, TLS 1.2 and later, verified.
+    def self.default -> Config = new
+  end
+end

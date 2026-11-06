@@ -168,6 +168,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 .map_err(|e| os_error(i, e, "flush"))?;
             }
             IoKind::Stdout | IoKind::Stderr | IoKind::Stdin => i.flush(),
+            IoKind::Tls(st) => super::tls_io::flush(i, st)?,
             _ => {}
         }
         Ok(Value::Nil)
@@ -175,7 +176,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "IO#close", |i, r, _| {
         match &io_of(i, r)?.kind {
             IoKind::File(f) => file_close(i, f)?,
-            IoKind::Socket(_) | IoKind::Listener(_) | IoKind::Udp(_) => net::close(i, r)?,
+            IoKind::Socket(_) | IoKind::Listener(_) | IoKind::Udp(_) | IoKind::Tls(_) => {
+                net::close(i, r)?
+            }
             _ => {}
         }
         Ok(Value::Nil)
@@ -213,6 +216,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 .unwrap_or(true)
             }
             IoKind::Socket(st) => net::socket_eof(i, st)?,
+            IoKind::Tls(st) => net::socket_eof(i, st)?,
             _ => false,
         }))
     });
@@ -239,7 +243,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 )?
                 .map_err(|e| os_error(i, e, "rewind"))?;
             }
-            IoKind::Socket(_) | IoKind::Listener(_) | IoKind::Udp(_) => {
+            IoKind::Socket(_) | IoKind::Listener(_) | IoKind::Udp(_) | IoKind::Tls(_) => {
                 return Err(i.raise(i.program.exc.io_error, "cannot rewind a socket"))
             }
             _ => {}
@@ -1095,6 +1099,7 @@ fn io_write_bytes(interp: &Interp, recv: &Value, bytes: &[u8]) -> Result<(), Flo
             .map_err(|e| os_error(interp, e, "write"))?;
         }
         IoKind::Socket(st) => net::socket_write(interp, st, bytes)?,
+        IoKind::Tls(st) => super::tls_io::write(interp, st, bytes)?,
         IoKind::Listener(_) | IoKind::Udp(_) => {
             return Err(interp.raise(interp.program.exc.io_error, "not opened for writing"))
         }
@@ -1122,6 +1127,7 @@ fn io_gets(interp: &Interp, recv: &Value, raise_on_eof: bool) -> EvalResult {
             (!buf.is_empty()).then(|| String::from_utf8_lossy(&buf).into_owned())
         }
         IoKind::Socket(st) => net::socket_gets(interp, st)?,
+        IoKind::Tls(st) => net::socket_gets(interp, st)?,
         _ => return Err(interp.raise(interp.program.exc.io_error, "not opened for reading")),
     };
     match line {
@@ -1173,6 +1179,7 @@ fn read_raw(interp: &Interp, recv: &Value, limit: Option<usize>) -> Result<Vec<u
             .map_err(|e| os_error(interp, e, "read"))?
         }
         IoKind::Socket(st) => net::socket_read(interp, st, limit)?,
+        IoKind::Tls(st) => net::socket_read(interp, st, limit)?,
         _ => return Err(interp.raise(interp.program.exc.io_error, "not opened for reading")),
     })
 }

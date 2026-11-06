@@ -1,0 +1,99 @@
+# A connection to the test server (tests/tls.rs): ARGV is its port and
+# the certificates' directory.
+require "tls"
+
+port = ARGV[0].to_i
+ca = TLS::Roots.from_pem(File.read(File.join(ARGV[1], "ca.pem")))
+config = TLS::Config.new(roots: ca, alpn: ["h2", "http/1.1"])
+
+def open(port: Int, config: TLS::Config) -> TLSSocket
+  TLSSocket.connect(TCPSocket.new("127.0.0.1", port), "localhost", config)
+end
+
+# The socket is taken over.
+sock = TCPSocket.new("127.0.0.1", port)
+tls = TLSSocket.connect(sock, "localhost", config)
+p sock.closed?
+begin
+  sock.gets
+rescue IOError => e
+  puts "taken over: #{e.message}"
+end
+p tls.alpn, tls.verified?, tls.peer_certificate&.size&.positive?
+p tls.is_a?(IO), tls.class
+puts tls.inspect.sub(/:\d+>/, ":PORT>")
+
+# Every IO method.
+tls.puts "hello"
+p tls.gets
+tls.write("a", "b", "\n")
+p tls.read(3)
+tls << "c\n"
+p tls.readpartial(100)
+tls.print "d\n"
+p tls.read_bytes(10).to_s
+tls.flush
+
+# Records: a reply of 100 000 bytes, a line of 40 000 bytes each way.
+tls.puts "!big 100000"
+big = tls.read(100_001)
+p big.size, big[0, 5], big[99_995, 6]
+line = "x" * 40_000
+tls.puts line
+p tls.gets == "#{line}\n"
+
+# close_notify from the peer: the end of the stream.
+tls.puts "!notify"
+p tls.gets
+p tls.gets?, tls.read?, tls.eof?
+tls.close
+p tls.closed?
+begin
+  tls.puts "after close"
+rescue IOError => e
+  puts "closed: #{e.message}"
+end
+
+# A peer gone without close_notify: the end too.
+tls = open(port, config)
+tls.puts "!abrupt"
+p tls.gets
+p tls.read?
+tls.close
+
+# close_write sends close_notify: the server stops reading.
+tls = open(port, config)
+tls.puts "last"
+tls.close_write
+p tls.read
+tls.close
+
+# TLS 1.3 only.
+tls = open(port, TLS::Config.new(roots: ca, min_version: :tls13))
+tls.puts "1.3"
+p tls.gets, tls.alpn
+tls.close
+
+# close_write, then a write: refused.
+tls = open(port, config)
+tls.close_write
+begin
+  tls.puts "late"
+rescue IOError => e
+  puts "after close_write: #{e.message}"
+end
+tls.close
+
+# Closing fails what waits: a task reading when another closes.
+tls = open(port, config)
+reader = Task.spawn do
+  begin
+    tls.gets
+    "read"
+  rescue IOError => e
+    "reader: #{e.message}"
+  end
+end
+Task.sleep(50.ms)
+tls.close
+puts reader.await

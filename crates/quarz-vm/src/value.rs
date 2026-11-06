@@ -2575,6 +2575,9 @@ pub enum IoKind {
     /// A listening socket (`TCPServer`, `UNIXServer`).
     Listener(IoCell<ListenerState>),
     Udp(IoCell<UdpState>),
+    /// A TLS connection over a stream socket it took over
+    /// (`TLSSocket`, `std/tls.qz`).
+    Tls(IoCell<crate::natives::tls_io::TlsState>),
 }
 
 #[derive(Debug)]

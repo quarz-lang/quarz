@@ -1,0 +1,89 @@
+# Refused certificates and failed handshakes, against the test server
+# (tests/tls.rs): ARGV is its port and the certificates' directory.
+require "tls"
+
+port = ARGV[0].to_i
+dir = ARGV[1]
+ca = TLS::Roots.from_pem(File.read(File.join(dir, "ca.pem")))
+other = TLS::Roots.from_pem(File.read(File.join(dir, "other-ca.pem")).to_bytes)
+
+def attempt(port: Int, name: String, config: TLS::Config) -> Void
+  sock = TCPSocket.new("127.0.0.1", port)
+  begin
+    tls = TLSSocket.connect(sock, name, config)
+    tls.puts "ok"
+    puts "#{name}: #{tls.gets.chomp}, verified: #{tls.verified?}"
+    tls.close
+  rescue TLS::CertificateError => e
+    puts "#{name}: #{e.class}: #{e.message.split(":")[0]}"
+  end
+  p sock.closed?
+end
+
+attempt(port, "localhost", TLS::Config.new(roots: ca))
+attempt(port, "127.0.0.1", TLS::Config.new(roots: ca))
+attempt(port, "wrong.example", TLS::Config.new(roots: ca))
+attempt(port, "localhost", TLS::Config.new(roots: other))
+# verify: false: encrypted, not authenticated.
+attempt(port, "wrong.example", TLS::Config.new(roots: other, verify: false))
+p TLS::CertificateError.new("x").is_a?(IOError)
+
+# Bad configs.
+begin
+  TLS::Roots.from_pem("not a certificate")
+rescue TLS::Error => e
+  puts "from_pem: #{e.message}"
+end
+begin
+  TLS::Config.new(min_version: :ssl3)
+rescue ArgumentError => e
+  puts e.message
+end
+begin
+  TLSSocket.connect(TCPSocket.new("127.0.0.1", port), "not a name!", TLS::Config.new(roots: ca))
+rescue ArgumentError => e
+  puts e.message
+end
+
+# A peer that never answers: Task.timeout bounds the handshake, and the
+# connection is closed.
+silent = TCPServer.new("127.0.0.1", 0)
+held = Channel[TCPSocket].new(1)
+Task.scope do |scope|
+  scope.spawn { held.send(silent.accept) }
+  sock = TCPSocket.new("127.0.0.1", silent.local_address.port)
+  begin
+    Task.timeout(200.ms) { TLSSocket.connect(sock, "localhost", TLS::Config.new(roots: ca)) }
+  rescue Task::Timeout
+    puts "handshake timed out"
+  end
+  p sock.closed?
+  held.receive.close
+end
+
+# A peer that hangs up during the handshake (its write side only, so
+# that what it has not read does not make the close a reset).
+Task.scope do |scope|
+  peer = Channel[TCPSocket].new(1)
+  scope.spawn do
+    s = silent.accept
+    s.close_write
+    peer.send(s)
+  end
+  begin
+    TLSSocket.connect(TCPSocket.new("127.0.0.1", silent.local_address.port), "localhost", TLS::Config.new(roots: ca))
+  rescue TLS::Error => e
+    puts e.message
+  end
+  peer.receive.close
+end
+silent.close
+
+# A closed socket cannot be taken over.
+sock = TCPSocket.new("127.0.0.1", port)
+sock.close
+begin
+  TLSSocket.connect(sock, "localhost", TLS::Config.new(roots: ca))
+rescue IOError => e
+  puts "closed socket: #{e.message}"
+end

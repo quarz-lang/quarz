@@ -1,0 +1,10 @@
+# An HTTPS request to a public host (ARGV[0]) with the system's roots:
+# tests/tls.rs runs it only when QUARZ_TLS_PUBLIC_HOST is set.
+require "tls"
+
+host = ARGV[0]
+tls = TLSSocket.connect(TCPSocket.new(host, 443), host, TLS::Config.new(alpn: ["http/1.1"]))
+tls.write("HEAD / HTTP/1.1\r\nHost: #{host}\r\nConnection: close\r\n\r\n")
+puts tls.gets.split(" ")[0]
+p tls.verified?
+tls.close
