@@ -1,0 +1,35 @@
+# A generic `data` type is Shareable by its fields with its arguments put
+# in (docs/03 §5): `ModelOps[T]` holds `T` only in a `shareable`
+# procedure type, so a class that promises Shareable may hold one for any
+# `T`, and a task may take it.
+
+class Counter
+  var @n: Int = 0
+  def bump -> Int
+    @n += 1
+    @n
+  end
+end
+
+class Model
+  @name: String
+  def initialize(@name: String); end
+  def name -> String = @name
+end
+
+data ModelOps[T] = (as_model: shareable (T) -> Model)
+
+class Query[T]
+  include Shareable
+  @ops: ModelOps[T]?
+  def initialize(@ops: ModelOps[T]?); end
+  def describe(x: T) -> String
+    ops = @ops
+    ops ? ops.as_model.call(x).name : "none"
+  end
+end
+
+q = Query[Counter].new(ModelOps[Counter].new(->(c: Counter) { Model.new("counter") }))
+t = Task.spawn { q.describe(Counter.new) }
+puts t.await
+puts Query[Counter].new(nil).describe(Counter.new)

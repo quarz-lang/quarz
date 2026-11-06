@@ -2947,6 +2947,61 @@ fn shareable_by_arguments_is_not_laundered() {
 }
 
 #[test]
+fn a_generic_data_type_is_shareable_by_its_instantiated_fields() {
+    let counter = "class Counter\n  var @n: Int = 0\nend\n";
+    // `T` only in a `shareable` procedure type: Shareable for any `T`, so
+    // a class promising Shareable may hold one (docs/03 §5).
+    ok(&format!("{counter}class Model\nend\ndata ModelOps[T] = (as_model: shareable (T) -> Model)\nclass Query[T]\n  include Shareable\n  @ops: ModelOps[T]?\n  def initialize(@ops: ModelOps[T]?); end\nend\nops: Shareable = ModelOps[Counter].new(->(c: Counter) {{ Model.new }})\nq: Shareable = Query[Counter].new(nil)\n"));
+    // A variant without fields, and a `Type[T]` field.
+    ok(&format!("{counter}enum L[T]\n  variant Cons(h: T, t: L[T])\n  variant E\nend\ndata K[T] = (t: Type[T])\nz: Shareable = L::E[Counter].new\nk: Shareable = K[Counter].new(Counter)\nl: Shareable = L::Cons[Int].new(1, L::E[Int].new)\n"));
+    // Refused: a field `T` with a non-Shareable argument, `Array[T]` with
+    // a class argument, an enum one of whose variants holds a `T`.
+    err(
+        &format!("{counter}data Box[T] = (v: T)\nx: Shareable = Box[Counter].new(Counter.new)\n"),
+        "cannot assign Box[Counter] to `x` of type Shareable",
+    );
+    err(&format!("{counter}data Arr[T] = (v: Array[T])\ny: Shareable = Arr[Counter].new([Counter.new])\n"), "cannot assign Arr[Counter] to `y` of type Shareable");
+    err(&format!("{counter}enum L[T]\n  variant Cons(h: T, t: L[T])\n  variant E\nend\ndef f(l: L[Counter]) -> Shareable = l\n"), "L[Counter]");
+    // An instance met again assumes nothing for good: `Y` is not
+    // Shareable because `A[Counter, Y]` holds a `Counter`, whichever of
+    // `Z` and `Y` is decided first.
+    err(&format!("{counter}data A[T, U] = (u: U?, v: T)\ndata Z = (a: A[Counter, Y]?)\ndata Y = (a: A[Counter, Y]?)\ny = Y.new(A[Counter, Y].new(nil, Counter.new))\ns: Shareable = y\n"), "cannot assign Y to `s` of type Shareable");
+    // A generic module promising Shareable is so by its arguments: a
+    // `data` type including it and `Shareable` need not bound `T`.
+    err(&format!("{counter}module M[T]\n  include Shareable\n  def share -> Task[Int]\n    me = self\n    Task.spawn {{ me.hash }}\n  end\nend\ndata D[T](v: T)\n  include Shareable\n  include M[T]\nend\n"), "`me` has the non-shareable type M[T]");
+    // A class decided Shareable leaning on an instance that is not does
+    // not stay so when a bound drops the instance's negative answer: `D`
+    // holds a procedure, so `D2`, which holds a `D`, is not Shareable.
+    err(&format!("{counter}module M\n  include Shareable\nend\ndata G[T, U] = (u: U?, v: T)\ndata D2[T <: Shareable](f: G[T, D]?)\n  include M\nend\ndata D = (g: G[() -> Nothing, D]?)\n"), "`D2` must be Shareable, since `M` includes `Shareable`, but its field `@f` has the non-shareable type");
+    // Nor is an instance whose answer leaned on a class decided only
+    // provisionally (`D`, which `C` holding a `Counter` makes not
+    // Shareable), whatever the order of `C`'s fields.
+    err(&format!("{counter}data C = (d: D, b: Box[D], k: Counter)\ndata D = (c: C?)\ndata Box[T] = (v: T)\ncc = C.new(D.new(nil), Box.new(D.new(nil)), Counter.new)\nx = Box.new(D.new(cc))\nt = Task.spawn do\n  x.v.c\n  0\nend\n"), "`x` has the non-shareable type Box[D]");
+    // An instance of a type parameter (`Self`) is judged where it is
+    // asked, not kept: `Box[Self]` is Shareable in `A`, not in `B`.
+    err("data Box[T] = (v: T)\nclass A\n  include Shareable\n  def go -> Self\n    b: Box[Self] = Box.new(self)\n    t = Task.spawn { b.hash }\n    t.await\n    self\n  end\nend\nclass B\n  var @n: Int = 0\n  def bump -> Int\n    @n += 1\n    @n\n  end\n  def go -> Self\n    b: Box[Self] = Box.new(self)\n    t = Task.spawn { b.v.bump }\n    t.await\n    self\n  end\nend\n", "`b` has the non-shareable type Box[Self]");
+    // Instances reached by many paths are judged once (this took time
+    // exponential in the number of types).
+    let chain: String = (0..30)
+        .map(|i| match i {
+            28 => "data T28[X] = (a: T29[X]?, v: X)\n".to_string(),
+            29 => "data T29[X] = (v: X)\n".to_string(),
+            _ => format!(
+                "data T{i}[X] = (a: T{}[X]?, b: T{}[X]?, v: X)\n",
+                i + 1,
+                i + 2
+            ),
+        })
+        .collect();
+    ok(&format!("{chain}x = T0[Int].new(nil, nil, 1)\nt = Task.spawn {{ x.v }}\ndef f(y: T0[Int]) -> Shareable = y\n"));
+    // Instances whose arguments grow end (by their arguments there).
+    ok("data N[T] = (n: N[Array[T]]?, v: T)\ndef f(x: N[Int]) -> Shareable = x\nx = N[Int].new(nil, 1)\nputs x.v\n");
+    // A class promising Shareable whose field is a generic `data` type
+    // holding a `T` still needs `T` bounded.
+    err("data Box[T] = (v: T)\nclass Q[T]\n  include Shareable\n  @b: Box[T]\n  def initialize(@b: Box[T]); end\nend\n", "its parameter `T` may be a non-Shareable type");
+}
+
+#[test]
 fn a_rescue_clauses_variable_is_its_own() {
     // As a block's parameter (docs/01 §12): separate `begin`s may bind it
     // to other classes, an outer local of the name is unchanged, and the
