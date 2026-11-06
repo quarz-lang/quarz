@@ -60,10 +60,19 @@ struct InlineLevel {
     retries: usize,
     /// The handler regions around it (`FnBuilder::handlers`).
     regions: usize,
+    /// What `self` and its class are around it (`FnBuilder::self_override`,
+    /// `class_id`), which an `instance_exec` block changes.
+    outer_self: (Option<Reg>, Option<ClassId>),
 }
 
 impl InlineLevel {
-    fn new(owner: SelfOwner, loops: usize, retries: usize, regions: usize) -> InlineLevel {
+    fn new(
+        owner: SelfOwner,
+        loops: usize,
+        retries: usize,
+        regions: usize,
+        outer_self: (Option<Reg>, Option<ClassId>),
+    ) -> InlineLevel {
         InlineLevel {
             slot_regs: HashMap::default(),
             owner,
@@ -71,6 +80,7 @@ impl InlineLevel {
             loops,
             retries,
             regions,
+            outer_self,
         }
     }
 }
@@ -127,6 +137,11 @@ pub struct FnBuilder<'a> {
     lexical: Vec<Reg>,
     /// The lexical variables assigned so far (in lowering order).
     assigned: HashSet<Reg>,
+    /// Lexical variables given a register ahead of where they are first
+    /// seen (`declare_ensure_vars`), with the level whose `lexical` list
+    /// takes them there (`None`: this function's), so that their order
+    /// there, the order of their releases, stays the source's.
+    deferred_lexical: Vec<(Option<usize>, Reg)>,
     /// Inside an `instance_exec` block lowered in place: the register
     /// holding the receiver, which `self` means here.
     self_override: Option<Reg>,
@@ -190,6 +205,7 @@ impl<'a> FnBuilder<'a> {
             inline: Vec::new(),
             owner: None,
             lexical: Vec::new(),
+            deferred_lexical: Vec::new(),
             assigned: HashSet::default(),
             self_override: None,
             loops: Vec::new(),
@@ -986,7 +1002,7 @@ impl<'a> FnBuilder<'a> {
                 let b = self.new_block();
                 self.term(Term::Jump(b));
                 self.switch(b);
-                self.body(body);
+                self.ensure_body(body);
             }
             if let Some(src) = region.rescuing {
                 self.emit(Inst::Rescuing { src, enter: false });
@@ -995,6 +1011,96 @@ impl<'a> FnBuilder<'a> {
         }
         popped.reverse();
         popped
+    }
+
+    /// The `ensure` body of the region just popped (at
+    /// `self.handlers.len()`), lowered where it is written: outside the
+    /// blocks lowered in place and the loops inside the region (a
+    /// `return` or `break` from such a block runs it), whose variables,
+    /// `self` and loop targets are not its own.
+    fn ensure_body(&mut self, body: &'a [Expr]) {
+        let at = self.handlers.len();
+        let keep = self
+            .inline
+            .iter()
+            .position(|l| l.regions > at)
+            .unwrap_or(self.inline.len());
+        let inner = self.inline.split_off(keep);
+        let saved_self = (self.self_override, self.class_id);
+        if let Some(l) = inner.first() {
+            (self.self_override, self.class_id) = l.outer_self;
+        }
+        let kept_loops = self
+            .loops
+            .iter()
+            .position(|l| l.depth > at)
+            .unwrap_or(self.loops.len());
+        let loops = self.loops.split_off(kept_loops);
+        self.body(body);
+        self.loops.extend(loops);
+        (self.self_override, self.class_id) = saved_self;
+        self.inline.extend(inner);
+    }
+
+    /// Give the variables of this scope (and of the blocks lowered in place
+    /// around it) that the `ensure` body `body` declares their registers
+    /// now: a copy of it on a jump out of a block lowered in place inside
+    /// the region (`ensure_body`) may be where they are first seen, and a
+    /// register made there falls in that block's `ClearRegs` range, which
+    /// would reset it on the block's next run.
+    fn declare_ensure_vars(&mut self, body: &'a [Expr]) {
+        let mut refs: Vec<VarRef> = Vec::new();
+        let out = self.out;
+        let mut visit = |site: crate::capture::Site, nest: crate::capture::Nest| {
+            if let crate::capture::Site::Var(span) | crate::capture::Site::Write(span) = site {
+                if let Some(r) = out.var_refs.get(&span) {
+                    if r.depth >= nest.actual {
+                        refs.push(VarRef {
+                            depth: r.depth - nest.actual,
+                            slot: r.slot,
+                        });
+                    }
+                }
+            }
+        };
+        let mut cx = crate::capture::Cx {
+            out,
+            world: self.world,
+            visit: &mut visit,
+            real_blocks: 0,
+        };
+        for e in body {
+            crate::capture::walk_expr(e, crate::capture::Nest { actual: 0, real: 0 }, &mut cx);
+        }
+        let own = self.lexical.len();
+        let levels: Vec<usize> = self.inline.iter().map(|l| l.lexical.len()).collect();
+        for r in refs {
+            self.resolve(r);
+        }
+        // (Listed for release where first seen, `seen_lexical`.)
+        for reg in self.lexical.split_off(own) {
+            self.deferred_lexical.push((None, reg));
+        }
+        for (i, n) in levels.into_iter().enumerate() {
+            for reg in self.inline[i].lexical.split_off(n) {
+                self.deferred_lexical.push((Some(i), reg));
+            }
+        }
+    }
+
+    /// A variable's register is used: list it for release now if it was
+    /// given ahead (`deferred_lexical`).
+    fn seen_lexical(&mut self, reg: Reg) {
+        if self.deferred_lexical.is_empty() {
+            return;
+        }
+        if let Some(i) = self.deferred_lexical.iter().position(|(_, r)| *r == reg) {
+            let (level, reg) = self.deferred_lexical.swap_remove(i);
+            match level {
+                None => self.lexical.push(reg),
+                Some(l) => self.inline[l].lexical.push(reg),
+            }
+        }
     }
 
     /// `return` from the function, running the `ensure` bodies it leaves.
@@ -1063,8 +1169,9 @@ impl<'a> FnBuilder<'a> {
     }
 
     fn slot_reg(&mut self, slot: u32) -> Reg {
-        if let Some(r) = self.slot_regs.get(&slot) {
-            return *r;
+        if let Some(r) = self.slot_regs.get(&slot).copied() {
+            self.seen_lexical(r);
+            return r;
         }
         let r = self.reg();
         // Registers start as nil; a variable read before assignment is nil.
@@ -1084,8 +1191,9 @@ impl<'a> FnBuilder<'a> {
         let k = self.inline.len();
         if (r.depth as usize) < k {
             let level = k - 1 - r.depth as usize;
-            if let Some(reg) = self.inline[level].slot_regs.get(&r.slot) {
-                return VarLoc::Reg(*reg);
+            if let Some(reg) = self.inline[level].slot_regs.get(&r.slot).copied() {
+                self.seen_lexical(reg);
+                return VarLoc::Reg(reg);
             }
             let reg = self.reg();
             let lv = &mut self.inline[level];
@@ -3066,6 +3174,7 @@ impl<'a> FnBuilder<'a> {
             self.loops.len(),
             self.retry_targets.len(),
             self.handlers.len(),
+            (saved_override, saved_class),
         );
         self.inline.push(level);
         for pi in 0..block.params.list.len() {
@@ -3384,6 +3493,7 @@ impl<'a> FnBuilder<'a> {
             self.loops.len(),
             self.retry_targets.len(),
             self.handlers.len(),
+            (self.self_override, self.class_id),
         );
         self.inline.push(level);
         let nparams = block.map_or(0, |b| b.params.list.len());
@@ -4638,6 +4748,7 @@ impl<'a> FnBuilder<'a> {
         let res = self.reg();
         let join = self.new_block();
         if let Some(ensure) = &block.ensure {
+            self.declare_ensure_vars(ensure);
             // The handler block belongs to the outer region.
             let ens_handler = self.new_block();
             self.handlers.push(Region {
