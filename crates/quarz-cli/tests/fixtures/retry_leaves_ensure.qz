@@ -1,0 +1,18 @@
+# A `retry` out of a `begin` in its `rescue` clause runs that `begin`'s
+# `ensure` on its way back, as any jump out of it does.
+
+def h -> Int
+  tries = 0
+  begin
+    raise "a" if tries < 2
+  rescue
+    tries += 1
+    begin
+      retry
+    ensure
+      p 3
+    end
+  end
+  tries
+end
+p h
