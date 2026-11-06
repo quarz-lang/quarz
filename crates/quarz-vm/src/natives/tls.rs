@@ -429,8 +429,10 @@ fn build_server_config(key: &ServerKey) -> Result<Arc<ServerConfig>, TlsFailure>
             rustls::Error::InconsistentKeys(_) => {
                 fail("private_key: does not match the certificate")
             }
-            // ring's key loader: neither RSA, ECDSA nor EdDSA.
-            rustls::Error::General(_) => fail("private_key: not an RSA, ECDSA or EdDSA key"),
+            // ring's key loader.
+            rustls::Error::General(_) => {
+                fail("private_key: not a key that can sign (RSA, ECDSA P-256 or P-384, Ed25519)")
+            }
             rustls::Error::InvalidCertificate(_) => {
                 fail("certificate: the first certificate does not parse")
             }

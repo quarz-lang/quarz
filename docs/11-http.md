@@ -1,6 +1,6 @@
 # HTTP: The Server
 
-`require "http"` gives the `HTTP` module: an HTTP/1.1 server written in Quarz on top of the sockets ([06-stdlib.md](06-stdlib.md) §9), for use as an application server behind a reverse proxy, as Puma is used. The proxy terminates TLS (or the server does, with `tls:`) and speaks HTTP/2 to the clients; the server speaks HTTP/1.1 to the proxy, with keep-alive and chunked bodies. A client, `HTTP::Client`, will follow with the same request and response types; neither follows Ruby's `net/http`.
+`require "http"` gives the `HTTP` module: an HTTP/1.1 server written in Quarz on top of the sockets ([06-stdlib.md](06-stdlib.md) §9), for use as an application server behind a reverse proxy, as Puma is used. The proxy terminates TLS and speaks HTTP/2 to the clients; the server speaks HTTP/1.1 to the proxy (or, with `tls:`, HTTPS over HTTP/1.1 to the clients themselves), with keep-alive and chunked bodies. A client, `HTTP::Client`, will follow with the same request and response types; neither follows Ruby's `net/http`.
 
 This is implemented in `std/http.qz` (and `Signal` in the prelude, with a few natives), except what §9 leaves for later.
 
@@ -184,7 +184,7 @@ end
 
 A connection's task does:
 
-0. With `tls:` (a `TLS::ServerConfig`, [06-stdlib.md](06-stdlib.md) §9), run the TLS handshake (`config.accept`), in the connection's task so that a slow client holds up only its own connection. It counts against the first request's `read_header_timeout` to begin: the handshake and the wait for that request's first byte share it. A handshake that fails or runs out of time closes the connection quietly, as an `IOError` does (below).
+0. With `tls:` (a `TLS::ServerConfig`, [06-stdlib.md](06-stdlib.md) §9), run the TLS handshake (`config.accept`), in the connection's task so that a slow client holds up only its own connection. It counts against the first request's `read_header_timeout` to begin: the handshake and the wait for that request's first byte share it. A handshake that fails or runs out of time closes the connection quietly, as an `IOError` does (below). The config's `alpn` may hold only `http/1.1` and `http/1.0` (`ArgumentError` otherwise).
 1. Read the request line and headers: the first request has `read_header_timeout` to begin and as long again from its first byte to finish; a later one on the same connection has `idle_timeout` to begin and `read_header_timeout` to finish. Over `max_header_bytes`: `431`. Malformed: `400`. Both close the connection.
 2. Build the `Request` and call the handler. An `HTTP::Error` it raises is answered with that status (§7); any other `StandardError` becomes a `500` with an empty body and goes to `on_error` with the request, or to STDERR with the method and the path as sent (still percent-encoded, so that it cannot hold a line break or an escape, and without the query, which may carry a token); `Task::Cancelled` is not caught. A response whose headers have a name that is not a token, or a value with CR, LF or another control character but HTAB, is not sent: it becomes a `500` too (response splitting; `Headers#put` and `add` already refuse those, so only fields built with `Field.new` get this far). Whatever else fails (a `Stream` procedure that raises after the headers went out) ends that connection and is reported; the server goes on.
 3. Write the response under `write_timeout`, then drain or close as §3 says.
@@ -204,7 +204,7 @@ With `trusted_proxies: ["127.0.0.1", "::1"]` (addresses, or networks as `"10.0.0
 
 ### Shutdown and signals
 
-`shutdown` stops accepting, closes the connections waiting for a request (their reader gets `IOError`, 04-concurrency §6), lets the ones in a handler finish, and after `timeout` cancels them (`Task::Cancelled` at their next wait); then `serve` returns. `shutdown` returns once it has begun, so a handler may call it; `wait` waits for `serve` to return. A shutdown before `serve` makes `serve` return at once. A connection accepted that has not sent a byte yet counts as waiting, and is closed. `Signal` is added with this work, enough for it:
+`shutdown` stops accepting, closes the connections waiting for a request (their reader gets `IOError`, 04-concurrency §6), lets the ones in a handler finish, and after `timeout` cancels them (`Task::Cancelled` at their next wait); then `serve` returns. `shutdown` returns once it has begun, so a handler may call it; `wait` waits for `serve` to return. A shutdown before `serve` makes `serve` return at once. A connection accepted that has not sent a byte yet counts as waiting, and is closed; with `tls:`, one still in its TLS handshake does not, and ends within `read_header_timeout`. `Signal` is added with this work, enough for it:
 
 ```ruby
 server = HTTP::Server.new(handler, port: 8080)

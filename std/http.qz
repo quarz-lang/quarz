@@ -1206,9 +1206,12 @@ module HTTP
     # With `tls:`, it serves HTTPS: each connection's TLS handshake runs in
     # its own task, within `read_header_timeout` together with the wait
     # for the first request; a handshake that fails or runs out of time
-    # closes that connection only. Not with `path:` (`ArgumentError`).
+    # closes that connection only. Not with `path:`, nor with an `alpn`
+    # other than `"http/1.1"` and `"http/1.0"` (`ArgumentError`: the
+    # server speaks no HTTP/2).
     #
     # ```quarz no_run
+    # handler = HTTP.handler { |req| HTTP::Response.text("hello") }
     # tls = TLS::ServerConfig.new(certificate: File.read("server.pem"),
     #                             private_key: File.read("server.key"),
     #                             alpn: ["http/1.1"])
@@ -1224,6 +1227,10 @@ module HTTP
                    on_error: (shareable (Exception, Request?) -> Void)? = nil,
                    tls: TLS::ServerConfig? = nil)
       raise ArgumentError, "tls: is for a TCP server, not a UNIX socket's (path:)" if path && tls
+      if tls
+        other = tls.alpn.find { |p| p != "http/1.1" && p != "http/1.0" }
+        raise ArgumentError, "tls: the server speaks HTTP/1.1, not #{other.inspect} (alpn:)" if other
+      end
       @options = Options.new(read_header_timeout, idle_timeout, read_timeout, write_timeout,
                              max_header_bytes, max_body_bytes, max_connections,
                              Proxies.of(trusted_proxies), on_error, tls)
@@ -1445,6 +1452,7 @@ module HTTP
       if tls
         # Here, not in the accept loop: a slow client holds up its own
         # connection only. A failure ends it, as a read's does.
+        # (A TCP server's: `tls:` is refused with `path:`.)
         case raw
         in TCPSocket => sock
           conn = begin

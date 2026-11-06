@@ -13,7 +13,7 @@ false
 #<TLS::ServerConfig certificate: (N bytes), private_key: <hidden>, alpn: [], min_version: :tls13>
 true
 port N
-TLS::Error
+refused
 true
 TLS::Error
 true

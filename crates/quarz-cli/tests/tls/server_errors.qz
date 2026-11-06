@@ -40,7 +40,7 @@ STDOUT.flush
 
 # 1. a client that refuses the certificate; 2. plain text; 3. a client
 # that sends nothing; 4. a good one.
-4.times do
+4.times do |i|
   sock = listener.accept
   begin
     tls = Task.timeout(500.ms) { TLSSocket.accept(sock, config) }
@@ -48,7 +48,11 @@ STDOUT.flush
     tls.close
     puts "served"
   rescue TLS::Error => e
-    puts e.class
+    puts i == 0 ? "refused" : e.class.name
+  rescue SystemCallError => e
+    # A client that refuses the certificate may reset the connection
+    # before its alert is read.
+    puts i == 0 ? "refused" : e.class.name
   rescue Task::Timeout => e
     puts e.class
   end

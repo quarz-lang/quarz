@@ -31,8 +31,10 @@ class TLSSocket < IO
   # the program, only the calling task waits, and `Task.timeout` and
   # `cancel` interrupt it, closing the connection. Raises `TLS::Error`
   # when the handshake fails (the client refused the certificate, spoke
-  # something else than TLS, shared no protocol version), the connection
-  # closed. The same as `config.accept(socket)`.
+  # something else than TLS, shared no protocol version), and the
+  # socket's `SystemCallError` or `IOError` when the connection does (a
+  # reset); the connection is closed. The same as
+  # `config.accept(socket)`.
   #
   # ```quarz no_run
   # config = TLS::ServerConfig.new(certificate: File.read("server.pem"),
@@ -139,8 +141,9 @@ module TLS
   # What a server presents and offers: its certificate chain and private
   # key (PEM), the protocols it accepts by ALPN, the oldest version.
   # Immutable, so one config serves any number of connections and tasks;
-  # the configuration built from it is kept. Client certificates, OCSP
-  # stapling and session tickets are not supported yet.
+  # the configuration built from it is kept, with its cache of sessions
+  # to resume (rustls's default). Client certificates, OCSP stapling and
+  # settings for resumption are not supported yet.
   #
   # Its `inspect` and `to_s` never show the private key.
   #

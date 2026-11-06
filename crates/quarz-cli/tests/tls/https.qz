@@ -18,6 +18,13 @@ begin
 rescue ArgumentError => e
   puts e.message
 end
+begin
+  HTTP::Server.new(handler, port: 0, tls: TLS::ServerConfig.new(certificate: File.read(File.join(dir, "server.pem")),
+                                                                private_key: File.read(File.join(dir, "server.key")),
+                                                                alpn: ["h2", "http/1.1"]))
+rescue ArgumentError => e
+  puts e.message
+end
 p HTTP::Request.get("/").scheme
 
 server = HTTP::Server.new(handler, host: "127.0.0.1", port: 0, tls: config,
