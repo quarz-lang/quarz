@@ -626,6 +626,10 @@ enum TableUndo {
     ),
     /// A node marked in `Output::varied_types`.
     Varied(NodeId),
+    /// A call's fall-through to an enclosing `self` (`bind_outer_self`)
+    /// before a check recorded one: in `outer_self_calls`, its depth, the
+    /// variable reference at its span.
+    OuterSelf(NodeId, Span, bool, Option<u32>, Option<VarRef>),
     /// A node marked in `Output::not_builtin`.
     NotBuiltin(NodeId),
     /// A call's `Output::quoted_blocks` entry and `Checker::quoted_seen`
@@ -2197,6 +2201,19 @@ impl Checker {
                 }
                 TableUndo::Varied(id) => {
                     self.out.varied_types.remove(&id);
+                }
+                TableUndo::OuterSelf(id, span, was, depth, var) => {
+                    if !was {
+                        self.out.outer_self_calls.remove(&id);
+                    }
+                    match depth {
+                        Some(d) => self.out.outer_self_depths.insert(id, d),
+                        None => self.out.outer_self_depths.remove(&id),
+                    };
+                    match var {
+                        Some(v) => self.out.var_refs.insert(span, v),
+                        None => self.out.var_refs.remove(&span),
+                    };
                 }
                 TableUndo::NotBuiltin(id) => {
                     self.out.not_builtin.remove(&id);
@@ -10555,6 +10572,16 @@ impl Checker {
         };
         let owner = frame.owner;
         let depth = (self.env.frames.len() - 1 - owner_frame) as u32;
+        // (Journaled: a check discarded, an overload tried with its
+        // block's receiver type not yet inferred, leaves no fall-through
+        // behind for the candidate chosen.)
+        self.table_journal.push(TableUndo::OuterSelf(
+            expr.id,
+            expr.span,
+            self.out.outer_self_calls.contains(&expr.id),
+            self.out.outer_self_depths.get(&expr.id).copied(),
+            self.out.var_refs.get(&expr.span).copied(),
+        ));
         self.out.var_refs.insert(expr.span, VarRef { depth, slot });
         self.out.self_slots.insert(owner, slot);
         self.out.outer_self_calls.insert(expr.id);
