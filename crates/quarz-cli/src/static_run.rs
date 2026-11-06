@@ -728,7 +728,7 @@ impl Runner {
                             world.type_name(&Type::Param(t))
                         ));
                     }
-                    let Type::Proc(None, ps, ret, _, kws) = &p else {
+                    let Type::Proc(None, ps, ret, shareable, kws) = &p else {
                         return Err(format!(
                             "{at}: the handle to `{shown}` is made with `{}`, which is not a procedure type (`(A, B) -> R`)",
                             world.type_name(&p)
@@ -737,6 +737,17 @@ impl Runner {
                     if !kws.is_empty() {
                         return Err(format!(
                             "{at}: the handle to `{shown}` is made with `{}`, which takes keywords: a handle names a method whose parameters are all positional",
+                            world.type_name(&p)
+                        ));
+                    }
+                    // A `shareable` handle bound to `self` (`bind`) holds
+                    // that `self`: only an instance of a class that promises
+                    // Shareable may cross tasks (a class method's `self`, a
+                    // class value, always may).
+                    if *shareable && !singleton && world.shareable_promise(*into).is_none() {
+                        let into = &world.class(*into).name;
+                        return Err(format!(
+                            "{at}: the handle to `{shown}` is a `{}`, but `{into}` is not Shareable: bound to its `self`, it would carry that `self` across tasks (make the procedure type plain, or have `{into}` include `Shareable`)",
                             world.type_name(&p)
                         ));
                     }
