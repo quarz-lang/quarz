@@ -1,0 +1,24 @@
+# A block given to a union receiver: an override of a generic
+# superclass's method, chosen by the receiver's class (docs/01 §9).
+class Base[T]
+  @v: T
+  def initialize(@v: T)
+  end
+  def foo(x: T) -> String = "base"
+end
+class Runner < Base[Int]
+  def initialize
+    super(1)
+  end
+  def foo(x: Int) -> String = "runner"
+  def run(h: HC | HA) -> String = h.with { foo(2) }
+end
+class HA
+  def with(&b: Base[Int].() -> String) -> String = Base[Int].new(5).instance_exec(&b)
+end
+class HC
+  def with(&b: () -> String) -> String = b.call
+end
+r = Runner.new
+puts r.run(HA.new)
+puts r.run(HC.new)

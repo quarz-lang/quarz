@@ -1,0 +1,62 @@
+# A block given to a union receiver, checked once per member with that
+# member's block receiver and compiled once (docs/01 §9): an implicit
+# call each member resolves on the block's own `self` calls that `self`'s
+# own; one no member's receiver answers goes to the enclosing `self`.
+class P
+  @s: String
+  def initialize
+    @s = "p" * 2
+  end
+  def both -> String = @s
+end
+class Q
+  @n: Int
+  def initialize
+    @n = 7
+  end
+  def both -> String = "q#{@n}"
+end
+class HA
+  def with(&b: P.() -> String) -> String = P.new.instance_exec(&b)
+  def with(x: Int, &b: P.() -> String) -> String = "#{x}" + P.new.instance_exec(&b)
+end
+class HB
+  def with(&b: Q.() -> String) -> String = Q.new.instance_exec(&b)
+  def with(x: Int, &b: Q.() -> String) -> String = "#{x}" + Q.new.instance_exec(&b)
+end
+class HC
+  def with(&b: () -> String) -> String = b.call
+end
+def helper -> String = "h"
+class Runner
+  def outer -> String = "outer"
+  def run(h: HB | HA) -> String = h.with { both + "/" + outer + "/" + self.both }
+  def run_args(h: HB | HA) -> String = h.with(1) { both }
+  def nested(h: HB | HA, g: HA | HB) -> String = h.with { both + "<" + g.with { both + outer } + ">" }
+  # Functions, which use no `self`: one call whatever the member, and
+  # `Kernel#rand`'s overloads chosen per type of what a block is given.
+  def functions(h: HC | HA) -> String = h.with { print "f:"; helper }
+  def rands(xs: Array[Int] | Array[Float]) -> Void = xs.each { |x| puts rand(x) < 100 }
+  # A member whose block has no receiver: its `self` is this one, the
+  # block's `self` at run time, whose class chooses the method.
+  def both -> String = "r"
+  def mixed(h: HC | HA) -> String = h.with { both + "/" + self.both + "/" + is_a?(P).to_s + "/" + self.class.name }
+  # A block with a receiver inside: that receiver, for every member.
+  def inner(h: HC | HA) -> String = h.with { "ab".instance_exec { upcase } }
+end
+r = Runner.new
+puts r.run(HB.new)
+puts r.run(HA.new)
+puts r.run_args(HB.new)
+puts r.run_args(HA.new)
+puts r.nested(HB.new, HA.new)
+puts r.nested(HA.new, HB.new)
+puts r.nested(HB.new, HB.new)
+puts r.functions(HC.new)
+puts r.functions(HA.new)
+r.rands([5])
+r.rands([2.5])
+puts r.inner(HC.new)
+puts r.inner(HA.new)
+puts r.mixed(HC.new)
+puts r.mixed(HA.new)

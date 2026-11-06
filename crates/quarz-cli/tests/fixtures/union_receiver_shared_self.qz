@@ -1,0 +1,22 @@
+# A block given to a union receiver: a call falling through for one
+# member (`Q` has no `foo`) and on the block's own `self` for one whose
+# block has none: both read the enclosing `self` (docs/01 §9).
+class P
+  def bar -> String = "p"
+end
+class Q
+  def baz -> String = "q"
+end
+class HB
+  def with(&b: Q.() -> String) -> String = Q.new.instance_exec(&b)
+end
+class HC
+  def with(&b: () -> String) -> String = b.call
+end
+class Runner
+  def foo -> String = "runner"
+  def run(h: HC | HB) -> String = h.with { foo }
+end
+r = Runner.new
+puts r.run(HC.new)
+puts r.run(HB.new)
