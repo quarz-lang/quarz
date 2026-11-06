@@ -1,0 +1,46 @@
+# A block's variable starts each pass as nil (`ClearRegs`), also when the
+# compiled code keeps it unboxed: the nil the raise path of an overflow
+# check writes is that path's only, not the pass's (item 91).
+
+def ints -> Int
+  j = 0
+  while j < 2
+    [4, 5].each do |e|
+      g = e + j
+      h = g if j == 0
+      p h
+    end
+    j += 1
+  end
+  0
+end
+
+def floats -> Int
+  j = 0
+  while j < 2
+    [1.5, 2.5].each do |e|
+      g = e * 2.0
+      h = g if j == 0
+      p h
+    end
+    j += 1
+  end
+  0
+end
+
+def bools -> Int
+  j = 0
+  while j < 2
+    [1, 2].each do |e|
+      g = e + j > 1
+      h = g if j == 0
+      p h
+    end
+    j += 1
+  end
+  0
+end
+
+p ints
+p floats
+p bools

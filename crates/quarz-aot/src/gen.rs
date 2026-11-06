@@ -1936,7 +1936,7 @@ impl<B: Builder> Gen<'_, B> {
             self.setup_frame();
         }
         let live = self.live[block as usize][index as usize].clone();
-        self.flush_live(&live);
+        self.flush_live_aside(&live);
         self.materialize();
         let k = self.b.iconst(Ty::I32, i64::from(kind));
         let fid = self.b.iconst(Ty::I32, i64::from(self.fid));
@@ -2185,6 +2185,16 @@ impl<B: Builder> Gen<'_, B> {
             self.flush(r as Reg);
             self.ensure_home(r as Reg);
         }
+    }
+
+    /// `flush_live` on a path of its own (a raise, a slow path through the
+    /// runtime): the nil it writes for a cleared register is on that path
+    /// only, so the register stays stale for the code that goes on
+    /// without it (else the main path reads a home it never wrote).
+    fn flush_live_aside(&mut self, live: &[bool]) {
+        let stale = self.stale.clone();
+        self.flush_live(live);
+        self.stale = stale;
     }
 
     /// Before an edge: write back the live unboxed registers whose state
@@ -2751,7 +2761,7 @@ impl<B: Builder> Gen<'_, B> {
         // The runtime reads the homes: written back here, not before
         // the call.
         let live = self.live[block as usize][index as usize].clone();
-        self.flush_live(&live);
+        self.flush_live_aside(&live);
         self.clear_home(dst);
         let _ = (inst, callee);
         self.runtime_call(mid, recv, args, None, dst, unwind);
@@ -4790,7 +4800,7 @@ impl<B: Builder> Gen<'_, B> {
                 // The runtime reads the homes: written back here, on its
                 // path only.
                 let live = self.live[block as usize][index as usize].clone();
-                self.flush_live(&live);
+                self.flush_live_aside(&live);
                 for (k, r) in args.iter().enumerate() {
                     let v = self.i32(*r);
                     self.b.store(v, self.scratch, 4 * k as i32);
