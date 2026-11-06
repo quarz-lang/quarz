@@ -1,0 +1,98 @@
+# A quoted call on a union receiver lists each member's method
+# (`Meta::Expr::Call#methods`, docs/14 §6), subclasses first; `method`
+# is the method the checker resolved the call to (one the members'
+# override), or the first.
+
+module Cmp
+  extension Nil
+    def >(other: Object) -> Bool = false
+    def speak -> String = "..."
+  end
+end
+
+class Animal
+  def self.make -> Animal = Animal.new
+  def speak -> String = "..."
+  def legs -> Int = 4
+end
+class Cat < Animal
+  def self.make -> Animal = Cat.new
+  def speak -> String = "meow"
+end
+class Dog < Animal
+  def self.make -> Animal = Dog.new
+  def speak -> String = "woof"
+end
+
+type Pet = Cat | Dog
+
+# Inherits `Animal#speak`.
+class Bird < Animal
+end
+
+class Box[T]
+  def put(x: T) -> Int = 0
+end
+class IntBox < Box[Int]
+  def put(x: Int) -> Int = 1
+end
+class OtherBox < Box[Int]
+end
+# Not overrides of one method: overloads of their own.
+class A
+  def to_s(n: Int) -> String = "a"
+end
+class B
+  def to_s(n: Int) -> String = "b"
+end
+
+class Rel
+  def int(&f: Quoted[(Int?) -> Bool]) -> Meta::Expr = f.expr
+  def pet(&f: Quoted[(Cat | Dog) -> Object]) -> Meta::Expr = f.expr
+  def three(&f: Quoted[(Dog | Cat | Nil) -> Object]) -> Meta::Expr = f.expr
+  def on(&f: Quoted[Pet.() -> Object]) -> Meta::Expr = f.expr
+  def bird(&f: Quoted[(Cat | Bird) -> Object]) -> Meta::Expr = f.expr
+  def box(&f: Quoted[(IntBox | OtherBox) -> Object]) -> Meta::Expr = f.expr
+  def ab(&f: Quoted[(A | B) -> Object]) -> Meta::Expr = f.expr
+  def all(&f: Quoted[(Array[Cat | Dog]) -> Object]) -> Meta::Expr = f.expr
+  def kinds(&f: Quoted[(Array[Type[Cat] | Type[Dog]]) -> Object]) -> Meta::Expr = f.expr
+  def nums(&f: Quoted[(Array[Int] | Array[Float]) -> Object]) -> Meta::Expr = f.expr
+end
+
+def ref(m: Meta::MethodRef) -> String
+  ext = m.extension
+  "#{m.owner.name}#{m.singleton ? "." : "#"}#{m.name}[#{m.index}]#{ext ? " (#{ext.name})" : ""}"
+end
+
+def calls(e: Meta::Expr) -> Array[String]
+  case e
+  in Meta::Expr::Call(recv: r, method: m, methods: ms, args: a, block: b)
+    mine = ["#{ref(m)} <- #{ms.size}: #{ms.map { |x| ref(x) }.join(", ")}"]
+    (r ? calls(r) : []) + a.flat_map { |x| calls(x) } + (b ? calls(b) : []) + mine
+  in Meta::Expr::Block(body: b) then b.flat_map { |x| calls(x) }
+  in Meta::Expr::Not(operand: o) then calls(o)
+  else []
+  end
+end
+
+r = Rel.new
+using Cmp do
+  puts calls(r.int { |level| level > 3 })
+  puts calls(r.three { |x| x.speak })
+end
+puts calls(r.pet { |x| x.speak })
+puts calls(r.pet { |x| x.legs })
+puts calls(r.int { |level| !level.nil? })
+puts calls(r.on { speak })
+puts calls(r.all { |xs| xs.map(&:speak) })
+# One member's is the method the other's overrides.
+puts calls(r.bird { |x| x.speak })
+# An override in a generic class's subclass.
+puts calls(r.box { |x| x.put(1) })
+# No method both override: the first.
+puts calls(r.ab { |x| x.to_s(1) })
+# Class methods on class objects, through `&:name`.
+puts calls(r.kinds { |ks| ks.map(&:make) })
+# A block checked once per type, its call's overloads differing by the
+# argument's type (called by name).
+puts calls(r.nums { |xs| xs.map { |v| 1 + v } })

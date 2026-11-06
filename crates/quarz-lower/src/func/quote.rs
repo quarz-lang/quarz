@@ -291,7 +291,7 @@ impl<'a> FnBuilder<'a> {
                 // from the operands written.
                 if let Some(c) = self.out.logical_calls.get(&e.id) {
                     let call_id = c.id;
-                    let method = self.method_ref(call_id);
+                    let (method, methods) = self.method_refs(call_id);
                     let recv = self.quote_expr(q, a);
                     q.levels += 1;
                     let body = self.quote_expr(q, b);
@@ -303,7 +303,7 @@ impl<'a> FnBuilder<'a> {
                     let block = self.node("Block", vec![names, body, l]);
                     let args = self.array_of(Vec::new());
                     let l = self.int(line);
-                    return self.node("Call", vec![recv, method, args, block, l]);
+                    return self.node("Call", vec![recv, method, methods, args, block, l]);
                 }
                 let left = self.quote_expr(q, a);
                 let right = self.quote_expr(q, b);
@@ -376,7 +376,7 @@ impl<'a> FnBuilder<'a> {
         recv: Option<&'q Expr>,
         line: i64,
     ) -> Reg {
-        let method = self.method_ref(e.id);
+        let (method, methods) = self.method_refs(e.id);
         let recv = match recv.or(call.recv.as_ref()) {
             Some(r) => self.quote_expr(q, r),
             // The `self` of the innermost quoted level with a receiver,
@@ -425,7 +425,7 @@ impl<'a> FnBuilder<'a> {
                         (&x.kind, self.out.block_pass.get(&e.id))
                     {
                         let mid = *mid;
-                        block = Some(self.symbol_block(mid, line));
+                        block = Some(self.symbol_block(x.id, mid, line));
                     }
                 }
                 _ => {}
@@ -439,7 +439,7 @@ impl<'a> FnBuilder<'a> {
         let args = self.array_of(args);
         let block = block.unwrap_or_else(|| self.nil());
         let l = self.int(line);
-        self.node("Call", vec![recv, method, args, block, l])
+        self.node("Call", vec![recv, method, methods, args, block, l])
     }
 
     /// The `self` of the `depth`-th quoted level with a receiver
@@ -455,22 +455,140 @@ impl<'a> FnBuilder<'a> {
         }
     }
 
-    /// `&:name` as a block: `Block([:x], [Call(Arg(:x, 0), name)])`.
-    fn symbol_block(&mut self, mid: MethodId, line: i64) -> Reg {
+    /// `&:name` (the symbol node `id`, resolved to `mid`) as a block:
+    /// `Block([:x], [Call(Arg(:x, 0), name)])`.
+    fn symbol_block(&mut self, id: u32, mid: MethodId, line: i64) -> Reg {
         let x = self.load_const(Constant::Symbol("x".to_string()));
         let d = self.int(0);
         let l = self.int(line);
         let arg = self.node("Arg", vec![x, d, l]);
-        let method = self.method_ref_of(mid, None);
+        let (method, methods) = match self.call_methods(id) {
+            Some(ms) => {
+                // As the call `x.name` on the union would be: the method
+                // the members' override, if any (on class objects, the
+                // one the procedure calls).
+                let base = self
+                    .base_method(id, &ms)
+                    .or((!ms.contains(&mid)).then_some(mid));
+                self.method_refs_of(base, &ms)
+            }
+            None => {
+                let method = self.method_ref_of(mid, None);
+                let methods = self.array_of(vec![method]);
+                (method, methods)
+            }
+        };
         let args = self.array_of(Vec::new());
         let nil = self.nil();
         let l = self.int(line);
-        let call = self.node("Call", vec![arg, method, args, nil, l]);
+        let call = self.node("Call", vec![arg, method, methods, args, nil, l]);
         let x = self.load_const(Constant::Symbol("x".to_string()));
         let names = self.array_of(vec![x]);
         let body = self.array_of(vec![call]);
         let l = self.int(line);
         self.node("Block", vec![names, body, l])
+    }
+
+    /// A `Call`'s `method` and `methods` for call `id`. `methods`: what
+    /// the checks found by the receiver's type (`call_methods`), or the
+    /// one method it was resolved to. `method`: the one it was resolved
+    /// to, which for members' methods that override a common one is that
+    /// one (`base_method`), else the first of `methods`.
+    fn method_refs(&mut self, id: u32) -> (Reg, Reg) {
+        // (A construction's table, if any, holds its `initialize`: it is
+        // `new`, `method_ref`'s.)
+        let construction = matches!(
+            self.out.calls.get(&id),
+            Some(CallTarget::Constructor { .. })
+        );
+        if let Some(ms) = self.call_methods(id).filter(|_| !construction) {
+            let base = self.base_method(id, &ms);
+            return self.method_refs_of(base, &ms);
+        }
+        let method = self.method_ref(id);
+        let methods = self.array_of(vec![method]);
+        (method, methods)
+    }
+
+    /// The methods node `id`'s checks found by the receiver's type, each
+    /// once: its table's (`Output::union_calls`, in the order a test of
+    /// the receiver's class tries them), or, where no table says (a call
+    /// by name, `&:name` on class objects), `Output::union_methods`.
+    fn call_methods(&self, id: u32) -> Option<Vec<MethodId>> {
+        let table = self
+            .out
+            .union_calls
+            .get(&id)
+            .filter(|_| !self.out.union_conflicts.contains(&id));
+        let ms: Vec<MethodId> = match table {
+            Some(table) => {
+                let mut ms: Vec<MethodId> = Vec::new();
+                for (_, m) in table {
+                    if !ms.contains(m) {
+                        ms.push(*m);
+                    }
+                }
+                ms
+            }
+            None => self.out.union_methods.get(&id)?.clone(),
+        };
+        (!ms.is_empty()).then_some(ms)
+    }
+
+    /// For node `id`'s methods `ms`, when there are several: the method
+    /// they all are or override, which a call dispatches on (a class
+    /// method on class objects, `World::overridden_class_method`; an
+    /// instance method by the runtime's rule, `overridden_methods_in`),
+    /// the most derived such one, if any.
+    fn base_method(&self, id: u32, ms: &[MethodId]) -> Option<MethodId> {
+        if ms.len() < 2 {
+            return None;
+        }
+        if let Some(b) = self.class_object_base(id) {
+            return Some(b);
+        }
+        let plain = |k: MethodId| {
+            let i = self.world.method(k);
+            !i.singleton && i.extension.is_none()
+        };
+        if !ms.iter().all(|&k| plain(k)) {
+            return None;
+        }
+        // Each method with those it overrides (its owner's ancestors',
+        // most derived first).
+        let sets: Vec<Vec<MethodId>> = ms
+            .iter()
+            .map(|&k| {
+                let m = self.world.method(k);
+                let own: Vec<quarz_types::Type> = self
+                    .world
+                    .class(m.owner)
+                    .type_params
+                    .iter()
+                    .map(|tp| quarz_types::Type::Param(tp.id))
+                    .collect();
+                let ancs = self.world.ancestors(m.owner, &own);
+                let mut set = vec![k];
+                set.extend(self.world.overridden_methods_in(m, &ancs));
+                set
+            })
+            .collect();
+        sets[0]
+            .iter()
+            .copied()
+            .find(|c| sets.iter().all(|s| s.contains(c)))
+    }
+
+    /// The `MethodRef` of `base` (or else of the first of `ms`), and an
+    /// array of `ms`'s.
+    fn method_refs_of(&mut self, base: Option<MethodId>, ms: &[MethodId]) -> (Reg, Reg) {
+        let refs: Vec<Reg> = ms.iter().map(|m| self.method_ref_of(*m, None)).collect();
+        let method = match base {
+            Some(b) if !ms.contains(&b) => self.method_ref_of(b, None),
+            Some(b) => refs[ms.iter().position(|m| *m == b).unwrap_or(0)],
+            None => refs[0],
+        };
+        (method, self.array_of(refs))
     }
 
     /// The `Meta::MethodRef` of the method call `id` was resolved to (a

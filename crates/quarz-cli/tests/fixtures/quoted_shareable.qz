@@ -67,7 +67,7 @@ def lits(e: Meta::Expr) -> Array[Shareable]
   in Meta::Expr::Block(_, body, _) then body.flat_map { |x| lits(x) }
   in Meta::Expr::And(l, r, _) then lits(l) + lits(r)
   in Meta::Expr::ArrayLit(items, _) then items.flat_map { |x| lits(x) }
-  in Meta::Expr::Call(r, _, args, _, _) then (r ? lits(r) : []) + args.flat_map { |x| lits(x) }
+  in Meta::Expr::Call(r, _, _, args, _, _) then (r ? lits(r) : []) + args.flat_map { |x| lits(x) }
   else []
   end
 end
