@@ -923,6 +923,7 @@ pub struct ReplSnapshot {
     file_mains: Vec<Option<ClassId>>,
     self_news: Vec<SelfNew>,
     generated_news: Vec<(ClassId, ClassId, MethodId, Option<MethodId>)>,
+    repl_ctor_marks: (usize, usize),
 }
 
 /// Why a call of `deinitialize` is refused (docs/03 §4).
@@ -1053,6 +1054,11 @@ pub struct Checker {
     /// arguments for. A `def_initialize` into that class later checks
     /// them again (docs/14 §5).
     generated_news: Vec<(ClassId, ClassId, MethodId, Option<MethodId>)>,
+    /// In the REPL, how many `self_news` sites and classes the inherited
+    /// constructor check has seen: an input checks its new classes
+    /// against every site and its new sites against every class, the
+    /// pairs before it being checked already.
+    repl_ctor_marks: (usize, usize),
     /// `check_constructor` for `Self.new` (`check_self_new`): an abstract
     /// class may be built, the receiver's class being concrete.
     constructing_self: bool,
@@ -1169,6 +1175,7 @@ impl Checker {
             last_winner: None,
             self_news: Vec::new(),
             generated_news: Vec::new(),
+            repl_ctor_marks: (0, 0),
             constructing_self: false,
             stmt_unused: false,
             next_body_void: false,
@@ -1513,13 +1520,28 @@ impl Checker {
     }
 
     fn check_inherited_constructors(&mut self) {
+        self.check_inherited_constructors_from((0, 0));
+    }
+
+    /// As `check_inherited_constructors`, for the pairs of a site and a
+    /// class not both seen before (`marks`: the sites and classes seen).
+    fn check_inherited_constructors_from(&mut self, marks: (usize, usize)) {
+        let (sites_seen, classes_seen) = marks;
+        let new_sites: HashSet<(ClassId, MethodId, u32, Option<MethodId>)> = self
+            .self_news
+            .get(sites_seen..)
+            .unwrap_or(&[])
+            .iter()
+            .map(|s| (s.0, s.2, s.3.start, s.1))
+            .collect();
         // (Kept: a later unit's subclasses inherit them too, as the
         // prelude's do a program's, `PreludeState::self_news`.)
         let mut sites = self.self_news.clone();
         sites.sort_by_key(|s| (s.0, s.2, s.3.start, s.1));
         sites.dedup_by_key(|s| (s.0, s.2, s.3.start, s.1));
         let mut reported = HashSet::default();
-        for (cid, init, method, _, _) in sites {
+        for (cid, init, method, span, _) in sites {
+            let site_new = new_sites.contains(&(cid, method, span.start, init));
             let mname = self.world.method(method).name.clone();
             // How the method and its `new` are named: `C.build`'s `new`, or
             // `Self.new` in `C#copy`.
@@ -1531,6 +1553,9 @@ impl Checker {
             };
             let nclasses = self.world.classes.len() as ClassId;
             for sid in 0..nclasses {
+                if !site_new && (sid as usize) < classes_seen {
+                    continue;
+                }
                 if sid == cid
                     || self.world.class(sid).kind != ClassKind::Class
                     || !self.world.class_is_a(sid, cid)
@@ -2041,6 +2066,13 @@ impl Checker {
         // The REPL keeps its inference variables across inputs.
         let env = self.check_top_level(env, file, body, true);
         self.repl_env = Some(env);
+        // A subclass declared in this input that inherits a class method
+        // calling `new`, or an instance method calling `Self.new`, needs
+        // an `initialize` that takes its arguments, as in a program (a
+        // failed input is discarded, so what passed stays checked).
+        let marks = self.repl_ctor_marks;
+        self.check_inherited_constructors_from(marks);
+        self.repl_ctor_marks = (self.self_news.len(), self.world.classes.len());
     }
 
     /// What a REPL input may change, to roll it back if it fails
@@ -2057,6 +2089,7 @@ impl Checker {
             file_mains: self.file_mains.clone(),
             self_news: self.self_news.clone(),
             generated_news: self.generated_news.clone(),
+            repl_ctor_marks: self.repl_ctor_marks,
         }
     }
 
@@ -2073,6 +2106,7 @@ impl Checker {
         self.file_mains = s.file_mains;
         self.self_news = s.self_news;
         self.generated_news = s.generated_news;
+        self.repl_ctor_marks = s.repl_ctor_marks;
         self.quoted_seen.clear();
         self.quoted_conflicts.clear();
         self.table_journal.clear();
