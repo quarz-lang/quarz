@@ -1,0 +1,17 @@
+end pass
+bye a
+bye b
+end method
+bye m-a
+bye m-b
+inner 1
+bye n1-a
+bye n1-b
+outer 1
+inner 2
+bye n2-a
+bye n2-b
+outer 2
+ensure
+end pass
+bye v-a

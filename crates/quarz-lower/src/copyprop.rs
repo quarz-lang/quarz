@@ -11,8 +11,9 @@
 //! the same definitions there as at the move. A read that updates the
 //! register in place (`xs = xs.push(v)`, an `ArrayPush`) keeps its
 //! copy: the source must not see the change. A `Release` of the copy
-//! (the end of an inlined `self`'s scope, say) goes with it: the source
-//! still holds the value, so no deinitializer can run there.
+//! (the end of an inlined `self`'s scope, say) goes with it when the
+//! source still holds the value after it, so that no deinitializer can
+//! run there; else the copy stays.
 
 use rustc_hash::FxHashSet as HashSet;
 
@@ -129,9 +130,19 @@ fn propagate_in(f: &mut Function, only: Option<&HashSet<Reg>>) -> Option<HashSet
                 break;
             }
             if is_release && !releases_only_src {
-                // Otherwise the source still holds the value: releasing the
-                // copy only lowers its count, which nothing can tell; it
-                // goes with the copy.
+                // Otherwise, when the source still holds the value after
+                // it, releasing the copy only lowers its count, which
+                // nothing can tell: it goes with the copy. When the source
+                // does not (a temporary that a later write overwrites,
+                // its last read moving it on), the value would be released
+                // there, before the copy's scope ends (a `deinitialize`
+                // runs early): the copy stays.
+                let src_live_after = live.get_or_insert_with(|| quarz_ir::live::liveness(f))[ubi]
+                    [uii + 1][src as usize];
+                if !src_live_after {
+                    ok = false;
+                    break;
+                }
                 drops.push((ubi, uii));
             } else {
                 reads.push((ubi, uii));
