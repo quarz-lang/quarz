@@ -540,6 +540,27 @@ pub struct World {
     /// an assumption (`class_shareable`).
     #[serde(skip)]
     shareable_provisional: Vec<ClassId>,
+    /// The instances of `data` types and enums whose fields
+    /// `instance_shareable` is judging: met again (a recursive type),
+    /// taken as Shareable, as their fields decide.
+    #[serde(skip)]
+    shareable_instances: Vec<Type>,
+    /// The lowest index of `shareable_instances` an answer leaned on (an
+    /// instance met again), while judging one: an answer leaning on none
+    /// below the instance's own is definite.
+    #[serde(skip)]
+    shareable_instance_floor: usize,
+    /// The definite answers (`instance_shareable`), so that a type reached
+    /// by many paths is judged once.
+    #[serde(skip)]
+    shareable_instance_known: HashMap<Type, bool>,
+    /// Likewise for `data_fields_shareable`, which subtyping calls.
+    #[serde(skip)]
+    shareable_instances_seen: std::cell::RefCell<Vec<Type>>,
+    #[serde(skip)]
+    shareable_seen_floor: std::cell::Cell<usize>,
+    #[serde(skip)]
+    shareable_seen_known: std::cell::RefCell<HashMap<Type, bool>>,
     /// The cogs of the movement (empty for a script).
     pub cogs: Vec<CogInfo>,
     /// Names the application declares or imports at the top level: a
@@ -1664,9 +1685,96 @@ impl World {
             class.kind,
             ClassKind::Data | ClassKind::Enum | ClassKind::Variant
         ) && class.shareable == Some(true)
-            && aargs
-                .iter()
-                .all(|t| self.is_subtype(t, &Type::class(self.builtin.shareable)))
+            && (aargs.is_empty() || self.data_fields_shareable(a, aargs))
+    }
+
+    /// Whether a value of `t`, a field's type, is Shareable, as
+    /// `is_shareable` says but from what is decided already (for
+    /// subtyping): a `shareable` procedure type, a class value, a union
+    /// or tuple of such, or a `Shareable` (a type parameter by its
+    /// bounds).
+    fn holds_shareable(&self, t: &Type) -> bool {
+        match t {
+            Type::Nothing | Type::Void | Type::ClassObject(..) | Type::TypeOf(_) => true,
+            Type::Proc(_, _, _, shareable, _) => *shareable,
+            Type::Union(ms) | Type::Tuple(ms) => ms.iter().all(|m| self.holds_shareable(m)),
+            _ => self.is_subtype(t, &Type::class(self.builtin.shareable)),
+        }
+    }
+
+    /// Whether the fields of `data` type, enum or variant `id`, with its
+    /// type arguments `args` put in, are all `Shareable` (docs/03 §5): a
+    /// `T` only inside a `shareable` procedure type, or a `Type[T]`, makes
+    /// any argument fit. An instance met again while it is judged (a
+    /// recursive type) counts as Shareable: its fields decide.
+    pub fn data_fields_shareable(&self, id: ClassId, args: &[Type]) -> bool {
+        let key = Type::Class(id, args.to_vec());
+        if let Some(&known) = self.shareable_seen_known.borrow().get(&key) {
+            return known;
+        }
+        let hit = self
+            .shareable_instances_seen
+            .borrow()
+            .iter()
+            .position(|t| *t == key);
+        if let Some(at) = hit {
+            self.shareable_seen_floor
+                .set(self.shareable_seen_floor.get().min(at));
+            return true;
+        }
+        // The class again with other arguments: by its arguments, as
+        // `instance_shareable` does.
+        if self
+            .shareable_instances_seen
+            .borrow()
+            .iter()
+            .any(|t| matches!(t, Type::Class(c, _) if *c == id))
+        {
+            let shareable = Type::class(self.builtin.shareable);
+            return args.iter().all(|a| {
+                if a.has_vars() {
+                    !self.refuse_undecided()
+                } else {
+                    self.is_subtype(a, &shareable)
+                }
+            });
+        }
+        let at = self.shareable_instances_seen.borrow().len();
+        self.shareable_instances_seen.borrow_mut().push(key.clone());
+        let floor = self.shareable_seen_floor.replace(usize::MAX);
+        let class = self.class(id);
+        let mut by_args = self.class_subst(id, args);
+        if let Some(e) = class.variant_of {
+            by_args.extend(self.class_subst(e, args));
+        }
+        let fits = |t: &Type| {
+            if t.has_vars() {
+                !self.refuse_undecided()
+            } else {
+                self.holds_shareable(t)
+            }
+        };
+        let mut ok = self
+            .all_fields(id)
+            .into_iter()
+            .all(|(f, subst)| fits(&f.ty.subst(&subst).subst(&by_args)));
+        if ok && class.kind == ClassKind::Enum {
+            ok = class
+                .variants
+                .clone()
+                .into_iter()
+                .all(|v| self.data_fields_shareable(v, args));
+        }
+        self.shareable_instances_seen.borrow_mut().pop();
+        // Definite unless it leaned on an instance further out (a negative
+        // always is), and not for undecided arguments or ones mentioning
+        // a type parameter (`Self`: the class asking).
+        let leaned = self.shareable_seen_floor.get();
+        if (!ok || leaned >= at) && !args.iter().any(|a| a.has_vars() || a.mentions_any_param()) {
+            self.shareable_seen_known.borrow_mut().insert(key, ok);
+        }
+        self.shareable_seen_floor.set(floor.min(leaned));
+        ok
     }
 
     /// Compute `class_shareable` for the `data` types and enums, which
@@ -1714,6 +1822,10 @@ impl World {
         // `Array[U]`, its own rules apply.)
         if !by_args(a) || by_args(b) {
             return true;
+        }
+        // A `data` type or an enum: by its fields with the arguments in.
+        if !self.is_value_class(a) {
+            return self.data_fields_shareable(a, aargs);
         }
         let shareable = Type::class(self.builtin.shareable);
         aargs.iter().all(|t| {
@@ -2947,8 +3059,31 @@ impl World {
                 if id == self.builtin.meta_field_ref || id == self.builtin.meta_method {
                     return true;
                 }
-                // Generic containers are shareable when their arguments are.
-                args.clone().iter().all(|a| self.is_shareable(a))
+                if args.is_empty() {
+                    return true;
+                }
+                // The built-in containers (and a `Quoted`, as its
+                // procedure type) hold what their arguments say.
+                if self.is_value_class(id) || id == self.builtin.quoted {
+                    return args.clone().iter().all(|a| self.is_shareable(a));
+                }
+                match self.class(id).kind {
+                    // A `data` type or an enum holds its fields, with the
+                    // arguments put in (docs/03 §5): `ModelOps[T]` whose
+                    // only `T` is in a `shareable` procedure type is
+                    // Shareable whatever `T` is.
+                    ClassKind::Data | ClassKind::Enum | ClassKind::Variant => {
+                        self.instance_shareable(id, args)
+                    }
+                    // A class that promises Shareable keeps the promise for
+                    // every argument: its fields were checked for any
+                    // (`shareable_violation`).
+                    ClassKind::Class | ClassKind::Main => true,
+                    // A module's includers need not have (a `data` type
+                    // including `Shareable` too is Shareable by its
+                    // fields): by its arguments.
+                    ClassKind::Module => args.clone().iter().all(|a| self.is_shareable(a)),
+                }
             }
             Type::ClassObject(_, _) | Type::TypeOf(_) => true,
             Type::Union(ms) | Type::Tuple(ms) => ms.clone().iter().all(|m| self.is_shareable(m)),
@@ -3004,6 +3139,88 @@ impl World {
             }
             Type::Var(_) => true,
         }
+    }
+
+    /// Whether the fields of `data` type, enum or variant `id` are
+    /// Shareable with its type arguments `args` put in (an enum's, its
+    /// variants'). An instance met again while it is judged (a recursive
+    /// type) counts as Shareable: its fields decide.
+    fn instance_shareable(&mut self, id: ClassId, args: &[Type]) -> bool {
+        let key = Type::Class(id, args.to_vec());
+        if let Some(&known) = self.shareable_instance_known.get(&key) {
+            return known;
+        }
+        if let Some(at) = self.shareable_instances.iter().position(|t| *t == key) {
+            // (An assumption, as `class_shareable`'s for a class it is
+            // deciding: not kept if that one turns out not Shareable.)
+            if !self.shareable_pending.is_empty() {
+                self.shareable_tentative = true;
+            }
+            self.shareable_instance_floor = self.shareable_instance_floor.min(at);
+            return true;
+        }
+        // The class again with other arguments (`data N[T] = (n:
+        // N[Array[T]]?, v: T)`, whose instances grow): by its arguments,
+        // which holds whenever they are Shareable, and ends.
+        if self
+            .shareable_instances
+            .iter()
+            .any(|t| matches!(t, Type::Class(c, _) if *c == id))
+        {
+            return args.to_vec().iter().all(|a| self.is_shareable(a));
+        }
+        let at = self.shareable_instances.len();
+        // (A positive answer leaning on a class being decided, an
+        // assumption, is not definite: `shareable_tentative`.)
+        let tentative = std::mem::take(&mut self.shareable_tentative);
+        self.shareable_instances.push(key.clone());
+        let floor = std::mem::replace(&mut self.shareable_instance_floor, usize::MAX);
+        let provisional_from = self.shareable_provisional.len();
+        let class = self.class(id);
+        let mut by_args = self.class_subst(id, args);
+        if let Some(e) = class.variant_of {
+            by_args.extend(self.class_subst(e, args));
+        }
+        let variants = if class.kind == ClassKind::Enum {
+            class.variants.clone()
+        } else {
+            Vec::new()
+        };
+        let mut ok = true;
+        for (f, subst) in self.all_fields(id) {
+            let ty = f.ty.subst(&subst).subst(&by_args);
+            if !self.is_shareable(&ty) {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            for v in variants {
+                if !self.instance_shareable(v, args) {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        self.shareable_instances.pop();
+        // What was decided Shareable meanwhile may have leaned on this
+        // instance: not, if it is not (as `class_shareable` does).
+        if !ok {
+            self.shareable_provisional.truncate(provisional_from);
+        }
+        // Definite unless it leaned on an instance further out: a negative
+        // always is (assumptions only add positives).
+        let leaned = self.shareable_instance_floor;
+        let assumed = self.shareable_tentative;
+        self.shareable_tentative = tentative || assumed;
+        // (Not for arguments mentioning a type parameter, `Self`
+        // included: the answer depends on where it is asked, the
+        // parameter's bounds and what is assumed of it.)
+        if (!ok || (leaned >= at && !assumed)) && !args.iter().any(|a| a.mentions_any_param()) {
+            self.shareable_instance_known.insert(key, ok);
+        }
+        self.shareable_instance_floor = floor.min(leaned);
+        ok
     }
 
     /// Whether no class can inherit from `id` (a `data` type, an enum
@@ -3168,6 +3385,9 @@ impl World {
         // per run: without this, mutually recursive types take time
         // exponential in their number).
         if self.shareable_provisional.contains(&id) {
+            // (Itself an assumption until the outermost is decided: what
+            // leans on it is not definite either, `instance_shareable`.)
+            self.shareable_tentative = true;
             return true;
         }
         self.shareable_pending.push(id);
