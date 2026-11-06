@@ -1400,6 +1400,73 @@ fn super_in_a_task_block_captures_self() {
 }
 
 #[test]
+fn a_procedure_run_in_a_task_must_be_shareable() {
+    // As a block literal there (docs/04 §1): a procedure passed with `&`
+    // to a method running its block in a task is a `shareable` one.
+    let counter =
+        "class C\n  var @n: Int = 0\n  def bump -> Int\n    @n += 1\n  end\nend\nc = C.new\n";
+    for (call, name) in [
+        ("Task.spawn(&f)", "Task.spawn"),
+        ("Task.blocking(&f)", "Task.blocking"),
+        ("Task.scope { |s| s.spawn(&f) }", "Task::Scope#spawn"),
+    ] {
+        // Capturing a mutable object, and assigning an outer local.
+        err(
+            &format!("{counter}f = -> {{ c.bump }}\n{call}\n"),
+            &format!("`{name}` runs the block in a task: pass a `shareable () -> Int`"),
+        );
+        err(
+            &format!("n = 0\nf = -> {{ n += 1 }}\n{call}\n"),
+            &format!("`{name}` runs the block in a task: pass a `shareable () -> Int`"),
+        );
+        // A `shareable` one, made where its captures are checked.
+        ok(&format!(
+            "n = 1\nf: shareable () -> Int = -> {{ n + 1 }}\n{call}\n"
+        ));
+    }
+    // Its result passes to the task that awaits it: Shareable, as a
+    // task block's.
+    for call in [
+        "Task.spawn(&f).await",
+        "Task.blocking(&f)",
+        "Task.scope { |s| s.spawn(&f).await }",
+    ] {
+        err(
+            &format!("class Box\n  var @n: Int = 0\nend\nf: shareable () -> Box = -> {{ Box.new }}\np {call}\n"),
+            "a procedure run in a task returns the non-shareable type Box",
+        );
+    }
+    // `Task.timeout` runs its block while the caller waits, on its
+    // worker: no Shareable captures, as for a literal there.
+    ok(&format!(
+        "{counter}f = -> {{ c.bump }}\np Task.timeout(1.second, &f)\n"
+    ));
+    // A block given where a `shareable` procedure type is expected cannot
+    // `return` or `break` (it may run in another task, or after its
+    // method has returned); `next` gives its value, and a `shareable`
+    // lambda's `return` is its own. A task's keeps its wording.
+    let run = "def run(&job: shareable (Int) -> Int) -> Int = job.call(1)\n";
+    err(
+        &format!("{run}def f -> Int\n  run {{ |x| return 5 }}\nend\n"),
+        "`return` cannot leave a shareable block: it may run in another task or after its method has returned; use `next value`",
+    );
+    err(
+        &format!("{run}def g -> Int\n  run {{ |x| break }}\nend\n"),
+        "`break` cannot leave a shareable block",
+    );
+    ok(&format!("{run}def h -> Int = run {{ |x| next x + 1 }}\nl: shareable () -> Int = -> {{ return 3 }}\np h + l.call\n"));
+    err(
+        "def f -> Int\n  Task.spawn { return 1 }\n  0\nend\n",
+        "`return` in a task's block",
+    );
+    // A parameter of a `shareable` procedure type refuses another.
+    err(
+        &format!("{counter}def run(&job: shareable () -> Int) -> Int = job.call\nf = -> {{ c.bump }}\np run(&f)\n"),
+        "block argument has type () -> Int but shareable () -> Int was expected",
+    );
+}
+
+#[test]
 fn shareable_procedures() {
     let run = "def run(&h: shareable () -> Void) -> Void\n  Task.spawn { h.call }.await\nend\n";
     // A block or lambda where one is expected captures by value, like a
