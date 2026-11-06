@@ -147,3 +147,8 @@ fn deadlock_across_workers() {
         assert_eq!(err.matches("task (").count(), 2, "{what}: {err}");
     });
 }
+
+#[test]
+fn at_exit_blocks_share_shareable_values() {
+    prints_its_out("at_exit_shareable.qz");
+}

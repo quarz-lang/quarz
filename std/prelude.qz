@@ -7001,8 +7001,11 @@ module Kernel
   # Writes `message` to standard error and raises `SystemExit` with status
   # 1 and `message`, as `exit` does.
   native def abort(message: String) -> Nothing
-  # Runs the block when the program exits.
-  native def at_exit(&blk: () -> Void) -> Void
+  # Runs the block when the program exits, after the main code, outside
+  # every task (other tasks may still be running): it captures as a
+  # task's block does, Shareable values only, copied when `at_exit` is
+  # called.
+  native def at_exit(&blk: shareable () -> Void) -> Void
   # The next line of standard input, with its newline (the last line may
   # have none).
   #

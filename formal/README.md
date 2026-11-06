@@ -497,7 +497,8 @@ stricter, not unsound.
   Rust checker's, taken as given (a program it refuses for them is out
   of range, not a disagreement); a task's body is checked as a block
   run any number of times, a block a built-in keeps (`at_exit`, `trap`)
-  as a lambda given to it (an annotated parameter of one out of range); `Task[T]` is an opaque built-in
+  as a lambda given to it (Rust copies its captures, a `shareable`
+  procedure's, which the typing does not see) (an annotated parameter of one out of range); `Task[T]` is an opaque built-in
   class (`await` gives a `T`), `shareable (A) -> R` a procedure type,
   `Shareable` as a type any value (`is_a?(Shareable)` and a pattern of
   it out of range).

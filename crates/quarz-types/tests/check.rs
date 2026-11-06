@@ -1467,6 +1467,26 @@ fn a_procedure_run_in_a_task_must_be_shareable() {
 }
 
 #[test]
+fn an_at_exit_block_captures_shareable_values() {
+    // It runs after the main code, outside every task, while other
+    // tasks may still run (docs/04 §1): a shareable block.
+    let counter = "class C\n  var @n: Int = 0\n  def bump -> Int\n    @n += 1\n  end\nend\n";
+    err(
+        &format!("{counter}c = C.new\nat_exit {{ c.bump }}\n"),
+        "`c` has the non-shareable type C and cannot be captured by a shareable procedure",
+    );
+    ok("n = Atom.new(0)\nio = STDOUT\nat_exit { io.puts(n.get.to_s) }\nn.set(3)\n");
+    err(
+        "def f -> Int\n  at_exit { return }\n  0\nend\n",
+        "`return` cannot leave a shareable block",
+    );
+    err(
+        "at_exit { break }\n",
+        "`break` cannot leave a shareable block",
+    );
+}
+
+#[test]
 fn shareable_procedures() {
     let run = "def run(&h: shareable () -> Void) -> Void\n  Task.spawn { h.call }.await\nend\n";
     // A block or lambda where one is expected captures by value, like a
@@ -2273,7 +2293,7 @@ fn closures_that_may_run_later_end_narrowings() {
     );
     // A block given to a method that may keep it (a named `&blk`).
     err(
-        "def f(x: Int | String) -> Int\n  if x.is_a?(String)\n    at_exit { p x.upcase; nil }\n  end\n  x = 5\n  0\nend",
+        "def keep(&blk: () -> Nil) -> Nil = nil\ndef f(x: Int | String) -> Int\n  if x.is_a?(String)\n    keep { p x.upcase; nil }\n  end\n  x = 5\n  0\nend",
         "undefined method `upcase` for Int",
     );
     // A local assigned once keeps its narrowing in a lambda; a block only

@@ -1,0 +1,22 @@
+# Tasks register `at_exit` blocks that read what they share: Shareable
+# values only (an `Atom`), so a block registered on another worker reads
+# the count its task left. (A block capturing a task's mutable object is
+# refused.) Every block prints the same line, so the order they run in
+# does not show.
+
+counts = (0...8).map { |t| Atom.new(0) }
+tasks = (0...8).map do |t|
+  c = counts[t]
+  Task.spawn do
+    at_exit { puts "done #{c.get}" }
+    k = 0
+    while k < 100000
+      c.update { |v| v + 1 }
+      k += 1
+    end
+    0
+  end
+end
+tasks.each(&:await)
+total = counts.map(&:get).sum
+puts "total #{total}"
