@@ -3000,6 +3000,24 @@ impl<'a> FnBuilder<'a> {
         table: Option<Vec<(Type, MethodId)>>,
         mut inst: Inst,
     ) {
+        // An implicit call (`foo` in a block given to a union receiver,
+        // checked once per member's receiver) whose checks found different
+        // methods: on `self`, tested as any receiver is. (Not a function,
+        // `Kernel`'s or a top-level `def`, which has no receiver.)
+        if let Inst::Call {
+            kind: CallKind::Method(m),
+            recv: recv @ None,
+            ..
+        } = &mut inst
+        {
+            let several = table
+                .as_ref()
+                .is_some_and(|t| t.iter().any(|(_, m)| *m != t[0].1));
+            let function = self.world.takes_no_self(*m);
+            if (base.is_some() || conflict || several) && !function {
+                *recv = Some(self.self_reg());
+            }
+        }
         let name = match &inst {
             Inst::Call {
                 kind: CallKind::Send(n),

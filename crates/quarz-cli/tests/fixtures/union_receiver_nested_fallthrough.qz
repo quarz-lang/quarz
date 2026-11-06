@@ -1,0 +1,21 @@
+# A call falling through from a receiver block inside a block given to a
+# union receiver, to the block's own `self` for every member: `P`'s
+# receiver for HA, the enclosing `Runner` for HC (docs/01 §9).
+class Runner
+  @tag: String
+  def initialize(@tag: String)
+  end
+  def both -> String = "both:" + @tag
+  def run(h: HA | HC) -> String = h.with { "s".instance_exec { upcase + both } }
+end
+class P < Runner
+end
+class HA
+  def with(&b: P.() -> String) -> String = P.new("p").instance_exec(&b)
+end
+class HC
+  def with(&b: () -> String) -> String = b.call
+end
+r = Runner.new("r")
+puts r.run(HA.new)
+puts r.run(HC.new)

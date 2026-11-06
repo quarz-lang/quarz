@@ -4830,6 +4830,111 @@ fn the_both_receivers_warning_is_for_different_declarations() {
 }
 
 #[test]
+fn a_block_given_to_a_union_receiver_resolves_its_calls_one_way() {
+    // `HA#with` runs the block on a `P`, `HB#with` on a `Q`, `HC#with`
+    // with no receiver: the block is compiled once, for every member.
+    let base = "class P\n  def foo -> String = \"p\"\n  def both -> String = \"pb\"\nend\nclass Q\n  def both -> String = \"qb\"\nend\nclass HA\n  def with(&b: P.() -> String) -> String = P.new.instance_exec(&b)\nend\nclass HB\n  def with(&b: Q.() -> String) -> String = Q.new.instance_exec(&b)\nend\nclass HC\n  def with(&b: () -> String) -> String = b.call\nend\n";
+    // `P`'s `foo` for one member, the enclosing `Runner`'s for the other.
+    err(
+        &format!("{base}class Runner\n  def foo -> String = \"outer\"\n  def run(h: HB | HA) -> String = h.with {{ foo }}\nend\n"),
+        "`foo` in the block of `with` resolves to `Runner#foo` of the enclosing `self` for HB and to `P#foo` for HA: a block given to a union receiver must resolve its calls the same way for every member; write the receiver (`self.foo`, or `h` narrowed with `case`)",
+    );
+    // Written on the receiver: `Q` has no `foo`.
+    err(
+        &format!("{base}class Runner\n  def foo -> String = \"outer\"\n  def run(h: HB | HA) -> String = h.with {{ self.foo }}\nend\n"),
+        "undefined method `foo` for Q",
+    );
+    // A member whose block has no receiver: its `self` is the enclosing
+    // one, the block's `self` at run time, its class choosing the method.
+    ok(&format!("{base}class Runner\n  def both -> String = \"outer\"\n  def run(h: HC | HA) -> String = h.with {{ both + self.to_s + to_s + is_a?(P).to_s + self.class.name }}\nend\n"));
+    // But not a call one member's receiver answers and another member's
+    // leaves to the enclosing `self` of its own receiver block.
+    err(
+        &format!("{base}class Runner\n  def foo -> String = \"outer\"\n  def run(h: HC | HA) -> String = \"s\".instance_exec {{ h.with {{ foo }} }}\nend\n"),
+        "`foo` in the block of `with` resolves to `Runner#foo` of the enclosing `self` for HC and to `P#foo` for HA",
+    );
+    // Nested: the inner block's `foo` is `P`'s, or the outer receiver's.
+    err(
+        &format!("{base}class Runner\n  def foo -> String = \"outer\"\n  def run(h: HA, g: HA | HB) -> String = h.with {{ g.with {{ foo }} }}\nend\n"),
+        "`foo` in the block of `with` resolves to `P#foo` on P for HA and to `P#foo` of the enclosing `self` for HB",
+    );
+    // Every member's receiver answers, or none does: accepted.
+    ok(&format!("{base}class Runner\n  def bar -> String = \"outer\"\n  def run(h: HB | HA) -> String = h.with {{ both + bar + self.both }}\nend\n"));
+    ok(&format!("{base}class Runner\n  def run(h: HB | HA, g: HA | HB) -> String = h.with {{ g.with {{ both }} }}\nend\n"));
+    ok(&format!(
+        "{base}class Runner\n  def run(h: HC | HC) -> String = h.with {{ to_s }}\nend\n"
+    ));
+    // A function for one member, a receiver's method for another.
+    err(
+        &format!("{base}def foo -> String = \"fn\"\nclass Runner\n  def run(h: HB | HA) -> String = h.with {{ foo }}\nend\n"),
+        "`foo` in the block of `with` resolves to the function `foo` for HB and to `P#foo` for HA",
+    );
+    // One enclosing `self`, its overloads chosen per member: no test of
+    // the class chooses between them.
+    err(
+        "class P\nend\nclass Q\nend\nclass HA\n  def with(&b: P.(Int) -> String) -> String = P.new.instance_exec(1, &b)\nend\nclass HB\n  def with(&b: Q.(Float) -> String) -> String = Q.new.instance_exec(1.5, &b)\nend\nclass Runner\n  def foo(x: Int) -> String = \"i\"\n  def foo(x: Float) -> String = \"f\"\n  def run(h: HB | HA) -> String = h.with { |x| foo(x) }\nend\n",
+        "resolves to `Runner#foo(Float)` of the enclosing `self` for HB and to `Runner#foo(Int)` of the enclosing `self` for HA",
+    );
+    // Three members, the first without a receiver: every pair compared
+    // (HC's call is on its block's `self`, HB's falls through to the
+    // enclosing one's hidden slot, HA's is on `P`).
+    err(
+        &format!("{base}class Runner\n  def foo -> String = \"outer\"\n  def run(h: HC | HB | HA) -> String = h.with {{ foo }}\nend\n"),
+        "resolves to `Runner#foo` of the enclosing `self` for HB and to `P#foo` for HA",
+    );
+    // A function's overloads chosen per member: a test of `self` does not
+    // choose a function.
+    err(
+        "def f(x: Int) -> String = x.to_s\ndef f(x: String) -> String = x\nclass P\nend\nclass HA\n  def with(&b: P.(Int) -> String) -> String = P.new.instance_exec(20, &b)\nend\nclass HS\n  def with(&b: (String) -> String) -> String = b.call(\"abc\")\nend\nclass Runner\n  def run(h: HS | HA) -> String = h.with { |x| f(x) }\nend\n",
+        "resolves to the function `f(String)` for HS and to the function `f(Int)` for HA",
+    );
+    // Overloads on `self`s of a class and its subclass: a `Sub` may be
+    // the `Runner` of the member without a receiver.
+    err(
+        "class Runner\n  def foo(x: Float) -> String = \"f\"\n  def run(h: HC | HA) -> String = h.with { |x| foo(x) }\nend\nclass Sub < Runner\n  def foo(x: Int) -> String = \"i\"\nend\nclass HA\n  def with(&b: Sub.(Int) -> String) -> String = Sub.new.instance_exec(10, &b)\nend\nclass HC\n  def with(&b: (Float) -> String) -> String = b.call(1.5)\nend\n",
+        "resolves to `Runner#foo(Float)` for HC and to `Sub#foo(Int)` for HA",
+    );
+    // A module and a class one value may be both of (`B < A`, including
+    // `M`), with different overloads.
+    err(
+        "module M\n  def foo(x: Float) -> String = \"m\"\nend\nclass A\n  def foo(x: Int) -> String = \"a\"\nend\nclass B < A\n  include M\nend\nclass HA\n  def with(&b: A.(Int) -> String) -> String = B.new.instance_exec(1, &b)\nend\nclass HM\n  def with(&b: M.(Float) -> String) -> String = B.new.instance_exec(2.5, &b)\nend\nclass Runner\n  def run(h: HA | HM) -> String = h.with { |x| foo(x) }\nend\n",
+        "resolves to `A#foo(Int)` for HA and to `M#foo(Float)` for HM",
+    );
+    // An override on a subclass: chosen by the receiver's class.
+    ok("class Base\n  def foo -> String = \"base\"\nend\nclass Sub < Base\n  def foo -> String = \"sub\"\nend\nclass HS\n  def with(&b: Sub.() -> String) -> String = Sub.new.instance_exec(&b)\nend\nclass HB\n  def with(&b: Base.() -> String) -> String = Base.new.instance_exec(&b)\nend\nclass Runner\n  def run(h: HS | HB) -> String = h.with { foo }\nend\n");
+    // Falling through from a receiver block inside to the method's `self`
+    // for one member, to the block's own (`P`, no `both`) for another.
+    err(
+        "class P\nend\nclass HA\n  def with(&b: P.() -> String) -> String = P.new.instance_exec(&b)\nend\nclass HC\n  def with(&b: () -> String) -> String = b.call\nend\nclass Runner\n  def both -> String = \"r\"\n  def run(h: HA | HC) -> String = h.with { \"s\".instance_exec { upcase + both } }\nend\n",
+        "`both` in the block of `with` resolves to `Runner#both` of the enclosing `self` for HA and to `Runner#both` of the block's `self` for HC",
+    );
+    // Falling through for one member, on the block's own `self` for one
+    // whose block has none: both read that `self`.
+    ok("class P\n  def bar -> String = \"p\"\nend\nclass Q\n  def baz -> String = \"q\"\nend\nclass HB\n  def with(&b: Q.() -> String) -> String = Q.new.instance_exec(&b)\nend\nclass HC\n  def with(&b: () -> String) -> String = b.call\nend\nclass Runner\n  def foo -> String = \"runner\"\n  def run(h: HC | HB) -> String = h.with { foo }\nend\n");
+    // An override of a generic superclass's method (`Base[Int]#foo(T)`).
+    ok("class Base[T]\n  @v: T\n  def initialize(@v: T)\n  end\n  def foo(x: T) -> String = \"base\"\nend\nclass Runner < Base[Int]\n  def initialize\n    super(1)\n  end\n  def foo(x: Int) -> String = \"runner\"\n  def run(h: HC | HA) -> String = h.with { foo(2) }\nend\nclass HA\n  def with(&b: Base[Int].() -> String) -> String = Base[Int].new(5).instance_exec(&b)\nend\nclass HC\n  def with(&b: () -> String) -> String = b.call\nend\n");
+    // In the block of a call that fell through: the function for one
+    // member, `P#foo` for the other.
+    err(
+        "class P\n  def foo -> String = \"p-foo\"\nend\nclass Q\n  def other -> String = \"q\"\nend\nclass HA\n  def with(&b: P.() -> String) -> String = P.new.instance_exec(&b)\nend\nclass HB\n  def with(&b: Q.() -> String) -> String = Q.new.instance_exec(&b)\nend\ndef foo -> String = \"fn-foo\"\nclass Runner\n  def each_item(&b: () -> String) -> String = \"[\" + b.call + \"]\"\n  def run(h: HA | HB) -> String = h.with { each_item { foo } }\nend\n",
+        "`foo` in the block of `with` resolves to `P#foo` for HA and to the function `foo` for HB: a block given to a union receiver must resolve its calls the same way for every member; narrow `h` with `case`",
+    );
+    // A type parameter's `self` may be a `Sub`: overloads refused.
+    err(
+        "class Base\n  def foo(x: Int) -> String = \"base-int\"\nend\nclass Sub < Base\n  def foo(x: Float) -> String = \"sub-float #{x * 2.0}\"\nend\nclass HT[T <: Base]\n  @v: T\n  def initialize(@v: T)\n  end\n  def with(&b: T.(Int) -> String) -> String = @v.instance_exec(1, &b)\nend\nclass HS\n  def with(&b: Sub.(Float) -> String) -> String = Sub.new.instance_exec(2.5, &b)\nend\nclass Runner\n  def run[T <: Base](h: HT[T] | HS) -> String = h.with { |x| foo(x) }\nend\n",
+        "resolves to `Base#foo(Int)` for HT[T] and to `Sub#foo(Float)` for HS",
+    );
+    // A block with a receiver inside: its receiver for every member.
+    ok(&format!("{base}class R\n  def foo -> String = \"r\"\nend\nclass Runner\n  def run(h: HC | HA) -> String = h.with {{ R.new.instance_exec {{ foo + self.to_s }} }}\n  def run2(h: HC | HA) -> String = h.with {{ f: String.() -> String = -> {{ upcase }}; \"ab\".instance_exec(&f) }}\nend\n"));
+    // Built-in overloads on one `self` (`String#sub`): called by name.
+    ok("class HA\n  def with(&b: String.(String) -> String) -> String = \"a-b\".instance_exec(\"-\", &b)\nend\nclass HB\n  def with(&b: String.(Regexp) -> String) -> String = \"a-b\".instance_exec(/-/, &b)\nend\nclass Runner\n  def run(h: HA | HB) -> String = h.with { |p| sub(p, \"+\") }\nend\n");
+    // A function (`Kernel`'s, a top-level `def`) uses no `self`.
+    ok(&format!("{base}def helper -> String = \"h\"\nclass Runner\n  def run(h: HC | HA) -> String = h.with {{ puts \"x\"; helper }}\nend\n"));
+    // Narrowed with `case`: each block is checked for one receiver.
+    ok(&format!("{base}class Runner\n  def foo -> String = \"outer\"\n  def run(h: HB | HA) -> String\n    case h\n    in HA then h.with {{ foo }}\n    in HB then h.with {{ foo }}\n    end\n  end\nend\n"));
+}
+
+#[test]
 fn type_parameter_bounds_cannot_form_a_cycle() {
     // Refused where declared, so that method lookup never goes round it.
     err(

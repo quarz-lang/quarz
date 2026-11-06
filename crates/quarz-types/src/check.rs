@@ -9,7 +9,7 @@ use rustc_hash::FxHashMap;
 
 use quarz_syntax::ast::*;
 use quarz_syntax::token::OpAssign;
-use quarz_syntax::{Diagnostic, Span};
+use quarz_syntax::{Diagnostic, Severity, Span};
 
 use crate::declare::{TypeScope, SELF_PARAM};
 use crate::types::*;
@@ -334,6 +334,28 @@ struct ReceiverCtx {
     outer_frame: usize,
 }
 
+/// The rule `compare_self_uses` reports.
+const UNION_SELF_RULE: &str = "a block given to a union receiver must";
+
+/// An implicit call in a block given to a union receiver, as one
+/// member's check saw it (`Checker::self_uses`): the `self` it reads, as
+/// the frame whose `self` that is (the block's own, for a call on it; the
+/// one whose hidden slot a call falling through reads, `bind_outer_self`),
+/// that `self`'s type, and the name called. Its method is the call's
+/// record once checked. (The members' checks push the same frames: their
+/// blocks differ only in having a receiver or not.)
+#[derive(Clone, Debug)]
+struct SelfUse {
+    id: NodeId,
+    span: Span,
+    name: String,
+    frame: usize,
+    self_ty: Type,
+    /// Whether it fell through to an enclosing `self` (not the block's).
+    fell: bool,
+    method: Option<MethodId>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum VarKey {
     Local(String),
@@ -630,6 +652,8 @@ enum TableUndo {
     /// before a check recorded one: in `outer_self_calls`, its depth, the
     /// variable reference at its span.
     OuterSelf(NodeId, Span, bool, Option<u32>, Option<VarRef>),
+    /// An entry of `Checker::self_uses`, at this index.
+    SelfUse(usize),
     /// A node marked in `Output::not_builtin`.
     NotBuiltin(NodeId),
     /// A call's `Output::quoted_blocks` entry and `Checker::quoted_seen`
@@ -1040,6 +1064,14 @@ pub struct Checker {
     in_progress: Vec<MethodId>,
     /// While re-checking an implicit-self call on an enclosing `self`.
     in_outer_self: bool,
+    /// The call being re-checked so (noted once, `note_self_use`).
+    outer_recheck: Option<NodeId>,
+    /// While checking a call with a block on a union receiver, once per
+    /// member: which `self` each implicit call in it went to
+    /// (`note_self_use`), compared across the members.
+    self_uses: Vec<SelfUse>,
+    /// How many such calls are being checked.
+    union_block_calls: usize,
     /// Classes whose field defaults have been checked.
     defaults_checked: HashSet<ClassId>,
     /// Classes checked for required fields without an `initialize`.
@@ -1181,6 +1213,9 @@ impl Checker {
             repl_env: None,
             in_progress: Vec::new(),
             in_outer_self: false,
+            outer_recheck: None,
+            self_uses: Vec::new(),
+            union_block_calls: 0,
             defaults_checked: HashSet::default(),
             init_checked: HashSet::default(),
             int_literals: Default::default(),
@@ -2214,6 +2249,9 @@ impl Checker {
                         Some(v) => self.out.var_refs.insert(span, v),
                         None => self.out.var_refs.remove(&span),
                     };
+                }
+                TableUndo::SelfUse(i) => {
+                    self.self_uses.truncate(i);
                 }
                 TableUndo::NotBuiltin(id) => {
                     self.out.not_builtin.remove(&id);
@@ -6161,7 +6199,19 @@ impl Checker {
                 }
             }
             Call(call) => {
+                let uses = self.self_uses.len();
                 let t = self.check_call(expr, call, expected);
+                if self.self_uses.len() > uses {
+                    let method = match self.out.calls.get(&expr.id) {
+                        Some(CallTarget::Method { method }) => Some(*method),
+                        _ => None,
+                    };
+                    for u in &mut self.self_uses[uses..] {
+                        if u.id == expr.id && u.method.is_none() {
+                            u.method = method;
+                        }
+                    }
+                }
                 self.check_dup(expr, call);
                 // `bump` in a `Task.spawn` block in a method of a mutable
                 // class: a call on the captured `self` (a call to a
@@ -9424,11 +9474,20 @@ impl Checker {
                 let ndiag = self.diagnostics.len();
                 let ndiag_tables = self.table_mark();
                 let mut per_member = Vec::new();
+                // (A block's: which `self` each implicit call in it goes
+                // to, per member, `self_uses`.)
+                let with_block = call.block.is_some();
+                self.union_block_calls += with_block as usize;
+                // (The block's frame, once entered.)
+                let block_frame = self.env.frames.len();
+                let mut uses = Vec::new();
                 for m in &members {
                     if let (Some(k), Some(saved)) = (&bang, &bang_saved) {
                         self.narrow_subject(k, saved.clone());
                     }
+                    let start = self.self_uses.len();
                     let t = self.check_call_on(expr, call, m, implicit_self, expected);
+                    uses.push((start, self.self_uses.len()));
                     targets.push(match self.out.calls.get(&expr.id) {
                         Some(CallTarget::Method { method }) => Some(*method),
                         _ => None,
@@ -9453,11 +9512,14 @@ impl Checker {
                     self.discard_tables(ndiag_tables);
                     result = Type::Nothing;
                     targets.clear();
+                    uses.clear();
                     for m in &members {
                         if let (Some(k), Some(saved)) = (&bang, &bang_saved) {
                             self.narrow_subject(k, saved.clone());
                         }
+                        let start = self.self_uses.len();
                         let t = self.check_call_on(expr, call, m, implicit_self, expected);
+                        uses.push((start, self.self_uses.len()));
                         targets.push(match self.out.calls.get(&expr.id) {
                             Some(CallTarget::Method { method }) => Some(*method),
                             _ => None,
@@ -9466,6 +9528,13 @@ impl Checker {
                     }
                     for id in added {
                         self.int_literals.remove(&id);
+                    }
+                }
+                if with_block {
+                    self.union_block_calls -= 1;
+                    self.compare_self_uses(call, &members, &uses, block_frame);
+                    if self.union_block_calls == 0 {
+                        self.self_uses.clear();
                     }
                 }
                 if let Some(k) = &bang {
@@ -9703,6 +9772,26 @@ impl Checker {
                 // functions are not methods of it, and come after the
                 // cog's top-level `def`s (docs/01 §1).
                 let no_method = cands.is_empty();
+                // (Also in the block of a call re-checked on an enclosing
+                // `self`, where calls do not fall through.)
+                if call.recv.is_none() && implicit_self && self.outer_recheck != Some(expr.id) {
+                    let falls = no_method && !self.env.receivers.is_empty() && !self.in_outer_self;
+                    let fell = match falls {
+                        true => self.outer_self_for(name),
+                        false => None,
+                    };
+                    let fallen = fell.is_some();
+                    // The frame whose `self` is read: the hidden slot's, or
+                    // the one whose receiver block gave the current `self`.
+                    let (frame, self_ty) = match fell {
+                        Some((outer, k)) => (self.env.receivers[k].outer_frame, outer),
+                        None => {
+                            let own = self.env.receivers.last().map_or(0, |r| r.outer_frame + 1);
+                            (own, recv_ty.clone())
+                        }
+                    };
+                    self.note_self_use(expr.id, expr.span, name, frame, self_ty, fallen);
+                }
                 if call.recv.is_none()
                     && implicit_self
                     && !self.env.receivers.is_empty()
@@ -9714,7 +9803,9 @@ impl Checker {
                         Some((outer, k)) if no_method => {
                             self.bind_outer_self(expr, k);
                             self.in_outer_self = true;
+                            let recheck = self.outer_recheck.replace(expr.id);
                             let t = self.check_call_on(expr, call, &outer, true, expected);
+                            self.outer_recheck = recheck;
                             self.in_outer_self = false;
                             return t;
                         }
@@ -10588,6 +10679,211 @@ impl Checker {
         self.out
             .outer_self_depths
             .insert(expr.id, (self.env.receivers.len() - k) as u32);
+    }
+
+    /// Note which `self` an implicit call went to, while a
+    /// block given to a union receiver is checked once per member.
+    fn note_self_use(
+        &mut self,
+        id: NodeId,
+        span: Span,
+        name: &str,
+        frame: usize,
+        self_ty: Type,
+        fell: bool,
+    ) {
+        if self.union_block_calls == 0 {
+            return;
+        }
+        self.table_journal
+            .push(TableUndo::SelfUse(self.self_uses.len()));
+        self.self_uses.push(SelfUse {
+            id,
+            span,
+            name: name.to_string(),
+            frame,
+            self_ty,
+            fell,
+            method: None,
+        });
+    }
+
+    /// A block given to a union receiver is compiled once: an implicit
+    /// call in it that one member's check sends to the block's own `self`
+    /// and another's to an enclosing one (read from its hidden slot), or a
+    /// function for one and a method for another, or one `self`'s
+    /// overloads chosen per member, would run the wrong method or on the
+    /// wrong object (`self_uses_differ`). `uses` holds each
+    /// member's range of `self_uses`.
+    fn compare_self_uses(
+        &mut self,
+        call: &Call,
+        members: &[Type],
+        uses: &[(usize, usize)],
+        block_frame: usize,
+    ) {
+        // Each node's first use in each member's check, compared pairwise.
+        let mut by_node: Vec<(NodeId, Vec<(usize, usize)>)> = Vec::new();
+        for (k, &(start, end)) in uses.iter().enumerate() {
+            for i in start..end.min(self.self_uses.len()) {
+                let u = &self.self_uses[i];
+                // (A call no method answered: an error of its own.)
+                if u.method.is_none() {
+                    continue;
+                }
+                match by_node.iter_mut().find(|(id, _)| *id == u.id) {
+                    Some((_, seen)) if !seen.iter().any(|(j, _)| *j == k) => seen.push((k, i)),
+                    Some(_) => {}
+                    None => by_node.push((u.id, vec![(k, i)])),
+                }
+            }
+        }
+        for (_, seen) in by_node {
+            let pair = seen.iter().enumerate().find_map(|(n, &a)| {
+                seen[n + 1..]
+                    .iter()
+                    .find(|&&b| self.self_uses_differ(a.1, b.1))
+                    .map(|&b| (a, b))
+            });
+            let Some((a, b)) = pair else { continue };
+            let msg = self.self_use_conflict(call, members, a, b, block_frame);
+            let span = self.self_uses[b.1].span;
+            let file = self.env.file;
+            // (Once, for the innermost call: an enclosing one's members
+            // see it differ too; and not beside another error there, such
+            // as overloads a test cannot choose between.)
+            let known = self
+                .diagnostics
+                .iter()
+                .any(|(f, d)| *f == file && d.span == span && d.severity == Severity::Error);
+            if !known {
+                self.error(msg, span);
+            }
+        }
+    }
+
+    /// Whether two checks' uses cannot be compiled as one. A call falling
+    /// through reads an enclosing frame's hidden slot (`bind_outer_self`),
+    /// and the compiled block reads it for every member: another member's
+    /// must fall through to that frame too, or read its own `self` with no
+    /// receiver block between that frame and the call (that `self` is the
+    /// slot's), with the same method (tested by the receivers' classes,
+    /// not the `self`'s). Calls on the block's own `self` (its receiver,
+    /// or the enclosing `self` where its block has none, its `self` at run
+    /// time) are chosen by a test of its class: overrides, or overloads on
+    /// types no value is of both. A function (`Kernel`'s, a top-level
+    /// `def`, which uses no `self`) agrees only with the same function.
+    /// Built-in overloads are called by name (`union_conflicts`).
+    fn self_uses_differ(&self, a: usize, b: usize) -> bool {
+        let (ua, ub) = (&self.self_uses[a], &self.self_uses[b]);
+        let function = |u: &SelfUse| u.method.is_some_and(|m| self.world.takes_no_self(m));
+        let native = |u: &SelfUse| u.method.is_some_and(|m| self.world.method(m).is_native);
+        let other_method = ua.method != ub.method && !(native(ua) && native(ub));
+        match (function(ua), function(ub)) {
+            (true, true) => return other_method,
+            (false, false) => {}
+            _ => return true,
+        }
+        match (ua.fell, ub.fell) {
+            (true, true) => ua.frame != ub.frame || other_method,
+            (true, false) => ub.frame > ua.frame || other_method,
+            (false, true) => ua.frame > ub.frame || other_method,
+            (false, false) => {
+                let (Some(ma), Some(mb)) = (ua.method, ub.method) else {
+                    return false;
+                };
+                if !other_method || self.overrides_one(ma, mb) {
+                    return false;
+                }
+                let (ta, tb) = (self.resolve(&ua.self_ty), self.resolve(&ub.self_ty));
+                // (A value may be of both: a subclass, a module a subclass
+                // of the other includes, a type parameter's.)
+                let open = |t: &Type| match t {
+                    Type::Class(c, _) => self.world.class(*c).kind == ClassKind::Module,
+                    Type::Param(_) => true,
+                    _ => false,
+                };
+                // (On one type, `note_union_table` refuses them.)
+                ta != tb
+                    && (self.world.is_subtype(&ta, &tb)
+                        || self.world.is_subtype(&tb, &ta)
+                        || open(&ta)
+                        || open(&tb))
+            }
+        }
+    }
+
+    /// Whether `a` and `b` are one method and its override (or both
+    /// override one), as the runtime dispatches: a call of either runs
+    /// the receiver's own.
+    fn overrides_one(&self, a: MethodId, b: MethodId) -> bool {
+        let set = |r: MethodId| {
+            let m = self.world.method(r);
+            let own: Vec<Type> = self
+                .world
+                .class(m.owner)
+                .type_params
+                .iter()
+                .map(|tp| Type::Param(tp.id))
+                .collect();
+            let ancs = self.world.ancestors(m.owner, &own);
+            let mut set = vec![r];
+            set.extend(self.world.overridden_methods_in(m, &ancs));
+            set
+        };
+        let (sa, sb) = (set(a), set(b));
+        sa.iter().any(|m| sb.contains(m))
+    }
+
+    fn self_use_conflict(
+        &self,
+        call: &Call,
+        members: &[Type],
+        (j, a): (usize, usize),
+        (k, b): (usize, usize),
+        block_frame: usize,
+    ) -> String {
+        let (ua, ub) = (&self.self_uses[a], &self.self_uses[b]);
+        let (ma, mb) = (self.name(&members[j]), self.name(&members[k]));
+        let recv = match call.recv.as_ref().map(|r| &r.kind) {
+            Some(ExprKind::Local(n)) => format!("`{n}`"),
+            _ => "the receiver".to_string(),
+        };
+        let what = |u: &SelfUse| {
+            let m = match u.method {
+                // (With its parameters where overloaded: `f(Int)`.)
+                Some(m) if self.world.takes_no_self(m) => {
+                    let label = self.method_label(m);
+                    let f = label.rsplit_once('#').map_or(label.as_str(), |(_, f)| f);
+                    format!("the function `{f}`")
+                }
+                Some(m) => format!("`{}`", self.method_label(m)),
+                None => format!("a method of {}", self.name(&u.self_ty)),
+            };
+            match (u.fell, ua.method == ub.method) {
+                // (The block's own `self`, read by a receiver block in it.)
+                (true, _) if u.frame >= block_frame => format!("{m} of the block's `self`"),
+                (true, _) => format!("{m} of the enclosing `self`"),
+                // (One method, on two `self`s.)
+                (false, true) => format!("{m} on {}", self.name(&u.self_ty)),
+                (false, false) => m,
+            }
+        };
+        let name = &ua.name;
+        // (A function has no receiver to write.)
+        let function = [ua, ub]
+            .iter()
+            .any(|u| u.method.is_some_and(|m| self.world.takes_no_self(m)));
+        let fix = match function {
+            true => format!("narrow {recv} with `case`"),
+            false => format!("write the receiver (`self.{name}`, or {recv} narrowed with `case`)"),
+        };
+        format!(
+            "`{name}` in the block of `{}` resolves to {} for {ma} and to {} for {mb}: {UNION_SELF_RULE} resolve its calls the same way for every member; {fix}",
+            call.name,
+            what(ua),
+            what(ub),
+        )
     }
 
     /// `Self.new(args)` in an instance method, or a block or lambda in it

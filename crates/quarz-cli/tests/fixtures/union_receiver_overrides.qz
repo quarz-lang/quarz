@@ -1,0 +1,37 @@
+# A block given to a union receiver whose members' receivers are a class
+# and its subclass, or class objects: an override is chosen by the
+# receiver's class, a subclass tested first (docs/01 §9).
+class Base
+  def foo -> String = "base"
+  def self.label -> String = "base-label"
+end
+class Sub < Base
+  def foo -> String = "sub"
+end
+class P < Base
+  def self.label -> String = "P-label"
+end
+class Q < Base
+  def self.label -> String = "Q-label"
+end
+class HS
+  def with(&b: Sub.() -> String) -> String = Sub.new.instance_exec(&b)
+end
+class HB
+  def with(&b: Base.() -> String) -> String = Base.new.instance_exec(&b)
+end
+class HP
+  def with(&b: Type[P].() -> String) -> String = P.instance_exec(&b)
+end
+class HQ
+  def with(&b: Type[Q].() -> String) -> String = Q.instance_exec(&b)
+end
+class Runner
+  def run(h: HS | HB) -> String = h.with { foo }
+  def labels(h: HP | HQ) -> String = h.with { label }
+end
+r = Runner.new
+puts r.run(HS.new)
+puts r.run(HB.new)
+puts r.labels(HP.new)
+puts r.labels(HQ.new)
