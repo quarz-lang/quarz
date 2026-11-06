@@ -147,7 +147,10 @@ pub struct FnBuilder<'a> {
     self_override: Option<Reg>,
     loops: Vec<LoopCtx>,
     handlers: Vec<Region<'a>>,
-    retry_targets: Vec<BlockId>,
+    /// Where a `retry` in each enclosing `rescue` clause goes, with the
+    /// handler regions open there (`handlers`), whose inner ones it
+    /// leaves.
+    retry_targets: Vec<(BlockId, usize)>,
     /// The exceptions the enclosing `rescue` clauses are handling,
     /// innermost last (`retry` ends the innermost).
     rescuing: Vec<Reg>,
@@ -2206,8 +2209,10 @@ impl<'a> FnBuilder<'a> {
             }
             Retry => {
                 match self.retry_targets.last() {
-                    Some(b) => {
-                        let b = *b;
+                    Some(&(b, depth)) => {
+                        // Out of the regions opened in the clause (a
+                        // `begin` there): their `ensure` bodies run.
+                        let restore = self.leave_regions(depth);
                         // Back to the `begin`: the clause's exception is
                         // handled no more.
                         if let Some(&exc) = self.rescuing.last() {
@@ -2217,6 +2222,7 @@ impl<'a> FnBuilder<'a> {
                             });
                         }
                         self.term(Term::Jump(b));
+                        self.handlers.extend(restore);
                     }
                     None => self.term(Term::Unreachable),
                 }
@@ -4855,7 +4861,8 @@ impl<'a> FnBuilder<'a> {
             // The clause's body handles `exc`: it is `$!`, the cause of the
             // exceptions raised meanwhile, here or in what it calls.
             let v = self.handling(exc, |s| {
-                s.retry_targets.push(entry);
+                let depth = s.handlers.len();
+                s.retry_targets.push((entry, depth));
                 s.rescuing.push(exc);
                 let v = s.body(&rescue.body);
                 s.rescuing.pop();
