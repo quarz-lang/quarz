@@ -132,6 +132,12 @@ pub struct Output {
     /// receiver's union) gave tables that disagree, or members that a
     /// test of the class cannot tell apart: called by name.
     pub union_conflicts: rustc_hash::FxHashSet<NodeId>,
+    /// The methods a call's checks found, each once, in the order found,
+    /// where `union_calls` holds no table that says so: a call in
+    /// `union_conflicts` (called by name), `&:name` on a union of class
+    /// objects. For a quoted tree's `Call#methods` (docs/14 §6).
+    #[serde(default)]
+    pub union_methods: HashMap<NodeId, Vec<MethodId>>,
     /// Nodes whose checks (a block's, once per type of what it is given)
     /// typed them differently: `node_types` holds the last one's, so
     /// nothing is specialized for it.
@@ -602,6 +608,8 @@ type KeptFirst = (Type, Vec<Option<Type>>, usize, (usize, usize));
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 enum TableUndo {
     Union(NodeId, Option<Vec<(Type, MethodId)>>, bool),
+    /// A node's `Output::union_methods` before a change.
+    UnionMethods(NodeId, Option<Vec<MethodId>>),
     Interp(NodeId, Option<Vec<(ClassId, Option<MethodId>)>>),
     /// A compound assignment's reader or operator (`note_op_method`):
     /// what the checks saw, whether it was given up, what was recorded.
@@ -2223,6 +2231,12 @@ impl Checker {
                         seen.pop();
                     }
                 }
+                TableUndo::UnionMethods(id, ms) => {
+                    match ms {
+                        Some(ms) => self.out.union_methods.insert(id, ms),
+                        None => self.out.union_methods.remove(&id),
+                    };
+                }
                 TableUndo::Interp(id, t) => {
                     self.out.interp_conflicts.remove(&id);
                     match t {
@@ -3734,6 +3748,39 @@ impl Checker {
     /// instances of one generic class, not a class and its subclass) and
     /// every check agrees on each member's method.
     fn note_union_table(&mut self, id: NodeId, table: Vec<(Type, MethodId)>, span: Span) {
+        // (What this and the earlier checks found, kept for a call that
+        // goes by name: `union_methods`.)
+        let found: Vec<MethodId> = self
+            .out
+            .union_calls
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .chain(&table)
+            .map(|(_, m)| *m)
+            .collect();
+        self.note_union_table_in(id, table, span);
+        if self.out.union_conflicts.contains(&id) {
+            self.note_union_methods(id, found);
+        }
+    }
+
+    /// Add `found` to node `id`'s `Output::union_methods`.
+    fn note_union_methods(&mut self, id: NodeId, found: Vec<MethodId>) {
+        let before = self.out.union_methods.get(&id).cloned();
+        let mut ms = before.clone().unwrap_or_default();
+        for m in found {
+            if !ms.contains(&m) {
+                ms.push(m);
+            }
+        }
+        if before.as_ref() != Some(&ms) {
+            self.table_journal.push(TableUndo::UnionMethods(id, before));
+            self.out.union_methods.insert(id, ms);
+        }
+    }
+
+    fn note_union_table_in(&mut self, id: NodeId, table: Vec<(Type, MethodId)>, span: Span) {
         if self.out.union_conflicts.contains(&id) {
             return;
         }
@@ -12435,6 +12482,11 @@ impl Checker {
                             }
                         } else if !self.env.blocks.is_empty() && self.union_testable(&recv) {
                             self.note_union_table(e.id, vec![(recv.clone(), mid)], e.span);
+                        }
+                        // (Class objects: what each member found, which no
+                        // table records.)
+                        if on_class_objects && union_methods.len() > 1 {
+                            self.note_union_methods(e.id, union_methods.clone());
                         }
                         let before = self.out.block_pass.get(&e.id).cloned();
                         self.table_journal.push(TableUndo::BlockPass(e.id, before));

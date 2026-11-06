@@ -179,6 +179,11 @@ impl Remap for Output {
             }
         });
         values(&mut self.const_targets, |t| t.remap(m));
+        values(&mut self.union_methods, |ms| {
+            for x in ms {
+                method(m, x);
+            }
+        });
         values(&mut self.union_calls, |t| {
             for (ty, x) in t {
                 ty.remap(m);

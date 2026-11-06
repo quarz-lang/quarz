@@ -1,0 +1,15 @@
+Int#>[0] <- 2: Int#>[0], Nil#>[0] (Cmp)
+Dog#speak[0] <- 3: Dog#speak[0], Cat#speak[0], Nil#speak[0] (Cmp)
+Animal#speak[0] <- 2: Cat#speak[0], Dog#speak[0]
+Animal#legs[0] <- 1: Animal#legs[0]
+Object#nil?[0] <- 1: Object#nil?[0]
+Animal#speak[0] <- 2: Cat#speak[0], Dog#speak[0]
+Animal#speak[0] <- 2: Cat#speak[0], Dog#speak[0]
+Array#map[0] <- 1: Array#map[0]
+Animal#speak[0] <- 2: Cat#speak[0], Animal#speak[0]
+Box#put[0] <- 2: IntBox#put[0], Box#put[0]
+A#to_s[0] <- 2: A#to_s[0], B#to_s[0]
+Animal.make[0] <- 2: Cat.make[0], Dog.make[0]
+Array#map[0] <- 1: Array#map[0]
+Int#+[0] <- 2: Int#+[0], Int#+[1]
+Array#map[0] <- 1: Array#map[0]

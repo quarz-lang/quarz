@@ -330,8 +330,12 @@ module Meta
     # (0: the innermost; the quoted block itself counts when its
     # procedure type has one).
     variant SelfRef(depth: Int, line: Int)
-    # A call of a method the checker chose.
-    variant Call(recv: Expr?, method: MethodRef, args: Array[Expr], block: Expr?, line: Int)
+    # A call of the methods the checker chose: `methods`, one per method
+    # a union receiver's members run, in dispatch order (one entry for
+    # any other call); `method`, the one the call was resolved to (for
+    # members' methods that override a common one, that one; otherwise
+    # the first of `methods`).
+    variant Call(recv: Expr?, method: MethodRef, methods: Array[MethodRef], args: Array[Expr], block: Expr?, line: Int)
     # The built-in `&&`, `||` and `!`.
     variant And(left: Expr, right: Expr, line: Int)
     variant Or(left: Expr, right: Expr, line: Int)

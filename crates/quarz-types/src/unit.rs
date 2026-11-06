@@ -209,6 +209,7 @@ pub(crate) fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> 
         dynamic_calls: set!(dynamic_calls),
         union_calls: map!(union_calls),
         union_conflicts: set!(union_conflicts),
+        union_methods: map!(union_methods),
         varied_types: set!(varied_types),
         varied_symbols: set!(varied_symbols),
         interp_conflicts: set!(interp_conflicts),
@@ -343,6 +344,7 @@ pub(crate) fn merge_output(out: &mut Output, o: Output) {
     out.dynamic_calls.extend(o.dynamic_calls);
     out.union_calls.extend(o.union_calls);
     out.union_conflicts.extend(o.union_conflicts);
+    out.union_methods.extend(o.union_methods);
     out.varied_types.extend(o.varied_types);
     out.varied_symbols.extend(o.varied_symbols);
     out.interp_conflicts.extend(o.interp_conflicts);
