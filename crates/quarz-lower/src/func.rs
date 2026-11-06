@@ -63,6 +63,8 @@ struct InlineLevel {
     /// What `self` and its class are around it (`FnBuilder::self_override`,
     /// `class_id`), which an `instance_exec` block changes.
     outer_self: (Option<Reg>, Option<ClassId>),
+    /// The first of its registers (its `ClearRegs` range starts there).
+    regs_from: Reg,
 }
 
 impl InlineLevel {
@@ -72,6 +74,7 @@ impl InlineLevel {
         retries: usize,
         regions: usize,
         outer_self: (Option<Reg>, Option<ClassId>),
+        regs_from: Reg,
     ) -> InlineLevel {
         InlineLevel {
             slot_regs: HashMap::default(),
@@ -81,6 +84,7 @@ impl InlineLevel {
             retries,
             regions,
             outer_self,
+            regs_from,
         }
     }
 }
@@ -324,7 +328,13 @@ impl<'a> FnBuilder<'a> {
     /// blocks lowered in place from `from` on, which a jump out of them
     /// does: their scopes end in nesting order, a block's variables
     /// before the `ensure` around it runs, after the one inside it.
-    fn leave_scopes(&mut self, depth: usize, from: usize) -> Vec<Region<'a>> {
+    /// Their other registers (temporaries, a failed pattern's array) are
+    /// cleared after their variables, as the next pass's `ClearRegs`
+    /// would: a value one of them still holds is released with the
+    /// block's variables, not when the function ends. `keep` are the
+    /// registers the jump carries a value in.
+    fn leave_scopes(&mut self, depth: usize, from: usize, keep: &[Reg]) -> Vec<Region<'a>> {
+        let top = self.func.nregs;
         let mut kept = self.inline.len();
         let mut restore = Vec::new();
         while self.handlers.len() > depth {
@@ -333,12 +343,40 @@ impl<'a> FnBuilder<'a> {
                 .find(|&i| self.inline[i].regions > inner)
                 .unwrap_or(kept);
             self.release_levels(start, kept);
+            self.clear_levels(start, kept, top, keep);
             kept = start;
             restore.extend(self.leave_regions(inner));
         }
-        self.release_levels(from.min(kept), kept);
+        let start = from.min(kept);
+        self.release_levels(start, kept);
+        self.clear_levels(start, kept, top, keep);
         restore.reverse();
         restore
+    }
+
+    /// Clear the registers of the blocks lowered in place `from..to`
+    /// (allocated before `top`), but `keep`.
+    fn clear_levels(&mut self, from: usize, to: usize, top: Reg, keep: &[Reg]) {
+        if from >= to {
+            return;
+        }
+        let mut lo = self.inline[from].regs_from;
+        let mut cuts: Vec<Reg> = keep
+            .iter()
+            .copied()
+            .filter(|&k| k >= lo && k < top)
+            .collect();
+        cuts.sort_unstable();
+        cuts.dedup();
+        for k in cuts {
+            if lo < k {
+                self.emit(Inst::ClearRegs { from: lo, to: k });
+            }
+            lo = k + 1;
+        }
+        if lo < top {
+            self.emit(Inst::ClearRegs { from: lo, to: top });
+        }
     }
 
     // ----- entry points ------------------------------------------------------------------
@@ -1114,7 +1152,7 @@ impl<'a> FnBuilder<'a> {
             self.emit(Inst::Move { dst: r, src: v });
             v = r;
         }
-        let restore = self.leave_scopes(1, 0);
+        let restore = self.leave_scopes(1, 0, &[v]);
         self.term(Term::Return(v));
         self.handlers.extend(restore);
     }
@@ -2178,7 +2216,7 @@ impl<'a> FnBuilder<'a> {
                         dst: result,
                         src: v,
                     });
-                    let restore = self.leave_scopes(depth, from);
+                    let restore = self.leave_scopes(depth, from, &[result]);
                     self.term(Term::Jump(exit));
                     self.handlers.extend(restore);
                 } else if self.is_lambda {
@@ -2199,7 +2237,8 @@ impl<'a> FnBuilder<'a> {
                     if let Some(dst) = next_value {
                         self.emit(Inst::Move { dst, src: v });
                     }
-                    let restore = self.leave_scopes(depth, from);
+                    let keep: Vec<Reg> = next_value.into_iter().collect();
+                    let restore = self.leave_scopes(depth, from, &keep);
                     self.term(Term::Jump(next));
                     self.handlers.extend(restore);
                 } else {
@@ -3181,6 +3220,7 @@ impl<'a> FnBuilder<'a> {
             self.retry_targets.len(),
             self.handlers.len(),
             (saved_override, saved_class),
+            clear_from,
         );
         self.inline.push(level);
         for pi in 0..block.params.list.len() {
@@ -3500,6 +3540,7 @@ impl<'a> FnBuilder<'a> {
             self.retry_targets.len(),
             self.handlers.len(),
             (self.self_override, self.class_id),
+            clear_from,
         );
         self.inline.push(level);
         let nparams = block.map_or(0, |b| b.params.list.len());
