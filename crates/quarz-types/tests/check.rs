@@ -2861,6 +2861,14 @@ fn rescue_and_raise_build_what_they_say() {
         "def f -> Int\n  begin\n    raise ArgumentError, \"x\"\n  rescue ArgumentError\n    -> { retry }.call\n  end\n  0\nend",
         "`retry` outside of a rescue clause",
     );
+    // Nor in the `ensure` body of a `begin` in the clause, which a jump
+    // out of that `begin` runs, its own rescue left (as Ruby refuses).
+    err(
+        "def h -> Int\n  tries = 0\n  begin\n    raise \"a\" if tries == 0\n  rescue\n    tries += 1\n    begin\n      return 5\n    ensure\n      retry if tries < 2\n    end\n  end\n  tries\nend",
+        "`retry` outside of a rescue clause (it must be directly in one, not in a block or an `ensure` body)",
+    );
+    // A `rescue` inside the `ensure` body is a clause of its own.
+    ok("def h -> Int\n  tries = 0\n  begin\n    p 1\n  ensure\n    begin\n      raise \"a\" if tries == 0\n    rescue\n      tries += 1\n      retry\n    end\n  end\n  tries\nend");
     // `raise K, m` builds `K.new(m)`: its `initialize` takes one String.
     err(
         "class E < StandardError\n  @code: Int\n  def initialize(@code: Int)\n    super(\"e\")\n  end\nend\ndef f -> Nothing = raise E, \"m\"",

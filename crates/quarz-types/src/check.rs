@@ -6553,7 +6553,7 @@ impl Checker {
             Retry => {
                 if self.env.in_rescue == 0 {
                     self.error(
-                        "`retry` outside of a rescue clause (it must be directly in one, not in a block)",
+                        "`retry` outside of a rescue clause (it must be directly in one, not in a block or an `ensure` body)",
                         expr.span,
                     );
                 }
@@ -7743,7 +7743,11 @@ impl Checker {
             }
             self.unset_since(&before);
             let outer = self.env.ensure_assigns.replace(HashMap::default());
+            // Not in the clause it may be nested in: a `retry` there would
+            // restart a `begin` the jump through the `ensure` has left.
+            let rescuing = std::mem::take(&mut self.env.in_rescue);
             self.check_body(ensure, None);
+            self.env.in_rescue = rescuing;
             let assigned =
                 std::mem::replace(&mut self.env.ensure_assigns, outer).unwrap_or_default();
             // After it, as on the normal path, joined with what it
