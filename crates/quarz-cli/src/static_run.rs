@@ -85,7 +85,10 @@ pub struct Runner {
     /// Methods and constants whose on-demand check reported errors: a
     /// statement that reaches one does not run (docs/05 §3: checked code
     /// only).
-    bad_methods: std::collections::HashSet<MethodId>,
+    /// Each with the error count before its check and the errors the
+    /// check added (its own, and those of what it checked on first use: a
+    /// constant's initializer).
+    bad_methods: std::collections::HashMap<MethodId, (usize, Vec<(u32, Diagnostic)>)>,
     bad_consts: std::collections::HashSet<u32>,
     /// The interpreter's state, shared by every statement's run (the
     /// functions are append-only, so each run sees the earlier ones; the
@@ -1044,7 +1047,8 @@ impl Runner {
                 let before = host.error_count();
                 host.ensure_method_checked(m);
                 if host.error_count() > before {
-                    self.bad_methods.insert(m);
+                    self.bad_methods
+                        .insert(m, (before, host.errors_after(before)));
                 }
             }
             for c in round.unchecked_consts {
@@ -1054,6 +1058,68 @@ impl Runner {
                     self.bad_consts.insert(c);
                 }
             }
+        }
+    }
+
+    /// Why a statement whose lowering found errors (`errors_before` the
+    /// count before it) did not run: a method checked for it with errors,
+    /// which the lowering reached by its name (the runner's own walk,
+    /// `bad_reach`, follows calls more closely and did not find it), named
+    /// with its first error, the one checked first; else what was found.
+    fn blocked_message(
+        &self,
+        host: &dyn StaticHost,
+        callee_name: &str,
+        errors_before: usize,
+    ) -> String {
+        let world = host.world();
+        let blocking = self
+            .bad_methods
+            .iter()
+            .filter(|(_, (n, _))| *n >= errors_before)
+            .min_by_key(|(_, (n, _))| *n);
+        let Some((&m, (_, errors))) = blocking else {
+            return format!(
+                "`{callee_name}` did not run: what it reaches has errors (reported above)"
+            );
+        };
+        let info = world.method(m);
+        let name = format!(
+            "{}{}{}",
+            world.class(info.owner).name,
+            if info.singleton { "." } else { "#" },
+            info.name
+        );
+        let at = |file: u32, span: Span| -> String {
+            match self.files.get(file as usize) {
+                Some(f) => format!("{}:{}", f.name, f.line_col(span.start).line),
+                None => String::new(),
+            }
+        };
+        let place = at(info.file, info.span);
+        let place = if place.is_empty() {
+            String::new()
+        } else {
+            format!(" ({place})")
+        };
+        // Its own first error, else the first of what it uses (a
+        // constant whose initializer has errors), with where that is.
+        let own = errors.iter().find(|(f, d)| {
+            *f == info.file && info.span.start <= d.span.start && d.span.end <= info.span.end
+        });
+        match (own, errors.first()) {
+            (Some((_, d)), _) => format!(
+                "`{callee_name}` did not run: `{name}`{place}, which it may reach by name, has errors: {}",
+                d.message
+            ),
+            (None, Some((f, d))) => format!(
+                "`{callee_name}` did not run: `{name}`{place}, which it may reach by name, uses what has errors: {} ({})",
+                d.message,
+                at(*f, d.span)
+            ),
+            (None, None) => format!(
+                "`{callee_name}` did not run: `{name}`{place}, which it may reach by name, has errors (reported with it)"
+            ),
         }
     }
 
@@ -1096,7 +1162,7 @@ impl Runner {
                 return found;
             }
             for m in methods {
-                if self.bad_methods.contains(&m) {
+                if self.bad_methods.contains_key(&m) {
                     return Some(method_name(world, m));
                 }
                 if let Some(f) = world.methods[m as usize].func {
@@ -1460,9 +1526,7 @@ impl Runner {
         }
         if host.error_count() > errors_before {
             return Err(StaticFailure {
-                message: format!(
-                    "`{callee_name}` did not run: what it reaches has errors (reported above)"
-                ),
+                message: self.blocked_message(host, &callee_name, errors_before),
                 notes: Vec::new(),
             });
         }
