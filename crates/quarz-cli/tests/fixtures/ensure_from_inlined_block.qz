@@ -1,0 +1,166 @@
+# Leaving blocks lowered in place (`each`, `times`, `instance_exec`)
+# through `begin`/`ensure`: the `ensure` body reads the variables, `self`
+# and loop targets of where it is written, not of the blocks it is left
+# from (#81).
+
+class Rel
+  def where(&f: Quoted[(Int) -> Bool]) -> Int = f.captures.size
+end
+
+# `return` from a block: the ensure reads the method's local.
+def plain(k: Int) -> Int
+  n = k * 10
+  begin
+    [1, 2, 3].each { |i| return i if i == k }
+  ensure
+    p n
+  end
+  0
+end
+
+# A block inside the ensure.
+def block_in_ensure(k: Int) -> Int
+  n = k * 10
+  begin
+    [1, 2, 3].each { |i| return i if i == k }
+  ensure
+    [n].each { |x| p x + 1 }
+  end
+  0
+end
+
+# A quoted block inside the ensure, capturing the local.
+def quoted_in_ensure(k: Int) -> Int
+  n = k * 10
+  begin
+    [1, 2, 3].each { |i| return i if i == k }
+  ensure
+    p Rel.new.where { |x| x == n }
+  end
+  0
+end
+
+# Nested blocks, the ensure between them reading the outer block's
+# variable.
+def nested(k: Int) -> Int
+  [10, 20].each do |a|
+    m = a + 1
+    begin
+      [1, 2, 3].each { |i| return a + i if i == k }
+    ensure
+      p m
+    end
+  end
+  0
+end
+
+# `break` and `next` through an ensure.
+def jumps -> Array[Int]
+  n = 7
+  out: Array[Int] = []
+  [1, 2, 3, 4].each do |i|
+    begin
+      next if i == 1
+      break if i == 3
+      out = out.push(i)
+    ensure
+      p n + i
+    end
+  end
+  out
+end
+
+# A `break` in the ensure leaves the loop around the begin, not the block
+# inside it.
+def loop_in_ensure -> Int
+  r = 0
+  while r < 5
+    r += 1
+    begin
+      [1, 2].each { |i| return i * 100 if r == 9 }
+    ensure
+      break if r == 2
+    end
+  end
+  r
+end
+
+class Box
+  @v: Int
+  def initialize(@v: Int); end
+  def v -> Int = @v
+  # `self` in the ensure is the method's, not the `instance_exec`
+  # block's receiver.
+  def through(o: Box) -> Int
+    begin
+      o.instance_exec { return v * 2 }
+    ensure
+      p v
+    end
+    0
+  end
+end
+
+# A variable the ensure declares keeps its value on the next pass of a
+# loop around it, its first sight being the copy of the ensure that a
+# `return` from the block runs (outside the block's registers).
+def declared_in_ensure(k: Int) -> Int
+  j = 0
+  while j < 2
+    begin
+      [1].each { |i| return i if k == 99 }
+    ensure
+      x = 7 if j == 0
+    end
+    p x
+    j += 1
+  end
+  0
+end
+
+# Likewise for an enclosing block's variable.
+def declared_in_block_ensure(k: Int) -> Int
+  [1, 2].each do |a|
+    j = 0
+    while j < 2
+      begin
+        [1].each { |i| return i if k == 99 }
+      ensure
+        y = a if j == 0
+      end
+      p y
+      j += 1
+    end
+  end
+  0
+end
+
+# The variables an ensure declares are released after those declared
+# before it, as written.
+class D
+  @n: String
+  def initialize(@n: String); end
+  def deinitialize
+    puts "bye #{@n}"
+  end
+end
+
+def release_order -> Void
+  begin
+    a = D.new("a")
+  ensure
+    b = D.new("b")
+  end
+  puts "end"
+end
+
+p plain(2)
+p block_in_ensure(2)
+p quoted_in_ensure(2)
+p nested(3)
+p jumps
+p loop_in_ensure
+p Box.new(5).through(Box.new(8))
+p declared_in_ensure(1)
+p declared_in_block_ensure(1)
+release_order
