@@ -5,7 +5,7 @@ use base64::alphabet;
 use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig};
 use base64::engine::DecodePaddingMode;
 use base64::Engine;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use md5::Md5;
 use sha2::{Digest, Sha256};
 
