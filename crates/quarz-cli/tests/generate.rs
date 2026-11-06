@@ -2628,3 +2628,39 @@ end
     assert!(ok, "{err}");
     assert_eq!(out, "nil\nnil\n");
 }
+
+#[test]
+fn a_shareable_method_handle_needs_a_shareable_self() {
+    // `method_ref[P]` with a `shareable` `P`: `bind` gives a procedure
+    // holding `self`, which may cross tasks only when the class promises
+    // Shareable (docs/14 §5). A mutable model is refused (it lost updates
+    // across tasks).
+    let d = dir();
+    write(&d.0, "lib.qz", "type SF = shareable () -> Int\nclass Model\n  var @n: Int = 0\n  def bump -> Int\n    @n += 1\n  end\n  def n -> Int = @n\n  static def self.gen -> Void\n    ref = method_ref[SF](:bump)\n    def_method(:bumper) do -> SF\n      ref.bind(self)\n    end\n  end\nend\n");
+    let app = write(&d.0, "app.qz", "require_relative \"lib\"\nclass Post < Model\n  gen\nend\npost = Post.new\nf = post.bumper\nTask.scope do |s|\n  20000.times { s.spawn(&f) }\n  nil\nend\np post.n\n");
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("the handle to `Post#bump` is a `shareable () -> Int`, but `Post` is not Shareable: bound to its `self`, it would carry that `self` across tasks"),
+        "{err}"
+    );
+    // A Shareable model's: 20,000 tasks bump it, on several workers.
+    let d = dir();
+    write(&d.0, "lib.qz", "type SF = shareable () -> Int\nclass Model\n  include Shareable\n  @n: Atom[Int] = Atom.new(0)\n  def bump -> Int = @n.update { |v| v + 1 }\n  def n -> Int = @n.get\n  static def self.gen -> Void\n    ref = method_ref[SF](:bump)\n    def_method(:bumper) do -> SF\n      ref.bind(self)\n    end\n    cref = class_method_ref[SF](:label)\n    def_class_method(:labeler) do -> SF\n      cref.bind(self)\n    end\n  end\n  def self.label -> Int = 7\nend\n");
+    let app = write(&d.0, "app.qz", "require_relative \"lib\"\nclass Post < Model\n  gen\nend\npost = Post.new\nf = post.bumper\nTask.scope do |s|\n  20000.times { s.spawn(&f) }\n  nil\nend\np post.n\ng = Post.labeler\np Task.spawn(&g).await\n");
+    let (ok, out, err) = quarz(
+        &d.0,
+        &["run", app.to_str().unwrap()],
+        &[("QUARZ_THREADS", "4")],
+    );
+    assert!(ok, "{err}");
+    assert_eq!(out, "20000\n7\n");
+    // A class method's `self` is a class value, Shareable whatever the
+    // class: `class_method_ref` with a `shareable` type is accepted.
+    let d = dir();
+    write(&d.0, "lib.qz", "type SF = shareable () -> Int\nclass Model\n  var @n: Int = 0\n  def self.label -> Int = 7\n  static def self.gen -> Void\n    cref = class_method_ref[SF](:label)\n    def_class_method(:labeler) do -> SF\n      cref.bind(self)\n    end\n  end\nend\n");
+    let app = write(&d.0, "app.qz", "require_relative \"lib\"\nclass Post < Model\n  gen\nend\ng = Post.labeler\np Task.spawn(&g).await\n");
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "7\n");
+}
