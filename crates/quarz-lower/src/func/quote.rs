@@ -316,9 +316,48 @@ impl<'a> FnBuilder<'a> {
                 self.node(kind, vec![left, right, l])
             }
             ExprKind::Not(a) => {
+                // The members' own `!` (`Output::not_dispatch`), each once,
+                // in the order a test of the receiver's class tries them.
+                let own: Vec<MethodId> = {
+                    let mut ms: Vec<MethodId> = Vec::new();
+                    for (_, m) in self.out.not_dispatch.get(&e.id).into_iter().flatten() {
+                        if !ms.contains(m) {
+                            ms.push(*m);
+                        }
+                    }
+                    ms
+                };
+                // A type's own `!`, every type the checks saw having one
+                // (no check took the built-in, `Output::not_builtin`): the
+                // call it is made of (`a.!()`).
+                let builtin = self.out.not_builtin.contains(&e.id);
+                let called = if own.is_empty() {
+                    matches!(self.out.calls.get(&e.id), Some(CallTarget::Method { .. }))
+                } else {
+                    !builtin
+                };
+                if called {
+                    let recv = self.quote_expr(q, a);
+                    // (`method` as for any call: the one they all are or
+                    // override, else the first.)
+                    let (method, methods) = if own.is_empty() {
+                        self.method_refs(e.id)
+                    } else {
+                        let base = self.base_method(e.id, &own);
+                        self.method_refs_of(base, &own)
+                    };
+                    let args = self.array_of(Vec::new());
+                    let nil = self.nil();
+                    let l = self.int(line);
+                    return self.node("Call", vec![recv, method, methods, args, nil, l]);
+                }
+                // The built-in negation, with the `!` of the members of a
+                // union that define one (empty: the built-in alone).
                 let operand = self.quote_expr(q, a);
+                let refs: Vec<Reg> = own.iter().map(|m| self.method_ref_of(*m, None)).collect();
+                let methods = self.array_of(refs);
                 let l = self.int(line);
-                self.node("Not", vec![operand, l])
+                self.node("Not", vec![operand, methods, l])
             }
             ExprKind::If { cond, then, els } => {
                 let c = self.quote_expr(q, cond);

@@ -255,6 +255,7 @@ pub(crate) fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> 
         shareable_procs: set!(shareable_procs),
         self_new: set!(self_new),
         not_dispatch: map!(not_dispatch),
+        not_builtin: set!(not_builtin),
         lexical_slots: out
             .lexical_slots
             .iter()
@@ -382,6 +383,7 @@ pub(crate) fn merge_output(out: &mut Output, o: Output) {
     out.shareable_procs.extend(o.shareable_procs);
     out.self_new.extend(o.self_new);
     out.not_dispatch.extend(o.not_dispatch);
+    out.not_builtin.extend(o.not_builtin);
     out.lexical_slots.extend(o.lexical_slots);
     out.released_stmts.extend(o.released_stmts);
 }

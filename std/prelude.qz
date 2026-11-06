@@ -336,10 +336,12 @@ module Meta
     # members' methods that override a common one, that one; otherwise
     # the first of `methods`).
     variant Call(recv: Expr?, method: MethodRef, methods: Array[MethodRef], args: Array[Expr], block: Expr?, line: Int)
-    # The built-in `&&`, `||` and `!`.
+    # The built-in `&&`, `||` and `!`; on a union where some members
+    # define `!`, those members' `!` (`methods`, in dispatch order; empty:
+    # the built-in alone).
     variant And(left: Expr, right: Expr, line: Int)
     variant Or(left: Expr, right: Expr, line: Int)
-    variant Not(operand: Expr, line: Int)
+    variant Not(operand: Expr, methods: Array[MethodRef], line: Int)
     # `if`, `unless` (its condition under a `Not`) and `?:`.
     variant If(cond: Expr, then_expr: Expr, else_expr: Expr?, line: Int)
     variant ArrayLit(items: Array[Expr], line: Int)

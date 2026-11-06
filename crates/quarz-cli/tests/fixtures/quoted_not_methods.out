@@ -1,0 +1,11 @@
+Call C2#! <- C2#!
+Call C2#! <- C2#!, C3#!
+Not [C2#!]
+Not []
+And
+false
+Call Array#map <- Array#map { Not [C2#!] }
+Call Array#map <- Array#map { Not [C2#!, C3#!] }
+Call Array#map <- Array#map { Not [C3#!, C2#!] }
+[false, false]
+Call C2#! <- C2#!
