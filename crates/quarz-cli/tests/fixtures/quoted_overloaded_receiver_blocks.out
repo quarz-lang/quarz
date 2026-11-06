@@ -1,0 +1,4 @@
+{ self@0.Base#one(self@0.A#bs()) { self@0.Base#one(self@0.B#cs()) { self@0.C#bs() } } }
+{ self@0.Base#two(self@0.A#bs()) { self@0.Base#two(self@0.B#cs()) { self@0.C#bs() } } }
+{ self@0.Base#two(self@0.A#bs()) { self@0.Base#two(self@0.B#cs()) { self@0.Base#two(self@0.C#bs()) { self@0.B#name() } } } }
+{ self@0.Base#two(self@0.A#bs()) { self@0.Base#two(self@0.B#cs()) { self@0.C#label(); self@1.B#name() } } }

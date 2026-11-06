@@ -1,0 +1,43 @@
+# Blocks with receivers given to an overloaded method inside a quoted
+# block: a call the innermost receiver answers is `SelfRef(0)`, also when
+# an outer receiver has a method of the name, whatever the overloads the
+# checker tried first (docs/14 §6).
+
+class Base
+  def one[T <: Base](x: Array[T], &: T.() -> Object) -> Object? = nil
+  def two[T <: Base](x: Array[T], &: T.() -> Object) -> Object? = nil
+  def two[T <: Base](x: T?, &: T.() -> Object) -> Object? = nil
+end
+class A < Base
+  def bs -> Array[B] = [B.new]
+  def name -> String = "a"
+end
+class B < Base
+  def cs -> Array[C] = [C.new]
+  def name -> String = "b"
+end
+class C < Base
+  def bs -> Array[B] = [B.new]
+  def label -> String = "c"
+end
+
+def show(e: Meta::Expr) -> String
+  case e
+  in Meta::Expr::Block(body: b) then "{ " + b.map { |x| show(x) }.join("; ") + " }"
+  in Meta::Expr::SelfRef(depth: d) then "self@#{d}"
+  in Meta::Expr::Call(recv: r, method: m, args: a, block: b)
+    "#{r ? show(r) + "." : ""}#{m.owner.name}##{m.name}(#{a.map { |x| show(x) }.join(", ")})#{b ? " " + show(b) : ""}"
+  else e.to_s
+  end
+end
+
+def show_tree(&q: Quoted[A.() -> Object]) -> Nil
+  puts show(q.expr)
+end
+
+# One overload, then two: three levels; `bs` and `name` shadowed.
+show_tree { one(bs) { one(cs) { bs } } }
+show_tree { two(bs) { two(cs) { bs } } }
+show_tree { two(bs) { two(cs) { two(bs) { name } } } }
+# A call only an outer receiver answers falls through to it.
+show_tree { two(bs) { two(cs) { label; name } } }
