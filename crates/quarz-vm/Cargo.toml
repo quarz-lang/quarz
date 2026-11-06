@@ -30,7 +30,7 @@ polling = "3"
 # `std/digest.qz` and `std/base64.qz`.
 sha2 = "0.10"
 hmac = "0.12"
-pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
 md5 = { package = "md-5", version = "0.10" }
 base64 = "0.23"
 # The allocator (see `src/alloc.rs`): C sources built with the system's
