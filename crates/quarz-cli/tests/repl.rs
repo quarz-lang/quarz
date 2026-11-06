@@ -835,3 +835,35 @@ fn quoted_sites_differ_across_inputs() {
         "{out:?}"
     );
 }
+
+#[test]
+fn an_inherited_new_checks_the_subclass_initialize() {
+    // A class method calling `new`, or an instance method calling
+    // `Self.new`, inherited by a subclass whose `initialize` does not take
+    // its arguments: refused in the REPL as in a program (the input is
+    // discarded); a subclass keeping them is accepted.
+    let (out, _) = values(&[
+        "class A; @x: Int; def initialize(@x: Int); end; def self.build -> A = new(1); def copy -> Self = Self.new(@x); def x -> Int = @x; end",
+        "class B < A; def initialize(s: String); super(s.size); end; end",
+        "class C < A; @y: Int = 0; def initialize(x: Int, y: Int = 2); super(x); @y = y; end; end",
+        "C.build.x + C.new(3).copy.x",
+        "B",
+    ]);
+    assert!(
+        out[1].contains("does not take the arguments of `new` in `A.build`, which `B` inherits"),
+        "{out:?}"
+    );
+    assert_eq!(out[2], "", "{out:?}");
+    assert_eq!(out[3], "=> 4", "{out:?}");
+    assert!(out[4].starts_with("error:"), "{out:?}");
+    // `Self.new` alone.
+    let (out, _) = values(&[
+        "class P; @x: Int; def initialize(@x: Int); end; def copy -> Self = Self.new(@x); end",
+        "class Q < P; def initialize(s: String); super(s.size); end; end",
+    ]);
+    assert!(
+        out[1]
+            .contains("does not take the arguments of `Self.new` in `P#copy`, which `Q` inherits"),
+        "{out:?}"
+    );
+}
