@@ -9174,10 +9174,33 @@ impl Checker {
                 _ => None,
             })
             .collect::<Option<Vec<_>>>()?;
-        let owners: Vec<ClassId> = resolved
+        let resolved: Vec<MethodId> = resolved.iter().flatten().copied().collect();
+        // An extension's method overrides nothing by dispatch: a call of
+        // the ancestor's would not run it.
+        if resolved
             .iter()
-            .flatten()
-            .map(|m| self.world.method(*m).owner)
+            .any(|&r| self.world.method(r).extension.is_some())
+        {
+            return None;
+        }
+        // Each resolved method with those it overrides, as the runtime
+        // dispatches (`overridden_methods_in`: same signature).
+        let overridden: Vec<Vec<MethodId>> = resolved
+            .iter()
+            .map(|&r| {
+                let m = self.world.method(r);
+                let own: Vec<Type> = self
+                    .world
+                    .class(m.owner)
+                    .type_params
+                    .iter()
+                    .map(|tp| Type::Param(tp.id))
+                    .collect();
+                let ancs = self.world.ancestors(m.owner, &own);
+                let mut set = vec![r];
+                set.extend(self.world.overridden_methods_in(m, &ancs));
+                set
+            })
             .collect();
         let chains: Vec<Vec<ClassId>> = ids
             .iter()
@@ -9189,13 +9212,21 @@ impl Checker {
                     .collect()
             })
             .collect();
+        // The most derived ancestor's method of the name, among its
+        // overloads the one every member's method is or overrides (the
+        // one the call resolved against for each): a call of it
+        // dispatches to each member's own.
         for anc in &chains[0] {
-            if !chains.iter().all(|c| c.contains(anc)) || owners.contains(anc) {
+            if !chains.iter().all(|c| c.contains(anc)) {
                 continue;
             }
             if let Some(ms) = self.world.class(*anc).methods.get(name) {
-                if let Some(m) = ms.first() {
-                    return Some(*m);
+                if let Some(m) = ms
+                    .iter()
+                    .copied()
+                    .find(|m| overridden.iter().all(|set| set.contains(m)))
+                {
+                    return Some(m);
                 }
             }
         }

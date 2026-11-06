@@ -421,3 +421,73 @@ fn a_calls_type_arguments_are_its_own_frames() {
     want.sort();
     assert_eq!(found, want);
 }
+
+#[test]
+fn a_union_call_records_the_overload_its_members_override() {
+    // `Cat | Dog` both override `Animal#speak`, beside an overload
+    // `speak(n: Int)`: the call is recorded as the one they override
+    // (no parameters), as it runs.
+    let (ok, out, v) = tree(
+        "union_overload",
+        "class Animal\n  def speak(n: Int) -> String = \"n\"\n  def speak -> String = \"...\"\nend\nclass Cat < Animal\n  def speak -> String = \"meow\"\nend\nclass Dog < Animal\n  def speak -> String = \"woof\"\nend\ndef f(x: Cat | Dog) -> String = x.speak\nputs f(Dog.new)\n",
+    );
+    assert!(ok, "{out}");
+    let mut all = Vec::new();
+    nodes(&v["definitions"], &mut all);
+    nodes(&v["units"], &mut all);
+    let id = all
+        .iter()
+        .find(|(_, n)| n["kind"]["Call"]["name"] == "speak")
+        .map(|(id, _)| id.to_string())
+        .unwrap();
+    let method = v["calls"][id.as_str()]["method"].as_u64().unwrap();
+    let m = v["methods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"].as_u64() == Some(method))
+        .unwrap();
+    let animal = v["classes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "Animal")
+        .unwrap();
+    assert_eq!(m["name"], "speak", "{m}");
+    assert_eq!(m["owner"], animal["id"], "{m}");
+    assert_eq!(m["params"].as_array().unwrap().len(), 0, "{m}");
+}
+
+#[test]
+fn a_union_call_with_an_extension_member_records_no_common_method() {
+    // `Cat`'s `speak` is an extension's, which a call of `Animal#speak`
+    // would not run: the call is not recorded as one (it goes by the
+    // members' table).
+    let (ok, out, v) = tree(
+        "union_extension",
+        "class Animal\n  def speak -> String = \"...\"\nend\nclass Cat < Animal\nend\nclass Dog < Animal\n  def speak -> String = \"woof\"\nend\nextension Cat\n  def speak -> String = \"ext meow\"\nend\ndef f(x: Cat | Dog) -> String = x.speak\nputs f(Cat.new)\n",
+    );
+    assert!(ok, "{out}");
+    let mut all = Vec::new();
+    nodes(&v["definitions"], &mut all);
+    nodes(&v["units"], &mut all);
+    let id = all
+        .iter()
+        .find(|(_, n)| n["kind"]["Call"]["name"] == "speak")
+        .map(|(id, _)| id.to_string())
+        .unwrap();
+    let method = v["calls"][id.as_str()]["method"].as_u64().unwrap();
+    let m = v["methods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"].as_u64() == Some(method))
+        .unwrap();
+    let animal = v["classes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "Animal")
+        .unwrap();
+    assert_ne!(m["owner"], animal["id"], "{m}");
+}
