@@ -1,0 +1,18 @@
+port N
+true
+["localhost", "http/1.1", nil, false]
+got 6 bytes
+got 20001 bytes
+eof
+true
+["localhost", "http/1.1", nil, false]
+nil
+eof
+true
+["localhost", "http/1.1", nil, false]
+got 2 bytes
+eof
+true
+[nil, nil, nil, false]
+got 2 bytes
+eof

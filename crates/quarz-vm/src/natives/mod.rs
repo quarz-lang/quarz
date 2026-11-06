@@ -289,12 +289,21 @@ fn registry() -> Registry<NativeFn> {
 /// Without the `tls` feature: making a TLS connection raises.
 #[cfg(not(feature = "tls"))]
 fn no_tls(m: &mut Registry<NativeFn>) {
-    native!(m, ["TLSSocket.handshake", "TLS::Roots.check"], |i, _, _| {
-        Err(i.raise(
-            i.program.exc.not_implemented,
-            "TLS is not built in (the `tls` feature of quarz-vm)",
-        ))
-    });
+    native!(
+        m,
+        [
+            "TLSSocket.handshake",
+            "TLS::Roots.check",
+            "TLS::ServerConfig#accept",
+            "TLS::ServerConfig#check"
+        ],
+        |i, _, _| {
+            Err(i.raise(
+                i.program.exc.not_implemented,
+                "TLS is not built in (the `tls` feature of quarz-vm)",
+            ))
+        }
+    );
 }
 
 /// Natives with a by-reference version.

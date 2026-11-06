@@ -10,7 +10,7 @@ const STD_SETS: &[&[&str]] = &[
     &["json"],
     &["time"],
     &["socket"],
-    &["json", "socket", "http"],
+    &["json", "socket", "tls", "http"],
     &["test"],
 ];
 

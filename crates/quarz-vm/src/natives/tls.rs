@@ -1,20 +1,25 @@
 //! TLS through rustls (`std/tls.qz`, the `tls` feature): the natives
-//! that make a connection, the `TlsSession` over a rustls connection,
-//! and the client configurations built from `TLS::Config`s.
+//! that make a connection (`TLSSocket.connect`, `TLS::ServerConfig#accept`),
+//! the `TlsSession` over a rustls connection, and the configurations
+//! built from `TLS::Config`s and `TLS::ServerConfig`s.
 //!
 //! The crypto provider is ring. `TLS::Roots.system` is the system's
 //! store, read once at its first use (rustls-native-certs, which honours
 //! `SSL_CERT_FILE` and `SSL_CERT_DIR`). A `TLS::Config` is a `data` value:
 //! the configuration built from it is kept by its contents, so that
-//! connecting again does not parse the root store again.
+//! connecting again does not parse the root store again; a
+//! `TLS::ServerConfig`'s likewise (built when it is made, to check it).
+//!
+//! A private key never goes into a message: errors about one name the
+//! part, not its bytes.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, ServerConfig, SignatureScheme};
 
 use crate::interp::{Flow, Interp, NativeFn};
 use crate::value::*;
@@ -33,28 +38,23 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let config = client_config(i, key.clone())?;
         let conn = rustls::ClientConnection::new(config, server_name)
             .map_err(|e| tls_error(i, failure(e)))?;
-        let mut conn = rustls::Connection::Client(conn);
-        // A write's plaintext goes into records at once, whatever its
-        // size (the bytes are in memory already).
-        conn.set_buffer_limit(None);
-        let sock = take_over(i, a.arg(0))?;
-        let tls = io(IoKind::Tls(IoCell::new(TlsState {
-            sock,
-            session: Box::new(Rustls(conn)),
-            plain: Vec::new(),
-            server_name: name,
-            verified: key.verify,
-            notified: false,
-        })));
-        let Value::Io(v) = &tls else { unreachable!() };
-        let IoKind::Tls(st) = &v.kind else {
-            unreachable!()
-        };
-        if let Err(e) = handshake(i, st) {
-            let _ = net::close(i, &tls);
-            return Err(e);
-        }
+        let tls = connection(
+            i,
+            rustls::Connection::Client(conn),
+            a.arg(0),
+            Some(name),
+            key.verify,
+        )?;
         Ok(tls)
+    });
+    native!(m, "TLS::ServerConfig#accept", |i, r, a| {
+        let config = server_config(i, server_key(i, r)?)?;
+        let conn = rustls::ServerConnection::new(config).map_err(|e| tls_error(i, failure(e)))?;
+        connection(i, rustls::Connection::Server(conn), a.arg(0), None, false)
+    });
+    native!(m, "TLS::ServerConfig#check", |i, r, _| {
+        server_config(i, server_key(i, r)?)?;
+        Ok(Value::Nil)
     });
     native!(m, "TLS::Roots.check", |i, _, a| {
         let Value::Bytes(pem) = a.arg(0) else {
@@ -63,6 +63,38 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         roots_from_pem(pem).map_err(|f| tls_error(i, f))?;
         Ok(a.arg(0).clone())
     });
+}
+
+/// A `TLSSocket` over `conn`, taking `socket` over, once the handshake
+/// is done; on a failure, the connection is closed.
+fn connection(
+    interp: &Interp,
+    mut conn: rustls::Connection,
+    socket: &Value,
+    server_name: Option<String>,
+    verified: bool,
+) -> Result<Value, Flow> {
+    // A write's plaintext goes into records at once, whatever its size
+    // (the bytes are in memory already).
+    conn.set_buffer_limit(None);
+    let sock = take_over(interp, socket)?;
+    let tls = io(IoKind::Tls(IoCell::new(TlsState {
+        sock,
+        session: Box::new(Rustls(conn)),
+        plain: Vec::new(),
+        server_name,
+        verified,
+        notified: false,
+    })));
+    let Value::Io(v) = &tls else { unreachable!() };
+    let IoKind::Tls(st) = &v.kind else {
+        unreachable!()
+    };
+    if let Err(e) = handshake(interp, st) {
+        let _ = net::close(interp, &tls);
+        return Err(e);
+    }
+    Ok(tls)
 }
 
 /// The state of a connected `TCPSocket`, moved out of it: the socket is
@@ -161,6 +193,13 @@ impl TlsSession for Rustls {
             .and_then(|c| c.first())
             .map(|c| c.as_ref().to_vec())
     }
+
+    fn sni(&self) -> Option<String> {
+        match &self.0 {
+            rustls::Connection::Server(c) => c.server_name().map(str::to_string),
+            rustls::Connection::Client(_) => None,
+        }
+    }
 }
 
 /// A rustls error as a `TLS::Error`, a certificate one naming the reason.
@@ -214,23 +253,8 @@ fn config_key(interp: &Interp, v: &Value) -> Result<ConfigKey, Flow> {
         Some(Value::Nil) => None,
         _ => return Err(bad()),
     };
-    let alpn = match cfg.field(1) {
-        Some(Value::Array(a)) => a
-            .iter()
-            .map(|p| Ok(string(interp, &p, "an ALPN protocol")?.as_bytes().to_vec()))
-            .collect::<Result<Vec<_>, Flow>>()?,
-        _ => return Err(bad()),
-    };
-    let tls13_only = match cfg.field(2) {
-        Some(Value::Symbol(s)) => match &*interp.symbol_name(s) {
-            "tls12" => false,
-            "tls13" => true,
-            other => {
-                return Err(interp.err_arg(&format!("min_version: :tls12 or :tls13, not :{other}")))
-            }
-        },
-        _ => return Err(bad()),
-    };
+    let alpn = alpn(interp, cfg.field(1)).ok_or_else(bad)??;
+    let tls13_only = tls13_only(interp, cfg.field(2)).ok_or_else(bad)??;
     let verify = !matches!(cfg.field(3), Some(Value::Bool(false)));
     Ok(ConfigKey {
         pem,
@@ -240,22 +264,87 @@ fn config_key(interp: &Interp, v: &Value) -> Result<ConfigKey, Flow> {
     })
 }
 
+/// What a server configuration is built from: a `TLS::ServerConfig`'s
+/// contents. (No `Debug`: it holds the private key.)
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ServerKey {
+    certificate: Vec<u8>,
+    private_key: Vec<u8>,
+    alpn: Vec<Vec<u8>>,
+    tls13_only: bool,
+}
+
+/// A `TLS::ServerConfig` (`data ServerConfig(certificate, private_key,
+/// alpn, min_version)`).
+fn server_key(interp: &Interp, v: &Value) -> Result<ServerKey, Flow> {
+    let bad = || interp.err_type("expected a TLS::ServerConfig");
+    let Value::Object(cfg) = v else {
+        return Err(bad());
+    };
+    let (Some(Value::Bytes(certificate)), Some(Value::Bytes(private_key))) =
+        (cfg.field(0), cfg.field(1))
+    else {
+        return Err(bad());
+    };
+    Ok(ServerKey {
+        certificate: certificate.to_vec(),
+        private_key: private_key.to_vec(),
+        alpn: alpn(interp, cfg.field(2)).ok_or_else(bad)??,
+        tls13_only: tls13_only(interp, cfg.field(3)).ok_or_else(bad)??,
+    })
+}
+
+/// A config's `alpn` field; `None` when it is not an array.
+fn alpn(interp: &Interp, v: Option<Value>) -> Option<Result<Vec<Vec<u8>>, Flow>> {
+    let Some(Value::Array(a)) = v else {
+        return None;
+    };
+    Some(
+        a.iter()
+            .map(|p| Ok(string(interp, &p, "an ALPN protocol")?.as_bytes().to_vec()))
+            .collect(),
+    )
+}
+
+/// Whether a config's `min_version` field is `:tls13`; `None` when it is
+/// not a symbol.
+fn tls13_only(interp: &Interp, v: Option<Value>) -> Option<Result<bool, Flow>> {
+    let Some(Value::Symbol(s)) = v else {
+        return None;
+    };
+    Some(match &*interp.symbol_name(s) {
+        "tls12" => Ok(false),
+        "tls13" => Ok(true),
+        other => Err(interp.err_arg(&format!("min_version: :tls12 or :tls13, not :{other}"))),
+    })
+}
+
 /// The configurations built, by what they were built from (a program
 /// uses a few; past `CACHED`, the cache starts again).
 const CACHED: usize = 64;
 
-fn client_config(interp: &Interp, key: ConfigKey) -> Result<Arc<ClientConfig>, Flow> {
-    static CACHE: OnceLock<Mutex<quarz_ir::HashMap<ConfigKey, Arc<ClientConfig>>>> =
-        OnceLock::new();
-    let cache = CACHE.get_or_init(Default::default);
+type Cache<K, V> = OnceLock<Mutex<quarz_ir::HashMap<K, Arc<V>>>>;
+
+/// The configuration built from `key`, from `cache` or by `build`: on a
+/// helper thread, as file IO is (reading the system's store, parsing
+/// certificates and keys).
+fn cached<K, V>(
+    interp: &Interp,
+    cache: &'static Cache<K, V>,
+    key: K,
+    build: fn(&K) -> Result<Arc<V>, TlsFailure>,
+) -> Result<Arc<V>, Flow>
+where
+    K: Clone + Eq + std::hash::Hash + Send + 'static,
+    V: Send + Sync + 'static,
+{
+    let cache = cache.get_or_init(Default::default);
     if let Some(c) = crate::sched::lock(cache).get(&key) {
         return Ok(c.clone());
     }
-    // Reading the system's store and parsing certificates: on a helper
-    // thread, as file IO is.
     let k = key.clone();
     let built = interp
-        .block_on(move || build_config(&k))?
+        .block_on(move || build(&k))?
         .map_err(|f| tls_error(interp, f))?;
     let mut c = crate::sched::lock(cache);
     if c.len() >= CACHED {
@@ -263,6 +352,16 @@ fn client_config(interp: &Interp, key: ConfigKey) -> Result<Arc<ClientConfig>, F
     }
     c.insert(key, built.clone());
     Ok(built)
+}
+
+fn client_config(interp: &Interp, key: ConfigKey) -> Result<Arc<ClientConfig>, Flow> {
+    static CACHE: Cache<ConfigKey, ClientConfig> = OnceLock::new();
+    cached(interp, &CACHE, key, build_config)
+}
+
+fn server_config(interp: &Interp, key: ServerKey) -> Result<Arc<ServerConfig>, Flow> {
+    static CACHE: Cache<ServerKey, ServerConfig> = OnceLock::new();
+    cached(interp, &CACHE, key, build_server_config)
 }
 
 fn provider() -> Arc<CryptoProvider> {
@@ -293,6 +392,52 @@ fn build_config(key: &ConfigKey) -> Result<Arc<ClientConfig>, TlsFailure> {
             .with_custom_certificate_verifier(Arc::new(NoVerify(provider())))
             .with_no_client_auth()
     };
+    config.alpn_protocols = key.alpn.clone();
+    Ok(Arc::new(config))
+}
+
+fn build_server_config(key: &ServerKey) -> Result<Arc<ServerConfig>, TlsFailure> {
+    let fail = |message: &str| TlsFailure {
+        message: message.to_string(),
+        certificate: false,
+    };
+    let mut chain = Vec::new();
+    for cert in CertificateDer::pem_slice_iter(&key.certificate) {
+        chain.push(cert.map_err(|e| fail(&format!("certificate: bad PEM: {e}")))?);
+    }
+    if chain.is_empty() {
+        return Err(fail("certificate: no certificate in the PEM"));
+    }
+    // Not the PEM parser's message: it may quote a line of the key.
+    let private_key = PrivateKeyDer::from_pem_slice(&key.private_key).map_err(|e| match e {
+        rustls::pki_types::pem::Error::NoItemsFound => {
+            fail("private_key: no private key in the PEM (PKCS#8, PKCS#1 or SEC1)")
+        }
+        _ => fail("private_key: bad PEM"),
+    })?;
+    let versions: &[&rustls::SupportedProtocolVersion] = if key.tls13_only {
+        &[&rustls::version::TLS13]
+    } else {
+        rustls::DEFAULT_VERSIONS
+    };
+    let mut config = ServerConfig::builder_with_provider(provider())
+        .with_protocol_versions(versions)
+        .map_err(failure)?
+        .with_no_client_auth()
+        .with_single_cert(chain, private_key)
+        .map_err(|e| match e {
+            rustls::Error::InconsistentKeys(_) => {
+                fail("private_key: does not match the certificate")
+            }
+            // ring's key loader.
+            rustls::Error::General(_) => {
+                fail("private_key: not a key that can sign (RSA, ECDSA P-256 or P-384, Ed25519)")
+            }
+            rustls::Error::InvalidCertificate(_) => {
+                fail("certificate: the first certificate does not parse")
+            }
+            e => fail(&format!("certificate: {e}")),
+        })?;
     config.alpn_protocols = key.alpn.clone();
     Ok(Arc::new(config))
 }

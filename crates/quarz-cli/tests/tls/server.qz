@@ -1,0 +1,49 @@
+# A TLS server for the harness's rustls client (tests/tls.rs): it prints
+# its port, then serves the harness's connections one after another. Each
+# echoes lines; `!big N` writes N bytes and a newline, `!notify` writes
+# `bye` then close_notify. ARGV is the certificates' directory.
+require "tls"
+
+dir = ARGV[0]
+config = TLS::ServerConfig.new(certificate: File.read(File.join(dir, "server.pem")),
+                               private_key: File.read(File.join(dir, "server.key")).to_bytes,
+                               alpn: ["http/1.1"])
+listener = TCPServer.new("127.0.0.1", 0)
+puts "port #{listener.local_address.port}"
+STDOUT.flush
+
+def serve(tls: TLSSocket) -> Void
+  p [tls.server_name, tls.alpn, tls.peer_certificate, tls.verified?]
+  loop do
+    line = tls.gets?
+    if line.nil?
+      puts "eof"
+      break
+    end
+    cmd = line.chomp
+    if cmd.start_with?("!big ")
+      n = cmd[5..].to_i
+      tls.puts "abcdefghijklmnopqrstuvwxyz" * (n / 26) + "abcdefghijklmnopqrstuvwxyz"[0, n % 26]
+    elsif cmd == "!notify"
+      tls.puts "bye"
+      tls.close_write
+      p tls.gets?
+    else
+      puts "got #{line.size} bytes"
+      tls.write(line)
+    end
+  end
+  tls.close
+  nil
+end
+
+# 1. echo, records over 16 KB both ways, close_notify from the client;
+# 2. close_notify from the server; 3. a TCP close without close_notify;
+# 4. no SNI, no ALPN.
+4.times do
+  sock = listener.accept
+  tls = TLSSocket.accept(sock, config)
+  p sock.closed?
+  serve(tls)
+end
+listener.close

@@ -1,0 +1,23 @@
+made
+TLS::Error: private_key: does not match the certificate
+TLS::Error: certificate: no certificate in the PEM
+TLS::Error: certificate: no certificate in the PEM
+TLS::Error: certificate: the first certificate does not parse
+TLS::Error: private_key: no private key in the PEM (PKCS#8, PKCS#1 or SEC1)
+TLS::Error: private_key: no private key in the PEM (PKCS#8, PKCS#1 or SEC1)
+TLS::Error: private_key: no private key in the PEM (PKCS#8, PKCS#1 or SEC1)
+min_version: :tls12 or :tls13, not :ssl3
+false
+false
+false
+#<TLS::ServerConfig certificate: (N bytes), private_key: <hidden>, alpn: [], min_version: :tls13>
+true
+port N
+refused
+true
+TLS::Error
+true
+Task::Timeout
+true
+served
+true

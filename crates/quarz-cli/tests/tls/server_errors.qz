@@ -1,0 +1,61 @@
+# Failed handshakes on the server's side and bad server configs; the
+# harness (tests/tls.rs) connects after the port is printed. ARGV is the
+# certificates' directory.
+require "tls"
+
+dir = ARGV[0]
+cert = File.read(File.join(dir, "server.pem"))
+key = File.read(File.join(dir, "server.key"))
+
+def make(certificate: String, private_key: String) -> Void
+  TLS::ServerConfig.new(certificate: certificate, private_key: private_key)
+  puts "made"
+rescue TLS::Error => e
+  puts "#{e.class}: #{e.message}"
+end
+
+make(cert, key)
+make(File.read(File.join(dir, "other-ca.pem")), key)
+make("", key)
+make("not a certificate", key)
+make("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n", key)
+make(cert, "")
+make(cert, "garbage")
+make(cert, cert)
+begin
+  TLS::ServerConfig.new(certificate: cert, private_key: key, min_version: :ssl3)
+rescue ArgumentError => e
+  puts e.message
+end
+
+config = TLS::ServerConfig.new(certificate: cert, private_key: key, min_version: :tls13)
+secret = key.lines[1].chomp
+p config.inspect.include?(secret), config.to_s.include?(secret), [config].inspect.include?(secret)
+puts config.inspect.sub(/\(\d+ bytes\)/, "(N bytes)")
+p config == TLS::ServerConfig.new(certificate: cert.to_bytes, private_key: key, min_version: :tls13)
+
+listener = TCPServer.new("127.0.0.1", 0)
+puts "port #{listener.local_address.port}"
+STDOUT.flush
+
+# 1. a client that refuses the certificate; 2. plain text; 3. a client
+# that sends nothing; 4. a good one.
+4.times do |i|
+  sock = listener.accept
+  begin
+    tls = Task.timeout(500.ms) { TLSSocket.accept(sock, config) }
+    tls.puts "ok"
+    tls.close
+    puts "served"
+  rescue TLS::Error => e
+    puts i == 0 ? "refused" : e.class.name
+  rescue SystemCallError => e
+    # A client that refuses the certificate may reset the connection
+    # before its alert is read.
+    puts i == 0 ? "refused" : e.class.name
+  rescue Task::Timeout => e
+    puts e.class
+  end
+  p sock.closed?
+end
+listener.close

@@ -1,5 +1,6 @@
 require "socket"
 require "json"
+require "tls"
 
 # HTTP: `require "http"`. An HTTP/1.1 server for use behind a reverse
 # proxy (docs/11-http.md): a handler takes a `Request` and returns a
@@ -496,14 +497,16 @@ module HTTP
     # the peer is one.
     proxies: Proxies,
     # Whether the peer is a trusted proxy (always, on a UNIX socket).
-    trusted: Bool
+    trusted: Bool,
+    # Whether the connection is TLS (the server's `tls:`).
+    tls: Bool
   )
     # A request for a test: `HTTP::Request.get("/users/1")`.
     def self.build(method: String, target: String, headers: Headers = Headers.empty,
                    body: String = "", remote_address: Socket::Address? = nil) -> Request
       path, query = HTTP.split_target(target)
       Request.new(method, target, path, query, "HTTP/1.1", headers, Body.of(body),
-                  remote_address, {}, Proxies.none, false)
+                  remote_address, {}, Proxies.none, false, false)
     end
 
     # A GET request for a test, with no body.
@@ -553,8 +556,9 @@ module HTTP
       HTTP.parse_query(body.read)
     end
 
-    # `"http"`, or `"https"` when a trusted proxy says so in
-    # `X-Forwarded-Proto`.
+    # `"https"` on a TLS connection (the server's `tls:`), `"http"`
+    # otherwise; from a trusted proxy, what its `X-Forwarded-Proto` says
+    # (what the client used to reach the proxy).
     def scheme -> String
       if trusted
         proto = headers["x-forwarded-proto"]
@@ -563,7 +567,7 @@ module HTTP
           return p if p == "http" || p == "https"
         end
       end
-      "http"
+      tls ? "https" : "http"
     end
 
     # The client's address: the peer's, or, from a trusted proxy, the last
@@ -771,7 +775,7 @@ module HTTP
   # the body's first read when the client expects `100 Continue`.
   def self.read_request(reader: Reader, max_header_bytes: Int, max_body_bytes: Int,
                         remote_address: Socket::Address?, proxies: Proxies, trusted: Bool,
-                        on_continue: (() -> Void)? = nil) -> Request?
+                        on_continue: (() -> Void)? = nil, tls: Bool = false) -> Request?
     # Blank lines before a request are ignored (RFC 9112 §2.2).
     budget = max_header_bytes
     line = reader.read_line(budget)
@@ -826,7 +830,7 @@ module HTTP
     end
     continue = version == "HTTP/1.1" && headers.token?("expect", "100-continue") ? on_continue : nil
     body = Body.new(reader, length, chunked, max_body_bytes, continue)
-    Request.new(method, target, path, query, version, headers, body, remote_address, {}, proxies, trusted)
+    Request.new(method, target, path, query, version, headers, body, remote_address, {}, proxies, trusted, tls)
   end
 
   # :nodoc:
@@ -1159,7 +1163,10 @@ module HTTP
     # The procedure called with what a handler raised (other than an
     # `HTTP::Error`) and the request; when nil, the error is written to
     # STDERR.
-    on_error: (shareable (Exception, Request?) -> Void)?
+    on_error: (shareable (Exception, Request?) -> Void)?,
+    # The TLS configuration connections are served with; nil for plain
+    # HTTP.
+    tls: TLS::ServerConfig?
   )
 
   # An HTTP/1.1 server: a task per connection, requests on one connection
@@ -1195,6 +1202,21 @@ module HTTP
     # A server on `host`:`port`, or on a UNIX socket at `path` (whose
     # peers count as trusted proxies). It listens at once, so that
     # `local_address` gives the port of `port: 0`.
+    #
+    # With `tls:`, it serves HTTPS: each connection's TLS handshake runs in
+    # its own task, within `read_header_timeout` together with the wait
+    # for the first request; a handshake that fails or runs out of time
+    # closes that connection only. Not with `path:`, nor with an `alpn`
+    # other than `"http/1.1"` and `"http/1.0"` (`ArgumentError`: the
+    # server speaks no HTTP/2).
+    #
+    # ```quarz no_run
+    # handler = HTTP.handler { |req| HTTP::Response.text("hello") }
+    # tls = TLS::ServerConfig.new(certificate: File.read("server.pem"),
+    #                             private_key: File.read("server.key"),
+    #                             alpn: ["http/1.1"])
+    # server = HTTP::Server.new(handler, port: 8443, tls: tls)
+    # ```
     def initialize(@handler: Handler, *, host: String = "0.0.0.0", port: Int = 8080,
                    path: String? = nil,
                    read_header_timeout: Duration = 10.seconds, idle_timeout: Duration = 60.seconds,
@@ -1202,10 +1224,16 @@ module HTTP
                    write_timeout: Duration = 30.seconds, max_header_bytes: Int = 65_536,
                    max_body_bytes: Int = 1_048_576, max_connections: Int = 10_000,
                    trusted_proxies: Array[String] = [],
-                   on_error: (shareable (Exception, Request?) -> Void)? = nil)
+                   on_error: (shareable (Exception, Request?) -> Void)? = nil,
+                   tls: TLS::ServerConfig? = nil)
+      raise ArgumentError, "tls: is for a TCP server, not a UNIX socket's (path:)" if path && tls
+      if tls
+        other = tls.alpn.find { |p| p != "http/1.1" && p != "http/1.0" }
+        raise ArgumentError, "tls: the server speaks HTTP/1.1, not #{other.inspect} (alpn:)" if other
+      end
       @options = Options.new(read_header_timeout, idle_timeout, read_timeout, write_timeout,
                              max_header_bytes, max_body_bytes, max_connections,
-                             Proxies.of(trusted_proxies), on_error)
+                             Proxies.of(trusted_proxies), on_error, tls)
       @tcp = path ? nil : TCPServer.new(host, port)
       @unix = path ? UNIXServer.new(path) : nil
       @state = Atom.new(0)
@@ -1416,8 +1444,26 @@ module HTTP
 
     # The requests of one connection, one after another. Whatever goes
     # wrong ends this connection only.
-    protected def serve_connection(id: Int, conn: IO, peer: Socket::Address?) -> Void
+    protected def serve_connection(id: Int, raw: IO, peer: Socket::Address?) -> Void
       opts = @options
+      started = Time.monotonic
+      conn = raw
+      tls = opts.tls
+      if tls
+        # Here, not in the accept loop: a slow client holds up its own
+        # connection only. A failure ends it, as a read's does.
+        # (A TCP server's: `tls:` is refused with `path:`.)
+        case raw
+        in TCPSocket => sock
+          conn = begin
+            Task.timeout(opts.read_header_timeout) { tls.accept(sock) }
+          rescue Task::Timeout, IOError, SystemCallError
+            return nil
+          end
+        else
+          return nil
+        end
+      end
       reader = Reader.new(conn)
       first = true
       current: Request? = nil
@@ -1431,14 +1477,16 @@ module HTTP
           # Waiting for a request: shutdown may close the connection.
           @idle.update { |h| h.put(id, conn) }
           break if stopping?
-          wait = first ? opts.read_header_timeout : opts.idle_timeout
+          # The first request's wait includes the TLS handshake.
+          wait = first ? opts.read_header_timeout - (Time.monotonic - started) : opts.idle_timeout
+          wait = 0.ms if wait < 0.ms
           more = Task.timeout(wait) { !reader.eof? }
           @idle.update { |h| h.delete(id) }
           break unless more
           req = begin
             Task.timeout(opts.read_header_timeout) do
               HTTP.read_request(reader, opts.max_header_bytes, opts.max_body_bytes, peer,
-                                opts.proxies, trusted, continue)
+                                opts.proxies, trusted, continue, !tls.nil?)
             end
           rescue Error => e
             HTTP.write_response(conn, nil, error_response(e), false, opts.write_timeout)
@@ -1481,6 +1529,15 @@ module HTTP
         report(e, current)
       ensure
         @idle.update { |h| h.delete(id) }
+        # The TLS connection (`end_connection` closes the socket under it,
+        # closed already).
+        unless conn.equal?(raw)
+          begin
+            conn.close unless conn.closed?
+          rescue IOError, SystemCallError
+            nil
+          end
+        end
       end
       nil
     end
