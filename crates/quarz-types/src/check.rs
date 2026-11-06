@@ -268,6 +268,11 @@ pub struct Output {
     /// with their `!` (a value of another member gets the built-in
     /// negation).
     pub not_dispatch: FxHashMap<NodeId, Vec<(Type, MethodId)>>,
+    /// `!x` nodes some check of which took the built-in negation (a value
+    /// of a member without `!`, or of a type a block's other check saw):
+    /// with `not_dispatch`, the built-in runs for some values.
+    #[serde(default)]
+    pub not_builtin: rustc_hash::FxHashSet<NodeId>,
     /// The variables (frame, slot) whose release may be observed
     /// (`World::release_observable`): they live to the end of their
     /// scope, not their last use.
@@ -621,6 +626,8 @@ enum TableUndo {
     ),
     /// A node marked in `Output::varied_types`.
     Varied(NodeId),
+    /// A node marked in `Output::not_builtin`.
+    NotBuiltin(NodeId),
     /// A call's `Output::quoted_blocks` entry and `Checker::quoted_seen`
     /// before a check changed them (docs/14 §6).
     Quoted(NodeId, Option<bool>, Option<bool>, Option<(u32, Span)>),
@@ -2151,6 +2158,9 @@ impl Checker {
                 }
                 TableUndo::Varied(id) => {
                     self.out.varied_types.remove(&id);
+                }
+                TableUndo::NotBuiltin(id) => {
+                    self.out.not_builtin.remove(&id);
                 }
                 TableUndo::ReceiverBlock(id, was) => {
                     if was {
@@ -10180,9 +10190,11 @@ impl Checker {
             let (with, without): (Vec<Type>, Vec<Type>) =
                 members.iter().cloned().partition(|m| has_not(self, m));
             if with.is_empty() {
+                self.note_not_builtin(expr.id);
                 return None;
             }
             if !without.is_empty() {
+                self.note_not_builtin(expr.id);
                 let call = Call {
                     recv: Some(operand.clone()),
                     name: "!".to_string(),
@@ -10207,6 +10219,7 @@ impl Checker {
                 return Some(result);
             }
         } else if !has_not(self, &t) {
+            self.note_not_builtin(expr.id);
             return None;
         }
         let call = Call {
@@ -10286,6 +10299,14 @@ impl Checker {
 
     /// Add to what `!x` tests (`Output::not_dispatch`): the types whose
     /// own `!` it calls, the built-in negation for any other.
+    /// Mark `!` node `id` as taking the built-in negation in some check
+    /// (`Output::not_builtin`), undone with a discarded check.
+    fn note_not_builtin(&mut self, id: NodeId) {
+        if self.out.not_builtin.insert(id) {
+            self.table_journal.push(TableUndo::NotBuiltin(id));
+        }
+    }
+
     fn note_not_dispatch(&mut self, id: NodeId, targets: Vec<(Type, MethodId)>) {
         let entry = self.out.not_dispatch.entry(id).or_default();
         for (t, m) in targets {

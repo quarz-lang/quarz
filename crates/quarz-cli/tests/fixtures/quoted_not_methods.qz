@@ -1,0 +1,56 @@
+# `!` and `&&` in a quoted block as they run (docs/14 §6): a type's own
+# `!` is the `Call` it is made of; on a union some of whose members
+# define `!`, a `Not` listing their `!`; the built-in `!` a `Not` with
+# none; `&&` on a union keeps the built-in, an `And`.
+
+class C2
+  def ! -> String = "C2!"
+  def &&(&other: () -> C2) -> C2 = self
+end
+class C3
+  def ! -> String = "C3!"
+  def &&(&other: () -> C3) -> C3 = self
+end
+
+class Rel
+  def one(&f: Quoted[(C2) -> Object]) -> Meta::Expr = f.expr
+  def both(&f: Quoted[(C2 | C3) -> Object]) -> Meta::Expr = f.expr
+  def some(&f: Quoted[(C2 | Int) -> Object]) -> Meta::Expr = f.expr
+  def plain(&f: Quoted[(Bool) -> Object]) -> Meta::Expr = f.expr
+  def run_some(&f: Quoted[(C2 | Int) -> Object]) -> Object = f.proc.call(1)
+  def nums(&f: Quoted[(Array[C2] | Array[Int]) -> Object]) -> Meta::Expr = f.expr
+  def mix(&f: Quoted[(Array[C2 | Int] | Array[C3]) -> Object]) -> Meta::Expr = f.expr
+  def mix2(&f: Quoted[(Array[C3] | Array[C2 | Int]) -> Object]) -> Meta::Expr = f.expr
+  # (Overloads: the one not chosen, whose type has no `!`, leaves no
+  # mark.)
+  def over(&f: Quoted[(Int) -> Int]) -> Meta::Expr = f.expr
+  def over(&f: Quoted[(C2) -> String]) -> Meta::Expr = f.expr
+  def run_nums(&f: Quoted[(Array[C2] | Array[Int]) -> Object]) -> Object = f.proc.call([1, 2])
+end
+
+def ref(m: Meta::MethodRef) -> String = "#{m.owner.name}#{m.singleton ? "." : "#"}#{m.name}"
+
+def show(e: Meta::Expr) -> String
+  case e
+  in Meta::Expr::Block(body: b) then b.map { |x| show(x) }.join("; ")
+  in Meta::Expr::Not(methods: ms) then "Not [#{ms.map { |x| ref(x) }.join(", ")}]"
+  in Meta::Expr::And then "And"
+  in Meta::Expr::Call(method: m, methods: ms, block: b) then "Call #{ref(m)} <- #{ms.map { |x| ref(x) }.join(", ")}#{b ? " { " + show(b) + " }" : ""}"
+  else e.to_s
+  end
+end
+
+r = Rel.new
+puts show(r.one { |v| !v })
+puts show(r.both { |v| !v })
+puts show(r.some { |v| !v })
+puts show(r.plain { |v| !v })
+puts show(r.both { |v| v && v })
+p r.run_some { |v| !v }
+# A block checked once per type, some types without `!`: the built-in
+# runs for them, whichever order the checks took.
+puts show(r.nums { |xs| xs.map { |v| !v } })
+puts show(r.mix { |xs| xs.map { |v| !v } })
+puts show(r.mix2 { |xs| xs.map { |v| !v } })
+p r.run_nums { |xs| xs.map { |v| !v } }
+puts show(r.over { |v| !v })
