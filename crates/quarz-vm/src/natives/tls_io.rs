@@ -3,9 +3,10 @@
 //! session pumped through it the way a socket is read and written.
 //!
 //! The session is reached through `TlsSession`, a trait object made only
-//! by `TLSSocket.connect`'s native (`tls.rs`, behind the `tls` feature):
-//! the IO natives' `Tls` arms call it without naming rustls, so a program
-//! that never connects keeps none of its code.
+//! by the natives of `TLSSocket.connect` and `TLS::ServerConfig#accept`
+//! (`tls.rs`, behind the `tls` feature): the IO natives' `Tls` arms call
+//! it without naming rustls, so a program that never makes a connection
+//! keeps none of its code. The pump does not know which side it is on.
 //!
 //! Sharing (docs/04 §4): the session is touched only under the handle's
 //! lock, which is released only to wait for the descriptor, and is
@@ -46,6 +47,8 @@ pub trait TlsSession: Send {
     fn alpn(&self) -> Option<Vec<u8>>;
     /// The peer's end-entity certificate (DER).
     fn peer_certificate(&self) -> Option<Vec<u8>>;
+    /// The name the client sent (SNI), on a server's session.
+    fn sni(&self) -> Option<String>;
 }
 
 /// A TLS failure, made into a `TLS::Error` (a `TLS::CertificateError`
@@ -75,9 +78,10 @@ pub struct TlsState {
     pub session: Box<dyn TlsSession>,
     /// Plaintext received but not yet taken.
     pub plain: Vec<u8>,
-    pub server_name: String,
+    /// The name given to `connect`; a server's is the session's SNI.
+    pub server_name: Option<String>,
     /// Whether the peer's certificate was verified (`verify: false` in
-    /// the config: not).
+    /// the config, and a server's peer: not).
     pub verified: bool,
     /// close_notify is queued: nothing more is written.
     pub notified: bool,
@@ -85,7 +89,14 @@ pub struct TlsState {
 
 impl std::fmt::Debug for TlsState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TlsState({})", self.server_name)
+        write!(f, "TlsState({:?})", self.server_name)
+    }
+}
+
+impl TlsState {
+    /// The name given to `connect`, or the one the client sent.
+    pub fn server_name(&self) -> Option<String> {
+        self.server_name.clone().or_else(|| self.session.sni())
     }
 }
 
@@ -395,5 +406,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "TLSSocket#verified?", |i, r, _| -> EvalResult {
         Ok(Value::Bool(tls_state(i, r)?.borrow().verified))
+    });
+    native!(m, "TLSSocket#server_name", |i, r, _| -> EvalResult {
+        let name = tls_state(i, r)?.borrow().server_name();
+        Ok(name.map(Value::string).unwrap_or(Value::Nil))
     });
 }

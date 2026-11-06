@@ -1142,9 +1142,9 @@ pub fn inspect_socket(interp: &Interp, io: &Rc<IoVal>) -> String {
         ),
         IoKind::Tls(st) => {
             let s = st.borrow();
+            let name = s.server_name().map(|n| n + " ").unwrap_or_default();
             format!(
-                "#<TLSSocket {} {}{closed}>",
-                s.server_name,
+                "#<TLSSocket {name}{}{closed}>",
                 s.sock.peer.map(|a| a.to_string()).unwrap_or_default()
             )
         }
