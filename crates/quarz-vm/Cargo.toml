@@ -28,7 +28,7 @@ unicode-segmentation = "1"
 glob = "0.3"
 polling = "3"
 # `std/digest.qz` and `std/base64.qz`.
-sha2 = "0.10"
+sha2 = "0.11"
 hmac = "0.12"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 md5 = { package = "md-5", version = "0.10" }
