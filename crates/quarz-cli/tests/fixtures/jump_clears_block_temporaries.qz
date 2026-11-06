@@ -1,0 +1,81 @@
+# A `return`, `break` or `next` out of a block lowered in place releases
+# what the block's temporaries hold with its variables (a failed
+# pattern's array holding `x`), before the method's own (item 92).
+
+class D
+  @n: String
+  def initialize(@n: String); end
+  def deinitialize
+    puts "bye #{@n}"
+  end
+end
+
+def failed(k: Int) -> Int
+  y = D.new("outer")
+  [1, 2].each do |a|
+    x = D.new("x#{a}")
+    if [x, 1] in [D => q, 2]
+      puts "no"
+    end
+    return 1 if a == k
+  end
+  0
+end
+
+def matched(k: Int) -> Int
+  y = D.new("outer")
+  [1, 2].each do |a|
+    x = D.new("x#{a}")
+    if [x, 1] in [D => q, 1]
+      puts "yes"
+    end
+    return 1 if a == k
+  end
+  0
+end
+
+def absent(k: Int) -> Int
+  y = D.new("outer")
+  [1, 2].each do |a|
+    x = D.new("x#{a}")
+    return 1 if a == k
+  end
+  0
+end
+
+def broken -> Int
+  y = D.new("outer")
+  r = [1, 2].each do |a|
+    x = D.new("x#{a}")
+    if [x, 1] in [D => q, 2]
+      puts "no"
+    end
+    break if a == 1
+  end
+  puts "after break"
+  0
+end
+
+def skipped -> Int
+  y = D.new("outer")
+  [1, 2].each do |a|
+    x = D.new("x#{a}")
+    if [x, 1] in [D => q, 2]
+      puts "no"
+    end
+    next if a == 1
+    puts "rest #{a}"
+  end
+  puts "after next"
+  0
+end
+
+p failed(1)
+puts "--"
+p matched(1)
+puts "--"
+p absent(1)
+puts "--"
+p broken
+puts "--"
+p skipped

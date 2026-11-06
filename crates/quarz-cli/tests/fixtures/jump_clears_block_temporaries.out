@@ -1,0 +1,24 @@
+bye x1
+bye outer
+1
+--
+yes
+bye x1
+bye outer
+1
+--
+bye x1
+bye outer
+1
+--
+bye x1
+after break
+bye outer
+0
+--
+bye x1
+rest 2
+bye x2
+after next
+bye outer
+0
