@@ -390,7 +390,7 @@ fn a_method_with_errors_does_not_run_through_the_runtime() {
         ),
         (
             "broken",
-            "`broken` did not run: it reaches `Bad#to_s`, which has errors",
+            "`broken` did not run: it may reach `Bad#to_s` (lib_bad.qz:2), which has errors: ",
         ),
     ] {
         let (lib, base) = if call == "broken" {
@@ -420,14 +420,15 @@ fn a_method_with_errors_does_not_run_through_the_runtime() {
 }
 
 #[test]
-fn a_statement_blocked_by_a_method_reached_by_name_names_it() {
-    // The statement's `String.build` reaches every `build` by name: a
-    // test class's, whose body uses what the statement would generate.
+fn a_statement_reaches_call_targets_and_their_overrides() {
+    // The statement's `String.build` reaches `String.build`, not every
+    // `build`: a test class's, whose body uses what the statement would
+    // generate, does not block it (docs/14 §7).
     let d = dir();
     write(
         &d.0,
         "lib.qz",
-        "class Model\n  static def self.table(name: String) -> Void\n    s = String.build { |b| b << name }\n    def_method(:table_name) { s }\n  end\nend\n",
+        "class Model\n  static def self.table(name: String) -> Void\n    s = String.build { |b| b << name }\n    def_method(:table_name) { s }\n  end\n  def label -> String = \"m\"\n  static def self.shown(x: Model) -> Void\n    s = x.label\n    def_method(:shown_as) { s }\n  end\nend\n",
     );
     write(
         &d.0,
@@ -437,38 +438,113 @@ fn a_statement_blocked_by_a_method_reached_by_name_names_it() {
     let app = write(
         &d.0,
         "spec.qz",
-        "require_relative \"m\"\nclass Spec\n  def build -> String = Post.new.table_name\nend\n",
+        "require_relative \"m\"\nclass Spec\n  def build -> String = Post.new.table_name\n  def name -> String = Post.new.table_name\nend\np Spec.new.build\n",
     );
-    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
-    assert!(!ok);
-    assert!(
-        err.contains("`table` did not run: `Spec#build` (spec.qz:3), which it may reach by name, has errors: undefined method `table_name` for Post"),
-        "{err}"
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "\"posts\"\n");
+    // A call resolved to `Model#label` may run any override: one whose
+    // body uses what a statement would generate blocks it, named with
+    // its first error.
+    write(
+        &d.0,
+        "m2.qz",
+        "require_relative \"lib\"\nclass Post < Model\n  table \"posts\"\nend\nclass Note < Model\n  shown Model.new\nend\n",
     );
-    // A method without errors of its own that uses a constant whose
-    // initializer has some: the constant's is quoted, as what it uses.
     let app2 = write(
         &d.0,
         "spec2.qz",
-        "require_relative \"m\"\nK = nosuch_thing\nclass Spec\n  def build -> String\n    puts K\n    \"x\"\n  end\nend\n",
+        "require_relative \"m2\"\nclass Spec < Model\n  def label -> String = Note.new.shown_as\nend\n",
     );
-    let (ok, _, err2) = quarz(
-        &d.0,
-        &["check", app2.to_str().unwrap()],
-        &[("QUARZ_NO_CACHE", "1")],
-    );
+    let (ok, _, err) = quarz(&d.0, &["check", app2.to_str().unwrap()], &[]);
     assert!(!ok);
     assert!(
-        err2.contains("`table` did not run: `Spec#build` (spec2.qz:4), which it may reach by name, uses what has errors: undefined local variable or method `nosuch_thing` for main (spec2.qz:2)"),
-        "{err2}"
+        err.contains("`shown` did not run: it may reach `Spec#label` (spec2.qz:3), which has errors: undefined method `shown_as` for Note"),
+        "{err}"
     );
     // The method's own error is reported, once.
     assert_eq!(
-        err.matches("spec.qz:3:25: error: undefined method `table_name` for Post")
+        err.matches("spec2.qz:3:25: error: undefined method `shown_as` for Note")
             .count(),
         1,
         "{err}"
     );
+    // A method without errors of its own that uses a constant whose
+    // initializer has some: the constant's error is quoted, as what it
+    // uses.
+    let app3 = write(
+        &d.0,
+        "spec3.qz",
+        "require_relative \"m2\"\nK = nosuch_thing\nclass Spec < Model\n  def label -> String\n    puts K\n    \"x\"\n  end\nend\n",
+    );
+    let (ok, _, err3) = quarz(
+        &d.0,
+        &["check", app3.to_str().unwrap()],
+        &[("QUARZ_NO_CACHE", "1")],
+    );
+    assert!(!ok);
+    assert!(
+        err3.contains("`shown` did not run: it may reach `Spec#label` (spec3.qz:4), which uses what has errors: undefined local variable or method `nosuch_thing` for main (spec3.qz:2)"),
+        "{err3}"
+    );
+}
+
+#[test]
+fn a_statement_reaches_what_dispatch_may_find() {
+    // A call resolved to a module's method, a class method or one class
+    // objects answer reaches every method of the name; another class's
+    // instance method, those below it and the modules a class below it
+    // includes (docs/14 §7): an implementation inherited from a
+    // superclass, a module included in a subclass, a class's own
+    // `def self.` over an extended module's or `Type`'s (a
+    // `Meta::ClassDef`'s in a static def, whose `self` is the class), an
+    // abstract method's implementation above it.
+    for (lib, app, want) in [
+        ("module Shape\n  abstract def area -> Int\n  def describe -> String = \"area #{area}\"\nend\nclass Base\n  def area -> Int = 7\nend\nclass Sq < Base\n  include Shape\nend\nclass Model\n  static def self.show(s: Shape) -> Void\n    puts s.describe\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show Sq.new\nend\n", "area 7\n"),
+        ("module Loud\n  def label -> String = \"loud\"\nend\nclass A\n  def label -> String = \"a\"\nend\nclass B < A\n  include Loud\nend\nclass Model\n  static def self.show(k: A) -> Void\n    puts k.label\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show B.new\nend\n", "loud\n"),
+        ("module Named\n  def label -> String = \"base\"\nend\nclass A\n  extend Named\nend\nclass B < A\n  def self.label -> String = \"B\"\nend\nclass Model\n  static def self.show(k: Type[A]) -> Void\n    puts k.label\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show B\nend\n", "B\n"),
+        ("class A\n  def self.name -> String = \"customA\"\nend\nclass Model\n  static def self.show(k: Type[Object]) -> Void\n    puts k.name\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show A\nend\n", "customA\n"),
+        ("class Model\n  static def self.show -> Void\n    puts type.name\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  def self.type -> Type[Post]\n    puts \"own type\"\n    Post\n  end\n  show\nend\n", "own type\nPost\n"),
+        ("module Typed\n  def type -> Type[Object]\n    puts \"typed\"\n    Object\n  end\nend\nclass Model\n  static def self.show -> Void\n    puts type.name\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  extend Typed\n  show\nend\n", "typed\nObject\n"),
+        ("class Base\n  def label -> String = \"base\"\nend\nabstract class A < Base\n  abstract def label -> String\nend\nclass B < A\nend\nclass Model\n  static def self.show(k: A) -> Void\n    puts k.label\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show B.new\nend\n", "base\n"),
+    ] {
+        let d = dir();
+        write(&d.0, "lib.qz", lib);
+        let app = write(&d.0, "app.qz", app);
+        let (ok, _, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+        assert!(ok, "{err}");
+        assert_eq!(err, want);
+    }
+    // So a method with errors found that way blocks the statement, as one
+    // found directly does.
+    let d = dir();
+    write(&d.0, "lib.qz", "module Shape\n  abstract def area -> Int\n  def describe -> String = \"area #{area}\"\nend\nclass Model\n  static def self.show(s: Shape) -> Void\n    puts s.describe\n  end\n  static def self.direct(b: Base) -> Void\n    puts b.area\n  end\nend\n");
+    let app = write(&d.0, "app.qz", "require_relative \"lib\"\nclass Base\n  def area -> Int\n    puts \"running broken\"\n    nosuch\n    7\n  end\nend\nclass Sq < Base\n  include Shape\nend\nclass Post < Model\n  direct Base.new\n  show Sq.new\nend\n");
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("`show` did not run: it may reach `Base#area` (app.qz:3), which has errors"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_statement_reaches_dispatch_one_step() {
+    // What dispatch may find for a call, not what it may find for those
+    // in turn (`Loud#label` reached for `A#label`, not every `label`),
+    // and a `super` its method alone: an unrelated `Spec#label` with
+    // errors does not block the statement.
+    for (lib, app, want) in [
+        ("module Loud\n  def label -> String = \"loud\"\nend\nclass A\n  def label -> String = \"a\"\nend\nclass B < A\n  include Loud\nend\nclass Model\n  static def self.show(k: A) -> Void\n    s = k.label\n    def_method(:shown_as) { s }\n  end\nend\n", "require_relative \"lib\"\nclass Note < Model\n  show B.new\nend\nclass Spec\n  def label -> String = Note.new.shown_as\nend\np Spec.new.label\n", "\"loud\"\n"),
+        ("class Base\n  def label -> String = \"base\"\nend\nclass B < Base\n  def label -> String = \"b+\" + super\nend\nclass Model\n  static def self.show(k: B) -> Void\n    s = k.label\n    def_method(:shown_as) { s }\n  end\nend\n", "require_relative \"lib\"\nclass Note < Model\n  show B.new\nend\nclass Spec < Base\n  def label -> String = Note.new.shown_as\nend\np Spec.new.label\n", "\"b+base\"\n"),
+    ] {
+        let d = dir();
+        write(&d.0, "lib.qz", lib);
+        let app = write(&d.0, "app.qz", app);
+        let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+        assert!(ok, "{err}");
+        assert_eq!(out, want);
+    }
 }
 
 #[test]
@@ -612,7 +688,7 @@ fn a_statement_reaching_code_with_errors_does_not_run() {
     // `Broken#to_s`); none of them ran it.
     assert!(err.contains("lib.qz:7:14: error"), "{err}");
     assert_eq!(
-        err.matches("did not run: it reaches `Broken#to_s`, which has errors")
+        err.matches("did not run: it may reach `Broken#to_s` (lib.qz:6), which has errors: ")
             .count(),
         3,
         "{err}"
