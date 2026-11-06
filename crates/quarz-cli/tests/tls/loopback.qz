@@ -1,0 +1,85 @@
+# A Quarz client and a Quarz server in one program. ARGV is the
+# certificates' directory.
+require "tls"
+
+dir = ARGV[0]
+server_config = TLS::ServerConfig.new(certificate: File.read(File.join(dir, "server.pem")),
+                                      private_key: File.read(File.join(dir, "server.key")),
+                                      alpn: ["h2", "http/1.1"])
+ca = TLS::Roots.from_pem(File.read(File.join(dir, "ca.pem")))
+listener = TCPServer.new("127.0.0.1", 0)
+port = listener.local_address.port
+
+LINES = 30
+server = Task.spawn do
+  tls = TLSSocket.accept(listener.accept, server_config)
+  # Printed by the main task, after the client's (whatever the workers).
+  seen = [[:server, tls.server_name, tls.alpn, tls.peer_certificate, tls.verified?].inspect,
+          tls.inspect.sub(/:\d+>/, ":PORT>")]
+  # Two tasks share the server's socket: each takes whole lines and
+  # echoes each whole.
+  echoers = 2.times.map do
+    Task.spawn do
+      n = 0
+      while (line = tls.gets?)
+        tls.write(line)
+        n += 1
+      end
+      n
+    end
+  end
+  total = echoers.map(&:await).sum
+  tls.close
+  seen + [total.to_s]
+end
+
+config = TLS::Config.new(roots: ca, alpn: ["http/1.1"])
+tls = TLSSocket.connect(TCPSocket.new("127.0.0.1", port), "localhost", config)
+p [:client, tls.server_name, tls.alpn, tls.peer_certificate.nil?, tls.verified?]
+reader = Task.spawn do
+  got: Array[String] = []
+  LINES.times { got = got + [tls.gets.chomp] }
+  got
+end
+LINES.times do |i|
+  tls.puts "#{i} #{"x" * (i.even? ? 20_000 : 3)}"
+end
+got = reader.await
+p got.size, got.all? { |l| i, body = l.split(" "); body == "x" * (i.to_i.even? ? 20_000 : 3) }
+p got.map { |l| l.split(" ")[0].to_i }.sort == LINES.times.to_a
+tls.close_write
+p tls.gets?
+tls.close
+puts server.await
+
+# Without SNI (an address) and with no ALPN in common.
+listener2 = TCPServer.new("127.0.0.1", 0)
+s2 = Task.spawn do
+  begin
+    t = TLSSocket.accept(listener2.accept, server_config)
+    seen = [:server, t.server_name, t.alpn].inspect
+    t.close
+    seen
+  rescue TLS::Error => e
+    "server: #{e.class}"
+  end
+end
+t = TLSSocket.connect(TCPSocket.new("127.0.0.1", listener2.local_address.port), "127.0.0.1",
+                      TLS::Config.new(roots: ca))
+p t.gets?
+puts s2.await
+s3 = Task.spawn do
+  begin
+    TLSSocket.accept(listener2.accept, server_config)
+    "server: accepted"
+  rescue TLS::Error => e
+    "server: #{e.class}"
+  end
+end
+begin
+  TLSSocket.connect(TCPSocket.new("127.0.0.1", listener2.local_address.port), "localhost",
+                    TLS::Config.new(roots: ca, alpn: ["spdy/3"]))
+rescue TLS::Error => e
+  puts "client: #{e.class}"
+end
+puts s3.await

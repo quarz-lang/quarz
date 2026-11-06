@@ -1,6 +1,6 @@
 # HTTP: The Server
 
-`require "http"` gives the `HTTP` module: an HTTP/1.1 server written in Quarz on top of the sockets ([06-stdlib.md](06-stdlib.md) §9), for use as an application server behind a reverse proxy, as Puma is used. The proxy terminates TLS and speaks HTTP/2 to the clients; the server speaks HTTP/1.1 to the proxy, with keep-alive and chunked bodies. A client, `HTTP::Client`, will follow with the same request and response types; neither follows Ruby's `net/http`.
+`require "http"` gives the `HTTP` module: an HTTP/1.1 server written in Quarz on top of the sockets ([06-stdlib.md](06-stdlib.md) §9), for use as an application server behind a reverse proxy, as Puma is used. The proxy terminates TLS (or the server does, with `tls:`) and speaks HTTP/2 to the clients; the server speaks HTTP/1.1 to the proxy, with keep-alive and chunked bodies. A client, `HTTP::Client`, will follow with the same request and response types; neither follows Ruby's `net/http`.
 
 This is implemented in `std/http.qz` (and `Signal` in the prelude, with a few natives), except what §9 leaves for later.
 
@@ -68,7 +68,7 @@ module HTTP
     def content_length -> Int?
     def query_params -> Hash[String, Array[String]]  # decoded; a key may repeat
     def form_params -> Hash[String, Array[String]]   # application/x-www-form-urlencoded body
-    def scheme -> String                             # "http", or X-Forwarded-Proto from a trusted proxy
+    def scheme -> String                             # "https" over tls:, else "http"; X-Forwarded-Proto from a trusted proxy
     def remote_ip -> String?                         # remote_address.host, or X-Forwarded-For's client from a trusted proxy
     def keep_alive? -> Bool
   end
@@ -168,8 +168,9 @@ module HTTP
                  max_body_bytes: Int = 1_048_576,              # what Body#read and read_bytes accept
                  max_connections: Int = 10_000,                # accepted at once; beyond it, accept waits
                  trusted_proxies: Array[String] = [],          # peers whose X-Forwarded-* headers are believed
-                 on_error: (shareable (Exception, Request?) -> Void)? = nil) -> Server
-    def self.unix(handler: Handler, path: String, *, ...the same options...) -> Server   # a UNIX socket
+                 on_error: (shareable (Exception, Request?) -> Void)? = nil,
+                 tls: TLS::ServerConfig? = nil) -> Server      # HTTPS (not with path:)
+    def self.unix(handler: Handler, path: String, *, ...the same options but tls:...) -> Server   # a UNIX socket
     def serve -> Void                      # accepts until shutdown or cancellation
     def local_address -> Socket::Address  # the port actually bound (`port: 0` picks one)
     def shutdown(timeout: Duration = 30.seconds) -> Void   # begins it and returns at once
@@ -183,6 +184,7 @@ end
 
 A connection's task does:
 
+0. With `tls:` (a `TLS::ServerConfig`, [06-stdlib.md](06-stdlib.md) §9), run the TLS handshake (`config.accept`), in the connection's task so that a slow client holds up only its own connection. It counts against the first request's `read_header_timeout` to begin: the handshake and the wait for that request's first byte share it. A handshake that fails or runs out of time closes the connection quietly, as an `IOError` does (below).
 1. Read the request line and headers: the first request has `read_header_timeout` to begin and as long again from its first byte to finish; a later one on the same connection has `idle_timeout` to begin and `read_header_timeout` to finish. Over `max_header_bytes`: `431`. Malformed: `400`. Both close the connection.
 2. Build the `Request` and call the handler. An `HTTP::Error` it raises is answered with that status (§7); any other `StandardError` becomes a `500` with an empty body and goes to `on_error` with the request, or to STDERR with the method and the path as sent (still percent-encoded, so that it cannot hold a line break or an escape, and without the query, which may carry a token); `Task::Cancelled` is not caught. A response whose headers have a name that is not a token, or a value with CR, LF or another control character but HTAB, is not sent: it becomes a `500` too (response splitting; `Headers#put` and `add` already refuse those, so only fields built with `Field.new` get this far). Whatever else fails (a `Stream` procedure that raises after the headers went out) ends that connection and is reported; the server goes on.
 3. Write the response under `write_timeout`, then drain or close as §3 says.
@@ -244,7 +246,7 @@ A handler is called directly: `handler.call(HTTP::Request.get("/users/1"))` give
 ## 9. Later
 
 - **`HTTP::Client`**: `HTTP::Client.new(base_url:, timeout:)` with `get`, `post` and `request(req) -> Response`, over `Socket.tcp`, keep-alive per host, the same `Request`/`Response` types. Not Ruby's `net/http`.
-- **TLS** (a `TLSSocket` over an `IO`, with the `rustls` crate), **HTTP/2**, **WebSocket**, compression, static files with ranges and caching headers, an automatic `OPTIONS` answer in the router, request logging in a standard format.
+- **HTTP/2**, **WebSocket**, compression, static files with ranges and caching headers, an automatic `OPTIONS` answer in the router, request logging in a standard format.
 - A `Supervisor` for restarting a server with other long-lived tasks ([04-concurrency.md](04-concurrency.md) §5) is designed separately.
 - The percent-decoding and query parsing live in `HTTP` until there is a `uri` library ([06-stdlib.md](06-stdlib.md) §10), which takes them over.
 

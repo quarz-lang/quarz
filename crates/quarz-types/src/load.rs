@@ -28,9 +28,9 @@ pub const STD_MODULES: &[(&str, &str)] = &[
     ("base64", include_str!("../../../std/base64.qz")),
     ("time", include_str!("../../../std/time.qz")),
     ("socket", include_str!("../../../std/socket.qz")),
+    ("tls", include_str!("../../../std/tls.qz")),
     ("http", include_str!("../../../std/http.qz")),
     ("test", include_str!("../../../std/test.qz")),
-    ("tls", include_str!("../../../std/tls.qz")),
 ];
 
 /// The constants each standard library module declares at the top level,

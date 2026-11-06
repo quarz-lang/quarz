@@ -1,0 +1,12 @@
+[:client, "localhost", "http/1.1", false, true]
+30
+true
+true
+nil
+[:server, "localhost", "http/1.1", nil, false]
+#<TLSSocket localhost 127.0.0.1:PORT>
+30
+nil
+[:server, nil, nil]
+client: TLS::Error
+server: TLS::Error
