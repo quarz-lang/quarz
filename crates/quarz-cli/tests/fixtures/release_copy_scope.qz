@@ -1,0 +1,66 @@
+# A variable's value is released at the end of its scope, also when the
+# value is a temporary's copy that copy propagation would remove (the
+# variable assigned in a `begin` whose value is the assignment's): a
+# `deinitialize` does not run early.
+
+class D
+  @n: String
+  def initialize(@n: String); end
+  def deinitialize
+    puts "bye #{@n}"
+  end
+end
+
+# The reported shape: an inlined block whose `begin` assigns `a`, its
+# `ensure` `b`.
+def ensure_in_block -> Void
+  [1].each do |i|
+    begin
+      a = D.new("a")
+    ensure
+      b = D.new("b")
+    end
+    puts "end pass"
+  end
+end
+
+# The same in a method body, and nested blocks.
+def ensure_in_method -> Void
+  begin
+    a = D.new("m-a")
+  ensure
+    b = D.new("m-b")
+  end
+  puts "end method"
+end
+
+def nested -> Void
+  [1, 2].each do |i|
+    [3].each do |j|
+      begin
+        a = D.new("n#{i}-a")
+      ensure
+        b = D.new("n#{i}-b")
+      end
+      puts "inner #{i}"
+    end
+    puts "outer #{i}"
+  end
+end
+
+# A `begin` whose value is used keeps the variable's value alive too.
+def value_used -> Void
+  [1].each do |i|
+    x = begin
+      a = D.new("v-a")
+    ensure
+      puts "ensure"
+    end
+    puts "end pass"
+  end
+end
+
+ensure_in_block
+ensure_in_method
+nested
+value_used
