@@ -5924,7 +5924,7 @@ class Task[out T <: Shareable]
   # and it cannot assign to outer variables. Without a `Task.scope`, the
   # task belongs to the program's root scope and is dropped when the main
   # code finishes; `#await` it, or use `Task.scope`, to wait for it.
-  native def self.spawn[R](&: () -> R) -> Task[R]
+  native def self.spawn[R](&blk: shareable () -> R) -> Task[R]
   # Runs the block with a `Task::Scope`, waits for every task started with
   # `Task::Scope#spawn` to finish, and returns the block's value.
   #
@@ -5991,7 +5991,7 @@ class Task[out T <: Shareable]
   #
   # `ArgumentError` when the block captures or returns a value that cannot
   # be copied: a `Channel`, an `Atom`, a `Task`, a mutable object.
-  native def self.blocking[R](&: () -> R) -> R
+  native def self.blocking[R](&blk: shareable () -> R) -> R
   # Raises `Task::Cancelled` when the calling task has been cancelled
   # (outside `.uncancellable`); otherwise does nothing.
   #
@@ -6043,7 +6043,7 @@ class Task[out T <: Shareable]
   # :nodoc:
   # `Task.spawn` outside any `Task.__contain` block: a service the library
   # starts once for the program.
-  native def self.__spawn_service[R](&: () -> R) -> Task[R]
+  native def self.__spawn_service[R](&blk: shareable () -> R) -> Task[R]
 
   # Waits for the task to finish and returns its value (at once when it has
   # finished); only the calling task waits.
@@ -6101,7 +6101,7 @@ class Task[out T <: Shareable]
     # returns it.
     #
     # `Task.scope` waits for it before it returns.
-    native def spawn[T](&: () -> T) -> Task[T]
+    native def spawn[T](&blk: shareable () -> T) -> Task[T]
     # Cancels the scope's tasks (`Task#cancel`); `Task.scope` then waits for
     # them and returns the block's value normally.
     native def cancel -> Void

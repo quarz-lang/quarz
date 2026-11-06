@@ -848,6 +848,11 @@ struct BlockCtx {
     /// the call's name: `return` and `break` cannot leave the code
     /// around it.
     task: Option<String>,
+    /// A block written where a `shareable` procedure type is expected: it
+    /// may run in another task or after its method has returned, so
+    /// `return` and `break` cannot leave the code around it either (a
+    /// task's says so with `task`).
+    shareable: bool,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -6402,6 +6407,7 @@ impl Checker {
                 let past_lifted = left(self.env.blocks.iter().rposition(|b| b.lifted));
                 let past_static = left(self.env.blocks.iter().rposition(|b| b.static_call));
                 let past_task = left(self.env.blocks.iter().rposition(|b| b.task.is_some()));
+                let past_shareable = left(self.env.blocks.iter().rposition(|b| b.shareable));
                 if past_lifted {
                     self.error(
                         "`return` in a block given to `def_method`: the block becomes the generated method's body, whose value is its last expression",
@@ -6429,6 +6435,19 @@ impl Checker {
                 if past_task {
                     self.error(
                         "`return` in a task's block: it runs in another task, where the method around it is not running to return from (give the value as the block's last expression, or `next` it)",
+                        expr.span,
+                    );
+                    if let Some(v) = value {
+                        self.check_expr(v, None);
+                    }
+                    return Type::Nothing;
+                }
+                // So may a block given where a `shareable` procedure type
+                // is expected: the method may run it in a task of its own,
+                // or after it has returned.
+                if past_shareable {
+                    self.error(
+                        "`return` cannot leave a shareable block: it may run in another task or after its method has returned; use `next value`",
                         expr.span,
                     );
                     if let Some(v) = value {
@@ -6529,6 +6548,16 @@ impl Checker {
                 if let (0, Some(name)) = (self.env.loop_depth, task) {
                     self.error(
                         format!("`break` cannot leave `{name}`: its block runs in another task; use `next value` for the task's result"),
+                        expr.span,
+                    );
+                    if let Some(v) = value {
+                        self.check_expr(v, None);
+                    }
+                    return Type::Nothing;
+                }
+                if self.env.loop_depth == 0 && self.env.blocks.last().is_some_and(|b| b.shareable) {
+                    self.error(
+                        "`break` cannot leave a shareable block: it may run in another task or after its method has returned; use `next value`",
                         expr.span,
                     );
                     if let Some(v) = value {
@@ -12631,6 +12660,33 @@ impl Checker {
                             block_ty.clone()
                         };
                         let t = self.check_expr(e, Some(&block_ty));
+                        // A procedure that would fit if it were `shareable`,
+                        // for a method running its block in a task: why,
+                        // and what to pass (the call is typed as it is).
+                        if let Type::Proc(precv, pparams, pret, false, pkws) = self.resolve(&t) {
+                            let as_shareable = Type::Proc(precv, pparams, pret, true, pkws);
+                            if Self::runs_block_in_task(&self.world, m)
+                                && matches!(self.resolve(&block_ty), Type::Proc(_, _, _, true, _))
+                                && self.coerce(&as_shareable, &block_ty)
+                            {
+                                if report {
+                                    let wanted = self.name(&self.resolve(&as_shareable));
+                                    let callee = if m.owner == self.world.builtin.task {
+                                        format!("Task.{}", m.name)
+                                    } else {
+                                        format!("{}#{}", self.world.class(m.owner).name, m.name)
+                                    };
+                                    self.error(
+                                        format!(
+                                            "`{callee}` runs the block in a task: pass a `{wanted}`, whose captures are Shareable (declare it: `f: {wanted} = -> {{ ... }}`)"
+                                        ),
+                                        e.span,
+                                    );
+                                }
+                                self.out.block_pass.insert(expr.id, BlockPass::Proc);
+                                return Ok(ret);
+                            }
+                        }
                         if !self.coerce(&t, &block_ty) {
                             let msg = format!(
                                 "block argument has type {} but {} was expected",
@@ -12641,6 +12697,25 @@ impl Checker {
                                 self.error(msg.clone(), e.span);
                             }
                             return Err(msg);
+                        }
+                        // Its result passes to the task that awaits it, as
+                        // a task block's does: Shareable.
+                        if Self::runs_block_in_task(&self.world, m) && report {
+                            if let Type::Proc(_, _, pret, _, _) = self.resolve(&t) {
+                                let pret = self.resolve(&pret);
+                                if !pret.has_vars()
+                                    && pret != Type::Void
+                                    && !self.world.is_shareable(&pret)
+                                {
+                                    self.error(
+                                        format!(
+                                            "a procedure run in a task returns the non-shareable type {}, but its value passes to the task that awaits it",
+                                            self.world.type_name(&pret)
+                                        ),
+                                        e.span,
+                                    );
+                                }
+                            }
                         }
                         self.out.block_pass.insert(expr.id, BlockPass::Proc);
                     }
@@ -13290,6 +13365,7 @@ impl Checker {
             init,
             static_call: in_static,
             task: elsewhere.or_else(|| is_task.then(|| "the task's method".to_string())),
+            shareable,
         });
         // `break` and `next` in a block leave the block, not a loop
         // around it.
@@ -13834,6 +13910,7 @@ impl Checker {
             init: false,
             static_call: false,
             task: None,
+            shareable: false,
         });
         // `break` and `next` here do not leave a loop around the lambda.
         let saved_loop = (
