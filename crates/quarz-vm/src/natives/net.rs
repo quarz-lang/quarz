@@ -819,6 +819,62 @@ pub(crate) fn socket_read_partial<S: Readable>(
     })
 }
 
+/// `IO#wait_readable`: wait until a read would not wait (bytes buffered
+/// or readable, or the end of the stream), reading into the stream's
+/// buffer but taking nothing from it; false when `deadline` passes
+/// first. A cancellation or `Task.timeout` interrupting the wait leaves
+/// the stream as it was: what was read stays buffered.
+pub(crate) fn socket_wait_readable<S: Readable>(
+    interp: &Interp,
+    st: &IoCell<S>,
+    deadline: Option<std::time::Instant>,
+) -> Result<bool, Flow> {
+    let mut chunk = [0u8; 8192];
+    let mut timer = None;
+    let r = loop {
+        let fd = {
+            let mut s = st.borrow_mut();
+            loop {
+                let (buf, ended) = s.buffer();
+                if !buf.is_empty() || ended {
+                    break None;
+                }
+                match s.fill(&mut chunk) {
+                    Fill::More => {}
+                    Fill::Wait(fd) => break Some(Ok(fd)),
+                    Fill::Closed => break Some(Err(None)),
+                    Fill::Failed(e) => break Some(Err(Some(e))),
+                }
+            }
+        };
+        let fd = match fd {
+            None => break Ok(true),
+            Some(Ok(fd)) => fd,
+            Some(Err(None)) => break Err(closed_stream(interp)),
+            Some(Err(Some(e))) => break Err(stream_error(interp, e)),
+        };
+        if let Some(d) = deadline {
+            // (The timer fired, or the deadline passed: either ends the
+            // wait; testing only `now()` races with a timer that fired.)
+            let fired = timer.is_some_and(|t| !interp.sched.borrow().timer_pending(t));
+            if fired || std::time::Instant::now() >= d {
+                break Ok(false);
+            }
+            if timer.is_none() {
+                let me = interp.sched.borrow().current_ref();
+                timer = Some(interp.sched.borrow_mut().add_timer_at(d, me.id));
+            }
+        }
+        if let Err(e) = interp.wait_io(st, fd, false) {
+            break Err(e);
+        }
+    };
+    if let Some(t) = timer {
+        interp.sched.borrow_mut().cancel_timer(t);
+    }
+    r
+}
+
 pub(crate) fn socket_eof<S: Readable>(interp: &Interp, st: &IoCell<S>) -> Result<bool, Flow> {
     read_with(interp, st, |buf, ended| {
         if !buf.is_empty() {

@@ -83,3 +83,23 @@ rescue TLS::Error => e
   puts "client: #{e.class}"
 end
 puts s3.await
+
+# wait_readable: a timeout, then plaintext, taking nothing from it.
+listener3 = TCPServer.new("127.0.0.1", 0)
+go = Channel[Bool].new
+s4 = Task.spawn do
+  peer = TLSSocket.accept(listener3.accept, server_config)
+  go.receive
+  peer.write("ready\n")
+  peer.gets?
+  peer.close
+end
+t = TLSSocket.connect(TCPSocket.new("127.0.0.1", listener3.local_address.port), "localhost",
+                      TLS::Config.new(roots: ca))
+p t.wait_readable(timeout: 20.ms)
+go.send(true)
+p t.wait_readable, t.wait_readable(timeout: 0.ms), t.gets
+t.puts "bye"
+p t.wait_readable(timeout: 5.seconds), t.gets?
+t.close
+s4.await

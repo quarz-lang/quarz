@@ -10,3 +10,9 @@ nil
 [:server, nil, nil]
 client: TLS::Error
 server: TLS::Error
+false
+true
+true
+"ready\n"
+true
+nil

@@ -1,0 +1,17 @@
+false
+true
+true
+true
+"hi"
+timed out
+cancelled
+true
+"line\n"
+true
+"late"
+true
+nil
+"IOError: closed stream"
+IOError: closed stream
+true
+TypeError
