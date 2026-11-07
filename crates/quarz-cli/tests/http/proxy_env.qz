@@ -1,0 +1,12 @@
+# HTTP::Proxy.from_env with the environment tests/http_client.rs sets.
+require "http"
+
+proxy = HTTP::Proxy.from_env
+if proxy
+  p [proxy.https&.to_s, proxy.http&.to_s, proxy.no_proxy]
+  ["https://example.com/", "http://example.com/", "https://api.internal/", "http://localhost:8080/"].each do |u|
+    puts "#{u} -> #{proxy.proxy_for(URI.parse(u))&.to_s || "direct"}"
+  end
+else
+  p nil
+end

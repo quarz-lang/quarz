@@ -4,13 +4,20 @@ require "tls"
 require "uri"
 require "base64"
 
-# HTTP: `require "http"`. An HTTP/1.1 server for use behind a reverse
-# proxy (docs/11-http.md): a handler takes a `Server::Request` and returns a
-# `Server::Response`; the server runs a task per connection.
+# HTTP: `require "http"` (docs/11-http.md). An HTTP/1.1 server, for use
+# behind a reverse proxy or with `tls:`: a handler takes a
+# `Server::Request` and returns a `Server::Response`; the server runs a
+# task per connection. And an HTTP/1.1 client, `Client`, with a pool of
+# kept connections, redirects and proxies.
 #
 # ```quarz no_run
 # require "http"
 # HTTP.serve(8080) { |req| HTTP::Server::Response.text("hello #{req.path}") }
+# ```
+#
+# ```quarz no_run
+# res = HTTP.get("https://example.com/")
+# puts res.body.read if res.success?
 # ```
 module HTTP
   # ----- errors ---------------------------------------------------------------------
@@ -1927,7 +1934,7 @@ module HTTP
 
   # ----- the client -----------------------------------------------------------------
 
-  # The proxy a client goes through: an `https` target through a `CONNECT`
+  # The proxy a client goes through: an `https` target through a CONNECT
   # tunnel, an `http` one by sending the request to the proxy in absolute
   # form. The proxy URL's user information, if any, is sent as
   # `Proxy-Authorization: Basic`.
@@ -1942,7 +1949,7 @@ module HTTP
     https: URI?,
     # The proxy for `http` targets, nil for none.
     http: URI?,
-    # The hosts reached directly, as curl reads `NO_PROXY`: a host, a
+    # The hosts reached directly, as curl reads NO_PROXY: a host, a
     # domain (`example.com` or `.example.com`: it and its subdomains), a
     # `host:port`, or `*` for every host.
     no_proxy: Array[String]
@@ -2078,7 +2085,7 @@ module HTTP
     class ResponseTooLarge < Error
     end
 
-    # A redirect that cannot be followed: no usable `Location`, or a
+    # A redirect that cannot be followed: no usable Location, or a
     # `Content::Stream` body to send again.
     class RedirectError < Error
     end
@@ -2102,7 +2109,7 @@ module HTTP
       def url -> URI = @url
     end
 
-    # The proxy refused the tunnel (`CONNECT`): `status` is its answer.
+    # The proxy refused the tunnel (CONNECT): `status` is its answer.
     class ProxyError < Error
       @status: Int
       def initialize(@status: Int)
@@ -2115,14 +2122,15 @@ module HTTP
 
     # A response that is not 2xx, from `Response#ensure_success`. An
     # exception is Shareable and a response's body is not, so it carries
-    # the response's status, headers and URL, and its body when it was
-    # small enough to read (`max_body_bytes`) and UTF-8.
+    # the response's status, headers and URL, and its body when it could
+    # be read (up to `max_body_bytes`). The message says the status and
+    # the URL, never the body.
     class StatusError < Error
       @status: Int
       @headers: Headers
       @url: URI
-      @body: String?
-      def initialize(@status: Int, @headers: Headers, @url: URI, @body: String?)
+      @body: Bytes?
+      def initialize(@status: Int, @headers: Headers, @url: URI, @body: Bytes?)
         super("#{@status} #{HTTP.reason(@status)} (#{@url.origin}#{@url.path})")
       end
 
@@ -2133,7 +2141,7 @@ module HTTP
       # The URL that answered.
       def url -> URI = @url
       # The response's body, nil when it could not be read.
-      def body -> String? = @body
+      def body -> Bytes? = @body
     end
 
     # :nodoc:
@@ -2164,7 +2172,7 @@ module HTTP
       method: String,
       # The URL: `http` or `https`, with a host.
       url: URI,
-      # The header fields (the client adds `Host`, the framing and a
+      # The header fields (the client adds Host, the framing and a
       # `User-Agent`).
       headers: Headers,
       # The body.
@@ -2295,12 +2303,12 @@ module HTTP
       # its status, headers, URL and body (read here).
       def ensure_success -> Response
         return self if success?
-        text = begin
-          body.read
+        bytes = begin
+          body.read_bytes
         rescue Error, IOError, SystemCallError
           nil
         end
-        raise StatusError.new(status, headers, url, text)
+        raise StatusError.new(status, headers, url, bytes)
       end
 
       # The body parsed as JSON (`JSON.parse(body.read)`).
@@ -2636,7 +2644,7 @@ module HTTP
     end
 
     # :nodoc:
-    # `host[:port]` as the `Host` header gives it (the port when not the
+    # `host[:port]` as the Host header gives it (the port when not the
     # default one).
     def self.host_header(url: URI) -> String
       h = url.host || ""

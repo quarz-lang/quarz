@@ -1,0 +1,459 @@
+# HTTP::Client against HTTP::Server (and a few servers written by hand)
+# in the same program: bodies both ways, keep-alive, redirects, limits,
+# timeouts, retries, HTTPS, and a CONNECT proxy.
+require "http"
+require "test"
+
+class HttpClientTest < Test::Case
+  # A server's peers: one per connection, so that the test can count
+  # them (the client's ports).
+  @peers: Atom[Array[Int]] = Atom[Array[Int]].new([])
+  # What the server saw of each request: "METHOD path headers... body".
+  @seen: Atom[Array[String]] = Atom[Array[String]].new([])
+
+  def handler -> HTTP::Handler
+    peers = @peers
+    seen = @seen
+    HTTP.handler do |req|
+      port = req.remote_address&.port || 0
+      peers.update { |a| a.include?(port) ? a : a.push(port) }
+      auth = req.headers["authorization"] || "-"
+      cookie = req.headers["cookie"] || "-"
+      body = req.body.read
+      seen.update { |a| a.push("#{req.method} #{req.path} auth=#{auth} cookie=#{cookie} ua=#{req.headers["user-agent"]} #{body}") }
+      case req.path
+      when "/text" then HTTP::Server::Response.text("hello #{req.method}")
+      when "/echo"
+        HTTP::Server::Response.text("#{req.method} #{req.headers["content-type"] || "-"} #{req.headers["transfer-encoding"] || req.headers["content-length"] || "-"} #{body}")
+      when "/stream"
+        HTTP::Server::Response.stream do |w|
+          4.times { |i| w.write("part#{i};") }
+        end
+      when "/big" then HTTP::Server::Response.text("x" * 200_000)
+      when "/json" then HTTP::Server::Response.json(JSON.parse("{\"a\": [1, 2]}"))
+      when "/empty" then HTTP::Server::Response.empty(204)
+      when "/not-modified" then HTTP::Server::Response.empty(304)
+      when "/missing" then HTTP::Server::Response.text("no such thing", 404)
+      when "/slow"
+        Task.sleep(2.seconds)
+        HTTP::Server::Response.text("late")
+      when "/slow-body"
+        HTTP::Server::Response.stream do |w|
+          w.write("first;")
+          w.flush
+          Task.sleep(2.seconds)
+          w.write("second")
+        end
+      when "/loop" then HTTP::Server::Response.redirect("/loop", 302)
+      else
+        if req.path.start_with?("/redirect/")
+          # /redirect/<status>/<where>
+          _, _, status, where = req.path.split("/", 4)
+          HTTP::Server::Response.redirect(where.gsub("~", "/"), status.to_i)
+        else
+          HTTP::Server::Response.not_found
+        end
+      end
+    end
+  end
+
+  # Serves on a port of its own while the block runs.
+  def serving(tls: TLS::ServerConfig? = nil, &: (String) -> Void) -> Void
+    server = HTTP::Server.new(handler, host: "127.0.0.1", port: 0, tls: tls)
+    Task.scope do |scope|
+      scope.spawn { server.serve }
+      begin
+        scheme = tls ? "https" : "http"
+        yield "#{scheme}://127.0.0.1:#{server.local_address.port}"
+      ensure
+        server.shutdown
+      end
+    end
+    nil
+  end
+
+  def client(max_redirects: Int = 10, max_body_bytes: Int = 1_000_000, timeout: Duration? = nil,
+             read_timeout: Duration = 30.seconds, proxy: HTTP::Proxy? = nil,
+             tls: TLS::Config = TLS::Config.default) -> HTTP::Client
+    HTTP::Client.new(max_redirects: max_redirects, max_body_bytes: max_body_bytes, timeout: timeout,
+                     read_timeout: read_timeout, proxy: proxy, tls: tls)
+  end
+
+  def connections -> Int = @peers.value.size
+
+  def test_get_post_put
+    serving do |base|
+      c = client
+      res = c.get("#{base}/text")
+      assert_equal(200, res.status)
+      assert_equal("HTTP/1.1", res.version)
+      assert_equal("text/plain; charset=utf-8", res.headers["content-type"])
+      assert_equal("hello GET", res.body.read)
+      assert_equal("POST text/plain 5 hello", c.post("#{base}/echo", body: "hello", content_type: "text/plain").body.read)
+      assert_equal("PUT - 3 abc", c.put("#{base}/echo", body: b"abc").body.read)
+      assert_equal("PATCH - 0 ", c.patch("#{base}/echo").body.read)
+      assert_equal("DELETE - - ", c.delete("#{base}/echo").body.read)
+      # One connection for all of them.
+      assert_equal(1, connections)
+      assert_true(@seen.value[0].include?("ua=quarz-http/"))
+    end
+  end
+
+  def test_chunked_both_ways
+    serving do |base|
+      c = client
+      req = HTTP::Client::Request.stream("POST", "#{base}/echo") do |w|
+        w.write("one,")
+        w.write(b"two")
+      end
+      assert_equal("POST - chunked one,two", c.request(req).body.read)
+      res = c.get("#{base}/stream")
+      assert_nil(res.body.size)
+      parts: Array[String] = []
+      res.body.each_chunk { |p| parts = parts.push(p.decode) }
+      assert_equal("part0;part1;part2;part3;", parts.join)
+      assert_equal("hello GET", c.get("#{base}/text").body.read)
+      assert_equal(1, connections)
+    end
+  end
+
+  def test_bodiless_responses_keep_the_connection
+    serving do |base|
+      c = client
+      res = c.head("#{base}/text")
+      assert_equal(200, res.status)
+      assert_equal("10", res.headers["content-length"])
+      assert_true(res.body.consumed?)
+      assert_equal("", c.get("#{base}/empty").body.read)
+      assert_equal(304, c.get("#{base}/not-modified").status)
+      assert_equal("hello GET", c.get("#{base}/text").body.read)
+      assert_equal(1, connections)
+    end
+  end
+
+  def get_and_drop(c: HTTP::Client, url: String) -> Int = c.get(url).status
+
+  def test_a_dropped_body_closes_its_connection
+    serving do |base|
+      c = client
+      assert_equal(200, get_and_drop(c, "#{base}/big"))
+      assert_equal("hello GET", c.get("#{base}/text").body.read)
+      assert_equal(2, connections)
+      # Closed with little left: drained and kept.
+      c.get("#{base}/text").close
+      assert_equal("hello GET", c.get("#{base}/text").body.read)
+      assert_equal(2, connections)
+    end
+  end
+
+  def test_json_and_ensure_success
+    serving do |base|
+      c = client
+      assert_equal(2, c.get("#{base}/json").json["a"].as_a.size)
+      ok = c.get("#{base}/text")
+      assert_equal(ok.status, ok.ensure_success.status)
+      ok.close
+      e = assert_raise(HTTP::Client::StatusError) { c.get("#{base}/missing").ensure_success }
+      assert_true(e.is_a?(HTTP::Client::Error))
+      if e.is_a?(HTTP::Client::StatusError)
+        assert_equal(404, e.status)
+        assert_equal(b"no such thing", e.body)
+        assert_equal("404 Not Found (#{base}/missing)", e.message)
+      end
+      assert_false(c.get("#{base}/missing").success?)
+    end
+  end
+
+  def test_redirects
+    serving do |base|
+      c = client
+      # 302 and 303: GET without the body.
+      res = c.post("#{base}/redirect/303/~echo", body: "data", content_type: "text/plain")
+      assert_equal("GET - - ", res.body.read)
+      assert_equal("/echo", res.url.path)
+      assert_equal("GET", res.request.method)
+      assert_equal("GET - - ", c.post("#{base}/redirect/302/~echo", body: "data").body.read)
+      # A HEAD stays a HEAD.
+      assert_equal("HEAD", c.head("#{base}/redirect/301/~text").request.method)
+      # 307 and 308: the same method and body.
+      assert_equal("PUT text/plain 4 data", c.put("#{base}/redirect/307/~echo", body: "data", content_type: "text/plain").body.read)
+      assert_equal("POST - 4 data", c.post("#{base}/redirect/308/~echo", body: "data").body.read)
+      # A streamed body cannot be sent again.
+      stream = HTTP::Client::Request.stream("POST", "#{base}/redirect/307/~echo") { |w| w.write("x") }
+      assert_raise(HTTP::Client::RedirectError) { c.request(stream) }
+      # max_redirects: 0 returns the redirect.
+      res = client(max_redirects: 0).get("#{base}/redirect/302/~text")
+      assert_equal(302, res.status)
+      assert_true(res.redirect?)
+      assert_equal("/text", res.headers["location"])
+      e = assert_raise(HTTP::Client::TooManyRedirects) { client(max_redirects: 3).get("#{base}/loop") }
+      if e.is_a?(HTTP::Client::TooManyRedirects)
+        assert_equal(302, e.status)
+        assert_equal("/loop", e.url.path)
+      end
+    end
+  end
+
+  def test_cross_origin_redirects_drop_credentials
+    serving do |a|
+      serving do |b|
+        c = client
+        target = "#{b}/echo".gsub("/", "~")
+        headers = {"Authorization" => "Bearer t", "Cookie" => "s=1", "X-Other" => "kept"}
+        assert_equal(200, c.get("#{a}/redirect/302/#{target}", headers).status)
+        last = @seen.value.last? || ""
+        assert_match(/\AGET \/echo auth=- cookie=- /, last)
+        # The same origin keeps them.
+        c.get("#{a}/redirect/302/~echo", headers).close
+        assert_match(/\AGET \/echo auth=Bearer t cookie=s=1 /, @seen.value.last? || "")
+      end
+    end
+  end
+
+  def test_max_body_bytes
+    serving do |base|
+      c = client(max_body_bytes: 1000)
+      assert_raise(HTTP::Client::ResponseTooLarge) { c.get("#{base}/big").body.read }
+      # each_chunk has no limit.
+      n = 0
+      c.get("#{base}/big").body.each_chunk { |p| n += p.size }
+      assert_equal(200_000, n)
+    end
+  end
+
+  def test_timeouts
+    serving do |base|
+      assert_raise(HTTP::Client::TimeoutError) { client(timeout: 200.ms).get("#{base}/slow") }
+      res = client(read_timeout: 200.ms).get("#{base}/slow-body")
+      assert_equal(b"first;", res.body.read_chunk)
+      assert_raise(HTTP::Client::TimeoutError) { res.body.read_chunk }
+    end
+  end
+
+  # A server written by hand: answers each connection's requests from
+  # `replies` (one per request, then closes), and counts connections.
+  def by_hand(replies: Array[String], &: (String) -> Void) -> Void
+    listener = TCPServer.new("127.0.0.1", 0)
+    count = @peers
+    Task.scope do |scope|
+      scope.spawn do
+        begin
+          loop do
+            sock = listener.accept
+            count.update { |a| a.push(a.size) }
+            scope.spawn do
+              begin
+                reader = HTTP::Reader.new(sock)
+                replies.each do |reply|
+                  HTTP.read_request(reader, 4096, 4096, nil, HTTP::Proxies.none, false)
+                  sock.write(reply)
+                end
+              rescue IOError, SystemCallError, HTTP::Error
+                nil
+              ensure
+                sock.close
+              end
+              nil
+            end
+          end
+        rescue IOError
+          nil
+        end
+        nil
+      end
+      begin
+        yield "http://127.0.0.1:#{listener.local_address.port}"
+      ensure
+        listener.close
+      end
+    end
+    nil
+  end
+
+  def test_a_kept_connection_found_closed_is_retried
+    # The server answers one request per connection, keeping it open in
+    # the headers' words, then closes it.
+    by_hand(["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"]) do |base|
+      c = client
+      assert_equal("ok", c.get("#{base}/a").body.read)
+      Task.sleep(50.ms)
+      assert_equal("ok", c.get("#{base}/b").body.read)
+      assert_equal(2, connections)
+      # A POST is not sent twice.
+      assert_equal("ok", c.get("#{base}/c").body.read)
+      Task.sleep(50.ms)
+      assert_raise(HTTP::Client::ProtocolError) { c.post("#{base}/d", body: "x") }
+    end
+  end
+
+  def test_http10_and_unframed_bodies
+    by_hand(["HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nto the end"]) do |base|
+      res = client.get("#{base}/")
+      assert_equal("HTTP/1.0", res.version)
+      assert_equal("to the end", res.body.read)
+    end
+    by_hand(["HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nConnection: close\r\n\r\nunframed"]) do |base|
+      assert_equal("unframed", client.get("#{base}/").body.read)
+    end
+    by_hand(["HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello"]) do |base|
+      assert_raise(HTTP::Client::ProtocolError) { client.get("#{base}/") }
+    end
+    by_hand(["SMTP ready\r\n\r\n"]) do |base|
+      assert_raise(HTTP::Client::ProtocolError) { client.get("#{base}/") }
+    end
+  end
+
+  def test_connect_errors
+    listener = TCPServer.new("127.0.0.1", 0)
+    port = listener.local_address.port
+    listener.close
+    assert_raise(HTTP::Client::ConnectError) { client.get("http://127.0.0.1:#{port}/") }
+    assert_raise(ArgumentError) { client.get("ftp://127.0.0.1/") }
+    assert_raise(ArgumentError) { client.get("/relative") }
+    assert_raise(ArgumentError) { client.get("http://127.0.0.1/a b") }
+  end
+
+  def tls_dir -> String = "crates/quarz-cli/tests/fixtures/tls"
+
+  def test_https
+    dir = tls_dir
+    server_tls = TLS::ServerConfig.new(certificate: File.read("#{dir}/server.pem"),
+                                       private_key: File.read("#{dir}/server.key"))
+    roots = TLS::Config.new(roots: TLS::Roots.from_pem(File.read("#{dir}/ca.pem")))
+    serving(server_tls) do |base|
+      c = client(tls: roots)
+      assert_equal("hello GET", c.get("#{base}/text").body.read)
+      assert_equal("POST - 2 hi", c.post("#{base}/echo", body: "hi").body.read)
+      assert_equal(1, connections)
+      e = assert_raise(HTTP::Client::ConnectError) { client.get("#{base}/text") }
+      assert_match(/certificate verify failed/, e.message)
+    end
+  end
+
+  # A CONNECT proxy: tunnels to the host asked for when the credentials
+  # are `user:secret`, answers 407 otherwise; answers a request in
+  # absolute form itself, with the target it got.
+  def proxying(&: (String) -> Void) -> Void
+    listener = TCPServer.new("127.0.0.1", 0)
+    Task.scope do |scope|
+      scope.spawn do
+        begin
+          loop do
+            sock = listener.accept
+            scope.spawn do
+              begin
+                reader = HTTP::Reader.new(sock)
+                line = (reader.read_line(4096) || Bytes.new).decode
+                headers = HTTP.read_headers(reader, 4096)
+                method, target, _ = line.split(" ")
+                if method == "CONNECT"
+                  if headers["proxy-authorization"] != "Basic #{Base64.encode("user:secret")}"
+                    sock.write("HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n")
+                  else
+                    host, _, port = target.rpartition(":")
+                    upstream = TCPSocket.new(host, port.to_i)
+                    sock.write("HTTP/1.1 200 Connection established\r\n\r\n")
+                    there = Task.spawn do
+                      loop do
+                        part = sock.read_bytes(16_384)
+                        break if part.empty?
+                        upstream.write(part)
+                      end
+                      upstream.close_write
+                    end
+                    loop do
+                      part = upstream.read_bytes(16_384)
+                      break if part.empty?
+                      sock.write(part)
+                    end
+                    there.await
+                    upstream.close
+                  end
+                else
+                  text = "proxied #{method} #{target} #{headers["proxy-authorization"] || "-"}"
+                  sock.write("HTTP/1.1 200 OK\r\nContent-Length: #{text.bytesize}\r\nConnection: close\r\n\r\n#{text}")
+                end
+              rescue IOError, SystemCallError, HTTP::Error
+                nil
+              ensure
+                sock.close
+              end
+              nil
+            end
+          end
+        rescue IOError
+          nil
+        end
+        nil
+      end
+      begin
+        yield "127.0.0.1:#{listener.local_address.port}"
+      ensure
+        listener.close
+      end
+    end
+    nil
+  end
+
+  def test_through_a_proxy
+    dir = tls_dir
+    server_tls = TLS::ServerConfig.new(certificate: File.read("#{dir}/server.pem"),
+                                       private_key: File.read("#{dir}/server.key"))
+    roots = TLS::Config.new(roots: TLS::Roots.from_pem(File.read("#{dir}/ca.pem")))
+    proxying do |proxy|
+      serving(server_tls) do |base|
+        good = HTTP::Proxy.new("http://user:secret@#{proxy}")
+        assert_equal("hello GET", client(proxy: good, tls: roots).get("#{base}/text").body.read)
+        e = assert_raise(HTTP::Client::ProxyError) do
+          client(proxy: HTTP::Proxy.new("http://user:wrong@#{proxy}"), tls: roots).get("#{base}/text")
+        end
+        if e.is_a?(HTTP::Client::ProxyError)
+          assert_equal(407, e.status)
+        end
+        # NO_PROXY: reached directly.
+        direct = HTTP::Proxy.new("http://user:wrong@#{proxy}", no_proxy: ["127.0.0.1"])
+        assert_equal("hello GET", client(proxy: direct, tls: roots).get("#{base}/text").body.read)
+      end
+      # An http target: sent to the proxy in absolute form.
+      res = client(proxy: HTTP::Proxy.new("http://user:secret@#{proxy}")).get("http://example.com/a?b")
+      assert_equal("proxied GET http://example.com/a?b Basic #{Base64.encode("user:secret")}", res.body.read)
+    end
+  end
+
+  def test_no_proxy_matching
+    p = HTTP::Proxy.new("http://proxy:3128", no_proxy: ["example.com", ".internal", "10.0.0.1:8080", "[::1]"])
+    assert_nil(p.proxy_for(URI.parse("https://example.com/")))
+    assert_nil(p.proxy_for(URI.parse("https://www.Example.com./")))
+    assert_equal("http://proxy:3128", p.proxy_for(URI.parse("https://notexample.com/")).to_s)
+    assert_nil(p.proxy_for(URI.parse("http://db.internal/")))
+    assert_nil(p.proxy_for(URI.parse("http://internal/")))
+    assert_nil(p.proxy_for(URI.parse("http://10.0.0.1:8080/")))
+    assert_equal("http://proxy:3128", p.proxy_for(URI.parse("http://10.0.0.1/")).to_s)
+    assert_nil(p.proxy_for(URI.parse("http://[::1]:80/")))
+    assert_nil(HTTP::Proxy.new("http://proxy:3128", no_proxy: ["*"]).proxy_for(URI.parse("https://any/")))
+    assert_raise(ArgumentError) { HTTP::Proxy.new("https://proxy:3128") }
+  end
+
+  def test_request_values
+    req = HTTP::Client::Request.post("https://example.com/inbox", body: "{}", content_type: "application/json",
+                                     headers: {"Accept" => "application/json"})
+    signed = req.header("Signature", "sig")
+    assert_equal("sig", signed.headers["signature"])
+    assert_nil(req.headers["signature"])
+    assert_equal("application/json", signed.headers["accept"])
+    moved = signed.with(url: "https://example.org/x")
+    assert_equal("example.org", moved.url.host)
+    assert_equal("POST", moved.method)
+    assert_true(HTTP::Client::Request.get("http://a/").idempotent?)
+    assert_false(req.idempotent?)
+    assert_raise(ArgumentError) { HTTP::Client::Request.new("BAD METHOD", "http://a/") }
+  end
+
+  def test_module_functions
+    serving do |base|
+      assert_equal("hello GET", HTTP.get("#{base}/text").body.read)
+      assert_equal("POST - 1 x", HTTP.post("#{base}/echo", body: "x").body.read)
+      assert_true(HTTP::Client.default.equal?(HTTP::Client.default))
+    end
+  end
+end
