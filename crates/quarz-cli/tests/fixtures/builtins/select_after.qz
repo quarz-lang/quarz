@@ -1,0 +1,35 @@
+# Channel.select with several `after` cases: the shortest wins, the
+# first registered among equal ones (#372).
+ch = Channel[Int].new
+started = Time.monotonic
+Channel.select do |s|
+  s.receive(ch) { |v| p v }
+  s.after(10.ms) { puts "short" }
+  s.after(5.seconds) { puts "long" }
+end
+p Time.monotonic - started < 2.seconds
+
+# Registered the other way round.
+Channel.select do |s|
+  s.after(5.seconds) { puts "long" }
+  s.receive(ch) { |v| p v }
+  s.after(10.ms) { puts "short" }
+end
+
+# Equal durations: the first registered.
+Channel.select do |s|
+  s.after(10.ms) { puts "first" }
+  s.after(10.ms) { puts "second" }
+end
+
+# select_loop: the same on each round.
+rounds = 0
+Channel.select_loop do |s|
+  s.receive(ch) { |v| p v }
+  s.after(5.seconds) { puts "long" }
+  s.after(10.ms) do
+    rounds += 1
+    puts "short #{rounds}"
+    s.stop if rounds == 2
+  end
+end

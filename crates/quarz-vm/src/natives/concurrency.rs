@@ -256,7 +256,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Channel::Selector#after", |i, r, a| {
         let d = duration(i, a.arg(0))?;
         let b = block(i, &a)?;
-        sel(i, r)?.borrow_mut().after = Some((d, b));
+        // With several, the shortest wins (the first of equal ones), as
+        // the prelude says.
+        let mut st = sel(i, r)?.borrow_mut();
+        if st.after.as_ref().is_none_or(|(shortest, _)| d < *shortest) {
+            st.after = Some((d, b));
+        }
         Ok(Value::Nil)
     });
     native!(m, "Channel::Selector#default", |i, r, a| {
