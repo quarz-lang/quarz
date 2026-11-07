@@ -1,0 +1,44 @@
+# A task's result is released where the program's last reference to it
+# goes, not later on the worker that ran the task (#374): its
+# `deinitialize` runs before the next line, every round.
+class Res
+  include Shareable
+  @name: String
+  def initialize(@name: String); end
+  def deinitialize
+    puts "deinit #{@name}"
+  end
+end
+
+def awaited(i: Int) -> Int
+  r, n = Task.scope do |scope|
+    t = scope.spawn { Res.new("awaited #{i}") }
+    [t.await, 1]
+  end
+  n
+end
+
+def spawned(i: Int) -> Int
+  t = Task.spawn { Res.new("spawned #{i}") }
+  t.await
+  1
+end
+
+def failed(i: Int) -> Int
+  t = Task.spawn { raise ArgumentError.new("failed #{i}") }
+  begin
+    t.await
+  rescue ArgumentError => e
+    e.message.size
+  end
+end
+
+ROUNDS = 3
+ROUNDS.times do |i: Int|
+  awaited(i)
+  puts "-- awaited #{i}"
+  spawned(i)
+  puts "-- spawned #{i}"
+  failed(i)
+end
+puts "done"

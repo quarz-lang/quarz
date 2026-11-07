@@ -1620,29 +1620,35 @@ impl Scheduler {
                             task.set_state(TaskState::Done);
                             std::mem::take(&mut *j)
                         };
+                        let me = task.task_ref();
+                        let scope = if failed { task.scope.clone() } else { None };
+                        // This worker lets the task go before anyone is
+                        // woken: those who wait for it hold its handle, and
+                        // the table lets it go (a program spawning a task
+                        // per request would keep them all). Released after
+                        // the wake, the handle (and the result in it) could
+                        // be released last here, after the awaiter moved on:
+                        // late, on this worker, or never if the program
+                        // ended first (#374).
+                        self.tasks.remove(&id);
+                        drop(task);
                         for j in joiners {
                             self.wake_ref(j);
                         }
                         // A failing child cancels its siblings and wakes the
                         // scope's owner so that the failure propagates at
                         // once.
-                        if failed {
-                            if let Some(scope) = task.scope.clone() {
-                                if scope.cancel() {
-                                    for c in scope.children() {
-                                        if c.task_ref() != task.task_ref() && !c.is_done() {
-                                            c.set_cancel_requested();
-                                            self.wake_ref(c.task_ref());
-                                        }
+                        if let Some(scope) = scope {
+                            if scope.cancel() {
+                                for c in scope.children() {
+                                    if c.task_ref() != me && !c.is_done() {
+                                        c.set_cancel_requested();
+                                        self.wake_ref(c.task_ref());
                                     }
                                 }
-                                self.wake_ref(scope.owner);
                             }
+                            self.wake_ref(scope.owner);
                         }
-                        // Those who wait for it hold its handle; the table
-                        // lets it go, or a program spawning a task per
-                        // request would keep them all.
-                        self.tasks.remove(&id);
                         None
                     }
                 }
