@@ -1,6 +1,8 @@
 require "socket"
 require "json"
 require "tls"
+require "uri"
+require "base64"
 
 # HTTP: `require "http"`. An HTTP/1.1 server for use behind a reverse
 # proxy (docs/11-http.md): a handler takes a `Server::Request` and returns a
@@ -209,12 +211,17 @@ module HTTP
     var @pos: Int = 0
     # Bounds each read from the connection (the body's reads).
     var @read_timeout: Duration? = nil
+    # How many bytes have come from the connection.
+    var @received: Int = 0
 
     def initialize(@io: IO?, @buf: Bytes = Bytes.new); end
 
     def self.of(bytes: Bytes) -> Reader = Reader.new(nil, bytes)
 
     def buffered -> Int = @buf.size - @pos
+
+    # How many bytes have come from the connection.
+    def received -> Int = @received
 
     def read_timeout=(d: Duration?) -> Void
       @read_timeout = d
@@ -236,6 +243,7 @@ module HTTP
         io.read_bytes(16_384)
       end
       return false if more.empty?
+      @received += more.size
       @buf = @pos == 0 ? @buf + more : @buf.slice(@pos, @buf.size - @pos) + more
       @pos = 0
       true
@@ -295,7 +303,8 @@ module HTTP
 
   # ----- bodies ---------------------------------------------------------------------
 
-  # A request body, read from the connection as the handler asks for it.
+  # A body read from a connection as it is asked for: a server's request
+  # body, or a client's response body.
   class Body
     include Unshareable
 
@@ -310,13 +319,54 @@ module HTTP
     var @started: Bool = false
     # A read raised: the framing is lost, so the connection cannot be kept.
     var @failed: Bool = false
+    # Read to the end of the connection (a response without framing).
+    var @until_eof: Bool
+    # A client's: its errors are `Client::Error`s.
+    var @client: Bool
+    # Called once, when the body has been read to its end (true) or given
+    # up (false).
+    var @on_end: ((Bool) -> Void)? = nil
 
-    # A body read from `reader`: `length` bytes, or chunked, accepting up to
-    # `limit` bytes. The server makes it; a test uses `.of`.
+    # A body read from `reader`: `length` bytes, or chunked, or (a
+    # client's, `until_eof`) up to the end of the connection, accepting up
+    # to `limit` bytes. The server and the client make it; a test uses
+    # `.of`.
     def initialize(@reader: Reader, @length: Int?, @chunked: Bool, @limit: Int,
-                   @on_first_read: (() -> Void)? = nil)
+                   @on_first_read: (() -> Void)? = nil, *, @until_eof: Bool = false,
+                   @client: Bool = false)
       @remaining = @length || 0
-      @done = !@chunked && @remaining == 0
+      @done = !@chunked && !@until_eof && @remaining == 0
+    end
+
+    # :nodoc:
+    # `f` runs when the body has been read to its end (at once if it has),
+    # with true, or with false when it is given up (`discard`).
+    def on_end=(f: (Bool) -> Void) -> Void
+      if @done
+        f.call(true)
+      else
+        @on_end = f
+      end
+      nil
+    end
+
+    # :nodoc:
+    # Read what is left when it is at most `max` bytes; otherwise give the
+    # body up. A failed read gives it up too.
+    def discard(max: Int) -> Void
+      whole = begin
+        !@failed && drain(max)
+      rescue StandardError
+        false
+      end
+      unless whole || @done
+        @done = true
+        @failed = true
+        cb = @on_end
+        @on_end = nil
+        cb.call(false) if cb
+      end
+      nil
     end
 
     # A body with these contents (for requests built in tests).
@@ -349,11 +399,29 @@ module HTTP
 
     # The next piece of the body, up to `max` bytes; empty at its end.
     def read_chunk(max: Int = 16_384) -> Bytes
-      raise BadRequest.new("the body could not be read") if @failed
-      @failed = true
-      part = read_chunk_raw(max)
-      @failed = false
-      part
+      begin
+        raise BadRequest.new("the body could not be read") if @failed
+        @failed = true
+        part = read_chunk_raw(max)
+        @failed = false
+        part
+      rescue Error => e
+        raise_for(e)
+      end
+    end
+
+    # A server's error as it is, a client's as a `Client::Error`.
+    private def raise_for(e: Error) -> Nothing
+      raise e unless @client
+      raise Client.error_for(e)
+    end
+
+    private def ended -> Void
+      @done = true
+      cb = @on_end
+      @on_end = nil
+      cb.call(true) if cb
+      nil
     end
 
     private def read_chunk_raw(max: Int) -> Bytes
@@ -363,6 +431,11 @@ module HTTP
         cb.call if cb
       end
       return Bytes.new if @done
+      if @until_eof
+        part = @reader.read_some(max)
+        ended if part.empty?
+        return part
+      end
       if @chunked && @remaining == 0
         next_chunk
         return Bytes.new if @done
@@ -375,7 +448,7 @@ module HTTP
           crlf = @reader.read_line(2, true)
           raise BadRequest.new("bad chunk") if crlf.nil? || !crlf.empty?
         else
-          @done = true
+          ended
         end
       end
       part
@@ -391,21 +464,28 @@ module HTTP
       end
     end
 
-    # The whole body; PayloadTooLarge past the server's `max_body_bytes`.
+    # The whole body; `PayloadTooLarge` past the server's
+    # `max_body_bytes` (a client's: `Client::ResponseTooLarge` past its
+    # own).
     def read_bytes -> Bytes
-      len = @length
-      raise PayloadTooLarge.new if len && len > @limit
-      out = Bytes::Builder.new
-      each_chunk do |part|
-        out << part
-        raise PayloadTooLarge.new if out.size > @limit
+      begin
+        len = @length
+        raise PayloadTooLarge.new if len && len > @limit
+        out = Bytes::Builder.new
+        each_chunk do |part|
+          out << part
+          raise PayloadTooLarge.new if out.size > @limit
+        end
+        out.to_bytes
+      rescue Error => e
+        raise_for(e)
       end
-      out.to_bytes
     end
 
     # The whole body as a string. Raises `PayloadTooLarge` past the server's
-    # `max_body_bytes` and `BadRequest` when it is not UTF-8. What is read is
-    # gone: a second read gives `""`.
+    # `max_body_bytes` and `BadRequest` when it is not UTF-8 (a client's:
+    # `Client::ResponseTooLarge` and `Client::ProtocolError`). What is
+    # read is gone: a second read gives `""`.
     #
     # ```
     # body = HTTP::Body.of("name=quarz")
@@ -416,7 +496,7 @@ module HTTP
     def read -> String
       bytes = read_bytes
       text = bytes.decode?
-      raise BadRequest.new("body is not UTF-8") if text.nil?
+      raise_for(BadRequest.new("body is not UTF-8")) if text.nil?
       text
     end
 
@@ -451,7 +531,7 @@ module HTTP
           left -= t.size + 2
           raise HeadersTooLarge.new if left < 0
         end
-        @done = true
+        ended
       end
       nil
     end
@@ -724,7 +804,8 @@ module HTTP
 
   # ----- responses ------------------------------------------------------------------
 
-  # Given to a Stream body's procedure: each `write` is a chunk.
+  # Given to a Stream body's procedure (a server's response's, a client's
+  # request's): each `write` is a chunk.
   class BodyWriter
     include Unshareable
 
@@ -736,7 +817,7 @@ module HTTP
     # A writer on `io`; the server makes it for a `Content::Stream` body.
     def initialize(@io: IO, @chunked: Bool, @timeout: Duration, @head: Bool = false); end
 
-    # Sends `data` as one chunk, within the server's `write_timeout`; empty
+    # Sends `data` as one chunk, within the sender's `write_timeout`; empty
     # data sends nothing.
     def write(data: String) -> Void = write(data.to_bytes)
 
@@ -773,8 +854,9 @@ module HTTP
     end
   end
 
-  # The body of a `Server::Response`. The server adds the framing it implies:
-  # `Content-Length` for all but `Content::Stream`, which is sent chunked.
+  # A body to send: a `Server::Response`'s or a `Client::Request`'s. The
+  # sender adds the framing it implies: `Content-Length` for all but
+  # `Content::Stream`, which is sent chunked.
   enum Content
     # No body.
     variant Empty
@@ -783,7 +865,7 @@ module HTTP
     # A binary body.
     variant Binary(bytes: Bytes)
     # A body the procedure writes, chunk by chunk, after the headers have
-    # gone out (it is not run for HEAD or `304`).
+    # gone out (a server does not run it for HEAD or `304`).
     variant Stream(write: shareable (BodyWriter) -> Void)
   end
 
@@ -852,7 +934,16 @@ module HTTP
     head, chunked = response_head(req, res, keep_alive)
     status = res.status
     send_body = !(req && req.method == "HEAD") && !(status >= 100 && status < 200) && status != 204 && status != 304
-    case res.body
+    write_message(io, head, res.body, chunked, send_body, timeout)
+  end
+
+  # :nodoc:
+  # Write a message's `head` (its start line and headers) and its `body`
+  # (when `send_body`, chunked when `chunked`) to `io`, under `timeout`
+  # per write: a server's response or a client's request.
+  def self.write_message(io: IO, head: String, body: Content, chunked: Bool, send_body: Bool,
+                         timeout: Duration) -> Void
+    case body
     in Content::Stream(write:)
       Task.timeout(timeout) { io.write(head) }
       if send_body
@@ -1833,4 +1924,943 @@ module HTTP
                  &handler: shareable (Server::Request) -> Server::Response) -> Void
     Server.new(ProcHandler.new(handler), host: host, port: port).serve
   end
+
+  # ----- the client -----------------------------------------------------------------
+
+  # The proxy a client goes through: an `https` target through a `CONNECT`
+  # tunnel, an `http` one by sending the request to the proxy in absolute
+  # form. The proxy URL's user information, if any, is sent as
+  # `Proxy-Authorization: Basic`.
+  #
+  # ```
+  # proxy = HTTP::Proxy.new("http://proxy.example:3128", no_proxy: ["localhost", ".internal"])
+  # proxy.proxy_for(URI.parse("https://example.com/")).to_s   # => "http://proxy.example:3128"
+  # proxy.proxy_for(URI.parse("http://db.internal/"))         # => nil
+  # ```
+  data Proxy(
+    # The proxy for `https` targets, nil for none.
+    https: URI?,
+    # The proxy for `http` targets, nil for none.
+    http: URI?,
+    # The hosts reached directly, as curl reads `NO_PROXY`: a host, a
+    # domain (`example.com` or `.example.com`: it and its subdomains), a
+    # `host:port`, or `*` for every host.
+    no_proxy: Array[String]
+  )
+    # One proxy for both schemes. Raises `ArgumentError` when `url` is not
+    # an `http` URL with a host.
+    def initialize(url: String | URI, *, no_proxy: Array[String] = [])
+      u = Proxy.check(url.is_a?(String) ? URI.parse(url) : url)
+      @https = u
+      @http = u
+      @no_proxy = no_proxy
+    end
+
+    # A proxy for each scheme, nil for none.
+    def initialize(*, https: URI?, http: URI?, no_proxy: Array[String] = [])
+      @https = https ? Proxy.check(https) : nil
+      @http = http ? Proxy.check(http) : nil
+      @no_proxy = no_proxy
+    end
+
+    # The proxies of the environment: `https_proxy` for `https` targets and
+    # `http_proxy` for `http` ones, `no_proxy` for the hosts reached
+    # directly (each name in lower case first, then in upper case); nil
+    # when neither proxy is set. A URL without a scheme is taken as
+    # `http://`.
+    def self.from_env -> Proxy?
+      https = env_url("https_proxy")
+      http = env_url("http_proxy")
+      return nil if https.nil? && http.nil?
+      no = ENV["no_proxy"]? || ENV["NO_PROXY"]? || ""
+      list = no.split(",").map(&:strip).reject(&:empty?)
+      Proxy.new(https: https, http: http, no_proxy: list)
+    end
+
+    # :nodoc:
+    def self.env_url(name: String) -> URI?
+      v = ENV[name]? || ENV[name.upcase]?
+      return nil if v.nil? || v.empty?
+      parse_env(v)
+    end
+
+    # :nodoc:
+    def self.parse_env(text: String) -> URI
+      check(URI.parse(text.include?("://") ? text : "http://#{text}"))
+    end
+
+    # :nodoc:
+    def self.check(u: URI) -> URI
+      unless u.scheme.downcase == "http" && !(u.host || "").empty?
+        raise ArgumentError, "a proxy is an http URL with a host, not #{u.to_s.inspect}"
+      end
+      u
+    end
+
+    # The proxy for `target`, nil when it is reached directly.
+    def proxy_for(target: URI) -> URI?
+      proxy = target.scheme.downcase == "https" ? https : http
+      return nil if proxy.nil? || direct?(target)
+      proxy
+    end
+
+    # Whether `target` is in `no_proxy`.
+    def direct?(target: URI) -> Bool
+      host = URI.ascii_downcase(target.host || "")
+      host = host[0, host.size - 1] if host.end_with?(".")
+      port = target.port || target.default_port
+      no_proxy.any? do |entry|
+        e = URI.ascii_downcase(entry)
+        next true if e == "*"
+        name = e
+        want_port: Int? = nil
+        unless e.start_with?("[")
+          h, colon, p = e.rpartition(":")
+          if !colon.empty? && !h.include?(":") && p.match?(/\A[0-9]+\z/)
+            name = h
+            want_port = p.to_i
+          end
+        end
+        name = name[1, name.size - 2] if name.start_with?("[") && name.end_with?("]")
+        name = name[1..] if name.start_with?(".")
+        name = name[0, name.size - 1] if name.end_with?(".")
+        next false if name.empty?
+        next false if want_port && want_port != port
+        host == name || host.end_with?(".#{name}")
+      end
+    end
+  end
+
+  # An HTTP/1.1 client: requests and responses are values, bodies are
+  # streamed, and kept connections are pooled per origin. Shareable: one
+  # client serves a program's tasks (its pool lives in an `Atom`).
+  #
+  # ```quarz no_run
+  # client = HTTP::Client.new(timeout: 30.seconds)
+  # res = client.get("https://example.com/users/alice",
+  #                  headers: {"Accept" => "application/activity+json"})
+  # res.status        # => 200
+  # actor = res.json  # the body read and parsed; the connection goes back to the pool
+  # ```
+  #
+  # A response that is not 2xx is a value, not an error (`ensure_success`
+  # raises for it). Redirects are followed (`max_redirects`), the proxy is
+  # the environment's (`Proxy.from_env`) unless given.
+  class Client
+    include Shareable
+
+    # Sent when a request names no `User-Agent`.
+    USER_AGENT = "quarz-http/0.0.1"
+
+    # What went wrong with a request (not `HTTP::Error`, whose status is
+    # for a server to answer with).
+    class Error < StandardError
+    end
+
+    # The connection could not be made: the name has no address, the
+    # connection was refused or unreachable, the TLS handshake failed. The
+    # message carries the cause's.
+    class ConnectError < Error
+    end
+
+    # The request ran out of time (`timeout`, `connect_timeout`,
+    # `read_timeout` or `write_timeout`).
+    class TimeoutError < Error
+    end
+
+    # The response is not HTTP/1.x as it should be: a bad status line or
+    # header, bad framing, headers over `max_header_bytes`.
+    class ProtocolError < Error
+    end
+
+    # A body larger than `max_body_bytes`, read with `read` or
+    # `read_bytes` (`each_chunk` has no limit).
+    class ResponseTooLarge < Error
+    end
+
+    # A redirect that cannot be followed: no usable `Location`, or a
+    # `Content::Stream` body to send again.
+    class RedirectError < Error
+    end
+
+    # More redirects than `max_redirects`. An exception is Shareable and
+    # a response's body is not, so it carries the last redirect's status,
+    # headers and URL (its body was read or dropped).
+    class TooManyRedirects < Error
+      @status: Int
+      @headers: Headers
+      @url: URI
+      def initialize(@status: Int, @headers: Headers, @url: URI, max: Int)
+        super("more than #{max} redirects (the last from #{@url})")
+      end
+
+      # The last redirect's status.
+      def status -> Int = @status
+      # The last redirect's headers (its `location`).
+      def headers -> Headers = @headers
+      # The URL that answered with the last redirect.
+      def url -> URI = @url
+    end
+
+    # The proxy refused the tunnel (`CONNECT`): `status` is its answer.
+    class ProxyError < Error
+      @status: Int
+      def initialize(@status: Int)
+        super("the proxy refused the tunnel: #{@status} #{HTTP.reason(@status)}")
+      end
+
+      # The proxy's status.
+      def status -> Int = @status
+    end
+
+    # A response that is not 2xx, from `Response#ensure_success`. An
+    # exception is Shareable and a response's body is not, so it carries
+    # the response's status, headers and URL, and its body when it was
+    # small enough to read (`max_body_bytes`) and UTF-8.
+    class StatusError < Error
+      @status: Int
+      @headers: Headers
+      @url: URI
+      @body: String?
+      def initialize(@status: Int, @headers: Headers, @url: URI, @body: String?)
+        super("#{@status} #{HTTP.reason(@status)} (#{@url.origin}#{@url.path})")
+      end
+
+      # The response's status.
+      def status -> Int = @status
+      # The response's headers.
+      def headers -> Headers = @headers
+      # The URL that answered.
+      def url -> URI = @url
+      # The response's body, nil when it could not be read.
+      def body -> String? = @body
+    end
+
+    # :nodoc:
+    # A server-side reading error as the client's.
+    def self.error_for(e: HTTP::Error) -> Error
+      case e.status
+      when 408 then TimeoutError.new("read timed out")
+      when 413 then ResponseTooLarge.new("the response body is larger than max_body_bytes")
+      when 431 then ProtocolError.new("the response's headers are larger than max_header_bytes")
+      else ProtocolError.new(e.message)
+      end
+    end
+
+    # A request: a value, so that a program (or a cog signing requests)
+    # can build it, change it with `#header` and `with`, and send it with
+    # `Client#request`.
+    #
+    # ```
+    # req = HTTP::Client::Request.post("https://example.com/inbox", body: "{}",
+    #                                  content_type: "application/json")
+    #         .header("Date", "Sat, 07 Nov 2026 00:00:00 GMT")
+    # req.method                    # => "POST"
+    # req.url.host                  # => "example.com"
+    # req.headers["content-type"]   # => "application/json"
+    # ```
+    data Request(
+      # The method: `"GET"`, or any token.
+      method: String,
+      # The URL: `http` or `https`, with a host.
+      url: URI,
+      # The header fields (the client adds `Host`, the framing and a
+      # `User-Agent`).
+      headers: Headers,
+      # The body.
+      body: Content
+    )
+      # Raises `ArgumentError` for a method that is not a token or a URL
+      # that is not `http` or `https` with a host (or holds whitespace or a
+      # control character).
+      def initialize(method: String, url: String | URI, *, headers: Headers | Hash[String, String] = Headers.empty,
+                     body: Content = Content::Empty)
+        raise ArgumentError, "not a method: #{method.inspect}" unless method.match?(TOKEN)
+        @method = method
+        @url = Request.check_url(url.is_a?(String) ? URI.parse(url) : url)
+        @headers = HTTP.headers_of(headers)
+        @body = body
+      end
+
+      # :nodoc:
+      def self.check_url(u: URI) -> URI
+        scheme = u.scheme.downcase
+        unless (scheme == "http" || scheme == "https") && !(u.host || "").empty?
+          raise ArgumentError, "not an http or https URL with a host: #{u.to_s.inspect}"
+        end
+        if u.to_s.match?(/[\x00-\x20\x7f]/)
+          raise ArgumentError, "a URL with whitespace or a control character: #{u.to_s.inspect}"
+        end
+        u
+      end
+
+      # A GET request.
+      def self.get(url: String | URI, headers: Headers | Hash[String, String] = Headers.empty) -> Request
+        Request.new("GET", url, headers: headers)
+      end
+
+      # A HEAD request.
+      def self.head(url: String | URI, headers: Headers | Hash[String, String] = Headers.empty) -> Request
+        Request.new("HEAD", url, headers: headers)
+      end
+
+      # A DELETE request.
+      def self.delete(url: String | URI, headers: Headers | Hash[String, String] = Headers.empty) -> Request
+        Request.new("DELETE", url, headers: headers)
+      end
+
+      # A POST request with `body`, its `Content-Type` `content_type` when
+      # given.
+      def self.post(url: String | URI, body: String | Bytes = "", content_type: String? = nil,
+                    headers: Headers | Hash[String, String] = Headers.empty) -> Request
+        with_body("POST", url, body, content_type, headers)
+      end
+
+      # A PUT request, as `.post`.
+      def self.put(url: String | URI, body: String | Bytes = "", content_type: String? = nil,
+                   headers: Headers | Hash[String, String] = Headers.empty) -> Request
+        with_body("PUT", url, body, content_type, headers)
+      end
+
+      # A PATCH request, as `.post`.
+      def self.patch(url: String | URI, body: String | Bytes = "", content_type: String? = nil,
+                     headers: Headers | Hash[String, String] = Headers.empty) -> Request
+        with_body("PATCH", url, body, content_type, headers)
+      end
+
+      # A request whose body the block writes, chunk by chunk (sent
+      # chunked).
+      def self.stream(method: String, url: String | URI, headers: Headers | Hash[String, String] = Headers.empty,
+                      &write: shareable (BodyWriter) -> Void) -> Request
+        Request.new(method, url, headers: headers, body: Content::Stream.new(write))
+      end
+
+      # :nodoc:
+      def self.with_body(method: String, url: String | URI, body: String | Bytes, content_type: String?,
+                         headers: Headers | Hash[String, String]) -> Request
+        h = HTTP.headers_of(headers)
+        h = h.put("content-type", content_type) if content_type
+        content = body.is_a?(String) ? Content::Text.new(body) : Content::Binary.new(body)
+        Request.new(method, url, headers: h, body: content)
+      end
+
+      # A copy with the fields given changed.
+      def with(*, method: String? = nil, url: (String | URI)? = nil,
+               headers: (Headers | Hash[String, String])? = nil, body: Content? = nil) -> Request
+        Request.new(method || self.method, url || self.url, headers: headers || self.headers, body: body || self.body)
+      end
+
+      # A copy with the header `name` set to `value` (replacing it).
+      def header(name: String, value: String) -> Request = with(headers: headers.put(name, value))
+
+      # Whether sending it twice does what sending it once does: GET, HEAD,
+      # PUT, DELETE, OPTIONS (a kept connection found closed is retried
+      # only then).
+      def idempotent? -> Bool
+        method == "GET" || method == "HEAD" || method == "PUT" || method == "DELETE" || method == "OPTIONS"
+      end
+    end
+
+    # A response: its status and headers, and its body, read from the
+    # connection as it is asked for. The connection goes back to the pool
+    # when the body has been read to its end (`body.read`, `read_bytes`,
+    # `each_chunk`, `#close`); a response dropped with its body unread
+    # closes its connection.
+    data Response(
+      # The status code.
+      status: Int,
+      # `"HTTP/1.1"` or `"HTTP/1.0"`.
+      version: String,
+      # The header fields.
+      headers: Headers,
+      # The body (`read` up to the client's `max_body_bytes`, `each_chunk`
+      # without a limit).
+      body: Body,
+      # The URL that answered: the request's, or where redirects led.
+      url: URI,
+      # The last request sent.
+      request: Request
+    )
+      # The reason phrase of the status (`"OK"`), as this client knows it.
+      def reason -> String = HTTP.reason(status)
+
+      # Whether the status is 2xx.
+      def success? -> Bool = status >= 200 && status <= 299
+
+      # Whether it is a redirect the client follows (301, 302, 303, 307,
+      # 308).
+      def redirect? -> Bool = status == 301 || status == 302 || status == 303 || status == 307 || status == 308
+
+      # The response itself when it is 2xx; otherwise `StatusError`, with
+      # its status, headers, URL and body (read here).
+      def ensure_success -> Response
+        return self if success?
+        text = begin
+          body.read
+        rescue Error, IOError, SystemCallError
+          nil
+        end
+        raise StatusError.new(status, headers, url, text)
+      end
+
+      # The body parsed as JSON (`JSON.parse(body.read)`).
+      def json -> JSON::Value = JSON.parse(body.read)
+
+      # Done with the body: what is left is read when it is little (64
+      # KiB), so that the connection can be kept; otherwise the
+      # connection is closed.
+      def close -> Void
+        body.discard(65_536)
+        nil
+      end
+    end
+
+    # :nodoc:
+    # A kept connection waiting in the pool.
+    data Idle = (io: IO, since: Duration)
+
+    # :nodoc:
+    # The connection a response's body is read from: back to the pool
+    # when the body ends, closed when the response is dropped before.
+    class Lease
+      include Unshareable
+
+      @client: Client
+      @key: String
+      @io: IO
+      @reader: Reader
+      @keep: Bool
+      var @done: Bool = false
+
+      def initialize(@client: Client, @key: String, @io: IO, @reader: Reader, @keep: Bool); end
+
+      # The body ended (`whole`: read to its end, else given up): the
+      # connection is kept if it can be.
+      def finish(whole: Bool) -> Void
+        return nil if @done
+        @done = true
+        if whole && @keep && @reader.buffered == 0
+          @client.give_back(@key, @io)
+        else
+          close_io
+        end
+        nil
+      end
+
+      private def close_io -> Void
+        begin
+          @io.close unless @io.closed?
+        rescue IOError, SystemCallError
+          nil
+        end
+        nil
+      end
+
+      # Dropped before the body ended: the connection is closed.
+      def deinitialize
+        finish(false)
+      end
+    end
+
+    @timeout: Duration?
+    @connect_timeout: Duration
+    @read_timeout: Duration
+    @write_timeout: Duration
+    @max_header_bytes: Int
+    @max_body_bytes: Int
+    @max_redirects: Int
+    @tls: TLS::Config
+    @proxy: Proxy?
+    @max_idle_per_host: Int
+    @idle_timeout: Duration
+    @user_agent: String
+    # The kept connections, by origin and proxy.
+    @pool: Atom[Hash[String, Array[Idle]]]
+
+    # A client. `timeout` bounds a whole request (connecting, sending, the
+    # response's headers, and the redirects), `connect_timeout` the
+    # connection (the name's lookup, the connects, a proxy's tunnel, the
+    # TLS handshake), `read_timeout` and `write_timeout` each read and
+    # write. `tls` is what `https` connections trust (`alpn` defaults to
+    # `http/1.1`); `proxy` defaults to the environment's.
+    def initialize(*, timeout: Duration? = nil, connect_timeout: Duration = 10.seconds,
+                   read_timeout: Duration = 30.seconds, write_timeout: Duration = 30.seconds,
+                   max_header_bytes: Int = 65_536, max_body_bytes: Int = 16_777_216,
+                   max_redirects: Int = 10, tls: TLS::Config = TLS::Config.default,
+                   proxy: Proxy? = Proxy.from_env, max_idle_per_host: Int = 4,
+                   idle_timeout: Duration = 60.seconds, user_agent: String = USER_AGENT)
+      @timeout = timeout
+      @connect_timeout = connect_timeout
+      @read_timeout = read_timeout
+      @write_timeout = write_timeout
+      @max_header_bytes = max_header_bytes
+      @max_body_bytes = max_body_bytes
+      @max_redirects = max_redirects
+      @tls = if tls.alpn.empty?
+        TLS::Config.new(roots: tls.roots, alpn: ["http/1.1"], min_version: tls.min_version, verify: tls.verify)
+      else
+        tls
+      end
+      @proxy = proxy
+      @max_idle_per_host = max_idle_per_host
+      @idle_timeout = idle_timeout
+      @user_agent = user_agent
+      @pool = Atom[Hash[String, Array[Idle]]].new({})
+    end
+
+    # :nodoc:
+    DEFAULT = Atom[Client?].new(nil)
+
+    # The client `HTTP.get` and the other module functions use: one with
+    # the defaults, made on first use.
+    def self.default -> Client
+      loop do
+        made = DEFAULT.get
+        return made if made
+        c = Client.new
+        return c if DEFAULT.compare_and_set(made, c)
+      end
+    end
+
+    # Sends `req` and returns the response, its headers read and its body
+    # not yet: follows redirects (`max_redirects`). Raises a
+    # `Client::Error` (or `ArgumentError` for a request that cannot be
+    # sent); a response that is not 2xx is returned as any other.
+    def request(req: Request) -> Response
+      limit = @timeout
+      if limit
+        begin
+          Task.timeout(limit) { follow(req) }
+        rescue Task::Timeout
+          raise TimeoutError.new("the request took longer than #{limit}")
+        end
+      else
+        follow(req)
+      end
+    end
+
+    # A GET request: `request(Request.get(url, headers))`.
+    def get(url: String | URI, headers: Headers | Hash[String, String] = Headers.empty) -> Response
+      request(Request.get(url, headers))
+    end
+
+    # A HEAD request.
+    def head(url: String | URI, headers: Headers | Hash[String, String] = Headers.empty) -> Response
+      request(Request.head(url, headers))
+    end
+
+    # A DELETE request.
+    def delete(url: String | URI, headers: Headers | Hash[String, String] = Headers.empty) -> Response
+      request(Request.delete(url, headers))
+    end
+
+    # A POST request with `body` (`Content-Type` `content_type` when
+    # given).
+    def post(url: String | URI, body: String | Bytes = "", content_type: String? = nil,
+             headers: Headers | Hash[String, String] = Headers.empty) -> Response
+      request(Request.post(url, body, content_type, headers))
+    end
+
+    # A PUT request, as `#post`.
+    def put(url: String | URI, body: String | Bytes = "", content_type: String? = nil,
+            headers: Headers | Hash[String, String] = Headers.empty) -> Response
+      request(Request.put(url, body, content_type, headers))
+    end
+
+    # A PATCH request, as `#post`.
+    def patch(url: String | URI, body: String | Bytes = "", content_type: String? = nil,
+              headers: Headers | Hash[String, String] = Headers.empty) -> Response
+      request(Request.patch(url, body, content_type, headers))
+    end
+
+    # Closes the kept connections (those in use are closed when their
+    # responses are done).
+    def close -> Void
+      old = @pool.get
+      until @pool.compare_and_set(old, {})
+        old = @pool.get
+      end
+      old.each { |_, idles| idles.each { |i| Client.close_quietly(i.io) } }
+      nil
+    end
+
+    # :nodoc:
+    def self.close_quietly(io: IO) -> Void
+      begin
+        io.close unless io.closed?
+      rescue IOError, SystemCallError
+        nil
+      end
+      nil
+    end
+
+    # The redirects followed.
+    private def follow(first: Request) -> Response
+      req = first
+      count = 0
+      loop do
+        res = round_trip(req)
+        return res unless res.redirect? && @max_redirects > 0
+        location = res.headers["location"]
+        return res if location.nil?
+        if count >= @max_redirects
+          res.close
+          raise TooManyRedirects.new(res.status, res.headers, res.url, @max_redirects)
+        end
+        target = begin
+          Request.check_url(req.url.resolve(location).with(fragment: nil))
+        rescue ArgumentError => e
+          res.close
+          raise RedirectError.new("cannot follow Location #{location.inspect}: #{e.message}")
+        end
+        res.close
+        req = redirected(req, res.status, target)
+        count += 1
+      end
+    end
+
+    # The request a redirect leads to (Go's rules).
+    private def redirected(req: Request, status: Int, target: URI) -> Request
+      headers = req.headers
+      body = req.body
+      method = req.method
+      if status == 301 || status == 302 || status == 303
+        unless method == "HEAD"
+          method = "GET"
+          body = Content::Empty
+          headers = headers.delete("content-type").delete("content-length").delete("transfer-encoding")
+        end
+      elsif body.is_a?(Content::Stream)
+        raise RedirectError.new("a #{status} redirect needs the body again, and a streamed body cannot be sent twice")
+      end
+      unless target.origin == req.url.origin
+        headers = headers.delete("authorization").delete("cookie").delete("proxy-authorization")
+      end
+      Request.new(method, target, headers: headers, body: body)
+    end
+
+    # One request and its response's headers, on a kept connection or a
+    # new one; a kept connection found closed is replaced once.
+    private def round_trip(req: Request) -> Response
+      proxy_url = @proxy&.proxy_for(req.url)
+      key = "#{req.url.origin}|#{proxy_url&.to_s || ""}"
+      io = take(key)
+      if io
+        begin
+          return exchange(req, io, key, proxy_url, true)
+        rescue Stale
+          Client.close_quietly(io)
+        end
+      end
+      exchange(req, connect(req.url, proxy_url), key, proxy_url, false)
+    end
+
+    # :nodoc:
+    # A kept connection found closed before any byte of the response.
+    class Stale < StandardError
+    end
+
+    # Send `req` on `io` and read the response's headers. `Stale` when a
+    # kept connection (`reused`) turns out closed before any byte of the
+    # response and the request can be sent again: nothing of it was sent,
+    # or it is idempotent.
+    private def exchange(req: Request, io: IO, key: String, proxy_url: URI?, reused: Bool) -> Response
+      reader = Reader.new(io)
+      reader.read_timeout = @read_timeout
+      sent = false
+      begin
+        write_request(io, req, !proxy_url.nil? && req.url.scheme.downcase == "http", proxy_url)
+        sent = true
+        read_response(req, io, reader, key)
+      rescue Stale => e
+        Client.close_quietly(io)
+        raise e if reused && (req.idempotent? || !sent)
+        raise ProtocolError.new("the server closed the connection without a response")
+      rescue IOError, SystemCallError => e
+        Client.close_quietly(io)
+        raise Stale.new(e.message) if reused && reader.received == 0 && (req.idempotent? || !sent)
+        raise ConnectError.new("the connection to #{Client.host_header(req.url)} failed: #{e.message}")
+      rescue Task::Timeout
+        Client.close_quietly(io)
+        raise TimeoutError.new("writing the request took longer than #{@write_timeout}")
+      rescue HTTP::Error => e
+        Client.close_quietly(io)
+        raise Client.error_for(e)
+      rescue Error => e
+        Client.close_quietly(io)
+        raise e
+      end
+    end
+
+    # The request line and headers, then the body.
+    private def write_request(io: IO, req: Request, absolute: Bool, proxy_url: URI?) -> Void
+      url = req.url
+      target = absolute ? url.with(fragment: nil).to_s : Client.origin_form(url)
+      headers = req.headers.delete("content-length").delete("transfer-encoding").delete("host")
+      headers = headers.put("user-agent", @user_agent) unless headers.key?("user-agent")
+      chunked = false
+      case req.body
+      in Content::Empty
+        if req.method == "POST" || req.method == "PUT" || req.method == "PATCH"
+          headers = headers.put("content-length", "0")
+        end
+      in Content::Text(text:)
+        headers = headers.put("content-length", text.bytesize.to_s)
+      in Content::Binary(bytes:)
+        headers = headers.put("content-length", bytes.size.to_s)
+      in Content::Stream
+        headers = headers.put("transfer-encoding", "chunked")
+        chunked = true
+      end
+      if absolute && proxy_url
+        auth = Client.basic(proxy_url)
+        headers = headers.put("proxy-authorization", auth) if auth
+      end
+      raise ArgumentError, "a request header with a control character or a bad name" unless HTTP.valid_headers?(headers)
+      out = String::Builder.new
+      out << "#{req.method} #{target} HTTP/1.1\r\n"
+      out << "Host: #{Client.host_header(url)}\r\n"
+      headers.each { |k, v| out << "#{Headers.canonical(k)}: #{v}\r\n" }
+      out << "\r\n"
+      HTTP.write_message(io, out.to_s, req.body, chunked, true, @write_timeout)
+      io.flush
+      nil
+    end
+
+    # :nodoc:
+    # The path and query (`/` for an empty path).
+    def self.origin_form(url: URI) -> String
+      path = url.path.empty? ? "/" : url.path
+      q = url.query
+      q ? "#{path}?#{q}" : path
+    end
+
+    # :nodoc:
+    # `host[:port]` as the `Host` header gives it (the port when not the
+    # default one).
+    def self.host_header(url: URI) -> String
+      h = url.host || ""
+      h = "[#{h}]" if h.include?(":")
+      pt = url.port
+      pt && pt != url.default_port ? "#{h}:#{pt}" : h
+    end
+
+    # :nodoc:
+    # `Basic ...` from a proxy URL's user information, nil without.
+    def self.basic(proxy_url: URI) -> String?
+      info = proxy_url.userinfo
+      return nil if info.nil?
+      user, _, password = info.partition(":")
+      "Basic #{Base64.encode("#{URI.decode_component(user)}:#{URI.decode_component(password)}")}"
+    end
+
+    # The status line and headers (interim 1xx responses skipped), and
+    # the body as its framing says.
+    private def read_response(req: Request, io: IO, reader: Reader, key: String) -> Response
+      first = true
+      loop do
+        line = reader.read_line(@max_header_bytes)
+        if line.nil?
+          raise Stale.new("closed") if first && reader.received == 0
+          raise ProtocolError.new("the connection ended in the response's headers")
+        end
+        first = false
+        text = line.decode?
+        raise ProtocolError.new("bad status line") if text.nil?
+        m = text.match(/\A(HTTP\/1\.[01]) ([0-9]{3})(?: (.*))?\z/)
+        raise ProtocolError.new("bad status line: #{text[0, 80].inspect}") if m.nil?
+        version = m[1] || ""
+        status = (m[2] || "0").to_i
+        headers = HTTP.read_headers(reader, @max_header_bytes)
+        next if status >= 100 && status < 200 && status != 101
+        return response_of(req, io, reader, key, version, status, headers)
+      end
+    end
+
+    private def response_of(req: Request, io: IO, reader: Reader, key: String, version: String, status: Int,
+                            headers: Headers) -> Response
+      keep = version == "HTTP/1.1" && !headers.token?("connection", "close")
+      no_body = req.method == "HEAD" || (status >= 100 && status < 200) || status == 204 || status == 304
+      body = if no_body
+        Body.new(reader, 0, false, @max_body_bytes, client: true)
+      else
+        te = headers.all("transfer-encoding")
+        cls = headers.all("content-length")
+        if !te.empty?
+          codings = te.flat_map { |v| v.split(",").map { |c| c.strip.downcase } }
+          if codings.last? == "chunked"
+            Body.new(reader, nil, true, @max_body_bytes, client: true)
+          else
+            keep = false
+            Body.new(reader, nil, false, @max_body_bytes, until_eof: true, client: true)
+          end
+        elsif !cls.empty?
+          values = cls.flat_map { |v| v.split(",").map(&:strip) }.uniq
+          unless values.size == 1 && values[0].match?(/\A[0-9]{1,18}\z/)
+            raise ProtocolError.new("bad Content-Length")
+          end
+          Body.new(reader, values[0].to_i, false, @max_body_bytes, client: true)
+        else
+          keep = false
+          Body.new(reader, nil, false, @max_body_bytes, until_eof: true, client: true)
+        end
+      end
+      lease = Lease.new(self, key, io, reader, keep)
+      body.on_end = ->(whole: Bool) { lease.finish(whole) }
+      Response.new(status, version, headers, body, req.url, req)
+    end
+
+    # A new connection to `url`'s host, through `proxy_url` when given.
+    private def connect(url: URI, proxy_url: URI?) -> IO
+      host = url.host || ""
+      port = url.port || url.default_port || 80
+      https = url.scheme.downcase == "https"
+      tls = @tls
+      begin
+        Task.timeout(@connect_timeout) do
+          if proxy_url
+            sock = Socket.tcp(proxy_url.host || "", proxy_url.port || 80)
+            if https
+              Client.tunnel(sock, host, port, proxy_url, @max_header_bytes)
+              TLSSocket.connect(sock, host, tls)
+            else
+              sock
+            end
+          elsif https
+            TLSSocket.connect(Socket.tcp(host, port), host, tls)
+          else
+            Socket.tcp(host, port)
+          end
+        end
+      rescue Task::Timeout
+        raise TimeoutError.new("connecting to #{Client.host_header(url)} took longer than #{@connect_timeout}")
+      rescue ProxyError => e
+        raise e
+      rescue Error => e
+        raise e
+      rescue SocketError, SystemCallError, IOError => e
+        via = proxy_url ? " through the proxy #{Client.host_header(proxy_url)}" : ""
+        raise ConnectError.new("cannot connect to #{Client.host_header(url)}#{via}: #{e.message}")
+      rescue HTTP::Error => e
+        raise ConnectError.new("the proxy's answer: #{Client.error_for(e).message}")
+      end
+    end
+
+    # :nodoc:
+    # `CONNECT host:port` on `sock` to the proxy; `ProxyError` when it
+    # does not answer 2xx (the socket closed).
+    def self.tunnel(sock: TCPSocket, host: String, port: Int, proxy_url: URI, max_header_bytes: Int) -> Void
+      authority = host.include?(":") ? "[#{host}]:#{port}" : "#{host}:#{port}"
+      out = String::Builder.new
+      out << "CONNECT #{authority} HTTP/1.1\r\nHost: #{authority}\r\n"
+      auth = basic(proxy_url)
+      out << "Proxy-Authorization: #{auth}\r\n" if auth
+      out << "\r\n"
+      sock.write(out.to_s)
+      reader = Reader.new(sock)
+      line = reader.read_line(max_header_bytes)
+      if line.nil?
+        sock.close
+        raise ConnectError.new("the proxy closed the connection")
+      end
+      m = (line.decode? || "").match(/\AHTTP\/1\.[01] ([0-9]{3})/)
+      if m.nil?
+        sock.close
+        raise ProtocolError.new("bad status line from the proxy")
+      end
+      status = (m[1] || "0").to_i
+      HTTP.read_headers(reader, max_header_bytes)
+      unless status >= 200 && status <= 299
+        sock.close
+        raise ProxyError.new(status)
+      end
+      # What follows is the server's: the proxy sent nothing more.
+      if reader.buffered > 0
+        sock.close
+        raise ProtocolError.new("the proxy sent data after its answer")
+      end
+      nil
+    end
+
+    # :nodoc:
+    # A kept connection for `key`, nil when none.
+    def take(key: String) -> IO?
+      now = Time.monotonic
+      loop do
+        old = @pool.get
+        idles = old[key]? || []
+        return nil if idles.empty?
+        fresh = idles.select { |i| now - i.since < @idle_timeout }
+        expired = idles.reject { |i| now - i.since < @idle_timeout }
+        taken = fresh.last?
+        rest = taken ? fresh.take(fresh.size - 1) : fresh
+        updated = rest.empty? ? old.delete(key) : old.put(key, rest)
+        if @pool.compare_and_set(old, updated)
+          expired.each { |i| Client.close_quietly(i.io) }
+          return taken&.io
+        end
+      end
+    end
+
+    # :nodoc:
+    # Keep `io` for `key`, or close it when the pool has enough.
+    def give_back(key: String, io: IO) -> Void
+      return nil if io.closed?
+      now = Time.monotonic
+      loop do
+        old = @pool.get
+        idles = (old[key]? || []).select { |i| now - i.since < @idle_timeout }
+        if idles.size >= @max_idle_per_host
+          Client.close_quietly(io)
+          return nil
+        end
+        return nil if @pool.compare_and_set(old, old.put(key, idles.push(Idle.new(io, now))))
+      end
+    end
+  end
+
+  # :nodoc:
+  def self.headers_of(h: Headers | Hash[String, String]) -> Headers
+    h.is_a?(Headers) ? h : Headers.of(h)
+  end
+
+  # A GET request on `HTTP::Client.default`.
+  #
+  # ```quarz no_run
+  # HTTP.get("https://example.com/").body.read
+  # ```
+  def self.get(url: String | URI, headers: Headers | Hash[String, String] = Headers.empty) -> Client::Response
+    Client.default.get(url, headers)
+  end
+
+  # A HEAD request on `HTTP::Client.default`.
+  def self.head(url: String | URI, headers: Headers | Hash[String, String] = Headers.empty) -> Client::Response
+    Client.default.head(url, headers)
+  end
+
+  # A DELETE request on `HTTP::Client.default`.
+  def self.delete(url: String | URI, headers: Headers | Hash[String, String] = Headers.empty) -> Client::Response
+    Client.default.delete(url, headers)
+  end
+
+  # A POST request on `HTTP::Client.default`.
+  def self.post(url: String | URI, body: String | Bytes = "", content_type: String? = nil,
+                headers: Headers | Hash[String, String] = Headers.empty) -> Client::Response
+    Client.default.post(url, body, content_type, headers)
+  end
+
+  # A PUT request on `HTTP::Client.default`.
+  def self.put(url: String | URI, body: String | Bytes = "", content_type: String? = nil,
+               headers: Headers | Hash[String, String] = Headers.empty) -> Client::Response
+    Client.default.put(url, body, content_type, headers)
+  end
+
+  # A PATCH request on `HTTP::Client.default`.
+  def self.patch(url: String | URI, body: String | Bytes = "", content_type: String? = nil,
+                 headers: Headers | Hash[String, String] = Headers.empty) -> Client::Response
+    Client.default.patch(url, body, content_type, headers)
+  end
+
+  # `req` sent on `HTTP::Client.default`.
+  def self.request(req: Client::Request) -> Client::Response = Client.default.request(req)
 end
