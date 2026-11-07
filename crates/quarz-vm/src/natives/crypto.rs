@@ -191,13 +191,16 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         };
         let ok = match h {
             Hash::Sha256 => {
-                rsa::pss::VerifyingKey::<Sha256>::new((*key).clone()).verify(data, &sig)
+                rsa::pss::VerifyingKey::<Sha256>::new_with_auto_salt_len((*key).clone())
+                    .verify(data, &sig)
             }
             Hash::Sha384 => {
-                rsa::pss::VerifyingKey::<Sha384>::new((*key).clone()).verify(data, &sig)
+                rsa::pss::VerifyingKey::<Sha384>::new_with_auto_salt_len((*key).clone())
+                    .verify(data, &sig)
             }
             Hash::Sha512 => {
-                rsa::pss::VerifyingKey::<Sha512>::new((*key).clone()).verify(data, &sig)
+                rsa::pss::VerifyingKey::<Sha512>::new_with_auto_salt_len((*key).clone())
+                    .verify(data, &sig)
             }
         };
         Ok(Value::Bool(ok.is_ok()))

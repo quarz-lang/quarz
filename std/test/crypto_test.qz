@@ -56,6 +56,18 @@ class CryptoRSATest < Test::Case
     assert_true(pub.verify_pss(message, fixture_bytes("sig_pss_sha512.bin"), :sha512))
   end
 
+  def test_pss_takes_any_salt_length
+    pub = key.public_key
+    maxed = fixture_bytes("sig_pss_sha256_saltmax.bin")
+    assert_true(pub.verify_pss(message, maxed, :sha256))
+    assert_true(pub.verify_pss(message, fixture_bytes("sig_pss_sha384_salt0.bin"), :sha384))
+    # Still bound to the hash and the message.
+    assert_false(pub.verify_pss(message, maxed, :sha384))
+    assert_false(pub.verify_pss(message, maxed, :sha512))
+    assert_false(pub.verify_pss("the quick brown fax", maxed, :sha256))
+    assert_false(pub.verify_pss(message, fixture_bytes("sig_pss_sha384_salt0.bin"), :sha256))
+  end
+
   def test_signatures_round_trip
     k = key
     pub = k.public_key
