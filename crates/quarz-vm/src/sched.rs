@@ -559,6 +559,18 @@ impl TaskHandle {
         lock(&self.result).clone()
     }
 
+    /// Whether the task is done, for a caller that may then let its
+    /// handle go without reading the result (`Task#done?`): it waits for
+    /// the worker to have let the task go too (see `released`). Not for a
+    /// caller holding a lock the worker takes as it finishes a task (a
+    /// sink's, a container's): `is_done` there.
+    pub fn finished(&self) -> bool {
+        self.is_done() && {
+            self.wait_released();
+            true
+        }
+    }
+
     /// Wait until the worker that finished the task has let it go (see
     /// `released`): a few instructions on another thread.
     fn wait_released(&self) {
@@ -1648,11 +1660,11 @@ impl Scheduler {
                         match &r {
                             TaskResult::Value(v) | TaskResult::Error(v) => v.share(),
                         }
-                        *lock(&task.result) = Some(r);
                         // Readers of the result wait until this worker's
                         // references are gone (below).
                         let released = task.released.clone();
                         released.store(false, Ordering::Release);
+                        *lock(&task.result) = Some(r);
                         let joiners = {
                             // Under the joiners' lock, so that a task
                             // registering as a joiner either sees it done or

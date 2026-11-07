@@ -197,7 +197,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Nil)
     });
     native!(m, "Task#done?", |i, r, _| {
-        Ok(Value::Bool(task(i, r)?.is_done()))
+        Ok(Value::Bool(task(i, r)?.finished()))
     });
     native!(m, "Task#cancelled?", |i, r, _| {
         Ok(Value::Bool(task(i, r)?.cancel_requested()))
@@ -589,7 +589,7 @@ fn wait_until(
 ) -> Result<bool, Flow> {
     let me = interp.current_task();
     loop {
-        if t.is_done() {
+        if t.finished() {
             return Ok(true);
         }
         let now = std::time::Instant::now();

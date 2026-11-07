@@ -24,6 +24,15 @@ def spawned(i: Int) -> Int
   1
 end
 
+# Polled with `done?`, the handle let go without reading the result.
+def polled(i: Int) -> Int
+  t = Task.spawn { Res.new("polled #{i}") }
+  until t.done?
+    Task.yield
+  end
+  1
+end
+
 def failed(i: Int) -> Int
   t = Task.spawn { raise ArgumentError.new("failed #{i}") }
   begin
@@ -39,6 +48,8 @@ ROUNDS.times do |i: Int|
   puts "-- awaited #{i}"
   spawned(i)
   puts "-- spawned #{i}"
+  polled(i)
+  puts "-- polled #{i}"
   failed(i)
 end
 puts "done"
