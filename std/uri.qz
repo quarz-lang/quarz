@@ -1,0 +1,345 @@
+# URIs: `require "uri"`. A `URI` is a reference split as RFC 3986's
+# generic syntax splits it (appendix B), with reference resolution
+# (§5.2) and the percent-encodings of a component and of a form.
+#
+# ```
+# require "uri"
+# u = URI.parse("https://example.com:8443/a/b?x=1#top")
+# u.host                          # => "example.com"
+# u.port                          # => 8443
+# u.path                          # => "/a/b"
+# u.resolve("../c").to_s          # => "https://example.com:8443/c"
+# URI.encode_component("a b/c")   # => "a%20b%2Fc"
+# ```
+#
+# The parts are kept as they were written (percent-encoded, in their
+# case): there is no normalization, no IDNA, and nothing scheme-specific
+# beyond the default ports.
+data URI(
+  # The scheme, as written (`"https"`); `""` for a relative reference.
+  scheme: String,
+  # The user information before `@` in the authority, nil when none.
+  userinfo: String?,
+  # The host, nil when there is no authority; an IPv6 literal without
+  # its brackets (`"::1"`).
+  host: String?,
+  # The port, nil when absent.
+  port: Int?,
+  # The path, as written (`""` when empty).
+  path: String,
+  # The query, without its `?`; nil when there is none (`""` for a bare
+  # `?`).
+  query: String?,
+  # The fragment, without its `#`; nil when there is none.
+  fragment: String?
+)
+  # RFC 3986 appendix B.
+  # :nodoc:
+  SPLIT = /\A(?:([^:\/?#]+):)?(?:\/\/([^\/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?\z/m
+  # :nodoc:
+  SCHEME = /\A[A-Za-z][A-Za-z0-9+\-.]*\z/
+
+  # `text` split into its parts. Raises `ArgumentError` when it does not
+  # parse: a scheme that is not a letter followed by letters, digits,
+  # `+`, `-` and `.`, a port that is not digits (up to 65535), or an IPv6
+  # literal's brackets unbalanced. Anything else is taken as it is.
+  #
+  # ```
+  # URI.parse("http://[::1]:8080/").host     # => "::1"
+  # URI.parse("/a?b").query                  # => "b"
+  # URI.parse("mailto:a@example.com").path   # => "a@example.com"
+  # URI.parse("1http://x")                   # raises ArgumentError
+  # ```
+  def self.parse(text: String) -> URI
+    m = text.match(SPLIT)
+    raise ArgumentError, "not a URI: #{text.inspect}" if m.nil?
+    scheme = m[1] || ""
+    unless scheme.empty? || scheme.match?(SCHEME)
+      raise ArgumentError, "not a URI scheme: #{scheme.inspect}"
+    end
+    authority = m[2]
+    userinfo: String? = nil
+    host: String? = nil
+    port: Int? = nil
+    if authority
+      at = authority.rindex("@")
+      hostport = authority
+      if at
+        userinfo = authority[0, at]
+        hostport = authority[(at + 1)..]
+      end
+      if hostport.start_with?("[")
+        close = hostport.index("]")
+        raise ArgumentError, "unbalanced brackets in #{text.inspect}" if close.nil?
+        host = hostport[1, close - 1]
+        rest = hostport[(close + 1)..]
+        unless rest.empty? || rest.start_with?(":")
+          raise ArgumentError, "not a host: #{hostport.inspect}"
+        end
+        port = parse_port(rest.empty? ? nil : rest[1..], text)
+      else
+        raise ArgumentError, "unbalanced brackets in #{text.inspect}" if hostport.include?("]")
+        h, colon, p = hostport.rpartition(":")
+        if colon.empty?
+          host = hostport
+        else
+          host = h
+          port = parse_port(p, text)
+        end
+      end
+    end
+    URI.new(scheme, userinfo, host, port, m[3] || "", m[4], m[5])
+  end
+
+  # :nodoc:
+  def self.parse_port(digits: String?, text: String) -> Int?
+    return nil if digits.nil? || digits.empty?
+    unless digits.match?(/\A[0-9]{1,5}\z/) && digits.to_i <= 65_535
+      raise ArgumentError, "not a port: #{digits.inspect} in #{text.inspect}"
+    end
+    digits.to_i
+  end
+
+  # The reference written back (RFC 3986 §5.3): an IPv6 host in
+  # brackets.
+  #
+  # ```
+  # URI.parse("http://u@[::1]:80/p?q#f").to_s   # => "http://u@[::1]:80/p?q#f"
+  # ```
+  def to_s -> String
+    out = String::Builder.new
+    out << scheme << ":" unless scheme.empty?
+    h = host
+    if h
+      out << "//"
+      u = userinfo
+      out << u << "@" if u
+      out << (h.include?(":") ? "[#{h}]" : h)
+      pt = port
+      out << ":" << pt.to_s if pt
+    end
+    out << path
+    q = query
+    out << "?" << q if q
+    f = fragment
+    out << "#" << f if f
+    out.to_s
+  end
+
+  # `#<URI http://example.com/>`.
+  def inspect -> String = "#<URI #{to_s}>"
+
+  # Whether it has a scheme (it is not a relative reference).
+  def absolute? -> Bool = !scheme.empty?
+
+  # The port a client uses when none is given: 80 for `http` and `ws`,
+  # 443 for `https` and `wss`, nil for another scheme.
+  def default_port -> Int?
+    case scheme.downcase
+    when "http", "ws" then 80
+    when "https", "wss" then 443
+    else nil
+    end
+  end
+
+  # `scheme://host[:port]`, the scheme and host in lower case and the
+  # port only when it is not the default one: two URLs of one origin give
+  # the same text. Raises `ArgumentError` without a scheme or a host.
+  #
+  # ```
+  # URI.parse("HTTPS://Example.com:443/a").origin   # => "https://example.com"
+  # URI.parse("http://[::1]:8080/").origin          # => "http://[::1]:8080"
+  # ```
+  def origin -> String
+    h = host
+    raise ArgumentError, "no origin: #{to_s}" if scheme.empty? || h.nil?
+    name = h.downcase
+    name = "[#{name}]" if name.include?(":")
+    pt = port
+    tail = pt && pt != default_port ? ":#{pt}" : ""
+    "#{scheme.downcase}://#{name}#{tail}"
+  end
+
+  # `reference` resolved against this URI (RFC 3986 §5.2.2, with the
+  # dot segments removed, §5.2.4): what a link or a Location header
+  # refers to. Raises `ArgumentError` when this URI is not absolute or
+  # `reference` does not parse.
+  #
+  # ```
+  # base = URI.parse("http://a/b/c/d;p?q")
+  # base.resolve("../g").to_s    # => "http://a/b/g"
+  # base.resolve("?y").to_s      # => "http://a/b/c/d;p?y"
+  # base.resolve("//h/x").to_s   # => "http://h/x"
+  # ```
+  def resolve(reference: String) -> URI
+    raise ArgumentError, "not an absolute URI: #{to_s}" unless absolute?
+    r = URI.parse(reference)
+    return URI.new(r.scheme, r.userinfo, r.host, r.port, URI.remove_dot_segments(r.path), r.query, r.fragment) if r.absolute?
+    if r.host
+      return URI.new(scheme, r.userinfo, r.host, r.port, URI.remove_dot_segments(r.path), r.query, r.fragment)
+    end
+    if r.path.empty?
+      return URI.new(scheme, userinfo, host, port, path, r.query || query, r.fragment)
+    end
+    merged = if r.path.start_with?("/")
+      r.path
+    elsif !host.nil? && path.empty?
+      "/" + r.path
+    else
+      cut = path.rindex("/")
+      cut ? path[0, cut + 1] + r.path : r.path
+    end
+    URI.new(scheme, userinfo, host, port, URI.remove_dot_segments(merged), r.query, r.fragment)
+  end
+
+  # :nodoc:
+  # RFC 3986 §5.2.4.
+  def self.remove_dot_segments(input: String) -> String
+    rest = input
+    out: Array[String] = []
+    until rest.empty?
+      if rest.start_with?("../")
+        rest = rest[3..]
+      elsif rest.start_with?("./")
+        rest = rest[2..]
+      elsif rest.start_with?("/./")
+        rest = rest[2..]
+      elsif rest == "/."
+        rest = "/"
+      elsif rest.start_with?("/../")
+        rest = rest[3..]
+        out = out.take(out.size - 1) unless out.empty?
+      elsif rest == "/.."
+        rest = "/"
+        out = out.take(out.size - 1) unless out.empty?
+      elsif rest == "." || rest == ".."
+        rest = ""
+      else
+        # The first segment, with its leading `/` if any.
+        from = rest.start_with?("/") ? 1 : 0
+        cut = rest.index("/", from)
+        seg = cut ? rest[0, cut] : rest
+        out = out.push(seg)
+        rest = cut ? rest[cut..] : ""
+      end
+    end
+    out.join
+  end
+
+  # `text` with every byte but the unreserved characters of RFC 3986
+  # (letters, digits, `-`, `.`, `_`, `~`) percent-encoded, its UTF-8
+  # bytes in upper-case hexadecimal: one path segment, query name or
+  # value.
+  #
+  # ```
+  # URI.encode_component("a b&c/é")   # => "a%20b%26c%2F%C3%A9"
+  # ```
+  def self.encode_component(text: String) -> String = encode(text, false)
+
+  # `text` with its percent-encoded bytes decoded (a `%` not followed by
+  # two hexadecimal digits is left as it is). Raises `ArgumentError` when
+  # the bytes are not UTF-8.
+  #
+  # ```
+  # URI.decode_component("a%20b%2Fc")   # => "a b/c"
+  # URI.decode_component("100%")        # => "100%"
+  # ```
+  def self.decode_component(text: String) -> String
+    decoded = decode(text, false)
+    raise ArgumentError, "not UTF-8 once decoded: #{text.inspect}" if decoded.nil?
+    decoded
+  end
+
+  # `params` as an `application/x-www-form-urlencoded` text (a query or a
+  # form body): `name=value` pairs joined by `&`, a name given several
+  # values once per value, a space as `+`, and every byte but letters,
+  # digits, `*`, `-`, `.` and `_` percent-encoded.
+  #
+  # ```
+  # URI.encode_www_form({"q" => "a b", "tag" => ["x", "y&z"]})   # => "q=a+b&tag=x&tag=y%26z"
+  # ```
+  def self.encode_www_form(params: Hash[String, String | Array[String]]) -> String
+    pairs: Array[String] = []
+    params.each do |name, value|
+      key = encode(name, true)
+      values = value.is_a?(String) ? [value] : value
+      values.each { |v| pairs = pairs.push("#{key}=#{encode(v, true)}") }
+    end
+    pairs.join("&")
+  end
+
+  # The pairs of an `application/x-www-form-urlencoded` text, each name
+  # with its values in order (`+` decodes as a space). A name or value
+  # that does not decode to UTF-8 is kept as written.
+  #
+  # ```
+  # URI.decode_www_form("q=a+b&tag=x&tag=y%26z")   # => {"q" => ["a b"], "tag" => ["x", "y&z"]}
+  # ```
+  def self.decode_www_form(text: String) -> Hash[String, Array[String]]
+    out = Hash::Builder[String, Array[String]].new
+    text.split("&").each do |pair|
+      next if pair.empty?
+      k, _, v = pair.partition("=")
+      key = decode(k, true) || k
+      val = decode(v, true) || v
+      out[key] = (out[key]? || []).push(val)
+    end
+    out.to_h
+  end
+
+  # :nodoc:
+  HEX = "0123456789ABCDEF"
+
+  # :nodoc:
+  # Percent-encoding: `form` keeps the form set (`*-._`, a space as `+`),
+  # otherwise the unreserved set (`-._~`).
+  def self.encode(text: String, form: Bool) -> String
+    out = String::Builder.new
+    text.to_bytes.each do |c|
+      alnum = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+      keep = alnum || c == 45 || c == 46 || c == 95 || (form ? c == 42 : c == 126)
+      if keep
+        out << c.chr
+      elsif form && c == 32
+        out << "+"
+      else
+        out << "%" << HEX[c / 16] << HEX[c % 16]
+      end
+    end
+    out.to_s
+  end
+
+  # :nodoc:
+  # Percent-decoding (`+` as a space when `plus`); nil when the result is
+  # not UTF-8.
+  def self.decode(text: String, plus: Bool) -> String?
+    return text unless text.include?("%") || (plus && text.include?("+"))
+    out = Bytes::Builder.new
+    bytes = text.to_bytes
+    i = 0
+    n = bytes.size
+    while i < n
+      c = bytes[i]
+      if c == 37 && i + 2 < n
+        h = hex(bytes[i + 1])
+        l = hex(bytes[i + 2])
+        if h >= 0 && l >= 0
+          out << h * 16 + l
+          i += 3
+          next
+        end
+      end
+      out << (plus && c == 43 ? 32 : c)
+      i += 1
+    end
+    out.to_bytes.decode?
+  end
+
+  # :nodoc:
+  def self.hex(c: Int) -> Int
+    return c - 48 if c >= 48 && c <= 57
+    return c - 55 if c >= 65 && c <= 70
+    return c - 87 if c >= 97 && c <= 102
+    -1
+  end
+end

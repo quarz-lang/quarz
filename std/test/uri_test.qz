@@ -1,0 +1,163 @@
+require "uri"
+require "test"
+
+# RFC 3986 §5.4: references resolved against `http://a/b/c/d;p?q`.
+class URIResolveTest < Test::Case
+  BASE = "http://a/b/c/d;p?q"
+
+  # §5.4.1.
+  NORMAL = [
+    ["g:h", "g:h"],
+    ["g", "http://a/b/c/g"],
+    ["./g", "http://a/b/c/g"],
+    ["g/", "http://a/b/c/g/"],
+    ["/g", "http://a/g"],
+    ["//g", "http://g"],
+    ["?y", "http://a/b/c/d;p?y"],
+    ["g?y", "http://a/b/c/g?y"],
+    ["#s", "http://a/b/c/d;p?q#s"],
+    ["g#s", "http://a/b/c/g#s"],
+    ["g?y#s", "http://a/b/c/g?y#s"],
+    [";x", "http://a/b/c/;x"],
+    ["g;x", "http://a/b/c/g;x"],
+    ["g;x?y#s", "http://a/b/c/g;x?y#s"],
+    ["", "http://a/b/c/d;p?q"],
+    [".", "http://a/b/c/"],
+    ["./", "http://a/b/c/"],
+    ["..", "http://a/b/"],
+    ["../", "http://a/b/"],
+    ["../g", "http://a/b/g"],
+    ["../..", "http://a/"],
+    ["../../", "http://a/"],
+    ["../../g", "http://a/g"],
+  ]
+
+  # §5.4.2.
+  ABNORMAL = [
+    ["../../../g", "http://a/g"],
+    ["../../../../g", "http://a/g"],
+    ["/./g", "http://a/g"],
+    ["/../g", "http://a/g"],
+    ["g.", "http://a/b/c/g."],
+    [".g", "http://a/b/c/.g"],
+    ["g..", "http://a/b/c/g.."],
+    ["..g", "http://a/b/c/..g"],
+    ["./../g", "http://a/b/g"],
+    ["./g/.", "http://a/b/c/g/"],
+    ["g/./h", "http://a/b/c/g/h"],
+    ["g/../h", "http://a/b/c/h"],
+    ["g;x=1/./y", "http://a/b/c/g;x=1/y"],
+    ["g;x=1/../y", "http://a/b/c/y"],
+    ["g?y/./x", "http://a/b/c/g?y/./x"],
+    ["g?y/../x", "http://a/b/c/g?y/../x"],
+    ["g#s/./x", "http://a/b/c/g#s/./x"],
+    ["g#s/../x", "http://a/b/c/g#s/../x"],
+    # A strict parser's answer.
+    ["http:g", "http:g"],
+  ]
+
+  def test_normal_examples
+    base = URI.parse(BASE)
+    NORMAL.each { |ref, want| assert_equal(want, base.resolve(ref).to_s, ref) }
+  end
+
+  def test_abnormal_examples
+    base = URI.parse(BASE)
+    ABNORMAL.each { |ref, want| assert_equal(want, base.resolve(ref).to_s, ref) }
+  end
+
+  def test_a_base_without_a_path
+    assert_equal("http://a/g", URI.parse("http://a").resolve("g").to_s)
+    assert_equal("http://a?y", URI.parse("http://a").resolve("?y").to_s)
+  end
+
+  def test_a_relative_base_is_refused
+    assert_raise(ArgumentError) { URI.parse("/a/b").resolve("c") }
+  end
+end
+
+class URIParseTest < Test::Case
+  # `text`'s scheme, userinfo, host, port, path, query and fragment.
+  def assert_parts(want: Array[String?], text: String) -> Void
+    u = URI.parse(text)
+    got: Array[String?] = [u.scheme, u.userinfo, u.host, u.port&.to_s, u.path, u.query, u.fragment]
+    assert_equal(want, got, text)
+  end
+
+  def test_parts
+    assert_parts(["https", "u:p", "example.com", "8443", "/a/b", "x=1&y", "top"], "https://u:p@example.com:8443/a/b?x=1&y#top")
+    assert_parts(["http", nil, "example.com", nil, "", nil, nil], "http://example.com")
+    assert_parts(["", nil, nil, nil, "/a", "", nil], "/a?")
+    assert_parts(["", nil, "h", nil, "/x", nil, ""], "//h/x#")
+    assert_parts(["mailto", nil, nil, nil, "a@example.com", nil, nil], "mailto:a@example.com")
+    assert_parts(["urn", nil, nil, nil, "isbn:0451450523", nil, nil], "urn:isbn:0451450523")
+    assert_parts(["file", nil, "", nil, "/etc/hosts", nil, nil], "file:///etc/hosts")
+    assert_parts(["", nil, nil, nil, "", nil, nil], "")
+  end
+
+  def test_ipv6_hosts
+    assert_parts(["http", nil, "::1", "8080", "/", nil, nil], "http://[::1]:8080/")
+    assert_parts(["http", nil, "fe80::1%25eth0", nil, "", nil, nil], "http://[fe80::1%25eth0]")
+    assert_equal("http://[::1]:8080/", URI.parse("http://[::1]:8080/").to_s)
+  end
+
+  def test_an_empty_port_is_absent
+    assert_nil(URI.parse("http://h:/p").port)
+  end
+
+  def test_round_trip
+    ["https://u:p@example.com:8443/a/b?x=1&y#top", "http://[::1]:8080/", "/a?", "//h/x#",
+     "mailto:a@example.com", "file:///etc/hosts", "g;x?y#s", "", "HTTP://Example.COM/%7Efoo"].each do |t|
+      assert_equal(t, URI.parse(t).to_s)
+    end
+  end
+
+  def test_what_does_not_parse
+    ["1http://x", "ht tp://x", "http://h:80x/", "http://h:99999/", "http://[::1/", "http://::1]/",
+     "http://[::1]x/"].each do |t|
+      assert_raise(ArgumentError) { URI.parse(t) }
+    end
+  end
+
+  def test_absolute_and_default_port
+    assert(URI.parse("http://a/").absolute?)
+    assert(!URI.parse("//a/").absolute?)
+    assert_equal(80, URI.parse("http://a/").default_port)
+    assert_equal(443, URI.parse("HTTPS://a/").default_port)
+    assert_equal(443, URI.parse("wss://a/").default_port)
+    assert_nil(URI.parse("ftp://a/").default_port)
+  end
+
+  def test_origin
+    assert_equal("https://example.com", URI.parse("HTTPS://Example.com:443/a?b").origin)
+    assert_equal("http://example.com:8080", URI.parse("http://example.com:8080/").origin)
+    assert_equal("http://[::1]", URI.parse("http://[::1]/").origin)
+    assert_raise(ArgumentError) { URI.parse("/a").origin }
+    assert_raise(ArgumentError) { URI.parse("mailto:a@b").origin }
+  end
+end
+
+class URIEncodingTest < Test::Case
+  def test_component
+    assert_equal("a%20b%26c%2F%3F%23%25~-._%C3%A9", URI.encode_component("a b&c/?#%~-._é"))
+    assert_equal("a b&c/?#%~-._é", URI.decode_component("a%20b%26c%2F%3F%23%25~-._%C3%A9"))
+    assert_equal("a+b", URI.decode_component("a+b"))
+    assert_equal("100% %zz %4", URI.decode_component("100% %zz %4"))
+    assert_raise(ArgumentError) { URI.decode_component("%FF") }
+  end
+
+  def test_www_form
+    assert_equal("q=a+b&tag=x&tag=y%26z&e=&s=*-._%7E%2B",
+                 URI.encode_www_form({"q" => "a b", "tag" => ["x", "y&z"], "e" => "", "s" => "*-._~+"}))
+    assert_equal({"q" => ["a b"], "tag" => ["x", "y&z"], "e" => [""], "s" => ["*-._~+"]},
+                 URI.decode_www_form("q=a+b&tag=x&tag=y%26z&e=&&s=*-._%7E%2B"))
+    assert_equal({"k" => ["%FF"]}, URI.decode_www_form("k=%FF"))
+    assert(URI.decode_www_form("").empty?)
+  end
+
+  def test_all_bytes_round_trip
+    text = (1..127).map(&:chr).join + "é漢"
+    assert_equal(text, URI.decode_component(URI.encode_component(text)))
+    assert_equal({text => [text]}, URI.decode_www_form(URI.encode_www_form({text => text})))
+  end
+end
