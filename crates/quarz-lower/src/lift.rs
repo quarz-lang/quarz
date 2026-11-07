@@ -449,6 +449,8 @@ impl<'a> Baker<'a> {
             kw_splat: None,
             block: None,
             moved: 0,
+            recv_classes: None,
+            on_self: false,
         });
     }
 
@@ -582,6 +584,8 @@ impl<'a> Baker<'a> {
                     kw_splat: None,
                     block: None,
                     moved: 0,
+                    recv_classes: None,
+                    on_self: false,
                 });
                 for (index, src) in stores.into_iter().enumerate() {
                     out.push(Inst::FieldSet {

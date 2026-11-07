@@ -313,7 +313,12 @@ fn const_index(g: &mut Function, c: &Constant) -> u32 {
 /// `inst` with its registers moved up by `base` and its constant indices
 /// mapped through `consts`.
 fn rewrite(inst: &Inst, base: Reg, consts: &[u32]) -> Inst {
-    rewrite_with(inst, &|x| base + x, &|c| consts[c as usize])
+    let mut inst = rewrite_with(inst, &|x| base + x, &|c| consts[c as usize]);
+    // (The callee's `self` is not the caller's.)
+    if let Inst::Call { on_self, .. } = &mut inst {
+        *on_self = false;
+    }
+    inst
 }
 
 /// `inst` with its registers mapped through `reg` and its constant
@@ -420,6 +425,8 @@ pub(crate) fn rewrite_with(
             kw_splat,
             block,
             moved,
+            recv_classes,
+            on_self,
         } => Inst::Call {
             dst: r(dst),
             kind: kind.clone(),
@@ -430,6 +437,8 @@ pub(crate) fn rewrite_with(
             kw_splat: kw_splat.as_ref().map(r),
             block: block.as_ref().map(r),
             moved: *moved,
+            recv_classes: recv_classes.clone(),
+            on_self: *on_self,
         },
         Inst::OwnedCall {
             dst,

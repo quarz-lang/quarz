@@ -529,6 +529,84 @@ fn a_statement_reaches_what_dispatch_may_find() {
 }
 
 #[test]
+fn a_class_typed_receiver_bounds_the_overrides_reached() {
+    // A call on a receiver whose static type is a class reaches the
+    // overrides an instance of the class or of a subclass may run, and
+    // the body of a module's method so reached has that receiver as its
+    // `self` (docs/14 §7): `[[1], [2]].flat_map` reaches neither `Rows`'s
+    // `flat_map` nor, in `Enumerable#flat_map`, its `each` (#379).
+    let rows = "class Rows\n  include Enumerable[Int]\n  def each(&: (Int) -> Void) -> Void\n    File.read(\"/etc/hostname\").size.times { |i| yield i }\n  end\n  def flat_map[U](&: (Int) -> Array[U]) -> Array[U]\n    File.read(\"/etc/hostname\")\n    []\n  end\nend\nclass Base\n  def label -> String = \"base\"\nend\nclass B < Base\n  def label -> String = File.read(\"/etc/hostname\")\nend\n";
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        &format!("{rows}class Model\n  static def self.gen -> Void\n    xs = [[1], [2]].flat_map {{ |a| a }}\n    def_class_method(:total) {{ xs.size }}\n  end\nend\n"),
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass App < Model\n  gen\nend\np App.total\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "2\n");
+    let exe = d.0.join("app-bin");
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", exe.to_str().unwrap()],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "2\n");
+    // A receiver typed by the module (the module's method's `self` calls
+    // too), by `Rows` itself, or by a class a subclass of which
+    // overrides the method keeps those overrides: refused.
+    for (gen, arg, via) in [
+        (
+            "static def self.gen(e: Enumerable[Int]) -> Void\n    xs = e.flat_map { |a| [a] }\n    def_class_method(:total) { xs.size }\n  end",
+            "[1, 2]",
+            "Rows#flat_map",
+        ),
+        (
+            "static def self.gen(e: Enumerable[Int]) -> Void\n    xs = e.to_a\n    def_class_method(:total) { xs.size }\n  end",
+            "[1, 2]",
+            "Rows#each",
+        ),
+        (
+            "static def self.gen(e: Rows) -> Void\n    xs = e.flat_map { |a| [a] }\n    def_class_method(:total) { xs.size }\n  end",
+            "Rows.new",
+            "Rows#",
+        ),
+        (
+            "static def self.gen(e: Base) -> Void\n    s = e.label\n    def_class_method(:total) { s.size }\n  end",
+            "Base.new",
+            "B#label",
+        ),
+    ] {
+        let d = dir();
+        write(
+            &d.0,
+            "lib.qz",
+            &format!("{rows}class Model\n  {gen}\nend\n"),
+        );
+        let app = write(
+            &d.0,
+            "app.qz",
+            &format!("require_relative \"lib\"\nclass App < Model\n  gen {arg}\nend\np App.total\n"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+        assert!(!ok);
+        let line = err.lines().next().unwrap_or("");
+        assert!(
+            line.starts_with("app.qz:3:3: error: `gen` reaches `File.read` (via ")
+                && line.contains(via),
+            "{err}"
+        );
+    }
+}
+
+#[test]
 fn a_statement_reaches_dispatch_one_step() {
     // What dispatch may find for a call, not what it may find for those
     // in turn (`Loud#label` reached for `A#label`, not every `label`),

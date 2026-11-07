@@ -1195,28 +1195,30 @@ impl Runner {
         }
         let world = self.world.as_ref()?;
         let by_name = methods_by_name(world);
-        let mut seen = vec![false; self.lowerer.done.len()];
-        let mut work: Vec<FuncId> = vec![root];
-        while let Some(fid) = work.pop() {
-            if fid as usize >= seen.len() || seen[fid as usize] {
+        // Each function once per bound of its `self` (`reached`).
+        let mut seen: rustc_hash::FxHashSet<(FuncId, SelfBound)> = Default::default();
+        let mut work: Vec<(FuncId, SelfBound)> = vec![(root, None)];
+        while let Some((fid, bound)) = work.pop() {
+            if fid as usize >= self.lowerer.done.len() || !seen.insert((fid, bound.clone())) {
                 continue;
             }
-            seen[fid as usize] = true;
-            let mut methods: Vec<MethodId> = Vec::new();
+            let f = &self.lowerer.done[fid as usize];
+            let mut methods: Vec<(MethodId, SelfBound)> = Vec::new();
             let mut found: Option<Result<MethodId, String>> = None;
             reached(
                 world,
                 &by_name,
-                &self.lowerer.done[fid as usize],
+                f,
+                &bound,
                 &mut methods,
                 &mut |r| match r {
-                    shake::Ref::Func(f) => work.push(f),
+                    shake::Ref::Func(g) => work.push((g, func_bound(f, g, &bound))),
                     shake::Ref::Const(c) => {
                         if self.bad_consts.contains(&c) {
                             found = Some(Err(world.consts[c as usize].name.clone()));
                         } else if let Some(init) = world.consts.get(c as usize).and_then(|c| c.init)
                         {
-                            work.push(init);
+                            work.push((init, None));
                         }
                     }
                     _ => {}
@@ -1226,12 +1228,12 @@ impl Runner {
             if found.is_some() {
                 return found;
             }
-            for m in methods {
+            for (m, b) in methods {
                 if self.bad_methods.contains_key(&m) {
                     return Some(Ok(m));
                 }
                 if let Some(f) = world.methods[m as usize].func {
-                    work.push(f);
+                    work.push((f, b));
                 }
             }
         }
@@ -1243,21 +1245,24 @@ impl Runner {
     fn impure_reach(&self, root: FuncId) -> Option<Vec<String>> {
         let world = self.world.as_ref()?;
         let by_name = methods_by_name(world);
-        let mut seen = vec![false; self.lowerer.done.len()];
-        // Each function with the path of method names that reached it.
-        let mut work: Vec<(FuncId, Vec<String>)> = vec![(root, Vec::new())];
-        while let Some((fid, path)) = work.pop() {
-            if seen[fid as usize] {
+        // Each function once per bound of its `self` (`reached`).
+        let mut seen: rustc_hash::FxHashSet<(FuncId, SelfBound)> = Default::default();
+        // Each function with the bound of its `self` and the path of
+        // method names that reached it.
+        let mut work: Vec<(FuncId, SelfBound, Vec<String>)> = vec![(root, None, Vec::new())];
+        while let Some((fid, bound, path)) = work.pop() {
+            if !seen.insert((fid, bound.clone())) {
                 continue;
             }
-            seen[fid as usize] = true;
-            let mut methods: Vec<MethodId> = Vec::new();
+            let f = &self.lowerer.done[fid as usize];
+            let mut methods: Vec<(MethodId, SelfBound)> = Vec::new();
             let mut funcs: Vec<FuncId> = Vec::new();
             let mut consts: Vec<u32> = Vec::new();
             reached(
                 world,
                 &by_name,
-                &self.lowerer.done[fid as usize],
+                f,
+                &bound,
                 &mut methods,
                 &mut |r| match r {
                     shake::Ref::Func(f) => funcs.push(f),
@@ -1266,7 +1271,7 @@ impl Runner {
                 },
                 false,
             );
-            for m in methods {
+            for (m, b) in methods {
                 let rm = &world.methods[m as usize];
                 let mut p = path.clone();
                 p.push(method_name(world, m));
@@ -1276,17 +1281,17 @@ impl Runner {
                     }
                 }
                 if let Some(f) = rm.func {
-                    work.push((f, p));
+                    work.push((f, b, p));
                 }
             }
-            for f in funcs {
-                work.push((f, path.clone()));
+            for g in funcs {
+                work.push((g, func_bound(f, g, &bound), path.clone()));
             }
             for c in consts {
                 if let Some(init) = world.consts.get(c as usize).and_then(|c| c.init) {
                     let mut p = path.clone();
                     p.push(world.consts[c as usize].name.clone());
-                    work.push((init, p));
+                    work.push((init, None, p));
                 }
             }
         }
@@ -1294,20 +1299,30 @@ impl Runner {
     }
 }
 
-/// The methods a run of `f` may call, into `methods`: a method called as
-/// resolved and its overrides (a subclass's runs in its place), one
-/// called exactly (`super`, a function) alone, those of a name looked up
-/// at run time, and for a construction the `initialize` it runs: the
-/// class's own (or inherited) for `C.new`, and those of its subclasses
-/// too for `new` on a class method's receiver, which may be one. The
-/// other references go to `other`. With `by_runtime`, also the methods
-/// the runtime calls by name for the instructions and the natives among
-/// them (for `bad_reach` only).
+/// What `self` is known to be in a run of a function: an instance of one
+/// of these classes or of a subclass (`None`: anything its type allows).
+/// A method reached through a call on such a receiver runs with it as
+/// `self` (docs/14 §7).
+type SelfBound = Option<std::rc::Rc<[ClassId]>>;
+
+/// The methods a run of `f` may call, into `methods`, each with the
+/// bound of the `self` it runs with: a method called as resolved and its
+/// overrides (a subclass's runs in its place; on a receiver whose static
+/// type, or `self_bound` for a call on `self`, bounds it, those its
+/// lookup may find), one called exactly (`super`, keeping `self_bound`,
+/// a function) alone, those of a name looked up at run time, and for a
+/// construction the `initialize` it runs: the class's own (or inherited)
+/// for `C.new`, and those of its subclasses too for `new` on a class
+/// method's receiver, which may be one. The other references go to
+/// `other`. With `by_runtime`, also the methods the runtime calls by name
+/// for the instructions and the natives among them (for `bad_reach`
+/// only).
 fn reached<'a>(
     world: &RtWorld,
     by_name: &HashMap<&str, Vec<MethodId>>,
     f: &'a quarz_ir::Function,
-    methods: &mut Vec<MethodId>,
+    self_bound: &SelfBound,
+    methods: &mut Vec<(MethodId, SelfBound)>,
     other: &mut dyn FnMut(shake::Ref<'a>),
     by_runtime: bool,
 ) {
@@ -1316,10 +1331,32 @@ fn reached<'a>(
     let mut runtime: Vec<&'static str> = Vec::new();
     shake::reach_refs(f, &mut |r| match r {
         shake::Ref::Method(m) => {
-            methods.push(m);
-            methods.extend(overrides_of(world, by_name, m));
+            methods.push((m, None));
+            methods.extend(
+                overrides_of(world, by_name, m, None)
+                    .into_iter()
+                    .map(|o| (o, None)),
+            );
         }
-        shake::Ref::Exact(m) => methods.push(m),
+        shake::Ref::Bounded {
+            method,
+            classes,
+            on_self,
+        } => {
+            let bound: SelfBound = match (on_self, self_bound) {
+                (true, Some(b)) => Some(b.clone()),
+                _ => classes.map(Into::into),
+            };
+            methods.push((method, bound.clone()));
+            methods.extend(
+                overrides_of(world, by_name, method, bound.as_deref())
+                    .into_iter()
+                    .map(|o| (o, bound.clone())),
+            );
+        }
+        shake::Ref::Exact { method, on_self } => {
+            methods.push((method, if on_self { self_bound.clone() } else { None }))
+        }
         shake::Ref::Runtime(n) => {
             if by_runtime {
                 runtime.push(n);
@@ -1327,18 +1364,23 @@ fn reached<'a>(
         }
         shake::Ref::Name(n) => {
             if let Some(ms) = by_name.get(n) {
-                methods.extend(ms.iter().copied().filter(|&o| !denied_owner(world, o)));
+                methods.extend(
+                    ms.iter()
+                        .copied()
+                        .filter(|&o| !denied_owner(world, o))
+                        .map(|o| (o, None)),
+                );
             }
         }
         shake::Ref::Construct { class, init, recv } => {
             match init {
-                Some(m) => methods.push(m),
+                Some(m) => methods.push((m, None)),
                 // (None: the class has no `initialize`, and none runs;
                 // counted all the same, any ancestor's overload.)
                 None => {
                     for &a in &world.classes[class as usize].ancestors {
                         if let Some(ms) = world.classes[a as usize].methods.get("initialize") {
-                            methods.extend(ms.iter().copied());
+                            methods.extend(ms.iter().map(|&m| (m, None)));
                             break;
                         }
                     }
@@ -1346,13 +1388,18 @@ fn reached<'a>(
             }
             if recv {
                 if let Some(ms) = by_name.get("initialize") {
-                    methods.extend(ms.iter().copied().filter(|&o| {
-                        let om = &world.methods[o as usize];
-                        !om.singleton
-                            && om.owner != class
-                            && world.class_is_a(om.owner, class)
-                            && !denied_owner(world, o)
-                    }));
+                    methods.extend(
+                        ms.iter()
+                            .copied()
+                            .filter(|&o| {
+                                let om = &world.methods[o as usize];
+                                !om.singleton
+                                    && om.owner != class
+                                    && world.class_is_a(om.owner, class)
+                                    && !denied_owner(world, o)
+                            })
+                            .map(|o| (o, None)),
+                    );
                 }
             }
             // The classes it may build: their fields' defaults run, and
@@ -1369,7 +1416,7 @@ fn reached<'a>(
                 }
                 for &a in &rc.ancestors {
                     if let Some(ms) = world.classes[a as usize].methods.get("deinitialize") {
-                        methods.extend(ms.iter().copied());
+                        methods.extend(ms.iter().map(|&m| (m, None)));
                     }
                 }
             }
@@ -1389,17 +1436,18 @@ fn reached<'a>(
     // name is one the runtime calls for that name (`Object#to_s` for
     // `to_s`), which calls what that name's calls do; another, what its
     // own kind calls (`native_calls`). Each method once.
-    let mut seen: rustc_hash::FxHashSet<MethodId> = methods[first..].iter().copied().collect();
+    let mut seen: rustc_hash::FxHashSet<MethodId> =
+        methods[first..].iter().map(|(m, _)| *m).collect();
     let mut work: Vec<(MethodId, Option<&'static str>)> =
-        methods[first..].iter().map(|&m| (m, None)).collect();
+        methods[first..].iter().map(|&(m, _)| (m, None)).collect();
     let mut add = |n: &'static str,
                    work: &mut Vec<(MethodId, Option<&'static str>)>,
-                   methods: &mut Vec<MethodId>| {
+                   methods: &mut Vec<(MethodId, SelfBound)>| {
         if let Some(ms) = by_name.get(n) {
             for &o in ms {
                 if !world.methods[o as usize].singleton && !denied_owner(world, o) && seen.insert(o)
                 {
-                    methods.push(o);
+                    methods.push((o, None));
                     work.push((o, Some(n)));
                 }
             }
@@ -1419,6 +1467,18 @@ fn reached<'a>(
         for n in names {
             add(n, &mut work, methods);
         }
+    }
+}
+
+/// The bound of `self` in function `g`, which `f` refers to, run with
+/// `bound`: a block of `f`'s has its `self` (where it is another, a block
+/// with a receiver, no call in it is marked `on_self`); a method `f`
+/// inlined has its own.
+fn func_bound(f: &quarz_ir::Function, g: FuncId, bound: &SelfBound) -> SelfBound {
+    if f.inlined.iter().any(|o| o.callee == g) {
+        None
+    } else {
+        bound.clone()
     }
 }
 
@@ -1511,11 +1571,13 @@ const NATIVE_NAMES: &[&str] = &[
 ];
 
 /// The methods that override `m` in subclasses of its owner (same name,
-/// same side), which a call of `m` may run instead.
+/// same side), which a call of `m` may run instead: with `bound`, on a
+/// receiver of one of those classes or a subclass (`may_receive`).
 fn overrides_of(
     world: &RtWorld,
     by_name: &HashMap<&str, Vec<MethodId>>,
     m: MethodId,
+    bound: Option<&[ClassId]>,
 ) -> Vec<MethodId> {
     let rm = &world.methods[m as usize];
     // An override in a class denied at compile time (`IO#puts` for
@@ -1528,7 +1590,12 @@ fn overrides_of(
         .map(|ms| {
             ms.iter()
                 .copied()
-                .filter(|&o| o != m && !denied_owner(world, o) && may_dispatch_to(world, o, m))
+                .filter(|&o| {
+                    o != m
+                        && !denied_owner(world, o)
+                        && may_dispatch_to(world, o, m)
+                        && bound.is_none_or(|b| may_receive(world, o, b))
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -1581,6 +1648,28 @@ fn may_dispatch_to(world: &RtWorld, o: MethodId, m: MethodId) -> bool {
         || (world.classes[om.owner as usize].kind == RtClassKind::Module
             && (0..world.classes.len() as ClassId)
                 .any(|c| world.class_is_a(c, owner) && world.class_is_a(c, om.owner)))
+}
+
+/// Whether a receiver that is an instance of one of `classes` or of a
+/// subclass may find `o` by its lookup (`may_receive` in the lowering,
+/// alike): `o` belongs to an ancestor of such a class, or to a module
+/// an extension makes some class conform to (which the ancestors do not
+/// show).
+fn may_receive(world: &RtWorld, o: MethodId, classes: &[ClassId]) -> bool {
+    let owner = world.methods[o as usize].owner;
+    if world.classes[owner as usize].kind == RtClassKind::Module
+        && world
+            .extensions
+            .iter()
+            .any(|e| e.includes.iter().any(|&m| world.class_is_a(m, owner)))
+    {
+        return true;
+    }
+    let n = world.classes.len() as ClassId;
+    classes.iter().any(|&c| {
+        world.class_is_a(c, owner)
+            || (0..n).any(|d| world.class_is_a(d, c) && world.class_is_a(d, owner))
+    })
 }
 
 /// Whether `m` belongs to a class denied at compile time: a receiver of
@@ -2727,11 +2816,13 @@ pub fn compile_time_only_calls_in(
                         continue;
                     }
                     seen[fid as usize] = true;
-                    let mut methods: Vec<MethodId> = Vec::new();
+                    // (Without the bounds of `self`, a wider walk.)
+                    let mut methods: Vec<(MethodId, SelfBound)> = Vec::new();
                     reached(
                         &rt,
                         &by_name,
                         &functions[fid as usize],
+                        &None,
                         &mut methods,
                         &mut |r| {
                             if let shake::Ref::Func(f) = r {
@@ -2740,7 +2831,7 @@ pub fn compile_time_only_calls_in(
                         },
                         false,
                     );
-                    for mm in methods {
+                    for (mm, _) in methods {
                         let rm = &rt.methods[mm as usize];
                         if rm.native_key.as_deref().is_some_and(compile_time_only) {
                             is_only = true;

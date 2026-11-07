@@ -541,6 +541,23 @@ pub enum Inst {
         /// `args[i]` (`i` < 15), bit 15 for `recv`.
         #[serde(default)]
         moved: u16,
+        /// For a `CallKind::Method`, the classes the receiver's static
+        /// type says it is an instance of (one, or a union's members),
+        /// when each is a class: the receiver is then of one of them or a
+        /// subclass, which bounds the overrides a run may reach
+        /// (`shake::Ref::Bounded`, docs/14 §7). `None` (a module type, a
+        /// type parameter, `self` or a call made by a pass): any.
+        #[serde(default)]
+        recv_classes: Option<Box<[ClassId]>>,
+        /// A `CallKind::Method` on the function's `self` as its method
+        /// has it (an implicit or `self.` call in the method's body, or
+        /// in a block whose `self` is the method's): a run of the method
+        /// reached through a call on a bounded receiver
+        /// (`shake::Ref::Bounded`) has that receiver here, with its bound
+        /// (docs/14 §7). A pass that copies the call into another
+        /// function (inlining) clears it.
+        #[serde(default)]
+        on_self: bool,
     },
     /// `x = x.meth(args)`: the receiver is moved out of its variable so a
     /// uniquely referenced collection is updated in place; the result is
