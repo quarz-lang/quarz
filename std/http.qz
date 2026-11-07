@@ -1979,7 +1979,7 @@ module HTTP
     # when neither proxy is set. A URL without a scheme is taken as
     # `http://`; one that is not an `http` URL with a host (`socks5://`)
     # is ignored, with a warning on STDERR (once). As Go does,
-    # `HTTP_PROXY` is ignored when `REQUEST_METHOD` is set: in a CGI
+    # HTTP_PROXY is ignored when REQUEST_METHOD is set: in a CGI
     # program, a request's `Proxy` header sets it (httpoxy).
     def self.from_env -> Proxy?
       https = env_url("https_proxy", true)
