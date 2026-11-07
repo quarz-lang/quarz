@@ -529,6 +529,51 @@ fn a_statement_reaches_what_dispatch_may_find() {
 }
 
 #[test]
+fn a_round_lowers_and_checks_what_its_statement_reaches() {
+    // `touch` reached `Base#dispatch`; `wire` then generated `A#dispatch`,
+    // which calls `A#act`, whose `H.helper` a later statement generates.
+    // `mark` reaches nothing of `Base`: its round neither lowers nor
+    // checks `A#act`, so the check does not run before `helpers` and
+    // `mark` is not blamed for it (#387; docs/14 §7).
+    let lib = "class Base\n  def dispatch -> Int = 0\n  def self.make -> Base = new\n  static def self.touch -> Void\n    n = Base.make.dispatch\n    def_class_method(:touched) { n }\n  end\n  static def self.wire -> Void\n    h = method_ref[() -> Int](:act)\n    def_method(:dispatch) { h.bind(self).call }\n  end\nend\nclass Plain\n  static def self.mark -> Void\n    def_class_method(:marked) { 1 }\n  end\nend\nclass HelperGen\n  static def self.helpers -> Void\n    def_class_method(:helper) { 1 }\n  end\nend\n";
+    let d = dir();
+    write(&d.0, "lib.qz", lib);
+    let app = write(
+        &d.0,
+        "main.qz",
+        "require_relative \"lib\"\nclass S1 < Base\n  touch\nend\nclass A < Base\n  wire\n  def act -> Int = H.helper\nend\nclass P < Plain\n  mark\nend\nclass H < HelperGen\n  helpers\nend\np A.new.dispatch\np P.marked\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "1\n1\n");
+    let exe = d.0.join("main-bin");
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", exe.to_str().unwrap()],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "1\n1\n");
+    // A statement that does reach it before `helpers` ran (`touch` after
+    // `wire`, through `Base#dispatch`'s override) is still refused: the
+    // order of the statements (docs/14 §2).
+    let d = dir();
+    write(&d.0, "lib.qz", lib);
+    let app = write(
+        &d.0,
+        "main.qz",
+        "require_relative \"lib\"\nclass A < Base\n  wire\n  def act -> Int = H.helper\nend\nclass S2 < Base\n  touch\nend\nclass H < HelperGen\n  helpers\nend\np A.new.dispatch\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("main.qz:7:3: error: `touch` did not run: it may reach `A#act` (main.qz:4), which has errors: undefined method `helper` for Type[H]"),
+        "{err}"
+    );
+}
+
+#[test]
 fn a_statement_reaches_dispatch_one_step() {
     // What dispatch may find for a call, not what it may find for those
     // in turn (`Loud#label` reached for `A#label`, not every `label`),
