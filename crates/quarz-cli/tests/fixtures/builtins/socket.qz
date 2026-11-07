@@ -82,8 +82,7 @@ v4.close
 v6&.close
 
 # What races: an IP address never does (connected in this task); a name
-# whose addresses are of one family does not either; a name of both
-# families does (as above). fast_fallback: false tries the resolver's
+# of both families does (as above). fast_fallback: false tries the resolver's
 # order, one after the other, in this task.
 only4 = TCPServer.new("127.0.0.1", 0)
 oport = only4.local_address.port
@@ -94,7 +93,9 @@ p Socket::RACES.get - races
 families = Socket.getaddrinfo("localhost", oport).map { |a| a.ipv6? }.uniq.size
 Socket.tcp("localhost", oport).close
 only4.accept.close
-p (Socket::RACES.get - races) == (families == 2 ? 1 : 0)
+# (One family races too when the other's empty answer comes late: a
+# slow AAAA lookup. So only the both-families case is checked.)
+p families == 1 || Socket::RACES.get - races == 1
 races = Socket::RACES.get
 c = Socket.tcp("localhost", oport, fast_fallback: false)
 p c.remote_address.host, Socket::RACES.get - races

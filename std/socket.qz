@@ -159,11 +159,11 @@ module Socket
   # has not connected in `fallback_delay`; the first to connect wins, the
   # others are cancelled. So a host with an IPv6 address the network
   # cannot reach (no route, packets dropped) connects over IPv4 after
-  # `fallback_delay`, not after the system's connect timeout. When one
-  # family is all there is (an IP address given, or a name with addresses
-  # of one family), there is nothing to race: the addresses are tried in
-  # order in the calling task. `fast_fallback: false` tries the
-  # addresses in the order the resolver gives them, one after the other.
+  # `fallback_delay`, not after the system's connect timeout. With one
+  # address (an IP address given, or a name with one address) there is
+  # nothing to race: it is connected to in the calling task.
+  # `fast_fallback: false` tries the addresses in the order the resolver
+  # gives them, one after the other, each until it connects or fails.
   def self.tcp(host: String, port: Int, connect_timeout: Duration? = nil, fast_fallback: Bool = true,
                fallback_delay: Duration = CONNECTION_ATTEMPT_DELAY) -> TCPSocket
     if connect_timeout
@@ -400,8 +400,19 @@ module Socket
         pending = interleave(pending + more.addresses)
         lookup_error ||= more.error
       end
-      # Both answered and one family is all there is: nothing to race.
-      one_family = unanswered == 0 && (pending.all?(&:ipv6?) || pending.none?(&:ipv6?))
+      # Nothing to try yet: the other answer decides (there is nothing to
+      # do meanwhile).
+      if pending.empty? && unanswered > 0
+        more = lookups.receive
+        unanswered -= 1
+        pending = interleave(more.addresses)
+        lookup_error ||= more.error
+      end
+      # Both answered with one address in all: nothing to race. (Several
+      # addresses race even when of one family: the next starts after
+      # `delay`, not after the system's connect timeout when the first
+      # one's packets are dropped.)
+      single = unanswered == 0 && pending.size == 1
       # Each attempt sends its outcome on a channel of its own, which never
       # makes it wait: a cancelled attempt has sent, closed its socket, or
       # (cancelled before it sent) dropped it, which closes it.
@@ -410,7 +421,7 @@ module Socket
       next_at = Time.monotonic
       winner: TCPSocket? = nil
       failure: SystemCallError? = nil
-      while winner.nil? && !one_family
+      while winner.nil? && !single
         if !pending.empty? && (running.empty? || Time.monotonic >= next_at)
           address = pending[0]
           pending = pending.drop(1)
@@ -452,9 +463,9 @@ module Socket
         end
       end
       scope.cancel
-      [winner, failure, lookup_error, made, one_family ? pending : nil]
+      [winner, failure, lookup_error, made, single ? pending : nil]
     end
-    # One family: in order, in this task.
+    # One address: connected to in this task.
     if alone && !alone.empty?
       return in_order(host, alone)
     end
