@@ -1,5 +1,6 @@
 //! `std/crypto.qz` (the `crypto` feature): RSA keys and signatures
-//! through RustCrypto's `rsa`.
+//! through RustCrypto's `rsa`, AES-GCM through `aes-gcm`, and the
+//! system's random bytes through `getrandom`.
 //!
 //! A key is a `data` value holding its DER (PKCS#8 for a private key,
 //! SPKI for a public one, whatever it was read from): the natives parse
@@ -9,6 +10,7 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
+use aes_gcm::aead::Aead;
 use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey, EncodeRsaPrivateKey};
 use rsa::pkcs8::{
     DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, LineEnding,
@@ -24,6 +26,49 @@ use crate::value::*;
 use super::string;
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
+    native!(m, "Crypto.random_bytes", |i, _, a| {
+        let n = super::int(i, a.arg(0), "n")?;
+        if !(0..=RANDOM_MAX).contains(&n) {
+            return Err(i.err_arg(&format!("random_bytes: 0 to {RANDOM_MAX} bytes, not {n}")));
+        }
+        let mut buf = vec![0u8; n as usize];
+        getrandom::fill(&mut buf)
+            .map_err(|e| error(i, format!("the system's random source failed: {e}")))?;
+        Ok(Value::bytes(buf))
+    });
+    native!(m, "Crypto::AES.seal_with", |i, _, a| {
+        let key = bytes(i, a.arg(0), "key")?;
+        let nonce = gcm_nonce(i, a.arg(1))?;
+        let plaintext = message(i, a.arg(2))?;
+        let aad = message(i, a.arg(3))?;
+        let payload = aes_gcm::aead::Payload {
+            msg: plaintext,
+            aad,
+        };
+        let sealed = match key.len() {
+            16 => gcm::<aes_gcm::Aes128Gcm>(key).encrypt(&nonce, payload),
+            24 => gcm::<Aes192Gcm>(key).encrypt(&nonce, payload),
+            32 => gcm::<aes_gcm::Aes256Gcm>(key).encrypt(&nonce, payload),
+            n => return Err(key_size_error(i, n)),
+        }
+        .map_err(|_| error(i, "the data is too long for AES-GCM"))?;
+        Ok(Value::bytes(sealed))
+    });
+    // nil when the data does not authenticate (nothing of it is returned).
+    native!(m, "Crypto::AES.open_with", |i, _, a| {
+        let key = bytes(i, a.arg(0), "key")?;
+        let nonce = gcm_nonce(i, a.arg(1))?;
+        let sealed = bytes(i, a.arg(2), "sealed")?;
+        let aad = message(i, a.arg(3))?;
+        let payload = aes_gcm::aead::Payload { msg: sealed, aad };
+        let opened = match key.len() {
+            16 => gcm::<aes_gcm::Aes128Gcm>(key).decrypt(&nonce, payload),
+            24 => gcm::<Aes192Gcm>(key).decrypt(&nonce, payload),
+            32 => gcm::<aes_gcm::Aes256Gcm>(key).decrypt(&nonce, payload),
+            n => return Err(key_size_error(i, n)),
+        };
+        Ok(opened.map(Value::bytes).unwrap_or(Value::Nil))
+    });
     native!(m, "Crypto::RSA.private_der", |i, _, a| {
         let key = private_from_der(bytes(i, a.arg(0), "der")?).map_err(|e| error(i, e))?;
         Ok(Value::bytes(private_pkcs8(i, &key)?))
@@ -215,6 +260,34 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Crypto::RSA::PublicKey#fingerprint", |i, r, _| {
         Ok(Value::bytes(Sha256::digest(der_field(i, r)?).to_vec()))
     });
+}
+
+/// The most `Crypto.random_bytes` gives at once.
+const RANDOM_MAX: i64 = 1 << 20;
+
+type Aes192Gcm = aes_gcm::AesGcm<aes_gcm::aes::Aes192, aes_gcm::aead::consts::U12>;
+
+/// An AES-GCM cipher for `key` (its length checked by the caller).
+fn gcm<C: aes_gcm::KeyInit>(key: &[u8]) -> C {
+    C::new_from_slice(key).expect("the key's length was checked")
+}
+
+fn key_size_error(interp: &Interp, n: usize) -> Flow {
+    interp.err_arg(&format!("an AES key has 16, 24 or 32 bytes, not {n}"))
+}
+
+/// A GCM nonce: exactly 12 bytes.
+fn gcm_nonce(
+    interp: &Interp,
+    v: &Value,
+) -> Result<aes_gcm::Nonce<aes_gcm::aead::consts::U12>, Flow> {
+    let nonce = bytes(interp, v, "nonce")?;
+    aes_gcm::Nonce::<aes_gcm::aead::consts::U12>::try_from(nonce).map_err(|_| {
+        interp.err_arg(&format!(
+            "an AES-GCM nonce has 12 bytes, not {}",
+            nonce.len()
+        ))
+    })
 }
 
 const ENCRYPTED: &str =

@@ -1,6 +1,7 @@
-# Public-key cryptography: `require "crypto"`. For now RSA keys (PEM and
-# DER, PKCS#8, PKCS#1 and SPKI) and signatures (PKCS#1 v1.5 and PSS), as
-# HTTP Signatures, JWT RS256 and webhook signatures need.
+# Cryptography: `require "crypto"`. RSA keys (PEM and DER, PKCS#8, PKCS#1
+# and SPKI) and signatures (PKCS#1 v1.5 and PSS), as HTTP Signatures, JWT
+# RS256 and webhook signatures need; AES-GCM, to encrypt a secret at rest
+# or seal a cookie; and `Crypto.random_bytes`, for keys and nonces.
 #
 # ```
 # require "crypto"
@@ -15,11 +16,130 @@
 # `to_s` never show the key. The runtime keeps the keys it parsed (by
 # contents), so signing again with one key does not parse it again.
 # Keys of 1024 to 8192 bits are read (`generate` makes 2048 to 4096).
-# There is no encryption, no encrypted PEM, and no EC or Ed25519 key yet.
+# There is no RSA encryption, no encrypted PEM, no EC or Ed25519 key, no
+# other cipher mode (CBC, CTR) and no key derivation but
+# `Digest::PBKDF2` yet.
 module Crypto
   # A key that does not parse, is of another kind, or is too small; a
   # PEM text that is not one key.
   class Error < StandardError
+  end
+
+  # Data that did not authenticate: the key, the nonce or the associated
+  # data is not the one it was sealed with, or the data was changed. The
+  # message never includes the data.
+  class AuthenticationError < Error
+  end
+
+  # `n` bytes (0 to 1 MiB, `ArgumentError` otherwise) from the operating
+  # system's cryptographic random source (`getrandom`): for keys, nonces
+  # and tokens; `Crypto::Error` if that source fails. Not a replacement
+  # for `Random`, which is reproducible.
+  #
+  # ```
+  # Crypto.random_bytes(16).size                               # => 16
+  # Crypto.random_bytes(16) == Crypto.random_bytes(16)         # => false
+  # ```
+  native def self.random_bytes(n: Int) -> Bytes
+
+  # AES, in its authenticated mode GCM.
+  module AES
+    # AES-GCM with one key: authenticated encryption, which keeps data
+    # secret and detects any change to it. A `data` value holding the
+    # key: immutable and Shareable; `inspect` and `to_s` never show the
+    # key (`key` and `to_h` do, asked for explicitly).
+    #
+    # ```
+    # aead = Crypto::AES::GCM.generate(256)
+    # token = aead.encrypt("a secret", aad: "user 42")
+    # aead.decrypt(token, aad: "user 42").decode   # => "a secret"
+    # aead.decrypt(token, aad: "user 43")          # raises Crypto::AuthenticationError
+    # ```
+    #
+    # A nonce must never be used twice with one key: that is the one way
+    # to break GCM. `encrypt` draws a random 12-byte nonce each time and
+    # puts it in front of what it returns, which is safe for about 2^32
+    # messages per key; past that, rotate the key, or give `seal` a
+    # counter as the nonce. `seal` and `open` are for protocols that fix
+    # the nonce (a counter, one from the peer).
+    data GCM(
+      # The key: 16, 24 or 32 bytes (AES-128, -192, -256).
+      key: Bytes
+    )
+      # Raises `ArgumentError` for a key that is not 16, 24 or 32 bytes.
+      def initialize(key: Bytes)
+        unless key.size == 16 || key.size == 24 || key.size == 32
+          raise ArgumentError, "an AES key has 16, 24 or 32 bytes, not #{key.size}"
+        end
+        @key = key
+      end
+
+      # A fresh random key of `bits` bits: 128, 192 or 256.
+      def self.generate(bits: Int = 256) -> GCM
+        unless bits == 128 || bits == 192 || bits == 256
+          raise ArgumentError, "an AES key has 128, 192 or 256 bits, not #{bits}"
+        end
+        GCM.new(Crypto.random_bytes(bits / 8))
+      end
+
+      # The key's size in bits.
+      def bits -> Int = key.size * 8
+
+      # `plaintext` encrypted with `nonce` (12 bytes, used once with this
+      # key), followed by the 16-byte tag that authenticates it and `aad`
+      # (associated data: authenticated, not encrypted, and not included).
+      def seal(nonce: Bytes, plaintext: Bytes | String, *, aad: Bytes | String = "") -> Bytes
+        AES.seal_with(key, nonce, plaintext, aad)
+      end
+
+      # The plaintext of `sealed` (what `seal` gave for `nonce` and `aad`);
+      # `Crypto::AuthenticationError` when it does not authenticate, and
+      # then nothing of it is returned.
+      def open(nonce: Bytes, sealed: Bytes, *, aad: Bytes | String = "") -> Bytes
+        opened = AES.open_with(key, nonce, sealed, aad)
+        raise AuthenticationError, "the data did not authenticate" if opened.nil?
+        opened
+      end
+
+      # As `open`, nil instead of raising: for a caller to whom a bad
+      # token is a normal case (an expired cookie).
+      def open?(nonce: Bytes, sealed: Bytes, *, aad: Bytes | String = "") -> Bytes?
+        AES.open_with(key, nonce, sealed, aad)
+      end
+
+      # `plaintext` sealed with a fresh random nonce: the nonce (12
+      # bytes), the ciphertext and the tag (16 bytes), as one `Bytes` to
+      # store or send.
+      def encrypt(plaintext: Bytes | String, *, aad: Bytes | String = "") -> Bytes
+        nonce = Crypto.random_bytes(12)
+        nonce + seal(nonce, plaintext, aad: aad)
+      end
+
+      # The plaintext of `token` (what `encrypt` gave for `aad`);
+      # `Crypto::AuthenticationError` when it does not authenticate.
+      def decrypt(token: Bytes, *, aad: Bytes | String = "") -> Bytes
+        opened = if token.size < 28
+          nil
+        else
+          AES.open_with(key, token.slice(0, 12), token.slice(12, token.size - 12), aad)
+        end
+        raise AuthenticationError, "the data did not authenticate" if opened.nil?
+        opened
+      end
+
+      # `#<Crypto::AES::GCM 256 bits>`: never the key.
+      def inspect -> String = "#<Crypto::AES::GCM #{bits} bits>"
+
+      # :ditto:
+      def to_s -> String = inspect
+    end
+
+    # :nodoc:
+    # `plaintext` sealed with `key` and `nonce` (GCM, a 16-byte tag).
+    native def self.seal_with(key: Bytes, nonce: Bytes, plaintext: Bytes | String, aad: Bytes | String) -> Bytes
+    # :nodoc:
+    # The plaintext of `sealed`, nil when it does not authenticate.
+    native def self.open_with(key: Bytes, nonce: Bytes, sealed: Bytes, aad: Bytes | String) -> Bytes?
   end
 
   # RSA keys and signatures, through the RustCrypto `rsa` crate. A hash
