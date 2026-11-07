@@ -423,7 +423,7 @@ module HTTP
     # A server's error as it is, a client's as a `Client::Error`.
     private def raise_for(e: Error) -> Nothing
       raise e unless @client
-      raise Client.error_for(e)
+      raise HTTP.client_error(e)
     end
 
     private def ended -> Void
@@ -1977,10 +1977,13 @@ module HTTP
     # `http_proxy` for `http` ones, `no_proxy` for the hosts reached
     # directly (each name in lower case first, then in upper case); nil
     # when neither proxy is set. A URL without a scheme is taken as
-    # `http://`.
+    # `http://`; one that is not an `http` URL with a host (`socks5://`)
+    # is ignored, with a warning on STDERR (once). As Go does,
+    # `HTTP_PROXY` is ignored when `REQUEST_METHOD` is set: in a CGI
+    # program, a request's `Proxy` header sets it (httpoxy).
     def self.from_env -> Proxy?
-      https = env_url("https_proxy")
-      http = env_url("http_proxy")
+      https = env_url("https_proxy", true)
+      http = env_url("http_proxy", ENV["REQUEST_METHOD"]?.nil?)
       return nil if https.nil? && http.nil?
       no = ENV["no_proxy"]? || ENV["NO_PROXY"]? || ""
       list = no.split(",").map(&:strip).reject(&:empty?)
@@ -1988,10 +1991,23 @@ module HTTP
     end
 
     # :nodoc:
-    def self.env_url(name: String) -> URI?
-      v = ENV[name]? || ENV[name.upcase]?
+    WARNED = Atom.new(false)
+
+    # :nodoc:
+    # The variable `name` (or, when `upper`, its upper-case name) as a
+    # proxy URL; nil when unset, empty or not a proxy URL.
+    def self.env_url(name: String, upper: Bool) -> URI?
+      v = ENV[name]?
+      v = ENV[name.upcase]? if v.nil? && upper
       return nil if v.nil? || v.empty?
-      parse_env(v)
+      begin
+        parse_env(v)
+      rescue ArgumentError => e
+        if WARNED.compare_and_set(false, true)
+          STDERR.puts "HTTP::Proxy.from_env: #{name} ignored: #{e.message}"
+        end
+        nil
+      end
     end
 
     # :nodoc:
@@ -2170,16 +2186,6 @@ module HTTP
       def body -> Bytes? = @body
     end
 
-    # :nodoc:
-    # A server-side reading error as the client's.
-    def self.error_for(e: HTTP::Error) -> Error
-      case e.status
-      when 408 then TimeoutError.new("read timed out")
-      when 413 then ResponseTooLarge.new("the response body is larger than max_body_bytes")
-      when 431 then ProtocolError.new("the response's headers are larger than max_header_bytes")
-      else ProtocolError.new(e.message)
-      end
-    end
 
     # A request: a value, so that a program (or a cog signing requests)
     # can build it, change it with `#header` and `with`, and send it with
@@ -2628,7 +2634,7 @@ module HTTP
       rescue Task::Timeout
         raise TimeoutError.new("writing the request took longer than #{@write_timeout}")
       rescue HTTP::Error => e
-        raise Client.error_for(e)
+        raise HTTP.client_error(e)
       ensure
         # Whatever went wrong (a cancellation, a Stream procedure that
         # raised), the connection is not left open.
@@ -2803,7 +2809,7 @@ module HTTP
         via = proxy_url ? " through the proxy #{Client.host_header(proxy_url)}" : ""
         raise ConnectError.new("cannot connect to #{Client.host_header(url)}#{via}: #{e.message}")
       rescue HTTP::Error => e
-        raise ConnectError.new("the proxy's answer: #{Client.error_for(e).message}")
+        raise ConnectError.new("the proxy's answer: #{HTTP.client_error(e).message}")
       end
     end
 
@@ -2887,6 +2893,20 @@ module HTTP
           return nil
         end
       end
+    end
+  end
+
+  # :nodoc:
+  # A reading error (as the server raises it) as the client's. A module
+  # function, not one of `Client`'s: the server's `Body` calls it, and
+  # naming `Client` there would keep the client's methods in every server
+  # program.
+  def self.client_error(e: Error) -> Client::Error
+    case e.status
+    when 408 then Client::TimeoutError.new("read timed out")
+    when 413 then Client::ResponseTooLarge.new("the response body is larger than max_body_bytes")
+    when 431 then Client::ProtocolError.new("the response's headers are larger than max_header_bytes")
+    else Client::ProtocolError.new(e.message)
     end
   end
 

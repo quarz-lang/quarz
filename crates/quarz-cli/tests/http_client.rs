@@ -12,7 +12,8 @@ fn program(name: &str) -> PathBuf {
         .join(name)
 }
 
-const PROXY_VARS: [&str; 6] = [
+const PROXY_VARS: [&str; 7] = [
+    "REQUEST_METHOD",
     "https_proxy",
     "HTTPS_PROXY",
     "http_proxy",
@@ -21,8 +22,9 @@ const PROXY_VARS: [&str; 6] = [
     "NO_PROXY",
 ];
 
-/// What `proxy_env.qz` prints with `vars` as the only proxy variables.
-fn from_env(vars: &[(&str, &str)]) -> String {
+/// What `proxy_env.qz` prints (and its STDERR) with `vars` as the only
+/// proxy variables.
+fn from_env_err(vars: &[(&str, &str)]) -> (String, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_quarz"));
     cmd.arg("run").arg(program("proxy_env.qz"));
     for v in PROXY_VARS {
@@ -37,7 +39,14 @@ fn from_env(vars: &[(&str, &str)]) -> String {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    String::from_utf8(out.stdout).unwrap()
+    (
+        String::from_utf8(out.stdout).unwrap(),
+        String::from_utf8(out.stderr).unwrap(),
+    )
+}
+
+fn from_env(vars: &[(&str, &str)]) -> String {
+    from_env_err(vars).0
 }
 
 #[test]
@@ -67,6 +76,27 @@ fn proxy_from_env() {
          http://example.com/ -> direct\n\
          https://api.internal/ -> direct\n\
          http://localhost:8080/ -> direct\n"
+    );
+    // httpoxy: HTTP_PROXY is ignored in a CGI program; http_proxy is not.
+    assert_eq!(
+        from_env(&[("HTTP_PROXY", "http://p:8080"), ("REQUEST_METHOD", "GET")]),
+        "nil\n"
+    );
+    // A proxy that is not http: ignored, with one warning.
+    let (out, err) = from_env_err(&[
+        ("https_proxy", "socks5://p:1080"),
+        ("http_proxy", "https://p:443"),
+    ]);
+    assert_eq!(out, "nil\n");
+    assert_eq!(err.lines().count(), 1, "{err}");
+    assert!(err.contains("https_proxy ignored"), "{err}");
+    assert_eq!(
+        from_env(&[("http_proxy", "http://p:8080"), ("REQUEST_METHOD", "GET")]),
+        "[nil, \"http://p:8080\", []]\n\
+         https://example.com/ -> direct\n\
+         http://example.com/ -> http://p:8080\n\
+         https://api.internal/ -> direct\n\
+         http://localhost:8080/ -> http://p:8080\n"
     );
     assert_eq!(
         from_env(&[("http_proxy", "http://p:8080")]),
