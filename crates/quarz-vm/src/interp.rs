@@ -1904,14 +1904,29 @@ impl Interp {
         fd: std::os::fd::RawFd,
         writable: bool,
     ) -> Result<(), Flow> {
+        self.wait_io_held(st, st.borrow_mut(), fd, writable)
+    }
+
+    /// `wait_io` for a caller holding the state's lock (`held`), which
+    /// found nothing to take: the wait is registered before the lock is
+    /// released, so that another task that takes the lock next and
+    /// leaves bytes in the buffer finds this one among the waiters and
+    /// wakes it (a wake that comes before the park is not lost: another
+    /// worker's is posted and delivered once this worker suspends the
+    /// task, and this worker runs nothing else before it).
+    pub fn wait_io_held<T: Watched>(
+        &self,
+        st: &IoCell<T>,
+        mut held: crate::value::IoGuard<'_, T>,
+        fd: std::os::fd::RawFd,
+        writable: bool,
+    ) -> Result<(), Flow> {
         let me = self.sched.borrow().current_ref();
-        let serial = {
-            let mut s = st.borrow_mut();
-            let w = s.watch();
-            w.waiters.push(me);
-            w.serial
-        };
+        let w = held.watch();
+        w.waiters.push(me);
+        let serial = w.serial;
         self.sched.borrow_mut().wait_fd(fd, serial, writable, me.id);
+        drop(held);
         let r = self.park();
         self.sched.borrow_mut().unwait_fd(fd, me.id);
         st.borrow_mut().watch().waiters.retain(|t| *t != me);

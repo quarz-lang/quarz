@@ -130,6 +130,11 @@ fn http_server_across_workers() {
 }
 
 #[test]
+fn readers_sharing_a_socket_wake_each_other() {
+    prints_its_out("shared_readers.qz");
+}
+
+#[test]
 fn exit_in_a_task_on_another_worker() {
     check_runs("exit.qz", |out, what| {
         assert_eq!(out.status.code(), Some(7), "{what}");

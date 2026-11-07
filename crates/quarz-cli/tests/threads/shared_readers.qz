@@ -1,0 +1,59 @@
+# Two tasks read lines from one socket while the peer writes many lines
+# in few writes (#345): every line is read once, by one of them, and no
+# reader stays parked with its line in the buffer. The peer ends with
+# one "end" line per reader and closes only after both returned (a
+# close would wake a parked reader and hide a lost wake). Each round is
+# bounded, so a lost wake fails instead of hanging.
+require "socket"
+
+ROUNDS = 200
+LINES = 40
+
+server = TCPServer.new("127.0.0.1", 0)
+port = server.local_address.port
+hung = 0
+wrong = 0
+total = 0
+ROUNDS.times do |round: Int|
+  client = TCPSocket.new("127.0.0.1", port)
+  conn = server.accept
+  readers = 2.times.map do |k: Int|
+    Task.spawn do
+      got: Array[String] = []
+      # One reader waits with wait_readable first on odd rounds.
+      while true
+        conn.wait_readable if k == 1 && round.odd?
+        line = conn.gets
+        break if line == "end\n"
+        got = got.push(line)
+      end
+      got
+    end
+  end
+  writer = Task.spawn do
+    # Lines in batches of 1 to 7 per write.
+    i = 0
+    while i < LINES
+      n = 1 + (i + round) % 7
+      n = LINES - i if n > LINES - i
+      batch = (i...(i + n)).map { |j| "#{j}\n" }.join
+      i += n
+      batch += "end\nend\n" if i == LINES
+      client.write(batch)
+    end
+  end
+  begin
+    Task.timeout(10.seconds) do
+      writer.await
+      lines = readers.flat_map(&:await)
+      total += lines.size
+      wrong += 1 unless lines.map(&:to_i).sort == (0...LINES).to_a
+    end
+  rescue Task::Timeout
+    hung += 1
+  end
+  conn.close
+  client.close
+end
+server.close
+p [:rounds, ROUNDS, :lines, total, :wrong, wrong, :hung, hung]

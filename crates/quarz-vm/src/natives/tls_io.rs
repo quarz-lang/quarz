@@ -186,24 +186,32 @@ impl Readable for TlsState {
         let Some(fd) = self.sock.stream.as_ref().map(|s| s.fd()) else {
             return Fill::Closed;
         };
-        // The plaintext the session holds first.
-        match self.session.read_plain(chunk) {
-            Ok(0) => {
-                self.sock.eof = true;
-                return Fill::More;
+        // The plaintext the session holds first, all of it: what a reader
+        // leaves must be in `plain`, where the other readers look (and
+        // which tells whether to wake them, `net::leftover_waiters`).
+        let mut got = false;
+        loop {
+            match self.session.read_plain(chunk) {
+                Ok(0) => {
+                    self.sock.eof = true;
+                    return Fill::More;
+                }
+                Ok(n) => {
+                    self.plain.extend_from_slice(&chunk[..n]);
+                    got = true;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                // The peer closed without close_notify: the end, as for a
+                // socket (`strict_close` would make it an error).
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    self.sock.eof = true;
+                    return Fill::More;
+                }
+                Err(e) => return Fill::Failed(StreamError::Os(e, "read")),
             }
-            Ok(n) => {
-                self.plain.extend_from_slice(&chunk[..n]);
-                return Fill::More;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-            // The peer closed without close_notify: the end, as for a
-            // socket (`strict_close` would make it an error).
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                self.sock.eof = true;
-                return Fill::More;
-            }
-            Err(e) => return Fill::Failed(StreamError::Os(e, "read")),
+        }
+        if got {
+            return Fill::More;
         }
         match self.receive() {
             Ok(Some(_)) => Fill::More,

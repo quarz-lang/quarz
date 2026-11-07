@@ -734,6 +734,11 @@ impl Readable for SocketState {
 /// more when it cannot, happen under the state's lock, released only to
 /// wait for the descriptor: with tasks on several threads, a read call
 /// takes a whole unit (a line, all of the rest) however they interleave.
+///
+/// Tasks sharing the stream wake each other: one that finds nothing
+/// registers its wait before releasing the lock, and one that leaves
+/// bytes in the buffer (or has seen the end) wakes the waiters, since
+/// the descriptor, drained, tells them nothing more (#345).
 fn read_with<S: Readable, R>(
     interp: &Interp,
     st: &IoCell<S>,
@@ -741,28 +746,64 @@ fn read_with<S: Readable, R>(
 ) -> Result<R, Flow> {
     let mut chunk = [0u8; 8192];
     loop {
-        let fd = {
-            let mut s = st.borrow_mut();
-            loop {
-                let (buf, ended) = s.buffer();
-                if let Some(r) = take(buf, ended) {
-                    return Ok(r);
+        let mut s = st.borrow_mut();
+        // Whether this call read into the buffer (or saw the end).
+        let mut filled = false;
+        let fd = loop {
+            let (buf, ended) = s.buffer();
+            if let Some(r) = take(buf, ended) {
+                let others = leftover_waiters(&mut *s);
+                drop(s);
+                wake_all(interp, others);
+                return Ok(r);
+            }
+            match s.fill(&mut chunk) {
+                Fill::More => filled = true,
+                Fill::Wait(fd) => break fd,
+                Fill::Closed => {
+                    drop(s);
+                    return Err(closed_stream(interp));
                 }
-                match s.fill(&mut chunk) {
-                    Fill::More => {}
-                    Fill::Wait(fd) => break fd,
-                    Fill::Closed => {
-                        drop(s);
-                        return Err(closed_stream(interp));
-                    }
-                    Fill::Failed(e) => {
-                        drop(s);
-                        return Err(stream_error(interp, e));
-                    }
+                Fill::Failed(e) => {
+                    drop(s);
+                    return Err(stream_error(interp, e));
                 }
             }
         };
-        interp.wait_io(st, fd, false)?;
+        // What this call read and could not take (half a line) may be
+        // what another waiter wants (any byte, for `readpartial` or
+        // `wait_readable`): it is woken before this one parks. (Waking
+        // under the state's lock is safe: it touches only the
+        // scheduler and the other workers' inboxes.) Only when this
+        // call read something, so that two readers of half a line do
+        // not wake each other in turn.
+        if filled {
+            let others = leftover_waiters(&mut *s);
+            wake_all(interp, others);
+        }
+        interp.wait_io_held(st, s, fd, false)?;
+    }
+}
+
+/// The tasks waiting on the stream, when there is something for them:
+/// bytes left in the buffer, or the end of the stream (which the
+/// descriptor will not report again). Taken under the state's lock;
+/// woken (`wake_all`) once it is released.
+fn leftover_waiters<S: Readable>(s: &mut S) -> Vec<crate::sched::TaskRef> {
+    let (buf, ended) = s.buffer();
+    if buf.is_empty() && !ended {
+        return Vec::new();
+    }
+    s.watch().waiters.clone()
+}
+
+fn wake_all(interp: &Interp, tasks: Vec<crate::sched::TaskRef>) {
+    if tasks.is_empty() {
+        return;
+    }
+    let mut sched = interp.sched.borrow_mut();
+    for t in tasks {
+        sched.wake_ref(t);
     }
 }
 
@@ -832,32 +873,43 @@ pub(crate) fn socket_wait_readable<S: Readable>(
     let mut chunk = [0u8; 8192];
     let mut timer = None;
     let r = loop {
-        let fd = {
-            let mut s = st.borrow_mut();
-            loop {
-                let (buf, ended) = s.buffer();
-                if !buf.is_empty() || ended {
-                    break None;
-                }
-                match s.fill(&mut chunk) {
-                    Fill::More => {}
-                    Fill::Wait(fd) => break Some(Ok(fd)),
-                    Fill::Closed => break Some(Err(None)),
-                    Fill::Failed(e) => break Some(Err(Some(e))),
-                }
+        let mut s = st.borrow_mut();
+        let fd = loop {
+            let (buf, ended) = s.buffer();
+            if !buf.is_empty() || ended {
+                break None;
+            }
+            match s.fill(&mut chunk) {
+                Fill::More => {}
+                Fill::Wait(fd) => break Some(Ok(fd)),
+                Fill::Closed => break Some(Err(None)),
+                Fill::Failed(e) => break Some(Err(Some(e))),
             }
         };
         let fd = match fd {
-            None => break Ok(true),
+            None => {
+                // What it read is there for the other readers too.
+                let others = leftover_waiters(&mut *s);
+                drop(s);
+                wake_all(interp, others);
+                break Ok(true);
+            }
             Some(Ok(fd)) => fd,
-            Some(Err(None)) => break Err(closed_stream(interp)),
-            Some(Err(Some(e))) => break Err(stream_error(interp, e)),
+            Some(Err(None)) => {
+                drop(s);
+                break Err(closed_stream(interp));
+            }
+            Some(Err(Some(e))) => {
+                drop(s);
+                break Err(stream_error(interp, e));
+            }
         };
         if let Some(d) = deadline {
             // (The timer fired, or the deadline passed: either ends the
             // wait; testing only `now()` races with a timer that fired.)
             let fired = timer.is_some_and(|t| !interp.sched.borrow().timer_pending(t));
             if fired || std::time::Instant::now() >= d {
+                drop(s);
                 break Ok(false);
             }
             if timer.is_none() {
@@ -865,7 +917,7 @@ pub(crate) fn socket_wait_readable<S: Readable>(
                 timer = Some(interp.sched.borrow_mut().add_timer_at(d, me.id));
             }
         }
-        if let Err(e) = interp.wait_io(st, fd, false) {
+        if let Err(e) = interp.wait_io_held(st, s, fd, false) {
             break Err(e);
         }
     };
