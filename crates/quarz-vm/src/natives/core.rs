@@ -176,7 +176,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Meta::ClassDef#class_method_ref", |i, r, a| {
         method_ref(i, r, &a, true)
     });
-    // Statement values and class-end hooks (docs/14 §3).
+    // Statement values and class-end hooks (docs/14 §5).
     native!(m, "Meta::ClassDef#statement_values", |i, r, a| {
         let class = reflected_class(i, r)?;
         let Value::Symbol(key) = a.arg(0) else {

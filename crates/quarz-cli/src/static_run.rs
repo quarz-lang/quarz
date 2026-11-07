@@ -101,12 +101,12 @@ pub struct Runner {
     /// earlier inputs (`continuing`).
     keep_consts: usize,
     /// The statement values and class-end hooks the statements of the
-    /// classes not ended yet registered (docs/14 §3).
+    /// classes not ended yet registered (docs/14 §5).
     ends: Rc<RefCell<ClassEnds>>,
 }
 
 /// What the statements of the classes whose bodies have not ended yet
-/// keep for their end (docs/14 §3): live values, kept across the runs
+/// keep for their end (docs/14 §5): live values, kept across the runs
 /// (the interpreter's state is shared, `SharedState`).
 #[derive(Default)]
 struct ClassEnds {

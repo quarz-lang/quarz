@@ -911,12 +911,22 @@ fn class_end_hooks_combine_a_bodys_statements() {
     write(
         &d.0,
         "box.qz",
-        "class Box\n  @n: Int = 0\nend\nclass Gen\n  static def self.boxes -> Void\n    statement_values[Box](:boxes)\n  end\nend\n",
+        "class Box\n  @n: Int = 0\nend\nclass Gen\n  static def self.boxes -> Void\n    statement_values[Box](:boxes)\n  end\n  static def self.inferred -> Void\n    statement_values(:any)\n  end\n  static def self.generic[X](v: X) -> Void\n    statement_values[X](:vals).add(v)\n  end\nend\n",
     );
     let (ok, _, err) = quarz(&d.0, &["check", "box.qz"], &[]);
     assert!(!ok);
     assert!(
         err.contains("box.qz:6:5: error: statement values of type Box cannot be kept: their values must be bakeable"),
+        "{err}"
+    );
+    // Written, and concrete: a generic `static def`'s instantiations would
+    // put values of different types under one key.
+    assert!(
+        err.contains("box.qz:9:5: error: `statement_values` takes the values' type explicitly"),
+        "{err}"
+    );
+    assert!(
+        err.contains("box.qz:12:5: error: statement values of type X cannot be kept: their type must be a concrete one, not a type parameter"),
         "{err}"
     );
 }

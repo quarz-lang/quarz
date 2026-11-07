@@ -11811,6 +11811,56 @@ impl Checker {
         Type::Nothing
     }
 
+    /// `statement_values[U]`'s `U` (docs/14 §5): written, concrete (no
+    /// type parameter, which would let one key hold the values of
+    /// different instantiations of a generic `static def`), and bakeable
+    /// (the values are what later statements and the class-end hooks read,
+    /// and what they generate from).
+    fn check_statement_values_type(
+        &mut self,
+        expr: &Expr,
+        call: &Call,
+        m: &MethodInfo,
+        args: &[(TypeParamId, Type)],
+    ) {
+        if call.type_args.is_empty() {
+            self.error(
+                "`statement_values` takes the values' type explicitly (`statement_values[Plug](:plugs)`): a key has one type, written where it is named",
+                expr.span,
+            );
+            return;
+        }
+        let u_param = m.type_params.first().map(|p| p.id);
+        let Some((_, u)) = args.iter().find(|(p, _)| Some(*p) == u_param) else {
+            return;
+        };
+        let u = self.resolve(u);
+        if u.has_vars() || u.mentions_any_param() {
+            self.error(
+                format!(
+                    "statement values of type {} cannot be kept: their type must be a concrete one, not a type parameter (a generic `static def`'s calls would put values of different types under one key)",
+                    self.world.type_name(&u)
+                ),
+                expr.span,
+            );
+            return;
+        }
+        if let Some(why) = self.bake_refusal(&u) {
+            let why = if why.is_empty() {
+                String::new()
+            } else {
+                format!(" ({why})")
+            };
+            self.error(
+                format!(
+                    "statement values of type {} cannot be kept: their values must be bakeable{why} (literals, classes, `data` of Shareable fields, arrays and hashes of them)",
+                    self.world.type_name(&u)
+                ),
+                expr.span,
+            );
+        }
+    }
+
     /// What a call that a method was chosen for gives.
     fn finish_call(&mut self, expr: &Expr, call: &Call, m: &MethodInfo, ret: Type) -> Type {
         self.out
@@ -11900,28 +11950,9 @@ impl Checker {
                     // `statement_values[U]`'s values are what later
                     // statements and the class-end hooks read, and what
                     // they generate from: `U` is a type whose values can be
-                    // baked (docs/14 §3).
+                    // baked (docs/14 §5).
                     if m.owner == self.world.builtin.meta_classdef && m.name == "statement_values" {
-                        let u_param = m.type_params.first().map(|p| p.id);
-                        if let Some((_, u)) = args.iter().find(|(p, _)| Some(*p) == u_param) {
-                            let u = self.resolve(u);
-                            if !u.has_vars() {
-                                if let Some(why) = self.bake_refusal(&u) {
-                                    let why = if why.is_empty() {
-                                        String::new()
-                                    } else {
-                                        format!(" ({why})")
-                                    };
-                                    self.error(
-                                        format!(
-                                            "statement values of type {} cannot be kept: their values must be bakeable{why} (literals, classes, `data` of Shareable fields, arrays and hashes of them)",
-                                            self.world.type_name(&u)
-                                        ),
-                                        expr.span,
-                                    );
-                                }
-                            }
-                        }
+                        self.check_statement_values_type(expr, call, m, &args);
                     }
                     self.out.type_args.insert(expr.id, args);
                 } else {

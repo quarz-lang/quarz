@@ -69,7 +69,7 @@ pub trait Reflect {
     /// ancestor's) have not all run, whose members the value would see
     /// otherwise than the program's (docs/14 §8).
     fn reflect_refusal(&self, class: ClassId) -> Option<String>;
-    /// `Meta::ClassDef#statement_values` (docs/14 §3) at the call node
+    /// `Meta::ClassDef#statement_values` (docs/14 §5) at the call node
     /// `site`: why the key cannot be named so, if it cannot (another
     /// type than it was made with, or from a class-end hook).
     fn statement_values(&self, class: ClassId, key: &str, site: i64) -> Result<(), String>;

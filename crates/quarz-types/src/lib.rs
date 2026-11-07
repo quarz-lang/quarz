@@ -710,7 +710,7 @@ pub trait StaticRunner {
         })
     }
     /// The class of `last`, its last statement, has run every statement:
-    /// run the hooks they registered (`at_class_end`, docs/14 §3).
+    /// run the hooks they registered (`at_class_end`, docs/14 §5).
     fn class_end(
         &mut self,
         _host: &mut dyn StaticHost,

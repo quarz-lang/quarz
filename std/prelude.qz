@@ -250,8 +250,8 @@ module Meta
     # The values the class body's statements add under `key` (docs/14
     # §3), in statement order: the same collection whenever this class
     # and key are named, typed once (a key named with another `U` than it
-    # was first is an error at the statement), `U` a type whose values can
-    # be baked. Later statements of the body read what earlier ones added,
+    # was first is an error at the statement), `U` written, concrete (no
+    # type parameter) and a type whose values can be baked. Later statements of the body read what earlier ones added,
     # and so do the hooks of `at_class_end`; nothing of them is in the
     # compiled program but what the hooks generate from them.
     static native def statement_values[U](key: Symbol) -> StatementValues[U]
@@ -269,7 +269,7 @@ module Meta
   end
 
   # The values a class body's statements added under one key
-  # (`ClassDef#statement_values`, docs/14 §3), at compile time only.
+  # (`ClassDef#statement_values`, docs/14 §5), at compile time only.
   class StatementValues[T]
     # (Set by the native that makes it.)
     @owner: Type[Object] = Object
