@@ -98,8 +98,8 @@ pub struct Lowerer {
     ),
     /// In a static round: the classes whose `static` statements have not
     /// all run (and their descendants). A reach by one of the names the
-    /// runtime calls everywhere (`shake::RUNTIME_NAMES`: `to_s`,
-    /// `initialize`, `hash`...) leaves their methods out: their bodies
+    /// runtime calls by (`shake::RUNTIME_NAMES`: `to_s`, `initialize`,
+    /// `hash`...) leaves their methods out: their bodies
     /// may use members not generated yet. A call that resolves to one,
     /// or a reach by another name, still gets it.
     pub static_skip: HashSet<ClassId>,
@@ -185,6 +185,10 @@ struct StaticWalk {
     /// receivers (`None`: any), whose overrides were reached.
     targets: HashSet<(MethodId, Option<Box<[ClassId]>>)>,
     names: HashSet<String>,
+    /// The names the runtime calls by for what was walked (`walk_runtime`),
+    /// and those to walk: the natives reached call them.
+    runtime: HashSet<&'static str>,
+    runtime_todo: Vec<&'static str>,
     /// Functions walked or to walk, by id.
     funcs: Vec<bool>,
     todo: Vec<FuncId>,
@@ -209,6 +213,8 @@ struct WalkRefs {
     methods: Vec<MethodId>,
     /// Names called by name (sorted, once each).
     names: Vec<String>,
+    /// Names the runtime calls by for an instruction (sorted, once each).
+    runtime: Vec<&'static str>,
     consts: Vec<ConstId>,
     /// Blocks' functions, and inlined ones.
     funcs: Vec<FuncId>,
@@ -716,14 +722,14 @@ impl Lowerer {
                 method, classes, ..
             } => r.targets.push((method, classes.map(Into::into))),
             quarz_ir::shake::Ref::Exact { method, .. } => r.methods.push(method),
-            quarz_ir::shake::Ref::Name(n) | quarz_ir::shake::Ref::Runtime(n) => {
-                r.names.push(n.to_string())
-            }
+            quarz_ir::shake::Ref::Name(n) => r.names.push(n.to_string()),
+            quarz_ir::shake::Ref::Runtime(n) => r.runtime.push(n),
+            // (The `initialize`s and `deinitialize`s of the classes it
+            // may build: `builds_of`.)
             quarz_ir::shake::Ref::Construct { class, init, recv } => {
                 if let Some(m) = init {
                     r.methods.push(m);
                 }
-                r.names.push("initialize".to_string());
                 r.builds.push((class, recv));
             }
             quarz_ir::shake::Ref::Const(c) => r.consts.push(c),
@@ -732,6 +738,8 @@ impl Lowerer {
         });
         r.names.sort_unstable();
         r.names.dedup();
+        r.runtime.sort_unstable();
+        r.runtime.dedup();
         let r = std::rc::Rc::new(r);
         if self.walk_refs.len() <= fid as usize {
             self.walk_refs.resize(fid as usize + 1, None);
@@ -743,8 +751,10 @@ impl Lowerer {
     /// For a construction of `class` (`recv`: on a class method's
     /// receiver, so of a subclass too), in this round: the `initialize`
     /// methods it may run by id (a receiver's class decides; by name they
-    /// are left out for the classes whose statements are still to run)
-    /// and the field defaults of the classes it may make.
+    /// are left out for the classes whose statements are still to run),
+    /// the `deinitialize`s of the classes it may make and their
+    /// ancestors (run when the object is released), and the field
+    /// defaults of the classes it may make.
     #[allow(clippy::type_complexity)]
     fn builds_of(
         &self,
@@ -764,6 +774,11 @@ impl Lowerer {
             }
             if recv {
                 if let Some(ids) = c.methods.get("initialize") {
+                    inits.extend(ids.iter().copied());
+                }
+            }
+            for a in world.ancestor_ids(c.id) {
+                if let Some(ids) = world.class(a).methods.get("deinitialize") {
                     inits.extend(ids.iter().copied());
                 }
             }
@@ -923,10 +938,31 @@ impl Lowerer {
                 w
             }
             _ => {
+                // No seed of the names the runtime calls by
+                // (`shake::RUNTIME_NAMES`, which compiled programs keep):
+                // the walk reaches those it calls for what it walks, as
+                // the runner's `bad_reach` counts them (docs/14 §7; #387).
+                // Every by-name call the runtime makes has such a source
+                // (the audit on #387, of quarz-vm and quarz-aot):
+                //
+                //   name               from
+                //   to_s, inspect      Interpolate, NoMatch; natives
+                //                      (printing, `format`, `join`...)
+                //   ==, hash           Equal, CaseEq, MakeHash; natives
+                //   <=>                CaseEq; natives (sorts, `clamp`...)
+                //   !=, + - * / % < <= > >=
+                //                      a `BinOp` without a method (by name)
+                //   <<                 Interpolate into a non-builder
+                //   each, next, rewind, status, to_json, each_slice,
+                //   each_cons, each_char, each_with_index_pairs, times,
+                //   upto, downto, step
+                //                      natives (`shake::NATIVE_NAMES`)
+                //   initialize         a construction (`builds_of`), a
+                //                      data type's `with` (`walk_method`)
+                //   deinitialize       a construction (`builds_of`)
+                //   ===, eql?, succ, message, call
+                //                      nothing calls them by name
                 let mut w = StaticWalk::default();
-                for n in quarz_ir::shake::RUNTIME_NAMES {
-                    self.walk_name(world, n, &by_name, &mut w);
-                }
                 self.walk_target(world, callee, None, &by_name, &mut w);
                 self.walk_func(stmt_func, &mut w);
                 w
@@ -1014,8 +1050,24 @@ impl Lowerer {
         }
         walk.methods[i] = true;
         self.reached[mid as usize] = true;
-        if let Some(orig) = world.methods[mid as usize].alias_of {
+        let m = &world.methods[mid as usize];
+        if let Some(orig) = m.alias_of {
             self.walk_method(world, orig, walk);
+        }
+        // What the runtime runs for it: a native's calls by name on the
+        // values it is given (`shake::native_calls`), a data type's
+        // `with` the type's `initialize`s (`Interp`'s `DataWith`).
+        if m.is_native {
+            let calls = quarz_ir::shake::native_calls(&m.native_key(world));
+            walk.runtime_todo.extend_from_slice(calls);
+        }
+        if m.synth == quarz_types::Synth::DataWith {
+            let owner = m.owner;
+            if let Some(ids) = world.class(owner).methods.get("initialize") {
+                for &init in ids.clone().iter() {
+                    self.walk_method(world, init, walk);
+                }
+            }
         }
         match self.method_funcs[mid as usize] {
             Some(f) => self.walk_func(f, walk),
@@ -1124,6 +1176,31 @@ impl Lowerer {
         }
     }
 
+    /// In a static round, the runtime calls a method named `name` on a
+    /// value it was given (for an instruction or a native reached): the
+    /// methods of the name (`walk_name`), and what a native among them
+    /// calls by name in turn (`shake::calls_for`), as the runner's
+    /// `bad_reach` counts them.
+    fn walk_runtime(
+        &mut self,
+        world: &World,
+        name: &'static str,
+        by_name: &HashMap<&str, Vec<MethodId>>,
+        walk: &mut StaticWalk,
+    ) {
+        if !walk.runtime.insert(name) {
+            return;
+        }
+        self.walk_name(world, name, by_name, walk);
+        if by_name
+            .get(name)
+            .is_some_and(|ms| ms.iter().any(|&m| world.methods[m as usize].is_native))
+        {
+            walk.runtime_todo
+                .extend_from_slice(quarz_ir::shake::calls_for(name));
+        }
+    }
+
     /// In a static round, function `fid` (lowered in this round or an
     /// earlier one) may run: its references are followed.
     fn walk_func(&mut self, fid: FuncId, walk: &mut StaticWalk) {
@@ -1189,9 +1266,16 @@ impl Lowerer {
                 for n in refs.names.iter() {
                     self.walk_name(world, n, by_name, walk);
                 }
+                for &n in refs.runtime.iter() {
+                    self.walk_runtime(world, n, by_name, walk);
+                }
                 for &c in refs.consts.iter() {
                     self.walk_const(world, out, c, walk);
                 }
+                continue;
+            }
+            if let Some(n) = walk.runtime_todo.pop() {
+                self.walk_runtime(world, n, by_name, walk);
                 continue;
             }
             let Some(mid) = walk.lower.pop() else {

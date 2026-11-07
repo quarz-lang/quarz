@@ -1231,11 +1231,13 @@ impl Runner {
                 return found;
             }
             for (m, b) in methods {
-                if self.bad_methods.contains_key(&m) {
-                    return Some(Ok(m));
-                }
-                if let Some(f) = world.methods[m as usize].func {
-                    work.push((f, b));
+                for &m in std::iter::once(&m).chain(synth_calls(world, m)) {
+                    if self.bad_methods.contains_key(&m) {
+                        return Some(Ok(m));
+                    }
+                    if let Some(f) = world.methods[m as usize].func {
+                        work.push((f, b.clone()));
+                    }
                 }
             }
         }
@@ -1273,14 +1275,22 @@ impl Runner {
                 },
                 false,
             );
-            for (m, b) in methods {
+            // (In order: a stack, as is `work`.)
+            let mut methods: Vec<(MethodId, SelfBound, Vec<String>)> = methods
+                .into_iter()
+                .rev()
+                .map(|(m, b)| (m, b, path.clone()))
+                .collect();
+            while let Some((m, b, mut p)) = methods.pop() {
                 let rm = &world.methods[m as usize];
-                let mut p = path.clone();
                 p.push(method_name(world, m));
                 if let Some(key) = &rm.native_key {
                     if !compile_time_allowed(key) {
                         return Some(p);
                     }
+                }
+                for &i in synth_calls(world, m) {
+                    methods.push((i, None, p.clone()));
                 }
                 if let Some(f) = rm.func {
                     work.push((f, b, p));
@@ -1467,7 +1477,7 @@ fn reached<'a>(
             continue;
         }
         let names = match by {
-            Some(n) => calls_for(n),
+            Some(n) => shake::calls_for(n),
             None => native_calls(world, m),
         };
         for n in names {
@@ -1496,93 +1506,29 @@ fn func_bound(
     }
 }
 
-/// What a native the runtime calls by `name` calls by name in turn: the
-/// printing ones each other's (`Object#to_s` of an array is its
-/// elements' `inspect`), `==` and `hash` each other's (a key's), `<=>`
-/// itself; the other names, all.
-fn calls_for(name: &str) -> &'static [&'static str] {
-    match name {
-        "to_s" | "inspect" | "<<" => &["to_s", "inspect"],
-        "==" | "hash" => &["==", "hash"],
-        "<=>" => &["<=>"],
-        _ => NATIVE_NAMES,
+/// The methods synthesized method `m` runs: a data type's `with`, the
+/// type's `initialize`s (the one taking the fields builds the copy,
+/// `Interp`'s `RtSynth::DataWith`); none for another.
+fn synth_calls(world: &RtWorld, m: MethodId) -> &[MethodId] {
+    let rm = &world.methods[m as usize];
+    match rm.synth {
+        quarz_ir::RtSynth::DataWith => world.classes[rm.owner as usize]
+            .methods
+            .get("initialize")
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]),
+        _ => &[],
     }
 }
 
-/// The names of the methods native `m` may call by name on the values
-/// it is given (`Interp::to_s`, `inspect`, `values_equal`, `compare`,
-/// the keys' `==` and `hash`, enumerators): none for a method that is no
-/// native, or a native of a class whose methods take only built-in
-/// values (an `Int`'s, `Math`'s), the printing ones for `Kernel`'s
-/// printing functions, and every name a native calls by
-/// (`NATIVE_NAMES`) for the others, which are not told apart.
+/// The names native `m` may call by name on the values it is given
+/// (`shake::native_calls`): none for a method that is no native.
 fn native_calls(world: &RtWorld, m: MethodId) -> &'static [&'static str] {
-    let Some(key) = world.methods[m as usize].native_key.as_deref() else {
-        return &[];
-    };
-    let (class, name) = key
-        .split_once('#')
-        .or_else(|| key.split_once('.'))
-        .unwrap_or(("", key));
-    match (class, name) {
-        // (A string's `sub` and `gsub` with a block, and a builder's
-        // `<<`, make strings of what they are given.)
-        ("String", "sub" | "gsub" | "sub!" | "gsub!" | "%") | ("String::Builder", _) => {
-            &["to_s", "inspect"]
-        }
-        (
-            "Int" | "Float" | "Integer" | "Math" | "Duration" | "Time" | "Bytes" | "Regexp"
-            | "MatchData" | "Symbol" | "Bool" | "Nil" | "String" | "Type",
-            _,
-        ) => &[],
-        // (Compile-time natives: names and types, no values of a program's.)
-        (c, _) if c.starts_with("Meta::") => &[],
-        // An object's own: what it is for.
-        ("Object", "to_s" | "inspect") => &["to_s", "inspect"],
-        ("Object", "==" | "!=" | "hash") => &["==", "hash"],
-        ("Object", _) => &[],
-        // A collection's elements are printed, compared, hashed and
-        // ordered, not iterated by name (those taking a collection,
-        // `Set#merge`, iterate a built-in one).
-        (
-            "Array" | "Hash" | "Set" | "Range" | "Array::Builder" | "Hash::Builder"
-            | "Set::Builder",
-            _,
-        ) => &["to_s", "inspect", "==", "hash", "<=>"],
-        ("Kernel", "p" | "pp" | "puts" | "print" | "warn" | "format" | "sprintf") => {
-            &["to_s", "inspect"]
-        }
-        _ => NATIVE_NAMES,
+    match world.methods[m as usize].native_key.as_deref() {
+        Some(key) => shake::native_calls(key),
+        None => &[],
     }
 }
-
-/// The names natives call methods of the values they are given by: what
-/// `Interp::to_s`, `inspect`, `values_equal`, `compare` and the keys'
-/// `==` and `hash` (`crate::keys`) look up, and what `Interp::send` and
-/// `has_user_method` are given in the natives (an `Enumerable`'s `each`,
-/// `next` and `rewind`, `to_json`, and the methods enumerators made by
-/// natives call on their receiver). A native that calls another name
-/// must add it here (and to `shake::RUNTIME_NAMES`).
-const NATIVE_NAMES: &[&str] = &[
-    "to_s",
-    "inspect",
-    "==",
-    "hash",
-    "<=>",
-    "each",
-    "next",
-    "rewind",
-    "to_json",
-    "status",
-    "each_with_index_pairs",
-    "each_slice",
-    "each_cons",
-    "each_char",
-    "times",
-    "upto",
-    "downto",
-    "step",
-];
 
 /// The methods that override `m` in subclasses of its owner (same name,
 /// same side), which a call of `m` may run instead: with `bound`, on a

@@ -29,8 +29,7 @@ use crate::*;
 /// sorting, iteration, ranges, JSON, exceptions, construction, the
 /// enumerators natives build). A new by-name call in the runtime
 /// (`Interp::send`, `call_named`, `has_user_method`, an enumerator)
-/// must add its name here (and, for a native's, to quarz-cli's
-/// `static_run::NATIVE_NAMES`).
+/// must add its name here (and, for a native's, to `NATIVE_NAMES`).
 pub const RUNTIME_NAMES: &[&str] = &[
     "to_s",
     "inspect",
@@ -74,6 +73,92 @@ pub const RUNTIME_NAMES: &[&str] = &[
     ">",
     ">=",
 ];
+
+/// The names natives call methods of the values they are given by: what
+/// `Interp::to_s`, `inspect`, `values_equal`, `compare` and the keys'
+/// `==` and `hash` look up, and what `Interp::send` and
+/// `has_user_method` are given in the natives (an `Enumerable`'s `each`,
+/// `next` and `rewind`, `to_json`, and the methods enumerators made by
+/// natives call on their receiver). A native that calls another name
+/// must add it here (and to `RUNTIME_NAMES`).
+pub const NATIVE_NAMES: &[&str] = &[
+    "to_s",
+    "inspect",
+    "==",
+    "hash",
+    "<=>",
+    "each",
+    "next",
+    "rewind",
+    "to_json",
+    "status",
+    "each_with_index_pairs",
+    "each_slice",
+    "each_cons",
+    "each_char",
+    "times",
+    "upto",
+    "downto",
+    "step",
+];
+
+/// What a native the runtime calls by `name` calls by name in turn (what
+/// a run reaches, for the compile-time walks: the runner's `bad_reach`
+/// and a static round's lowering): the printing ones each other's
+/// (`Object#to_s` of an array is its elements' `inspect`), `==` and
+/// `hash` each other's (a key's), `<=>` itself; the other names, all.
+pub fn calls_for(name: &str) -> &'static [&'static str] {
+    match name {
+        "to_s" | "inspect" | "<<" => &["to_s", "inspect"],
+        "==" | "hash" => &["==", "hash"],
+        "<=>" => &["<=>"],
+        _ => NATIVE_NAMES,
+    }
+}
+
+/// The names the native registered as `key` (`Class#name` or
+/// `Class.name`) may call by name on the values it is given
+/// (`Interp::to_s`, `inspect`, `values_equal`, `compare`, the keys' `==`
+/// and `hash`, enumerators): none for a native of a class whose methods
+/// take only built-in values (an `Int`'s, `Math`'s), the printing ones
+/// for `Kernel`'s printing functions, and every name a native calls by
+/// (`NATIVE_NAMES`) for the others, which are not told apart.
+pub fn native_calls(key: &str) -> &'static [&'static str] {
+    let (class, name) = key
+        .split_once('#')
+        .or_else(|| key.split_once('.'))
+        .unwrap_or(("", key));
+    match (class, name) {
+        // (A string's `sub` and `gsub` with a block, and a builder's
+        // `<<`, make strings of what they are given.)
+        ("String", "sub" | "gsub" | "sub!" | "gsub!" | "%") | ("String::Builder", _) => {
+            &["to_s", "inspect"]
+        }
+        (
+            "Int" | "Float" | "Integer" | "Math" | "Duration" | "Time" | "Bytes" | "Regexp"
+            | "MatchData" | "Symbol" | "Bool" | "Nil" | "String" | "Type",
+            _,
+        ) => &[],
+        // (Compile-time natives: names and types, no values of a program's.)
+        (c, _) if c.starts_with("Meta::") => &[],
+        // An object's own: what it is for.
+        ("Object", "to_s" | "inspect") => &["to_s", "inspect"],
+        ("Object", "==" | "!=" | "hash") => &["==", "hash"],
+        ("Object", _) => &[],
+        // A collection's elements are printed, compared, hashed and
+        // ordered, not iterated by name (those taking a collection,
+        // `Set#merge`, iterate a built-in one).
+        (
+            "Array" | "Hash" | "Set" | "Range" | "Array::Builder" | "Hash::Builder"
+            | "Set::Builder",
+            _,
+        ) => &["to_s", "inspect", "==", "hash", "<=>"],
+        ("Kernel", "p" | "pp" | "puts" | "print" | "warn" | "format" | "sprintf") => {
+            &["to_s", "inspect"]
+        }
+        _ => NATIVE_NAMES,
+    }
+}
 
 struct Shake<'a> {
     module: &'a Module,
@@ -439,10 +524,16 @@ fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
                     visit(Ref::Runtime("inspect"));
                     visit(Ref::Runtime("<<"));
                 }
-                Inst::Equal { .. } if exact => visit(Ref::Runtime("==")),
+                // (`values_equal` of two hashes or sets looks their keys
+                // up: `hash` as well.)
+                Inst::Equal { .. } if exact => {
+                    visit(Ref::Runtime("=="));
+                    visit(Ref::Runtime("hash"));
+                }
                 // (`case_eq`: a range's bounds by `<=>`, else `==`.)
                 Inst::CaseEq { .. } if exact => {
                     visit(Ref::Runtime("=="));
+                    visit(Ref::Runtime("hash"));
                     visit(Ref::Runtime("<=>"));
                 }
                 Inst::MakeHash { .. } if exact => {
