@@ -130,6 +130,11 @@ fn http_server_across_workers() {
 }
 
 #[test]
+fn readers_sharing_a_socket_wake_each_other() {
+    prints_its_out("shared_readers.qz");
+}
+
+#[test]
 fn values_crossing_channels_and_selects_are_released_at_their_last_use() {
     prints_its_out("deinit_crossing.qz");
 }

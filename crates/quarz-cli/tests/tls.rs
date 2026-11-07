@@ -412,6 +412,30 @@ fn loopback() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// Two tasks reading one `TLSSocket` on four workers (#345): no reader
+/// stays parked with its line in the plaintext buffer.
+#[test]
+fn shared_readers() {
+    let path = program("shared_readers.qz");
+    let want = std::fs::read_to_string(path.with_extension("out")).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .arg("run")
+        .arg(&path)
+        .arg(certs_dir())
+        .env("QUARZ_THREADS", "4")
+        .output()
+        .expect("run quarz");
+    check(&out, &want, "shared_readers.qz on the VM");
+    let (tmp, exe) = compile(&path);
+    let out = Command::new(&exe)
+        .arg(certs_dir())
+        .env("QUARZ_THREADS", "4")
+        .output()
+        .unwrap();
+    check(&out, &want, "shared_readers.qz compiled");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// An HTTPS request on `tls`; the response's body.
 fn get(tls: &mut Client, target: &str, headers: &str) -> String {
     write!(
