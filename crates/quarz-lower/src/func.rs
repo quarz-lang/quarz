@@ -4271,6 +4271,9 @@ impl<'a> FnBuilder<'a> {
                 Some(dst)
             }
         };
+        // (Run on the frame's `self`: in a block with a receiver, the
+        // receiver, not the method's.)
+        let on_self = self.on_methods_self();
         let dst = self.reg();
         self.emit(Inst::Call {
             dst,
@@ -4283,7 +4286,7 @@ impl<'a> FnBuilder<'a> {
             block: a.block,
             moved: 0,
             recv_classes: None,
-            on_self: false,
+            on_self,
         });
         dst
     }

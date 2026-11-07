@@ -264,8 +264,8 @@ pub enum Ref<'a> {
     /// from `reach_refs` only.
     Runtime(&'static str),
     /// A method called as it is, never an override (`super`, a
-    /// function): from `reach_refs` only. `on_self`: a `super`, run on
-    /// the caller's `self`.
+    /// function): from `reach_refs` only. `on_self`: a `super` run on the
+    /// `self` of the method it is written in (`Inst::Call::on_self`).
     Exact {
         method: MethodId,
         on_self: bool,
@@ -345,7 +345,7 @@ fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
                 } => match kind {
                     CallKind::Super(m) if exact => visit(Ref::Exact {
                         method: *m,
-                        on_self: true,
+                        on_self: *on_self,
                     }),
                     CallKind::Function(m) if exact => visit(Ref::Exact {
                         method: *m,

@@ -591,6 +591,13 @@ fn a_class_typed_receiver_bounds_the_overrides_reached() {
             "",
             "B#label",
         ),
+        // A `super` in a block with a receiver runs on that receiver: its
+        // method is walked without the bound of `P#go`'s `self` (`P2`).
+        (
+            "static def self.gen -> Void\n    s = P2.new.go(P3.new)\n    def_class_method(:total) { s.size }\n  end\nend\nclass Q\n  def label -> String = \"q\"\n  def go(s: P) -> String = label\nend\nclass H\n  def with(s: P, &b: P.() -> String) -> String = s.instance_exec(&b)\nend\nclass P < Q\n  def go(s: P) -> String = H.new.with(s) { super(s) }\nend\nclass P2 < P\nend\nclass P3 < P\n  def label -> String = File.read(\"/etc/hostname\")",
+            "",
+            "P3#label",
+        ),
         // So does a block given to `instance_exec` with keywords.
         (
             "static def self.gen -> Void\n    s = Runner.new.run(B.new)\n    def_class_method(:total) { s.size }\n  end\nend\nclass Runner\n  def run(b: Base) -> String\n    b.instance_exec(k: 1) { |*, k| label }\n  end",

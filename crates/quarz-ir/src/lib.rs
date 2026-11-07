@@ -549,9 +549,9 @@ pub enum Inst {
         /// type parameter, `self` or a call made by a pass): any.
         #[serde(default)]
         recv_classes: Option<Box<[ClassId]>>,
-        /// A `CallKind::Method` on the function's `self` as its method
-        /// has it (an implicit or `self.` call in the method's body, or
-        /// in a block whose `self` is the method's): a run of the method
+        /// A `CallKind::Method` (or a `Super`) on the function's `self` as
+        /// its method has it (an implicit or `self.` call in the method's
+        /// body, or in a block whose `self` is the method's): a run of the method
         /// reached through a call on a bounded receiver
         /// (`shake::Ref::Bounded`) has that receiver here, with its bound
         /// (docs/14 §7). A pass that copies the call into another
