@@ -253,6 +253,13 @@ pub struct TaskHandle {
     pub worker: u32,
     state: AtomicU8,
     pub result: Mutex<Option<TaskResult>>,
+    /// False from when its worker marks it done with a result until that
+    /// worker has dropped its references to it: whoever reads the result
+    /// meanwhile waits (nanoseconds), so that the worker's are never the
+    /// last references, which would release the result there, late
+    /// (#374). Shared, so that the worker can set it once its references
+    /// are gone.
+    released: std::sync::Arc<AtomicBool>,
     /// Tasks waiting for this one to finish.
     pub joiners: Mutex<Vec<TaskRef>>,
     cancel_requested: AtomicBool,
@@ -320,6 +327,7 @@ impl TaskHandle {
             worker,
             state: AtomicU8::new(TaskState::Ready as u8),
             result: Mutex::new(None),
+            released: std::sync::Arc::new(AtomicBool::new(true)),
             joiners: Mutex::new(Vec::new()),
             cancel_requested: AtomicBool::new(false),
             cancel_delivered: AtomicBool::new(false),
@@ -502,7 +510,10 @@ impl TaskHandle {
 
     /// Done, and not with an exception.
     pub fn finished_with_value(&self) -> bool {
-        self.is_done() && matches!(&*lock(&self.result), Some(TaskResult::Value(_)))
+        self.is_done() && {
+            self.wait_released();
+            matches!(&*lock(&self.result), Some(TaskResult::Value(_)))
+        }
     }
 
     /// Whether the task was cancelled. A state, not an event (as Trio's
@@ -544,7 +555,29 @@ impl TaskHandle {
     }
 
     pub fn result(&self) -> Option<TaskResult> {
+        self.wait_released();
         lock(&self.result).clone()
+    }
+
+    /// Whether the task is done, for a caller that may then let its
+    /// handle go without reading the result (`Task#done?`): it waits for
+    /// the worker to have let the task go too (see `released`). Not for a
+    /// caller holding a lock the worker takes as it finishes a task (a
+    /// sink's, a container's): `is_done` there.
+    pub fn finished(&self) -> bool {
+        self.is_done() && {
+            self.wait_released();
+            true
+        }
+    }
+
+    /// Wait until the worker that finished the task has let it go (see
+    /// `released`): a few instructions on another thread.
+    fn wait_released(&self) {
+        while !self.released.load(Ordering::Acquire) {
+            std::hint::spin_loop();
+            std::thread::yield_now();
+        }
     }
 
     fn stack_range(&self) -> (usize, usize) {
@@ -633,6 +666,22 @@ impl ScopeInner {
 
     pub fn children(&self) -> Vec<Rc<TaskHandle>> {
         lock(&self.children).iter().cloned().collect()
+    }
+
+    /// Ask the children still running but `except` to cancel, under the
+    /// children's lock; their references, to wake. (No handle is copied:
+    /// a copy released after the owner let the scope go would release
+    /// what a child holds here, #374.)
+    pub fn cancel_children_except(&self, except: TaskRef) -> Vec<TaskRef> {
+        let children = lock(&self.children);
+        let mut refs = Vec::new();
+        for c in children.iter() {
+            if c.task_ref() != except && !c.is_done() {
+                c.set_cancel_requested();
+                refs.push(c.task_ref());
+            }
+        }
+        refs
     }
 }
 
@@ -1611,6 +1660,10 @@ impl Scheduler {
                         match &r {
                             TaskResult::Value(v) | TaskResult::Error(v) => v.share(),
                         }
+                        // Readers of the result wait until this worker's
+                        // references are gone (below).
+                        let released = task.released.clone();
+                        released.store(false, Ordering::Release);
                         *lock(&task.result) = Some(r);
                         let joiners = {
                             // Under the joiners' lock, so that a task
@@ -1620,29 +1673,34 @@ impl Scheduler {
                             task.set_state(TaskState::Done);
                             std::mem::take(&mut *j)
                         };
+                        let me = task.task_ref();
+                        let scope = if failed { task.scope.clone() } else { None };
+                        // This worker lets the task go before anyone is
+                        // woken: those who wait for it hold its handle, and
+                        // the table lets it go (a program spawning a task
+                        // per request would keep them all). Released after
+                        // the wake, the handle (and the result in it) could
+                        // be released last here, after the awaiter moved on:
+                        // late, on this worker, or never if the program
+                        // ended first (#374). A reader that saw it done
+                        // without being a joiner waits for `released`.
+                        self.tasks.remove(&id);
+                        drop(task);
+                        released.store(true, Ordering::Release);
                         for j in joiners {
                             self.wake_ref(j);
                         }
                         // A failing child cancels its siblings and wakes the
                         // scope's owner so that the failure propagates at
                         // once.
-                        if failed {
-                            if let Some(scope) = task.scope.clone() {
-                                if scope.cancel() {
-                                    for c in scope.children() {
-                                        if c.task_ref() != task.task_ref() && !c.is_done() {
-                                            c.set_cancel_requested();
-                                            self.wake_ref(c.task_ref());
-                                        }
-                                    }
+                        if let Some(scope) = scope {
+                            if scope.cancel() {
+                                for c in scope.cancel_children_except(me) {
+                                    self.wake_ref(c);
                                 }
-                                self.wake_ref(scope.owner);
                             }
+                            self.wake_ref(scope.owner);
                         }
-                        // Those who wait for it hold its handle; the table
-                        // lets it go, or a program spawning a task per
-                        // request would keep them all.
-                        self.tasks.remove(&id);
                         None
                     }
                 }

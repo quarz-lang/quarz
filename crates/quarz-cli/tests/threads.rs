@@ -140,6 +140,11 @@ fn values_crossing_channels_and_selects_are_released_at_their_last_use() {
 }
 
 #[test]
+fn a_tasks_result_is_released_where_its_last_reference_goes() {
+    prints_its_out("task_result_release.qz");
+}
+
+#[test]
 fn exit_in_a_task_on_another_worker() {
     check_runs("exit.qz", |out, what| {
         assert_eq!(out.status.code(), Some(7), "{what}");

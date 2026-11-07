@@ -1,0 +1,19 @@
+deinit awaited 0
+-- awaited 0
+deinit spawned 0
+-- spawned 0
+deinit polled 0
+-- polled 0
+deinit awaited 1
+-- awaited 1
+deinit spawned 1
+-- spawned 1
+deinit polled 1
+-- polled 1
+deinit awaited 2
+-- awaited 2
+deinit spawned 2
+-- spawned 2
+deinit polled 2
+-- polled 2
+done
