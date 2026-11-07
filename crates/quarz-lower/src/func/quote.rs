@@ -153,6 +153,8 @@ impl<'a> FnBuilder<'a> {
             kw_splat: None,
             block: None,
             moved: 0,
+            recv_classes: None,
+            on_self: false,
         });
         dst
     }
@@ -767,6 +769,8 @@ impl<'a> FnBuilder<'a> {
             kw_splat: None,
             block: None,
             moved: 0,
+            recv_classes: None,
+            on_self: false,
         });
         dst
     }

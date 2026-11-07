@@ -1180,6 +1180,8 @@ impl Interp {
                 kw_splat,
                 block,
                 moved,
+                recv_classes: _,
+                on_self: _,
             } => self.op_call(
                 f,
                 pool,

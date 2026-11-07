@@ -118,6 +118,8 @@ fn rewrite_in(f: &mut Function, world: &RtWorld, has_subclass: &[bool]) {
                                 kw_splat: None,
                                 block: None,
                                 moved: 0,
+                                recv_classes: None,
+                                on_self: false,
                             });
                             lines.push(line);
                         }
@@ -133,6 +135,8 @@ fn rewrite_in(f: &mut Function, world: &RtWorld, has_subclass: &[bool]) {
                     kw_splat,
                     block,
                     moved,
+                    recv_classes: _,
+                    on_self: _,
                 } if !has_subclass[class as usize] => {
                     insts.push(Inst::Call {
                         dst,
@@ -144,6 +148,8 @@ fn rewrite_in(f: &mut Function, world: &RtWorld, has_subclass: &[bool]) {
                         kw_splat,
                         block,
                         moved,
+                        recv_classes: None,
+                        on_self: false,
                     });
                     lines.push(line);
                 }
