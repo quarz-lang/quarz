@@ -298,6 +298,9 @@ fn no_crypto(m: &mut Registry<NativeFn>) {
     native!(
         m,
         [
+            "Crypto.random_bytes",
+            "Crypto::AES.seal_with",
+            "Crypto::AES.open_with",
             "Crypto::RSA.private_der",
             "Crypto::RSA.private_pem",
             "Crypto::RSA.public_der",

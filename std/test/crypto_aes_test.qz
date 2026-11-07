@@ -1,0 +1,163 @@
+# Crypto::AES::GCM and Crypto.random_bytes: the test vectors of the GCM
+# specification (McGrew and Viega, cases 1-4 and 13-16), round trips,
+# every way of failing to open, the token layout, and what inspect shows.
+require "crypto"
+require "test"
+
+class CryptoAESTest < Test::Case
+  def hex(text: String) -> Bytes
+    Bytes.from((0...(text.size / 2)).map { |i| text[i * 2, 2].to_i(16) })
+  end
+
+  P = "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a72" +
+      "1c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255"
+  P60 = "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a72" +
+        "1c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b39"
+  K128 = "feffe9928665731c6d6a8f9467308308"
+  K256 = "feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308"
+  IV = "cafebabefacedbaddecaf888"
+  A = "feedfacedeadbeeffeedfacedeadbeefabaddad2"
+  Z12 = "000000000000000000000000"
+
+  # [key, nonce, plaintext, aad, ciphertext || tag]
+  def vectors -> Array[[String, String, String, String, String]]
+    [
+      # 1, 2, 3, 4: AES-128.
+      ["00" * 16, Z12, "", "", "58e2fccefa7e3061367f1d57a4e7455a"],
+      ["00" * 16, Z12, "00" * 16, "", "0388dace60b6a392f328c2b971b2fe78" + "ab6e47d42cec13bdf53a67b21257bddf"],
+      [K128, IV, P, "",
+       "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e" +
+       "21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091473f5985" + "4d5c2af327cd64a62cf35abd2ba6fab4"],
+      [K128, IV, P60, A,
+       "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e" +
+       "21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091" + "5bc94fbc3221a5db94fae95ae7121a47"],
+      # 13, 14, 15, 16: AES-256.
+      ["00" * 32, Z12, "", "", "530f8afbc74536b9a963b4f1c4cb738b"],
+      ["00" * 32, Z12, "00" * 16, "", "cea7403d4d606b6e074ec5d3baf39d18" + "d0d1c8a799996bf0265b98b5d48ab919"],
+      [K256, IV, P, "",
+       "522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa" +
+       "8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f662898015ad" + "b094dac5d93471bdec1a502270e3cc6c"],
+      [K256, IV, P60, A,
+       "522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa" +
+       "8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f662" + "76fc6ece0f4e1768cddf8853bb2d551b"],
+    ]
+  end
+
+  def test_specification_vectors
+    vectors.each do |key, nonce, plain, aad, sealed|
+      aead = Crypto::AES::GCM.new(hex(key))
+      assert_equal(hex(sealed), aead.seal(hex(nonce), hex(plain), aad: hex(aad)), sealed)
+      assert_equal(hex(plain), aead.open(hex(nonce), hex(sealed), aad: hex(aad)), sealed)
+    end
+  end
+
+  def test_round_trips
+    [128, 192, 256].each do |bits|
+      aead = Crypto::AES::GCM.generate(bits)
+      assert_equal(bits, aead.bits)
+      assert_equal(bits / 8, aead.key.size)
+      nonce = Crypto.random_bytes(12)
+      ["", "short", "x" * 100_000].each do |text|
+        sealed = aead.seal(nonce, text)
+        assert_equal(text.bytesize + 16, sealed.size)
+        assert_equal(text.to_bytes, aead.open(nonce, sealed))
+      end
+      big = Crypto.random_bytes(1 << 20)
+      assert_equal(big, aead.decrypt(aead.encrypt(big, aad: b"\x00\x01"), aad: b"\x00\x01"))
+    end
+    # Bytes and String alike for the plaintext and aad.
+    aead = Crypto::AES::GCM.generate
+    nonce = Crypto.random_bytes(12)
+    assert_equal(aead.seal(nonce, "text", aad: "aad"), aead.seal(nonce, b"text", aad: b"aad"))
+  end
+
+  def test_failures_to_open
+    aead = Crypto::AES::GCM.generate
+    nonce = Crypto.random_bytes(12)
+    sealed = aead.seal(nonce, "attack at dawn", aad: "orders")
+    bytes = sealed.to_a
+    changed = Bytes.from([(bytes[0] + 1) % 256] + bytes.drop(1))
+    tag_changed = Bytes.from(bytes.take(bytes.size - 1) + [(bytes.last? || 0) ^ 1])
+    other_nonce = Crypto.random_bytes(12)
+    other_key = Crypto::AES::GCM.generate
+    [
+      -> { aead.open(nonce, changed, aad: "orders") },
+      -> { aead.open(nonce, tag_changed, aad: "orders") },
+      -> { aead.open(nonce, sealed, aad: "order") },
+      -> { aead.open(nonce, sealed) },
+      -> { aead.open(other_nonce, sealed, aad: "orders") },
+      -> { other_key.open(nonce, sealed, aad: "orders") },
+      -> { aead.open(nonce, sealed.slice(0, 15), aad: "orders") },
+      -> { aead.open(nonce, Bytes.new, aad: "orders") },
+    ].each_with_index do |attempt, i|
+      e = assert_raise(Crypto::AuthenticationError) { attempt.call }
+      assert_true(e.is_a?(Crypto::Error))
+      assert_false(e.message.include?("attack"))
+    end
+    assert_nil(aead.open?(nonce, changed, aad: "orders"))
+    assert_equal(b"attack at dawn", aead.open?(nonce, sealed, aad: "orders"))
+  end
+
+  def test_tokens
+    aead = Crypto::AES::GCM.generate
+    token = aead.encrypt("secret", aad: "id 7")
+    assert_equal(12 + 6 + 16, token.size)
+    # The nonce first, then what seal gives for it.
+    assert_equal(token.slice(12, token.size - 12), aead.seal(token.slice(0, 12), "secret", aad: "id 7"))
+    assert_equal(b"secret", aead.decrypt(token, aad: "id 7"))
+    # A fresh nonce each time.
+    refute_equal(token, aead.encrypt("secret", aad: "id 7"))
+    assert_raise(Crypto::AuthenticationError) { aead.decrypt(token, aad: "id 8") }
+    assert_raise(Crypto::AuthenticationError) { aead.decrypt(token.slice(0, 27)) }
+    assert_raise(Crypto::AuthenticationError) { aead.decrypt(Bytes.new) }
+  end
+
+  def test_sizes_refused
+    [0, 15, 17, 33].each do |n|
+      assert_raise(ArgumentError) { Crypto::AES::GCM.new(Bytes.from([0] * n)) }
+    end
+    [64, 512].each { |bits| assert_raise(ArgumentError) { Crypto::AES::GCM.generate(bits) } }
+    aead = Crypto::AES::GCM.generate
+    [0, 8, 11, 13, 16].each do |n|
+      assert_raise(ArgumentError) { aead.seal(Bytes.from([0] * n), "x") }
+      assert_raise(ArgumentError) { aead.open?(Bytes.from([0] * n), Bytes.from([0] * 16)) }
+    end
+  end
+
+  def test_random_bytes
+    assert_equal(0, Crypto.random_bytes(0).size)
+    assert_equal(32, Crypto.random_bytes(32).size)
+    assert_equal(1 << 20, Crypto.random_bytes(1 << 20).size)
+    seen = (1..20).map { |_| Crypto.random_bytes(16) }
+    assert_equal(20, seen.uniq.size)
+    assert_raise(ArgumentError) { Crypto.random_bytes(-1) }
+    assert_raise(ArgumentError) { Crypto.random_bytes((1 << 20) + 1) }
+  end
+
+  def test_inspect_hides_the_key
+    aead = Crypto::AES::GCM.new(hex(K256))
+    assert_equal("#<Crypto::AES::GCM 256 bits>", aead.inspect)
+    assert_equal(aead.inspect, aead.to_s)
+    ["#{aead}", [aead].inspect, {"k" => aead}.inspect].each do |text|
+      assert_false(text.include?("feffe9"), text)
+      assert_false(text.include?("\\xfe"), text)
+    end
+    assert_equal(hex(K256), aead.key)
+    assert_equal(aead, Crypto::AES::GCM.new(hex(K256)))
+  end
+
+  def test_two_tasks_share_one_key
+    aead = Crypto::AES::GCM.generate
+    tasks = 2.times.map do |i|
+      Task.spawn do
+        ok = true
+        50.times do |j|
+          text = "task #{i} message #{j}"
+          ok = ok && aead.decrypt(aead.encrypt(text)) == text.to_bytes
+        end
+        ok
+      end
+    end
+    assert_equal([true, true], tasks.map(&:await))
+  end
+end
