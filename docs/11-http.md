@@ -10,12 +10,12 @@ This is implemented in `std/http.qz` (and `Signal` in the prelude, with a few na
 require "http"
 
 handler = HTTP.handler do |req|
-  HTTP::Response.text("hello #{req.path}")
+  HTTP::Server::Response.text("hello #{req.path}")
 end
 HTTP::Server.new(handler, port: 8080).serve
 ```
 
-- A **handler** takes a `Request` and returns a `Response`, as a Rack application does, rather than writing into a response object as Go's `http.Handler` does. Quarz's values are immutable and a `data` value is the natural thing to return; a handler is then a function, which a test calls without a socket. Streaming is a kind of response body (§4), not a different way of writing handlers.
+- A **handler** takes a `Server::Request` and returns a `Server::Response`, as a Rack application does, rather than writing into a response object as Go's `http.Handler` does. Quarz's values are immutable and a `data` value is the natural thing to return; a handler is then a function, which a test calls without a socket. Streaming is a kind of response body (§4), not a different way of writing handlers.
 - The server runs one task per connection ([04-concurrency.md](04-concurrency.md)): tasks are M:N scheduled, so there is no thread pool to size; `QUARZ_THREADS` sets the workers. A handler runs on the connection's task, so it is **Shareable**: a class that includes `HTTP::Handler` has no `var` fields, and the state it shares between requests lives in an `Atom` or a `Channel`.
 - Everything that waits (reading a request, writing a response, the handler's own IO) suspends only its task; timeouts are `Task.timeout`, and stopping the server is cancellation.
 
@@ -25,11 +25,11 @@ HTTP::Server.new(handler, port: 8080).serve
 module HTTP
   module Handler
     include Shareable
-    abstract def call(req: Request) -> Response
+    abstract def call(req: Server::Request) -> Server::Response
   end
 
   # A handler from a procedure (captures by value, [02-types.md](02-types.md) §9).
-  def self.handler(&f: shareable (Request) -> Response) -> Handler
+  def self.handler(&f: shareable (Server::Request) -> Server::Response) -> Handler
 end
 ```
 
@@ -38,7 +38,7 @@ Middleware is a handler that holds the next one. A `data` type is Shareable when
 ```ruby
 data Logging(inner: HTTP::Handler)
   include HTTP::Handler
-  def call(req: HTTP::Request) -> HTTP::Response
+  def call(req: HTTP::Server::Request) -> HTTP::Server::Response
     started = Time.monotonic
     res = inner.call(req)
     STDERR.puts "#{req.method} #{req.target.partition("?")[0]} #{res.status} #{Time.monotonic - started}"
@@ -50,7 +50,7 @@ end
 ## 3. Requests
 
 ```ruby
-module HTTP
+class HTTP::Server   # (its requests and responses are its own types)
   data Request(
     method: String,                 # "GET"; any token the client sent, not a Symbol
     target: String,                 # the request target as sent: "/users/1?x=1"
@@ -75,7 +75,7 @@ module HTTP
 end
 ```
 
-`Request` is a `data` value: `req.with(params: ...)` makes the routed request, and a test builds one with `HTTP::Request.get("/users/1", headers)`, `HTTP::Request.post("/users", body, headers)` (also `head`, `delete`, `put`, `patch`), or `HTTP::Request.build(method, target, headers, body)`. It is not Shareable, because its `Body` is not: a handler that hands work to another task copies the fields it needs out first (`path = req.path` before the `spawn` block).
+`Request` is a `data` value: `req.with(params: ...)` makes the routed request, and a test builds one with `HTTP::Server::Request.get("/users/1", headers)`, `HTTP::Server::Request.post("/users", body, headers)` (also `head`, `delete`, `put`, `patch`), or `HTTP::Server::Request.build(method, target, headers, body)`. It is not Shareable, because its `Body` is not: a handler that hands work to another task copies the fields it needs out first (`path = req.path` before the `spawn` block).
 
 ### Bodies
 
@@ -119,8 +119,8 @@ Names are case-insensitive: they are stored lowercased and written out in the co
 ## 4. Responses
 
 ```ruby
-module HTTP
-  data Response(status: Int, headers: Headers, body: ResponseBody)   # the generated `new` takes a ResponseBody
+class HTTP::Server
+  data Response(status: Int, headers: Headers, body: Content)   # the generated `new` takes a Content
     def self.empty(status: Int = 204, headers: Headers = Headers.empty) -> Response
     def self.text(body: String, status: Int = 200) -> Response            # text/plain; charset=utf-8
     def self.html(body: String, status: Int = 200) -> Response
@@ -133,8 +133,10 @@ module HTTP
     def header(name: String, value: String) -> Response                   # with(headers: headers.put(...))
     def reason -> String                                                  # "OK" for 200
   end
+end
 
-  enum ResponseBody
+module HTTP
+  enum Content                      # a body to send (a server's response's, and a client's request's)
     variant Empty
     variant Text(text: String)
     variant Binary(bytes: Bytes)
@@ -168,7 +170,7 @@ module HTTP
                  max_body_bytes: Int = 1_048_576,              # what Body#read and read_bytes accept
                  max_connections: Int = 10_000,                # accepted at once; beyond it, accept waits
                  trusted_proxies: Array[String] = [],          # peers whose X-Forwarded-* headers are believed
-                 on_error: (shareable (Exception, Request?) -> Void)? = nil,
+                 on_error: (shareable (Exception, Server::Request?) -> Void)? = nil,
                  tls: TLS::ServerConfig? = nil) -> Server      # HTTPS (not with path:)
     def self.unix(handler: Handler, path: String, *, ...the same options but tls:...) -> Server   # a UNIX socket
     def serve -> Void                      # accepts until shutdown or cancellation
@@ -178,7 +180,7 @@ module HTTP
   end
 
   def self.serve(port: Int = 8080, host: String = "0.0.0.0",
-                 &handler: shareable (Request) -> Response) -> Void
+                 &handler: shareable (Server::Request) -> Server::Response) -> Void
 end
 ```
 
@@ -186,7 +188,7 @@ A connection's task does:
 
 0. With `tls:` (a `TLS::ServerConfig`, [06-stdlib.md](06-stdlib.md) §9), run the TLS handshake (`config.accept`), in the connection's task so that a slow client holds up only its own connection. It counts against the first request's `read_header_timeout` to begin: the handshake and the wait for that request's first byte share it. A handshake that fails or runs out of time closes the connection quietly, as an `IOError` does (below). The config's `alpn` may hold only `http/1.1` and `http/1.0` (`ArgumentError` otherwise).
 1. Read the request line and headers: the first request has `read_header_timeout` to begin and as long again from its first byte to finish; a later one on the same connection has `idle_timeout` to begin and `read_header_timeout` to finish. Over `max_header_bytes`: `431`. Malformed: `400`. Both close the connection.
-2. Build the `Request` and call the handler. An `HTTP::Error` it raises is answered with that status (§7); any other `StandardError` becomes a `500` with an empty body and goes to `on_error` with the request, or to STDERR with the method and the path as sent (still percent-encoded, so that it cannot hold a line break or an escape, and without the query, which may carry a token); `Task::Cancelled` is not caught. A response whose headers have a name that is not a token, or a value with CR, LF or another control character but HTAB, is not sent: it becomes a `500` too (response splitting; `Headers#put` and `add` already refuse those, so only fields built with `Field.new` get this far). Whatever else fails (a `Stream` procedure that raises after the headers went out) ends that connection and is reported; the server goes on.
+2. Build the `Server::Request` and call the handler. An `HTTP::Error` it raises is answered with that status (§7); any other `StandardError` becomes a `500` with an empty body and goes to `on_error` with the request, or to STDERR with the method and the path as sent (still percent-encoded, so that it cannot hold a line break or an escape, and without the query, which may carry a token); `Task::Cancelled` is not caught. A response whose headers have a name that is not a token, or a value with CR, LF or another control character but HTAB, is not sent: it becomes a `500` too (response splitting; `Headers#put` and `add` already refuse those, so only fields built with `Field.new` get this far). Whatever else fails (a `Stream` procedure that raises after the headers went out) ends that connection and is reported; the server goes on.
 3. Write the response under `write_timeout`, then drain or close as §3 says.
 4. Keep the connection unless the request or the response said `Connection: close`, the request was HTTP/1.0 without `Connection: keep-alive`, or the body could not be drained. An HTTP/1.0 connection is kept only for a response with a `Content-Length`, and the response then says `Connection: keep-alive`; an HTTP/1.0 request with `Transfer-Encoding` is answered and the connection closed (RFC 9112 §6.1).
 
@@ -221,11 +223,11 @@ A small router is part of the library, as Go's `ServeMux` is; patterns with cons
 
 ```ruby
 router = HTTP::Router.build do |r|
-  r.get("/users/{id}") { |req| HTTP::Response.json(user_json(req.params["id"])) }
+  r.get("/users/{id}") { |req| HTTP::Server::Response.json(user_json(req.params["id"])) }
   r.post("/users", CreateUser.new(db))           # a Handler, or a block
   r.get("/files/{path...}") { |req| serve_file(req.params["path"]) }
   r.mount("/admin", admin_router)                # another Router, under a prefix
-  r.not_found { |req| HTTP::Response.not_found }
+  r.not_found { |req| HTTP::Server::Response.not_found }
 end
 ```
 
@@ -241,7 +243,7 @@ end
 
 ## 8. Testing
 
-A handler is called directly: `handler.call(HTTP::Request.get("/users/1"))` gives a `Response` to inspect; `HTTP::Request.post("/users", "...")` builds the body (`HTTP::Body.of`) from a string. The library's own tests (`tests/fixtures/builtins/http_*.qz`, `signal.qz`, and `tests/threads/http.qz` on four workers) parse and serialize requests and responses without sockets, and run servers on `port: 0` to check keep-alive, pipelining, chunked bodies, `HEAD`, HTTP/1.0, the limits, `100-continue`, the timeouts, `max_connections`, `shutdown`, UNIX sockets and the router.
+A handler is called directly: `handler.call(HTTP::Server::Request.get("/users/1"))` gives a `Response` to inspect; `HTTP::Server::Request.post("/users", "...")` builds the body (`HTTP::Body.of`) from a string. The library's own tests (`tests/fixtures/builtins/http_*.qz`, `signal.qz`, and `tests/threads/http.qz` on four workers) parse and serialize requests and responses without sockets, and run servers on `port: 0` to check keep-alive, pipelining, chunked bodies, `HEAD`, HTTP/1.0, the limits, `100-continue`, the timeouts, `max_connections`, `shutdown`, UNIX sockets and the router.
 
 ## 9. Later
 
@@ -252,7 +254,7 @@ A handler is called directly: `handler.call(HTTP::Request.get("/users/1"))` give
 
 ## 10. Alternatives Not Adopted
 
-- **A response writer (Go)**: a handler that writes into a `ResponseWriter` streams naturally and needs no body types, but it ties a handler to a connection: testing one needs a fake writer, middleware must wrap the writer to see the status, and a handler can start writing before it knows it will fail. Returning a value keeps handlers functions; `ResponseBody::Stream` covers the streaming cases.
+- **A response writer (Go)**: a handler that writes into a `ResponseWriter` streams naturally and needs no body types, but it ties a handler to a connection: testing one needs a fake writer, middleware must wrap the writer to see the status, and a handler can start writing before it knows it will fail. Returning a value keeps handlers functions; `Content::Stream` covers the streaming cases.
 - **A thread pool with a connection queue (Puma)**: tasks are cheap and M:N scheduled, so each connection is a task and the scheduler is the pool; `max_connections` bounds them.
 - **Rack's environment hash**: a `data Request` with typed fields is checked by the compiler; an extension on `Request` adds what an application needs.
 - **A full-featured router in the standard library**: patterns beyond `{name}` and `{name...}` differ between frameworks; a cog can replace the router, since it is only a `Handler`.

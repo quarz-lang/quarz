@@ -10,7 +10,7 @@ config = TLS::ServerConfig.new(certificate: File.read(File.join(dir, "server.pem
 stop = Channel[Nil].new(capacity: 1)
 handler = HTTP.handler do |req|
   stop.try_send(nil) if req.path == "/quit"
-  HTTP::Response.text(req.scheme)
+  HTTP::Server::Response.text(req.scheme)
 end
 
 begin
@@ -25,11 +25,11 @@ begin
 rescue ArgumentError => e
   puts e.message
 end
-p HTTP::Request.get("/").scheme
+p HTTP::Server::Request.get("/").scheme
 
 server = HTTP::Server.new(handler, host: "127.0.0.1", port: 0, tls: config,
                           read_header_timeout: 300.ms, trusted_proxies: ["127.0.0.1"],
-                          on_error: ->(e: Exception, req: HTTP::Request?) { puts "on_error: #{e.class}" })
+                          on_error: ->(e: Exception, req: HTTP::Server::Request?) { puts "on_error: #{e.class}" })
 puts "port #{server.local_address.port}"
 STDOUT.flush
 Task.spawn do
