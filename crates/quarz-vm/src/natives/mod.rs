@@ -96,6 +96,8 @@ mod core;
 mod digest;
 pub(crate) use self::core::system_exit;
 pub(crate) use core::raised;
+#[cfg(feature = "crypto")]
+mod crypto;
 mod enumerable;
 mod fast;
 mod io;
@@ -283,7 +285,42 @@ fn registry() -> Registry<NativeFn> {
     tls::register(&mut m);
     #[cfg(not(feature = "tls"))]
     no_tls(&mut m);
+    #[cfg(feature = "crypto")]
+    crypto::register(&mut m);
+    #[cfg(not(feature = "crypto"))]
+    no_crypto(&mut m);
     m
+}
+
+/// Without the `crypto` feature: RSA raises.
+#[cfg(not(feature = "crypto"))]
+fn no_crypto(m: &mut Registry<NativeFn>) {
+    native!(
+        m,
+        [
+            "Crypto::RSA.private_der",
+            "Crypto::RSA.private_pem",
+            "Crypto::RSA.public_der",
+            "Crypto::RSA.public_pem",
+            "Crypto::RSA.public_of",
+            "Crypto::RSA.generate_der",
+            "Crypto::RSA::PrivateKey#to_pem",
+            "Crypto::RSA::PrivateKey#bits",
+            "Crypto::RSA::PrivateKey#sign",
+            "Crypto::RSA::PrivateKey#sign_pss",
+            "Crypto::RSA::PublicKey#to_pem",
+            "Crypto::RSA::PublicKey#bits",
+            "Crypto::RSA::PublicKey#verify",
+            "Crypto::RSA::PublicKey#verify_pss",
+            "Crypto::RSA::PublicKey#fingerprint"
+        ],
+        |i, _, _| {
+            Err(i.raise(
+                i.program.exc.not_implemented,
+                "RSA is not built in (the `crypto` feature of quarz-vm)",
+            ))
+        }
+    );
 }
 
 /// Without the `tls` feature: making a TLS connection raises.

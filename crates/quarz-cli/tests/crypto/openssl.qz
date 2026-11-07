@@ -1,0 +1,14 @@
+# Writes a new key's public half (SPKI PEM), the message and its
+# signatures into the directory ARGV[0], for tests/crypto.rs to check
+# with the openssl command.
+require "crypto"
+
+dir = ARGV[0]
+key = Crypto::RSA::PrivateKey.generate(2048)
+message = "signed by quarz"
+File.write(File.join(dir, "pub.pem"), key.public_key.to_pem)
+File.write(File.join(dir, "key.pem"), key.to_pem(format: :pkcs1))
+File.write(File.join(dir, "message.txt"), message)
+File.write(File.join(dir, "sig_pkcs1v15.bin"), key.sign(message, :sha256))
+File.write(File.join(dir, "sig_pss.bin"), key.sign_pss(message, :sha384))
+puts "written"

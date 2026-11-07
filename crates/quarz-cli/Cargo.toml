@@ -41,7 +41,9 @@ quarz-types = { workspace = true }
 # mimalloc as the allocator of `quarz` and of the runtime library compiled
 # programs link (`QUARZ_ALLOC=system` still selects the system's at run
 # time); without it, the system's only.
-default = ["mimalloc", "tls"]
+default = ["mimalloc", "tls", "crypto"]
 mimalloc = ["quarz-vm/mimalloc"]
 # TLS in `quarz` and the runtime library (`std/tls.qz`).
 tls = ["quarz-vm/tls"]
+# RSA in `quarz` and the runtime library (`std/crypto.qz`).
+crypto = ["quarz-vm/crypto"]

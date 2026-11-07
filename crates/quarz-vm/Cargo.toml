@@ -37,6 +37,13 @@ base64 = "0.23"
 # provider (no cmake), and the system's root certificates.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 rustls-native-certs = { version = "0.8", optional = true }
+# `std/crypto.qz` (the `crypto` feature): RustCrypto's RSA. Its 0.10
+# line is the one on `sha2` 0.11 (0.9 is on 0.10) and constant-time
+# (RUSTSEC-2023-0071): pinned while it is a release candidate (#357: move
+# to 0.10.0 when it is released).
+rsa = { version = "=0.10.0-rc.21", default-features = false, features = ["std", "encoding"], optional = true }
+rand = { version = "0.10", optional = true }
+pem-rfc7468 = { version = "1", features = ["alloc"], optional = true }
 # The allocator (see `src/alloc.rs`): C sources built with the system's
 # compiler.
 # Pinned with libmimalloc-sys: `alloc.rs` sets an option by its number in
@@ -45,10 +52,12 @@ mimalloc = { version = "=0.1.52", optional = true }
 libmimalloc-sys = { version = "=0.1.49", features = ["extended"], optional = true }
 
 [features]
-default = ["mimalloc", "tls"]
+default = ["mimalloc", "tls", "crypto"]
 mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
 # TLS (`TLSSocket`, `std/tls.qz`): without it, connecting raises.
 tls = ["dep:rustls", "dep:rustls-native-certs", "dep:openssl-probe"]
+# RSA keys and signatures (`std/crypto.qz`): without it, they raise.
+crypto = ["dep:rsa", "dep:rand", "dep:pem-rfc7468"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

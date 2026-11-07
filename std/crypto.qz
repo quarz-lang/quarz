@@ -1,0 +1,175 @@
+# Public-key cryptography: `require "crypto"`. For now RSA keys (PEM and
+# DER, PKCS#8, PKCS#1 and SPKI) and signatures (PKCS#1 v1.5 and PSS), as
+# HTTP Signatures, JWT `RS256` and webhook signatures need.
+#
+# ```
+# require "crypto"
+# key = Crypto::RSA::PrivateKey.from_pem(File.read("std/test/fixtures/crypto/rsa2048_pkcs8.pem"))
+# sig = key.sign("hello", :sha256)
+# key.public_key.verify("hello", sig, :sha256)   # => true
+# key.public_key.verify("hullo", sig, :sha256)   # => false
+# ```
+#
+# Keys are `data` values holding their DER, so they are immutable and
+# Shareable, and two readings of one key are `==`; their `inspect` and
+# `to_s` never show the key. The runtime keeps the keys it parsed (by
+# contents), so signing again with one key does not parse it again.
+# There is no encryption, no encrypted PEM, and no EC or Ed25519 key yet.
+module Crypto
+  # A key that does not parse, is of another kind, or is too small; a
+  # PEM text that is not one key.
+  class Error < StandardError
+  end
+
+  # RSA keys and signatures, through the RustCrypto `rsa` crate. A hash
+  # is named by a symbol: `:sha256`, `:sha384` or `:sha512`
+  # (`ArgumentError` otherwise).
+  module RSA
+    # An RSA private key.
+    #
+    # ```quarz no_run
+    # key = Crypto::RSA::PrivateKey.generate(2048)
+    # File.write("key.pem", key.to_pem)
+    # File.write("key.pub.pem", key.public_key.to_pem)
+    # ```
+    data PrivateKey(
+      # The key as PKCS#8 DER, whatever it was read from.
+      der: Bytes
+    )
+      # Raises `Crypto::Error` when `der` is not an RSA private key
+      # (PKCS#8 or PKCS#1); it is kept as PKCS#8.
+      def initialize(der: Bytes)
+        @der = RSA.private_der(der)
+      end
+
+      # A new key of `bits` bits: 2048, 3072 or 4096 (`ArgumentError`
+      # otherwise). It is made on a helper thread: only the calling task
+      # waits (hundreds of milliseconds for 4096 bits).
+      def self.generate(bits: Int = 2048) -> PrivateKey
+        unless bits == 2048 || bits == 3072 || bits == 4096
+          raise ArgumentError, "an RSA key has 2048, 3072 or 4096 bits, not #{bits}"
+        end
+        PrivateKey.new(RSA.generate_der(bits))
+      end
+
+      # The key in `pem`: one PKCS#8 (`PRIVATE KEY`) or PKCS#1
+      # (`RSA PRIVATE KEY`) block, not encrypted (`Crypto::Error`
+      # otherwise, as for a second block or a key of another kind).
+      #
+      # ```
+      # pem = File.read("std/test/fixtures/crypto/rsa2048_pkcs1.pem")
+      # Crypto::RSA::PrivateKey.from_pem(pem).bits   # => 2048
+      # ```
+      def self.from_pem(pem: String | Bytes) -> PrivateKey
+        PrivateKey.new(RSA.private_pem(pem.is_a?(String) ? pem.to_bytes : pem))
+      end
+
+      # The key in `der`: PKCS#8 or PKCS#1.
+      def self.from_der(der: Bytes) -> PrivateKey = PrivateKey.new(der)
+
+      # The key as DER: PKCS#8.
+      def to_der -> Bytes = der
+
+      # The key as PEM: PKCS#8 (`PRIVATE KEY`), or PKCS#1
+      # (`RSA PRIVATE KEY`) with `format: :pkcs1`.
+      native def to_pem(format: Symbol = :pkcs8) -> String
+
+      # The public half.
+      def public_key -> PublicKey = PublicKey.new(RSA.public_of(der))
+
+      # The modulus's size in bits.
+      native def bits -> Int
+
+      # The RSASSA-PKCS1-v1_5 signature of `data` with `hash`.
+      native def sign(data: Bytes | String, hash: Symbol) -> Bytes
+
+      # The RSASSA-PSS signature of `data` with `hash` (MGF1 with the same
+      # hash, a salt as long as the hash). Each signature differs: the
+      # salt is random.
+      native def sign_pss(data: Bytes | String, hash: Symbol) -> Bytes
+
+      # `#<Crypto::RSA::PrivateKey 2048 bits>`: never the key.
+      def inspect -> String = "#<Crypto::RSA::PrivateKey #{bits} bits>"
+
+      # :ditto:
+      def to_s -> String = inspect
+    end
+
+    # An RSA public key.
+    #
+    # ```
+    # pem = File.read("std/test/fixtures/crypto/rsa2048_spki.pem")
+    # pub = Crypto::RSA::PublicKey.from_pem(pem)
+    # pub.bits                  # => 2048
+    # pub.fingerprint.size      # => 32
+    # ```
+    data PublicKey(
+      # The key as SPKI DER, whatever it was read from.
+      der: Bytes
+    )
+      # Raises `Crypto::Error` when `der` is not an RSA public key (SPKI
+      # or PKCS#1); it is kept as SPKI.
+      def initialize(der: Bytes)
+        @der = RSA.public_der(der)
+      end
+
+      # The key in `pem`: one SPKI (`PUBLIC KEY`) or PKCS#1
+      # (`RSA PUBLIC KEY`) block.
+      def self.from_pem(pem: String | Bytes) -> PublicKey
+        PublicKey.new(RSA.public_pem(pem.is_a?(String) ? pem.to_bytes : pem))
+      end
+
+      # The key in `der`: SPKI or PKCS#1.
+      def self.from_der(der: Bytes) -> PublicKey = PublicKey.new(der)
+
+      # The key as DER: SPKI.
+      def to_der -> Bytes = der
+
+      # The key as PEM: SPKI (`PUBLIC KEY`).
+      native def to_pem -> String
+
+      # The modulus's size in bits.
+      native def bits -> Int
+
+      # Whether `signature` is the RSASSA-PKCS1-v1_5 signature of `data`
+      # with `hash`: false for any wrong signature, never an exception.
+      native def verify(data: Bytes | String, signature: Bytes, hash: Symbol) -> Bool
+
+      # Whether `signature` is the RSASSA-PSS signature of `data` with
+      # `hash` (MGF1 with the same hash, a salt as long as the hash).
+      native def verify_pss(data: Bytes | String, signature: Bytes, hash: Symbol) -> Bool
+
+      # The SHA-256 of the SPKI DER: a key's identity, for key ids and
+      # pinning.
+      native def fingerprint -> Bytes
+
+      # `#<Crypto::RSA::PublicKey 2048 bits, fingerprint ab12cd34…>`.
+      def inspect -> String
+        hex = fingerprint.slice(0, 4).to_a.map { |b| b.to_s(16).rjust(2, "0") }.join
+        "#<Crypto::RSA::PublicKey #{bits} bits, fingerprint #{hex}…>"
+      end
+
+      # :ditto:
+      def to_s -> String = inspect
+    end
+
+    # :nodoc:
+    # `der` (PKCS#8 or PKCS#1) as PKCS#8.
+    native def self.private_der(der: Bytes) -> Bytes
+    # :nodoc:
+    # The one private key block of `pem`, as PKCS#8 DER.
+    native def self.private_pem(pem: Bytes) -> Bytes
+    # :nodoc:
+    # `der` (SPKI or PKCS#1) as SPKI.
+    native def self.public_der(der: Bytes) -> Bytes
+    # :nodoc:
+    # The one public key block of `pem`, as SPKI DER.
+    native def self.public_pem(pem: Bytes) -> Bytes
+    # :nodoc:
+    # The SPKI DER of the public half of the private key `der` (PKCS#8).
+    native def self.public_of(der: Bytes) -> Bytes
+    # :nodoc:
+    # A new key's PKCS#8 DER (on a helper thread).
+    native def self.generate_der(bits: Int) -> Bytes
+  end
+end
