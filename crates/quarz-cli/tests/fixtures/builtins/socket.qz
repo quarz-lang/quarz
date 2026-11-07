@@ -70,10 +70,39 @@ Task.scope do |scope|
   waited = Time.monotonic - t0
   p c.remote_address.host, v6.nil? || (waited >= 240.ms && waited < 2.seconds)
   c.close
+  # A shorter fallback_delay starts the IPv4 attempt sooner.
+  t0 = Time.monotonic
+  c = Socket.tcp("localhost", hport, fallback_delay: 20.ms)
+  waited = Time.monotonic - t0
+  p c.remote_address.host, waited < 200.ms
+  c.close
   scope.cancel
 end
 v4.close
 v6&.close
+
+# What races: an IP address never does (connected in this task); a name
+# whose addresses are of one family does not either; a name of both
+# families does (as above). fast_fallback: false tries the resolver's
+# order, one after the other, in this task.
+only4 = TCPServer.new("127.0.0.1", 0)
+oport = only4.local_address.port
+races = Socket::RACES.get
+Socket.tcp("127.0.0.1", oport).close
+only4.accept.close
+p Socket::RACES.get - races
+families = Socket.getaddrinfo("localhost", oport).map { |a| a.ipv6? }.uniq.size
+Socket.tcp("localhost", oport).close
+only4.accept.close
+p (Socket::RACES.get - races) == (families == 2 ? 1 : 0)
+races = Socket::RACES.get
+c = Socket.tcp("localhost", oport, fast_fallback: false)
+p c.remote_address.host, Socket::RACES.get - races
+c.close
+only4.accept.close
+TCPSocket.open("127.0.0.1", oport) { |s| p s.remote_address.port == oport }
+only4.accept.close
+only4.close
 
 # Failures: refused, no such host, a timeout.
 begin
