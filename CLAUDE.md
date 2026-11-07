@@ -38,14 +38,17 @@ newer than a local stable: check with that release (`cargo +<version>`)
 when the local one is older.
 
 A change confined to one standard-library module (`std/<name>.qz`, its
-own natives file, the `register` line, Cargo and the std module list)
-runs locally `cargo build`, that module's tests in `std/test/`
-interpreted and compiled (`tests/std.rs`), its doc examples, clippy,
-rustfmt and the MSRV check; the full `cargo test` is CI's, which must
-be green before the pull request leaves draft. A change that touches a
-shared file (`natives/mod.rs` beyond the register line, `value.rs`,
-`interp.rs`, the checker, lowering or the IR passes) runs the full
-`cargo test` locally as above. The pull request says which case it was.
+own natives file, Cargo and the std module list, plus what a shared
+file gains that only the new module reaches: the `register` line and
+feature-off stubs in `natives/mod.rs`, a new exception class in
+`interp.rs`) runs locally `cargo build` with the feature on and off,
+that module's tests in `std/test/` interpreted and compiled
+(`tests/std.rs`), its doc examples, clippy, rustfmt and the MSRV check;
+the full `cargo test` is CI's, which must be green before the pull
+request leaves draft. A change that alters a path existing programs
+run (an edited function or match arm in a shared file, `value.rs`, the
+checker, lowering or the IR passes) runs the full `cargo test` locally
+as above. The pull request says which case it was.
 
 - Commit and push at good stopping points. Stage files by explicit path,
   never `git add -A`. Remove a stray `examples/shapes` that tests leave.
