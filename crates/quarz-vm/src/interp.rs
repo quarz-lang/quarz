@@ -1410,7 +1410,7 @@ impl Interp {
     }
 
     /// `run_static` for a block kept from an earlier compile-time run (a
-    /// class-end hook, docs/14 §3), called with `args`.
+    /// class-end hook, docs/14 §5), called with `args`.
     pub fn run_static_block(
         self: &std::rc::Rc<Interp>,
         block: Value,

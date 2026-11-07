@@ -870,7 +870,7 @@ fn an_inherited_new_checks_the_subclass_initialize() {
 
 #[test]
 fn class_end_hooks_run_when_the_class_is_entered() {
-    // docs/14 §3: the hooks of an input's class run when the input is
+    // docs/14 §5: the hooks of an input's class run when the input is
     // entered, after its statements.
     let dir = std::env::temp_dir().join(format!("quarz-repl-hooks-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

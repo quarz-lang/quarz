@@ -848,7 +848,7 @@ end
 
 #[test]
 fn class_end_hooks_combine_a_bodys_statements() {
-    // docs/14 §3: `statement_values` and `at_class_end`.
+    // docs/14 §5: `statement_values` and `at_class_end`.
     let d = dir();
     write(&d.0, "lib.qz", HOOKS);
     let app = write(

@@ -248,12 +248,13 @@ module Meta
     # its own.
     static def type -> Type[T] = self
     # The values the class body's statements add under `key` (docs/14
-    # §3), in statement order: the same collection whenever this class
+    # §5), in statement order: the same collection whenever this class
     # and key are named, typed once (a key named with another `U` than it
     # was first is an error at the statement), `U` written, concrete (no
-    # type parameter) and a type whose values can be baked. Later statements of the body read what earlier ones added,
-    # and so do the hooks of `at_class_end`; nothing of them is in the
-    # compiled program but what the hooks generate from them.
+    # type parameter) and a type whose values can be baked. Later
+    # statements of the body read what earlier ones added, and so do the
+    # hooks of `at_class_end`; nothing of them is in the compiled program
+    # but what the hooks generate from them.
     static native def statement_values[U](key: Symbol) -> StatementValues[U]
     # Registers `hook` to run once, with the class, after the class body's
     # last `static` statement and before the class's declaration-time
