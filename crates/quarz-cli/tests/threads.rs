@@ -135,6 +135,11 @@ fn readers_sharing_a_socket_wake_each_other() {
 }
 
 #[test]
+fn values_crossing_channels_and_selects_are_released_at_their_last_use() {
+    prints_its_out("deinit_crossing.qz");
+}
+
+#[test]
 fn exit_in_a_task_on_another_worker() {
     check_runs("exit.qz", |out, what| {
         assert_eq!(out.status.code(), Some(7), "{what}");

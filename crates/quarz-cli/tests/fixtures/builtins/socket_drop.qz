@@ -1,0 +1,28 @@
+# A socket is closed when its last reference goes, however it was made
+# (#353): the peer reads the end of the stream.
+require "socket"
+
+def open_and_drop(port: Int, how: Symbol) -> Int
+  s = case how
+      when :new then TCPSocket.new("127.0.0.1", port)
+      when :tcp then Socket.tcp("127.0.0.1", port)
+      else TCPSocket.connect(Socket.getaddrinfo("127.0.0.1", port)[0])
+      end
+  1
+end
+
+listener = TCPServer.new("127.0.0.1", 0)
+port = listener.local_address.port
+[:new, :tcp, :connect].each do |how|
+  peer = Task.spawn do
+    c = listener.accept
+    begin
+      Task.timeout(2.seconds) { c.read_bytes(10).size.to_s }
+    rescue Task::Timeout
+      "not closed"
+    end
+  end
+  open_and_drop(port, how)
+  puts "#{how}: #{peer.await}"
+end
+listener.close
