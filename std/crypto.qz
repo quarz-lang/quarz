@@ -138,8 +138,8 @@ module Crypto
 
       # Whether `signature` is the RSASSA-PSS signature of `data` with
       # `hash` (MGF1 with the same hash), whatever the salt's length: it
-      # is read from the signature, as OpenSSL's `saltlen:auto` and Go's
-      # `PSSSaltLengthAuto` verify. False for any wrong signature.
+      # is read from the signature, as OpenSSL's saltlen:auto and Go's
+      # PSSSaltLengthAuto verify. False for any wrong signature.
       native def verify_pss(data: Bytes | String, signature: Bytes, hash: Symbol) -> Bool
 
       # The SHA-256 of the SPKI DER: a key's identity, for key ids and
