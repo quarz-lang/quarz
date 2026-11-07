@@ -1,0 +1,173 @@
+# Crypto::RSA: keys read from and written to PEM and DER, signatures
+# checked against ones OpenSSL made (std/test/fixtures/crypto, its
+# README has the commands), the errors, and what inspect shows.
+require "crypto"
+require "digest"
+require "base64"
+require "json"
+require "test"
+
+class CryptoRSATest < Test::Case
+  DIR = "std/test/fixtures/crypto"
+  HASHES = [:sha256, :sha384, :sha512]
+
+  def fixture(name: String) -> String = File.read("#{DIR}/#{name}")
+  def fixture_bytes(name: String) -> Bytes = File.read_bytes("#{DIR}/#{name}")
+  def key -> Crypto::RSA::PrivateKey = Crypto::RSA::PrivateKey.from_pem(fixture("rsa2048_pkcs8.pem"))
+  def message -> Bytes = fixture_bytes("message.txt")
+
+  def test_every_format_reads_as_one_key
+    pkcs8 = Crypto::RSA::PrivateKey.from_pem(fixture("rsa2048_pkcs8.pem"))
+    pkcs1 = Crypto::RSA::PrivateKey.from_pem(fixture("rsa2048_pkcs1.pem").to_bytes)
+    assert_equal(pkcs8, pkcs1)
+    assert_equal(2048, pkcs1.bits)
+    spki = Crypto::RSA::PublicKey.from_pem(fixture("rsa2048_spki.pem"))
+    pub1 = Crypto::RSA::PublicKey.from_pem(fixture("rsa2048_pkcs1_pub.pem"))
+    assert_equal(spki, pub1)
+    assert_equal(spki, pkcs8.public_key)
+    assert_equal(2048, spki.bits)
+  end
+
+  def test_pem_and_der_round_trips
+    k = key
+    assert_true(k.to_pem.start_with?("-----BEGIN PRIVATE KEY-----\n"))
+    assert_true(k.to_pem(format: :pkcs1).start_with?("-----BEGIN RSA PRIVATE KEY-----\n"))
+    assert_equal(k, Crypto::RSA::PrivateKey.from_pem(k.to_pem))
+    assert_equal(k, Crypto::RSA::PrivateKey.from_pem(k.to_pem(format: :pkcs1)))
+    assert_equal(k, Crypto::RSA::PrivateKey.from_der(k.to_der))
+    # OpenSSL's PKCS#8 is the same DER.
+    assert_equal(fixture("rsa2048_pkcs8.pem"), k.to_pem)
+    pub = k.public_key
+    assert_true(pub.to_pem.start_with?("-----BEGIN PUBLIC KEY-----\n"))
+    assert_equal(fixture("rsa2048_spki.pem"), pub.to_pem)
+    assert_equal(pub, Crypto::RSA::PublicKey.from_der(pub.to_der))
+    assert_raise(ArgumentError) { k.to_pem(format: :pem) }
+  end
+
+  def test_openssl_signatures_verify
+    pub = key.public_key
+    HASHES.each do |h|
+      sig = fixture_bytes("sig_pkcs1v15_#{h}.bin")
+      assert_true(pub.verify(message, sig, h), h.to_s)
+      # PKCS#1 v1.5 is deterministic: the same signature.
+      assert_equal(sig, key.sign(message, h))
+    end
+    assert_true(pub.verify_pss(message, fixture_bytes("sig_pss_sha256.bin"), :sha256))
+    assert_true(pub.verify_pss(message, fixture_bytes("sig_pss_sha512.bin"), :sha512))
+  end
+
+  def test_signatures_round_trip
+    k = key
+    pub = k.public_key
+    HASHES.each do |h|
+      assert_true(pub.verify("hello", k.sign("hello", h), h))
+      sig = k.sign_pss("hello".to_bytes, h)
+      assert_true(pub.verify_pss("hello", sig, h))
+      # A PSS signature is salted: each one differs.
+      refute_equal(sig, k.sign_pss("hello", h))
+    end
+  end
+
+  def test_wrong_signatures_are_false
+    k = key
+    pub = k.public_key
+    sig = fixture_bytes("sig_pkcs1v15_sha256.bin")
+    assert_false(pub.verify("the quick brown fax", sig, :sha256))
+    changed = sig.to_a
+    changed = changed.take(10) + [(changed[10] + 1) % 256] + changed.drop(11)
+    assert_false(pub.verify(message, Bytes.from(changed), :sha256))
+    assert_false(pub.verify(message, sig, :sha512))
+    assert_false(pub.verify(message, sig.slice(0, 100), :sha256))
+    assert_false(pub.verify(message, Bytes.new, :sha256))
+    assert_false(pub.verify_pss(message, sig, :sha256))
+    other = Crypto::RSA::PrivateKey.from_pem(fixture("rsa1024_pkcs8.pem")).public_key
+    assert_false(other.verify(message, sig, :sha256))
+    # Another key of the same size.
+    assert_false(Crypto::RSA::PrivateKey.generate.public_key.verify(message, sig, :sha256))
+    assert_raise(ArgumentError) { pub.verify(message, sig, :md5) }
+    assert_raise(ArgumentError) { k.sign(message, :sha1) }
+  end
+
+  def test_generate
+    k = Crypto::RSA::PrivateKey.generate(2048)
+    assert_equal(2048, k.bits)
+    assert_equal(k, Crypto::RSA::PrivateKey.from_pem(k.to_pem))
+    assert_equal(k, Crypto::RSA::PrivateKey.from_pem(k.to_pem(format: :pkcs1)))
+    assert_equal(k, Crypto::RSA::PrivateKey.from_der(k.to_der))
+    assert_equal(k.public_key, Crypto::RSA::PublicKey.from_pem(k.public_key.to_pem))
+    assert_true(k.public_key.verify("x", k.sign("x", :sha256), :sha256))
+    refute_equal(k, Crypto::RSA::PrivateKey.generate)
+    [1024, 2047, 8192].each do |bits|
+      assert_raise(ArgumentError) { Crypto::RSA::PrivateKey.generate(bits) }
+    end
+  end
+
+  def test_errors
+    assert_raise_message(/encrypted/) { Crypto::RSA::PrivateKey.from_pem(fixture("rsa2048_encrypted.pem")) }
+    assert_raise_message(/encrypted/) { Crypto::RSA::PrivateKey.from_pem(fixture("rsa2048_proc_type.pem")) }
+    two = fixture("rsa2048_pkcs8.pem") + fixture("rsa2048_pkcs8.pem")
+    assert_raise(Crypto::Error) { Crypto::RSA::PrivateKey.from_pem(two) }
+    assert_raise_message(/EC|1\.2\.840\.10045/) { Crypto::RSA::PrivateKey.from_pem(fixture("ec_p256_pkcs8.pem")) }
+    assert_raise(Crypto::Error) { Crypto::RSA::PrivateKey.from_pem("not a key") }
+    assert_raise(Crypto::Error) { Crypto::RSA::PrivateKey.from_der(b"\x30\x03\x02\x01\x00") }
+    assert_raise(Crypto::Error) { Crypto::RSA::PublicKey.from_pem(fixture("rsa2048_pkcs8.pem")) }
+    assert_raise(Crypto::Error) { Crypto::RSA::PrivateKey.from_pem(fixture("rsa2048_spki.pem")) }
+    # Old keys are read; under 1024 bits they are not.
+    small = Crypto::RSA::PrivateKey.from_pem(fixture("rsa1024_pkcs8.pem"))
+    assert_equal(1024, small.bits)
+    assert_true(small.public_key.verify("x", small.sign("x", :sha256), :sha256))
+    assert_raise_message(/512-bit RSA key: keys of 1024 to 8192 bits only/) do
+      Crypto::RSA::PrivateKey.from_pem(fixture("rsa512_pkcs8.pem"))
+    end
+    # PSS with SHA-512 needs more than 1024 bits.
+    assert_raise_message(/too small for PSS/) { small.sign_pss("x", :sha512) }
+    # Only whitespace around the block.
+    pem = fixture("rsa2048_pkcs8.pem")
+    assert_equal(key, Crypto::RSA::PrivateKey.from_pem("\n  #{pem}\n\n"))
+    assert_raise_message(/before or after/) { Crypto::RSA::PrivateKey.from_pem("Bag Attributes\n#{pem}") }
+    assert_raise_message(/before or after/) { Crypto::RSA::PrivateKey.from_pem("#{pem}trailing\n") }
+    assert_true(Crypto::Error.new("x").is_a?(StandardError))
+  end
+
+  def test_inspect_hides_the_key
+    k = key
+    pub = k.public_key
+    assert_equal("#<Crypto::RSA::PrivateKey 2048 bits>", k.inspect)
+    assert_equal(k.inspect, k.to_s)
+    hex = pub.fingerprint.slice(0, 4).to_a.map { |b| b.to_s(16).rjust(2, "0") }.join
+    assert_equal("#<Crypto::RSA::PublicKey 2048 bits, fingerprint #{hex}…>", pub.inspect)
+    secret = Base64.encode(k.to_der.slice(40, 30))
+    ["#{k}", [k].inspect, {"k" => k}.inspect, [pub].inspect].each do |text|
+      assert_false(text.include?(secret), text)
+      assert_false(text.include?("BEGIN"), text)
+    end
+  end
+
+  def test_fingerprint
+    pub = key.public_key
+    assert_equal(Digest::SHA256.digest(pub.to_der), pub.fingerprint)
+  end
+
+  def test_an_activitypub_actor_key
+    # As an actor document carries it: SPKI PEM in a JSON string.
+    pem = fixture("rsa2048_spki.pem")
+    actor = "{\"publicKey\": {\"id\": \"https://example.com/users/a#main-key\", \"publicKeyPem\": #{pem.inspect}}}"
+    parsed = JSON.parse(actor)["publicKey"]["publicKeyPem"].as_s
+    assert_equal(key.public_key, Crypto::RSA::PublicKey.from_pem(parsed))
+  end
+
+  def test_two_tasks_share_a_key
+    k = key
+    tasks = 2.times.map do |i|
+      Task.spawn do
+        ok = true
+        20.times do |j|
+          text = "task #{i} message #{j}"
+          ok = ok && k.public_key.verify(text, k.sign(text, :sha256), :sha256)
+        end
+        ok
+      end
+    end
+    assert_equal([true, true], tasks.map(&:await))
+  end
+end
