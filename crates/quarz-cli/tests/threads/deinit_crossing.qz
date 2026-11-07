@@ -27,10 +27,12 @@ def from_a_task -> Int
   r.name.size
 end
 
+# (Made in the scope's block, not by a task of it: a task's result is
+# also held by the record of the worker that ran it, released when that
+# worker gets to it, #374.)
 def returned_from_a_scope -> Int
   r, n = Task.scope do |scope|
-    t = scope.spawn { Res.new("scope") }
-    [t.await, 1]
+    [Res.new("scope"), 1]
   end
   n
 end
