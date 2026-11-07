@@ -1212,7 +1212,9 @@ impl Runner {
                 &bound,
                 &mut methods,
                 &mut |r| match r {
-                    shake::Ref::Func(g) => work.push((g, func_bound(f, g, &bound))),
+                    shake::Ref::Func(g) => {
+                        work.push((g, func_bound(&self.lowerer.done, f, g, &bound)))
+                    }
                     shake::Ref::Const(c) => {
                         if self.bad_consts.contains(&c) {
                             found = Some(Err(world.consts[c as usize].name.clone()));
@@ -1285,7 +1287,11 @@ impl Runner {
                 }
             }
             for g in funcs {
-                work.push((g, func_bound(f, g, &bound), path.clone()));
+                work.push((
+                    g,
+                    func_bound(&self.lowerer.done, f, g, &bound),
+                    path.clone(),
+                ));
             }
             for c in consts {
                 if let Some(init) = world.consts.get(c as usize).and_then(|c| c.init) {
@@ -1473,12 +1479,20 @@ fn reached<'a>(
 /// The bound of `self` in function `g`, which `f` refers to, run with
 /// `bound`: a block of `f`'s has its `self` (where it is another, a block
 /// with a receiver, no call in it is marked `on_self`); a method `f`
-/// inlined has its own.
-fn func_bound(f: &quarz_ir::Function, g: FuncId, bound: &SelfBound) -> SelfBound {
-    if f.inlined.iter().any(|o| o.callee == g) {
-        None
-    } else {
+/// inlined has its own, and a field's default (a construction's) none.
+fn func_bound(
+    functions: &[quarz_ir::Function],
+    f: &quarz_ir::Function,
+    g: FuncId,
+    bound: &SelfBound,
+) -> SelfBound {
+    let block = functions
+        .get(g as usize)
+        .is_some_and(|g| matches!(g.kind, quarz_ir::FuncKind::Block));
+    if block && !f.inlined.iter().any(|o| o.callee == g) {
         bound.clone()
+    } else {
+        None
     }
 }
 

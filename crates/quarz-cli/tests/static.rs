@@ -583,6 +583,20 @@ fn a_class_typed_receiver_bounds_the_overrides_reached() {
             "Base.new",
             "B#label",
         ),
+        // A lambda with a receiver runs on what it is given, not on the
+        // `self` of the method it is written in (whose bound is
+        // `Runner`'s here).
+        (
+            "static def self.gen -> Void\n    s = Runner.new.run(B.new)\n    def_class_method(:total) { s.size }\n  end\nend\nclass Runner\n  def run(b: Base) -> String\n    f: Base.() -> String = -> { label }\n    b.instance_exec(&f)\n  end",
+            "",
+            "B#label",
+        ),
+        // So does a block given to `instance_exec` with keywords.
+        (
+            "static def self.gen -> Void\n    s = Runner.new.run(B.new)\n    def_class_method(:total) { s.size }\n  end\nend\nclass Runner\n  def run(b: Base) -> String\n    b.instance_exec(k: 1) { |*, k| label }\n  end",
+            "",
+            "B#label",
+        ),
     ] {
         let d = dir();
         write(

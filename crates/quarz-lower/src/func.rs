@@ -589,7 +589,16 @@ impl<'a> FnBuilder<'a> {
             self.world,
             params.len() as u32,
         );
-        let own_self = self.on_methods_self() && self.self_is_methods(call_id);
+        // (A lambda with a receiver, `-> { label }` as a `Base.() ->
+        // String`, has the `self` it is run on: no `receiver_blocks`
+        // entry says so, its type does.)
+        let own_self = self.on_methods_self()
+            && self.self_is_methods(call_id)
+            && (!is_lambda
+                || matches!(
+                    self.node_type(call_id),
+                    Some(quarz_types::Type::Proc(None, ..))
+                ));
         let id = self.lw.alloc_func();
         let name = format!(
             "{} in {}",
@@ -4141,9 +4150,14 @@ impl<'a> FnBuilder<'a> {
 
     /// Whether the block given to call `id` has the `self` of the code
     /// it is written in: not a block with a receiver, nor one a
-    /// generating native lifts into a method of its own.
+    /// generating native lifts into a method of its own, nor one given to
+    /// `instance_exec`.
     fn self_is_methods(&self, id: u32) -> bool {
-        !self.out.receiver_blocks.contains(&id) && !self.out.lifted_blocks.contains_key(&id)
+        // (A keyword `instance_exec`'s block runs on its receiver without
+        // a `receiver_blocks` entry.)
+        !self.out.receiver_blocks.contains(&id)
+            && !self.out.lifted_blocks.contains_key(&id)
+            && !matches!(self.out.calls.get(&id), Some(CallTarget::InstanceExec))
     }
 
     /// The classes receiver `id`'s static type says it is an instance of
