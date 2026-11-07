@@ -100,6 +100,44 @@ pub struct Runner {
     /// The constants a `def_field` leaves initialized: those of the REPL's
     /// earlier inputs (`continuing`).
     keep_consts: usize,
+    /// The statement values and class-end hooks the statements of the
+    /// classes not ended yet registered (docs/14 §5).
+    ends: Rc<RefCell<ClassEnds>>,
+}
+
+/// What the statements of the classes whose bodies have not ended yet
+/// keep for their end (docs/14 §5): live values, kept across the runs
+/// (the interpreter's state is shared, `SharedState`).
+#[derive(Default)]
+struct ClassEnds {
+    classes: HashMap<ClassId, ClassEnd>,
+}
+
+#[derive(Default)]
+struct ClassEnd {
+    /// The hooks, in registration order, the first under each key.
+    hooks: Vec<Hook>,
+    /// The statement values by key: the type they were made with (as
+    /// the checker names it) and the values, in statement order.
+    values: HashMap<String, (String, Vec<Value>)>,
+}
+
+struct Hook {
+    key: String,
+    block: Value,
+    /// The statement whose run registered it, and its callee.
+    stmt: StaticStmt,
+    callee: MethodId,
+}
+
+/// Where a compile-time run is, for the statement values and hooks.
+#[derive(Clone, Default)]
+struct EndContext {
+    /// The statement running (its class, the statement, its callee); none
+    /// for a `static(...)`.
+    stmt: Option<(StaticStmt, MethodId)>,
+    /// The class whose class-end hook runs.
+    hook_of: Option<ClassId>,
 }
 
 impl Runner {
@@ -978,6 +1016,7 @@ impl Runner {
             files,
             prepared: false,
             keep_consts: 0,
+            ends: Default::default(),
         }
     }
 
@@ -1576,6 +1615,7 @@ impl Runner {
         host: &mut dyn StaticHost,
         stmt: &StaticStmt,
         callee: MethodId,
+        as_statement: bool,
     ) -> Result<(Value, Vec<Pending>, std::rc::Rc<Interp>), StaticFailure> {
         if !self.prepared {
             host.prepare();
@@ -1623,7 +1663,22 @@ impl Runner {
                 notes: Vec::new(),
             });
         }
-        let mut reflect = WorldReflect::snapshot(host.world());
+        let context = EndContext {
+            stmt: as_statement.then(|| (stmt.clone(), callee)),
+            hook_of: None,
+        };
+        let mut reflect =
+            WorldReflect::snapshot(host.world()).with_ends(&*host, self.ends.clone(), context);
+        self.note_pending(host, &mut reflect);
+        let reflect = Rc::new(reflect);
+        let interp = self.interp(&reflect);
+        let result = interp.run_static(fid, Value::Class(stmt.class), stmt.file);
+        self.finish(&interp, &reflect, result, &format!("`{callee_name}`"))
+    }
+
+    /// The classes whose statements are still to run, as a message names
+    /// them, for `reflect_refusal` (docs/14 §8).
+    fn note_pending(&self, host: &dyn StaticHost, reflect: &mut WorldReflect) {
         let world = host.world();
         for i in host.pending_statements() {
             let s = &world.static_stmts[i];
@@ -1641,7 +1696,11 @@ impl Runner {
                 }
             }
         }
-        let reflect = Rc::new(reflect);
+    }
+
+    /// An interpreter for a compile-time run, on the shared state, with
+    /// `reflect` and the time limit.
+    fn interp(&self, reflect: &Rc<WorldReflect>) -> std::rc::Rc<Interp> {
         let world = self.world.clone().expect("lowered");
         let interp = Interp::with_state(
             world,
@@ -1655,7 +1714,19 @@ impl Runner {
         interp
             .deadline
             .set(Some(std::time::Instant::now() + limit()));
-        let result = interp.run_static(fid, Value::Class(stmt.class), stmt.file);
+        interp
+    }
+
+    /// A compile-time run's outcome (`what` names what ran): its value and
+    /// what it asked to generate, or the failure.
+    fn finish(
+        &self,
+        interp: &std::rc::Rc<Interp>,
+        reflect: &Rc<WorldReflect>,
+        result: Result<Value, StaticEnd>,
+        what: &str,
+    ) -> Result<(Value, Vec<Pending>, std::rc::Rc<Interp>), StaticFailure> {
+        let interp = interp.clone();
         // A refused reflection fails the run, though the code rescued it.
         if let Some(why) = reflect.refused.borrow_mut().take() {
             return Err(StaticFailure {
@@ -1678,15 +1749,58 @@ impl Runner {
                     }
                 }
                 Err(StaticFailure {
-                    message: format!("`{callee_name}` raised {class}: {message}"),
+                    message: format!("{what} raised {class}: {message}"),
                     notes,
                 })
             }
             Err(StaticEnd::Exited(code)) => Err(StaticFailure {
-                message: format!("`{callee_name}` exited with status {code} at compile time"),
+                message: format!("{what} exited with status {code} at compile time"),
                 notes: Vec::new(),
             }),
         }
+    }
+}
+
+impl Runner {
+    /// The class-end hooks `hooks` of `last`'s class, run in order, each
+    /// generating as the statement that registered it.
+    fn run_hooks(
+        &mut self,
+        host: &mut dyn StaticHost,
+        last: &StaticStmt,
+        hooks: &[Hook],
+    ) -> Result<(), StaticFailure> {
+        for hook in hooks {
+            // The world as the statements left it: the hook's statement
+            // lowered again (what it generates is in the class now).
+            let _ = self.lower(host, &hook.stmt, hook.callee);
+            let callee_name = host.world().method(hook.callee).name.clone();
+            let context = EndContext {
+                stmt: None,
+                hook_of: Some(last.class),
+            };
+            let mut reflect =
+                WorldReflect::snapshot(host.world()).with_ends(&*host, self.ends.clone(), context);
+            self.note_pending(host, &mut reflect);
+            let reflect = Rc::new(reflect);
+            let interp = self.interp(&reflect);
+            let result =
+                interp.run_static_block(hook.block.clone(), vec![Value::Class(last.class)]);
+            let what = format!(
+                "the class-end hook `:{}` (registered by `{callee_name}`)",
+                hook.key
+            );
+            let (_, pending, interp) = self.finish(&interp, &reflect, result, &what)?;
+            drop(interp);
+            // Generated as by the statement that registered it (its
+            // location, its call's type arguments).
+            self.generate(host, &hook.stmt, pending)
+                .map_err(|f| StaticFailure {
+                    message: format!("{what}: {}", f.message),
+                    notes: f.notes,
+                })?;
+        }
+        Ok(())
     }
 }
 
@@ -1697,9 +1811,25 @@ impl StaticRunner for Runner {
         stmt: &StaticStmt,
         callee: MethodId,
     ) -> Result<(), StaticFailure> {
-        let (_, pending, interp) = self.execute(host, stmt, callee)?;
+        let (_, pending, interp) = self.execute(host, stmt, callee, true)?;
         drop(interp);
         self.generate(host, stmt, pending)
+    }
+
+    fn class_end(
+        &mut self,
+        host: &mut dyn StaticHost,
+        last: &StaticStmt,
+    ) -> Result<(), StaticFailure> {
+        let hooks = match self.ends.borrow_mut().classes.get_mut(&last.class) {
+            Some(end) => std::mem::take(&mut end.hooks),
+            None => return Ok(()),
+        };
+        let result = self.run_hooks(host, last, &hooks);
+        // The statement values go with the class's end: nothing of them is
+        // in the program but what the hooks generated.
+        self.ends.borrow_mut().classes.remove(&last.class);
+        result
     }
 
     fn eval(
@@ -1708,7 +1838,7 @@ impl StaticRunner for Runner {
         stmt: &StaticStmt,
         callee: MethodId,
     ) -> Result<Baked, StaticFailure> {
-        let (value, pending, interp) = self.execute(host, stmt, callee)?;
+        let (value, pending, interp) = self.execute(host, stmt, callee, false)?;
         let fail = |message: String| StaticFailure {
             message,
             notes: Vec::new(),
@@ -1764,6 +1894,13 @@ struct WorldReflect {
     /// The `data` types and enums with a field that is not Shareable,
     /// whose values cannot be baked (`bake`).
     unshareable: rustc_hash::FxHashMap<ClassId, String>,
+    /// The statement values and hooks kept across runs (`Runner::ends`).
+    ends: Rc<RefCell<ClassEnds>>,
+    /// Where this run is.
+    context: EndContext,
+    /// The `statement_values[U]` calls: their nodes and `U`, as the
+    /// checker names it.
+    site_types: HashMap<i64, String>,
 }
 
 /// A generation a statement's run asked for, in call order.
@@ -2223,6 +2360,50 @@ impl WorldReflect {
             pending: HashMap::new(),
             in_static: std::cell::Cell::new(0),
             refused: RefCell::new(None),
+            ends: Default::default(),
+            context: EndContext::default(),
+            site_types: HashMap::new(),
+        }
+    }
+
+    /// The run's statement values and hooks: `ends`, from where it is
+    /// (`context`), with the `U` of each `statement_values` call.
+    fn with_ends(
+        mut self,
+        host: &dyn StaticHost,
+        ends: Rc<RefCell<ClassEnds>>,
+        context: EndContext,
+    ) -> WorldReflect {
+        let world = host.world();
+        let out = host.output();
+        for (node, args) in &out.type_args {
+            let Some(quarz_types::check::CallTarget::Method { method }) = out.calls.get(node)
+            else {
+                continue;
+            };
+            let m = world.method(*method);
+            if m.owner == world.builtin.meta_classdef && m.name == "statement_values" {
+                let u_param = m.type_params.first().map(|p| p.id);
+                if let Some((_, u)) = args.iter().find(|(p, _)| Some(*p) == u_param) {
+                    self.site_types.insert(*node as i64, world.type_name(u));
+                }
+            }
+        }
+        self.ends = ends;
+        self.context = context;
+        self
+    }
+
+    /// The class a statement value or hook may be given to here, or why
+    /// none may: the running statement's own (a hook's, for reading).
+    fn end_class(&self, class: ClassId, what: &str) -> Result<(), String> {
+        match (&self.context.stmt, self.context.hook_of) {
+            (_, Some(c)) if c == class => Ok(()),
+            (Some((stmt, _)), None) if stmt.class == class => Ok(()),
+            (None, None) => Err(format!(
+                "{what} belong to a class body's statements, not to `static(...)`"
+            )),
+            _ => Err(format!("{what} belong to the class whose statement runs")),
         }
     }
 }
@@ -2381,6 +2562,76 @@ impl Reflect for WorldReflect {
     }
     fn doc(&self, text: String) {
         *self.doc.borrow_mut() = Some(text);
+    }
+    fn statement_values(&self, class: ClassId, key: &str, site: i64) -> Result<(), String> {
+        self.end_class(class, "statement values")?;
+        let ty = self
+            .site_types
+            .get(&site)
+            .cloned()
+            .unwrap_or_else(|| "?".to_string());
+        let mut ends = self.ends.borrow_mut();
+        let end = ends.classes.entry(class).or_default();
+        match end.values.get(key) {
+            Some((made, _)) if *made != ty => Err(format!(
+                "the statement values `:{key}` were made as `StatementValues[{made}]`, and are named here as `StatementValues[{ty}]`: a key has one type"
+            )),
+            Some(_) => Ok(()),
+            None => {
+                end.values.insert(key.to_string(), (ty, Vec::new()));
+                Ok(())
+            }
+        }
+    }
+    fn add_statement_value(&self, class: ClassId, key: &str, value: Value) -> Result<(), String> {
+        if self.context.hook_of.is_some() {
+            return Err(format!(
+                "a class-end hook cannot add statement values (`:{key}`): they are for the class body's statements"
+            ));
+        }
+        self.end_class(class, "statement values")?;
+        let mut ends = self.ends.borrow_mut();
+        let end = ends.classes.entry(class).or_default();
+        match end.values.get_mut(key) {
+            Some((_, vs)) => {
+                vs.push(value);
+                Ok(())
+            }
+            None => Err(format!("internal: statement values `:{key}` not made")),
+        }
+    }
+    fn statement_value_list(&self, class: ClassId, key: &str) -> Vec<Value> {
+        self.ends
+            .borrow()
+            .classes
+            .get(&class)
+            .and_then(|e| e.values.get(key))
+            .map(|(_, vs)| vs.clone())
+            .unwrap_or_default()
+    }
+    fn at_class_end(&self, class: ClassId, key: &str, hook: Value) -> Result<(), String> {
+        if self.context.hook_of.is_some() {
+            return Err(format!(
+                "a class-end hook cannot register another (`:{key}`)"
+            ));
+        }
+        self.end_class(class, "class-end hooks")?;
+        let Some((stmt, callee)) = self.context.stmt.clone() else {
+            return Err("class-end hooks belong to a class body's statements".to_string());
+        };
+        let mut ends = self.ends.borrow_mut();
+        let end = ends.classes.entry(class).or_default();
+        // The first under a key counts (a DSL of many lines registers
+        // once).
+        if !end.hooks.iter().any(|h| h.key == key) {
+            end.hooks.push(Hook {
+                key: key.to_string(),
+                block: hook,
+                stmt,
+                callee,
+            });
+        }
+        Ok(())
     }
 }
 

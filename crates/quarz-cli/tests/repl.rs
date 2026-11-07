@@ -867,3 +867,27 @@ fn an_inherited_new_checks_the_subclass_initialize() {
         "{out:?}"
     );
 }
+
+#[test]
+fn class_end_hooks_run_when_the_class_is_entered() {
+    // docs/14 §5: the hooks of an input's class run when the input is
+    // entered, after its statements.
+    let dir = std::env::temp_dir().join(format!("quarz-repl-hooks-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("lib.qz"),
+        "class Endpoint\n  static def self.plug(n: Symbol) -> Void\n    statement_values[Symbol](:plugs).add(n)\n    at_class_end(:plugs) do |cls|\n      ns = cls.statement_values[Symbol](:plugs).values\n      cls.def_class_method(:plugs) { ns }\n    end\n  end\nend\n",
+    )
+    .unwrap();
+    let lib = dir.join("lib").display().to_string();
+    let (out, _) = values(&[
+        &format!("require_relative \"{lib}\""),
+        "class Api < Endpoint",
+        "  plug :auth",
+        "  plug :log",
+        "end",
+        "Api.plugs",
+    ]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(out, vec!["", "...", "...", "...", "", "=> [:auth, :log]"]);
+}

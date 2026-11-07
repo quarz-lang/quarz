@@ -1409,6 +1409,37 @@ impl Interp {
         }
     }
 
+    /// `run_static` for a block kept from an earlier compile-time run (a
+    /// class-end hook, docs/14 §5), called with `args`.
+    pub fn run_static_block(
+        self: &std::rc::Rc<Interp>,
+        block: Value,
+        args: Vec<Value>,
+    ) -> Result<Value, StaticEnd> {
+        let me = self.clone();
+        let run_body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
+            let result = me.call_block(&block, args.into_iter().collect());
+            task_exit(&me, result)
+        });
+        let root = self.sched.borrow_mut().spawn(
+            run_body,
+            None,
+            "class-end hook".to_string(),
+            256 * 1024 * 1024,
+        );
+        self.set_root(&root);
+        let code = self.run_loop_with(&root, false);
+        self.flush();
+        if let Some(status) = root.take_exit().or(self.take_exit_request()) {
+            return Err(StaticEnd::Exited(status as i32));
+        }
+        match root.result() {
+            Some(TaskResult::Value(v)) => Ok(v),
+            Some(TaskResult::Error(e)) => Err(StaticEnd::Raised(e)),
+            None => Err(StaticEnd::Exited(code)),
+        }
+    }
+
     pub(crate) fn run_loop(&self, root: &Rc<TaskHandle>) -> i32 {
         self.run_loop_with(root, true)
     }

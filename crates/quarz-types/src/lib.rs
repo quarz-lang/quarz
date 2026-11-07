@@ -709,6 +709,15 @@ pub trait StaticRunner {
             notes: Vec::new(),
         })
     }
+    /// The class of `last`, its last statement, has run every statement:
+    /// run the hooks they registered (`at_class_end`, docs/14 §5).
+    fn class_end(
+        &mut self,
+        _host: &mut dyn StaticHost,
+        _last: &StaticStmt,
+    ) -> Result<(), StaticFailure> {
+        Ok(())
+    }
     /// Forget everything lowered and run so far: the check starts over
     /// (`check_uncached` after a cache mismatch).
     fn reset(&mut self);

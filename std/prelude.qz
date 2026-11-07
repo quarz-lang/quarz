@@ -247,6 +247,41 @@ module Meta
     # subclass that inherits the generated method gets that class, not
     # its own.
     static def type -> Type[T] = self
+    # The values the class body's statements add under `key` (docs/14
+    # §5), in statement order: the same collection whenever this class
+    # and key are named, typed once (a key named with another `U` than it
+    # was first is an error at the statement), `U` written, concrete (no
+    # type parameter) and a type whose values can be baked. Later
+    # statements of the body read what earlier ones added, and so do the
+    # hooks of `at_class_end`; nothing of them is in the compiled program
+    # but what the hooks generate from them.
+    static native def statement_values[U](key: Symbol) -> StatementValues[U]
+    # Registers `hook` to run once, with the class, after the class body's
+    # last `static` statement and before the class's declaration-time
+    # checks (docs/14 §2): there it generates what all the statements
+    # together decide (one method from every line's values). Under one
+    # `key`, the first registration counts and later ones are ignored (a
+    # DSL of many lines registers once); hooks run in the order they were
+    # first registered. A hook may generate (`def_method`, `def_field`,
+    # ...) as a statement does, but not register hooks nor add statement
+    # values. Its captures are Shareable (it runs in a later compile-time
+    # run than the statement that registered it).
+    static native def at_class_end(key: Symbol, &hook: shareable (ClassDef[T]) -> Void) -> Void
+  end
+
+  # The values a class body's statements added under one key
+  # (`ClassDef#statement_values`, docs/14 §5), at compile time only.
+  class StatementValues[T]
+    # (Set by the native that makes it.)
+    @owner: Type[Object] = Object
+    @key: Symbol = :key
+    @site: Int = 0
+    # Adds `value` (after those the earlier statements added).
+    static native def add(value: T) -> Void
+    # What the statements added so far, in statement order.
+    static native def values -> Array[T]
+    # How many values were added so far.
+    static native def size -> Int
   end
 
   # A field of `T` of type `U` as a value (docs/14 §5): what
