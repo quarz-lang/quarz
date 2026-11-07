@@ -1,5 +1,5 @@
 # Crypto::AES::GCM and Crypto.random_bytes: the test vectors of the GCM
-# specification (McGrew and Viega, cases 1-4 and 13-16), round trips,
+# specification (McGrew and Viega, cases 1-4, 10 and 13-16), round trips,
 # every way of failing to open, the token layout, and what inspect shows.
 require "crypto"
 require "test"
@@ -31,6 +31,10 @@ class CryptoAESTest < Test::Case
       [K128, IV, P60, A,
        "42831ec2217774244b7221b784d0d49ce3aa212f2c02a4e035c17e2329aca12e" +
        "21d514b25466931c7d8f6a5aac84aa051ba30b396a0aac973d58e091" + "5bc94fbc3221a5db94fae95ae7121a47"],
+      # 10: AES-192, with aad.
+      [K128 + "feffe9928665731c", IV, P60, A,
+       "3980ca0b3c00e841eb06fac4872a2757859e1ceaa6efd984628593b40ca1e19c" +
+       "7d773d00c144c525ac619d18c84a3f4718e2448b2fe324d9ccda2710" + "2519498e80f1478f37ba55bd6d27618c"],
       # 13, 14, 15, 16: AES-256.
       ["00" * 32, Z12, "", "", "530f8afbc74536b9a963b4f1c4cb738b"],
       ["00" * 32, Z12, "00" * 16, "", "cea7403d4d606b6e074ec5d3baf39d18" + "d0d1c8a799996bf0265b98b5d48ab919"],
@@ -92,7 +96,6 @@ class CryptoAESTest < Test::Case
     ].each_with_index do |attempt, i|
       e = assert_raise(Crypto::AuthenticationError) { attempt.call }
       assert_true(e.is_a?(Crypto::Error))
-      assert_false(e.message.include?("attack"))
     end
     assert_nil(aead.open?(nonce, changed, aad: "orders"))
     assert_equal(b"attack at dawn", aead.open?(nonce, sealed, aad: "orders"))

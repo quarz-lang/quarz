@@ -46,7 +46,7 @@ rand = { version = "0.10", optional = true }
 pem-rfc7468 = { version = "1", features = ["alloc"], optional = true }
 # AES-GCM (`Crypto::AES::GCM`), on the same crypto-common/rand_core line
 # as `rsa`; `getrandom` for `Crypto.random_bytes`.
-aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"], optional = true }
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc", "zeroize"], optional = true }
 getrandom = { version = "0.4", optional = true }
 # The allocator (see `src/alloc.rs`): C sources built with the system's
 # compiler.
