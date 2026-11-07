@@ -70,10 +70,12 @@ pub struct Lowerer {
     static_mode: bool,
     unchecked: Vec<MethodId>,
     unchecked_consts: Vec<ConstId>,
-    /// What the previous static round left unchecked: reached again in
-    /// the next one, once checked.
-    static_retry: Vec<MethodId>,
-    static_retry_consts: Vec<ConstId>,
+    /// Functions a static round lowered but its statement did not reach
+    /// (a field default, a constant, what an invalidated layout made
+    /// lowered again): their references are followed by the next round
+    /// that reaches them, or else by the final lowering (`lower`), which
+    /// must lower what they call.
+    unwalked: HashSet<FuncId>,
     /// In a static round: the classes whose `static` statements have not
     /// all run (and their descendants). A reach by one of the names the
     /// runtime calls everywhere (`shake::RUNTIME_NAMES`: `to_s`,
@@ -149,11 +151,23 @@ pub struct Lowerer {
     /// `quarz_ir::shake`'s, by name.
     reached: Vec<bool>,
     reached_names: HashSet<String>,
-    /// In static rounds, the methods calls resolved to (`Ref::Method`),
-    /// whose overrides were reached once (`reach_target`).
-    dispatch_targets: HashSet<MethodId>,
     /// Lowered functions of this round whose references were followed.
     scanned: usize,
+}
+
+/// What a static round's statement reaches (`Lowerer::walk_all`), walked
+/// afresh each round.
+#[derive(Default)]
+struct StaticWalk {
+    methods: HashSet<MethodId>,
+    /// Calls resolved to these, whose overrides were reached.
+    targets: HashSet<MethodId>,
+    names: HashSet<String>,
+    /// Functions walked or to walk.
+    funcs: HashSet<FuncId>,
+    todo: Vec<FuncId>,
+    /// Methods reached with no function yet: lowered next.
+    lower: Vec<MethodId>,
 }
 
 /// What a function lowered with a `static(...)` as its call belongs to.
@@ -171,23 +185,17 @@ impl Lowerer {
     pub fn relower_static_fallbacks(&mut self) {
         for owner in std::mem::take(&mut self.static_fallbacks) {
             match owner {
-                // As `invalidate_layout` does: a static round lowers them
-                // again too (`static_retry`: the names they were reached by
-                // are not walked again).
+                // As `invalidate_layout` does: lowered again where they are
+                // next lowered (still `reached`, for the lazy ones).
                 FallbackOwner::Method(m) => {
                     if let Some(f) = self.method_funcs.get_mut(m as usize) {
                         *f = None;
                     }
-                    if let Some(r) = self.reached.get_mut(m as usize) {
-                        *r = false;
-                    }
-                    self.static_retry.push(m);
                 }
                 FallbackOwner::Const(c) => {
                     if let Some(f) = self.const_funcs.get_mut(c as usize) {
                         *f = None;
                     }
-                    self.static_retry_consts.push(c);
                 }
                 FallbackOwner::FieldDefault(c, i) => {
                     self.field_default_funcs.remove(&(c, i));
@@ -222,9 +230,7 @@ impl Lowerer {
         self.overridden.retain(|(c, _)| class_ok(c));
         self.static_skip.retain(class_ok);
         self.unchecked.retain(|m| (*m as usize) < methods);
-        self.static_retry.retain(|m| (*m as usize) < methods);
         self.unchecked_consts.retain(|c| (*c as usize) < consts);
-        self.static_retry_consts.retain(|c| (*c as usize) < consts);
         self.static_fallbacks.retain(|o| match *o {
             FallbackOwner::Method(m) => (m as usize) < methods,
             FallbackOwner::Const(c) => (c as usize) < consts,
@@ -364,6 +370,28 @@ impl Lowerer {
         for n in quarz_ir::shake::RUNTIME_NAMES {
             self.reach_name(world, n, &by_name, &mut work);
         }
+        // What static rounds lowered without following (no statement
+        // reached it): its references, as this round's.
+        let mut unwalked: Vec<FuncId> = std::mem::take(&mut self.unwalked).into_iter().collect();
+        unwalked.sort_unstable();
+        for fid in unwalked {
+            let Some(f) = self.done.get(fid as usize) else {
+                continue;
+            };
+            let mut methods = Vec::new();
+            let mut names = Vec::new();
+            quarz_ir::shake::refs(f, &mut |r| match r {
+                quarz_ir::shake::Ref::Method(m) => methods.push(m),
+                quarz_ir::shake::Ref::Name(n) => names.push(n.to_string()),
+                _ => {}
+            });
+            for m in methods {
+                self.reach_method(world, m, &by_name, &mut work);
+            }
+            for n in names {
+                self.reach_name(world, &n, &by_name, &mut work);
+            }
+        }
         // Methods new this round (a REPL input requiring a library) whose
         // name an earlier round reached: callable already.
         for mid in known..world.methods.len() {
@@ -463,21 +491,17 @@ impl Lowerer {
             }
         }
         let is_stale = |id: FuncId| stale.get(id as usize).copied().unwrap_or(false);
-        // Lowered again in the next static round (`static_retry`: the
-        // names they were reached by are not walked again).
-        for (mid, m) in self.method_funcs.iter_mut().enumerate() {
+        // Lowered again where they are next reached: by a static round's
+        // walk, or by the final lowering (still `reached`, for the lazy
+        // ones).
+        for m in self.method_funcs.iter_mut() {
             if m.is_some_and(is_stale) {
                 *m = None;
-                if let Some(r) = self.reached.get_mut(mid) {
-                    *r = false;
-                }
-                self.static_retry.push(mid as MethodId);
             }
         }
-        for (cid, c) in self.const_funcs.iter_mut().enumerate() {
+        for c in self.const_funcs.iter_mut() {
             if c.is_some_and(is_stale) {
                 *c = None;
-                self.static_retry_consts.push(cid as ConstId);
             }
         }
         // A field default is kept by (class, index): the indices of the
@@ -564,8 +588,8 @@ impl Lowerer {
     }
 
     /// Lower what the functions lowered so far reach, until nothing new
-    /// is reached: methods by id and by name, and, in static mode,
-    /// constants (which `lower` lowered up front).
+    /// is reached: methods by id and by name (a static round walks its
+    /// statement's reach instead: `walk_all`).
     fn reach_all(
         &mut self,
         world: &World,
@@ -577,82 +601,21 @@ impl Lowerer {
             while self.scanned < self.pending.len() {
                 let i = self.scanned;
                 self.scanned += 1;
-                let Some(f) = self.pending[i].take() else {
+                let Some(f) = self.pending[i].as_ref() else {
                     continue;
                 };
                 let mut methods = Vec::new();
-                // (A static round's call targets, whose overrides it
-                // reaches too: `reach_target`.)
-                let mut targets: Vec<MethodId> = Vec::new();
                 let mut names = Vec::new();
-                let mut consts = Vec::new();
-                if self.static_mode {
-                    // What a run may reach (`shake::reach_refs`, as the
-                    // runner's `bad_reach` walks): a symbol value names
-                    // no method, a construction reaches `initialize`
-                    // (its class's, or by name outside the classes whose
-                    // statements are still to run), a `super` or a
-                    // function call its method.
-                    quarz_ir::shake::reach_refs(&f, &mut |r| match r {
-                        quarz_ir::shake::Ref::Method(m) => targets.push(m),
-                        quarz_ir::shake::Ref::Exact(m) => methods.push(m),
-                        quarz_ir::shake::Ref::Name(n) | quarz_ir::shake::Ref::Runtime(n) => {
-                            names.push(n.to_string())
-                        }
-                        quarz_ir::shake::Ref::Construct { init, .. } => {
-                            if let Some(m) = init {
-                                methods.push(m);
-                            }
-                            names.push("initialize".to_string());
-                        }
-                        quarz_ir::shake::Ref::Const(c) => consts.push(c),
-                        _ => {}
-                    });
-                } else {
-                    quarz_ir::shake::refs(&f, &mut |r| match r {
-                        quarz_ir::shake::Ref::Method(m) => methods.push(m),
-                        quarz_ir::shake::Ref::Name(n) => names.push(n.to_string()),
-                        quarz_ir::shake::Ref::Const(c) => consts.push(c),
-                        _ => {}
-                    });
-                }
-                // In a static round, a construction whose class the
-                // receiver decides (`new` in an inherited class method)
-                // reaches the `initialize` of every class it may make by
-                // id: the name is one left out for the classes whose
-                // statements are still to run.
-                if self.static_mode {
-                    for inst in f.blocks.iter().flat_map(|b| &b.insts) {
-                        let Inst::Call {
-                            kind: CallKind::ConstructRecv { class, .. },
-                            ..
-                        } = inst
-                        else {
-                            continue;
-                        };
-                        for c in &world.classes {
-                            if world.class_is_a(c.id, *class) {
-                                if let Some(ids) = c.methods.get("initialize") {
-                                    methods.extend(ids.iter().copied());
-                                }
-                            }
-                        }
-                    }
-                }
-                self.pending[i] = Some(f);
+                quarz_ir::shake::refs(f, &mut |r| match r {
+                    quarz_ir::shake::Ref::Method(m) => methods.push(m),
+                    quarz_ir::shake::Ref::Name(n) => names.push(n.to_string()),
+                    _ => {}
+                });
                 for m in methods {
                     self.reach_method(world, m, by_name, work);
                 }
-                for m in targets {
-                    self.reach_target(world, m, by_name, work);
-                }
                 for n in names {
                     self.reach_name(world, &n, by_name, work);
-                }
-                if self.static_mode {
-                    for c in consts {
-                        self.lower_const_static(world, out, c);
-                    }
                 }
             }
             let Some(mid) = work.pop() else {
@@ -717,7 +680,6 @@ impl Lowerer {
         if self.method_funcs.len() < world.methods.len() {
             self.method_funcs.resize(world.methods.len(), None);
         }
-        let known = self.reached.len();
         if self.reached.len() < world.methods.len() {
             self.reached.resize(world.methods.len(), false);
         }
@@ -778,52 +740,30 @@ impl Lowerer {
                 fid
             }
         };
-        self.scanned = 0;
+        // What the statement reaches, walked afresh each round from its
+        // function, through the functions lowered before as well as this
+        // round's: a method is lowered (and so checked) only once the
+        // statement may run it, not because an earlier statement's reach
+        // or a function lowered for another reason calls it (docs/14 §7).
         let by_name = methods_by_name(world);
-        let mut work: Vec<MethodId> = Vec::new();
+        let mut walk = StaticWalk::default();
         for n in quarz_ir::shake::RUNTIME_NAMES {
-            self.reach_name(world, n, &by_name, &mut work);
+            self.walk_name(world, n, &by_name, &mut walk);
         }
-        // Methods new since the previous round (generated by a statement)
-        // whose name an earlier round reached: callable already, unless
-        // the name is one left out for their class, walked again later.
-        for mid in known..world.methods.len() {
-            let m = &world.methods[mid];
-            // (Or one that overrides a method a call resolved to, which
-            // may run it.)
-            if !self.reached_names.contains(m.name.as_str()) {
-                let overrides_reached = by_name.get(m.name.as_str()).is_some_and(|ms| {
-                    ms.iter().any(|&o| {
-                        o as usize != mid
-                            && self.dispatch_targets.contains(&o)
-                            && is_override(world, mid as MethodId, o)
-                            && !(quarz_ir::shake::RUNTIME_NAMES.contains(&m.name.as_str())
-                                && self.static_skip.contains(&m.owner))
-                    })
-                });
-                if overrides_reached {
-                    self.reach_method(world, mid as MethodId, &by_name, &mut work);
-                }
-                continue;
-            }
-            if quarz_ir::shake::RUNTIME_NAMES.contains(&m.name.as_str())
-                && self.static_skip.contains(&m.owner)
-            {
-                self.reached_names.remove(m.name.as_str());
-            } else {
-                self.reach_method(world, mid as MethodId, &by_name, &mut work);
+        self.walk_target(world, callee, &by_name, &mut walk);
+        self.walk_func(stmt_func, &mut walk);
+        self.walk_all(world, out, &by_name, &mut walk);
+        // This round's functions the statement does not reach: followed
+        // later (`unwalked`).
+        for i in 0..self.pending.len() {
+            let id = self.round_base + i as FuncId;
+            if !walk.funcs.contains(&id) {
+                self.unwalked.insert(id);
             }
         }
-        self.reach_target(world, callee, &by_name, &mut work);
-        // What the previous round could not lower, checked since.
-        for m in std::mem::take(&mut self.static_retry) {
-            self.reached[m as usize] = false;
-            self.reach_method(world, m, &by_name, &mut work);
+        for id in &walk.funcs {
+            self.unwalked.remove(id);
         }
-        for c in std::mem::take(&mut self.static_retry_consts) {
-            self.lower_const_static(world, out, c);
-        }
-        self.reach_all(world, out, &by_name, &mut work);
         let functions: Vec<Function> = self
             .pending
             .drain(..)
@@ -832,8 +772,6 @@ impl Lowerer {
         let file_names = self.files.iter().map(|f| f.name.clone()).collect();
         let rt = rtworld::build(world, out, self, file_names);
         self.static_mode = false;
-        self.static_retry = self.unchecked.clone();
-        self.static_retry_consts = self.unchecked_consts.clone();
         StaticRound {
             delta: Delta {
                 world: rt,
@@ -877,28 +815,45 @@ impl Lowerer {
         // (`cha::rewrite`): it calls no method of its name.
         let plain_reader = matches!(m.synth, quarz_types::Synth::FieldGet(_))
             && !self.overridden.contains(&(m.owner, m.name.clone()));
-        if !self.static_mode && !plain_reader {
+        if !plain_reader {
             self.reach_name(world, &m.name, by_name, work);
         }
     }
 
+    /// In a static round, method `mid` may run: it is lowered (once
+    /// checked) and its function walked; noted `reached` for the final
+    /// lowering, which lowers the lazy methods so noted.
+    fn walk_method(&mut self, world: &World, mid: MethodId, walk: &mut StaticWalk) {
+        if (mid as usize) >= self.reached.len() || !walk.methods.insert(mid) {
+            return;
+        }
+        self.reached[mid as usize] = true;
+        if let Some(orig) = world.methods[mid as usize].alias_of {
+            self.walk_method(world, orig, walk);
+        }
+        match self.method_funcs[mid as usize] {
+            Some(f) => self.walk_func(f, walk),
+            None => walk.lower.push(mid),
+        }
+    }
+
     /// In a static round, a call resolved to `mid`: it and the methods a
-    /// receiver's lookup may find for it instead (`is_override`), once
-    /// each, not theirs in turn (dispatch is one step; docs/14 §7).
-    fn reach_target(
+    /// receiver's lookup may find for it instead (`is_override`), not
+    /// theirs in turn (dispatch is one step; docs/14 §7).
+    fn walk_target(
         &mut self,
         world: &World,
         mid: MethodId,
         by_name: &HashMap<&str, Vec<MethodId>>,
-        work: &mut Vec<MethodId>,
+        walk: &mut StaticWalk,
     ) {
-        self.reach_method(world, mid, by_name, work);
-        if !self.static_mode || !self.dispatch_targets.insert(mid) {
+        self.walk_method(world, mid, walk);
+        if !walk.targets.insert(mid) {
             return;
         }
         let m = &world.methods[mid as usize];
         // (Not those of the classes whose statements are still to
-        // run for a name the runtime calls, as `reach_name` leaves
+        // run for a name the runtime calls, as `walk_name` leaves
         // them out: their bodies may use what is still to be
         // generated, and a dispatch to one before then finds no
         // body.)
@@ -918,7 +873,158 @@ impl Lowerer {
             })
             .unwrap_or_default();
         for o in overrides {
-            self.reach_method(world, o, by_name, work);
+            self.walk_method(world, o, walk);
+        }
+    }
+
+    /// In a static round, a method called `name` may run (but those of
+    /// the classes whose statements are still to run, for a name the
+    /// runtime calls: `static_skip`).
+    fn walk_name(
+        &mut self,
+        world: &World,
+        name: &str,
+        by_name: &HashMap<&str, Vec<MethodId>>,
+        walk: &mut StaticWalk,
+    ) {
+        if !walk.names.insert(name.to_string()) {
+            return;
+        }
+        let runtime_name =
+            !self.static_skip.is_empty() && quarz_ir::shake::RUNTIME_NAMES.contains(&name);
+        let mut skipped = false;
+        for &m in by_name.get(name).map(|v| v.as_slice()).unwrap_or(&[]) {
+            if runtime_name && self.static_skip.contains(&world.methods[m as usize].owner) {
+                skipped = true;
+                continue;
+            }
+            self.walk_method(world, m, walk);
+        }
+        // (For the final lowering: methods of the name added later are
+        // callable already.)
+        if !skipped {
+            self.reached_names.insert(name.to_string());
+        }
+    }
+
+    /// In a static round, function `fid` (lowered in this round or an
+    /// earlier one) may run: its references are followed.
+    fn walk_func(&mut self, fid: FuncId, walk: &mut StaticWalk) {
+        if walk.funcs.insert(fid) {
+            walk.todo.push(fid);
+        }
+    }
+
+    /// Function `fid`, lowered in this round or an earlier one.
+    fn function(&self, fid: FuncId) -> Option<&Function> {
+        if fid >= self.round_base {
+            self.pending
+                .get((fid - self.round_base) as usize)
+                .and_then(|f| f.as_ref())
+        } else {
+            self.done.get(fid as usize)
+        }
+    }
+
+    /// Follow what the functions walked so far refer to, lowering the
+    /// methods reached, until nothing new is: what a run may reach
+    /// (`shake::reach_refs`, as the runner's `bad_reach` walks): a
+    /// symbol value names no method, a construction reaches its
+    /// `initialize` (its class's, or by name outside the classes whose
+    /// statements are still to run) and its class's field defaults, a
+    /// `super` or a function call its method, a block its function.
+    fn walk_all(
+        &mut self,
+        world: &World,
+        out: &Output,
+        by_name: &HashMap<&str, Vec<MethodId>>,
+        walk: &mut StaticWalk,
+    ) {
+        loop {
+            if let Some(fid) = walk.todo.pop() {
+                let Some(f) = self.function(fid) else {
+                    continue;
+                };
+                let mut methods = Vec::new();
+                let mut targets = Vec::new();
+                let mut names: Vec<String> = Vec::new();
+                let mut consts = Vec::new();
+                let mut funcs = Vec::new();
+                let mut builds: Vec<(ClassId, bool)> = Vec::new();
+                quarz_ir::shake::reach_refs(f, &mut |r| match r {
+                    quarz_ir::shake::Ref::Method(m) => targets.push(m),
+                    quarz_ir::shake::Ref::Exact(m) => methods.push(m),
+                    quarz_ir::shake::Ref::Name(n) | quarz_ir::shake::Ref::Runtime(n) => {
+                        names.push(n.to_string())
+                    }
+                    quarz_ir::shake::Ref::Construct { class, init, recv } => {
+                        if let Some(m) = init {
+                            methods.push(m);
+                        }
+                        names.push("initialize".to_string());
+                        builds.push((class, recv));
+                    }
+                    quarz_ir::shake::Ref::Const(c) => consts.push(c),
+                    quarz_ir::shake::Ref::Func(g) => funcs.push(g),
+                    _ => {}
+                });
+                // A construction whose class the receiver decides (`new`
+                // in an inherited class method) reaches the `initialize`
+                // of every class it may make by id: the name is one left
+                // out for the classes whose statements are still to run.
+                for &(class, recv) in &builds {
+                    if !recv {
+                        continue;
+                    }
+                    for c in &world.classes {
+                        if world.class_is_a(c.id, class) {
+                            if let Some(ids) = c.methods.get("initialize") {
+                                methods.extend(ids.iter().copied());
+                            }
+                        }
+                    }
+                }
+                // The field defaults of the classes it may make, which
+                // their construction runs.
+                for (class, recv) in builds {
+                    for c in &world.classes {
+                        if c.id != class && !(recv && world.class_is_a(c.id, class)) {
+                            continue;
+                        }
+                        for i in 0..world.all_fields(c.id).len() {
+                            if let Some(d) = self.field_default(world, c.id, i) {
+                                funcs.push(d);
+                            }
+                        }
+                    }
+                }
+                for g in funcs {
+                    self.walk_func(g, walk);
+                }
+                for m in methods {
+                    self.walk_method(world, m, walk);
+                }
+                for m in targets {
+                    self.walk_target(world, m, by_name, walk);
+                }
+                for n in names {
+                    self.walk_name(world, &n, by_name, walk);
+                }
+                for c in consts {
+                    self.lower_const_static(world, out, c);
+                    if let Some(g) = self.const_funcs.get(c as usize).copied().flatten() {
+                        self.walk_func(g, walk);
+                    }
+                }
+                continue;
+            }
+            let Some(mid) = walk.lower.pop() else {
+                break;
+            };
+            self.lower_method(world, out, mid);
+            if let Some(g) = self.method_funcs[mid as usize] {
+                self.walk_func(g, walk);
+            }
         }
     }
 
@@ -933,23 +1039,10 @@ impl Lowerer {
         if self.reached_names.contains(name) {
             return;
         }
-        // In a static round, a runtime name leaves out the classes whose
-        // statements are still to run (`static_skip`); the name is walked
-        // again next round.
-        let runtime_name = self.static_mode
-            && !self.static_skip.is_empty()
-            && quarz_ir::shake::RUNTIME_NAMES.contains(&name);
-        let mut skipped = false;
         for &m in by_name.get(name).map(|v| v.as_slice()).unwrap_or(&[]) {
-            if runtime_name && self.static_skip.contains(&world.methods[m as usize].owner) {
-                skipped = true;
-                continue;
-            }
             self.reach_method(world, m, by_name, work);
         }
-        if !skipped {
-            self.reached_names.insert(name.to_string());
-        }
+        self.reached_names.insert(name.to_string());
     }
 }
 
