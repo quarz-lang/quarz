@@ -6421,6 +6421,31 @@ class IO
   #
   # True for a stream not opened for reading.
   native def eof? -> Bool
+  # Waits until a read would not wait: bytes are buffered or arrive, or
+  # the stream ends. Returns false when `timeout` passes first (`nil`
+  # waits without limit). Nothing is taken from the stream: what arrived
+  # stays buffered for the next read, so a wait that times out or is
+  # cancelled (`Task.timeout`, `cancel`) leaves the stream as it was.
+  # Only the calling task waits. True at once for a file (a regular
+  # file's read never waits; on a FIFO or a device it may still).
+  #
+  # ```quarz
+  # require "socket"
+  # server = TCPServer.new("127.0.0.1", 0)
+  # client = TCPSocket.new("127.0.0.1", server.local_address.port)
+  # conn = server.accept
+  # conn.wait_readable(timeout: 10.ms)   # => false
+  # client.write("hi")
+  # conn.wait_readable                   # => true
+  # conn.readpartial(10)                 # => "hi"
+  # ```
+  #
+  # ## Raises
+  #
+  # `IOError` on a closed stream; `TypeError` on a stream other than a
+  # file, a connected socket or a TLS socket (standard input, a server
+  # socket, a UDP socket).
+  native def wait_readable(timeout: Duration? = nil) -> Bool
   # Goes back to the start of a file, for reading and writing.
   #
   # ## Raises

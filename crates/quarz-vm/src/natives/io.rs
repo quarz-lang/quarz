@@ -220,6 +220,33 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             _ => false,
         }))
     });
+    native!(m, "IO#wait_readable", |i, r, a| {
+        let deadline = match a.kw(i, "timeout").or(a.pos.first()) {
+            None | Some(Value::Nil) => None,
+            Some(Value::Duration(ns)) => {
+                let d = std::time::Duration::from_nanos((*ns).max(0) as u64);
+                // A deadline past what an Instant holds is no deadline.
+                std::time::Instant::now().checked_add(d)
+            }
+            Some(_) => return Err(i.err_type("timeout must be a Duration or nil")),
+        };
+        let io = io_of(i, r)?;
+        if net::is_closed(io) {
+            return Err(net::closed_stream(i));
+        }
+        Ok(Value::Bool(match &io.kind {
+            IoKind::Socket(st) => net::socket_wait_readable(i, st, deadline)?,
+            IoKind::Tls(st) => net::socket_wait_readable(i, st, deadline)?,
+            // A regular file never makes a read wait (a FIFO or a device
+            // file may: its reads run on a helper thread, not the reactor).
+            IoKind::File(_) => true,
+            _ => {
+                return Err(i.err_type(
+                    "wait_readable waits on a connected socket or a TLS socket (true at once for a file)",
+                ))
+            }
+        }))
+    });
     native!(m, "IO#rewind", |i, r, _| {
         match &io_of(i, r)?.kind {
             IoKind::File(f) => {

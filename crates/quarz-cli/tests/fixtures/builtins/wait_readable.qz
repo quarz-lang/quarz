@@ -1,0 +1,76 @@
+# IO#wait_readable: waits without taking, false at its timeout; what a
+# cancelled or timed-out wait read stays for the next read.
+require "socket"
+
+server = TCPServer.new("127.0.0.1", 0)
+client = TCPSocket.new("127.0.0.1", server.local_address.port)
+conn = server.accept
+
+p conn.wait_readable(timeout: 20.ms)
+client.write("hi")
+p conn.wait_readable, conn.wait_readable(timeout: 0.ms), conn.wait_readable(timeout: nil)
+p conn.readpartial(10)
+
+# Interrupted by Task.timeout, then by cancel: the stream is as it was.
+begin
+  Task.timeout(20.ms) { conn.wait_readable }
+rescue Task::Timeout
+  puts "timed out"
+end
+Task.scope do |s|
+  waiter = s.spawn { conn.wait_readable }
+  Task.sleep(10.ms)
+  waiter.cancel
+end
+puts "cancelled"
+client.puts "line"
+p conn.wait_readable(timeout: 5.seconds), conn.gets
+
+# Data that arrives during the wait wakes it.
+Task.scope do |s|
+  s.spawn do
+    Task.sleep(20.ms)
+    client.write("late")
+  end
+  p conn.wait_readable(timeout: 5.seconds)
+end
+p conn.readpartial(10)
+
+# The end of the stream: a read would not wait.
+client.close
+p conn.wait_readable(timeout: 5.seconds), conn.readpartial?(10)
+
+# Closed while waiting, and closed before.
+a = TCPSocket.new("127.0.0.1", server.local_address.port)
+b = server.accept
+Task.scope do |s|
+  w = s.spawn do
+    begin
+      b.wait_readable
+      "no error"
+    rescue IOError => e
+      "IOError: #{e.message}"
+    end
+  end
+  Task.sleep(20.ms)
+  b.close
+  p w.await
+end
+begin
+  b.wait_readable
+rescue IOError => e
+  puts "IOError: #{e.message}"
+end
+a.close
+
+# A file is always readable; standard input is not a socket.
+path = File.join(Dir.tmpdir, "quarz_wait_readable_#{Process.pid}")
+File.write(path, "x")
+File.open(path, "r") { |f| p f.wait_readable(timeout: 0.ms) }
+File.delete(path)
+begin
+  STDIN.wait_readable
+rescue TypeError
+  puts "TypeError"
+end
+server.close
