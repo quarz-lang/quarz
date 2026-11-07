@@ -891,3 +891,45 @@ fn class_end_hooks_run_when_the_class_is_entered() {
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(out, vec!["", "...", "...", "...", "", "=> [:auth, :log]"]);
 }
+
+#[test]
+fn a_name_reached_before_finds_a_library_method_required_with_a_statement() {
+    // `&:as_s` reached the name in an earlier input; a later one requires
+    // `json` together with a file whose `static` statement runs. The
+    // statement's rounds do not lower `JSON::Value#as_s` (it does not
+    // reach it), and the input's own lowering still does: it reaches the
+    // methods new since its previous one whose name was reached (#387).
+    let dir = std::env::temp_dir().join(format!("quarz-repl-names-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("libdef.qz"),
+        "class Mk\n  static def self.mark -> Void\n    def_class_method(:marked) { 1 }\n  end\nend\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("lib.qz"),
+        "require \"json\"\nrequire_relative \"libdef\"\nclass D < Mk\n  mark\nend\n",
+    )
+    .unwrap();
+    let lib = dir.join("lib").display().to_string();
+    let (out, _) = values(&[
+        "class P1",
+        "  def as_s -> String = \"p1\"",
+        "end",
+        "class P2",
+        "  def as_s -> String = \"p2\"",
+        "end",
+        "a: Array[P1 | P2] = [P1.new, P2.new]",
+        "a.map(&:as_s)",
+        &format!("require_relative \"{lib}\""),
+        "D.marked",
+        "v: Array[P1 | JSON::Value] = [P1.new, JSON.parse(\"\\\"x\\\"\")]",
+        "v.map(&:as_s)",
+    ]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        out.last().map(String::as_str),
+        Some("=> [\"p1\", \"x\"]"),
+        "{out:?}"
+    );
+}
