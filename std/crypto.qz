@@ -1,6 +1,6 @@
 # Public-key cryptography: `require "crypto"`. For now RSA keys (PEM and
 # DER, PKCS#8, PKCS#1 and SPKI) and signatures (PKCS#1 v1.5 and PSS), as
-# HTTP Signatures, JWT `RS256` and webhook signatures need.
+# HTTP Signatures, JWT RS256 and webhook signatures need.
 #
 # ```
 # require "crypto"
@@ -14,6 +14,7 @@
 # Shareable, and two readings of one key are `==`; their `inspect` and
 # `to_s` never show the key. The runtime keeps the keys it parsed (by
 # contents), so signing again with one key does not parse it again.
+# Keys of 1024 to 8192 bits are read (`generate` makes 2048 to 4096).
 # There is no encryption, no encrypted PEM, and no EC or Ed25519 key yet.
 module Crypto
   # A key that does not parse, is of another kind, or is too small; a
@@ -53,8 +54,8 @@ module Crypto
       end
 
       # The key in `pem`: one PKCS#8 (`PRIVATE KEY`) or PKCS#1
-      # (`RSA PRIVATE KEY`) block, not encrypted (`Crypto::Error`
-      # otherwise, as for a second block or a key of another kind).
+      # (`RSA PRIVATE KEY`) block, alone but for whitespace, not encrypted
+      # (`Crypto::Error` otherwise, as for a key of another kind or size).
       #
       # ```
       # pem = File.read("std/test/fixtures/crypto/rsa2048_pkcs1.pem")

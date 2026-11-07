@@ -29,6 +29,14 @@ fn openssl_verifies_our_signatures() {
     }
     let dir = std::env::temp_dir().join(format!("quarz-crypto-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
+    // Removed however the test ends: it holds a private key.
+    struct Gone(std::path::PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _gone = Gone(dir.clone());
     let program = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/crypto/openssl.qz");
     let out = Command::new(env!("CARGO_BIN_EXE_quarz"))
         .arg("run")
@@ -74,5 +82,4 @@ fn openssl_verifies_our_signatures() {
         &dir,
     );
     assert!(v.contains("Verified OK"), "{v}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

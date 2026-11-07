@@ -13,7 +13,7 @@ use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey, EncodeRsaPrivateKey};
 use rsa::pkcs8::{
     DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, LineEnding,
 };
-use rsa::signature::{RandomizedSigner, SignatureEncoding, Signer, Verifier};
+use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
 use rsa::traits::PublicKeyParts;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use sha2::{Digest, Sha256, Sha384, Sha512};
@@ -32,8 +32,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let (label, der) = one_block(bytes(i, a.arg(0), "pem")?).map_err(|e| error(i, e))?;
         let key = match label.as_str() {
             "PRIVATE KEY" => private_from_pkcs8(&der),
-            "RSA PRIVATE KEY" => RsaPrivateKey::from_pkcs1_der(&der)
-                .map_err(|e| format!("not an RSA private key: {e}")),
+            "RSA PRIVATE KEY" => private_from_pkcs1(&der),
             "ENCRYPTED PRIVATE KEY" => Err(ENCRYPTED.to_string()),
             other => Err(format!("not a private key: {other}")),
         }
@@ -48,8 +47,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let (label, der) = one_block(bytes(i, a.arg(0), "pem")?).map_err(|e| error(i, e))?;
         let key = match label.as_str() {
             "PUBLIC KEY" => public_from_spki(&der),
-            "RSA PUBLIC KEY" => RsaPublicKey::from_pkcs1_der(&der)
-                .map_err(|e| format!("not an RSA public key: {e}")),
+            "RSA PUBLIC KEY" => public_from_pkcs1(&der),
             other => Err(format!("not a public key: {other}")),
         }
         .map_err(|e| error(i, e))?;
@@ -110,15 +108,17 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let key = private_key(i, r)?;
         usable(i, &key.to_public_key())?;
         let data = message(i, a.arg(0))?;
+        // The same (deterministic) signature, computed blinded.
+        let mut rng = rand::rng();
         let sig = match hash(i, a.arg(1))? {
             Hash::Sha256 => rsa::pkcs1v15::SigningKey::<Sha256>::new((*key).clone())
-                .try_sign(data)
+                .try_sign_with_rng(&mut rng, data)
                 .map(|s| s.to_vec()),
             Hash::Sha384 => rsa::pkcs1v15::SigningKey::<Sha384>::new((*key).clone())
-                .try_sign(data)
+                .try_sign_with_rng(&mut rng, data)
                 .map(|s| s.to_vec()),
             Hash::Sha512 => rsa::pkcs1v15::SigningKey::<Sha512>::new((*key).clone())
-                .try_sign(data)
+                .try_sign_with_rng(&mut rng, data)
                 .map(|s| s.to_vec()),
         }
         .map_err(|e| error(i, format!("signing failed: {e}")))?;
@@ -129,8 +129,22 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         usable(i, &key.to_public_key())?;
         let data = message(i, a.arg(0))?;
         let mut rng = rand::rng();
+        let h = hash(i, a.arg(1))?;
+        // EMSA-PSS needs the hash twice (the salt is as long) and 2 bytes
+        // in the modulus.
+        let need = 2 * h.size() + 2;
+        if key.size() < need {
+            return Err(error(
+                i,
+                format!(
+                    "a {}-bit key is too small for PSS with this hash ({} bits at least)",
+                    bits(&key.to_public_key()),
+                    need * 8
+                ),
+            ));
+        }
         // The salt as long as the hash (`SigningKey::new`'s default).
-        let sig = match hash(i, a.arg(1))? {
+        let sig = match h {
             Hash::Sha256 => rsa::pss::SigningKey::<Sha256>::new((*key).clone())
                 .try_sign_with_rng(&mut rng, data)
                 .map(|s| s.to_vec()),
@@ -236,10 +250,22 @@ fn symbol(interp: &Interp, v: &Value, what: &str) -> Result<String, Flow> {
     }
 }
 
+#[derive(Clone, Copy)]
 enum Hash {
     Sha256,
     Sha384,
     Sha512,
+}
+
+impl Hash {
+    /// The digest's size in bytes.
+    fn size(self) -> usize {
+        match self {
+            Hash::Sha256 => 32,
+            Hash::Sha384 => 48,
+            Hash::Sha512 => 64,
+        }
+    }
 }
 
 fn hash(interp: &Interp, v: &Value) -> Result<Hash, Flow> {
@@ -276,6 +302,11 @@ fn one_block(text: &[u8]) -> Result<(String, Vec<u8>), String> {
     if text.contains("Proc-Type: 4,ENCRYPTED") {
         return Err(ENCRYPTED.to_string());
     }
+    if text.contains("-----BEGIN ")
+        && (!text.starts_with("-----BEGIN ") || !text.ends_with("-----"))
+    {
+        return Err("text before or after the PEM block: give the key alone".to_string());
+    }
     if text.matches("-----BEGIN ").count() != 1 {
         return Err(if text.contains("-----BEGIN ") {
             "more than one PEM block: give one key".to_string()
@@ -297,11 +328,52 @@ fn algorithm_name(oid: &str) -> String {
         "1.3.101.113" => "an Ed448 key (1.3.101.113)".to_string(),
         "1.3.101.110" => "an X25519 key (1.3.101.110)".to_string(),
         "1.2.840.10040.4.1" => "a DSA key (1.2.840.10040.4.1)".to_string(),
+        "1.2.840.113549.1.1.10" => {
+            "an RSASSA-PSS-only key (1.2.840.113549.1.1.10), which is not supported".to_string()
+        }
         other => format!("a key of algorithm {other}"),
     }
 }
 
 const RSA_OID: &str = "1.2.840.113549.1.1.1";
+
+/// The sizes of the keys read: what `rsa` takes for a public key
+/// (`RsaPublicKey::MIN_SIZE..=MAX_SIZE`), for private ones too.
+const MIN_BITS: usize = 1024;
+const MAX_BITS: usize = 8192;
+
+fn size_error(bits: usize) -> String {
+    format!("a {bits}-bit RSA key: keys of {MIN_BITS} to {MAX_BITS} bits only")
+}
+
+/// The modulus's size of a PKCS#1 `RSAPublicKey`, if it decodes.
+fn pkcs1_modulus_bits(der: &[u8]) -> Option<usize> {
+    use rsa::pkcs1::der::Decode;
+    let key = rsa::pkcs1::RsaPublicKey::<rsa::pkcs1::der::asn1::UintRef<'_>>::from_der(der).ok()?;
+    let n = key.modulus.as_bytes();
+    let first = *n.first()?;
+    Some(n.len() * 8 - first.leading_zeros() as usize)
+}
+
+/// The size error for a public key `rsa` would refuse, when that is why.
+fn public_size_error(pkcs1: &[u8]) -> Option<String> {
+    let bits = pkcs1_modulus_bits(pkcs1)?;
+    (!(MIN_BITS..=MAX_BITS).contains(&bits)).then(|| size_error(bits))
+}
+
+fn checked_private(key: RsaPrivateKey) -> Result<RsaPrivateKey, String> {
+    let n = key.n().bits() as usize;
+    if !(MIN_BITS..=MAX_BITS).contains(&n) {
+        return Err(size_error(n));
+    }
+    Ok(key)
+}
+
+/// Whether a parse failed for a reason other than the encoding (the
+/// algorithm, the size): no other encoding is tried then.
+fn decisive(e: &str) -> bool {
+    !e.starts_with("not an RSA private key") && !e.starts_with("not an RSA public key")
+}
 
 fn private_from_pkcs8(der: &[u8]) -> Result<RsaPrivateKey, String> {
     if let Ok(info) = rsa::pkcs8::PrivateKeyInfoRef::try_from(der) {
@@ -310,7 +382,15 @@ fn private_from_pkcs8(der: &[u8]) -> Result<RsaPrivateKey, String> {
             return Err(format!("not an RSA key: {}", algorithm_name(&oid)));
         }
     }
-    RsaPrivateKey::from_pkcs8_der(der).map_err(|e| format!("not an RSA private key: {e}"))
+    checked_private(
+        RsaPrivateKey::from_pkcs8_der(der).map_err(|e| format!("not an RSA private key: {e}"))?,
+    )
+}
+
+fn private_from_pkcs1(der: &[u8]) -> Result<RsaPrivateKey, String> {
+    checked_private(
+        RsaPrivateKey::from_pkcs1_der(der).map_err(|e| format!("not an RSA private key: {e}"))?,
+    )
 }
 
 fn public_from_spki(der: &[u8]) -> Result<RsaPublicKey, String> {
@@ -319,16 +399,33 @@ fn public_from_spki(der: &[u8]) -> Result<RsaPublicKey, String> {
         if oid != RSA_OID {
             return Err(format!("not an RSA key: {}", algorithm_name(&oid)));
         }
+        if let Some(e) = info
+            .subject_public_key
+            .as_bytes()
+            .and_then(public_size_error)
+        {
+            return Err(e);
+        }
     }
     RsaPublicKey::from_public_key_der(der).map_err(|e| format!("not an RSA public key: {e}"))
+}
+
+fn public_from_pkcs1(der: &[u8]) -> Result<RsaPublicKey, String> {
+    if let Some(e) = public_size_error(der) {
+        return Err(e);
+    }
+    RsaPublicKey::from_pkcs1_der(der).map_err(|e| format!("not an RSA public key: {e}"))
 }
 
 /// A private key from PKCS#8 or PKCS#1 DER.
 fn private_from_der(der: &[u8]) -> Result<RsaPrivateKey, String> {
     match private_from_pkcs8(der) {
         Ok(k) => Ok(k),
-        Err(e) if e.starts_with("not an RSA key") => Err(e),
-        Err(e) => RsaPrivateKey::from_pkcs1_der(der).map_err(|_| e),
+        Err(e) if decisive(&e) => Err(e),
+        Err(e) => match private_from_pkcs1(der) {
+            Err(e1) if decisive(&e1) => Err(e1),
+            r => r.map_err(|_| e),
+        },
     }
 }
 
@@ -336,8 +433,11 @@ fn private_from_der(der: &[u8]) -> Result<RsaPrivateKey, String> {
 fn public_from_der(der: &[u8]) -> Result<RsaPublicKey, String> {
     match public_from_spki(der) {
         Ok(k) => Ok(k),
-        Err(e) if e.starts_with("not an RSA key") => Err(e),
-        Err(e) => RsaPublicKey::from_pkcs1_der(der).map_err(|_| e),
+        Err(e) if decisive(&e) => Err(e),
+        Err(e) => match public_from_pkcs1(der) {
+            Err(e1) if decisive(&e1) => Err(e1),
+            r => r.map_err(|_| e),
+        },
     }
 }
 

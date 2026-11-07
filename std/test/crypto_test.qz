@@ -82,6 +82,8 @@ class CryptoRSATest < Test::Case
     assert_false(pub.verify_pss(message, sig, :sha256))
     other = Crypto::RSA::PrivateKey.from_pem(fixture("rsa1024_pkcs8.pem")).public_key
     assert_false(other.verify(message, sig, :sha256))
+    # Another key of the same size.
+    assert_false(Crypto::RSA::PrivateKey.generate.public_key.verify(message, sig, :sha256))
     assert_raise(ArgumentError) { pub.verify(message, sig, :md5) }
     assert_raise(ArgumentError) { k.sign(message, :sha1) }
   end
@@ -89,6 +91,10 @@ class CryptoRSATest < Test::Case
   def test_generate
     k = Crypto::RSA::PrivateKey.generate(2048)
     assert_equal(2048, k.bits)
+    assert_equal(k, Crypto::RSA::PrivateKey.from_pem(k.to_pem))
+    assert_equal(k, Crypto::RSA::PrivateKey.from_pem(k.to_pem(format: :pkcs1)))
+    assert_equal(k, Crypto::RSA::PrivateKey.from_der(k.to_der))
+    assert_equal(k.public_key, Crypto::RSA::PublicKey.from_pem(k.public_key.to_pem))
     assert_true(k.public_key.verify("x", k.sign("x", :sha256), :sha256))
     refute_equal(k, Crypto::RSA::PrivateKey.generate)
     [1024, 2047, 8192].each do |bits|
@@ -106,13 +112,20 @@ class CryptoRSATest < Test::Case
     assert_raise(Crypto::Error) { Crypto::RSA::PrivateKey.from_der(b"\x30\x03\x02\x01\x00") }
     assert_raise(Crypto::Error) { Crypto::RSA::PublicKey.from_pem(fixture("rsa2048_pkcs8.pem")) }
     assert_raise(Crypto::Error) { Crypto::RSA::PrivateKey.from_pem(fixture("rsa2048_spki.pem")) }
-    # Old keys are read; under 1024 bits they do not sign or verify.
+    # Old keys are read; under 1024 bits they are not.
     small = Crypto::RSA::PrivateKey.from_pem(fixture("rsa1024_pkcs8.pem"))
+    assert_equal(1024, small.bits)
     assert_true(small.public_key.verify("x", small.sign("x", :sha256), :sha256))
-    tiny = Crypto::RSA::PrivateKey.from_pem(fixture("rsa512_pkcs8.pem"))
-    assert_equal(512, tiny.bits)
-    assert_raise(Crypto::Error) { tiny.sign("x", :sha256) }
-    assert_raise(Crypto::Error) { tiny.public_key.verify("x", Bytes.new, :sha256) }
+    assert_raise_message(/512-bit RSA key: keys of 1024 to 8192 bits only/) do
+      Crypto::RSA::PrivateKey.from_pem(fixture("rsa512_pkcs8.pem"))
+    end
+    # PSS with SHA-512 needs more than 1024 bits.
+    assert_raise_message(/too small for PSS/) { small.sign_pss("x", :sha512) }
+    # Only whitespace around the block.
+    pem = fixture("rsa2048_pkcs8.pem")
+    assert_equal(key, Crypto::RSA::PrivateKey.from_pem("\n  #{pem}\n\n"))
+    assert_raise_message(/before or after/) { Crypto::RSA::PrivateKey.from_pem("Bag Attributes\n#{pem}") }
+    assert_raise_message(/before or after/) { Crypto::RSA::PrivateKey.from_pem("#{pem}trailing\n") }
     assert_true(Crypto::Error.new("x").is_a?(StandardError))
   end
 
