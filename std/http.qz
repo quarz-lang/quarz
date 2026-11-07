@@ -414,6 +414,9 @@ module HTTP
         part
       rescue Error => e
         raise_for(e)
+      rescue IOError, SystemCallError => e
+        raise e unless @client
+        raise Client::ConnectError.new("the connection failed while reading the body: #{e.message}")
       end
     end
 
@@ -2001,6 +2004,13 @@ module HTTP
       unless u.scheme.downcase == "http" && !(u.host || "").empty?
         raise ArgumentError, "a proxy is an http URL with a host, not #{u.to_s.inspect}"
       end
+      info = u.userinfo
+      if info
+        # Sent as Basic credentials: decoded as UTF-8.
+        user, _, password = info.partition(":")
+        URI.decode_component(user)
+        URI.decode_component(password)
+      end
       u
     end
 
@@ -2016,25 +2026,41 @@ module HTTP
       host = URI.ascii_downcase(target.host || "")
       host = host[0, host.size - 1] if host.end_with?(".")
       port = target.port || target.default_port
-      no_proxy.any? do |entry|
-        e = URI.ascii_downcase(entry)
-        next true if e == "*"
-        name = e
-        want_port: Int? = nil
-        unless e.start_with?("[")
-          h, colon, p = e.rpartition(":")
-          if !colon.empty? && !h.include?(":") && p.match?(/\A[0-9]+\z/)
-            name = h
-            want_port = p.to_i
-          end
+      no_proxy.any? { |entry| Proxy.matches?(URI.ascii_downcase(entry.strip), host, port) }
+    end
+
+    # :nodoc:
+    # Whether the NO_PROXY entry `e` covers `host` (lower case, no
+    # trailing dot) at `port`: `*`, a name and its subdomains, an address
+    # exactly, each with an optional `:port` (`[v6]:port` for IPv6).
+    def self.matches?(e: String, host: String, port: Int?) -> Bool
+      return true if e == "*"
+      name = e
+      want_port: Int? = nil
+      if e.start_with?("[")
+        close = e.index("]")
+        return false if close.nil?
+        name = e[1, close - 1]
+        rest = e[(close + 1)..]
+        if rest.start_with?(":") && rest[1..].match?(/\A[0-9]+\z/)
+          want_port = rest[1..].to_i
+        elsif !rest.empty?
+          return false
         end
-        name = name[1, name.size - 2] if name.start_with?("[") && name.end_with?("]")
-        name = name[1..] if name.start_with?(".")
-        name = name[0, name.size - 1] if name.end_with?(".")
-        next false if name.empty?
-        next false if want_port && want_port != port
-        host == name || host.end_with?(".#{name}")
+      else
+        h, colon, p = e.rpartition(":")
+        if !colon.empty? && !h.include?(":") && p.match?(/\A[0-9]+\z/)
+          name = h
+          want_port = p.to_i
+        end
       end
+      return false if want_port && want_port != port
+      # An address matches only itself.
+      return name == host if name.include?(":") || name.match?(/\A[0-9.]+\z/)
+      name = name[1..] if name.start_with?(".")
+      name = name[0, name.size - 1] if name.end_with?(".")
+      return false if name.empty?
+      host == name || host.end_with?(".#{name}")
     end
   end
 
@@ -2384,6 +2410,8 @@ module HTTP
     @user_agent: String
     # The kept connections, by origin and proxy.
     @pool: Atom[Hash[String, Array[Idle]]]
+    # `#close` was called: connections are no longer kept.
+    @closed: Atom[Bool]
 
     # A client. `timeout` bounds a whole request (connecting, sending, the
     # response's headers, and the redirects), `connect_timeout` the
@@ -2414,6 +2442,7 @@ module HTTP
       @idle_timeout = idle_timeout
       @user_agent = user_agent
       @pool = Atom[Hash[String, Array[Idle]]].new({})
+      @closed = Atom.new(false)
     end
 
     # :nodoc:
@@ -2481,9 +2510,11 @@ module HTTP
       request(Request.patch(url, body, content_type, headers))
     end
 
-    # Closes the kept connections (those in use are closed when their
-    # responses are done).
+    # Closes the kept connections and keeps no more: those in use are
+    # closed when their responses are done. The client can still send
+    # requests, each on a connection of its own.
     def close -> Void
+      @closed.set(true)
       old = @pool.get
       until @pool.compare_and_set(old, {})
         old = @pool.get
@@ -2548,19 +2579,22 @@ module HTTP
     end
 
     # One request and its response's headers, on a kept connection or a
-    # new one; a kept connection found closed is replaced once.
+    # new one; a kept connection found closed is replaced once. The head
+    # is made (and checked) before any connection is taken.
     private def round_trip(req: Request) -> Response
       proxy_url = @proxy&.proxy_for(req.url)
+      absolute = !proxy_url.nil? && req.url.scheme.downcase == "http"
+      head, chunked = request_head(req, absolute, proxy_url)
       key = "#{req.url.origin}|#{proxy_url&.to_s || ""}"
       io = take(key)
       if io
         begin
-          return exchange(req, io, key, proxy_url, true)
+          return exchange(req, head, chunked, io, key, true)
         rescue Stale
-          Client.close_quietly(io)
+          nil
         end
       end
-      exchange(req, connect(req.url, proxy_url), key, proxy_url, false)
+      exchange(req, head, chunked, connect(req.url, proxy_url), key, false)
     end
 
     # :nodoc:
@@ -2568,42 +2602,52 @@ module HTTP
     class Stale < StandardError
     end
 
-    # Send `req` on `io` and read the response's headers. `Stale` when a
-    # kept connection (`reused`) turns out closed before any byte of the
-    # response and the request can be sent again: nothing of it was sent,
-    # or it is idempotent.
-    private def exchange(req: Request, io: IO, key: String, proxy_url: URI?, reused: Bool) -> Response
+    # Send `req` on `io` and read the response's headers; `io` is closed
+    # unless the response's body owns it. `Stale` when a kept connection
+    # (`reused`) turns out closed before any byte of the response and the
+    # request can be sent again: its body is not a stream, and nothing of
+    # it was sent or it is idempotent.
+    private def exchange(req: Request, head: String, chunked: Bool, io: IO, key: String, reused: Bool) -> Response
       reader = Reader.new(io)
       reader.read_timeout = @read_timeout
       sent = false
+      owned = false
       begin
-        write_request(io, req, !proxy_url.nil? && req.url.scheme.downcase == "http", proxy_url)
+        HTTP.write_message(io, head, req.body, chunked, true, @write_timeout)
+        io.flush
         sent = true
-        read_response(req, io, reader, key)
+        res = read_response(req, io, reader, key)
+        owned = true
+        res
       rescue Stale => e
-        Client.close_quietly(io)
-        raise e if reused && (req.idempotent? || !sent)
+        raise e if reused && again?(req, sent)
         raise ProtocolError.new("the server closed the connection without a response")
       rescue IOError, SystemCallError => e
-        Client.close_quietly(io)
-        raise Stale.new(e.message) if reused && reader.received == 0 && (req.idempotent? || !sent)
+        raise Stale.new(e.message) if reused && reader.received == 0 && again?(req, sent)
         raise ConnectError.new("the connection to #{Client.host_header(req.url)} failed: #{e.message}")
       rescue Task::Timeout
-        Client.close_quietly(io)
         raise TimeoutError.new("writing the request took longer than #{@write_timeout}")
       rescue HTTP::Error => e
-        Client.close_quietly(io)
         raise Client.error_for(e)
-      rescue Error => e
-        Client.close_quietly(io)
-        raise e
+      ensure
+        # Whatever went wrong (a cancellation, a Stream procedure that
+        # raised), the connection is not left open.
+        Client.close_quietly(io) unless owned
       end
     end
 
-    # The request line and headers, then the body.
-    private def write_request(io: IO, req: Request, absolute: Bool, proxy_url: URI?) -> Void
+    # Whether `req` may be sent again on a new connection.
+    private def again?(req: Request, sent: Bool) -> Bool
+      return false if req.body.is_a?(Content::Stream)
+      req.idempotent? || !sent
+    end
+
+    # The request line and headers, and whether the body goes chunked.
+    # Raises `ArgumentError` for a header that would split the request.
+    private def request_head(req: Request, absolute: Bool, proxy_url: URI?) -> [String, Bool]
       url = req.url
-      target = absolute ? url.with(fragment: nil).to_s : Client.origin_form(url)
+      # No user information on the wire (RFC 9110 §4.2.4).
+      target = absolute ? url.with(userinfo: nil, fragment: nil).to_s : Client.origin_form(url)
       headers = req.headers.delete("content-length").delete("transfer-encoding").delete("host")
       headers = headers.put("user-agent", @user_agent) unless headers.key?("user-agent")
       chunked = false
@@ -2630,9 +2674,7 @@ module HTTP
       out << "Host: #{Client.host_header(url)}\r\n"
       headers.each { |k, v| out << "#{Headers.canonical(k)}: #{v}\r\n" }
       out << "\r\n"
-      HTTP.write_message(io, out.to_s, req.body, chunked, true, @write_timeout)
-      io.flush
-      nil
+      [out.to_s, chunked]
     end
 
     # :nodoc:
@@ -2654,7 +2696,8 @@ module HTTP
     end
 
     # :nodoc:
-    # `Basic ...` from a proxy URL's user information, nil without.
+    # `Basic ...` from a proxy URL's user information, nil without
+    # (`Proxy` checked that it decodes).
     def self.basic(proxy_url: URI) -> String?
       info = proxy_url.userinfo
       return nil if info.nil?
@@ -2663,23 +2706,26 @@ module HTTP
     end
 
     # The status line and headers (interim 1xx responses skipped), and
-    # the body as its framing says.
+    # the body as its framing says. The status lines and headers read
+    # share `max_header_bytes`.
     private def read_response(req: Request, io: IO, reader: Reader, key: String) -> Response
-      first = true
+      budget = @max_header_bytes
       loop do
-        line = reader.read_line(@max_header_bytes)
+        line = reader.read_line(budget)
         if line.nil?
-          raise Stale.new("closed") if first && reader.received == 0
+          raise Stale.new("closed") if reader.received == 0
           raise ProtocolError.new("the connection ended in the response's headers")
         end
-        first = false
+        budget -= line.size + 2
         text = line.decode?
         raise ProtocolError.new("bad status line") if text.nil?
         m = text.match(/\A(HTTP\/1\.[01]) ([0-9]{3})(?: (.*))?\z/)
         raise ProtocolError.new("bad status line: #{text[0, 80].inspect}") if m.nil?
         version = m[1] || ""
         status = (m[2] || "0").to_i
-        headers = HTTP.read_headers(reader, @max_header_bytes)
+        before = reader.received - reader.buffered
+        headers = HTTP.read_headers(reader, budget)
+        budget -= reader.received - reader.buffered - before
         next if status >= 100 && status < 200 && status != 101
         return response_of(req, io, reader, key, version, status, headers)
       end
@@ -2688,6 +2734,8 @@ module HTTP
     private def response_of(req: Request, io: IO, reader: Reader, key: String, version: String, status: Int,
                             headers: Headers) -> Response
       keep = version == "HTTP/1.1" && !headers.token?("connection", "close")
+      # A 101's connection speaks another protocol from here.
+      keep = false if status == 101
       no_body = req.method == "HEAD" || (status >= 100 && status < 200) || status == 204 || status == 304
       body = if no_body
         Body.new(reader, 0, false, @max_body_bytes, client: true)
@@ -2695,6 +2743,9 @@ module HTTP
         te = headers.all("transfer-encoding")
         cls = headers.all("content-length")
         if !te.empty?
+          # Both, or chunked in HTTP/1.0: read as chunked (or to the end)
+          # but not kept (RFC 9112 §6.3).
+          keep = false if !cls.empty? || version == "HTTP/1.0"
           codings = te.flat_map { |v| v.split(",").map { |c| c.strip.downcase } }
           if codings.last? == "chunked"
             Body.new(reader, nil, true, @max_body_bytes, client: true)
@@ -2724,26 +2775,28 @@ module HTTP
       port = url.port || url.default_port || 80
       https = url.scheme.downcase == "https"
       tls = @tls
+      max = @max_header_bytes
       begin
         Task.timeout(@connect_timeout) do
           if proxy_url
             sock = Socket.tcp(proxy_url.host || "", proxy_url.port || 80)
             if https
-              Client.tunnel(sock, host, port, proxy_url, @max_header_bytes)
-              TLSSocket.connect(sock, host, tls)
+              Client.secure(sock) do
+                Client.tunnel(sock, host, port, proxy_url, max)
+                TLSSocket.connect(sock, host, tls)
+              end
             else
               sock
             end
           elsif https
-            TLSSocket.connect(Socket.tcp(host, port), host, tls)
+            sock = Socket.tcp(host, port)
+            Client.secure(sock) { TLSSocket.connect(sock, host, tls) }
           else
             Socket.tcp(host, port)
           end
         end
       rescue Task::Timeout
         raise TimeoutError.new("connecting to #{Client.host_header(url)} took longer than #{@connect_timeout}")
-      rescue ProxyError => e
-        raise e
       rescue Error => e
         raise e
       rescue SocketError, SystemCallError, IOError => e
@@ -2755,8 +2808,22 @@ module HTTP
     end
 
     # :nodoc:
+    # The block's IO, `sock` closed if the block does not finish (a
+    # timeout or a cancellation included).
+    def self.secure(sock: TCPSocket, &: () -> IO) -> IO
+      done = false
+      begin
+        made = yield
+        done = true
+        made
+      ensure
+        close_quietly(sock) unless done
+      end
+    end
+
+    # :nodoc:
     # `CONNECT host:port` on `sock` to the proxy; `ProxyError` when it
-    # does not answer 2xx (the socket closed).
+    # does not answer 2xx.
     def self.tunnel(sock: TCPSocket, host: String, port: Int, proxy_url: URI, max_header_bytes: Int) -> Void
       authority = host.include?(":") ? "[#{host}]:#{port}" : "#{host}:#{port}"
       out = String::Builder.new
@@ -2767,26 +2834,14 @@ module HTTP
       sock.write(out.to_s)
       reader = Reader.new(sock)
       line = reader.read_line(max_header_bytes)
-      if line.nil?
-        sock.close
-        raise ConnectError.new("the proxy closed the connection")
-      end
+      raise ConnectError.new("the proxy closed the connection") if line.nil?
       m = (line.decode? || "").match(/\AHTTP\/1\.[01] ([0-9]{3})/)
-      if m.nil?
-        sock.close
-        raise ProtocolError.new("bad status line from the proxy")
-      end
+      raise ProtocolError.new("bad status line from the proxy") if m.nil?
       status = (m[1] || "0").to_i
-      HTTP.read_headers(reader, max_header_bytes)
-      unless status >= 200 && status <= 299
-        sock.close
-        raise ProxyError.new(status)
-      end
+      HTTP.read_headers(reader, max_header_bytes - line.size - 2)
+      raise ProxyError.new(status) unless status >= 200 && status <= 299
       # What follows is the server's: the proxy sent nothing more.
-      if reader.buffered > 0
-        sock.close
-        raise ProtocolError.new("the proxy sent data after its answer")
-      end
+      raise ProtocolError.new("the proxy sent data after its answer") if reader.buffered > 0
       nil
     end
 
@@ -2814,15 +2869,23 @@ module HTTP
     # Keep `io` for `key`, or close it when the pool has enough.
     def give_back(key: String, io: IO) -> Void
       return nil if io.closed?
+      if @closed.value
+        Client.close_quietly(io)
+        return nil
+      end
       now = Time.monotonic
       loop do
         old = @pool.get
-        idles = (old[key]? || []).select { |i| now - i.since < @idle_timeout }
+        all = old[key]? || []
+        idles = all.select { |i| now - i.since < @idle_timeout }
         if idles.size >= @max_idle_per_host
           Client.close_quietly(io)
           return nil
         end
-        return nil if @pool.compare_and_set(old, old.put(key, idles.push(Idle.new(io, now))))
+        if @pool.compare_and_set(old, old.put(key, idles.push(Idle.new(io, now))))
+          all.reject { |i| now - i.since < @idle_timeout }.each { |i| Client.close_quietly(i.io) }
+          return nil
+        end
       end
     end
   end

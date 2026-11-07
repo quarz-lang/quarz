@@ -19,8 +19,9 @@ class HttpClientTest < Test::Case
       peers.update { |a| a.include?(port) ? a : a.push(port) }
       auth = req.headers["authorization"] || "-"
       cookie = req.headers["cookie"] || "-"
+      pauth = req.headers["proxy-authorization"] || "-"
       body = req.body.read
-      seen.update { |a| a.push("#{req.method} #{req.path} auth=#{auth} cookie=#{cookie} ua=#{req.headers["user-agent"]} #{body}") }
+      seen.update { |a| a.push("#{req.method} #{req.path} auth=#{auth} cookie=#{cookie} pauth=#{pauth} ua=#{req.headers["user-agent"]} #{body}") }
       case req.path
       when "/text" then HTTP::Server::Response.text("hello #{req.method}")
       when "/echo"
@@ -199,10 +200,11 @@ class HttpClientTest < Test::Case
       serving do |b|
         c = client
         target = "#{b}/echo".gsub("/", "~")
-        headers = {"Authorization" => "Bearer t", "Cookie" => "s=1", "X-Other" => "kept"}
+        headers = {"Authorization" => "Bearer t", "Cookie" => "s=1", "Proxy-Authorization" => "Basic x",
+                   "X-Other" => "kept"}
         assert_equal(200, c.get("#{a}/redirect/302/#{target}", headers).status)
         last = @seen.value.last? || ""
-        assert_match(/\AGET \/echo auth=- cookie=- /, last)
+        assert_match(/\AGET \/echo auth=- cookie=- pauth=- /, last)
         # The same origin keeps them.
         c.get("#{a}/redirect/302/~echo", headers).close
         assert_match(/\AGET \/echo auth=Bearer t cookie=s=1 /, @seen.value.last? || "")
@@ -283,6 +285,62 @@ class HttpClientTest < Test::Case
       assert_equal("ok", c.get("#{base}/c").body.read)
       Task.sleep(50.ms)
       assert_raise(HTTP::Client::ProtocolError) { c.post("#{base}/d", body: "x") }
+    end
+  end
+
+  def test_a_streamed_body_is_never_sent_twice
+    by_hand(["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"]) do |base|
+      c = client
+      assert_equal("ok", c.get("#{base}/a").body.read)
+      Task.sleep(50.ms)
+      runs = Atom.new(0)
+      req = HTTP::Client::Request.stream("PUT", "#{base}/b") do |w|
+        runs.update { |n| n + 1 }
+        w.write("x")
+      end
+      # The kept connection is closed: the request fails (a write error or
+      # no response), and is not sent again on a new one.
+      e = assert_raise(HTTP::Client::Error) { c.request(req) }
+      assert_true(e.is_a?(HTTP::Client::ProtocolError) || e.is_a?(HTTP::Client::ConnectError), e.class.name)
+      assert_equal(1, runs.value)
+    end
+  end
+
+  def test_a_101_connection_is_not_kept
+    by_hand(["HTTP/1.1 101 Switching Protocols\r\nUpgrade: other\r\nConnection: Upgrade\r\n\r\n",
+             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"]) do |base|
+      c = client
+      assert_equal(101, c.get("#{base}/up", {"Upgrade" => "other", "Connection" => "Upgrade"}).status)
+      # Not the upgraded connection again (where it would get "ok"): a new
+      # one, whose first answer is the 101 again.
+      assert_equal(101, c.get("#{base}/a").status)
+      assert_equal(2, connections)
+    end
+  end
+
+  def test_connections_are_closed_on_timeouts
+    listener = TCPServer.new("127.0.0.1", 0)
+    closed = Channel[String].new(capacity: 4)
+    Task.scope do |scope|
+      scope.spawn do
+        2.times do
+          sock = listener.accept
+          scope.spawn do
+            reader = HTTP::Reader.new(sock)
+            HTTP.read_request(reader, 4096, 4096, nil, HTTP::Proxies.none, false)
+            # No answer: wait for the client to go.
+            rest = Task.timeout(5.seconds) { sock.read_bytes(1) }
+            closed.send(rest.empty? ? "closed" : "data")
+            sock.close
+          end
+        end
+      end
+      base = "http://127.0.0.1:#{listener.local_address.port}"
+      assert_raise(HTTP::Client::TimeoutError) { client(timeout: 100.ms).get("#{base}/a") }
+      assert_equal("closed", closed.receive)
+      assert_raise(Task::Timeout) { Task.timeout(100.ms) { client.get("#{base}/b") } }
+      assert_equal("closed", closed.receive)
+      listener.close
     end
   end
 
@@ -403,7 +461,11 @@ class HttpClientTest < Test::Case
     proxying do |proxy|
       serving(server_tls) do |base|
         good = HTTP::Proxy.new("http://user:secret@#{proxy}")
-        assert_equal("hello GET", client(proxy: good, tls: roots).get("#{base}/text").body.read)
+        tunnelled = client(proxy: good, tls: roots)
+        assert_equal("hello GET", tunnelled.get("#{base}/text").body.read)
+        # The tunnel is kept: one connection at the server.
+        assert_equal("hello GET", tunnelled.get("#{base}/text").body.read)
+        assert_equal(1, connections)
         e = assert_raise(HTTP::Client::ProxyError) do
           client(proxy: HTTP::Proxy.new("http://user:wrong@#{proxy}"), tls: roots).get("#{base}/text")
         end
@@ -430,6 +492,12 @@ class HttpClientTest < Test::Case
     assert_nil(p.proxy_for(URI.parse("http://10.0.0.1:8080/")))
     assert_equal("http://proxy:3128", p.proxy_for(URI.parse("http://10.0.0.1/")).to_s)
     assert_nil(p.proxy_for(URI.parse("http://[::1]:80/")))
+    q = HTTP::Proxy.new("http://proxy:3128", no_proxy: ["[::1]:8080", "0.0.1"])
+    assert_nil(q.proxy_for(URI.parse("http://[::1]:8080/")))
+    assert_equal("http://proxy:3128", q.proxy_for(URI.parse("http://[::1]:8081/")).to_s)
+    # An address is not a domain: no suffix match.
+    assert_equal("http://proxy:3128", q.proxy_for(URI.parse("http://127.0.0.1/")).to_s)
+    assert_raise(ArgumentError) { HTTP::Proxy.new("http://u:%FF@proxy:3128") }
     assert_nil(HTTP::Proxy.new("http://proxy:3128", no_proxy: ["*"]).proxy_for(URI.parse("https://any/")))
     assert_raise(ArgumentError) { HTTP::Proxy.new("https://proxy:3128") }
   end
