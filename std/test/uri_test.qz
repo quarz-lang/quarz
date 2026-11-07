@@ -71,6 +71,14 @@ class URIResolveTest < Test::Case
     assert_equal("http://a?y", URI.parse("http://a").resolve("?y").to_s)
   end
 
+  def test_a_path_that_looks_like_an_authority
+    u = URI.parse("foo:/a").resolve("/.//x")
+    assert_equal("//x", u.path)
+    assert_nil(u.host)
+    assert_equal("foo:/.//x", u.to_s)
+    assert_nil(URI.parse(u.to_s).host)
+  end
+
   def test_a_relative_base_is_refused
     assert_raise(ArgumentError) { URI.parse("/a/b").resolve("c") }
   end
@@ -114,7 +122,7 @@ class URIParseTest < Test::Case
 
   def test_what_does_not_parse
     ["1http://x", "ht tp://x", "http://h:80x/", "http://h:99999/", "http://[::1/", "http://::1]/",
-     "http://[::1]x/"].each do |t|
+     "http://[::1]x/", "http://a:b:80/", "http://::1/", "http://a[b/", "http://[]/", "http://[v1.abc]/"].each do |t|
       assert_raise(ArgumentError) { URI.parse(t) }
     end
   end
@@ -134,6 +142,8 @@ class URIParseTest < Test::Case
     assert_equal("http://[::1]", URI.parse("http://[::1]/").origin)
     assert_raise(ArgumentError) { URI.parse("/a").origin }
     assert_raise(ArgumentError) { URI.parse("mailto:a@b").origin }
+    # ASCII letters only are folded.
+    assert_equal("http://\u212Aa.com", URI.parse("http://\u212Aa.com/").origin)
   end
 end
 

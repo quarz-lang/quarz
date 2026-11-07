@@ -42,7 +42,9 @@ data URI(
   # `text` split into its parts. Raises `ArgumentError` when it does not
   # parse: a scheme that is not a letter followed by letters, digits,
   # `+`, `-` and `.`, a port that is not digits (up to 65535), or an IPv6
-  # literal's brackets unbalanced. Anything else is taken as it is.
+  # literal's brackets unbalanced or holding something else (a colon in
+  # a host is an IPv6 address's, in brackets). Anything else is taken as
+  # it is.
   #
   # ```
   # URI.parse("http://[::1]:8080/").host     # => "::1"
@@ -72,17 +74,25 @@ data URI(
         close = hostport.index("]")
         raise ArgumentError, "unbalanced brackets in #{text.inspect}" if close.nil?
         host = hostport[1, close - 1]
+        # An IPv6 literal (IPvFuture is not taken).
+        unless host.include?(":")
+          raise ArgumentError, "not an IPv6 address in brackets: #{hostport.inspect}"
+        end
         rest = hostport[(close + 1)..]
         unless rest.empty? || rest.start_with?(":")
           raise ArgumentError, "not a host: #{hostport.inspect}"
         end
         port = parse_port(rest.empty? ? nil : rest[1..], text)
       else
-        raise ArgumentError, "unbalanced brackets in #{text.inspect}" if hostport.include?("]")
+        if hostport.include?("]") || hostport.include?("[")
+          raise ArgumentError, "unbalanced brackets in #{text.inspect}"
+        end
         h, colon, p = hostport.rpartition(":")
         if colon.empty?
           host = hostport
         else
+          # A colon in a host is an IPv6 address's, in brackets.
+          raise ArgumentError, "not a host: #{h.inspect} (an IPv6 address goes in brackets)" if h.include?(":")
           host = h
           port = parse_port(p, text)
         end
@@ -118,6 +128,9 @@ data URI(
       pt = port
       out << ":" << pt.to_s if pt
     end
+    # A path starting with `//` without an authority (resolving can make
+    # one) would read back as an authority.
+    out << "/." if h.nil? && path.start_with?("//")
     out << path
     q = query
     out << "?" << q if q
@@ -142,7 +155,8 @@ data URI(
     end
   end
 
-  # `scheme://host[:port]`, the scheme and host in lower case and the
+  # `scheme://host[:port]`, the scheme and host in lower case (ASCII
+  # letters only) and the
   # port only when it is not the default one: two URLs of one origin give
   # the same text. Raises `ArgumentError` without a scheme or a host.
   #
@@ -153,11 +167,21 @@ data URI(
   def origin -> String
     h = host
     raise ArgumentError, "no origin: #{to_s}" if scheme.empty? || h.nil?
-    name = h.downcase
+    name = URI.ascii_downcase(h)
     name = "[#{name}]" if name.include?(":")
     pt = port
     tail = pt && pt != default_port ? ":#{pt}" : ""
-    "#{scheme.downcase}://#{name}#{tail}"
+    "#{URI.ascii_downcase(scheme)}://#{name}#{tail}"
+  end
+
+  # :nodoc:
+  # Only A to Z: a host's other characters are not folded (a Kelvin sign
+  # is not a `k`).
+  def self.ascii_downcase(text: String) -> String
+    return text unless text.match?(/[A-Z]/)
+    out = Bytes::Builder.new
+    text.to_bytes.each { |c| out << (c >= 65 && c <= 90 ? c + 32 : c) }
+    out.to_bytes.decode? || text
   end
 
   # `reference` resolved against this URI (RFC 3986 §5.2.2, with the
