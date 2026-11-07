@@ -3890,7 +3890,11 @@ impl<'a> FnBuilder<'a> {
             if m.owner == self.world.builtin.meta_classdef
                 && matches!(
                     m.name.as_str(),
-                    "def_field" | "field_ref" | "method_ref" | "class_method_ref"
+                    "def_field"
+                        | "field_ref"
+                        | "method_ref"
+                        | "class_method_ref"
+                        | "statement_values"
                 )
             {
                 let site = self.load_const(Constant::Int(e.id as i64));

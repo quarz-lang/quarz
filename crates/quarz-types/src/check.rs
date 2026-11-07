@@ -2508,23 +2508,37 @@ impl Checker {
             }
         }
         let stmts = self.superclass_first(stmts);
+        // The classes one of whose statements failed: their class-end
+        // hooks do not run (what they combine is incomplete).
+        let mut failed: HashSet<ClassId> = HashSet::default();
         for (i, stmt) in stmts {
             // Done once it ran: until then its class, and the classes
             // under it, may still get members from it
             // (`pending_statement_classes`).
+            let errors_before = self.error_count();
             if let Some(callee) = self.check_static_stmt(&stmt) {
                 if let Some(r) = runner.as_deref_mut() {
                     if let Err(failure) = r.run(self, &stmt, callee) {
-                        let mut message = failure.message;
-                        for note in failure.notes {
-                            message.push('\n');
-                            message.push_str(&note);
-                        }
-                        self.error_in(stmt.file, message, stmt.span);
+                        self.static_failure(&stmt, failure);
                     }
                 }
             }
+            if self.error_count() > errors_before {
+                failed.insert(stmt.class);
+            }
             self.static_done[i] = true;
+            // The class's last statement: the hooks its statements
+            // registered run, before the checks deferred past them.
+            let last = !self.world.static_stmts.iter().enumerate().any(|(j, s)| {
+                s.class == stmt.class && !self.static_done.get(j).copied().unwrap_or(false)
+            });
+            if last && !failed.contains(&stmt.class) {
+                if let Some(r) = runner.as_deref_mut() {
+                    if let Err(failure) = r.class_end(self, &stmt) {
+                        self.static_failure(&stmt, failure);
+                    }
+                }
+            }
         }
         // The conformance of these files' classes deferred past their
         // statements (docs/14 §5), which may have generated what they
@@ -2542,6 +2556,16 @@ impl Checker {
             self.world = std::mem::take(&mut declarer.world);
             self.world.freeze_ancestors(true);
         }
+    }
+
+    /// A statement's failure, reported at it with its notes.
+    fn static_failure(&mut self, stmt: &StaticStmt, failure: crate::StaticFailure) {
+        let mut message = failure.message;
+        for note in failure.notes {
+            message.push('\n');
+            message.push_str(&note);
+        }
+        self.error_in(stmt.file, message, stmt.span);
     }
 
     /// The statements `stmts` (in file name order, then text order) in
@@ -11873,6 +11897,32 @@ impl Checker {
                 .cloned()
             {
                 if m.is_static {
+                    // `statement_values[U]`'s values are what later
+                    // statements and the class-end hooks read, and what
+                    // they generate from: `U` is a type whose values can be
+                    // baked (docs/14 §3).
+                    if m.owner == self.world.builtin.meta_classdef && m.name == "statement_values" {
+                        let u_param = m.type_params.first().map(|p| p.id);
+                        if let Some((_, u)) = args.iter().find(|(p, _)| Some(*p) == u_param) {
+                            let u = self.resolve(u);
+                            if !u.has_vars() {
+                                if let Some(why) = self.bake_refusal(&u) {
+                                    let why = if why.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(" ({why})")
+                                    };
+                                    self.error(
+                                        format!(
+                                            "statement values of type {} cannot be kept: their values must be bakeable{why} (literals, classes, `data` of Shareable fields, arrays and hashes of them)",
+                                            self.world.type_name(&u)
+                                        ),
+                                        expr.span,
+                                    );
+                                }
+                            }
+                        }
+                    }
                     self.out.type_args.insert(expr.id, args);
                 } else {
                     self.out.call_type_args.insert(expr.id, args);
@@ -12603,8 +12653,11 @@ impl Checker {
                     });
                 // A block given to `Meta::ClassDef`'s generating natives
                 // becomes a method's body (docs/14 §5).
-                self.env.next_block_lifted =
-                    m.is_native && m.owner == self.world.builtin.meta_classdef;
+                // (A class-end hook's block is compile-time code, run
+                // with the class, not a generated method's body.)
+                self.env.next_block_lifted = m.is_native
+                    && m.owner == self.world.builtin.meta_classdef
+                    && m.name != "at_class_end";
                 self.env.next_block_init = self.env.next_block_lifted && m.name == "def_initialize";
                 // (Own only on the `static def`'s own `self`, outside any
                 // block run with another receiver: `instance_exec` on

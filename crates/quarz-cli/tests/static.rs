@@ -804,3 +804,119 @@ fn a_lifted_block_checked_once_per_type_must_have_one_type() {
     assert!(ok, "{err}");
     assert_eq!(out, "2\n");
 }
+
+const HOOKS: &str = r##"data Plug = (name: String, order: Int)
+
+class Endpoint
+  # One line per plug; the class's end makes `self.plugs` of them all.
+  static def self.plug(p: Plug) -> Void
+    statement_values[Plug](:plugs).add(p)
+    at_class_end(:plugs) do |cls|
+      ps = cls.statement_values[Plug](:plugs).values
+      cls.def_class_method(:plugs) { ps }
+    end
+  end
+  # Another key, of another type: kept apart.
+  static def self.tag(t: Symbol) -> Void
+    statement_values[Symbol](:tags).add(t)
+    at_class_end(:tags) do |cls|
+      ts = cls.statement_values[Symbol](:tags).values
+      cls.def_method(:tags) { ts }
+    end
+  end
+  # A later statement reads what earlier ones added.
+  static def self.count_plugs -> Void
+    n = statement_values[Plug](:plugs).size
+    puts "plugs so far: #{n}"
+    # (It generates in the statement itself too.)
+    def_class_method(:counted) { n }
+  end
+  static def self.misnamed -> Void
+    statement_values[String](:plugs)
+  end
+  static def self.failing -> Void
+    at_class_end(:failing) { |cls| raise ArgumentError, "no plugs" }
+  end
+  static def self.nesting -> Void
+    at_class_end(:outer) { |cls| cls.at_class_end(:inner) { |c| nil } }
+  end
+  static def self.adding -> Void
+    at_class_end(:adding) { |cls| cls.statement_values[Plug](:plugs).add(Plug.new("x", 0)) }
+  end
+end
+"##;
+
+#[test]
+fn class_end_hooks_combine_a_bodys_statements() {
+    // docs/14 §3: `statement_values` and `at_class_end`.
+    let d = dir();
+    write(&d.0, "lib.qz", HOOKS);
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass Api < Endpoint\n  plug Plug.new(\"auth\", 1)\n  tag :json\n  plug Plug.new(\"log\", 2)\n  count_plugs\n  plug Plug.new(\"cache\", 3)\n  tag :v1\nend\nclass V2 < Api\nend\np Api.plugs.map(&:name), Api.counted, Api.new.tags\np V2.plugs.size\n",
+    );
+    let expected = "[\"auth\", \"log\", \"cache\"]\n2\n[:json, :v1]\n3\n";
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    assert_eq!(err, "plugs so far: 2\n");
+    // Compiled: the hook's method is an ordinary one.
+    let exe = d.0.join("app-bin");
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", exe.to_str().unwrap()],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+    // `--tree` lists what a hook generated as generated.
+    let (ok, out, err) = quarz(&d.0, &["check", "--tree", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    let tree: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let text = tree.to_string();
+    assert!(text.contains("\"name\":\"plugs\""), "{text}");
+    assert!(text.contains("\"generated\":true"), "{text}");
+
+    // The errors, at the statement (a hook's at the class's last one,
+    // naming its key and the `static def` that registered it).
+    let bad = write(
+        &d.0,
+        "bad.qz",
+        "require_relative \"lib\"\nclass A < Endpoint\n  plug Plug.new(\"a\", 1)\n  misnamed\nend\nclass B < Endpoint\n  failing\n  plug Plug.new(\"b\", 1)\nend\nclass C < Endpoint\n  nesting\nend\nclass D < Endpoint\n  adding\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", bad.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("bad.qz:4:3: error: `misnamed` raised RuntimeError: the statement values `:plugs` were made as `StatementValues[Plug]`, and are named here as `StatementValues[String]`: a key has one type"),
+        "{err}"
+    );
+    assert!(
+        err.contains("bad.qz:8:3: error: the class-end hook `:failing` (registered by `failing`) raised ArgumentError: no plugs"),
+        "{err}"
+    );
+    assert!(
+        err.contains("bad.qz:11:3: error: the class-end hook `:outer` (registered by `nesting`) raised RuntimeError: a class-end hook cannot register another (`:inner`)"),
+        "{err}"
+    );
+    assert!(
+        err.contains("bad.qz:14:3: error: the class-end hook `:adding` (registered by `adding`) raised RuntimeError: a class-end hook cannot add statement values (`:plugs`)"),
+        "{err}"
+    );
+    // A class one of whose statements failed runs no hook.
+    assert!(!err.contains("`:plugs` (registered by `plug`)"), "{err}");
+
+    // `U` is a type whose values can be baked, checked where it is written.
+    write(
+        &d.0,
+        "box.qz",
+        "class Box\n  @n: Int = 0\nend\nclass Gen\n  static def self.boxes -> Void\n    statement_values[Box](:boxes)\n  end\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "box.qz"], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("box.qz:6:5: error: statement values of type Box cannot be kept: their values must be bakeable"),
+        "{err}"
+    );
+}

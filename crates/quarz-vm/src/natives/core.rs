@@ -176,6 +176,56 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Meta::ClassDef#class_method_ref", |i, r, a| {
         method_ref(i, r, &a, true)
     });
+    // Statement values and class-end hooks (docs/14 §3).
+    native!(m, "Meta::ClassDef#statement_values", |i, r, a| {
+        let class = reflected_class(i, r)?;
+        let Value::Symbol(key) = a.arg(0) else {
+            return Err(i.err_type("statement_values takes its key as a symbol"));
+        };
+        let Some(Value::Int(site)) = a.kw(i, quarz_ir::FIELD_REF_SITE) else {
+            return Err(i.err_runtime("internal: statement values without their call"));
+        };
+        let key_name = i.symbol_name(*key).to_string();
+        reflect_of(i)?
+            .statement_values(class, &key_name, *site)
+            .map_err(|m| i.err_runtime(&m))?;
+        let sv = meta_class(i, "Meta::StatementValues")?;
+        Ok(Value::Object(Object::new(
+            sv,
+            smallvec![Value::Class(class), Value::Symbol(*key), Value::Int(*site)],
+        )))
+    });
+    native!(m, "Meta::StatementValues#add", |i, r, a| {
+        let (class, key) = statement_values_of(i, r)?;
+        reflect_of(i)?
+            .add_statement_value(class, &key, a.arg(0).clone())
+            .map_err(|m| i.err_runtime(&m))?;
+        Ok(Value::Nil)
+    });
+    native!(m, "Meta::StatementValues#values", |i, r, _| {
+        let (class, key) = statement_values_of(i, r)?;
+        Ok(Value::array(
+            reflect_of(i)?.statement_value_list(class, &key),
+        ))
+    });
+    native!(m, "Meta::StatementValues#size", |i, r, _| {
+        let (class, key) = statement_values_of(i, r)?;
+        Ok(Value::Int(
+            reflect_of(i)?.statement_value_list(class, &key).len() as i64,
+        ))
+    });
+    native!(m, "Meta::ClassDef#at_class_end", |i, r, a| {
+        let class = reflected_class(i, r)?;
+        let Value::Symbol(key) = a.arg(0) else {
+            return Err(i.err_type("at_class_end takes its key as a symbol"));
+        };
+        let hook = super::block(i, &a)?;
+        let key_name = i.symbol_name(*key).to_string();
+        reflect_of(i)?
+            .at_class_end(class, &key_name, hook)
+            .map_err(|m| i.err_runtime(&m))?;
+        Ok(Value::Nil)
+    });
     native!(m, "Meta::Method#bind", |i, _, _| Err(i.err_runtime(
         "a `Meta::Method` is bound only in a block given to `def_method`, where it is baked"
     )));
@@ -604,6 +654,16 @@ fn meta_class(interp: &Interp, name: &str) -> Result<ClassId, Flow> {
         .world
         .class_by_name(name)
         .ok_or_else(|| interp.err_runtime(&format!("the prelude has no `{name}`")))
+}
+
+/// The class and key of a `Meta::StatementValues`.
+fn statement_values_of(interp: &Interp, recv: &Value) -> Result<(ClassId, String), Flow> {
+    if let Value::Object(o) = recv {
+        if let (Some(Value::Class(c)), Some(Value::Symbol(k))) = (o.field(0), o.field(1)) {
+            return Ok((c, interp.symbol_name(k).to_string()));
+        }
+    }
+    Err(interp.err_type("not a Meta::StatementValues"))
 }
 
 /// A `Meta::FieldRef` to the field `name` of `class`, made at the call
