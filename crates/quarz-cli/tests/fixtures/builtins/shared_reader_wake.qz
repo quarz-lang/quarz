@@ -1,0 +1,48 @@
+# A reader parked on a socket is woken by bytes another task left in
+# the buffer (#345): on one worker, deterministic.
+require "socket"
+
+server = TCPServer.new("127.0.0.1", 0)
+client = TCPSocket.new("127.0.0.1", server.local_address.port)
+conn = server.accept
+
+def outcome(t: Task[String?]) -> String
+  Task.timeout(2.seconds) { t.await.inspect }
+rescue Task::Timeout
+  "still parked"
+end
+
+# A parks in gets; the peer writes two lines at once; B takes the
+# first, leaving the second in the buffer, which A must get.
+a = Task.spawn { conn.gets? }
+Task.yield
+client.write("one\ntwo\n")
+p conn.gets
+puts outcome(a)
+
+# The same with wait_readable as B's step: it reads the bytes into the
+# buffer, taking none.
+a = Task.spawn { conn.gets? }
+Task.yield
+client.write("three\n")
+p conn.wait_readable(timeout: 1.second)
+puts outcome(a)
+
+# B reads half a line and waits for the rest: A, which wants any byte,
+# is woken before B parks.
+w = Task.spawn { conn.wait_readable(timeout: 2.seconds) }
+Task.yield
+client.write("xy")
+b = Task.spawn { conn.gets? }
+p w.await
+client.write("z\n")
+p b.await
+
+# The end of the stream seen by B wakes A too.
+a = Task.spawn { conn.gets? }
+Task.yield
+client.close
+p conn.read
+puts outcome(a)
+conn.close
+server.close

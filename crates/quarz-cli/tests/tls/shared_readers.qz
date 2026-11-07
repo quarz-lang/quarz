@@ -1,0 +1,61 @@
+# Two tasks read lines from one TLSSocket while the peer writes many
+# lines in few writes (#345), as tests/threads/shared_readers.qz does
+# over TCP: every line read once, no reader parked with its line in the
+# plaintext buffer. ARGV is the certificates' directory.
+require "tls"
+
+dir = ARGV[0]
+server_config = TLS::ServerConfig.new(certificate: File.read(File.join(dir, "server.pem")),
+                                      private_key: File.read(File.join(dir, "server.key")))
+ca = TLS::Roots.from_pem(File.read(File.join(dir, "ca.pem")))
+config = TLS::Config.new(roots: ca)
+listener = TCPServer.new("127.0.0.1", 0)
+port = listener.local_address.port
+
+ROUNDS = 60
+LINES = 40
+hung = 0
+wrong = 0
+total = 0
+ROUNDS.times do |round: Int|
+  peer = Task.spawn { TLSSocket.accept(listener.accept, server_config) }
+  tls = TLSSocket.connect(TCPSocket.new("127.0.0.1", port), "localhost", config)
+  server = peer.await
+  readers = 2.times.map do |k: Int|
+    Task.spawn do
+      got: Array[String] = []
+      while true
+        tls.wait_readable if k == 1 && round.odd?
+        line = tls.gets
+        break if line == "end\n"
+        got = got.push(line)
+      end
+      got
+    end
+  end
+  writer = Task.spawn do
+    i = 0
+    while i < LINES
+      n = 1 + (i + round) % 7
+      n = LINES - i if n > LINES - i
+      batch = (i...(i + n)).map { |j| "#{j}\n" }.join
+      i += n
+      batch += "end\nend\n" if i == LINES
+      server.write(batch)
+    end
+  end
+  begin
+    Task.timeout(10.seconds) do
+      writer.await
+      lines = readers.flat_map(&:await)
+      total += lines.size
+      wrong += 1 unless lines.map(&:to_i).sort == (0...LINES).to_a
+    end
+  rescue Task::Timeout
+    hung += 1
+  end
+  tls.close
+  server.close
+end
+listener.close
+p [:rounds, ROUNDS, :lines, total, :wrong, wrong, :hung, hung]
