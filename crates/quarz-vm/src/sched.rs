@@ -634,6 +634,22 @@ impl ScopeInner {
     pub fn children(&self) -> Vec<Rc<TaskHandle>> {
         lock(&self.children).iter().cloned().collect()
     }
+
+    /// Ask the children still running but `except` to cancel, under the
+    /// children's lock; their references, to wake. (No handle is copied:
+    /// a copy released after the owner let the scope go would release
+    /// what a child holds here, #374.)
+    pub fn cancel_children_except(&self, except: TaskRef) -> Vec<TaskRef> {
+        let children = lock(&self.children);
+        let mut refs = Vec::new();
+        for c in children.iter() {
+            if c.task_ref() != except && !c.is_done() {
+                c.set_cancel_requested();
+                refs.push(c.task_ref());
+            }
+        }
+        refs
+    }
 }
 
 /// A channel. Its state is behind one lock, which no task holds while it
@@ -1640,11 +1656,8 @@ impl Scheduler {
                         // once.
                         if let Some(scope) = scope {
                             if scope.cancel() {
-                                for c in scope.children() {
-                                    if c.task_ref() != me && !c.is_done() {
-                                        c.set_cancel_requested();
-                                        self.wake_ref(c.task_ref());
-                                    }
+                                for c in scope.cancel_children_except(me) {
+                                    self.wake_ref(c);
                                 }
                             }
                             self.wake_ref(scope.owner);

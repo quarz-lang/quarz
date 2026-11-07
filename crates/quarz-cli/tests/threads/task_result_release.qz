@@ -1,12 +1,16 @@
 # A task's result is released where the program's last reference to it
 # goes, not later on the worker that ran the task (#374): its
-# `deinitialize` runs before the next line, every round.
+# `deinitialize` runs before the next line, every round (counted, so
+# that the output stays short; the builtins fixture of the same name
+# prints them).
+DEINITS = Atom[Int].new(0)
+
 class Res
   include Shareable
   @name: String
   def initialize(@name: String); end
   def deinitialize
-    puts "deinit #{@name}"
+    DEINITS.update { |n| n + 1 }
   end
 end
 
@@ -34,11 +38,12 @@ def failed(i: Int) -> Int
 end
 
 ROUNDS = 1000
+late = 0
 ROUNDS.times do |i: Int|
   awaited(i)
-  puts "-- awaited #{i}"
+  late += 1 unless DEINITS.get == 2 * i + 1
   spawned(i)
-  puts "-- spawned #{i}"
+  late += 1 unless DEINITS.get == 2 * i + 2
   failed(i)
 end
-puts "done"
+p [:rounds, ROUNDS, :late, late, :released, DEINITS.get]
