@@ -163,6 +163,10 @@ pub struct FnBuilder<'a> {
     /// While the method's parameters are bound (their defaults lowered):
     /// a later parameter holds no value yet.
     binding_params: bool,
+    /// `self` here is the method's (`Inst::Call::on_self`): not in a
+    /// block with a receiver or a generated method's block, nor in one
+    /// nested in such a block.
+    own_self: bool,
     is_block: bool,
     is_lambda: bool,
     file: u32,
@@ -224,6 +228,7 @@ impl<'a> FnBuilder<'a> {
             retry_targets: Vec::new(),
             rescuing: Vec::new(),
             binding_params: false,
+            own_self: true,
             method,
             class_id,
             is_block: false,
@@ -584,6 +589,16 @@ impl<'a> FnBuilder<'a> {
             self.world,
             params.len() as u32,
         );
+        // (A lambda with a receiver, `-> { label }` as a `Base.() ->
+        // String`, has the `self` it is run on: no `receiver_blocks`
+        // entry says so, its type does.)
+        let own_self = self.on_methods_self()
+            && self.self_is_methods(call_id)
+            && (!is_lambda
+                || matches!(
+                    self.node_type(call_id),
+                    Some(quarz_types::Type::Proc(None, ..))
+                ));
         let id = self.lw.alloc_func();
         let name = format!(
             "{} in {}",
@@ -610,6 +625,7 @@ impl<'a> FnBuilder<'a> {
         );
         b.is_block = true;
         b.is_lambda = is_lambda;
+        b.own_self = own_self;
         b.owner = Some(SelfOwner::Block(call_id));
         b.func.param_kinds = params
             .iter()
@@ -1007,6 +1023,8 @@ impl<'a> FnBuilder<'a> {
             kw_splat: None,
             block: None,
             moved: 0,
+            recv_classes: None,
+            on_self: false,
         });
         dst
     }
@@ -1795,6 +1813,8 @@ impl<'a> FnBuilder<'a> {
                     kw_splat: a.kw_splat,
                     block: a.block,
                     moved: 0,
+                    recv_classes: None,
+                    on_self: false,
                 });
                 dst
             }
@@ -1941,6 +1961,8 @@ impl<'a> FnBuilder<'a> {
                             kw_splat: None,
                             block: None,
                             moved: 0,
+                            recv_classes: None,
+                            on_self: false,
                         });
                         self.emit(Inst::Move { dst: res, src: d });
                         self.term(Term::Jump(join));
@@ -1974,6 +1996,8 @@ impl<'a> FnBuilder<'a> {
                             kw_splat: None,
                             block: None,
                             moved: 0,
+                            recv_classes: None,
+                            on_self: false,
                         },
                     );
                     return dst;
@@ -2385,6 +2409,8 @@ impl<'a> FnBuilder<'a> {
                 kw_splat: None,
                 block: None,
                 moved: 0,
+                recv_classes: None,
+                on_self: false,
             });
             self.term(Term::Jump(join));
             self.switch(no);
@@ -2488,6 +2514,8 @@ impl<'a> FnBuilder<'a> {
             kw_splat: None,
             block: None,
             moved: 0,
+            recv_classes: None,
+            on_self: false,
         });
         dst
     }
@@ -2926,6 +2954,8 @@ impl<'a> FnBuilder<'a> {
                         kw_splat: a.kw_splat,
                         block: a.block,
                         moved: 0,
+                        recv_classes: None,
+                        on_self: false,
                     },
                 );
                 if let Some(r) = r {
@@ -2969,6 +2999,8 @@ impl<'a> FnBuilder<'a> {
                         kw_splat: a.kw_splat,
                         block: a.block,
                         moved: 0,
+                        recv_classes: None,
+                        on_self: false,
                     },
                 );
                 let obj = self.self_reg();
@@ -3141,6 +3173,8 @@ impl<'a> FnBuilder<'a> {
             kw_splat: None,
             block: None,
             moved: 0,
+            recv_classes: None,
+            on_self: false,
         });
     }
 
@@ -3607,6 +3641,8 @@ impl<'a> FnBuilder<'a> {
                     kw_splat: None,
                     block: None,
                     moved: 0,
+                    recv_classes: None,
+                    on_self: false,
                 });
                 d
             }
@@ -3860,6 +3896,8 @@ impl<'a> FnBuilder<'a> {
                         kw_splat: None,
                         block: None,
                         moved: 0,
+                        recv_classes: None,
+                        on_self: false,
                     },
                 );
                 let dst = self.reg();
@@ -3875,6 +3913,8 @@ impl<'a> FnBuilder<'a> {
                         kw_splat: None,
                         block: None,
                         moved: 0,
+                        recv_classes: None,
+                        on_self: false,
                     },
                 );
                 return dst;
@@ -4044,6 +4084,8 @@ impl<'a> FnBuilder<'a> {
                         kw_splat: a.kw_splat,
                         block: a.block,
                         moved: 0,
+                        recv_classes: None,
+                        on_self: false,
                     });
                     return dst;
                 }
@@ -4063,6 +4105,18 @@ impl<'a> FnBuilder<'a> {
             }
             None => CallKind::Send(call.name.clone()),
         };
+        let recv_classes = match (&kind, &call.recv) {
+            (CallKind::Method(_), Some(r)) if recv.is_some() => self.recv_classes(r.id),
+            _ => None,
+        };
+        // A call on the method's `self`: implicit (not one going to an
+        // enclosing `self` from a block with a receiver) or `self.`.
+        let on_self = matches!(kind, CallKind::Method(_))
+            && match &call.recv {
+                None => !self.out.outer_self_calls.contains(&e.id),
+                Some(r) => matches!(r.kind, ExprKind::SelfRef),
+            }
+            && self.on_methods_self();
         let dst = self.reg();
         self.emit_call(
             e.id,
@@ -4076,9 +4130,57 @@ impl<'a> FnBuilder<'a> {
                 kw_splat: a.kw_splat,
                 block: a.block,
                 moved: 0,
+                recv_classes,
+                on_self,
             },
         );
         dst
+    }
+
+    /// Whether `self` where the lowering is is the method's (`own_self`,
+    /// and no block with a receiver lowered in place around).
+    fn on_methods_self(&self) -> bool {
+        self.own_self
+            && self.self_override.is_none()
+            && self.inline.iter().all(|l| match l.owner {
+                SelfOwner::Block(id) => self.self_is_methods(id),
+                _ => true,
+            })
+    }
+
+    /// Whether the block given to call `id` has the `self` of the code
+    /// it is written in: not a block with a receiver, nor one a
+    /// generating native lifts into a method of its own, nor one given to
+    /// `instance_exec`.
+    fn self_is_methods(&self, id: u32) -> bool {
+        // (A keyword `instance_exec`'s block runs on its receiver without
+        // a `receiver_blocks` entry.)
+        !self.out.receiver_blocks.contains(&id)
+            && !self.out.lifted_blocks.contains_key(&id)
+            && !matches!(self.out.calls.get(&id), Some(CallTarget::InstanceExec))
+    }
+
+    /// The classes receiver `id`'s static type says it is an instance of
+    /// (`Inst::Call::recv_classes`): a class's instance type, or a union
+    /// of such; `None` when any member is something else (a module, a
+    /// type parameter, a class object, a tuple, a procedure), or the
+    /// checks gave the node different types. The receiver is then of one
+    /// of the classes or a subclass, which bounds what a compile-time run
+    /// may reach (docs/14 §7).
+    fn recv_classes(&self, id: u32) -> Option<Box<[ClassId]>> {
+        let class = |t: &quarz_types::Type| match t {
+            quarz_types::Type::Class(c, _)
+                if self.world.class(*c).kind != quarz_types::ClassKind::Module
+                    && !self.world.class_is_a(*c, self.world.builtin.class_) =>
+            {
+                Some(*c)
+            }
+            _ => None,
+        };
+        match self.node_type(id)? {
+            quarz_types::Type::Union(ts) => ts.iter().map(class).collect(),
+            t => class(t).map(|c| Box::from([c])),
+        }
     }
 
     fn super_call(
@@ -4169,6 +4271,9 @@ impl<'a> FnBuilder<'a> {
                 Some(dst)
             }
         };
+        // (Run on the frame's `self`: in a block with a receiver, the
+        // receiver, not the method's.)
+        let on_self = self.on_methods_self();
         let dst = self.reg();
         self.emit(Inst::Call {
             dst,
@@ -4180,6 +4285,8 @@ impl<'a> FnBuilder<'a> {
             kw_splat: a.kw_splat,
             block: a.block,
             moved: 0,
+            recv_classes: None,
+            on_self,
         });
         dst
     }
@@ -4238,6 +4345,8 @@ impl<'a> FnBuilder<'a> {
                                     kw_splat: a.kw_splat,
                                     block: a.block,
                                     moved: 0,
+                                    recv_classes: None,
+                                    on_self: false,
                                 });
                                 self.store_var(r, dst);
                                 return dst;
@@ -4302,6 +4411,8 @@ impl<'a> FnBuilder<'a> {
                                     kw_splat: a.kw_splat,
                                     block: a.block,
                                     moved: 0,
+                                    recv_classes: None,
+                                    on_self: false,
                                 });
                                 let obj = self.self_reg();
                                 self.field_set(obj, class, index, dst);
@@ -4392,6 +4503,8 @@ impl<'a> FnBuilder<'a> {
                 kw_splat: None,
                 block: None,
                 moved: 0,
+                recv_classes: None,
+                on_self: false,
             },
         );
         dst
@@ -4410,6 +4523,8 @@ impl<'a> FnBuilder<'a> {
             kw_splat: None,
             block: None,
             moved: 0,
+            recv_classes: None,
+            on_self: false,
         });
         dst
     }
@@ -4450,6 +4565,8 @@ impl<'a> FnBuilder<'a> {
                 kw_splat: None,
                 block: None,
                 moved: 0,
+                recv_classes: None,
+                on_self: false,
             },
         );
     }
@@ -4483,6 +4600,8 @@ impl<'a> FnBuilder<'a> {
                     kw_splat: None,
                     block: None,
                     moved: 0,
+                    recv_classes: None,
+                    on_self: false,
                 },
             );
             return dst;
@@ -4497,6 +4616,8 @@ impl<'a> FnBuilder<'a> {
             kw_splat: None,
             block: None,
             moved: 0,
+            recv_classes: None,
+            on_self: false,
         });
         dst
     }
@@ -4627,6 +4748,8 @@ impl<'a> FnBuilder<'a> {
                                 kw_splat: None,
                                 block: None,
                                 moved: 0,
+                                recv_classes: None,
+                                on_self: false,
                             },
                         );
                         dst
@@ -4655,6 +4778,8 @@ impl<'a> FnBuilder<'a> {
                                 kw_splat: None,
                                 block: None,
                                 moved: 0,
+                                recv_classes: None,
+                                on_self: false,
                             });
                             dst
                         }

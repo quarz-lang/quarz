@@ -150,8 +150,9 @@ pub struct Lowerer {
     reached: Vec<bool>,
     reached_names: HashSet<String>,
     /// In static rounds, the methods calls resolved to (`Ref::Method`),
-    /// whose overrides were reached once (`reach_target`).
-    dispatch_targets: HashSet<MethodId>,
+    /// with the classes bounding their receivers (`Ref::Bounded`; `None`:
+    /// any), whose overrides were reached once (`reach_target`).
+    dispatch_targets: HashSet<(MethodId, Option<Box<[ClassId]>>)>,
     /// Lowered functions of this round whose references were followed.
     scanned: usize,
 }
@@ -583,7 +584,7 @@ impl Lowerer {
                 let mut methods = Vec::new();
                 // (A static round's call targets, whose overrides it
                 // reaches too: `reach_target`.)
-                let mut targets: Vec<MethodId> = Vec::new();
+                let mut targets: Vec<(MethodId, Option<Box<[ClassId]>>)> = Vec::new();
                 let mut names = Vec::new();
                 let mut consts = Vec::new();
                 if self.static_mode {
@@ -594,8 +595,13 @@ impl Lowerer {
                     // statements are still to run), a `super` or a
                     // function call its method.
                     quarz_ir::shake::reach_refs(&f, &mut |r| match r {
-                        quarz_ir::shake::Ref::Method(m) => targets.push(m),
-                        quarz_ir::shake::Ref::Exact(m) => methods.push(m),
+                        quarz_ir::shake::Ref::Method(m) => targets.push((m, None)),
+                        // (A call on `self` is reached as any: the
+                        // lowering's reach may be wider than a run's.)
+                        quarz_ir::shake::Ref::Bounded {
+                            method, classes, ..
+                        } => targets.push((method, classes.map(Into::into))),
+                        quarz_ir::shake::Ref::Exact { method, .. } => methods.push(method),
                         quarz_ir::shake::Ref::Name(n) | quarz_ir::shake::Ref::Runtime(n) => {
                             names.push(n.to_string())
                         }
@@ -643,8 +649,8 @@ impl Lowerer {
                 for m in methods {
                     self.reach_method(world, m, by_name, work);
                 }
-                for m in targets {
-                    self.reach_target(world, m, by_name, work);
+                for (m, bound) in targets {
+                    self.reach_target(world, m, bound, by_name, work);
                 }
                 for n in names {
                     self.reach_name(world, &n, by_name, work);
@@ -795,7 +801,12 @@ impl Lowerer {
                 let overrides_reached = by_name.get(m.name.as_str()).is_some_and(|ms| {
                     ms.iter().any(|&o| {
                         o as usize != mid
-                            && self.dispatch_targets.contains(&o)
+                            && self.dispatch_targets.iter().any(|(t, bound)| {
+                                *t == o
+                                    && bound
+                                        .as_deref()
+                                        .is_none_or(|b| may_receive(world, mid as MethodId, b))
+                            })
                             && is_override(world, mid as MethodId, o)
                             && !(quarz_ir::shake::RUNTIME_NAMES.contains(&m.name.as_str())
                                 && self.static_skip.contains(&m.owner))
@@ -814,7 +825,7 @@ impl Lowerer {
                 self.reach_method(world, mid as MethodId, &by_name, &mut work);
             }
         }
-        self.reach_target(world, callee, &by_name, &mut work);
+        self.reach_target(world, callee, None, &by_name, &mut work);
         // What the previous round could not lower, checked since.
         for m in std::mem::take(&mut self.static_retry) {
             self.reached[m as usize] = false;
@@ -884,16 +895,24 @@ impl Lowerer {
 
     /// In a static round, a call resolved to `mid`: it and the methods a
     /// receiver's lookup may find for it instead (`is_override`), once
-    /// each, not theirs in turn (dispatch is one step; docs/14 §7).
+    /// each, not theirs in turn (dispatch is one step; docs/14 §7). With
+    /// `bound`, the receiver is an instance of one of those classes or of
+    /// a subclass: only the overrides its lookup may find
+    /// (`may_receive`).
     fn reach_target(
         &mut self,
         world: &World,
         mid: MethodId,
+        bound: Option<Box<[ClassId]>>,
         by_name: &HashMap<&str, Vec<MethodId>>,
         work: &mut Vec<MethodId>,
     ) {
         self.reach_method(world, mid, by_name, work);
-        if !self.static_mode || !self.dispatch_targets.insert(mid) {
+        // (Any receiver's reach covers a bounded one's.)
+        if !self.static_mode
+            || self.dispatch_targets.contains(&(mid, None))
+            || !self.dispatch_targets.insert((mid, bound.clone()))
+        {
             return;
         }
         let m = &world.methods[mid as usize];
@@ -911,6 +930,7 @@ impl Lowerer {
                     .filter(|&o| {
                         o != mid
                             && is_override(world, o, mid)
+                            && bound.as_deref().is_none_or(|b| may_receive(world, o, b))
                             && !(runtime_name
                                 && self.static_skip.contains(&world.methods[o as usize].owner))
                     })
@@ -951,6 +971,32 @@ impl Lowerer {
             self.reached_names.insert(name.to_string());
         }
     }
+}
+
+/// Whether a receiver that is an instance of one of `classes` or of a
+/// subclass may find `o` by its lookup (`static_run::may_receive`
+/// alike): `o` belongs to an ancestor of such a class, or to a module
+/// an extension makes some class conform to (which the ancestors do not
+/// show). A receiver's static type that is a class gives `classes`
+/// (`Inst::Call::recv_classes`; docs/14 §7).
+fn may_receive(world: &World, o: MethodId, classes: &[ClassId]) -> bool {
+    let owner = world.methods[o as usize].owner;
+    if world.class(owner).kind == quarz_types::ClassKind::Module
+        && world.extensions.iter().any(|e| {
+            e.includes
+                .iter()
+                .any(|t| matches!(t, quarz_types::Type::Class(m, _) if world.class_is_a(*m, owner)))
+        })
+    {
+        return true;
+    }
+    classes.iter().any(|&c| {
+        world.class_is_a(c, owner)
+            || world
+                .classes
+                .iter()
+                .any(|d| world.class_is_a(d.id, c) && world.class_is_a(d.id, owner))
+    })
 }
 
 /// Whether `o` may run for a call resolved to `m` (`overrides_of` in the

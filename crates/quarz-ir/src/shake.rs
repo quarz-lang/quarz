@@ -231,7 +231,7 @@ impl Shake<'_> {
             Ref::Bytes => self.class(self.module.world.builtin.bytes),
             // (Only `reach_refs` gives these.)
             Ref::Runtime(n) => self.name(n),
-            Ref::Exact(m) => self.method(m),
+            Ref::Exact { method: m, .. } | Ref::Bounded { method: m, .. } => self.method(m),
             Ref::Construct { class, init, .. } => {
                 self.class(class);
                 self.name("initialize");
@@ -264,8 +264,26 @@ pub enum Ref<'a> {
     /// from `reach_refs` only.
     Runtime(&'static str),
     /// A method called as it is, never an override (`super`, a
-    /// function): from `reach_refs` only.
-    Exact(MethodId),
+    /// function): from `reach_refs` only. `on_self`: a `super` run on the
+    /// `self` of the method it is written in (`Inst::Call::on_self`).
+    Exact {
+        method: MethodId,
+        on_self: bool,
+    },
+    /// A method called as resolved on a receiver whose static type says
+    /// it is an instance of one of `classes` or of a subclass
+    /// (`Inst::Call::recv_classes`), or on the method's own `self`
+    /// (`on_self`, `Inst::Call::on_self`), which a run may know a bound
+    /// for: an override runs in its place only if such a receiver's
+    /// lookup may find it, and its body runs with that receiver as
+    /// `self` (docs/14 §7). From `reach_refs` only; `refs` gives
+    /// `Method`, what is kept in a compiled program not being narrowed
+    /// by it.
+    Bounded {
+        method: MethodId,
+        classes: Option<&'a [ClassId]>,
+        on_self: bool,
+    },
     /// `Class.new(...)` (`recv` false: an instance of `class` itself) or
     /// `new` on the receiver of a class method (`recv`: of `class` or a
     /// subclass), built with `init` when it is `class`'s (its own or an
@@ -319,8 +337,20 @@ fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
     for blk in &f.blocks {
         for inst in &blk.insts {
             match inst {
-                Inst::Call { kind, .. } => match kind {
-                    CallKind::Super(m) | CallKind::Function(m) if exact => visit(Ref::Exact(*m)),
+                Inst::Call {
+                    kind,
+                    recv_classes,
+                    on_self,
+                    ..
+                } => match kind {
+                    CallKind::Super(m) if exact => visit(Ref::Exact {
+                        method: *m,
+                        on_self: *on_self,
+                    }),
+                    CallKind::Function(m) if exact => visit(Ref::Exact {
+                        method: *m,
+                        on_self: false,
+                    }),
                     CallKind::Construct { init, class } if exact => visit(Ref::Construct {
                         class: *class,
                         init: *init,
@@ -331,6 +361,13 @@ fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
                         init: *init,
                         recv: true,
                     }),
+                    CallKind::Method(m) if exact && (recv_classes.is_some() || *on_self) => {
+                        visit(Ref::Bounded {
+                            method: *m,
+                            classes: recv_classes.as_deref(),
+                            on_self: *on_self,
+                        })
+                    }
                     CallKind::Method(m) | CallKind::Super(m) | CallKind::Function(m) => {
                         visit(Ref::Method(*m))
                     }

@@ -2987,6 +2987,8 @@ impl<B: Builder> Gen<'_, B> {
                 kw_splat,
                 block: blk,
                 moved,
+                recv_classes: _,
+                on_self: _,
             } => {
                 let (tag, a, b2, name): (u32, u32, u32, &str) = match kind {
                     CallKind::Method(m) => (0, *m, 0, ""),

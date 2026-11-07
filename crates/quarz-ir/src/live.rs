@@ -160,6 +160,8 @@ pub fn own_dying_receivers(f: &mut Function, in_place: &[bool]) {
                 kw_splat: None,
                 block: None,
                 moved,
+                recv_classes: _,
+                on_self: _,
             } = inst
             else {
                 continue;
