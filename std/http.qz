@@ -2414,6 +2414,7 @@ module HTTP
     @max_idle_per_host: Int
     @idle_timeout: Duration
     @user_agent: String
+    @fast_fallback: Bool
     # The kept connections, by origin and proxy.
     @pool: Atom[Hash[String, Array[Idle]]]
     # `#close` was called: connections are no longer kept.
@@ -2424,14 +2425,18 @@ module HTTP
     # connection (the name's lookup, the connects, a proxy's tunnel, the
     # TLS handshake), `read_timeout` and `write_timeout` each read and
     # write. `tls` is what `https` connections trust (`alpn` defaults to
-    # `http/1.1`); `proxy` defaults to the environment's.
+    # `http/1.1`); `proxy` defaults to the environment's. `fast_fallback`
+    # is `Socket.tcp`'s: false tries a name's addresses one after the
+    # other, without Happy Eyeballs.
     def initialize(*, timeout: Duration? = nil, connect_timeout: Duration = 10.seconds,
                    read_timeout: Duration = 30.seconds, write_timeout: Duration = 30.seconds,
                    max_header_bytes: Int = 65_536, max_body_bytes: Int = 16_777_216,
                    max_redirects: Int = 10, tls: TLS::Config = TLS::Config.default,
                    proxy: Proxy? = Proxy.from_env, max_idle_per_host: Int = 4,
-                   idle_timeout: Duration = 60.seconds, user_agent: String = USER_AGENT)
+                   idle_timeout: Duration = 60.seconds, user_agent: String = USER_AGENT,
+                   fast_fallback: Bool = true)
       @timeout = timeout
+      @fast_fallback = fast_fallback
       @connect_timeout = connect_timeout
       @read_timeout = read_timeout
       @write_timeout = write_timeout
@@ -2785,7 +2790,7 @@ module HTTP
       begin
         Task.timeout(@connect_timeout) do
           if proxy_url
-            sock = Socket.tcp(proxy_url.host || "", proxy_url.port || 80)
+            sock = Socket.tcp(proxy_url.host || "", proxy_url.port || 80, fast_fallback: @fast_fallback)
             if https
               Client.secure(sock) do
                 Client.tunnel(sock, host, port, proxy_url, max)
@@ -2795,10 +2800,10 @@ module HTTP
               sock
             end
           elsif https
-            sock = Socket.tcp(host, port)
+            sock = Socket.tcp(host, port, fast_fallback: @fast_fallback)
             Client.secure(sock) { TLSSocket.connect(sock, host, tls) }
           else
-            Socket.tcp(host, port)
+            Socket.tcp(host, port, fast_fallback: @fast_fallback)
           end
         end
       rescue Task::Timeout
