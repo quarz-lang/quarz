@@ -1,0 +1,7 @@
+# A GET of ARGV[0] (an https URL) with the system's roots and the
+# environment's proxy (tests/http_client.rs, QUARZ_HTTP_PUBLIC_URL).
+require "http"
+
+res = HTTP.get(ARGV[0])
+p res.status / 100, res.version, res.url.scheme
+res.close
