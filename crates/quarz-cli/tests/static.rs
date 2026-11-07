@@ -628,6 +628,36 @@ fn a_class_typed_receiver_bounds_the_overrides_reached() {
 }
 
 #[test]
+fn an_array_receiver_does_not_reach_another_classs_method_of_the_name() {
+    // `names.find { }` on an `Array[Symbol]` reaches `Enumerable#find`
+    // and what an `Array` runs, not `C#find`, which has errors until a
+    // later statement generates `H.helper` (#386).
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Gen\n  def pick(names: Array[Symbol]) -> Symbol? = names.find { |n| n == :b }\n\n  static def self.make -> Void\n    found = new.pick([:a, :b])\n    def_class_method(:found) { found.to_s }\n  end\nend\n\nclass HelperGen\n  static def self.helpers -> Void\n    def_class_method(:helper) { 1 }\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "main.qz",
+        "require_relative \"lib\"\n\nclass M < Gen\n  make\nend\n\nclass C\n  def find(x: Int) -> Int = H.helper + x\nend\n\nclass H < HelperGen\n  helpers\nend\n\np M.found\np C.new.find(1)\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "\"b\"\n2\n");
+    let exe = d.0.join("main-bin");
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", exe.to_str().unwrap()],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "\"b\"\n2\n");
+}
+
+#[test]
 fn a_statement_reaches_dispatch_one_step() {
     // What dispatch may find for a call, not what it may find for those
     // in turn (`Loud#label` reached for `A#label`, not every `label`),
