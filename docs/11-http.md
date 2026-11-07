@@ -1,6 +1,6 @@
 # HTTP: The Server
 
-`require "http"` gives the `HTTP` module: an HTTP/1.1 server written in Quarz on top of the sockets ([06-stdlib.md](06-stdlib.md) §9), for use as an application server behind a reverse proxy, as Puma is used. The proxy terminates TLS and speaks HTTP/2 to the clients; the server speaks HTTP/1.1 to the proxy (or, with `tls:`, HTTPS over HTTP/1.1 to the clients themselves), with keep-alive and chunked bodies. A client, `HTTP::Client`, will follow with the same request and response types; neither follows Ruby's `net/http`.
+`require "http"` gives the `HTTP` module: an HTTP/1.1 server written in Quarz on top of the sockets ([06-stdlib.md](06-stdlib.md) §9), for use as an application server behind a reverse proxy, as Puma is used. The proxy terminates TLS and speaks HTTP/2 to the clients; the server speaks HTTP/1.1 to the proxy (or, with `tls:`, HTTPS over HTTP/1.1 to the clients themselves), with keep-alive and chunked bodies. A client, `HTTP::Client`, will follow, with request and response types of its own (the server's are `HTTP::Server::Request` and `HTTP::Server::Response`) and the same `Headers`, `Body` and `Content`; neither follows Ruby's `net/http`.
 
 This is implemented in `std/http.qz` (and `Signal` in the prelude, with a few natives), except what §9 leaves for later.
 
@@ -62,7 +62,8 @@ class HTTP::Server   # (its requests and responses are its own types)
     remote_address: Socket::Address?,   # nil on a UNIX socket
     params: Hash[String, String],   # path parameters the router bound (§6); empty otherwise
     proxies: Proxies,               # the server's trusted proxies
-    trusted: Bool                   # whether the peer is one
+    trusted: Bool,                  # whether the peer is one
+    tls: Bool                       # whether the connection is TLS (the server's `tls:`)
   )
     def host -> String?                              # the Host header
     def content_length -> Int?
@@ -114,7 +115,7 @@ data Headers(entries: Array[Field])               # in order; a name may repeat
 end
 ```
 
-Names are case-insensitive: they are stored lowercased and written out in the conventional form (`Content-Type`). Values are kept as received, except that leading and trailing whitespace is removed. `put`, `add` and `of` (and so `Response#header` and `Response.redirect`) raise `ArgumentError` for a name that is not a token or a value with CR, LF or another control character but HTAB, where the header is set: such a header would split the response (response splitting). The message names the header, not the value, which may come from a request (a cookie, a token) and would otherwise end up in logs.
+Names are case-insensitive: they are stored lowercased and written out in the conventional form (`Content-Type`). Values are kept as received, except that leading and trailing whitespace is removed. `put`, `add` and `of` (and so `Server::Response#header` and `Server::Response.redirect`) raise `ArgumentError` for a name that is not a token or a value with CR, LF or another control character but HTAB, where the header is set: such a header would split the response (response splitting). The message names the header, not the value, which may come from a request (a cookie, a token) and would otherwise end up in logs.
 
 ## 4. Responses
 
@@ -170,7 +171,7 @@ module HTTP
                  max_body_bytes: Int = 1_048_576,              # what Body#read and read_bytes accept
                  max_connections: Int = 10_000,                # accepted at once; beyond it, accept waits
                  trusted_proxies: Array[String] = [],          # peers whose X-Forwarded-* headers are believed
-                 on_error: (shareable (Exception, Server::Request?) -> Void)? = nil,
+                 on_error: (shareable (Exception, Request?) -> Void)? = nil,
                  tls: TLS::ServerConfig? = nil) -> Server      # HTTPS (not with path:)
     def self.unix(handler: Handler, path: String, *, ...the same options but tls:...) -> Server   # a UNIX socket
     def serve -> Void                      # accepts until shutdown or cancellation
@@ -247,7 +248,7 @@ A handler is called directly: `handler.call(HTTP::Server::Request.get("/users/1"
 
 ## 9. Later
 
-- **`HTTP::Client`**: `HTTP::Client.new(base_url:, timeout:)` with `get`, `post` and `request(req) -> Response`, over `Socket.tcp`, keep-alive per host, the same `Request`/`Response` types. Not Ruby's `net/http`.
+- **`HTTP::Client`**: `HTTP::Client.new(base_url:, timeout:)` with `get`, `post` and `request(req) -> Response`, over `Socket.tcp`, keep-alive per host, with `HTTP::Client::Request`/`Response` of its own (#349). Not Ruby's `net/http`.
 - **HTTP/2**, **WebSocket**, compression, static files with ranges and caching headers, an automatic `OPTIONS` answer in the router, request logging in a standard format.
 - A `Supervisor` for restarting a server with other long-lived tasks ([04-concurrency.md](04-concurrency.md) §5) is designed separately.
 - The percent-decoding and query parsing live in `HTTP` until there is a `uri` library ([06-stdlib.md](06-stdlib.md) §10), which takes them over.

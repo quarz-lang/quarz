@@ -967,13 +967,13 @@ module HTTP
     include Shareable
 
     # A request, as the server read it or as a test builds it
-    # (`HTTP::Server::Request.get`). A `data` value: `with` makes a changed copy. It
-    # is not Shareable, since its `Body` is not: copy the fields a task
-    # needs out of it before spawning one.
+    # (`HTTP::Server::Request.get`). A `data` value: `with` makes a
+    # changed copy. It is not Shareable, since its `Body` is not: copy the
+    # fields a task needs out of it before spawning one.
     #
     # ```
     # req = HTTP::Server::Request.get("/search?q=quarz&tag=a&tag=b",
-    #                         HTTP::Headers.of({"Host" => "example.com"}))
+    #                                 HTTP::Headers.of({"Host" => "example.com"}))
     # req.path               # => "/search"
     # req.query              # => "q=quarz&tag=a&tag=b"
     # req.query_params["tag"]
