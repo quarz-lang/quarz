@@ -76,6 +76,26 @@ pub struct Lowerer {
     /// that reaches them, or else by the final lowering (`lower`), which
     /// must lower what they call.
     unwalked: HashSet<FuncId>,
+    /// The number of methods the last `lower` (not a static round) saw:
+    /// the next one reaches those added since whose name it reached.
+    final_known: usize,
+    /// What each function refers to, for the static rounds' walks
+    /// (`walk_refs`), by function id.
+    walk_refs: Vec<Option<std::rc::Rc<WalkRefs>>>,
+    /// The walk of the last static round, by its statement, callee and
+    /// world (numbers of methods and classes): continued by the next
+    /// round of the same statement (`lower_static`).
+    last_walk: Option<(
+        (quarz_syntax::ast::NodeId, MethodId, usize, usize),
+        StaticWalk,
+    )>,
+    /// `overrides_of`, for the world of this number of classes: each with
+    /// the number of methods it was found among.
+    #[allow(clippy::type_complexity)]
+    overrides_cache: (
+        usize,
+        HashMap<MethodId, (usize, std::rc::Rc<Vec<MethodId>>)>,
+    ),
     /// In a static round: the classes whose `static` statements have not
     /// all run (and their descendants). A reach by one of the names the
     /// runtime calls everywhere (`shake::RUNTIME_NAMES`: `to_s`,
@@ -159,15 +179,39 @@ pub struct Lowerer {
 /// afresh each round.
 #[derive(Default)]
 struct StaticWalk {
-    methods: HashSet<MethodId>,
+    /// Methods reached, by id.
+    methods: Vec<bool>,
     /// Calls resolved to these, whose overrides were reached.
     targets: HashSet<MethodId>,
     names: HashSet<String>,
-    /// Functions walked or to walk.
-    funcs: HashSet<FuncId>,
+    /// Functions walked or to walk, by id.
+    funcs: Vec<bool>,
     todo: Vec<FuncId>,
     /// Methods reached with no function yet: lowered next.
     lower: Vec<MethodId>,
+    /// Methods and constants reached but not lowered, their checks not
+    /// done yet: lowered in the statement's next round.
+    retry: Vec<MethodId>,
+    retry_consts: Vec<ConstId>,
+    /// `Lowerer::builds_of`, by class and `recv`, for this round.
+    #[allow(clippy::type_complexity)]
+    builds: HashMap<(ClassId, bool), std::rc::Rc<(Vec<MethodId>, Vec<FuncId>)>>,
+}
+
+/// What a lowered function refers to, for a static round's walk.
+#[derive(Default)]
+struct WalkRefs {
+    /// Calls resolved to these (their overrides may run).
+    targets: Vec<MethodId>,
+    /// Methods run as they are (`super`, a function, an `initialize`).
+    methods: Vec<MethodId>,
+    /// Names called by name (sorted, once each).
+    names: Vec<String>,
+    consts: Vec<ConstId>,
+    /// Blocks' functions, and inlined ones.
+    funcs: Vec<FuncId>,
+    /// Constructions: the class, and whether on a receiver.
+    builds: Vec<(ClassId, bool)>,
 }
 
 /// What a function lowered with a `static(...)` as its call belongs to.
@@ -183,6 +227,7 @@ impl Lowerer {
     /// value (`static_fallback`): the program must bake the value, not
     /// call (docs/14 §8). Its old functions stay, unreferenced.
     pub fn relower_static_fallbacks(&mut self) {
+        self.last_walk = None;
         for owner in std::mem::take(&mut self.static_fallbacks) {
             match owner {
                 // As `invalidate_layout` does: lowered again where they are
@@ -221,8 +266,12 @@ impl Lowerer {
     /// failed input (docs/05 §7), whose ids the next input reuses. The
     /// functions stay (their ids are not reused); nothing refers to them.
     pub fn forget(&mut self, methods: usize, consts: usize, classes: usize) {
+        self.last_walk = None;
+        // (The ids from `methods` on are given to other methods next.)
+        self.overrides_cache.1.clear();
         self.method_funcs.truncate(methods);
         self.reached.truncate(methods);
+        self.final_known = self.final_known.min(methods);
         self.const_funcs.truncate(consts);
         let class_ok = |c: &ClassId| (*c as usize) < classes;
         self.field_default_funcs.retain(|(c, _), _| class_ok(c));
@@ -292,7 +341,10 @@ impl Lowerer {
         if self.method_funcs.len() < world.methods.len() {
             self.method_funcs.resize(world.methods.len(), None);
         }
-        let known = self.reached.len();
+        // (The methods new since the last of these: the static rounds
+        // between them grow `reached` without lowering every method.)
+        let known = self.final_known.min(world.methods.len());
+        self.final_known = world.methods.len();
         if self.reached.len() < world.methods.len() {
             self.reached.resize(world.methods.len(), false);
         }
@@ -385,8 +437,13 @@ impl Lowerer {
                 quarz_ir::shake::Ref::Name(n) => names.push(n.to_string()),
                 _ => {}
             });
+            // (A method a static walk reached already, `super`'s or an
+            // `initialize`, may not have had its name reached: what the
+            // final lowering reaches a call by.)
             for m in methods {
                 self.reach_method(world, m, &by_name, &mut work);
+                let name = world.methods[m as usize].name.clone();
+                self.reach_name(world, &name, &by_name, &mut work);
             }
             for n in names {
                 self.reach_name(world, &n, &by_name, &mut work);
@@ -457,6 +514,7 @@ impl Lowerer {
     /// does), the constant initializers likewise, and the field defaults
     /// of the classes themselves (kept by field index).
     pub fn invalidate_layout(&mut self, classes: &[ClassId]) {
+        self.last_walk = None;
         let touches = |f: &Function| {
             f.blocks.iter().flat_map(|b| &b.insts).any(|i| match i {
                 Inst::FieldGet { class, .. } | Inst::FieldSet { class, .. } => {
@@ -625,6 +683,94 @@ impl Lowerer {
         }
     }
 
+    /// In a static round, constant `c` may be read: its initializer is
+    /// lowered (once its type is checked) and walked.
+    fn walk_const(&mut self, world: &World, out: &Output, c: ConstId, walk: &mut StaticWalk) {
+        self.lower_const_static(world, out, c);
+        match self.const_funcs.get(c as usize).copied().flatten() {
+            Some(g) => self.walk_func(g, walk),
+            None => {
+                if world.consts[c as usize].value.is_some() && !walk.retry_consts.contains(&c) {
+                    walk.retry_consts.push(c);
+                }
+            }
+        }
+    }
+
+    /// What function `fid` refers to, for `walk_all` (`shake::reach_refs`;
+    /// a construction's class apart): kept by function, as a lowered
+    /// function does not change (one lowered again gets a new id).
+    fn walk_refs(&mut self, fid: FuncId) -> Option<std::rc::Rc<WalkRefs>> {
+        if let Some(Some(r)) = self.walk_refs.get(fid as usize) {
+            return Some(r.clone());
+        }
+        let f = self.function(fid)?;
+        let mut r = WalkRefs::default();
+        quarz_ir::shake::reach_refs(f, &mut |x| match x {
+            quarz_ir::shake::Ref::Method(m) => r.targets.push(m),
+            quarz_ir::shake::Ref::Exact(m) => r.methods.push(m),
+            quarz_ir::shake::Ref::Name(n) | quarz_ir::shake::Ref::Runtime(n) => {
+                r.names.push(n.to_string())
+            }
+            quarz_ir::shake::Ref::Construct { class, init, recv } => {
+                if let Some(m) = init {
+                    r.methods.push(m);
+                }
+                r.names.push("initialize".to_string());
+                r.builds.push((class, recv));
+            }
+            quarz_ir::shake::Ref::Const(c) => r.consts.push(c),
+            quarz_ir::shake::Ref::Func(g) => r.funcs.push(g),
+            _ => {}
+        });
+        r.names.sort_unstable();
+        r.names.dedup();
+        let r = std::rc::Rc::new(r);
+        if self.walk_refs.len() <= fid as usize {
+            self.walk_refs.resize(fid as usize + 1, None);
+        }
+        self.walk_refs[fid as usize] = Some(r.clone());
+        Some(r)
+    }
+
+    /// For a construction of `class` (`recv`: on a class method's
+    /// receiver, so of a subclass too), in this round: the `initialize`
+    /// methods it may run by id (a receiver's class decides; by name they
+    /// are left out for the classes whose statements are still to run)
+    /// and the field defaults of the classes it may make.
+    #[allow(clippy::type_complexity)]
+    fn builds_of(
+        &self,
+        world: &World,
+        class: ClassId,
+        recv: bool,
+        walk: &mut StaticWalk,
+    ) -> std::rc::Rc<(Vec<MethodId>, Vec<FuncId>)> {
+        if let Some(b) = walk.builds.get(&(class, recv)) {
+            return b.clone();
+        }
+        let mut inits = Vec::new();
+        let mut defaults = Vec::new();
+        for c in &world.classes {
+            if c.id != class && !(recv && world.class_is_a(c.id, class)) {
+                continue;
+            }
+            if recv {
+                if let Some(ids) = c.methods.get("initialize") {
+                    inits.extend(ids.iter().copied());
+                }
+            }
+            for i in 0..world.all_fields(c.id).len() {
+                if let Some(d) = self.field_default(world, c.id, i) {
+                    defaults.push(d);
+                }
+            }
+        }
+        let b = std::rc::Rc::new((inits, defaults));
+        walk.builds.insert((class, recv), b.clone());
+        b
+    }
+
     /// In static mode, a constant's initializer when it is reached: only
     /// once its type is checked (`const_type`), else reported.
     fn lower_const_static(&mut self, world: &World, out: &Output, cid: ConstId) {
@@ -745,25 +891,52 @@ impl Lowerer {
         // round's: a method is lowered (and so checked) only once the
         // statement may run it, not because an earlier statement's reach
         // or a function lowered for another reason calls it (docs/14 §7).
+        // The next round of the same statement (once what this one
+        // returned unchecked is checked) continues this one's walk: the
+        // world has the same methods, and only what was left unlowered,
+        // and the field defaults lowered since, are new to it.
         let by_name = methods_by_name(world);
-        let mut walk = StaticWalk::default();
-        for n in quarz_ir::shake::RUNTIME_NAMES {
-            self.walk_name(world, n, &by_name, &mut walk);
-        }
-        self.walk_target(world, callee, &by_name, &mut walk);
-        self.walk_func(stmt_func, &mut walk);
+        let key = (stmt.id, callee, world.methods.len(), world.classes.len());
+        let mut walk = match self.last_walk.take() {
+            Some((k, mut w)) if k == key => {
+                for m in std::mem::take(&mut w.retry) {
+                    w.lower.push(m);
+                }
+                for c in std::mem::take(&mut w.retry_consts) {
+                    self.walk_const(world, out, c, &mut w);
+                }
+                let builds: Vec<(ClassId, bool)> = w.builds.keys().copied().collect();
+                w.builds.clear();
+                for (class, recv) in builds {
+                    let b = self.builds_of(world, class, recv, &mut w);
+                    for &g in b.1.iter() {
+                        self.walk_func(g, &mut w);
+                    }
+                }
+                w
+            }
+            _ => {
+                let mut w = StaticWalk::default();
+                for n in quarz_ir::shake::RUNTIME_NAMES {
+                    self.walk_name(world, n, &by_name, &mut w);
+                }
+                self.walk_target(world, callee, &by_name, &mut w);
+                self.walk_func(stmt_func, &mut w);
+                w
+            }
+        };
         self.walk_all(world, out, &by_name, &mut walk);
         // This round's functions the statement does not reach: followed
         // later (`unwalked`).
+        let walked = |id: FuncId| walk.funcs.get(id as usize).copied().unwrap_or(false);
         for i in 0..self.pending.len() {
             let id = self.round_base + i as FuncId;
-            if !walk.funcs.contains(&id) {
+            if !walked(id) {
                 self.unwalked.insert(id);
             }
         }
-        for id in &walk.funcs {
-            self.unwalked.remove(id);
-        }
+        self.unwalked.retain(|&id| !walked(id));
+        self.last_walk = Some((key, walk));
         let functions: Vec<Function> = self
             .pending
             .drain(..)
@@ -786,10 +959,8 @@ impl Lowerer {
     }
 
     /// Method `mid` may be called: so may every method of its name (and
-    /// the one it is an alias of); a prelude one goes to `work`. In a
-    /// static round, only the methods that override it (docs/14 §7): a
-    /// call resolved to it runs it or one of those, and what is called by
-    /// name is reached by name (`reach_name`).
+    /// the one it is an alias of); a prelude one goes to `work`. (A
+    /// static round walks its statement's reach instead: `walk_method`.)
     fn reach_method(
         &mut self,
         world: &World,
@@ -824,9 +995,17 @@ impl Lowerer {
     /// checked) and its function walked; noted `reached` for the final
     /// lowering, which lowers the lazy methods so noted.
     fn walk_method(&mut self, world: &World, mid: MethodId, walk: &mut StaticWalk) {
-        if (mid as usize) >= self.reached.len() || !walk.methods.insert(mid) {
+        let i = mid as usize;
+        if i >= self.reached.len() {
             return;
         }
+        if walk.methods.len() <= i {
+            walk.methods.resize(self.reached.len(), false);
+        }
+        if walk.methods[i] {
+            return;
+        }
+        walk.methods[i] = true;
         self.reached[mid as usize] = true;
         if let Some(orig) = world.methods[mid as usize].alias_of {
             self.walk_method(world, orig, walk);
@@ -858,23 +1037,46 @@ impl Lowerer {
         // generated, and a dispatch to one before then finds no
         // body.)
         let runtime_name = quarz_ir::shake::RUNTIME_NAMES.contains(&m.name.as_str());
-        let overrides: Vec<MethodId> = by_name
-            .get(m.name.as_str())
-            .map(|ms| {
-                ms.iter()
-                    .copied()
-                    .filter(|&o| {
-                        o != mid
-                            && is_override(world, o, mid)
-                            && !(runtime_name
-                                && self.static_skip.contains(&world.methods[o as usize].owner))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        for o in overrides {
-            self.walk_method(world, o, walk);
+        for o in self.overrides_of(world, mid, by_name).iter() {
+            if !(runtime_name && self.static_skip.contains(&world.methods[*o as usize].owner)) {
+                self.walk_method(world, *o, walk);
+            }
         }
+    }
+
+    /// The methods that may run for a call resolved to `mid`
+    /// (`is_override`), kept while the world has the same classes: the
+    /// static rounds' walks ask for the same ones again. Methods added
+    /// since (generated by a statement) are tested when next asked.
+    fn overrides_of(
+        &mut self,
+        world: &World,
+        mid: MethodId,
+        by_name: &HashMap<&str, Vec<MethodId>>,
+    ) -> std::rc::Rc<Vec<MethodId>> {
+        if self.overrides_cache.0 != world.classes.len() {
+            self.overrides_cache = (world.classes.len(), HashMap::default());
+        }
+        let name = world.methods[mid as usize].name.as_str();
+        let methods = world.methods.len();
+        let (from, mut o) = match self.overrides_cache.1.get(&mid) {
+            Some((n, o)) if *n == methods => return o.clone(),
+            Some((n, o)) => (*n, (**o).clone()),
+            None => (0, Vec::new()),
+        };
+        // (`by_name` lists a name's methods in id order.)
+        if let Some(ms) = by_name.get(name) {
+            let start = ms.partition_point(|&m| (m as usize) < from);
+            o.extend(
+                ms[start..]
+                    .iter()
+                    .copied()
+                    .filter(|&x| x != mid && is_override(world, x, mid)),
+            );
+        }
+        let o = std::rc::Rc::new(o);
+        self.overrides_cache.1.insert(mid, (methods, o.clone()));
+        o
     }
 
     /// In a static round, a method called `name` may run (but those of
@@ -887,9 +1089,10 @@ impl Lowerer {
         by_name: &HashMap<&str, Vec<MethodId>>,
         walk: &mut StaticWalk,
     ) {
-        if !walk.names.insert(name.to_string()) {
+        if walk.names.contains(name) {
             return;
         }
+        walk.names.insert(name.to_string());
         let runtime_name =
             !self.static_skip.is_empty() && quarz_ir::shake::RUNTIME_NAMES.contains(&name);
         let mut skipped = false;
@@ -910,7 +1113,13 @@ impl Lowerer {
     /// In a static round, function `fid` (lowered in this round or an
     /// earlier one) may run: its references are followed.
     fn walk_func(&mut self, fid: FuncId, walk: &mut StaticWalk) {
-        if walk.funcs.insert(fid) {
+        let i = fid as usize;
+        if walk.funcs.len() <= i {
+            walk.funcs
+                .resize((self.next_func as usize).max(i + 1), false);
+        }
+        if !walk.funcs[i] {
+            walk.funcs[i] = true;
             walk.todo.push(fid);
         }
     }
@@ -942,79 +1151,32 @@ impl Lowerer {
     ) {
         loop {
             if let Some(fid) = walk.todo.pop() {
-                let Some(f) = self.function(fid) else {
+                let Some(refs) = self.walk_refs(fid) else {
                     continue;
                 };
-                let mut methods = Vec::new();
-                let mut targets = Vec::new();
-                let mut names: Vec<String> = Vec::new();
-                let mut consts = Vec::new();
-                let mut funcs = Vec::new();
-                let mut builds: Vec<(ClassId, bool)> = Vec::new();
-                quarz_ir::shake::reach_refs(f, &mut |r| match r {
-                    quarz_ir::shake::Ref::Method(m) => targets.push(m),
-                    quarz_ir::shake::Ref::Exact(m) => methods.push(m),
-                    quarz_ir::shake::Ref::Name(n) | quarz_ir::shake::Ref::Runtime(n) => {
-                        names.push(n.to_string())
-                    }
-                    quarz_ir::shake::Ref::Construct { class, init, recv } => {
-                        if let Some(m) = init {
-                            methods.push(m);
-                        }
-                        names.push("initialize".to_string());
-                        builds.push((class, recv));
-                    }
-                    quarz_ir::shake::Ref::Const(c) => consts.push(c),
-                    quarz_ir::shake::Ref::Func(g) => funcs.push(g),
-                    _ => {}
-                });
-                // A construction whose class the receiver decides (`new`
-                // in an inherited class method) reaches the `initialize`
-                // of every class it may make by id: the name is one left
-                // out for the classes whose statements are still to run.
-                for &(class, recv) in &builds {
-                    if !recv {
-                        continue;
-                    }
-                    for c in &world.classes {
-                        if world.class_is_a(c.id, class) {
-                            if let Some(ids) = c.methods.get("initialize") {
-                                methods.extend(ids.iter().copied());
-                            }
-                        }
-                    }
-                }
-                // The field defaults of the classes it may make, which
-                // their construction runs.
-                for (class, recv) in builds {
-                    for c in &world.classes {
-                        if c.id != class && !(recv && world.class_is_a(c.id, class)) {
-                            continue;
-                        }
-                        for i in 0..world.all_fields(c.id).len() {
-                            if let Some(d) = self.field_default(world, c.id, i) {
-                                funcs.push(d);
-                            }
-                        }
-                    }
-                }
-                for g in funcs {
-                    self.walk_func(g, walk);
-                }
-                for m in methods {
-                    self.walk_method(world, m, walk);
-                }
-                for m in targets {
-                    self.walk_target(world, m, by_name, walk);
-                }
-                for n in names {
-                    self.walk_name(world, &n, by_name, walk);
-                }
-                for c in consts {
-                    self.lower_const_static(world, out, c);
-                    if let Some(g) = self.const_funcs.get(c as usize).copied().flatten() {
+                for &(class, recv) in refs.builds.iter() {
+                    let b = self.builds_of(world, class, recv, walk);
+                    for &g in b.1.iter() {
                         self.walk_func(g, walk);
                     }
+                    for &m in b.0.iter() {
+                        self.walk_method(world, m, walk);
+                    }
+                }
+                for &g in refs.funcs.iter() {
+                    self.walk_func(g, walk);
+                }
+                for &m in refs.methods.iter() {
+                    self.walk_method(world, m, walk);
+                }
+                for &m in refs.targets.iter() {
+                    self.walk_target(world, m, by_name, walk);
+                }
+                for n in refs.names.iter() {
+                    self.walk_name(world, n, by_name, walk);
+                }
+                for &c in refs.consts.iter() {
+                    self.walk_const(world, out, c, walk);
                 }
                 continue;
             }
@@ -1022,8 +1184,10 @@ impl Lowerer {
                 break;
             };
             self.lower_method(world, out, mid);
-            if let Some(g) = self.method_funcs[mid as usize] {
-                self.walk_func(g, walk);
+            match self.method_funcs[mid as usize] {
+                Some(g) => self.walk_func(g, walk),
+                // (Not checked yet: the next round, once it is.)
+                None => walk.retry.push(mid),
             }
         }
     }
