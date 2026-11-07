@@ -965,12 +965,29 @@ fn run_select(interp: &Interp, block: &Value, looping: bool) -> EvalResult {
     let mut unwaited: u32 = 0;
     loop {
         let state = Rc::new(RefCell::new(SelectorState::default()));
-        interp.call_block(block, smallvec![Value::Selector(state.clone())])?;
-        if state.borrow().stopped {
-            return Ok(Value::Nil);
-        }
-        let how = select_once(interp, &state)?;
-        if state.borrow().stopped || !looping {
+        let built = interp.call_block(block, smallvec![Value::Selector(state.clone())]);
+        let how = match built {
+            Ok(_) if !state.borrow().stopped => select_once(interp, &state),
+            Ok(_) => Ok(Selected::Ready),
+            Err(e) => Err(e),
+        };
+        // The selector lets its handlers go once the select is over: a
+        // handler whose captures live in a heap frame that also holds
+        // the selector (`s` used in a nested block, as `running.each { |c|
+        // s.receive(c) { ... } }` does) would otherwise make a cycle,
+        // which keeps what the frame holds alive past its last use: a
+        // value assigned from the handler would not be released, and its
+        // `deinitialize` (a socket's close) not run (#353).
+        let stopped = {
+            let mut st = state.borrow_mut();
+            st.receives.clear();
+            st.sends.clear();
+            st.after = None;
+            st.default = None;
+            st.stopped
+        };
+        let how = how?;
+        if stopped || !looping {
             return Ok(Value::Nil);
         }
         // `select_loop` is for tasks working together: one that polls with

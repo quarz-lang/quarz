@@ -1,0 +1,96 @@
+# A value with `deinitialize` that crossed a channel, a select handler or
+# a scope is released at its last use, as any other (#353): its
+# `deinitialize` runs then, not at a later cycle collection.
+class Res
+  include Shareable
+  @name: String
+  def initialize(@name: String); end
+  def name -> String = @name
+  def deinitialize
+    puts "deinit #{@name}"
+  end
+end
+
+def through_channel -> Int
+  ch = Channel[Res].new(capacity: 1)
+  ch.send(Res.new("channel"))
+  r = ch.receive
+  r.name.size
+end
+
+def from_a_task -> Int
+  r = Task.scope do |scope|
+    ch = Channel[Res].new(capacity: 1)
+    scope.spawn { ch.send(Res.new("task")) }
+    ch.receive
+  end
+  r.name.size
+end
+
+def returned_from_a_scope -> Int
+  r, n = Task.scope do |scope|
+    t = scope.spawn { Res.new("scope") }
+    [t.await, 1]
+  end
+  n
+end
+
+def captured_by_a_handler -> Int
+  ch = Channel[Res].new(capacity: 1)
+  ch.send(Res.new("handler"))
+  got: Res? = nil
+  Channel.select do |s|
+    s.receive(ch) { |r| got = r }
+  end
+  1
+end
+
+# The selector `s` used in a nested block lives in a heap frame that the
+# handler's captures reach: the select must not keep it in a cycle.
+def captured_by_a_nested_handler -> Int
+  ch = Channel[Res].new(capacity: 1)
+  ch.send(Res.new("nested handler"))
+  running = [ch]
+  got: Res? = nil
+  Channel.select do |s|
+    running.each do |c|
+      s.receive(c) do |r|
+        running = running.reject { |x| x.equal?(c) }
+        got = r
+      end
+    end
+  end
+  1
+end
+
+def in_a_select_loop -> Int
+  ch = Channel[Res].new(capacity: 2)
+  ch.send(Res.new("loop 1"))
+  ch.send(Res.new("loop 2"))
+  chans = [ch]
+  n = 0
+  last: Res? = nil
+  Channel.select_loop do |s|
+    chans.each do |c|
+      s.receive(c) do |r|
+        last = r
+        n += 1
+        s.stop if n == 2
+      end
+    end
+  end
+  n
+end
+
+through_channel
+puts "-- channel"
+from_a_task
+puts "-- task"
+returned_from_a_scope
+puts "-- scope"
+captured_by_a_handler
+puts "-- handler"
+captured_by_a_nested_handler
+puts "-- nested handler"
+in_a_select_loop
+puts "-- select loop"

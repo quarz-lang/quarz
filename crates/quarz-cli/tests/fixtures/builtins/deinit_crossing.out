@@ -1,0 +1,13 @@
+deinit channel
+-- channel
+deinit task
+-- task
+deinit scope
+-- scope
+deinit handler
+-- handler
+deinit nested handler
+-- nested handler
+deinit loop 1
+deinit loop 2
+-- select loop
