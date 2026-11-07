@@ -37,6 +37,16 @@ CI runs clippy and rustfmt with the latest stable, whose lints can be
 newer than a local stable: check with that release (`cargo +<version>`)
 when the local one is older.
 
+A change confined to one standard-library module (`std/<name>.qz`, its
+own natives file, the `register` line, Cargo and the std module list)
+runs locally `cargo build`, that module's tests in `std/test/`
+interpreted and compiled (`tests/std.rs`), its doc examples, clippy,
+rustfmt and the MSRV check; the full `cargo test` is CI's, which must
+be green before the pull request leaves draft. A change that touches a
+shared file (`natives/mod.rs` beyond the register line, `value.rs`,
+`interp.rs`, the checker, lowering or the IR passes) runs the full
+`cargo test` locally as above. The pull request says which case it was.
+
 - Commit and push at good stopping points. Stage files by explicit path,
   never `git add -A`. Remove a stray `examples/shapes` that tests leave.
 - Never print secrets (tokens, credentials). Leave credential commands to
@@ -62,7 +72,7 @@ when the local one is older.
 - While it is a draft, force-pushing after the subagent review or the
   local checks changed the commits is fine (amend or rebase as needed).
 - Mark it ready for review only when the subagent review of the branch's
-  diff and every local check above have passed; from then on add
+  diff and the local checks above that apply have passed; from then on add
   commits, never force-push, and review each of them before pushing.
 - The description says what was verified.
 
