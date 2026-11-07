@@ -6,9 +6,9 @@ hits = Atom.new(0)
 router = HTTP::Router.build do |r|
   r.get("/count") do |req|
     n = hits.update { |c| c + 1 }
-    HTTP::Response.text(n.to_s)
+    HTTP::Server::Response.text(n.to_s)
   end
-  r.post("/echo/{name}") { |req| HTTP::Response.text("#{req.params["name"]}:#{req.body.read}") }
+  r.post("/echo/{name}") { |req| HTTP::Server::Response.text("#{req.params["name"]}:#{req.body.read}") }
 end
 server = HTTP::Server.new(router, host: "127.0.0.1", port: 0)
 port = server.local_address.port

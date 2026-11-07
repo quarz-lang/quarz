@@ -27,9 +27,9 @@ class HttpShutdownTest < Test::Case
       if req.path == "/wait"
         entered.send("wait")
         gate.receive
-        HTTP::Response.text("waited")
+        HTTP::Server::Response.text("waited")
       else
-        HTTP::Response.text("ok")
+        HTTP::Server::Response.text("ok")
       end
     end
     server = HTTP::Server.new(handler, host: "127.0.0.1", port: 0)
@@ -71,7 +71,7 @@ class HttpShutdownTest < Test::Case
     stuck = HTTP.handler do |req|
       entered.send("stuck")
       Task.sleep(30.seconds)
-      HTTP::Response.text("never")
+      HTTP::Server::Response.text("never")
     end
     s2 = HTTP::Server.new(stuck, host: "127.0.0.1", port: 0)
     port2 = s2.local_address.port
@@ -97,7 +97,7 @@ class HttpShutdownTest < Test::Case
     slow = HTTP.handler do |req|
       entered.send("slow")
       Task.sleep(200.ms)
-      HTTP::Response.text("slow done")
+      HTTP::Server::Response.text("slow done")
     end
     s5 = HTTP::Server.new(slow, host: "127.0.0.1", port: 0)
     port5 = s5.local_address.port
@@ -124,7 +124,7 @@ class HttpShutdownTest < Test::Case
       entered.send(req.path)
       Task.sleep(50.ms)
       order.send("out #{req.path}")
-      HTTP::Response.text(req.path)
+      HTTP::Server::Response.text(req.path)
     end
     s3 = HTTP::Server.new(one, host: "127.0.0.1", port: 0, max_connections: 1)
     port3 = s3.local_address.port
@@ -145,7 +145,7 @@ class HttpShutdownTest < Test::Case
 
   def test_unix_socket_peer_is_trusted_proxy
     path = "#{Dir.tmpdir}/quarz-http-test-#{Process.pid}.sock"
-    s4 = HTTP::Server.unix(HTTP.handler { |req| HTTP::Response.text("#{req.remote_ip} #{req.scheme}") }, path)
+    s4 = HTTP::Server.unix(HTTP.handler { |req| HTTP::Server::Response.text("#{req.remote_ip} #{req.scheme}") }, path)
     Task.scope do |scope|
       scope.spawn { s4.serve }
       begin

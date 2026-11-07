@@ -60,54 +60,54 @@ class HttpParseTest < Test::Case
   end
 
   def test_query_params_and_keep_alive
-    req = HTTP::Request.get("/q?a=1&b=2&a=x+y%21")
+    req = HTTP::Server::Request.get("/q?a=1&b=2&a=x+y%21")
     assert_equal("{\"a\" => [\"1\", \"x y!\"], \"b\" => [\"2\"]}", req.query_params.inspect)
     assert_true(req.keep_alive?)
   end
 
   def test_form_params
-    req = HTTP::Request.post("/f", "a=1&b=%E3%81%82", HTTP::Headers.of({"Content-Type" => "application/x-www-form-urlencoded"}))
+    req = HTTP::Server::Request.post("/f", "a=1&b=%E3%81%82", HTTP::Headers.of({"Content-Type" => "application/x-www-form-urlencoded"}))
     assert_equal("{\"a\" => [\"1\"], \"b\" => [\"あ\"]}", req.form_params.inspect)
   end
 
   # The response head without its Date line, CR LF shown as `|`, and
   # whether the body is chunked.
-  def head(req: HTTP::Request?, res: HTTP::Response, keep: Bool = true) -> [String, Bool]
+  def head(req: HTTP::Server::Request?, res: HTTP::Server::Response, keep: Bool = true) -> [String, Bool]
     text, chunked = HTTP.response_head(req, res, keep)
     [text.lines.reject { |l| l.start_with?("Date:") }.join.gsub("\r\n", "|"), chunked]
   end
 
   def test_head_text
     assert_equal(["HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 2||", false],
-                 head(nil, HTTP::Response.text("hi")))
+                 head(nil, HTTP::Server::Response.text("hi")))
   end
 
   def test_head_empty
-    assert_equal(["HTTP/1.1 204 No Content||", false], head(nil, HTTP::Response.empty))
+    assert_equal(["HTTP/1.1 204 No Content||", false], head(nil, HTTP::Server::Response.empty))
   end
 
   def test_head_not_modified
     assert_equal(["HTTP/1.1 304 Not Modified||", false],
-                 head(nil, HTTP::Response.new(304, HTTP::Headers.empty, HTTP::ResponseBody::Empty)))
+                 head(nil, HTTP::Server::Response.new(304, HTTP::Headers.empty, HTTP::Content::Empty)))
   end
 
   def test_head_stream_is_chunked
     assert_equal(["HTTP/1.1 200 OK|Transfer-Encoding: chunked||", true],
-                 head(HTTP::Request.get("/"), HTTP::Response.stream { |w| w.write("x") }))
+                 head(HTTP::Server::Request.get("/"), HTTP::Server::Response.stream { |w| w.write("x") }))
   end
 
   def test_head_http10_keep_alive
     assert_equal(["HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 1|Connection: keep-alive||", false],
-                 head(HTTP::Request.build("GET", "/").with(version: "HTTP/1.0"), HTTP::Response.text("a")))
+                 head(HTTP::Server::Request.build("GET", "/").with(version: "HTTP/1.0"), HTTP::Server::Response.text("a")))
   end
 
   def test_head_redirect_closed
     assert_equal(["HTTP/1.1 302 Found|Location: /x|Content-Length: 0|Connection: close||", false],
-                 head(nil, HTTP::Response.redirect("/x"), false))
+                 head(nil, HTTP::Server::Response.redirect("/x"), false))
   end
 
   def test_reason_and_canonical_name
-    assert_equal("Not Found", HTTP::Response.not_found.reason)
+    assert_equal("Not Found", HTTP::Server::Response.not_found.reason)
     assert_equal("X-Forwarded-For", HTTP::Headers.canonical("x-forwarded-for"))
   end
 
@@ -124,8 +124,8 @@ class HttpParseTest < Test::Case
     assert_nil(HTTP.ip_bytes("1::2::3"))
   end
 
-  def forwarded -> HTTP::Request
-    HTTP::Request.get("/", HTTP::Headers.empty.add("X-Forwarded-For", "1.2.3.4, 10.0.0.5").add("X-Forwarded-For", "127.0.0.1").add("X-Forwarded-Proto", "https"))
+  def forwarded -> HTTP::Server::Request
+    HTTP::Server::Request.get("/", HTTP::Headers.empty.add("X-Forwarded-For", "1.2.3.4, 10.0.0.5").add("X-Forwarded-For", "127.0.0.1").add("X-Forwarded-Proto", "https"))
       .with(remote_address: Socket::Address.new("127.0.0.1", 9), proxies: @proxies, trusted: true)
   end
 
@@ -143,10 +143,10 @@ class HttpParseTest < Test::Case
 
   def test_json_response
     assert_equal(["HTTP/1.1 200 OK|Content-Type: application/json|Content-Length: 11||", false],
-                 head(nil, HTTP::Response.json(JSON.parse("{\"a\": [1, 2]}"))))
-    r = HTTP::Response.json(JSON.parse("{\"a\": [1, 2]}"))
+                 head(nil, HTTP::Server::Response.json(JSON.parse("{\"a\": [1, 2]}"))))
+    r = HTTP::Server::Response.json(JSON.parse("{\"a\": [1, 2]}"))
     text = case r.body
-           in HTTP::ResponseBody::Text(text:) then text
+           in HTTP::Content::Text(text:) then text
            else nil
            end
     assert_equal("{\"a\":[1,2]}", text)
@@ -154,6 +154,6 @@ class HttpParseTest < Test::Case
 
   def test_header_entries
     assert_equal("[HTTP::Field(name: \"content-type\", value: \"text/plain; charset=utf-8\"), HTTP::Field(name: \"x-id\", value: \"7\")]",
-                 HTTP::Response.text("x").header("X-Id", "7").headers.entries.inspect)
+                 HTTP::Server::Response.text("x").header("X-Id", "7").headers.entries.inspect)
   end
 end

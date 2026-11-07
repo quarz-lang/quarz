@@ -64,7 +64,7 @@ class HttpHardeningParseTest < Test::Case
   end
 
   def test_bad_forwarded_for_ignored
-    bad = HTTP::Request.get("/", HTTP::Headers.empty.add("X-Forwarded-For", "<script>, not-an-ip"))
+    bad = HTTP::Server::Request.get("/", HTTP::Headers.empty.add("X-Forwarded-For", "<script>, not-an-ip"))
             .with(remote_address: Socket::Address.new("127.0.0.1", 9), proxies: HTTP::Proxies.of(["127.0.0.1"]), trusted: true)
     assert_equal("127.0.0.1", bad.remote_ip)
   end
@@ -78,20 +78,20 @@ class HttpHardeningServerTest < Test::Case
     HTTP.handler do |req|
       case req.path
       when "/stream-fails"
-        HTTP::Response.stream do |w|
+        HTTP::Server::Response.stream do |w|
           w.write("x")
           raise "stream broke"
         end
-      when "/inject" then HTTP::Response.text("a").header("x-user", "a\r\nSet-Cookie: evil=1")
+      when "/inject" then HTTP::Server::Response.text("a").header("x-user", "a\r\nSet-Cookie: evil=1")
       when "/inject-field"
         # Past `Headers#put`: the server's own check still refuses it.
         bad = HTTP::Headers.new([HTTP::Field.new("x-user", "a\r\nSet-Cookie: evil=1")])
-        HTTP::Response.empty(200, bad)
-      when "/te" then HTTP::Response.text("hello").header("transfer-encoding", "chunked")
-      when "/cl" then HTTP::Response.empty(200).header("content-length", "5")
-      when "/status" then HTTP::Response.text("x", 1000)
+        HTTP::Server::Response.empty(200, bad)
+      when "/te" then HTTP::Server::Response.text("hello").header("transfer-encoding", "chunked")
+      when "/cl" then HTTP::Server::Response.empty(200).header("content-length", "5")
+      when "/status" then HTTP::Server::Response.text("x", 1000)
       when "/interim" then raise HTTP::Error.new(100)
-      else HTTP::Response.text("ok #{req.body.read}")
+      else HTTP::Server::Response.text("ok #{req.body.read}")
       end
     end
   end
@@ -99,7 +99,7 @@ class HttpHardeningServerTest < Test::Case
   # Serves on a port of its own while the block runs, then shuts down.
   def serving(&: (Int) -> Void) -> Void
     errors = @errors
-    report: shareable (Exception, HTTP::Request?) -> Void = ->(e: Exception, r: HTTP::Request?) { errors.send(e.message); nil }
+    report: shareable (Exception, HTTP::Server::Request?) -> Void = ->(e: Exception, r: HTTP::Server::Request?) { errors.send(e.message); nil }
     server = HTTP::Server.new(handler, host: "127.0.0.1", port: 0, on_error: report, read_timeout: 200.ms)
     Task.scope do |scope|
       scope.spawn { server.serve }
@@ -229,7 +229,7 @@ class HttpHardeningServerTest < Test::Case
     slow = HTTP.handler do |req|
       busy.send(nil)
       Task.sleep(30.seconds)
-      HTTP::Response.text("late")
+      HTTP::Server::Response.text("late")
     end
     s3 = HTTP::Server.new(slow, host: "127.0.0.1", port: 0, max_connections: 1)
     port3 = s3.local_address.port
@@ -257,14 +257,14 @@ class HttpHeaderValidationTest < Test::Case
   end
 
   def test_bad_value(value: String)
-    res = HTTP::Response.text("a")
+    res = HTTP::Server::Response.text("a")
     e = assert_raise(ArgumentError) { res.header("x-user", value) }
     # The value, which may come from a request, is not in the message.
     assert_equal("invalid header value for x-user (a control character)", e.message)
     assert_raise(ArgumentError) { HTTP::Headers.empty.add("x-user", value) }
     assert_raise(ArgumentError) { HTTP::Headers.empty.put("x-user", value) }
     assert_raise(ArgumentError) { HTTP::Headers.of({"x-user" => value}) }
-    assert_raise(ArgumentError) { HTTP::Response.redirect("/a#{value}") }
+    assert_raise(ArgumentError) { HTTP::Server::Response.redirect("/a#{value}") }
   end
 
   def data_bad_name -> Hash[String, String]
@@ -272,12 +272,12 @@ class HttpHeaderValidationTest < Test::Case
   end
 
   def test_bad_name(name: String)
-    e = assert_raise(ArgumentError) { HTTP::Response.text("a").header(name, "v") }
+    e = assert_raise(ArgumentError) { HTTP::Server::Response.text("a").header(name, "v") }
     assert_equal("invalid header name #{name.inspect}", e.message)
   end
 
   def test_htab_and_utf8_are_values
-    res = HTTP::Response.text("a").header("x-a", "1\t2").header("x-b", "héllo")
+    res = HTTP::Server::Response.text("a").header("x-a", "1\t2").header("x-b", "héllo")
     assert_equal("1\t2", res.headers["x-a"])
     assert_equal("héllo", res.headers["x-b"])
   end
