@@ -77,7 +77,7 @@ enum Node {
     Symbol(String),
     Class(ClassId),
     Duration(i64),
-    BigInt(BigInt),
+    BigInt(Box<BigInt>),
     Str(String),
     Array(Vec<Ix>),
     Hash(Vec<(Ix, Ix)>),
@@ -87,31 +87,16 @@ enum Node {
         hi: Ix,
         exclusive: bool,
     },
-    Regexp {
-        source: String,
-        flags: String,
-    },
+    /// (The rarer kinds boxed: a node stays small.)
+    Regexp(Box<(String, String)>),
     Bytes(Vec<u8>),
     Time(TimeVal),
     Object {
         class: ClassId,
         fields: Vec<Ix>,
-        /// A raised exception's identity (`ExcInfo::id`).
-        id: Option<u64>,
-        backtrace: Option<Vec<String>>,
-        cause: Option<Ix>,
+        exc: Option<Box<ExcNode>>,
     },
-    Proc {
-        body: ProcBody,
-        frame: Option<Ix>,
-        self_val: Ix,
-        destructure: Option<usize>,
-        is_lambda: bool,
-        tag: u64,
-        method_block: Option<Ix>,
-        method_tag: u64,
-        file: u32,
-    },
+    Proc(Box<ProcNode>),
     /// A captured frame: its slots (`None`: one the block does not use,
     /// left out) and its parent.
     Frame {
@@ -120,6 +105,27 @@ enum Node {
     },
     /// Not filled in yet (while exporting).
     Pending,
+}
+
+/// An exception's: its identity (`ExcInfo::id`), backtrace and cause.
+#[derive(Clone, Debug)]
+struct ExcNode {
+    id: Option<u64>,
+    backtrace: Option<Vec<String>>,
+    cause: Option<Ix>,
+}
+
+#[derive(Clone, Debug)]
+struct ProcNode {
+    body: ProcBody,
+    frame: Option<Ix>,
+    self_val: Ix,
+    destructure: Option<usize>,
+    is_lambda: bool,
+    tag: u64,
+    method_block: Option<Ix>,
+    method_tag: u64,
+    file: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -195,7 +201,7 @@ fn leaf(interp: &Interp, v: &Value) -> Option<Node> {
         Value::Symbol(s) => Node::Symbol(interp.symbol_name(*s).to_string()),
         Value::Class(c) => Node::Class(*c),
         Value::Duration(d) => Node::Duration(*d),
-        Value::BigInt(b) => Node::BigInt((**b).clone()),
+        Value::BigInt(b) => Node::BigInt(Box::new((**b).clone())),
         Value::Str(s) => Node::Str(s.to_string()),
         Value::Short(s) => Node::Str(s.as_str().to_string()),
         Value::Bytes(b) => Node::Bytes(b.to_vec()),
@@ -272,10 +278,7 @@ fn export_value(
             hi: p(&r.hi),
             exclusive: r.exclusive,
         },
-        Value::Regexp(r) => Node::Regexp {
-            source: r.source.clone(),
-            flags: r.flags.clone(),
-        },
+        Value::Regexp(r) => Node::Regexp(Box::new((r.source.clone(), r.flags.clone()))),
         Value::Object(o) if crate::deinit::has(o.class) => {
             // Copied to the helper thread, it would be released twice.
             return Err(interp.raise(
@@ -293,12 +296,20 @@ fn export_value(
             if o.exc_info().is_none() && interp.program.world.class(o.class).is_exception {
                 o.init_exc(crate::value::ExcInfo::new(None, None));
             }
+            let fields = o.fields().iter().map(&mut p).collect();
+            let id = o.exc_info().map(|i| i.id);
+            let backtrace = o.backtrace().map(|b| b.to_vec());
+            let cause = o.cause().map(|c| p(&c));
             Node::Object {
                 class: o.class,
-                fields: o.fields().iter().map(&mut p).collect(),
-                id: o.exc_info().map(|i| i.id),
-                backtrace: o.backtrace().map(|b| b.to_vec()),
-                cause: o.cause().map(|c| p(&c)),
+                fields,
+                exc: (id.is_some() || backtrace.is_some() || cause.is_some()).then(|| {
+                    Box::new(ExcNode {
+                        id,
+                        backtrace,
+                        cause,
+                    })
+                }),
             }
         }
         Value::Proc(c) => {
@@ -335,7 +346,7 @@ fn export_value(
                 .method_block
                 .as_ref()
                 .map(|b| part(interp, nodes, jobs, b));
-            Node::Proc {
+            Node::Proc(Box::new(ProcNode {
                 body,
                 frame,
                 self_val,
@@ -345,7 +356,7 @@ fn export_value(
                 method_block,
                 method_tag: c.method_tag,
                 file: c.file,
-            }
+            }))
         }
         _ => return Err(not_transferable(interp, v)),
     })
@@ -412,75 +423,97 @@ enum Built {
     Frame(Rc<Frame>),
 }
 
-/// The parts of a node, in the order the recursion imported them.
-fn parts(node: &Node) -> Vec<Ix> {
+/// Push the parts of a node on `work` to be built first to last, in the
+/// order the recursion imported them; whether it has any.
+fn push_parts(node: &Node, work: &mut Vec<(Ix, bool)>) -> bool {
+    let start = work.len();
+    let mut push = |ix: Ix| work.push((ix, false));
     match node {
-        Node::Array(items) | Node::Set(items) => items.clone(),
-        Node::Hash(pairs) => pairs.iter().flat_map(|(k, v)| [*k, *v]).collect(),
-        Node::Range { lo, hi, .. } => vec![*lo, *hi],
-        Node::Object { fields, cause, .. } => fields.iter().copied().chain(*cause).collect(),
-        Node::Proc {
-            body,
-            frame,
-            self_val,
-            method_block,
-            ..
-        } => {
-            let recv = match body {
-                ProcBody::BoundMethod { recv, .. } => Some(*recv),
-                _ => None,
-            };
-            recv.into_iter()
-                .chain(*frame)
-                .chain(Some(*self_val))
-                .chain(*method_block)
-                .collect()
+        Node::Array(items) | Node::Set(items) => items.iter().copied().for_each(&mut push),
+        Node::Hash(pairs) => pairs.iter().for_each(|(k, v)| {
+            push(*k);
+            push(*v);
+        }),
+        Node::Range { lo, hi, .. } => {
+            push(*lo);
+            push(*hi);
         }
-        Node::Frame { slots, parent } => parent
-            .iter()
-            .copied()
-            .chain(slots.iter().flatten().copied())
-            .collect(),
-        _ => Vec::new(),
+        Node::Object { fields, exc, .. } => {
+            fields.iter().copied().for_each(&mut push);
+            exc.iter().flat_map(|e| e.cause).for_each(&mut push);
+        }
+        Node::Proc(c) => {
+            if let ProcBody::BoundMethod { recv, .. } = &c.body {
+                push(*recv);
+            }
+            c.frame.iter().copied().for_each(&mut push);
+            push(c.self_val);
+            c.method_block.iter().copied().for_each(&mut push);
+        }
+        Node::Frame { slots, parent } => {
+            parent.iter().copied().for_each(&mut push);
+            slots.iter().flatten().copied().for_each(&mut push);
+        }
+        _ => {}
     }
+    // (Popped last first: reversed, built first to last.)
+    work[start..].reverse();
+    work.len() > start
 }
 
-/// The value of a transfer, its nodes imported depth first, each after
-/// its parts, in the order the recursion imported them (a key's own
-/// `hash` and `==`, called as a hash or set is rebuilt, run in the same
-/// order), from a work list (no recursion).
+/// The value of a transfer, without recursion. When it holds an instance
+/// of a class with its own `hash` or `==` (called as a hash or set holding
+/// it is rebuilt), the nodes are imported depth first, each after its parts,
+/// in the order the recursion imported them, so those run in the same
+/// order; otherwise from the last node back.
 pub fn import(interp: &Interp, t: Transfer) -> Value {
     let mut nodes = t.nodes;
     let mut built: Vec<Option<Built>> = (0..nodes.len()).map(|_| None).collect();
+    let custom = crate::keys::any()
+        && nodes
+            .iter()
+            .any(|n| matches!(n, Node::Object { class, .. } if crate::keys::of(*class).is_some()));
+    if !custom {
+        // No value here has a `hash` or `==` of its own: nothing the
+        // import runs can tell the order, and from the last node back each
+        // node's parts (after it) are built before it.
+        for ix in (0..nodes.len()).rev() {
+            build(interp, &mut nodes, &mut built, ix);
+        }
+        return value(&mut built, 0);
+    }
     // (node, whether its parts are built)
     let mut work: Vec<(Ix, bool)> = vec![(0, false)];
     while let Some((ix, ready)) = work.pop() {
         if !ready {
+            // (A node with no parts is built at once.)
             work.push((ix, true));
-            work.extend(
-                parts(&nodes[ix as usize])
-                    .into_iter()
-                    .rev()
-                    .map(|p| (p, false)),
-            );
-            continue;
-        }
-        let ix = ix as usize;
-        let node = std::mem::replace(&mut nodes[ix], Node::Pending);
-        let b = match node {
-            Node::Frame { slots, parent } => {
-                let slots: Vec<Value> = slots
-                    .into_iter()
-                    .map(|s| s.map(|s| value(&mut built, s)).unwrap_or(Value::Nil))
-                    .collect();
-                let parent = parent.and_then(|p| frame(&mut built, p));
-                Built::Frame(Frame::from_slots(slots.into_iter().collect(), parent))
+            let at = work.len() - 1;
+            if push_parts(&nodes[ix as usize], &mut work) {
+                continue;
             }
-            node => Built::Value(import_node(interp, node, &mut built)),
-        };
-        built[ix] = Some(b);
+            work.truncate(at);
+        }
+        build(interp, &mut nodes, &mut built, ix as usize);
     }
     value(&mut built, 0)
+}
+
+/// Build node `ix`, its parts built.
+fn build(interp: &Interp, nodes: &mut [Node], built: &mut [Option<Built>], ix: usize) {
+    let node = std::mem::replace(&mut nodes[ix], Node::Pending);
+    let b = match node {
+        Node::Frame { slots, parent } => {
+            let slots: Vec<Value> = slots
+                .into_iter()
+                .map(|s| s.map(|s| value(built, s)).unwrap_or(Value::Nil))
+                .collect();
+            let parent = parent.and_then(|p| frame(built, p));
+            Built::Frame(Frame::from_slots(slots.into_iter().collect(), parent))
+        }
+        node => Built::Value(import_node(interp, node, built)),
+    };
+    built[ix] = Some(b);
 }
 
 /// The value built for node `ix`. (Each part belongs to one node: taken
@@ -510,7 +543,7 @@ fn import_node(interp: &Interp, node: Node, built: &mut [Option<Built>]) -> Valu
         Node::Symbol(s) => Value::Symbol(interp.intern(&s)),
         Node::Class(c) => Value::Class(c),
         Node::Duration(d) => Value::Duration(d),
-        Node::BigInt(b) => integer(b),
+        Node::BigInt(b) => integer(*b),
         Node::Str(s) => Value::string(s),
         Node::Array(items) => Value::array(items.into_iter().map(|i| value(built, i)).collect()),
         Node::Hash(pairs) => Value::Hash(Rc::new(crate::value::HashData::from(
@@ -527,16 +560,14 @@ fn import_node(interp: &Interp, node: Node, built: &mut [Option<Built>]) -> Valu
             hi: value(built, hi),
             exclusive,
         })),
-        Node::Regexp { source, flags } => interp.make_regexp(&source, &flags).unwrap_or(Value::Nil),
+        Node::Regexp(r) => interp.make_regexp(&r.0, &r.1).unwrap_or(Value::Nil),
         Node::Bytes(b) => Value::bytes(b),
         Node::Time(t) => Value::Time(Rc::new(t)),
-        Node::Object {
-            class,
-            fields,
-            id,
-            backtrace,
-            cause,
-        } => {
+        Node::Object { class, fields, exc } => {
+            let (id, backtrace, cause) = match exc {
+                Some(e) => (e.id, e.backtrace, e.cause),
+                None => (None, None, None),
+            };
             let fields: Fields = fields.into_iter().map(|i| value(built, i)).collect();
             // Variants without data are singletons.
             if fields.is_empty() {
@@ -556,41 +587,44 @@ fn import_node(interp: &Interp, node: Node, built: &mut [Option<Built>]) -> Valu
                 o
             })
         }
-        Node::Proc {
-            body,
-            frame: f,
-            self_val,
-            destructure,
-            is_lambda,
-            tag,
-            method_block,
-            method_tag,
-            file,
-        } => Value::Proc(Rc::new(Closure {
-            body: match body {
-                ProcBody::Func(id) => ClosureBody::Func(id),
-                ProcBody::MethodName(n, m, d, among) => ClosureBody::MethodName(
-                    Rc::from(n),
-                    std::cell::Cell::new(None),
-                    m,
-                    d,
-                    (!among.is_empty()).then(|| Rc::new(among)),
-                ),
-                ProcBody::BoundMethod { recv, name, method } => ClosureBody::BoundMethod {
-                    recv: value(built, recv),
-                    name: Rc::from(name),
-                    method,
+        Node::Proc(c) => {
+            let ProcNode {
+                body,
+                frame: f,
+                self_val,
+                destructure,
+                is_lambda,
+                tag,
+                method_block,
+                method_tag,
+                file,
+            } = *c;
+            Value::Proc(Rc::new(Closure {
+                body: match body {
+                    ProcBody::Func(id) => ClosureBody::Func(id),
+                    ProcBody::MethodName(n, m, d, among) => ClosureBody::MethodName(
+                        Rc::from(n),
+                        std::cell::Cell::new(None),
+                        m,
+                        d,
+                        (!among.is_empty()).then(|| Rc::new(among)),
+                    ),
+                    ProcBody::BoundMethod { recv, name, method } => ClosureBody::BoundMethod {
+                        recv: value(built, recv),
+                        name: Rc::from(name),
+                        method,
+                    },
                 },
-            },
-            frame: f.and_then(|f| frame(built, f)),
-            self_val: value(built, self_val),
-            destructure,
-            is_lambda,
-            tag,
-            method_block: method_block.map(|b| value(built, b)),
-            method_tag,
-            file,
-        })),
+                frame: f.and_then(|f| frame(built, f)),
+                self_val: value(built, self_val),
+                destructure,
+                is_lambda,
+                tag,
+                method_block: method_block.map(|b| value(built, b)),
+                method_tag,
+                file,
+            }))
+        }
     }
 }
 
