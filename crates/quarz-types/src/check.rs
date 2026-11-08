@@ -11028,11 +11028,13 @@ impl Checker {
         // (which built an object of its class, no value of it).
         let b = &self.world.builtin;
         let class_object = self.world.class_is_a(cid, b.class_);
-        // (And the prelude's `IO`, `File` and `Selector`, which the runtime
-        // opens, `Proc`, `Integer`: what the runtime's guard refuses too.)
+        // (And the prelude's `IO`, `File`, `Selector` and `Process::Child`,
+        // which the runtime opens or starts, `Proc`, `Integer`: what the
+        // runtime's guard refuses too.)
         let runtime_made = [b.proc_, b.integer].contains(&cid)
             || (class.file == 0
-                && ["IO", "File", "Channel::Selector"].contains(&class.name.as_str()));
+                && ["IO", "File", "Channel::Selector", "Process::Child"]
+                    .contains(&class.name.as_str()));
         if (self.world.is_value_class(cid) || class_object || runtime_made)
             && ![b.array, b.hash, b.set].contains(&cid)
         {

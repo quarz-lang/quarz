@@ -1,0 +1,11 @@
+# `Task.timeout` around `wait` interrupts it; the child goes on, and can
+# be killed and waited for after.
+c = Process.spawn("sleep", "30")
+begin
+  Task.timeout(200.ms) { c.wait }
+rescue Task::Timeout
+  puts "timed out"
+end
+p c.running?
+c.kill
+p c.wait.signal

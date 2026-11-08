@@ -1,0 +1,39 @@
+# Signals: `TERM` ends `sleep`, `kill` too; `signal` after the end does
+# nothing; `running?` and `status` before and after; `wait` twice gives the
+# same status.
+c = Process.spawn("sleep", "30")
+p c.running?
+p c.status
+c.signal(:TERM)
+s = c.wait
+p s
+p s.code, s.signal, s.to_i, s.success?
+p c.running?
+p c.status
+p c.wait == s
+c.signal("SIGTERM")
+c.kill
+p c.wait
+
+# `STOP` stops a child and `CONT` continues it.
+st = Process.spawn("sh", "-c", "sleep 0.3; exit 4")
+st.signal(:STOP)
+Task.sleep(500.ms)
+p st.running?
+st.signal(:CONT)
+p st.wait.code
+
+k = Process.spawn("sleep", "30")
+k.kill
+p k.wait.signal
+p Signal.number("KILL") == Signal.number("SIGKILL")
+begin
+  Signal.trap(:KILL) { }
+rescue ArgumentError => e
+  p e.message
+end
+begin
+  k.signal(:NOPE)
+rescue ArgumentError => e
+  p e.message
+end

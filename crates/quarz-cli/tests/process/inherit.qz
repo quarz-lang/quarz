@@ -1,0 +1,8 @@
+# A child writing to the inherited standard output: its line comes after
+# what the program printed before `spawn` (flushed first) and before what
+# it prints once the child ended.
+puts "before"
+print "no newline yet, "
+child = Process.spawn("echo", "from the child")
+p child.wait.success?
+puts "after"

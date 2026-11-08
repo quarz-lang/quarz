@@ -126,6 +126,7 @@ fn take_over(interp: &Interp, v: &Value) -> Result<SocketState, Flow> {
         let state = SocketState {
             stream: Some(stream),
             unix: s.unix,
+            pipe: s.pipe,
             rbuf: std::mem::take(&mut s.rbuf),
             eof: false,
             closed: false,

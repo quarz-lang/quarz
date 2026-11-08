@@ -2578,12 +2578,17 @@ pub enum IoKind {
     /// A TLS connection over a stream socket it took over
     /// (`TLSSocket`, `std/tls.qz`).
     Tls(IoCell<crate::natives::tls_io::TlsState>),
+    /// A child process (`Process.spawn`, `Process::Child`).
+    Child(IoCell<crate::natives::process::ChildState>),
 }
 
 #[derive(Debug)]
 pub enum Stream {
     Tcp(std::net::TcpStream),
     Unix(std::os::unix::net::UnixStream),
+    /// One end of a pipe to a child process (`Process.spawn` with
+    /// `:pipe`), non-blocking: an `IO`, read and written as a socket.
+    Pipe(std::fs::File),
 }
 
 impl Stream {
@@ -2592,6 +2597,7 @@ impl Stream {
         match self {
             Stream::Tcp(s) => s.as_raw_fd(),
             Stream::Unix(s) => s.as_raw_fd(),
+            Stream::Pipe(s) => s.as_raw_fd(),
         }
     }
 }
@@ -2601,6 +2607,7 @@ impl std::io::Read for Stream {
         match self {
             Stream::Tcp(s) => s.read(buf),
             Stream::Unix(s) => s.read(buf),
+            Stream::Pipe(s) => s.read(buf),
         }
     }
 }
@@ -2610,6 +2617,7 @@ impl std::io::Write for Stream {
         match self {
             Stream::Tcp(s) => s.write(buf),
             Stream::Unix(s) => s.write(buf),
+            Stream::Pipe(s) => s.write(buf),
         }
     }
 
@@ -2617,6 +2625,7 @@ impl std::io::Write for Stream {
         match self {
             Stream::Tcp(s) => s.flush(),
             Stream::Unix(s) => s.flush(),
+            Stream::Pipe(s) => s.flush(),
         }
     }
 }
@@ -2746,12 +2755,23 @@ impl Watched for UdpState {
     }
 }
 
+/// Which end of a pipe the program holds: it reads the one, writes the
+/// other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipeEnd {
+    Read,
+    Write,
+}
+
 #[derive(Debug)]
 pub struct SocketState {
     /// `None` once closed: the descriptor is released at `close`, not
     /// when the value is dropped.
     pub stream: Option<Stream>,
     pub unix: bool,
+    /// A pipe to a child process (`Stream::Pipe`), and which end: an
+    /// `IO`, not a socket.
+    pub pipe: Option<PipeEnd>,
     /// Bytes read from the socket but not yet consumed.
     pub rbuf: Vec<u8>,
     pub eof: bool,

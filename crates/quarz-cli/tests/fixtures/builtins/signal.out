@@ -1,4 +1,4 @@
-["HUP", "INT", "QUIT", "USR1", "USR2", "PIPE", "TERM"]
+["HUP", "INT", "QUIT", "USR1", "USR2", "PIPE", "TERM", "CONT", "KILL", "STOP"]
 ["usr1 a", "usr1 b"]
 "term"
 nil

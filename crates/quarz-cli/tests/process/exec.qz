@@ -1,0 +1,19 @@
+# A failing `exec` raises and the program goes on, SIGPIPE still ignored
+# (a write to a pipe nobody reads raises); one that succeeds replaces the
+# program: what it printed before comes first (flushed), and nothing after
+# `exec` runs.
+begin
+  Process.exec("no-such-program-for-quarz")
+rescue SystemCallError
+  puts "exec failed"
+end
+gone = Process.spawn("true", stdin: :pipe)
+gone.wait
+begin
+  gone.stdin.write("x" * 100000)
+rescue SystemCallError
+  puts "broken pipe raised"
+end
+print "before exec, "
+Process.exec("echo", "from the new program")
+puts "never printed"

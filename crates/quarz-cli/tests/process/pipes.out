@@ -1,0 +1,22 @@
+"out\n"
+"err\n"
+Process::Status(code: 3, signal: nil)
+3
+nil
+false
+3
+true
+"hello\nworld\n"
+true
+false
+true
+"not opened for reading"
+"not opened for writing"
+"cannot rewind a pipe"
+false
+false
+#<IO:pipe>
+IO
+""
+[1048576, 1048576]
+0

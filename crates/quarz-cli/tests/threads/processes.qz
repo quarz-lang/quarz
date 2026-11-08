@@ -1,0 +1,24 @@
+# Children spawned and waited for by tasks on several workers at once:
+# each task's child prints its number through a pipe and exits with it;
+# one task kills a sleeping child another task waits for.
+results = Task.scope do |s|
+  tasks = (1..8).map do |i|
+    s.spawn do
+      c = Process.spawn("sh", "-c", "echo #{i}; exit #{i}", stdout: :pipe)
+      line = c.stdout.read
+      "#{line.strip} #{c.wait.code}"
+    end
+  end
+  tasks.map(&:await)
+end
+puts results.join(", ")
+sleeper = Process.spawn("sleep", "30")
+ended = Task.scope do |s|
+  waiter = s.spawn { sleeper.wait.signal }
+  s.spawn do
+    Task.sleep(50.ms)
+    sleeper.kill
+  end
+  waiter.await
+end
+p ended

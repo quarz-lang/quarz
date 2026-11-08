@@ -6431,17 +6431,20 @@ class IO
   # Yields each remaining line, with its newline.
   native def each_line(&: (String) -> Void) -> Void
   # Shuts down the writing side of a socket: the peer reads the end of the
-  # stream, and the socket can still be read.
+  # stream, and the socket can still be read. On the pipe to a child's
+  # standard input (`Process::Child#stdin`), closes it: the child reads the
+  # end of its input.
   #
   # ## Raises
   #
-  # `TypeError` on a stream that is not a connected socket.
+  # `TypeError` on a stream that is neither a connected socket nor a pipe.
   native def close_write -> Void
-  # Shuts down the reading side of a socket.
+  # Shuts down the reading side of a socket; on a pipe from a child
+  # (`Process::Child#stdout`), closes it.
   #
   # ## Raises
   #
-  # `TypeError` on a stream that is not a connected socket.
+  # `TypeError` on a stream that is neither a connected socket nor a pipe.
   native def close_read -> Void
   # Writes out what the stream has buffered.
   native def flush -> Void
@@ -6742,9 +6745,11 @@ end
 # ```
 module Signal
   # The number of the signal `name` (`"TERM"` or `"SIGTERM"`, in capitals),
-  # or nil for a signal `trap` does not take.
+  # or nil for a signal not in `.names`.
   native def self.number(name: String) -> Int?
-  # The names of the signals `trap` takes, without the `"SIG"` prefix.
+  # The names of the signals known here, without the `"SIG"` prefix: those
+  # `trap` takes, and `"KILL"` and `"STOP"`, which can only be sent
+  # (`Process::Child#signal`).
   native def self.names -> Array[String]
   # :nodoc:
   # Internal to `trap`: routes the signal to the socket `reader` returns.
@@ -6759,7 +6764,7 @@ module Signal
   # The traps by signal number, in the order they were set.
   TRAPS = Atom[Hash[Int, Array[shareable () -> Void]]].new({})
 
-  # The signals `trap` takes, with their numbers.
+  # The signals known here (`.names`), with their numbers.
   def self.list -> Hash[String, Int]
     out = Hash::Builder[String, Int].new
     names.each { |n| out[n] = number(n) || 0 }
@@ -6778,13 +6783,15 @@ module Signal
   #
   # ## Raises
   #
-  # `ArgumentError` for a signal not in `.names` (`:KILL`).
+  # `ArgumentError` for a signal not in `.names`, and for `:KILL` and
+  # `:STOP`, which cannot be trapped.
   def self.trap(name: Symbol, &handler: shareable () -> Void) -> Void = trap(name.to_s, &handler)
 
   # :ditto:
   def self.trap(name: String, &handler: shareable () -> Void) -> Void
     signo = number(name)
     raise ArgumentError, "unsupported signal: #{name}" if signo.nil?
+    raise ArgumentError, "SIG#{name.delete_prefix("SIG")} cannot be trapped" if ["KILL", "STOP"].include?(name.delete_prefix("SIG"))
     TRAPS.update { |h| h.put(signo, (h[signo]? || []).push(handler)) }
     watch(signo)
     io = reader
@@ -6799,14 +6806,16 @@ module Signal
   #
   # ## Raises
   #
-  # `ArgumentError` for a signal not in `.names`, for another action, and
-  # for `:default` on `:PIPE` (which stays ignored).
+  # `ArgumentError` for a signal not in `.names`, for `:KILL` and `:STOP`,
+  # for another action, and for `:default` on `:PIPE` (which stays
+  # ignored).
   def self.trap(name: Symbol, action: Symbol) -> Void = trap(name.to_s, action)
 
   # :ditto:
   def self.trap(name: String, action: Symbol) -> Void
     signo = number(name)
     raise ArgumentError, "unsupported signal: #{name}" if signo.nil?
+    raise ArgumentError, "SIG#{name.delete_prefix("SIG")} cannot be trapped" if ["KILL", "STOP"].include?(name.delete_prefix("SIG"))
     raise ArgumentError, "action must be :default or :ignore" unless action == :default || action == :ignore
     # Writing to a closed socket raises instead (SIGPIPE stays ignored).
     raise ArgumentError, "SIGPIPE cannot be given its default action" if action == :default && name.delete_prefix("SIG") == "PIPE"
@@ -6860,6 +6869,93 @@ module Process
     native def success? -> Bool
   end
 
+  # How a child process ended (`Process::Child#wait`): its exit code, or
+  # the signal that ended it.
+  data Status(
+    # The exit code; nil when a signal ended the process.
+    code: Int?,
+    # The name of the signal that ended the process, without the `"SIG"`
+    # prefix (`"TERM"`); nil when it exited.
+    signal: String?
+  )
+    # Whether the process exited with code 0.
+    def success? -> Bool = code == 0
+
+    # The exit code, or -1 when a signal ended the process (as
+    # `Output#status`).
+    def to_i -> Int = code || -1
+  end
+
+  # A child process that `Process.spawn` started, which runs alongside the
+  # program until it ends.
+  #
+  # Several tasks may hold it: one waits for it while another signals it.
+  #
+  # A child dropped without `#wait` is not killed: it goes on running,
+  # and once it has ended it stays a zombie (a process-table entry) until
+  # the program exits, unless it had ended already when the value was
+  # released, which reaps it.
+  class Child
+    include Shareable
+
+    # The child's process id.
+    native def pid -> Int
+
+    # Waits for the child to end and returns how it ended; only the
+    # calling task waits. A second `wait`, or one after the child ended,
+    # returns the same status.
+    #
+    # `Task.timeout` and `Task#cancel` interrupt the wait (the task gets
+    # `Task::Timeout` or `Task::Cancelled`): the child goes on, and can
+    # still be waited for or signalled.
+    native def wait -> Process::Status
+
+    # How the child ended, or nil while it runs (without waiting).
+    native def status -> Process::Status?
+
+    # Whether the child is still running.
+    native def running? -> Bool
+
+    # Sends the signal `name` (`:TERM`, `"TERM"`, `"SIGTERM"`; one of
+    # `Signal.names`) to the child. Sending to a child that has ended does
+    # nothing.
+    #
+    # ## Raises
+    #
+    # `ArgumentError` for a signal not in `Signal.names`.
+    native def signal(name: Symbol | String) -> Void
+
+    # Ends the child at once (`signal(:KILL)`).
+    def kill -> Void = signal(:KILL)
+
+    # The pipe to the child's standard input, when it was spawned with
+    # `stdin: :pipe`: write to it, and close it to end the child's input.
+    #
+    # ## Raises
+    #
+    # `ArgumentError` when `stdin` was not `:pipe`.
+    native def stdin -> IO
+
+    # The pipe from the child's standard output, when it was spawned with
+    # `stdout: :pipe`.
+    #
+    # A child writing to two pipes waits once one of them is full: read
+    # both (from two tasks), or the child may never end.
+    #
+    # ## Raises
+    #
+    # `ArgumentError` when `stdout` was not `:pipe`.
+    native def stdout -> IO
+
+    # The pipe from the child's standard error, when it was spawned with
+    # `stderr: :pipe` (see `#stdout`).
+    #
+    # ## Raises
+    #
+    # `ArgumentError` when `stderr` was not `:pipe`.
+    native def stderr -> IO
+  end
+
   # The program's arguments, without the program's name (as `ARGV`).
   native def self.argv -> Array[String]
   # The environment variables, as they are when it is called (as `ENV`,
@@ -6890,6 +6986,47 @@ module Process
   native def self.run(*command: String) -> Process::Output
   # Runs `script` with `sh -c`, as `.run` runs a program.
   native def self.sh(script: String) -> Process::Output
+
+  # Starts the program `command[0]` with the arguments that follow, with no
+  # shell between, and returns at once: the child runs alongside the
+  # program (`Process::Child#wait` waits for its end).
+  #
+  # ```quarz no_run
+  # child = Process.spawn("sh", "-c", "echo out; exit 3", stdout: :pipe)
+  # child.stdout.read    # => "out\n"
+  # child.wait.code      # => 3
+  # ```
+  #
+  # `env` adds to the program's environment, or overrides a variable, for
+  # the child. Each of `stdin`, `stdout` and `stderr` is `:inherit` (the
+  # program's own, as the terminal), `:pipe` (a pipe the program writes or
+  # reads through `Process::Child#stdin`, `Process::Child#stdout`,
+  # `Process::Child#stderr`) or `:null` (`/dev/null`). `chdir` is the
+  # child's working directory. What the program printed is flushed first,
+  # so that it comes before what the child prints.
+  #
+  # ## Raises
+  #
+  # `SystemCallError` when the program cannot be started (not found, not
+  # executable, `chdir` missing); `ArgumentError` when `command` is empty
+  # or a stream is not one of those symbols.
+  native def self.spawn(*command: String, env: Hash[String, String] = {}, stdin: Symbol = :inherit,
+                        stdout: Symbol = :inherit, stderr: Symbol = :inherit,
+                        chdir: String? = nil) -> Process::Child
+
+  # Replaces the program with `command[0]` and the arguments that follow
+  # (searched for as `.spawn` does), after flushing standard output and
+  # error; `env` as for `.spawn`. It does not return: the other tasks and
+  # the worker threads end with the program. The new program gets the
+  # standard input, output and error, and no other descriptor: the files
+  # and sockets the program opened, as the runtime's own, are closed on
+  # `exec` (as for a child of `.spawn`).
+  #
+  # ## Raises
+  #
+  # `SystemCallError` when the program cannot be run (the program goes
+  # on); `ArgumentError` when `command` is empty.
+  native def self.exec(*command: String, env: Hash[String, String] = {}) -> Nothing
 end
 
 # Floating-point functions, as Ruby's `Math`: angles are in radians.

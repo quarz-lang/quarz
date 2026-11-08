@@ -1,0 +1,9 @@
+SystemCallError
+ArgumentError
+ArgumentError
+ArgumentError
+ArgumentError
+SystemCallError
+ArgumentError
+the child's stdout is not a pipe: spawn it with `stdout: :pipe`
+true

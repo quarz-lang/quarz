@@ -106,6 +106,7 @@ mod matching;
 mod math;
 pub mod net;
 mod numeric;
+pub mod process;
 pub mod random;
 pub mod signal;
 mod steps;
@@ -275,6 +276,7 @@ fn registry() -> Registry<NativeFn> {
     io::register(&mut m);
     net::register(&mut m);
     signal::register(&mut m);
+    process::register(&mut m);
     bytes::register(&mut m);
     bytes_search::register(&mut m);
     time::register(&mut m);

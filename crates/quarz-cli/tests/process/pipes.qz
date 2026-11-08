@@ -1,0 +1,55 @@
+# A child's standard output and error through pipes, its exit code; its
+# standard input through a pipe; and two tasks reading a child's two
+# pipes at once, each of which the child fills (1 MB each): both make
+# progress, and the child ends.
+c = Process.spawn("sh", "-c", "echo out; echo err >&2; exit 3",
+                  stdout: :pipe, stderr: :pipe, stdin: :null, chdir: "/tmp")
+p c.stdout.read
+p c.stderr.read
+status = c.wait
+p status
+p status.code, status.signal, status.success?, status.to_i
+
+cat = Process.spawn("cat", stdin: :pipe, stdout: :pipe)
+cat.stdin.puts "hello"
+cat.stdin.write("world\n")
+p cat.stdin.eof?
+cat.stdin.close_write
+p cat.stdout.read
+p cat.wait.success?
+p cat.stdout.closed?, cat.stdin.closed?
+
+# A pipe goes one way.
+c = Process.spawn("cat", stdin: :pipe, stdout: :pipe)
+begin
+  c.stdin.gets
+rescue IOError => e
+  p e.message
+end
+begin
+  c.stdout.write("x")
+rescue IOError => e
+  p e.message
+end
+begin
+  c.stdout.rewind
+rescue IOError => e
+  p e.message
+end
+c.stdout.close_write
+c.stdin.close_read
+p c.stdin.closed?, c.stdout.closed?
+p c.stdin, c.stdout.class
+c.stdin.close
+p c.stdout.read
+c.wait
+
+big = Process.spawn("sh", "-c", "head -c 1048576 /dev/zero; head -c 1048576 /dev/zero >&2",
+                    stdout: :pipe, stderr: :pipe)
+sizes = Task.scope do |s|
+  out = s.spawn { big.stdout.read.size }
+  err = s.spawn { big.stderr.read.size }
+  [out.await, err.await]
+end
+p sizes
+p big.wait.code
