@@ -202,7 +202,7 @@ With `--parallel`, each test of a class is a task, up to N at once, and the clas
 
 A script's own tests live next to it, `foo_test.qz` with `require_relative "foo"`, and run with `quarz test foo_test.qz`. `quarz run foo_test.qz` runs the file's top-level statements only, and a test file has none: it prints nothing. The runner is added by `quarz test`, not by an `at_exit` of the library (Test::Unit's autorun), since nothing can list the tests at run time.
 
-The language and its standard library are tested this way: `std/test/*_test.qz`, which `cargo test` runs with `quarz test std/test` interpreted, compiled (`--release`) and in parallel (`crates/quarz-cli/tests/std.rs`). What only a process shows (exit statuses, an unhandled error, a deadlock, arguments, standard output) and the checker's errors stay in Rust tests.
+The language and its standard library are tested this way: `std/test/*_test.qz`, which `cargo test` runs with `quarz test`, a file at a time on a pool of processes, interpreted and compiled (`--release`), and with `quarz test --parallel=8 std/test` in one (`crates/quarz-cli/tests/std.rs`). What only a process shows (exit statuses, an unhandled error, a deadlock, arguments, standard output) and the checker's errors stay in Rust tests.
 
 ## 9. Later
 
