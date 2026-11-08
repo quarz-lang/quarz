@@ -336,6 +336,25 @@ fn register_argon2(m: &mut super::Registry<NativeFn>) {
 const SALT_MIN: usize = 16;
 const SALT_MAX: usize = argon2::password_hash::phc::Salt::MAX_LENGTH;
 
+/// The schemes a stored password hash may be of, named in `verify?`'s
+/// error.
+const KNOWN_SCHEMES: &[&str] = &[
+    "argon2i",
+    "argon2d",
+    "pbkdf2",
+    "pbkdf2-sha1",
+    "pbkdf2-sha256",
+    "pbkdf2-sha512",
+    "scrypt",
+    "bcrypt",
+    "2a",
+    "2b",
+    "2y",
+    "1",
+    "5",
+    "6",
+];
+
 /// The bounds of `Crypto::Argon2::Params` (`std/crypto.qz`).
 const MEMORY_MAX: i64 = 4 * 1024 * 1024;
 const PARALLELISM_MAX: i64 = 255;
@@ -377,21 +396,18 @@ fn parse_argon2(
     hash: &str,
 ) -> Result<(argon2::password_hash::phc::PasswordHash, argon2::Params), String> {
     use argon2::password_hash::phc::PasswordHash;
-    // The scheme first, whatever the rest is (named when it reads as a
-    // PHC identifier).
+    // The scheme first, whatever the rest is: named when it is one of the
+    // usual password hash schemes, so that a password given in place of
+    // the hash is never echoed.
     let ident = hash
         .strip_prefix('$')
-        .and_then(|rest| rest.split('$').next())
-        .filter(|id| {
-            !id.is_empty()
-                && id.len() <= 32
-                && id
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        });
+        .and_then(|rest| rest.split('$').next());
     match ident {
         Some("argon2id") => {}
-        Some(id) => return Err(format!("a ${id}$ hash: only argon2id hashes are read")),
+        Some(id) if KNOWN_SCHEMES.contains(&id) => {
+            return Err(format!("a ${id}$ hash: only argon2id hashes are read"));
+        }
+        Some(_) => return Err("not an argon2id hash: another scheme".to_string()),
         None => return Err("not a PHC hash string".to_string()),
     }
     let phc = PasswordHash::new(hash).map_err(|e| format!("not a PHC hash string: {e}"))?;
@@ -400,21 +416,49 @@ fn parse_argon2(
         Some(v) => return Err(format!("argon2id version v={v}: only v=19 is read")),
         None => return Err("an argon2id hash without its version (v=19)".to_string()),
     }
-    for (name, _) in phc.params.iter() {
-        if !["m", "t", "p"].contains(&name.as_str()) {
+    // m, t and p once each, as decimals (`ParamsString` keeps a repeated
+    // name, and the crate would hash with the last one).
+    let mut mtp: [Option<i64>; 3] = [None; 3];
+    for (name, value) in phc.params.iter() {
+        let Some(slot) = ["m", "t", "p"].iter().position(|n| *n == name.as_str()) else {
             return Err(format!(
                 "an argon2id hash with the parameter {}: only m, t and p are read",
                 name.as_str()
             ));
+        };
+        if mtp[slot].is_some() {
+            return Err(format!(
+                "an argon2id hash with the parameter {} twice",
+                name.as_str()
+            ));
         }
+        let text = value.as_str();
+        // Digits, without a leading zero; at most 18 of them (the bounds
+        // then refuse what is too large).
+        let decimal = !text.is_empty()
+            && text.len() <= 18
+            && text.bytes().all(|b| b.is_ascii_digit())
+            && (text == "0" || !text.starts_with('0'));
+        let n = decimal
+            .then(|| text.parse::<i64>().ok())
+            .flatten()
+            .ok_or_else(|| {
+                format!(
+                    "an argon2id hash whose parameter {} is not a decimal",
+                    name.as_str()
+                )
+            })?;
+        mtp[slot] = Some(n);
     }
-    let get = |name: &str| {
-        phc.params
-            .get_decimal(name)
-            .map(i64::from)
-            .ok_or_else(|| format!("an argon2id hash without its parameter {name}"))
+    let get = |slot: usize| {
+        mtp[slot].ok_or_else(|| {
+            format!(
+                "an argon2id hash without its parameter {}",
+                ["m", "t", "p"][slot]
+            )
+        })
     };
-    let (m, t, p) = (get("m")?, get("t")?, get("p")?);
+    let (m, t, p) = (get(0)?, get(1)?, get(2)?);
     if let Some(e) = argon2_bounds(m, t, p) {
         return Err(format!("an argon2id hash with {e}"));
     }

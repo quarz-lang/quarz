@@ -112,7 +112,12 @@ class CryptoArgon2Test < Test::Case
       ["$argon2id$v=19$m=4194305,t=1,p=1$#{salt}$#{out}", /memory_kib/],
       ["$argon2id$v=19$m=64,t=0,p=1$#{salt}$#{out}", /iterations/],
       ["$argon2id$v=19$m=64,t=1,p=9$#{salt}$#{out}", /8 \* parallelism/],
-      [good.slice(0, good.size - 50), /./],
+      [good.slice(0, good.size - 50), /without its hash/],
+      ["$argon2id$v=19$m=64,t=1,p=1,m=128$#{salt}$#{out}", /parameter m twice/],
+      ["$argon2id$v=19$m=64,t=1,p=1,p=1000$#{salt}$#{out}", /parameter p twice/],
+      ["$argon2id$v=19$m=4294967296,t=1,p=1$#{salt}$#{out}", /m is not a decimal|memory_kib/],
+      ["$argon2id$v=19$m=064,t=1,p=1$#{salt}$#{out}", /m is not a decimal/],
+      ["$scrypt$ln=16,r=8,p=1$c2FsdA$aGFzaA", /\$scrypt\$ hash/],
       ["$pbkdf2-sha256$600000$c2FsdA$aGFzaA", /pbkdf2-sha256/],
       ["not a hash", /PHC/],
       ["", /PHC/]
@@ -122,6 +127,10 @@ class CryptoArgon2Test < Test::Case
       assert(!e.message.include?(secret))
     end
     assert(Crypto::Argon2.verify?(secret, good))
+    # The arguments swapped: the password is not echoed.
+    pw = "$my-pass-1$word"
+    e = assert_raise(Crypto::Error) { Crypto::Argon2.verify?(good, pw) }
+    assert(!e.message.include?("my-pass"))
   end
 
   def test_tasks_hash_at_once
