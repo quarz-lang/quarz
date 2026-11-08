@@ -93,6 +93,93 @@ pub fn liveness(f: &Function) -> Vec<Vec<Vec<bool>>> {
         .collect()
 }
 
+/// One register's liveness at a time, solved when first asked for: what
+/// `liveness` says of that register, without `liveness`'s set of every
+/// register at every instruction, which grows with the product of a
+/// function's registers and instructions (a test runner's function over
+/// many test files, #463). Its block-level solution (live at each block's
+/// entry) is kept per register; a question scans one block.
+pub struct RegLive<'f> {
+    f: &'f Function,
+    uses_defs: Vec<Vec<(Regs, Regs)>>,
+    live_in: rustc_hash::FxHashMap<Reg, Vec<bool>>,
+}
+
+impl<'f> RegLive<'f> {
+    pub fn new(f: &'f Function) -> RegLive<'f> {
+        let uses_defs = f
+            .blocks
+            .iter()
+            .map(|blk| blk.insts.iter().map(|i| (i.uses(), i.defs())).collect())
+            .collect();
+        RegLive {
+            f,
+            uses_defs,
+            live_in: rustc_hash::FxHashMap::default(),
+        }
+    }
+
+    /// Whether `r` may be read before being written from instruction `i`
+    /// of block `b` on (`i` the block's length: its terminator), as
+    /// `liveness(f)[b][i][r]`.
+    pub fn live_before(&mut self, b: usize, i: usize, r: Reg) -> bool {
+        if !self.live_in.contains_key(&r) {
+            let solved = self.solve(r);
+            self.live_in.insert(r, solved);
+        }
+        let live = self.scan(&self.live_in[&r], b, i, r);
+        // (Debug builds check it against `liveness` where that is cheap.)
+        #[cfg(debug_assertions)]
+        {
+            let insts: usize = self.f.blocks.iter().map(|b| b.insts.len() + 1).sum();
+            if insts * self.f.nregs as usize <= 1 << 16 {
+                assert_eq!(
+                    live,
+                    liveness(self.f)[b][i][r as usize],
+                    "RegLive disagrees with liveness on r{r} at block {b}, instruction {i}"
+                );
+            }
+        }
+        live
+    }
+
+    /// `r` live at each block's entry: a fixpoint, as `liveness`'s.
+    fn solve(&self, r: Reg) -> Vec<bool> {
+        let mut live_in = vec![false; self.f.blocks.len()];
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for b in (0..live_in.len()).rev() {
+                let v = self.scan(&live_in, b, 0, r);
+                if v != live_in[b] {
+                    live_in[b] = v;
+                    changed = true;
+                }
+            }
+        }
+        live_in
+    }
+
+    /// `r` live before instruction `i` of block `b`, given its liveness
+    /// at the blocks' entries: `liveness`'s walk, for one register.
+    fn scan(&self, live_in: &[bool], b: usize, i: usize, r: Reg) -> bool {
+        let blk = &self.f.blocks[b];
+        let mut live =
+            successors(blk).iter().any(|s| live_in[*s as usize]) || blk.term.uses() == Some(r);
+        // (A handler can be entered from any of the block's instructions.)
+        let handler = blk.handler.is_some_and(|h| live_in[h.block as usize]);
+        for (u, d) in self.uses_defs[b][i..].iter().rev() {
+            if d.contains(&r) {
+                live = false;
+            }
+            if u.contains(&r) || handler {
+                live = true;
+            }
+        }
+        live
+    }
+}
+
 /// For each instruction (`result[b][i]`), the registers it reads for the
 /// last time: it reads them once, and nothing reads them after it before
 /// they are written again (by itself, possibly). Such a value can be moved out of its register.

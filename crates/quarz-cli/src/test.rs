@@ -653,8 +653,30 @@ fn runner_source(
             ex.line
         ));
     }
-    Ok(format!(
-        "suites: Array[Test::Suite] = [\n{}\n]\nexit Test.run(ARGV, suites)\n",
-        suites.join("\n")
-    ))
+    // In functions of a few suites each, each adding them to a builder:
+    // one function over every suite made lowering's per-function work
+    // (liveness, the IR verifier) grow with the square of the tests
+    // (#463).
+    let mut out = String::new();
+    let chunks: Vec<&[String]> = suites.chunks(RUNNER_CHUNK).collect();
+    for (i, chunk) in chunks.iter().enumerate() {
+        out.push_str(&format!(
+            "def __quarz_suites_{i}(suites: Array::Builder[Test::Suite]) -> Void\n"
+        ));
+        for suite in chunk.iter() {
+            // (`  Test::Suite.new(...),` as an array element: pushed.)
+            let suite = suite.trim_end().trim_end_matches(',');
+            out.push_str(&format!("  suites <<{}\n", &suite[1..]));
+        }
+        out.push_str("end\n");
+    }
+    out.push_str("suites = Array::Builder[Test::Suite].new\n");
+    for i in 0..chunks.len() {
+        out.push_str(&format!("__quarz_suites_{i}(suites)\n"));
+    }
+    out.push_str("exit Test.run(ARGV, suites.to_a)\n");
+    Ok(out)
 }
+
+/// How many suites one of the runner's functions adds.
+const RUNNER_CHUNK: usize = 16;
