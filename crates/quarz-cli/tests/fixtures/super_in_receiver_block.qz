@@ -2,8 +2,10 @@
 # run on the method's `self`, however the block is lowered (#384): in
 # place (a literal block given to `instance_exec`), as a function of its
 # own (a block given to a method that `instance_exec`s it), in a lambda
-# with a receiver, nested in other blocks, and on a receiver of a class
-# that has no such method.
+# with a receiver, nested in other blocks, on a receiver of a class that
+# has no such method, and in a parameter's default (the method's `self`
+# is in its slot before the parameters are bound, for an implicit call
+# falling through to it too).
 
 class Q
   def go(n: Int) -> String = "go #{self.class.name} #{n}"
@@ -12,6 +14,7 @@ class Q
   def nest(n: Int) -> String = "nest #{self.class.name} #{n}"
   def un(n: Int) -> String = "un #{self.class.name} #{n}"
   def arg(n: Int) -> String = "arg #{self.class.name} #{n}"
+  def df(n: Int, s: String = "q") -> String = "df #{self.class.name} #{n} #{s}"
 end
 
 class R
@@ -43,6 +46,11 @@ class P < Q
   def un(n: Int) -> String = Runner.new.on_r { super(n) }
 
   def arg(n: Int) -> String = P3.new.instance_exec(n * 2) { |k| super(k) }
+
+  def df(n: Int, s: String = R.new.instance_exec { super(n, "d") }) -> String = "P(#{s})"
+
+  def fall(s: String = R.new.instance_exec { own_name }) -> String = "fall(#{s})"
+  def own_name -> String = self.class.name
 end
 
 class P2 < P
@@ -57,3 +65,5 @@ puts P2.new.lam(3)
 puts P2.new.nest(4)
 puts P2.new.un(5)
 puts P2.new.arg(6)
+puts P2.new.df(7)
+puts P2.new.fall

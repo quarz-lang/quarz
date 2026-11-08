@@ -417,6 +417,9 @@ impl<'a> FnBuilder<'a> {
             Some(m.owner),
         );
         b.owner = Some(SelfOwner::Method(mid));
+        // (Before the parameters: a default may hold a block with a
+        // receiver that reads the method's `self` from the slot.)
+        b.store_self_slot(SelfOwner::Method(mid));
         // Parameters: bound by the runtime into argument slots in order;
         // the `&block` parameter comes last.
         b.binding_params = true;
@@ -486,7 +489,6 @@ impl<'a> FnBuilder<'a> {
         if out.usable_on_entry.contains(&SelfOwner::Method(mid)) {
             b.mark_usable();
         }
-        b.store_self_slot(SelfOwner::Method(mid));
         let v = b.body(body);
         b.term(Term::Return(v));
         b.finish()
