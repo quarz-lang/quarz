@@ -1189,7 +1189,11 @@ impl Runner {
 
     /// A method (`Ok`) or constant (`Err`, named) with errors that the
     /// statement reaches.
-    fn bad_reach(&self, root: FuncId) -> Option<Result<MethodId, String>> {
+    fn bad_reach(
+        &self,
+        root: FuncId,
+        lifted: &rustc_hash::FxHashSet<FuncId>,
+    ) -> Option<Result<MethodId, String>> {
         if self.bad_methods.is_empty() && self.bad_consts.is_empty() {
             return None;
         }
@@ -1212,7 +1216,7 @@ impl Runner {
                 &bound,
                 &mut methods,
                 &mut |r| match r {
-                    shake::Ref::Func(g) => {
+                    shake::Ref::Func(g) if !lifted.contains(&g) => {
                         work.push((g, func_bound(&self.lowerer.done, f, g, &bound)))
                     }
                     shake::Ref::Const(c) => {
@@ -1246,7 +1250,11 @@ impl Runner {
 
     /// A native the statement reaches that cannot run at compile time,
     /// with the calls leading to it (innermost last).
-    fn impure_reach(&self, root: FuncId) -> Option<Vec<String>> {
+    fn impure_reach(
+        &self,
+        root: FuncId,
+        lifted: &rustc_hash::FxHashSet<FuncId>,
+    ) -> Option<Vec<String>> {
         let world = self.world.as_ref()?;
         let by_name = methods_by_name(world);
         // Each function once per bound of its `self` (`reached`).
@@ -1269,7 +1277,7 @@ impl Runner {
                 &bound,
                 &mut methods,
                 &mut |r| match r {
-                    shake::Ref::Func(f) => funcs.push(f),
+                    shake::Ref::Func(f) if !lifted.contains(&f) => funcs.push(f),
                     shake::Ref::Const(c) => consts.push(c),
                     _ => {}
                 },
@@ -1676,7 +1684,16 @@ impl Runner {
         // Code that failed its check does not run (docs/05 §3): neither a
         // statement reaching a method or constant with errors, nor one
         // whose lowering found errors elsewhere (a field default).
-        if let Some(bad) = self.bad_reach(fid) {
+        // The blocks given to `def_method` and its kin become method bodies
+        // the statement does not run: not in its reach (docs/14 §5).
+        let lifted: rustc_hash::FxHashSet<FuncId> = self
+            .lowerer
+            .block_calls
+            .keys()
+            .copied()
+            .filter(|&g| self.lowerer.lifted_block(host.output(), g))
+            .collect();
+        if let Some(bad) = self.bad_reach(fid, &lifted) {
             let message = match bad {
                 Ok(m) => format!(
                     "`{callee_name}` did not run: {}",
@@ -1697,7 +1714,7 @@ impl Runner {
                 notes: Vec::new(),
             });
         }
-        if let Some(path) = self.impure_reach(fid) {
+        if let Some(path) = self.impure_reach(fid, &lifted) {
             let last = path.last().cloned().unwrap_or_default();
             // The path starts at the callee itself.
             let via = if path.len() > 2 {

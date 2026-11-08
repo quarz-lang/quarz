@@ -1295,6 +1295,15 @@ impl Lowerer {
         }
     }
 
+    /// Whether function `g` is a block given to `def_method`,
+    /// `def_class_method` or `def_initialize` (`Output::lifted_blocks`):
+    /// a generated method's body, which a static statement does not run.
+    pub fn lifted_block(&self, out: &Output, g: FuncId) -> bool {
+        self.block_calls
+            .get(&g)
+            .is_some_and(|(call, _)| out.lifted_blocks.contains_key(call))
+    }
+
     /// Function `fid`, lowered in this round or an earlier one.
     fn function(&self, fid: FuncId) -> Option<&Function> {
         if fid >= self.round_base {
@@ -1335,7 +1344,13 @@ impl Lowerer {
                     }
                 }
                 for &g in refs.funcs.iter() {
-                    self.walk_func(g, walk);
+                    // (Not a block given to `def_method` and its kin: it
+                    // becomes a method's body, which the statement does
+                    // not run; docs/14 §5. It is lowered, and checked,
+                    // where the generated method is reached.)
+                    if !self.lifted_block(out, g) {
+                        self.walk_func(g, walk);
+                    }
                 }
                 for &m in refs.methods.iter() {
                     self.walk_method(world, m, walk);
