@@ -1,6 +1,7 @@
 //! `std/crypto.qz` (the `crypto` feature): RSA keys and signatures
-//! through RustCrypto's `rsa`, AES-GCM through `aes-gcm`, and the
-//! system's random bytes through `getrandom`.
+//! through RustCrypto's `rsa`, AES-GCM through `aes-gcm`, argon2id
+//! password hashes through `argon2`, and the system's random bytes
+//! through `getrandom`.
 //!
 //! A key is a `data` value holding its DER (PKCS#8 for a private key,
 //! SPKI for a public one, whatever it was read from): the natives parse
@@ -19,6 +20,7 @@ use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
 use rsa::traits::PublicKeyParts;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use sha2::{Digest, Sha256, Sha384, Sha512};
+use zeroize::Zeroizing;
 
 use crate::interp::{Flow, Interp, NativeFn};
 use crate::value::*;
@@ -26,6 +28,7 @@ use crate::value::*;
 use super::string;
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
+    register_argon2(m);
     native!(m, "Crypto.random_bytes", |i, _, a| {
         let n = super::int(i, a.arg(0), "n")?;
         if !(0..=RANDOM_MAX).contains(&n) {
@@ -260,6 +263,229 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Crypto::RSA::PublicKey#fingerprint", |i, r, _| {
         Ok(Value::bytes(Sha256::digest(der_field(i, r)?).to_vec()))
     });
+}
+
+fn register_argon2(m: &mut super::Registry<NativeFn>) {
+    // The PHC string of `password` hashed with `salt` and the parameters
+    // (all checked by `Crypto::Argon2.hash`, and again here).
+    native!(m, "Crypto::Argon2.hash_with", |i, _, a| {
+        let password = Zeroizing::new(message(i, a.arg(0))?.to_vec());
+        let salt = bytes(i, a.arg(1), "salt")?.to_vec();
+        let params = argon2_params(
+            i,
+            super::int(i, a.arg(2), "memory_kib")?,
+            super::int(i, a.arg(3), "iterations")?,
+            super::int(i, a.arg(4), "parallelism")?,
+        )?;
+        if !(SALT_MIN..=SALT_MAX).contains(&salt.len()) {
+            return Err(i.err_arg(&format!(
+                "an argon2 salt has {SALT_MIN} to {SALT_MAX} bytes, not {}",
+                salt.len()
+            )));
+        }
+        // Tens of milliseconds and `memory_kib` of memory: on a helper
+        // thread.
+        let phc = i
+            .block_on(move || {
+                use argon2::PasswordHasher;
+                argon2_id(params)
+                    .hash_password_with_salt(&password, &salt)
+                    .map(|h| h.to_string())
+                    .map_err(|e| e.to_string())
+            })?
+            .map_err(|e| error(i, format!("hashing failed: {e}")))?;
+        Ok(Value::string(phc))
+    });
+    // Whether `password` matches the argon2id PHC string `hash`;
+    // `Crypto::Error` for a string that is not one.
+    native!(m, "Crypto::Argon2.verify_with", |i, _, a| {
+        let password = Zeroizing::new(message(i, a.arg(0))?.to_vec());
+        let (phc, params) = parse_argon2(string(i, a.arg(1), "hash")?).map_err(|e| error(i, e))?;
+        let ok = i
+            .block_on(move || {
+                use argon2::PasswordVerifier;
+                match argon2_id(params).verify_password(&password, &phc) {
+                    Ok(()) => Ok(true),
+                    Err(argon2::password_hash::Error::PasswordInvalid) => Ok(false),
+                    Err(e) => Err(e.to_string()),
+                }
+            })?
+            .map_err(|e| error(i, format!("verifying failed: {e}")))?;
+        Ok(Value::Bool(ok))
+    });
+    // `[memory_kib, iterations, parallelism]` of an argon2id PHC string;
+    // nil for a string of another scheme (one that does not begin with
+    // `$argon2id$`); `Crypto::Error` for an argon2id one that does not
+    // parse.
+    native!(m, "Crypto::Argon2.params_with", |i, _, a| {
+        let hash = string(i, a.arg(0), "hash")?;
+        if !hash.starts_with("$argon2id$") {
+            return Ok(Value::Nil);
+        }
+        let (_, p) = parse_argon2(hash).map_err(|e| error(i, e))?;
+        Ok(Value::array(vec![
+            Value::Int(p.m_cost() as i64),
+            Value::Int(p.t_cost() as i64),
+            Value::Int(p.p_cost() as i64),
+        ]))
+    });
+}
+
+/// The salt sizes `Crypto::Argon2.hash` takes: PHC's `Salt` holds 8 to
+/// 48 bytes; 16 at least, as RFC 9106 recommends.
+const SALT_MIN: usize = 16;
+const SALT_MAX: usize = argon2::password_hash::phc::Salt::MAX_LENGTH;
+
+/// The schemes a stored password hash may be of, named in `verify?`'s
+/// error.
+const KNOWN_SCHEMES: &[&str] = &[
+    "argon2i",
+    "argon2d",
+    "pbkdf2",
+    "pbkdf2-sha1",
+    "pbkdf2-sha256",
+    "pbkdf2-sha512",
+    "scrypt",
+    "bcrypt",
+    "yescrypt",
+    "y",
+    "gy",
+    "7",
+    "2",
+    "2a",
+    "2b",
+    "2x",
+    "2y",
+    "1",
+    "5",
+    "6",
+    "md5",
+    "sha1",
+];
+
+/// The bounds of `Crypto::Argon2::Params` (`std/crypto.qz`).
+const MEMORY_MAX: i64 = 4 * 1024 * 1024;
+const PARALLELISM_MAX: i64 = 255;
+
+/// The parameters' bounds, as a message (None when they are within).
+fn argon2_bounds(m: i64, t: i64, p: i64) -> Option<String> {
+    if !(8..=MEMORY_MAX).contains(&m) {
+        Some(format!("memory_kib: 8 to {MEMORY_MAX}, not {m}"))
+    } else if !(1..=u32::MAX as i64).contains(&t) {
+        Some(format!("iterations: 1 to {}, not {t}", u32::MAX))
+    } else if !(1..=PARALLELISM_MAX).contains(&p) {
+        Some(format!("parallelism: 1 to {PARALLELISM_MAX}, not {p}"))
+    } else if m < 8 * p {
+        Some(format!(
+            "memory_kib must be at least 8 * parallelism ({}), not {m}",
+            8 * p
+        ))
+    } else {
+        None
+    }
+}
+
+fn argon2_params(interp: &Interp, m: i64, t: i64, p: i64) -> Result<argon2::Params, Flow> {
+    if let Some(e) = argon2_bounds(m, t, p) {
+        return Err(interp.err_arg(&e));
+    }
+    argon2::Params::new(m as u32, t as u32, p as u32, Some(32))
+        .map_err(|e| interp.err_arg(&format!("argon2 parameters: {e}")))
+}
+
+fn argon2_id(params: argon2::Params) -> argon2::Argon2<'static> {
+    argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params)
+}
+
+/// An argon2id `v=19` PHC string with `m`, `t` and `p` only, within the
+/// bounds, with a salt and a hash, and its parameters. The message names
+/// what is wrong (never the password, which is not here).
+fn parse_argon2(
+    hash: &str,
+) -> Result<(argon2::password_hash::phc::PasswordHash, argon2::Params), String> {
+    use argon2::password_hash::phc::PasswordHash;
+    // The scheme first, whatever the rest is: named when it is one of the
+    // usual password hash schemes, so that a password given in place of
+    // the hash is never echoed.
+    let ident = hash
+        .strip_prefix('$')
+        .and_then(|rest| rest.split('$').next())
+        .filter(|id| {
+            !id.is_empty()
+                && id.len() <= 32
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        });
+    match ident {
+        Some("argon2id") => {}
+        Some(id) if KNOWN_SCHEMES.contains(&id) => {
+            return Err(format!("a ${id}$ hash: only argon2id hashes are read"));
+        }
+        Some(_) => return Err("not an argon2id hash: another scheme".to_string()),
+        None => return Err("not a PHC hash string".to_string()),
+    }
+    let phc = PasswordHash::new(hash).map_err(|e| format!("not a PHC hash string: {e}"))?;
+    match phc.version {
+        Some(0x13) => {}
+        Some(v) => return Err(format!("argon2id version v={v}: only v=19 is read")),
+        None => return Err("an argon2id hash without its version (v=19)".to_string()),
+    }
+    // m, t and p once each, as decimals (`ParamsString` keeps a repeated
+    // name, and the crate would hash with the last one).
+    let mut mtp: [Option<i64>; 3] = [None; 3];
+    for (name, value) in phc.params.iter() {
+        let Some(slot) = ["m", "t", "p"].iter().position(|n| *n == name.as_str()) else {
+            return Err(format!(
+                "an argon2id hash with the parameter {}: only m, t and p are read",
+                name.as_str()
+            ));
+        };
+        if mtp[slot].is_some() {
+            return Err(format!(
+                "an argon2id hash with the parameter {} twice",
+                name.as_str()
+            ));
+        }
+        let text = value.as_str();
+        // Digits, without a leading zero; at most 18 of them (the bounds
+        // then refuse what is too large).
+        let decimal = !text.is_empty()
+            && text.len() <= 18
+            && text.bytes().all(|b| b.is_ascii_digit())
+            && (text == "0" || !text.starts_with('0'));
+        let n = decimal
+            .then(|| text.parse::<i64>().ok())
+            .flatten()
+            .ok_or_else(|| {
+                format!(
+                    "an argon2id hash whose parameter {} is not a decimal",
+                    name.as_str()
+                )
+            })?;
+        mtp[slot] = Some(n);
+    }
+    let get = |slot: usize| {
+        mtp[slot].ok_or_else(|| {
+            format!(
+                "an argon2id hash without its parameter {}",
+                ["m", "t", "p"][slot]
+            )
+        })
+    };
+    let (m, t, p) = (get(0)?, get(1)?, get(2)?);
+    if let Some(e) = argon2_bounds(m, t, p) {
+        return Err(format!("an argon2id hash with {e}"));
+    }
+    if phc.salt.is_none() {
+        return Err("an argon2id hash without its salt".to_string());
+    }
+    let Some(out) = &phc.hash else {
+        return Err("an argon2id hash without its hash".to_string());
+    };
+    let params = argon2::Params::new(m as u32, t as u32, p as u32, Some(out.len()))
+        .map_err(|e| format!("an argon2id hash with bad parameters: {e}"))?;
+    Ok((phc, params))
 }
 
 /// The most `Crypto.random_bytes` gives at once.

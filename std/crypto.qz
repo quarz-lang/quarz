@@ -1,7 +1,8 @@
 # Cryptography: `require "crypto"`. RSA keys (PEM and DER, PKCS#8, PKCS#1
 # and SPKI) and signatures (PKCS#1 v1.5 and PSS), as HTTP Signatures, JWT
 # RS256 and webhook signatures need; AES-GCM, to encrypt a secret at rest
-# or seal a cookie; and `Crypto.random_bytes`, for keys and nonces.
+# or seal a cookie; argon2id (`Crypto::Argon2`), to store passwords; and
+# `Crypto.random_bytes`, for keys and nonces.
 #
 # ```
 # require "crypto"
@@ -17,8 +18,8 @@
 # contents), so signing again with one key does not parse it again.
 # Keys of 1024 to 8192 bits are read (`generate` makes 2048 to 4096).
 # There is no RSA encryption, no encrypted PEM, no EC or Ed25519 key, no
-# other cipher mode (CBC, CTR) and no key derivation but
-# `Digest::PBKDF2` yet.
+# other cipher mode (CBC, CTR), and no key derivation but
+# `Digest::PBKDF2` (argon2id makes password hashes, not keys) yet.
 module Crypto
   # A key that does not parse, is of another kind, or is too small; a
   # PEM text that is not one key.
@@ -140,6 +141,145 @@ module Crypto
     # :nodoc:
     # The plaintext of `sealed`, nil when it does not authenticate.
     native def self.open_with(key: Bytes, nonce: Bytes, sealed: Bytes, aad: Bytes | String) -> Bytes?
+  end
+
+  # argon2id password hashes (RFC 9106), through the RustCrypto `argon2`
+  # crate: what a server stores for a password, as a PHC string such as
+  # `$argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>` (the salt and the
+  # 32-byte hash in unpadded Base64), which names its parameters, so that
+  # stored hashes stay readable when the parameters change.
+  #
+  # ```
+  # hash = Crypto::Argon2.hash("correct horse")
+  # hash.start_with?("$argon2id$v=19$m=19456,t=2,p=1$")   # => true
+  # Crypto::Argon2.verify?("correct horse", hash)         # => true
+  # Crypto::Argon2.verify?("wrong horse", hash)           # => false
+  # Crypto::Argon2.needs_rehash?(hash)                    # => false
+  # ```
+  #
+  # A hash with `Params::DEFAULT` takes tens of milliseconds and 19 MiB
+  # (`memory_kib`), on a helper thread: only the calling task waits. Each
+  # hash at once holds its memory, so a server that hashes many passwords
+  # at once (logins) should bound how many it runs together.
+  #
+  # Only argon2id, version 19, without a secret or associated data:
+  # `verify?` refuses argon2i and argon2d hashes. bcrypt and scrypt are
+  # not here; `Digest::PBKDF2` is, where PBKDF2 is required.
+  module Argon2
+    # The cost of a hash: `memory_kib` KiB of memory, `iterations` passes
+    # over it, `parallelism` lanes. A `data` value: immutable and
+    # Shareable.
+    #
+    # ```
+    # p = Crypto::Argon2::Params.new(memory_kib: 47_104, iterations: 1, parallelism: 1)
+    # p.inspect                                             # => "#<Crypto::Argon2::Params m=47104 t=1 p=1>"
+    # Crypto::Argon2::Params::DEFAULT.memory_kib            # => 19456
+    # ```
+    data Params(
+      # The memory in KiB: 8 to 4_194_304 (4 GiB), and at least
+      # 8 * `parallelism`.
+      memory_kib: Int,
+      # The passes: 1 to 2^32 - 1.
+      iterations: Int,
+      # The lanes: 1 to 255. (They are computed one after the other: the
+      # hash runs on one thread.)
+      parallelism: Int
+    )
+      # Raises `ArgumentError` for a parameter outside its bounds.
+      def initialize(memory_kib: Int, iterations: Int, parallelism: Int)
+        unless memory_kib >= 8 && memory_kib <= 4_194_304
+          raise ArgumentError, "memory_kib: 8 to 4194304, not #{memory_kib}"
+        end
+        unless iterations >= 1 && iterations <= 4_294_967_295
+          raise ArgumentError, "iterations: 1 to 4294967295, not #{iterations}"
+        end
+        unless parallelism >= 1 && parallelism <= 255
+          raise ArgumentError, "parallelism: 1 to 255, not #{parallelism}"
+        end
+        if memory_kib < 8 * parallelism
+          raise ArgumentError, "memory_kib must be at least 8 * parallelism (#{8 * parallelism}), not #{memory_kib}"
+        end
+        @memory_kib = memory_kib
+        @iterations = iterations
+        @parallelism = parallelism
+      end
+
+      # OWASP's first recommended setting: m=19456 (19 MiB), t=2, p=1.
+      DEFAULT = Params.new(19_456, 2, 1)
+
+      # The parameters of the argon2id PHC string `hash`;
+      # `Crypto::Error` when it is not one (another scheme, another
+      # version, a string that does not parse).
+      def self.of(hash: String) -> Params
+        found = Argon2.params_with(hash)
+        raise Error, "not an argon2id hash" if found.nil?
+        Params.new(found[0], found[1], found[2])
+      end
+
+      # `#<Crypto::Argon2::Params m=19456 t=2 p=1>`.
+      def inspect -> String = "#<Crypto::Argon2::Params m=#{memory_kib} t=#{iterations} p=#{parallelism}>"
+
+      # :ditto:
+      def to_s -> String = inspect
+    end
+
+    # The argon2id PHC string of `password` with `params`, and `salt`
+    # (16 to 48 bytes, `ArgumentError` otherwise), a fresh random 16 bytes
+    # unless given. Two hashes of one password differ by their salts.
+    #
+    # ```
+    # salt = Bytes.from((0...16).to_a)
+    # cheap = Crypto::Argon2::Params.new(memory_kib: 64, iterations: 1, parallelism: 1)
+    # Crypto::Argon2.hash("pw", params: cheap, salt: salt) == Crypto::Argon2.hash("pw", params: cheap, salt: salt)   # => true
+    # ```
+    def self.hash(password: String | Bytes, params: Params = Params::DEFAULT, salt: Bytes? = nil) -> String
+      s = salt || Crypto.random_bytes(16)
+      unless s.size >= 16 && s.size <= 48
+        raise ArgumentError, "an argon2 salt has 16 to 48 bytes, not #{s.size}"
+      end
+      hash_with(password, s, params.memory_kib, params.iterations, params.parallelism)
+    end
+
+    # Whether `password` is the one `hash` (an argon2id PHC string, with
+    # the parameters it names) was made of: false for a wrong password,
+    # and the comparison takes the same time wherever they differ.
+    # `Crypto::Error` for a string that is not an argon2id `v=19` hash
+    # (another scheme or variant, another version, a parameter other than
+    # m, t and p, one out of `Params`'s bounds, a string that does not
+    # parse), so that stored garbage is noticed rather than taken for a
+    # wrong password; its message never includes the password. Runs on a
+    # helper thread, as `hash` does.
+    def self.verify?(password: String | Bytes, hash: String) -> Bool = verify_with(password, hash)
+
+    # Whether `hash` should be made again with `params`, the next time
+    # the password is at hand (after `verify?` succeeds): true when one of
+    # its parameters is below `params`'s, and for a string of another
+    # scheme (a `$pbkdf2-sha256$` one, argon2i), so that a caller rehashes
+    # whatever it finds. `Crypto::Error` for an argon2id string that does
+    # not parse.
+    #
+    # ```
+    # old = "$argon2id$v=19$m=4096,t=3,p=1$c2FsdHNhbHRzYWx0c2FsdA$fxbFVdPGPQ1NJoy87CaTabyrXOKZepZ9SGBFwPkPJ28"
+    # Crypto::Argon2.needs_rehash?(old)                                  # => true
+    # Crypto::Argon2.needs_rehash?(old, Crypto::Argon2::Params.of(old))  # => false
+    # Crypto::Argon2.needs_rehash?("$pbkdf2-sha256$...")                 # => true
+    # ```
+    def self.needs_rehash?(hash: String, params: Params = Params::DEFAULT) -> Bool
+      found = params_with(hash)
+      return true if found.nil?
+      found[0] < params.memory_kib || found[1] < params.iterations || found[2] < params.parallelism
+    end
+
+    # :nodoc:
+    # The PHC string of `password` (on a helper thread).
+    native def self.hash_with(password: String | Bytes, salt: Bytes, memory_kib: Int, iterations: Int, parallelism: Int) -> String
+    # :nodoc:
+    # Whether `password` matches `hash` (on a helper thread).
+    native def self.verify_with(password: String | Bytes, hash: String) -> Bool
+    # :nodoc:
+    # `[memory_kib, iterations, parallelism]` of an argon2id hash; nil for
+    # another scheme.
+    native def self.params_with(hash: String) -> Array[Int]?
   end
 
   # RSA keys and signatures, through the RustCrypto `rsa` crate. A hash
