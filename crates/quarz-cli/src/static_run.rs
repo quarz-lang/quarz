@@ -1686,14 +1686,8 @@ impl Runner {
         // whose lowering found errors elsewhere (a field default).
         // The blocks given to `def_method` and its kin become method bodies
         // the statement does not run: not in its reach (docs/14 §5).
-        let lifted: rustc_hash::FxHashSet<FuncId> = self
-            .lowerer
-            .block_calls
-            .keys()
-            .copied()
-            .filter(|&g| self.lowerer.lifted_block(host.output(), g))
-            .collect();
-        if let Some(bad) = self.bad_reach(fid, &lifted) {
+        let lifted = &self.lowerer.lifted_funcs;
+        if let Some(bad) = self.bad_reach(fid, lifted) {
             let message = match bad {
                 Ok(m) => format!(
                     "`{callee_name}` did not run: {}",
@@ -1714,7 +1708,7 @@ impl Runner {
                 notes: Vec::new(),
             });
         }
-        if let Some(path) = self.impure_reach(fid, &lifted) {
+        if let Some(path) = self.impure_reach(fid, lifted) {
             let last = path.last().cloned().unwrap_or_default();
             // The path starts at the callee itself.
             let via = if path.len() > 2 {

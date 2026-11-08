@@ -124,6 +124,10 @@ pub struct Lowerer {
     /// The call each block function was written at, and the block's
     /// span, for the generation of methods from blocks (docs/14 §5).
     pub block_calls: HashMap<FuncId, (quarz_syntax::ast::NodeId, quarz_syntax::Span)>,
+    /// Of those, the blocks given to `def_method`, `def_class_method` or
+    /// `def_initialize`: generated methods' bodies, which a static
+    /// statement does not run (`lifted_block`).
+    pub lifted_funcs: HashSet<FuncId>,
     /// A generating call (`def_method`, `def_class_method`,
     /// `def_initialize`) written in the body of a generic method: the
     /// type parameters the values it is passed under
@@ -1296,12 +1300,10 @@ impl Lowerer {
     }
 
     /// Whether function `g` is a block given to `def_method`,
-    /// `def_class_method` or `def_initialize` (`Output::lifted_blocks`):
-    /// a generated method's body, which a static statement does not run.
-    pub fn lifted_block(&self, out: &Output, g: FuncId) -> bool {
-        self.block_calls
-            .get(&g)
-            .is_some_and(|(call, _)| out.lifted_blocks.contains_key(call))
+    /// `def_class_method` or `def_initialize` (`lifted_funcs`): a
+    /// generated method's body, which a static statement does not run.
+    pub fn lifted_block(&self, g: FuncId) -> bool {
+        self.lifted_funcs.contains(&g)
     }
 
     /// Function `fid`, lowered in this round or an earlier one.
@@ -1348,7 +1350,7 @@ impl Lowerer {
                     // becomes a method's body, which the statement does
                     // not run; docs/14 §5. It is lowered, and checked,
                     // where the generated method is reached.)
-                    if !self.lifted_block(out, g) {
+                    if !self.lifted_block(g) {
                         self.walk_func(g, walk);
                     }
                 }

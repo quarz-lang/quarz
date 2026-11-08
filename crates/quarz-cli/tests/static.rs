@@ -1270,3 +1270,30 @@ fn a_generated_methods_body_is_not_in_its_statements_reach() {
         "{err}"
     );
 }
+
+#[test]
+fn a_block_a_union_receiver_may_call_stays_in_the_reach() {
+    // `r.def_method(:x) { ... }` on `Type[Base] | Runner`: the block may
+    // be `Runner#def_method`'s, which calls it at compile time, so it is
+    // no generated body: walked, lowered and checked (#402's review).
+    let lib = |body: &str| {
+        format!("class Helper\n  def self.compute -> Int = 41\nend\nclass Runner\n  def def_method[R](name: Symbol, &body: () -> R) -> R = body.call\nend\nclass Base\n  static def self.gen(flag: Bool) -> Void\n    r = flag ? self : Runner.new\n    r.def_method(:hostname) {{ {body} }}\n    def_class_method(:x) {{ 1 }}\n  end\nend\n")
+    };
+    let d = dir();
+    write(&d.0, "lib.qz", &lib("Helper.compute"));
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass A < Base\n  gen(false)\nend\np A.x\n",
+    );
+    run_and_build(&d.0, &app, "1\n");
+    write(&d.0, "lib.qz", &lib("File.read(\"/etc/hostname\")"));
+    let (ok, _, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.starts_with(
+            "app.qz:3:3: error: `gen` reaches `File.read`, which cannot run at compile time"
+        ),
+        "{err}"
+    );
+}
