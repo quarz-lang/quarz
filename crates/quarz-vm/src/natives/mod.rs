@@ -268,6 +268,14 @@ const PURITY_BY_CLASS: &[(&str, Purity)] = &[
 
 /// The keys classified apart from their class's line.
 const PURITY_BY_KEY: &[(&str, Purity)] = &[
+    // Of denied classes, what touches nothing: path strings, a data
+    // value's accessor.
+    ("File.basename", Pure),
+    ("File.dirname", Pure),
+    ("File.extname", Pure),
+    ("File.split", Pure),
+    ("File.join", Pure),
+    ("Process::Output#success?", Pure),
     ("Kernel#gets", Denied),
     ("Kernel#gets?", Denied),
     ("Kernel#readline", Denied),
@@ -291,6 +299,13 @@ const PURITY_BY_KEY: &[(&str, Purity)] = &[
     ("Crypto::RSA::PrivateKey#sign_pss", Denied),
     // (On a socket.)
     ("TLS::ServerConfig#accept", Denied),
+];
+
+/// The compile-time-only keys (their classes' lines say pure): apart, so
+/// that what a compiled program reaches (`compile_time_allowed`, the
+/// runtime guard) does not hold their names, which an executable must not
+/// contain (`a_static_statement_runs_at_compile_time`).
+const COMPILE_TIME_ONLY: &[(&str, Purity)] = &[
     ("Type#fields", CtOnly),
     ("Type#field", CtOnly),
     ("Type#methods", CtOnly),
@@ -321,6 +336,15 @@ pub fn native_class(key: &str) -> &str {
 /// The classification of native `key`; `None` for a key with no line,
 /// which is denied.
 pub fn purity(key: &str) -> Option<Purity> {
+    if COMPILE_TIME_ONLY.iter().any(|(k, _)| *k == key) {
+        return Some(CtOnly);
+    }
+    run_purity(key)
+}
+
+/// `purity`, but a compile-time-only key as its class's line (pure): what
+/// the runtime reads.
+fn run_purity(key: &str) -> Option<Purity> {
     if let Some((_, p)) = PURITY_BY_KEY.iter().find(|(k, _)| *k == key) {
         return Some(*p);
     }
@@ -354,7 +378,7 @@ pub fn compile_time_denied_class(class: &str) -> bool {
 /// guard, so their keys must all be allowed (`fast_and_owned_natives_are_
 /// pure` checks it).
 pub fn compile_time_allowed(key: &str) -> bool {
-    matches!(purity(key), Some(Pure | CtOnly))
+    matches!(run_purity(key), Some(Pure | CtOnly))
 }
 
 /// The natives that exist at compile time only: the reflection on a class
@@ -668,8 +692,13 @@ mod compile_time_tests {
     #[test]
     fn every_line_names_a_native() {
         let keys = every_key();
-        for (k, _) in PURITY_BY_KEY {
+        for (k, _) in PURITY_BY_KEY.iter().chain(COMPILE_TIME_ONLY) {
             assert!(keys.contains(k), "{k} is no native");
+        }
+        // (A compile-time-only key's class says pure, which the runtime
+        // reads for it.)
+        for (k, _) in COMPILE_TIME_ONLY {
+            assert_eq!(run_purity(k), Some(Pure), "{k}");
         }
         for (c, _) in PURITY_BY_CLASS {
             assert!(
@@ -683,10 +712,13 @@ mod compile_time_tests {
     fn the_registry_is_classified_as_intended() {
         for key in every_key() {
             let class = native_class(key);
-            let denied = matches!(
+            let denied = (matches!(
                 class,
                 "IO" | "File" | "Dir" | "Process" | "Process::Child" | "Task" | "Channel"
-            ) || matches!(
+            ) && !matches!(
+                key,
+                "File.basename" | "File.dirname" | "File.extname" | "File.split" | "File.join"
+            )) || matches!(
                 key,
                 "Time.now"
                     | "Kernel#sleep"
