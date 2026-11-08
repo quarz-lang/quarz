@@ -1,0 +1,4 @@
+Session(values: {}, changed: true, dropped: false)
+Session(values: {}, changed: false, dropped: false)
+Job(id: 1, tags: [], at: 5, name: "job")
+Job(id: 2, tags: ["a"], at: 3, name: "job")
