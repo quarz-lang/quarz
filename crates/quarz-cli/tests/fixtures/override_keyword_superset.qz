@@ -1,0 +1,18 @@
+# An own method hides an inherited one it overrides (docs/01 §9, #436):
+# a call that fits both runs the override, on the subclass and, by
+# dispatch, through a parent-typed receiver; a true overload (another
+# parameter type) resolves as before.
+class Base
+  def with(*, a: Int = 0, b: Int = 0) -> String = "base #{a} #{b}"
+  def foo(x: Int) -> String = "base foo"
+end
+class A < Base
+  def with(*, a: Int = 0, b: Int = 0, c: Int = 0) -> String = "A #{a} #{b} #{c}"
+  def foo(x: String) -> String = "A foo"
+end
+p A.new.with(a: 1)
+b: Base = Base.new
+p b.with(a: 2)
+def via(b: Base) -> String = b.with(a: 3)
+p via(A.new)
+p A.new.foo(1), A.new.foo("s")

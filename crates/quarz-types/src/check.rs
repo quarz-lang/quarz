@@ -12200,6 +12200,17 @@ impl Checker {
         block_arity: Option<usize>,
     ) -> bool {
         let (a, b) = (self.world.method(x.1), self.world.method(y.1));
+        // An own method hides an inherited one it overrides (docs/01 §9,
+        // #436): a call both fit runs the override, as dispatch does on
+        // a receiver of the overriding class.
+        if a.owner != b.owner {
+            if self.overrides_method(x.1, y.1) {
+                return true;
+            }
+            if self.overrides_method(y.1, x.1) {
+                return false;
+            }
+        }
         let (sa, sb) = (&cands[x.0].1, &cands[y.0].1);
         let (ab, ba) = (
             self.as_specific(a, sa, b, sb),
@@ -12231,6 +12242,21 @@ impl Checker {
         // (Two files' top-level `def`s are one set: neither comes first.)
         let main = |c: ClassId| self.world.class(c).kind == ClassKind::Main;
         a.owner != b.owner && !(main(a.owner) && main(b.owner)) && x.0 < y.0
+    }
+
+    /// Whether method `m` overrides `o` (`World::overridden_methods_in`,
+    /// the relation dispatch uses).
+    fn overrides_method(&self, m: MethodId, o: MethodId) -> bool {
+        let mm = self.world.method(m);
+        let own: Vec<Type> = self
+            .world
+            .class(mm.owner)
+            .type_params
+            .iter()
+            .map(|tp| Type::Param(tp.id))
+            .collect();
+        let ancs = self.world.ancestors(mm.owner, &own);
+        self.world.overridden_methods_in(mm, &ancs).contains(&o)
     }
 
     /// Whether `a` is at least as specific as `b`: every call `a` takes,
