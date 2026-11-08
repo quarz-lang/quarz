@@ -1142,9 +1142,9 @@ fn foreign_class(world: &World, class: ClassId) -> Option<Target> {
 }
 
 impl Api {
-    /// A variant whose enum has a page here: that page, and the variant
-    /// when the page lists it (not `:nodoc:`).
-    fn variant_here(&self, world: &World, variant: ClassId) -> Option<(String, Option<String>)> {
+    /// A variant listed on its enum's page here (not `:nodoc:`): that page,
+    /// and the variant's member there.
+    fn variant_here(&self, world: &World, variant: ClassId) -> Option<(String, String)> {
         let c = world.class(variant);
         if c.kind != ClassKind::Variant {
             return None;
@@ -1154,8 +1154,10 @@ impl Api {
             .iter()
             .find(|e| e.variants.contains(&variant))?;
         let p = self.page(&e.name)?;
-        let listed = p.members.iter().any(|m| m.path == c.name);
-        Some((p.name.clone(), listed.then(|| c.name.clone())))
+        p.members
+            .iter()
+            .any(|m| m.path == c.name)
+            .then(|| (p.name.clone(), c.name.clone()))
     }
 
     /// A class by its declared name (`Dep::Thing`, as signatures print
@@ -1333,7 +1335,7 @@ impl Api {
                 Some(p) => Target::Page(p, None),
                 // A variant documented here: on its enum's page (#452).
                 None => match self.variant_here(world, class) {
-                    Some((p, member)) => Target::Page(p, member),
+                    Some((p, member)) => Target::Page(p, Some(member)),
                     None => {
                         foreign_class(world, class).unwrap_or(Target::Elsewhere { private: false })
                     }
@@ -1381,7 +1383,7 @@ impl Api {
                 // variant (#452).
                 if !private && world.class(owner).kind == ClassKind::Variant {
                     if let Some((p, member)) = self.variant_here(world, owner) {
-                        let member = member.filter(|_| info.name == "initialize");
+                        let member = (info.name == "initialize").then_some(member);
                         return Some(Target::Page(p, member));
                     }
                 }

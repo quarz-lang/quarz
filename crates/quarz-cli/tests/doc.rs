@@ -801,7 +801,7 @@ fn html_of_a_cog_headings_locations_and_variants() {
     );
     d.write(
         "src/shapes.qz",
-        "# A point; see `Shape::Circle` and `Shape::Circle.new`.\ndata Point = (x: Int, y: Int = 0)\n\n# Shapes.\nenum Shape\n  # A circle.\n  variant Circle(radius: Int)\nend\n",
+        "# A point; see `Shape::Circle`, `Shape::Circle.new` and `Shape::Hidden`.\ndata Point = (x: Int, y: Int = 0)\n\n# Shapes.\nenum Shape\n  # A circle.\n  variant Circle(radius: Int)\n  # :nodoc:\n  variant Hidden(x: Int)\nend\n",
     );
     let site = d.0.join("site");
     let out = quarz_in(&d.0, &["doc", "--html", "-o", site.to_str().unwrap()]);
@@ -812,6 +812,11 @@ fn html_of_a_cog_headings_locations_and_variants() {
         "{point}"
     );
     assert!(point.contains(">src/shapes.qz:2</"), "{point}");
+    // (A `:nodoc:` variant stays text.)
+    assert!(
+        point.contains("<code>Shape::Hidden</code>") && !point.contains("Shape::Hidden</code></a>"),
+        "{point}"
+    );
     assert!(
         point.contains(
             "<a href=\"Shapes--Shape.html#variant-Circle\"><code>Shape::Circle</code></a>"
