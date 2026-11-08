@@ -6748,7 +6748,7 @@ module Signal
   # or nil for a signal not in `.names`.
   native def self.number(name: String) -> Int?
   # The names of the signals known here, without the `"SIG"` prefix: those
-  # `trap` takes, and `KILL` and `STOP`, which can only be sent
+  # `trap` takes, and `"KILL"` and `"STOP"`, which can only be sent
   # (`Process::Child#signal`).
   native def self.names -> Array[String]
   # :nodoc:
@@ -6874,8 +6874,8 @@ module Process
   data Status(
     # The exit code; nil when a signal ended the process.
     code: Int?,
-    # The name of the signal that ended the process, without `SIG`
-    # (`"TERM"`); nil when it exited.
+    # The name of the signal that ended the process, without the `"SIG"`
+    # prefix (`"TERM"`); nil when it exited.
     signal: String?
   )
     # Whether the process exited with code 0.
@@ -7000,10 +7000,10 @@ module Process
   # `env` adds to the program's environment, or overrides a variable, for
   # the child. Each of `stdin`, `stdout` and `stderr` is `:inherit` (the
   # program's own, as the terminal), `:pipe` (a pipe the program writes or
-  # reads through `Child#stdin`, `#stdout`, `#stderr`) or `:null`
-  # (`/dev/null`). `chdir` is the child's working directory. What the
-  # program printed is flushed first, so that it comes before what the
-  # child prints.
+  # reads through `Process::Child#stdin`, `Process::Child#stdout`,
+  # `Process::Child#stderr`) or `:null` (`/dev/null`). `chdir` is the
+  # child's working directory. What the program printed is flushed first,
+  # so that it comes before what the child prints.
   #
   # ## Raises
   #

@@ -1,6 +1,7 @@
 # The child gets no descriptor of the program's or the runtime's (files,
 # sockets, the reactor, pipes to other children): only 0, 1 and 2 (and the
-# one `ls` opens for the directory).
+# one `ls` opens for the directory, and what `quarz` itself inherited:
+# tests/process.rs compares).
 f = File.open(__FILE__)
 other = Process.spawn("sleep", "5", stdin: :pipe, stdout: :pipe)
 c = Process.spawn("ls", "/proc/self/fd", stdout: :pipe)

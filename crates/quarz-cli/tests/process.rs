@@ -114,7 +114,36 @@ fn a_child_inherits_no_runtime_descriptor() {
     if !Path::new("/proc/self/fd").is_dir() {
         return;
     }
-    prints_its_out("fds.qz");
+    // What a child of this process sees: the standard three, the one
+    // `ls` opens, and what the test's own environment passed down (a
+    // build's jobserver pipes), which `quarz` inherits too. A child of the
+    // program must see the same: nothing the program or the runtime
+    // opened.
+    let ls = Command::new("ls").arg("/proc/self/fd").output().unwrap();
+    let mut fds: Vec<u32> = String::from_utf8_lossy(&ls.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse().ok())
+        .collect();
+    fds.sort_unstable();
+    let want = format!(
+        "[{}]\n",
+        fds.iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let path = program("fds.qz");
+    for (out, what) in [
+        (on_vm(&path, &[]), "on the VM"),
+        (compiled(&path, &[]), "compiled"),
+    ] {
+        assert!(
+            out.status.success(),
+            "fds.qz {what} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), want, "fds.qz {what}");
+    }
 }
 
 #[test]
