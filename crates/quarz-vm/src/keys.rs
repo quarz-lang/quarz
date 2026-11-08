@@ -70,6 +70,13 @@ pub fn of(class: ClassId) -> Option<KeyMethods> {
         .flatten()
 }
 
+/// Whether a program of this process may have a class with its own `==`
+/// or `hash` (`of` is then worth asking).
+#[inline]
+pub fn any() -> bool {
+    ANY.load(Ordering::Relaxed)
+}
+
 /// Whether a method called for a key raised, not yet raised again.
 #[inline(always)]
 pub fn pending() -> bool {

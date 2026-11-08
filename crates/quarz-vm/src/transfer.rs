@@ -55,9 +55,21 @@ impl ProgramImage {
 unsafe impl Send for ProgramImage {}
 unsafe impl Sync for ProgramImage {}
 
-/// A value in transit between threads.
+/// A value in transit between threads: its nodes, the root first. A
+/// node refers to its parts by their indices, always after its own, so
+/// that a value nested however deeply is exported, imported, cloned and
+/// dropped without recursion (#466: a list 100,000 cells deep overflowed
+/// a thread's stack).
 #[derive(Clone, Debug)]
-pub enum Transfer {
+pub struct Transfer {
+    nodes: Vec<Node>,
+}
+
+/// A node's index in its `Transfer`.
+type Ix = u32;
+
+#[derive(Clone, Debug)]
+enum Node {
     Nil,
     Bool(bool),
     Int(i64),
@@ -65,45 +77,59 @@ pub enum Transfer {
     Symbol(String),
     Class(ClassId),
     Duration(i64),
-    BigInt(BigInt),
+    BigInt(Box<BigInt>),
     Str(String),
-    Array(Vec<Transfer>),
-    Hash(Vec<(Transfer, Transfer)>),
-    Set(Vec<Transfer>),
+    Array(Vec<Ix>),
+    Hash(Vec<(Ix, Ix)>),
+    Set(Vec<Ix>),
     Range {
-        lo: Box<Transfer>,
-        hi: Box<Transfer>,
+        lo: Ix,
+        hi: Ix,
         exclusive: bool,
     },
-    Regexp {
-        source: String,
-        flags: String,
-    },
+    /// (The rarer kinds boxed: a node stays small.)
+    Regexp(Box<(String, String)>),
     Bytes(Vec<u8>),
     Time(TimeVal),
     Object {
         class: ClassId,
-        fields: Vec<Transfer>,
-        /// A raised exception's identity (`ExcInfo::id`).
-        id: Option<u64>,
-        backtrace: Option<Vec<String>>,
-        cause: Option<Box<Transfer>>,
+        fields: Vec<Ix>,
+        exc: Option<Box<ExcNode>>,
     },
-    Proc {
-        body: ProcBody,
-        frame: Option<Box<TFrame>>,
-        self_val: Box<Transfer>,
-        destructure: Option<usize>,
-        is_lambda: bool,
-        tag: u64,
-        method_block: Option<Box<Transfer>>,
-        method_tag: u64,
-        file: u32,
+    Proc(Box<ProcNode>),
+    /// A captured frame: its slots (`None`: one the block does not use,
+    /// left out) and its parent.
+    Frame {
+        slots: Vec<Option<Ix>>,
+        parent: Option<Ix>,
     },
+    /// Not filled in yet (while exporting).
+    Pending,
+}
+
+/// An exception's: its identity (`ExcInfo::id`), backtrace and cause.
+#[derive(Clone, Debug)]
+struct ExcNode {
+    id: Option<u64>,
+    backtrace: Option<Vec<String>>,
+    cause: Option<Ix>,
 }
 
 #[derive(Clone, Debug)]
-pub enum ProcBody {
+struct ProcNode {
+    body: ProcBody,
+    frame: Option<Ix>,
+    self_val: Ix,
+    destructure: Option<usize>,
+    is_lambda: bool,
+    tag: u64,
+    method_block: Option<Ix>,
+    method_tag: u64,
+    file: u32,
+}
+
+#[derive(Clone, Debug)]
+enum ProcBody {
     Func(FuncId),
     MethodName(
         String,
@@ -112,16 +138,19 @@ pub enum ProcBody {
         Vec<(quarz_ir::RtType, MethodId)>,
     ),
     BoundMethod {
-        recv: Box<Transfer>,
+        recv: Ix,
         name: String,
         method: Option<MethodId>,
     },
 }
 
-#[derive(Clone, Debug)]
-pub struct TFrame {
-    pub slots: Vec<Transfer>,
-    pub parent: Option<Box<TFrame>>,
+impl Transfer {
+    /// `nil` in transit.
+    fn nil() -> Transfer {
+        Transfer {
+            nodes: vec![Node::Nil],
+        }
+    }
 }
 
 /// How the block ended on the helper thread.
@@ -142,38 +171,114 @@ pub struct WorkerOutcome {
 
 // ----- export --------------------------------------------------------------------
 
-pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
-    Ok(match v {
-        Value::Nil => Transfer::Nil,
-        Value::Bool(b) => Transfer::Bool(*b),
-        Value::Int(i) => Transfer::Int(*i),
-        Value::Float(f) => Transfer::Float(*f),
-        Value::Symbol(s) => Transfer::Symbol(interp.symbol_name(*s).to_string()),
-        Value::Class(c) => Transfer::Class(*c),
-        Value::Duration(d) => Transfer::Duration(*d),
-        Value::BigInt(b) => Transfer::BigInt((**b).clone()),
-        Value::Str(s) => Transfer::Str(s.to_string()),
-        Value::Short(s) => Transfer::Str(s.as_str().to_string()),
-        Value::Array(items) => Transfer::Array(export_all(interp, items.values().iter())?),
-        Value::Hash(h) => {
-            let mut out = Vec::with_capacity(h.len());
-            for (k, v) in h.as_map().iter() {
-                out.push((export(interp, k)?, export(interp, v)?));
-            }
-            Transfer::Hash(out)
+/// What a node is exported from.
+enum Job {
+    Value(Value),
+    /// Frame `depth` of a closure's chain, keeping only the slots in
+    /// `needed` (all of them when `None`).
+    Frame(
+        Rc<Frame>,
+        Option<std::rc::Rc<std::collections::HashSet<(i64, u32)>>>,
+        i64,
+    ),
+}
+
+/// A node for `job`, filled in later: its index.
+fn later(nodes: &mut Vec<Node>, jobs: &mut Vec<(Ix, Job)>, job: Job) -> Ix {
+    let ix = nodes.len() as Ix;
+    nodes.push(Node::Pending);
+    jobs.push((ix, job));
+    ix
+}
+
+/// The node of a value with no parts, if `v` is one.
+fn leaf(interp: &Interp, v: &Value) -> Option<Node> {
+    Some(match v {
+        Value::Nil => Node::Nil,
+        Value::Bool(b) => Node::Bool(*b),
+        Value::Int(i) => Node::Int(*i),
+        Value::Float(f) => Node::Float(*f),
+        Value::Symbol(s) => Node::Symbol(interp.symbol_name(*s).to_string()),
+        Value::Class(c) => Node::Class(*c),
+        Value::Duration(d) => Node::Duration(*d),
+        Value::BigInt(b) => Node::BigInt(Box::new((**b).clone())),
+        Value::Str(s) => Node::Str(s.to_string()),
+        Value::Short(s) => Node::Str(s.as_str().to_string()),
+        Value::Bytes(b) => Node::Bytes(b.to_vec()),
+        Value::Time(t) => Node::Time(**t),
+        _ => return None,
+    })
+}
+
+/// A node for `v`: a leaf's at once, another's filled in later.
+fn part(interp: &Interp, nodes: &mut Vec<Node>, jobs: &mut Vec<(Ix, Job)>, v: &Value) -> Ix {
+    match leaf(interp, v) {
+        Some(node) => {
+            nodes.push(node);
+            (nodes.len() - 1) as Ix
         }
-        Value::Set(s) => Transfer::Set(export_all(interp, s.iter())?),
-        Value::Range(r) => Transfer::Range {
-            lo: Box::new(export(interp, &r.lo)?),
-            hi: Box::new(export(interp, &r.hi)?),
+        None => later(nodes, jobs, Job::Value(v.clone())),
+    }
+}
+
+/// `v` for another thread, exported from a work list (no recursion,
+/// however deeply it is nested).
+pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
+    let mut nodes: Vec<Node> = Vec::new();
+    let mut jobs: Vec<(Ix, Job)> = Vec::new();
+    later(&mut nodes, &mut jobs, Job::Value(v.clone()));
+    while let Some((ix, job)) = jobs.pop() {
+        // (A node's parts are pushed in order and reversed below, so that
+        // they are exported first to last, as the recursion did: of two
+        // parts that cannot cross, the first is the one reported.)
+        let start = jobs.len();
+        let node = match job {
+            Job::Value(v) => export_value(interp, &v, &mut nodes, &mut jobs)?,
+            Job::Frame(frame, needed, depth) => {
+                let mut slots = Vec::new();
+                for (j, v) in frame.slots().iter().enumerate() {
+                    let wanted = needed
+                        .as_ref()
+                        .is_none_or(|n| n.contains(&(depth, j as u32)));
+                    slots.push(wanted.then(|| part(interp, &mut nodes, &mut jobs, v)));
+                }
+                let parent = frame.parent.as_ref().map(|p| {
+                    later(
+                        &mut nodes,
+                        &mut jobs,
+                        Job::Frame(p.clone(), needed.clone(), depth + 1),
+                    )
+                });
+                Node::Frame { slots, parent }
+            }
+        };
+        nodes[ix as usize] = node;
+        jobs[start..].reverse();
+    }
+    Ok(Transfer { nodes })
+}
+
+/// The node of `v`, its parts left for later.
+fn export_value(
+    interp: &Interp,
+    v: &Value,
+    nodes: &mut Vec<Node>,
+    jobs: &mut Vec<(Ix, Job)>,
+) -> Result<Node, Flow> {
+    if let Some(node) = leaf(interp, v) {
+        return Ok(node);
+    }
+    let mut p = |v: &Value| part(interp, nodes, jobs, v);
+    Ok(match v {
+        Value::Array(items) => Node::Array(items.values().iter().map(&mut p).collect()),
+        Value::Hash(h) => Node::Hash(h.as_map().iter().map(|(k, v)| (p(k), p(v))).collect()),
+        Value::Set(s) => Node::Set(s.iter().map(&mut p).collect()),
+        Value::Range(r) => Node::Range {
+            lo: p(&r.lo),
+            hi: p(&r.hi),
             exclusive: r.exclusive,
         },
-        Value::Regexp(r) => Transfer::Regexp {
-            source: r.source.clone(),
-            flags: r.flags.clone(),
-        },
-        Value::Bytes(b) => Transfer::Bytes(b.to_vec()),
-        Value::Time(t) => Transfer::Time(**t),
+        Value::Regexp(r) => Node::Regexp(Box::new((r.source.clone(), r.flags.clone()))),
         Value::Object(o) if crate::deinit::has(o.class) => {
             // Copied to the helper thread, it would be released twice.
             return Err(interp.raise(
@@ -185,29 +290,34 @@ pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
                 ),
             ));
         }
-        Value::Object(o) => Transfer::Object {
-            class: o.class,
-            fields: export_all(interp, o.fields().iter())?,
-            id: {
-                // An exception keeps its identity across: one never raised
-                // gets it recorded now (`natives::raised` does so too).
-                if o.exc_info().is_none() && interp.program.world.class(o.class).is_exception {
-                    o.init_exc(crate::value::ExcInfo::new(None, None));
-                }
-                o.exc_info().map(|i| i.id)
-            },
-            backtrace: o.backtrace().map(|b| b.to_vec()),
-            cause: match o.cause() {
-                Some(c) => Some(Box::new(export(interp, &c)?)),
-                None => None,
-            },
-        },
+        Value::Object(o) => {
+            // An exception keeps its identity across: one never raised
+            // gets it recorded now (`natives::raised` does so too).
+            if o.exc_info().is_none() && interp.program.world.class(o.class).is_exception {
+                o.init_exc(crate::value::ExcInfo::new(None, None));
+            }
+            let fields = o.fields().iter().map(&mut p).collect();
+            let id = o.exc_info().map(|i| i.id);
+            let backtrace = o.backtrace().map(|b| b.to_vec());
+            let cause = o.cause().map(|c| p(&c));
+            Node::Object {
+                class: o.class,
+                fields,
+                exc: (id.is_some() || backtrace.is_some() || cause.is_some()).then(|| {
+                    Box::new(ExcNode {
+                        id,
+                        backtrace,
+                        cause,
+                    })
+                }),
+            }
+        }
         Value::Proc(c) => {
             // Only the captured variables the block (and the blocks inside
             // it) actually use travel; the rest of the frame chain is
             // left out, so an unrelated channel in scope is no obstacle.
             let needed = match &c.body {
-                ClosureBody::Func(id) => Some(needed_slots(interp, *id)),
+                ClosureBody::Func(id) => Some(std::rc::Rc::new(needed_slots(interp, *id))),
                 _ => None,
             };
             let body = match &c.body {
@@ -219,64 +329,36 @@ pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
                     among.as_deref().cloned().unwrap_or_default(),
                 ),
                 ClosureBody::BoundMethod { recv, name, method } => ProcBody::BoundMethod {
-                    recv: Box::new(export(interp, recv)?),
+                    recv: p(recv),
                     name: name.to_string(),
                     method: *method,
                 },
                 ClosureBody::Native(_) => return Err(not_transferable(interp, v)),
             };
-            Transfer::Proc {
+            // (In the recursion's order: the receiver, the frame, `self`,
+            // the method's block.)
+            let frame = c
+                .frame
+                .as_ref()
+                .map(|f| later(nodes, jobs, Job::Frame(f.clone(), needed, 0)));
+            let self_val = part(interp, nodes, jobs, &c.self_val);
+            let method_block = c
+                .method_block
+                .as_ref()
+                .map(|b| part(interp, nodes, jobs, b));
+            Node::Proc(Box::new(ProcNode {
                 body,
-                frame: match &c.frame {
-                    Some(f) => Some(Box::new(export_frame(interp, f, needed.as_ref(), 0)?)),
-                    None => None,
-                },
-                self_val: Box::new(export(interp, &c.self_val)?),
+                frame,
+                self_val,
                 destructure: c.destructure,
                 is_lambda: c.is_lambda,
                 tag: c.tag,
-                method_block: match &c.method_block {
-                    Some(b) => Some(Box::new(export(interp, b)?)),
-                    None => None,
-                },
+                method_block,
                 method_tag: c.method_tag,
                 file: c.file,
-            }
+            }))
         }
         _ => return Err(not_transferable(interp, v)),
-    })
-}
-
-fn export_all<'a>(
-    interp: &Interp,
-    items: impl Iterator<Item = &'a Value>,
-) -> Result<Vec<Transfer>, Flow> {
-    items.map(|v| export(interp, v)).collect()
-}
-
-/// Export frame `depth` of a chain, keeping only the slots in `needed`
-/// (all of them when `None`).
-fn export_frame(
-    interp: &Interp,
-    frame: &Frame,
-    needed: Option<&std::collections::HashSet<(i64, u32)>>,
-    depth: i64,
-) -> Result<TFrame, Flow> {
-    let mut slots = Vec::new();
-    for (j, v) in frame.slots().iter().enumerate() {
-        let wanted = needed.is_none_or(|n| n.contains(&(depth, j as u32)));
-        slots.push(if wanted {
-            export(interp, v)?
-        } else {
-            Transfer::Nil
-        });
-    }
-    Ok(TFrame {
-        slots,
-        parent: match &frame.parent {
-            Some(p) => Some(Box::new(export_frame(interp, p, needed, depth + 1)?)),
-            None => None,
-        },
     })
 }
 
@@ -317,8 +399,8 @@ fn needed_slots(interp: &Interp, fid: FuncId) -> std::collections::HashSet<(i64,
 fn export_raised(interp: &Interp, e: &Value) -> Transfer {
     match export(interp, e) {
         Ok(t) => t,
-        Err(Flow::Raise(why)) => export(interp, &why).unwrap_or(Transfer::Nil),
-        Err(_) => Transfer::Nil,
+        Err(Flow::Raise(why)) => export(interp, &why).unwrap_or_else(|_| Transfer::nil()),
+        Err(_) => Transfer::nil(),
     }
 }
 
@@ -335,45 +417,160 @@ fn not_transferable(interp: &Interp, v: &Value) -> Flow {
 
 // ----- import --------------------------------------------------------------------
 
+/// What a node was imported as.
+enum Built {
+    Value(Value),
+    Frame(Rc<Frame>),
+}
+
+/// Push the parts of a node on `work` to be built first to last, in the
+/// order the recursion imported them; whether it has any.
+fn push_parts(node: &Node, work: &mut Vec<(Ix, bool)>) -> bool {
+    let start = work.len();
+    let mut push = |ix: Ix| work.push((ix, false));
+    match node {
+        Node::Array(items) | Node::Set(items) => items.iter().copied().for_each(&mut push),
+        Node::Hash(pairs) => pairs.iter().for_each(|(k, v)| {
+            push(*k);
+            push(*v);
+        }),
+        Node::Range { lo, hi, .. } => {
+            push(*lo);
+            push(*hi);
+        }
+        Node::Object { fields, exc, .. } => {
+            fields.iter().copied().for_each(&mut push);
+            exc.iter().flat_map(|e| e.cause).for_each(&mut push);
+        }
+        Node::Proc(c) => {
+            if let ProcBody::BoundMethod { recv, .. } = &c.body {
+                push(*recv);
+            }
+            c.frame.iter().copied().for_each(&mut push);
+            push(c.self_val);
+            c.method_block.iter().copied().for_each(&mut push);
+        }
+        Node::Frame { slots, parent } => {
+            parent.iter().copied().for_each(&mut push);
+            slots.iter().flatten().copied().for_each(&mut push);
+        }
+        _ => {}
+    }
+    // (Popped last first: reversed, built first to last.)
+    work[start..].reverse();
+    work.len() > start
+}
+
+/// The value of a transfer, without recursion. When it holds an instance
+/// of a class with its own `hash` or `==` (called as a hash or set holding
+/// it is rebuilt), the nodes are imported depth first, each after its
+/// parts, first to last, so that those run in nearly the recursion's
+/// order (one difference: a hash's pairs are all built before they are
+/// inserted, where the recursion inserted each pair before building the
+/// next); otherwise from the last node back.
 pub fn import(interp: &Interp, t: Transfer) -> Value {
-    match t {
-        Transfer::Nil => Value::Nil,
-        Transfer::Bool(b) => Value::Bool(b),
-        Transfer::Int(i) => Value::Int(i),
-        Transfer::Float(f) => Value::Float(f),
-        Transfer::Symbol(s) => Value::Symbol(interp.intern(&s)),
-        Transfer::Class(c) => Value::Class(c),
-        Transfer::Duration(d) => Value::Duration(d),
-        Transfer::BigInt(b) => integer(b),
-        Transfer::Str(s) => Value::string(s),
-        Transfer::Array(items) => Value::array(import_all(interp, items)),
-        Transfer::Hash(pairs) => Value::Hash(Rc::new(crate::value::HashData::from(
+    let mut nodes = t.nodes;
+    let mut built: Vec<Option<Built>> = (0..nodes.len()).map(|_| None).collect();
+    let custom = crate::keys::any()
+        && nodes
+            .iter()
+            .any(|n| matches!(n, Node::Object { class, .. } if crate::keys::of(*class).is_some()));
+    if !custom {
+        // No value here has a `hash` or `==` of its own: nothing the
+        // import runs can tell the order, and from the last node back each
+        // node's parts (after it) are built before it.
+        for ix in (0..nodes.len()).rev() {
+            build(interp, &mut nodes, &mut built, ix);
+        }
+        return value(&mut built, 0);
+    }
+    // (node, whether its parts are built)
+    let mut work: Vec<(Ix, bool)> = vec![(0, false)];
+    while let Some((ix, ready)) = work.pop() {
+        if !ready {
+            // (A node with no parts is built at once.)
+            work.push((ix, true));
+            let at = work.len() - 1;
+            if push_parts(&nodes[ix as usize], &mut work) {
+                continue;
+            }
+            work.truncate(at);
+        }
+        build(interp, &mut nodes, &mut built, ix as usize);
+    }
+    value(&mut built, 0)
+}
+
+/// Build node `ix`, its parts built.
+fn build(interp: &Interp, nodes: &mut [Node], built: &mut [Option<Built>], ix: usize) {
+    let node = std::mem::replace(&mut nodes[ix], Node::Pending);
+    let b = match node {
+        Node::Frame { slots, parent } => {
+            let slots: Vec<Value> = slots
+                .into_iter()
+                .map(|s| s.map(|s| value(built, s)).unwrap_or(Value::Nil))
+                .collect();
+            let parent = parent.and_then(|p| frame(built, p));
+            Built::Frame(Frame::from_slots(slots.into_iter().collect(), parent))
+        }
+        node => Built::Value(import_node(interp, node, built)),
+    };
+    built[ix] = Some(b);
+}
+
+/// The value built for node `ix`. (Each part belongs to one node: taken
+/// once.)
+fn value(built: &mut [Option<Built>], ix: Ix) -> Value {
+    match built[ix as usize].take() {
+        Some(Built::Value(v)) => v,
+        _ => Value::Nil,
+    }
+}
+
+/// The frame built for node `ix`.
+fn frame(built: &mut [Option<Built>], ix: Ix) -> Option<Rc<Frame>> {
+    match built[ix as usize].take() {
+        Some(Built::Frame(f)) => Some(f),
+        _ => None,
+    }
+}
+
+/// A node's value, its parts already built.
+fn import_node(interp: &Interp, node: Node, built: &mut [Option<Built>]) -> Value {
+    match node {
+        Node::Nil | Node::Pending | Node::Frame { .. } => Value::Nil,
+        Node::Bool(b) => Value::Bool(b),
+        Node::Int(i) => Value::Int(i),
+        Node::Float(f) => Value::Float(f),
+        Node::Symbol(s) => Value::Symbol(interp.intern(&s)),
+        Node::Class(c) => Value::Class(c),
+        Node::Duration(d) => Value::Duration(d),
+        Node::BigInt(b) => integer(*b),
+        Node::Str(s) => Value::string(s),
+        Node::Array(items) => Value::array(items.into_iter().map(|i| value(built, i)).collect()),
+        Node::Hash(pairs) => Value::Hash(Rc::new(crate::value::HashData::from(
             pairs
                 .into_iter()
-                .map(|(k, v)| (import(interp, k), import(interp, v)))
+                .map(|(k, v)| (value(built, k), value(built, v)))
                 .collect::<crate::value::ValueMap>(),
         ))),
-        Transfer::Set(items) => {
-            Value::Set(Rc::new(import_all(interp, items).into_iter().collect()))
-        }
-        Transfer::Range { lo, hi, exclusive } => Value::Range(Rc::new(RangeVal {
-            lo: import(interp, *lo),
-            hi: import(interp, *hi),
+        Node::Set(items) => Value::Set(Rc::new(
+            items.into_iter().map(|i| value(built, i)).collect(),
+        )),
+        Node::Range { lo, hi, exclusive } => Value::Range(Rc::new(RangeVal {
+            lo: value(built, lo),
+            hi: value(built, hi),
             exclusive,
         })),
-        Transfer::Regexp { source, flags } => {
-            interp.make_regexp(&source, &flags).unwrap_or(Value::Nil)
-        }
-        Transfer::Bytes(b) => Value::bytes(b),
-        Transfer::Time(t) => Value::Time(Rc::new(t)),
-        Transfer::Object {
-            class,
-            fields,
-            id,
-            backtrace,
-            cause,
-        } => {
-            let fields: Fields = import_all(interp, fields).into_iter().collect();
+        Node::Regexp(r) => interp.make_regexp(&r.0, &r.1).unwrap_or(Value::Nil),
+        Node::Bytes(b) => Value::bytes(b),
+        Node::Time(t) => Value::Time(Rc::new(t)),
+        Node::Object { class, fields, exc } => {
+            let (id, backtrace, cause) = match exc {
+                Some(e) => (e.id, e.backtrace, e.cause),
+                None => (None, None, None),
+            };
+            let fields: Fields = fields.into_iter().map(|i| value(built, i)).collect();
             // Variants without data are singletons.
             if fields.is_empty() {
                 let info = interp.program.world.class(class);
@@ -381,65 +578,56 @@ pub fn import(interp: &Interp, t: Transfer) -> Value {
                     return interp.variant_singleton(class);
                 }
             }
+            let cause = cause.map(|c| value(built, c));
             Value::Object({
                 let o = Object::new(class, fields);
                 // A raised exception stays the same one (its id).
                 if let Some(id) = id {
-                    let info = crate::value::ExcInfo::with_id(
-                        id,
-                        backtrace.map(Rc::new),
-                        cause.map(|c| import(interp, *c)),
-                    );
+                    let info = crate::value::ExcInfo::with_id(id, backtrace.map(Rc::new), cause);
                     o.init_exc(info);
                 }
                 o
             })
         }
-        Transfer::Proc {
-            body,
-            frame,
-            self_val,
-            destructure,
-            is_lambda,
-            tag,
-            method_block,
-            method_tag,
-            file,
-        } => Value::Proc(Rc::new(Closure {
-            body: match body {
-                ProcBody::Func(id) => ClosureBody::Func(id),
-                ProcBody::MethodName(n, m, d, among) => ClosureBody::MethodName(
-                    Rc::from(n),
-                    std::cell::Cell::new(None),
-                    m,
-                    d,
-                    (!among.is_empty()).then(|| Rc::new(among)),
-                ),
-                ProcBody::BoundMethod { recv, name, method } => ClosureBody::BoundMethod {
-                    recv: import(interp, *recv),
-                    name: Rc::from(name),
-                    method,
+        Node::Proc(c) => {
+            let ProcNode {
+                body,
+                frame: f,
+                self_val,
+                destructure,
+                is_lambda,
+                tag,
+                method_block,
+                method_tag,
+                file,
+            } = *c;
+            Value::Proc(Rc::new(Closure {
+                body: match body {
+                    ProcBody::Func(id) => ClosureBody::Func(id),
+                    ProcBody::MethodName(n, m, d, among) => ClosureBody::MethodName(
+                        Rc::from(n),
+                        std::cell::Cell::new(None),
+                        m,
+                        d,
+                        (!among.is_empty()).then(|| Rc::new(among)),
+                    ),
+                    ProcBody::BoundMethod { recv, name, method } => ClosureBody::BoundMethod {
+                        recv: value(built, recv),
+                        name: Rc::from(name),
+                        method,
+                    },
                 },
-            },
-            frame: frame.map(|f| import_frame(interp, *f)),
-            self_val: import(interp, *self_val),
-            destructure,
-            is_lambda,
-            tag,
-            method_block: method_block.map(|b| import(interp, *b)),
-            method_tag,
-            file,
-        })),
+                frame: f.and_then(|f| frame(built, f)),
+                self_val: value(built, self_val),
+                destructure,
+                is_lambda,
+                tag,
+                method_block: method_block.map(|b| value(built, b)),
+                method_tag,
+                file,
+            }))
+        }
     }
-}
-
-fn import_all(interp: &Interp, items: Vec<Transfer>) -> Vec<Value> {
-    items.into_iter().map(|t| import(interp, t)).collect()
-}
-
-fn import_frame(interp: &Interp, f: TFrame) -> Rc<Frame> {
-    let parent = f.parent.map(|p| import_frame(interp, *p));
-    Frame::from_slots(import_all(interp, f.slots).into_iter().collect(), parent)
 }
 
 // ----- the helper thread's interpreter ------------------------------------------

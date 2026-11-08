@@ -1,0 +1,39 @@
+# Values nested 100,000 deep and 100,000 wide cross `Task.blocking` both
+# ways (#466): copied to the helper thread and back without recursion.
+enum L
+  variant Nil
+  variant Cons(head: Int, tail: L)
+end
+
+def build(n: Int) -> L
+  l: L = L::Nil
+  n.times { |i| l = L::Cons.new(i, l) }
+  l
+end
+
+def length(l: L) -> Int
+  n = 0
+  cur = l
+  loop do
+    case cur
+    in L::Cons(tail:)
+      n += 1
+      cur = tail
+    in L::Nil
+      break
+    end
+  end
+  n
+end
+
+# Out of the block.
+out = Task.blocking { build(100_000) }
+p length(out)
+# Into it (captured), and back.
+back = Task.blocking { length(out) }
+p back
+round = Task.blocking { out }
+p length(round)
+# Wide.
+wide = (0...100_000).map { |i| "s#{i}" }
+p Task.blocking { wide.size }, Task.blocking { wide }.last
