@@ -87,8 +87,10 @@ fn propagate_in(f: &mut Function, only: Option<&HashSet<Reg>>) -> Option<HashSet
     // reads redirected to it leave its definitions as they were.
     let mut removed: HashSet<Reg> = HashSet::default();
     let mut sources: HashSet<Reg> = HashSet::default();
-    // Liveness, when a `Release` needs it.
-    let mut live: Option<Vec<Vec<Vec<bool>>>> = None;
+    // Liveness of the registers a `Release` asks about, solved per
+    // register (#463: a whole function's took most of a long function's
+    // lowering).
+    let mut live = quarz_ir::live::RegLive::new(f);
     for (site, dst, src) in moves {
         if removed.contains(&dst) || sources.contains(&dst) || removed.contains(&src) {
             continue;
@@ -116,8 +118,7 @@ fn propagate_in(f: &mut Function, only: Option<&HashSet<Reg>>) -> Option<HashSet
             let releases_only_src = is_release
                 && uses[src as usize].len() == 1
                 && term_uses[src as usize].is_empty()
-                && !live.get_or_insert_with(|| quarz_ir::live::liveness(f))[ubi][uii + 1]
-                    [src as usize];
+                && !live.live_before(ubi, uii + 1, src);
             if here.len() != 1
                 || (consumes(inst, dst) && !is_release)
                 || defs_at(&reach, ubi, uii, src) != src_defs
@@ -137,8 +138,7 @@ fn propagate_in(f: &mut Function, only: Option<&HashSet<Reg>>) -> Option<HashSet
                 // its last read moving it on), the value would be released
                 // there, before the copy's scope ends (a `deinitialize`
                 // runs early): the copy stays.
-                let src_live_after = live.get_or_insert_with(|| quarz_ir::live::liveness(f))[ubi]
-                    [uii + 1][src as usize];
+                let src_live_after = live.live_before(ubi, uii + 1, src);
                 if !src_live_after {
                     ok = false;
                     break;
