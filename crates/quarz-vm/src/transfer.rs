@@ -222,6 +222,10 @@ pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
     let mut jobs: Vec<(Ix, Job)> = Vec::new();
     later(&mut nodes, &mut jobs, Job::Value(v.clone()));
     while let Some((ix, job)) = jobs.pop() {
+        // (A node's parts are pushed in order and reversed below, so that
+        // they are exported first to last, as the recursion did: of two
+        // parts that cannot cross, the first is the one reported.)
+        let start = jobs.len();
         let node = match job {
             Job::Value(v) => export_value(interp, &v, &mut nodes, &mut jobs)?,
             Job::Frame(frame, needed, depth) => {
@@ -243,6 +247,7 @@ pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
             }
         };
         nodes[ix as usize] = node;
+        jobs[start..].reverse();
     }
     Ok(Transfer { nodes })
 }
@@ -257,14 +262,14 @@ fn export_value(
     if let Some(node) = leaf(interp, v) {
         return Ok(node);
     }
-    let mut part = |v: &Value| part(interp, nodes, jobs, v);
+    let mut p = |v: &Value| part(interp, nodes, jobs, v);
     Ok(match v {
-        Value::Array(items) => Node::Array(items.values().iter().map(&mut part).collect()),
-        Value::Hash(h) => Node::Hash(h.as_map().iter().map(|(k, v)| (part(k), part(v))).collect()),
-        Value::Set(s) => Node::Set(s.iter().map(&mut part).collect()),
+        Value::Array(items) => Node::Array(items.values().iter().map(&mut p).collect()),
+        Value::Hash(h) => Node::Hash(h.as_map().iter().map(|(k, v)| (p(k), p(v))).collect()),
+        Value::Set(s) => Node::Set(s.iter().map(&mut p).collect()),
         Value::Range(r) => Node::Range {
-            lo: part(&r.lo),
-            hi: part(&r.hi),
+            lo: p(&r.lo),
+            hi: p(&r.hi),
             exclusive: r.exclusive,
         },
         Value::Regexp(r) => Node::Regexp {
@@ -290,10 +295,10 @@ fn export_value(
             }
             Node::Object {
                 class: o.class,
-                fields: o.fields().iter().map(&mut part).collect(),
+                fields: o.fields().iter().map(&mut p).collect(),
                 id: o.exc_info().map(|i| i.id),
                 backtrace: o.backtrace().map(|b| b.to_vec()),
-                cause: o.cause().map(|c| part(&c)),
+                cause: o.cause().map(|c| p(&c)),
             }
         }
         Value::Proc(c) => {
@@ -313,18 +318,23 @@ fn export_value(
                     among.as_deref().cloned().unwrap_or_default(),
                 ),
                 ClosureBody::BoundMethod { recv, name, method } => ProcBody::BoundMethod {
-                    recv: part(recv),
+                    recv: p(recv),
                     name: name.to_string(),
                     method: *method,
                 },
                 ClosureBody::Native(_) => return Err(not_transferable(interp, v)),
             };
-            let self_val = part(&c.self_val);
-            let method_block = c.method_block.as_ref().map(&mut part);
+            // (In the recursion's order: the receiver, the frame, `self`,
+            // the method's block.)
             let frame = c
                 .frame
                 .as_ref()
                 .map(|f| later(nodes, jobs, Job::Frame(f.clone(), needed, 0)));
+            let self_val = part(interp, nodes, jobs, &c.self_val);
+            let method_block = c
+                .method_block
+                .as_ref()
+                .map(|b| part(interp, nodes, jobs, b));
             Node::Proc {
                 body,
                 frame,
@@ -402,12 +412,60 @@ enum Built {
     Frame(Rc<Frame>),
 }
 
-/// The value of a transfer, its nodes imported from the last: a node's
-/// parts, after it, are built before it (no recursion).
+/// The parts of a node, in the order the recursion imported them.
+fn parts(node: &Node) -> Vec<Ix> {
+    match node {
+        Node::Array(items) | Node::Set(items) => items.clone(),
+        Node::Hash(pairs) => pairs.iter().flat_map(|(k, v)| [*k, *v]).collect(),
+        Node::Range { lo, hi, .. } => vec![*lo, *hi],
+        Node::Object { fields, cause, .. } => fields.iter().copied().chain(*cause).collect(),
+        Node::Proc {
+            body,
+            frame,
+            self_val,
+            method_block,
+            ..
+        } => {
+            let recv = match body {
+                ProcBody::BoundMethod { recv, .. } => Some(*recv),
+                _ => None,
+            };
+            recv.into_iter()
+                .chain(*frame)
+                .chain(Some(*self_val))
+                .chain(*method_block)
+                .collect()
+        }
+        Node::Frame { slots, parent } => parent
+            .iter()
+            .copied()
+            .chain(slots.iter().flatten().copied())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The value of a transfer, its nodes imported depth first, each after
+/// its parts, in the order the recursion imported them (a key's own
+/// `hash` and `==`, called as a hash or set is rebuilt, run in the same
+/// order), from a work list (no recursion).
 pub fn import(interp: &Interp, t: Transfer) -> Value {
     let mut nodes = t.nodes;
     let mut built: Vec<Option<Built>> = (0..nodes.len()).map(|_| None).collect();
-    for ix in (0..nodes.len()).rev() {
+    // (node, whether its parts are built)
+    let mut work: Vec<(Ix, bool)> = vec![(0, false)];
+    while let Some((ix, ready)) = work.pop() {
+        if !ready {
+            work.push((ix, true));
+            work.extend(
+                parts(&nodes[ix as usize])
+                    .into_iter()
+                    .rev()
+                    .map(|p| (p, false)),
+            );
+            continue;
+        }
+        let ix = ix as usize;
         let node = std::mem::replace(&mut nodes[ix], Node::Pending);
         let b = match node {
             Node::Frame { slots, parent } => {
