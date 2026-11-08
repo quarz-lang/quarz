@@ -1513,3 +1513,39 @@ fn a_handle_typed_with_a_static_defs_parameter_called_by_name_elsewhere() {
     let path = write(&d.0, "app.qz", &app("job_args"));
     run_and_build(&d.0, &path, "\"2\"\n\"e\"\n");
 }
+
+#[test]
+fn override_true_requires_a_generated_method_to_override() {
+    // `override: true` (#328): the statement is an error unless the
+    // generated method overrides an inherited one of its name.
+    let lib = "module Ext\n  def made -> String = \"ext\"\nend\nclass Base\n  extend Ext\n  def greet(name: String) -> String = \"base #{name}\"\n  def size_of(n: Int) -> String = \"base #{n}\"\n  def with(*, a: Int = 0, b: Int = 0) -> String = \"base #{a} #{b}\"\n  def label(name: String) -> String = \"base\"\n  def self.kind -> String = \"base\"\n  static def self.gen_ok -> Void\n    def_method(:greet, :name, override: true) { |name: String| -> String \"gen #{name}\" }\n    def_class_method(:kind, override: true) { -> String \"gen kind\" }\n    def_class_method(:made, override: true) { -> String \"gen made\" }\n  end\n  static def self.gen_disjoint -> Void\n    def_method(:size_of, :s, override: true) { |s: String| -> String \"gen #{s}\" }\n  end\n  static def self.gen_partial -> Void\n    def_method(:with, keywords: [Meta::Keyword.new(:a, Int, false)], override: true) do |given| -> String\n      \"gen\"\n    end\n  end\n  static def self.gen_superset -> Void\n    def_method(:with, keywords: [Meta::Keyword.new(:a, Int, false), Meta::Keyword.new(:b, Int, false), Meta::Keyword.new(:c, Int, false)], override: true) do |given| -> String\n      \"gen #{given.size}\"\n    end\n  end\n  static def self.gen_result -> Void\n    def_method(:label, :name, override: true) { |name: String| -> Int name.size }\n  end\n  static def self.gen_none -> Void\n    def_method(:nothing_here, override: true) { -> Int 1 }\n  end\nend\n";
+    let d = dir();
+    write(&d.0, "lib.qz", lib);
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass A < Base\n  gen_ok\nend\nb: Base = A.new\np b.greet(\"x\"), A.kind, A.made\n",
+    );
+    run_and_build(&d.0, &app, "\"gen x\"\n\"gen kind\"\n\"gen made\"\n");
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass A < Base\n  gen_superset\nend\np A.new.with(a: 1, b: 2, c: 3)\n",
+    );
+    run_and_build(&d.0, &app, "\"gen 3\"\n");
+    for (stmt, want) in [
+        ("gen_disjoint", "`def_method(:size_of)`: `override: true`, but `A#size_of` overrides no inherited method of its name, which would be overloaded instead: `Base#size_of(n: Int) -> String`: its parameter `s` takes String, not every Int"),
+        ("gen_partial", "`def_method(:with)`: `override: true`, but `A#with` overrides no inherited method of its name, which would be overloaded instead: `Base#with(*, a: Int = ..., b: Int = ...) -> String`: it does not take the keyword `b`"),
+        ("gen_result", "`def_method(:label)`: `override: true`, but its result Int is not a String, the result of `Base#label(name: String) -> String`"),
+        ("gen_none", "`def_method(:nothing_here)`: `override: true`, but `A` inherits no method `nothing_here` to override"),
+    ] {
+        let app = write(
+            &d.0,
+            "app.qz",
+            &format!("require_relative \"lib\"\nclass A < Base\n  {stmt}\nend\n"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        assert!(!ok);
+        assert!(err.starts_with(&format!("app.qz:3:3: error: {want}")), "{stmt}: {err}");
+    }
+}

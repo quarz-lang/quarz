@@ -118,6 +118,9 @@ pub struct GenRequest {
     /// Called in a generic method: the classes its carried type
     /// parameters stand for (`quarz_ir::TYPE_ARG_VALUES`).
     pub type_args: Vec<ClassId>,
+    /// `override: true`: the method must override an inherited one of
+    /// its name (docs/14 §5).
+    pub override_: bool,
 }
 
 /// A `Meta::Keyword`: name, type (a class), required, nullable.
