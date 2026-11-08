@@ -9529,6 +9529,7 @@ impl Checker {
                     let start = self.self_uses.len();
                     if on_union_self {
                         self.out.outer_self_calls.remove(&expr.id);
+                        self.out.outer_self_depths.remove(&expr.id);
                     }
                     let t = self.check_call_on(expr, call, m, implicit_self, expected);
                     if on_union_self {
@@ -9568,6 +9569,7 @@ impl Checker {
                         let start = self.self_uses.len();
                         if on_union_self {
                             self.out.outer_self_calls.remove(&expr.id);
+                            self.out.outer_self_depths.remove(&expr.id);
                         }
                         let t = self.check_call_on(expr, call, m, implicit_self, expected);
                         if on_union_self {
@@ -10789,13 +10791,6 @@ impl Checker {
         });
     }
 
-    /// A block given to a union receiver is compiled once: an implicit
-    /// call in it that one member's check sends to the block's own `self`
-    /// and another's to an enclosing one (read from its hidden slot), or a
-    /// function for one and a method for another, or one `self`'s
-    /// overloads chosen per member, would run the wrong method or on the
-    /// wrong object (`self_uses_differ`). `uses` holds each
-    /// member's range of `self_uses`.
     /// Whether the implicit call `expr`, just checked, fell through to an
     /// enclosing `self`, and to which hidden slot.
     fn fell_through(&self, expr: &Expr) -> Option<VarRef> {
@@ -10806,6 +10801,13 @@ impl Checker {
         }
     }
 
+    /// A block given to a union receiver is compiled once: an implicit
+    /// call in it that one member's check sends to the block's own `self`
+    /// and another's to an enclosing one (read from its hidden slot), or a
+    /// function for one and a method for another, or one `self`'s
+    /// overloads chosen per member, would run the wrong method or on the
+    /// wrong object (`self_uses_differ`). `uses` holds each
+    /// member's range of `self_uses`.
     fn compare_self_uses(
         &mut self,
         call: &Call,
