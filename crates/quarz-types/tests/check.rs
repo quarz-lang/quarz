@@ -5441,3 +5441,26 @@ fn a_block_whose_receiver_is_a_union_resolves_its_calls_one_way() {
     // Every member answers (by its class), or none does: accepted.
     ok(&format!("{base}class Outer\n  def bar -> String = \"outer\"\n  def go(x: P | Q) -> String = on(x) {{ both + bar }}\nend\n"));
 }
+
+#[test]
+fn an_own_override_hides_the_inherited_method_at_a_call() {
+    // A keyword superset overrides (docs/01 §3): a call both fit runs it
+    // (#436); a partial overlap is no override, and still a tie.
+    ok("class Base\n  def with(*, a: Int = 0, b: Int = 0) -> String = \"b\"\nend\nclass A < Base\n  def with(*, a: Int = 0, b: Int = 0, c: Int = 0) -> String = \"a\"\nend\ns: String = A.new.with(a: 1)\n");
+    err(
+        "class Base\n  def part(*, a: Int = 0, b: Int = 0) -> String = \"b\"\nend\nclass A < Base\n  def part(*, a: Int = 0, c: Int = 0) -> String = \"a\"\nend\ns: String = A.new.part(a: 1)\n",
+        "the call of `part` is ambiguous",
+    );
+    // A top-level function overrides nothing (docs/01 §1): still a tie
+    // with `Object#to_s`.
+    err(
+        "def to_s(x: Int = 0) -> String = \"f\"\nclass C\n  def go -> String = to_s\nend\n",
+        "the call of `to_s` is ambiguous",
+    );
+    // Nor does an extension's method, which the runtime does not put in
+    // place of the class's.
+    err(
+        "class Base\n  def with(*, a: Int = 0) -> String = \"b\"\nend\nclass A < Base\nend\nextension A\n  def with(*, a: Int = 0, b: Int = 0) -> String = \"e\"\nend\ns: String = A.new.with(a: 1)\n",
+        "the call of `with` is ambiguous",
+    );
+}

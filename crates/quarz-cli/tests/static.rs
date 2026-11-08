@@ -1530,9 +1530,14 @@ fn override_true_requires_a_generated_method_to_override() {
     let app = write(
         &d.0,
         "app.qz",
-        "require_relative \"lib\"\nclass A < Base\n  gen_superset\nend\np A.new.with(a: 1, b: 2, c: 3)\n",
+        "require_relative \"lib\"\nclass A < Base\n  gen_superset\nend\np A.new.with(a: 1, b: 2, c: 3), A.new.with(a: 1)\nb: Base = Base.new\np b.with(a: 1)\ndef via(b: Base) -> String = b.with(a: 2)\np via(A.new)\n",
     );
-    run_and_build(&d.0, &app, "\"gen 3\"\n");
+    // (A call the inherited one fits too runs the override, #436.)
+    run_and_build(
+        &d.0,
+        &app,
+        "\"gen 3\"\n\"gen 1\"\n\"base 1 0\"\n\"gen 1\"\n",
+    );
     for (stmt, want) in [
         ("gen_disjoint", "`def_method(:size_of)`: `override: true`, but `A#size_of` overrides no inherited method of its name, which would be overloaded instead: `Base#size_of(n: Int) -> String`: its parameter `s` takes String, not every Int"),
         ("gen_partial", "`def_method(:with)`: `override: true`, but `A#with` overrides no inherited method of its name, which would be overloaded instead: `Base#with(*, a: Int = ..., b: Int = ...) -> String`: it does not take the keyword `b`"),

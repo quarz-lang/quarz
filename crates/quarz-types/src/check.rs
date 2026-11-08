@@ -12182,6 +12182,16 @@ impl Checker {
             })
             .map(|x| x.1)
             .collect();
+        // A tie whose methods one of them overrides all the others goes to
+        // that one, as dispatch would run it (docs/01 §9, #436).
+        if top.len() > 1 {
+            if let Some(&x) = top.iter().find(|&&x| {
+                let o = self.overridden_by(x);
+                top.iter().all(|y| *y == x || o.contains(y))
+            }) {
+                return (x, Vec::new());
+            }
+        }
         let winner = top.first().copied().unwrap_or(level[0].1);
         (winner, top.into_iter().skip(1).collect())
     }
@@ -12231,6 +12241,26 @@ impl Checker {
         // (Two files' top-level `def`s are one set: neither comes first.)
         let main = |c: ClassId| self.world.class(c).kind == ClassKind::Main;
         a.owner != b.owner && !(main(a.owner) && main(b.owner)) && x.0 < y.0
+    }
+
+    /// The methods `m` overrides (`World::overridden_methods_in`, the
+    /// relation dispatch uses, as `rtworld::overridden_methods`): none for
+    /// a top-level function, nor for an extension's method, which the
+    /// runtime does not put in place of the class's.
+    fn overridden_by(&self, m: MethodId) -> Vec<MethodId> {
+        let mm = self.world.method(m);
+        if mm.extension.is_some() || self.world.class(mm.owner).kind == ClassKind::Main {
+            return Vec::new();
+        }
+        let own: Vec<Type> = self
+            .world
+            .class(mm.owner)
+            .type_params
+            .iter()
+            .map(|tp| Type::Param(tp.id))
+            .collect();
+        let ancs = self.world.ancestors(mm.owner, &own);
+        self.world.overridden_methods_in(mm, &ancs)
     }
 
     /// Whether `a` is at least as specific as `b`: every call `a` takes,

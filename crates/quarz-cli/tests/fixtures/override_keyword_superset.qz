@@ -1,0 +1,47 @@
+# An own method hides an inherited one it overrides (docs/01 §9, #436):
+# a call that fits both runs the override, on the subclass and, by
+# dispatch, through a parent-typed receiver; a true overload (another
+# parameter type) resolves as before.
+class Base
+  def with(*, a: Int = 0, b: Int = 0) -> String = "base #{a} #{b}"
+  def foo(x: Int) -> String = "base foo"
+end
+class A < Base
+  def with(*, a: Int = 0, b: Int = 0, c: Int = 0) -> String = "A #{a} #{b} #{c}"
+  def foo(x: String) -> String = "A foo"
+end
+p A.new.with(a: 1)
+b: Base = Base.new
+p b.with(a: 2)
+def via(b: Base) -> String = b.with(a: 3)
+p via(A.new)
+p A.new.foo(1), A.new.foo("s")
+
+# A call the inherited method wins against another overload is as
+# before: `f(Int, Int = 0)` is chosen over `f(Int | String, *Int)`, and
+# dispatch runs its override.
+class P
+  def f(a: Int | String, *b: Int) -> String = "P rest"
+  def f(a: Int, b: Int = 0) -> String = "P int"
+end
+class Q < P
+  def f(a: Object, b: Object = 0, *c: Object) -> String = "Q"
+end
+p Q.new.f(1), Q.new.f(1, 2)
+
+# The override relation is not transitive (docs/01 §9): `M3#m` overrides
+# `M1#m` but only overloads `M2#m`. On an `M3`, a call typed `M2` runs
+# `M2#m` (its own override of `M1#m`), one typed `M1` the most derived
+# override of `M1#m`, `M3#m`.
+class M1
+  def m(*, a: Int = 0) -> String = "M1"
+end
+class M2 < M1
+  def m(*, a: Int = 0, b: Int = 0) -> String = "M2"
+end
+class M3 < M2
+  def m(*, a: Int = 0, c: Int = 0) -> String = "M3"
+end
+def via_m2(x: M2) -> String = x.m(a: 1)
+def via_m1(x: M1) -> String = x.m(a: 1)
+p via_m2(M3.new), via_m1(M3.new)
