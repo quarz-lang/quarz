@@ -5427,3 +5427,17 @@ fn initialize_and_deinitialize_are_not_field_names() {
     );
     err("class K\n  @initialize: Int = 1\nend", i);
 }
+
+#[test]
+fn a_block_whose_receiver_is_a_union_resolves_its_calls_one_way() {
+    // A generic `T.()` block with `T` a union: its `self` is a `P` or a
+    // `Q`, and an implicit call one member answers while another leaves
+    // to the enclosing `self` cannot be compiled as one (#335).
+    let base = "class P\n  def foo -> String = \"P\"\n  def both -> String = \"pb\"\nend\nclass Q\n  def both -> String = \"qb\"\nend\ndef on[T](x: T, &b: T.() -> String) -> String = x.instance_exec(&b)\n";
+    err(
+        &format!("{base}class Outer\n  def foo -> String = \"outer\"\n  def go(x: P | Q) -> String = on(x) {{ foo }}\nend\n"),
+        "`foo` is the receiver's own for P and falls through to the enclosing `self` for Q: a block whose receiver is a union must resolve its calls the same way for every member",
+    );
+    // Every member answers (by its class), or none does: accepted.
+    ok(&format!("{base}class Outer\n  def bar -> String = \"outer\"\n  def go(x: P | Q) -> String = on(x) {{ both + bar }}\nend\n"));
+}

@@ -1,0 +1,48 @@
+# A block whose receiver is a union (a generic `T.()` block with `T` a
+# union, or a block given to a union receiver whose members type it
+# `Type[P].()` and `Type[Q].()`): each implicit call runs the method of the
+# receiver's class, `new` builds the receiver's class (#335, #337).
+class P
+  @x: Int
+  def initialize(x: Int)
+    @x = x
+  end
+  def foo -> String = "P#{@x}"
+  def self.make -> String = "P made"
+end
+
+class Q
+  @x: Int
+  def initialize(x: Int)
+    @x = x * 10
+  end
+  def foo -> String = "Q#{@x}"
+  def self.make -> String = "Q made"
+end
+
+def on[T](x: T, &b: T.() -> String) -> String = x.instance_exec(&b)
+def build[T](c: T, &b: T.() -> (P | Q)) -> P | Q = c.instance_exec(&b)
+
+class Outer
+  def bar -> String = "outer"
+  def go(x: P | Q) -> String = on(x) { foo + " " + bar }
+end
+
+x: P | Q = Q.new(1)
+y: P | Q = P.new(2)
+puts on(x) { foo }, on(y) { foo }
+puts Outer.new.go(x), Outer.new.go(y)
+c: Type[P] | Type[Q] = Q
+d: Type[P] | Type[Q] = P
+puts build(c) { new(3) }.foo, build(d) { new(3) }.foo
+puts on(c) { make }, on(d) { make }
+
+class HP
+  def with(&b: Type[P].() -> (P | Q)) -> P | Q = P.instance_exec(&b)
+end
+class HQ
+  def with(&b: Type[Q].() -> (P | Q)) -> P | Q = Q.instance_exec(&b)
+end
+h: HP | HQ = HP.new
+h2: HP | HQ = HQ.new
+puts h.with { new(4) }.foo, h2.with { new(4) }.foo
