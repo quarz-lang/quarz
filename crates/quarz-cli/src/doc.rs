@@ -271,7 +271,16 @@ impl Loaded {
             return String::new();
         }
         match self.file_of(offset) {
-            Some(f) => format!("{}:{}", f.name, f.line_col(offset).line),
+            Some(f) => {
+                // (A cog's file by its path in the cog, #458.)
+                let shown = self
+                    .files
+                    .iter()
+                    .position(|g| std::ptr::eq(g, f))
+                    .and_then(|i| self.links.shown.get(i)?.as_deref())
+                    .unwrap_or(&f.name);
+                format!("{shown}:{}", f.line_col(offset).line)
+            }
             None => "?".to_string(),
         }
     }
@@ -1133,6 +1142,22 @@ fn foreign_class(world: &World, class: ClassId) -> Option<Target> {
 }
 
 impl Api {
+    /// A variant whose enum has a page here: that page, and the variant
+    /// when the page lists it (not `:nodoc:`).
+    fn variant_here(&self, world: &World, variant: ClassId) -> Option<(String, Option<String>)> {
+        let c = world.class(variant);
+        if c.kind != ClassKind::Variant {
+            return None;
+        }
+        let e = world
+            .classes
+            .iter()
+            .find(|e| e.variants.contains(&variant))?;
+        let p = self.page(&e.name)?;
+        let listed = p.members.iter().any(|m| m.path == c.name);
+        Some((p.name.clone(), listed.then(|| c.name.clone())))
+    }
+
     /// A class by its declared name (`Dep::Thing`, as signatures print
     /// it, whatever the scope), as a link target: its page here, or there.
     pub(crate) fn class_target(&self, world: &World, name: &str) -> Option<Target> {
@@ -1306,7 +1331,13 @@ impl Api {
         match method {
             None => Some(match page_of(class) {
                 Some(p) => Target::Page(p, None),
-                None => foreign_class(world, class).unwrap_or(Target::Elsewhere { private: false }),
+                // A variant documented here: on its enum's page (#452).
+                None => match self.variant_here(world, class) {
+                    Some((p, member)) => Target::Page(p, member),
+                    None => {
+                        foreign_class(world, class).unwrap_or(Target::Elsewhere { private: false })
+                    }
+                },
             }),
             // A cog's public function, `Lib.f` (docs/10 §6), on the root
             // module's page.
@@ -1346,6 +1377,14 @@ impl Api {
                 } else {
                     &info.name
                 };
+                // A variant's method here: its enum's page; its `new`, the
+                // variant (#452).
+                if !private && world.class(owner).kind == ClassKind::Variant {
+                    if let Some((p, member)) = self.variant_here(world, owner) {
+                        let member = member.filter(|_| info.name == "initialize");
+                        return Some(Target::Page(p, member));
+                    }
+                }
                 match page_of(owner) {
                     Some(p) if !private => {
                         let member = format!("{p}{member_sep}{shown}");

@@ -458,12 +458,44 @@ fn summary_list(api: &Api, pages: &[&Page]) -> String {
     s
 }
 
+/// A page's heading: its signature, but a data type's without its
+/// fields, which its members list (#460): `data Version`, `data Box[T]`.
+fn heading(page: &Page) -> &str {
+    let sig = page.signature.as_str();
+    if page.kind != Kind::Data {
+        return sig;
+    }
+    // After `data Name` and its type parameters, `[...]` (brackets
+    // balanced), the fields begin.
+    let start = sig.find(&page.name).map(|i| i + page.name.len());
+    let Some(mut end) = start else {
+        return sig;
+    };
+    if sig[end..].starts_with('[') {
+        let mut depth = 0;
+        for (i, c) in sig[end..].char_indices() {
+            match c {
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end += i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    &sig[..end]
+}
+
 fn page_html(loaded: &Loaded, api: &Api, page: &Page) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
         "<h1><code>{}</code></h1>",
-        signature_html(loaded, api, Some(page.id), None, &page.signature)
+        signature_html(loaded, api, Some(page.id), None, heading(page))
     );
     if !page.includes.is_empty() {
         let names: Vec<String> = page
