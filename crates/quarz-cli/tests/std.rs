@@ -7,6 +7,11 @@
 //! process per test file or module, on a pool of threads, as
 //! tests/build.rs does (#455): one process over them all took most of the
 //! suite's time.
+//!
+//! The interpreted `in_parallel` run still loads every test file together,
+//! so clashes between files are caught at check time; a clash visible only
+//! when everything is compiled as one program is not covered (decided on
+//! #461).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
