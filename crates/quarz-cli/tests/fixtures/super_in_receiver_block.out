@@ -1,0 +1,6 @@
+go P2 1 | go P2 2
+zs P2 7
+lam P2 3
+nest P2 5, nest P2 6
+un P2 5
+arg P2 12

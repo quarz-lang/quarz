@@ -591,10 +591,11 @@ fn a_class_typed_receiver_bounds_the_overrides_reached() {
             "",
             "B#label",
         ),
-        // A `super` in a block with a receiver runs on that receiver: its
-        // method is walked without the bound of `P#go`'s `self` (`P2`).
+        // A `super` in a block with a receiver runs on the method's
+        // `self` (#384): its method is walked with the bound of `P#go`'s
+        // `self`, here `P3`, whatever the receiver.
         (
-            "static def self.gen -> Void\n    s = P2.new.go(P3.new)\n    def_class_method(:total) { s.size }\n  end\nend\nclass Q\n  def label -> String = \"q\"\n  def go(s: P) -> String = label\nend\nclass H\n  def with(s: P, &b: P.() -> String) -> String = s.instance_exec(&b)\nend\nclass P < Q\n  def go(s: P) -> String = H.new.with(s) { super(s) }\nend\nclass P2 < P\nend\nclass P3 < P\n  def label -> String = File.read(\"/etc/hostname\")",
+            "static def self.gen -> Void\n    s = P3.new.go(P2.new)\n    def_class_method(:total) { s.size }\n  end\nend\nclass Q\n  def label -> String = \"q\"\n  def go(s: P) -> String = label\nend\nclass H\n  def with(s: P, &b: P.() -> String) -> String = s.instance_exec(&b)\nend\nclass P < Q\n  def go(s: P) -> String = H.new.with(s) { super(s) }\nend\nclass P2 < P\nend\nclass P3 < P\n  def label -> String = File.read(\"/etc/hostname\")",
             "",
             "P3#label",
         ),
@@ -1200,4 +1201,42 @@ fn a_class_end_hook_reaches_what_the_class_statements_left_out() {
         "require_relative \"lib\"\nclass C < Endpoint\n  plug 1\n  def to_s -> String = \"C!\"\nend\np C.shown\n",
     );
     run_and_build(&d.0, &app, "\"C!\"\n");
+}
+
+#[test]
+fn a_super_in_a_block_with_a_receiver_runs_on_the_methods_self() {
+    // `super` in a block with a receiver runs on the method's `self`,
+    // whether the block is lowered in place (given to `instance_exec`)
+    // or as a function of its own (given to `H#with`), and the
+    // compile-time reach bounds it by the method's `self` (#384): `P2`'s
+    // `go` reaches `Q#label`, not `P3#label`, which the receiver has.
+    let classes = "class Q\n  def label -> String = \"q\"\n  def go(s: P) -> String = label\n  def go2(s: P) -> String = label\nend\nclass H\n  def with(s: P, &b: P.() -> String) -> String = s.instance_exec(&b)\nend\nclass P < Q\n  def go(s: P) -> String = s.instance_exec { super(s) }\n  def go2(s: P) -> String = H.new.with(s) { super(s) }\nend\nclass P2 < P\nend\nclass P3 < P\n  def label -> String = File.read(\"/etc/hostname\")\nend\n";
+    for (call, ok_expected) in [
+        ("P2.new.go(P3.new) + P2.new.go2(P3.new)", true),
+        ("P3.new.go(P2.new)", false),
+        ("P3.new.go2(P2.new)", false),
+    ] {
+        let d = dir();
+        write(
+            &d.0,
+            "lib.qz",
+            &format!("{classes}class Model\n  static def self.gen -> Void\n    s = {call}\n    def_class_method(:total) {{ s }}\n  end\nend\n"),
+        );
+        let app = write(
+            &d.0,
+            "app.qz",
+            "require_relative \"lib\"\nclass App < Model\n  gen\nend\np App.total\n",
+        );
+        if ok_expected {
+            run_and_build(&d.0, &app, "\"qq\"\n");
+        } else {
+            let (ok, _, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+            assert!(!ok);
+            assert!(
+                err.starts_with("app.qz:3:3: error: `gen` reaches `File.read` (via ")
+                    && err.lines().next().unwrap().contains("P3#label"),
+                "{call}: {err}"
+            );
+        }
+    }
 }

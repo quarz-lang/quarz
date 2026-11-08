@@ -405,6 +405,11 @@ pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
         Yield(args) => walk_args(args, nest, cx),
         Super { args, block } => {
             (cx.visit)(Site::Super, nest);
+            // In a block with a receiver, the method's `self` from its
+            // hidden slot (#384), as a call falling through to it reads.
+            if cx.out.outer_self_calls.contains(&e.id) {
+                (cx.visit)(Site::Var(e.span), nest);
+            }
             (cx.visit)(Site::SelfUse, nest);
             match args {
                 Some(args) => walk_args(args, nest, cx),

@@ -4271,14 +4271,21 @@ impl<'a> FnBuilder<'a> {
                 Some(dst)
             }
         };
-        // (Run on the frame's `self`: in a block with a receiver, the
-        // receiver, not the method's.)
-        let on_self = self.on_methods_self();
+        // In a block with a receiver, the method's `self`, from its hidden
+        // slot (`outer_self_calls`), whether the block is lowered in place
+        // or as a function of its own (#384); elsewhere the frame's.
+        let recv = if self.out.outer_self_calls.contains(&e.id) {
+            let r = self.out.var_refs[&e.span];
+            Some(self.load_var(r))
+        } else {
+            None
+        };
+        let on_self = recv.is_some() || self.on_methods_self();
         let dst = self.reg();
         self.emit(Inst::Call {
             dst,
             kind: CallKind::Super(method),
-            recv: None,
+            recv,
             args: a.pos,
             splat: a.splat,
             kw: a.kw,
