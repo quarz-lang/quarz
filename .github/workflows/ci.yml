@@ -13,8 +13,10 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  test:
-    name: Test (stable)
+  # Format, lint and the standard library's docs: apart from the tests, so
+  # that they run beside them.
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -22,22 +24,70 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # Caches are saved from main only: the repository's caches are over
+      # GitHub's limit, and a pull request's would evict main's.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lint
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Format
         run: cargo fmt --all -- --check
       - name: Lint
         run: cargo clippy --all-targets -- -D warnings
-      - name: Toolchain for the LLVM backend
-        run: clang --version
-      - name: Build
-        run: cargo build --workspace
-      - name: Test
-        run: cargo test --workspace
       # The standard library's API reference is published from main by
       # docs.yml (https://api.quarz.dev/); here its links are checked, so
       # a pull request that breaks them fails.
       - name: Check the standard library's docs
-        run: ./target/debug/quarz doc --std --check
+        run: cargo run -q --bin quarz -- doc --std --check
+
+  # The tests, in three jobs run side by side (#453): the two longest test
+  # binaries, `tests/std.rs` and `tests/build.rs`, each in its own, and
+  # every other test target in the third. The third takes quarz-cli's
+  # test targets from Cargo (`cargo metadata`), so a new test file runs
+  # there without being listed. The jobs share one cache (`shared-key`),
+  # saved by one of them.
+  test:
+    name: Test (${{ matrix.part }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [std, build, rest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          save-if: ${{ matrix.part == 'rest' && github.ref == 'refs/heads/main' }}
+      - name: Toolchain for the LLVM backend
+        run: clang --version
+      - name: Build
+        run: cargo build --workspace
+      - name: Test std.rs
+        if: matrix.part == 'std'
+        run: cargo test -p quarz-cli --test std
+      - name: Test build.rs
+        if: matrix.part == 'build'
+        run: cargo test -p quarz-cli --test build
+      - name: Test the rest
+        if: matrix.part == 'rest'
+        shell: bash
+        run: |
+          # quarz-cli's test targets as Cargo finds them (those `cargo test`
+          # runs), but std and build.
+          tests=$(cargo metadata --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.name == "quarz-cli") | .targets[]
+              | select((.kind | index("test")) and .test) | .name
+              | select(. != "std" and . != "build")')
+          [ -n "$tests" ] || { echo "no test targets of quarz-cli found" >&2; exit 1; }
+          args=()
+          for t in $tests; do args+=(--test "$t"); done
+          echo "quarz-cli's test targets here: ${tests//$'\n'/ }"
+          cargo test --workspace --exclude quarz-cli
+          cargo test -p quarz-cli --lib --bins "${args[@]}"
+          cargo test -p quarz-cli --doc
 
   msrv:
     name: Check (Rust 1.96)
@@ -70,33 +120,36 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install elan
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o elan-init.sh
-          sh elan-init.sh -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-      # The toolchain `lean-toolchain` names, from the GitHub release
-      # (elan's own source, releases.lean-lang.org, is not reachable from
-      # the runners), linked as formal/README.md's Setup describes.
+      # The toolchain `lean-toolchain` names, from the GitHub release, run
+      # directly from its `bin/` (#459: no elan, whose own download from
+      # GitHub's releases failed the job with 504s; elan's source,
+      # releases.lean-lang.org, is not reachable from the runners).
       - name: Lean version
         id: lean
         run: echo "version=$(sed 's|^leanprover/lean4:||' lean-toolchain)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v6
         id: lean-toolchain
         with:
-          path: ~/.elan/manual/lean
+          path: ~/.lean-toolchain
           key: lean-toolchain-${{ steps.lean.outputs.version }}
+      # On a miss: retried through transient errors, and once more after
+      # a minute.
       - name: Download the Lean toolchain
         if: steps.lean-toolchain.outputs.cache-hit != 'true'
+        shell: bash
         run: |
           v="${{ steps.lean.outputs.version }}"
-          mkdir -p ~/.elan/manual/lean
-          curl -sSfL "https://github.com/leanprover/lean4/releases/download/$v/lean-${v#v}-linux.tar.zst" |
-            tar --zstd -x --strip-components=1 -C ~/.elan/manual/lean
-      - name: Link the Lean toolchain
+          url="https://github.com/leanprover/lean4/releases/download/$v/lean-${v#v}-linux.tar.zst"
+          get() {
+            rm -rf ~/.lean-toolchain && mkdir -p ~/.lean-toolchain &&
+              curl -sSfL --retry 5 --retry-all-errors --retry-delay 10 "$url" |
+              tar --zstd -x --strip-components=1 -C ~/.lean-toolchain
+          }
+          get || { sleep 60; get; }
+      - name: Put the Lean toolchain on the path
         run: |
-          elan toolchain link "leanprover/lean4:${{ steps.lean.outputs.version }}" ~/.elan/manual/lean
-          lean --version
+          echo "$HOME/.lean-toolchain/bin" >> "$GITHUB_PATH"
+          "$HOME/.lean-toolchain/bin/lean" --version
       - uses: actions/cache@v6
         with:
           path: formal/quarz-core/.lake
