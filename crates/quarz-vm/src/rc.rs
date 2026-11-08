@@ -453,20 +453,113 @@ impl<T: ?Sized + Target> Drop for Rc<T> {
     }
 }
 
+/// A value whose last reference went, waiting to be freed: its counts'
+/// address and the function that frees one of its type.
+type Deferred = (NonNull<u8>, unsafe fn(NonNull<u8>));
+
+thread_local! {
+    /// A value is being freed on this thread: what its fields release in
+    /// turn waits in `DEFERRED` instead of being freed inside it, so that
+    /// freeing a deeply nested value never recurses (#437: a list of
+    /// 20,000 cells overflowed a task's stack).
+    static FREEING: Cell<bool> = const { Cell::new(false) };
+    static DEFERRED: std::cell::RefCell<Vec<Deferred>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Resets `FREEING` however the loop is left.
+struct Freeing;
+
+impl Drop for Freeing {
+    fn drop(&mut self) {
+        let _ = FREEING.try_with(|f| f.set(false));
+    }
+}
+
+/// Free the value at `ptr` and then, in a loop, what freeing it released.
+/// Each value's releases are reversed on the stack as they were pushed,
+/// so values are freed depth first, fields in order, as the recursion
+/// freed them, but for one case: a value two fields refer to, its last
+/// reference in the first's subtree, was freed there and is now freed
+/// after it (all of a value's fields are released before any of them is
+/// freed).
+///
+/// # Safety
+/// `ptr` is the last reference of a live `Rc` of the type `free` frees.
+#[cold]
+#[inline(never)]
+unsafe fn free_all(ptr: NonNull<u8>, free: unsafe fn(NonNull<u8>)) {
+    let _reset = Freeing;
+    // (With the thread's locals being destroyed: freed here.)
+    if DEFERRED.try_with(|_| ()).is_err() {
+        // SAFETY: as the caller promises.
+        return unsafe { free(ptr) };
+    }
+    let mut next = Some((ptr, free));
+    while let Some((p, f)) = next {
+        let before = DEFERRED.with(|d| d.borrow().len());
+        // SAFETY: each entry is a last reference, freed once.
+        unsafe { f(p) };
+        next = DEFERRED.with(|d| {
+            let mut d = d.borrow_mut();
+            d[before..].reverse();
+            d.pop()
+        });
+    }
+    // (Not kept large after freeing a wide value.)
+    DEFERRED.with(|d| {
+        let mut d = d.borrow_mut();
+        if d.capacity() > 4096 {
+            d.shrink_to(1024);
+        }
+    });
+}
+
 impl<T: ?Sized + Target> Rc<T> {
     #[inline(never)]
     unsafe fn drop_slow(&mut self) {
-        let layout = self.layout();
         let inner = self.inner();
         if !inner.is_shared() {
-            // Out of the cycle collector's candidates first: what the
-            // value's drop runs may start a collection.
+            // Out of the cycle collector's candidates first, also when it
+            // waits to be freed: what a value's drop runs may start a
+            // collection, which must not find it.
             crate::cycles::forget(inner.shared.get());
         }
+        // A value that releases nothing in turn (a string, bytes) cannot
+        // recurse: freed here, as wide collections of them are common.
+        if !std::mem::needs_drop::<T>() {
+            // SAFETY: the caller holds the last reference.
+            return unsafe { Self::free_at(self.ptr) };
+        }
+        // Inside another value's freeing: wait (see `FREEING`); freed here
+        // when the stack is gone (the thread's locals being destroyed).
+        if FREEING.with(|f| f.replace(true)) {
+            let pushed = DEFERRED
+                .try_with(|d| d.borrow_mut().push((self.ptr, Self::free_at)))
+                .is_ok();
+            if !pushed {
+                // SAFETY: as below.
+                unsafe { Self::free_at(self.ptr) };
+            }
+        } else {
+            // SAFETY: the caller holds the last reference.
+            unsafe { free_all(self.ptr, Self::free_at) };
+        }
+    }
+
+    /// Free the value whose last reference is at `ptr`.
+    ///
+    /// # Safety
+    /// As `drop_slow`'s caller: `ptr` is the last reference's.
+    unsafe fn free_at(ptr: NonNull<u8>) {
+        let this = std::mem::ManuallyDrop::new(Rc::<T> {
+            ptr,
+            _owns: PhantomData,
+        });
+        let layout = this.layout();
         // SAFETY: the caller holds the last reference.
         unsafe {
-            std::ptr::drop_in_place(&raw mut (*self.inner_ptr()).value);
-            dealloc(self.ptr.as_ptr().sub(T::PREFIX), layout);
+            std::ptr::drop_in_place(&raw mut (*this.inner_ptr()).value);
+            dealloc(this.ptr.as_ptr().sub(T::PREFIX), layout);
         }
     }
 }

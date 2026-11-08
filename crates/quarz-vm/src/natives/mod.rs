@@ -49,10 +49,16 @@ macro_rules! fast {
             r: &crate::value::Value,
             a: &[&crate::value::Value],
         ) -> Option<crate::interp::EvalResult> {
-            // (No check of `crate::keys::pending`: one that may run a
-            // key's `==` or `hash` leaves such a key to the native.)
+            // (One that may run a key's `==` or `hash` leaves such a key
+            // to the native. A walk over a key nested too deeply keeps a
+            // `SystemStackError` (#437): the native runs instead, and
+            // its wrapper raises it there.)
             let f: crate::interp::FastNativeFn = $f;
-            f(i, r, a)
+            let out = f(i, r, a);
+            if crate::keys::pending() {
+                return None;
+            }
+            out
         }
         $m.add(&[$first $(, $key)*], native, concat!("qzf.", $first));
     }};

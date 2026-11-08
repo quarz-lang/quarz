@@ -104,6 +104,32 @@ fn keep(e: Flow) {
     let _ = HAS_ERROR.try_with(|h| h.set(true));
 }
 
+/// The native stack is nearly exhausted inside `Value`'s `Eq` or `Hash`
+/// (a value nested too deeply, #437): a `SystemStackError` is kept, to be
+/// raised when the operation returns, as a method's error is, and the
+/// walk stops (unequal, nothing more hashed).
+#[cold]
+#[inline(never)]
+pub fn too_deep(what: &str) {
+    if pending() {
+        return;
+    }
+    // (The check of a kept error is behind this flag.)
+    ANY.store(true, Ordering::Relaxed);
+    if let Some(interp) = interp() {
+        keep(interp.raise(
+            interp.program.exc.system_stack,
+            &format!("a value nested too deeply to {what}"),
+        ));
+    }
+}
+
+/// Whether the native stack is nearly exhausted (see `too_deep`).
+#[inline]
+pub fn stack_low() -> bool {
+    crate::sched::stack_exhausted()
+}
+
 fn interp() -> Option<std::rc::Rc<Interp>> {
     INTERP.try_with(|i| i.borrow().upgrade()).ok().flatten()
 }

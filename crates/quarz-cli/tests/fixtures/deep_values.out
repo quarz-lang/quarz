@@ -1,0 +1,13 @@
+root inspect: ok
+root to_s: ok
+root ==: ok
+root hash: ok
+root as a key: ok
+root: the bottom freed
+task inspect: ok
+task to_s: ok
+task ==: ok
+task hash: ok
+task as a key: ok
+task: the bottom freed
+done
