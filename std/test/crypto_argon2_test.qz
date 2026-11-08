@@ -72,6 +72,10 @@ class CryptoArgon2Test < Test::Case
     assert_equal(Crypto::Argon2::Params.new(72, 3, 2), Crypto::Argon2::Params.of(h))
     assert_raise(Crypto::Error) { Crypto::Argon2::Params.of("$pbkdf2-sha256$600000$c2FsdA$aGFzaA") }
     assert_raise(Crypto::Error) { Crypto::Argon2::Params.of("$argon2id$v=19$m=64,t=1") }
+    # A repeated parameter: refused, not read as either value.
+    twice = h.sub("p=2$", "p=2,m=999999$")
+    assert_raise_message(/m twice/) { Crypto::Argon2::Params.of(twice) }
+    assert_raise_message(/m twice/) { Crypto::Argon2.needs_rehash?(twice) }
   end
 
   def test_needs_rehash
@@ -115,7 +119,11 @@ class CryptoArgon2Test < Test::Case
       [good.slice(0, good.size - 50), /without its hash/],
       ["$argon2id$v=19$m=64,t=1,p=1,m=128$#{salt}$#{out}", /parameter m twice/],
       ["$argon2id$v=19$m=64,t=1,p=1,p=1000$#{salt}$#{out}", /parameter p twice/],
-      ["$argon2id$v=19$m=4294967296,t=1,p=1$#{salt}$#{out}", /m is not a decimal|memory_kib/],
+      ["$argon2id$v=19$m=4294967296,t=1,p=1$#{salt}$#{out}", /memory_kib/],
+      ["$argon2id$v=19$m=abc,t=1,p=1$#{salt}$#{out}", /m is not a decimal/],
+      ["$y$j9T$abc$def", /\$y\$ hash/],
+      ["$", /not a PHC/],
+      ["$foo bar$x", /not a PHC/],
       ["$argon2id$v=19$m=064,t=1,p=1$#{salt}$#{out}", /m is not a decimal/],
       ["$scrypt$ln=16,r=8,p=1$c2FsdA$aGFzaA", /\$scrypt\$ hash/],
       ["$pbkdf2-sha256$600000$c2FsdA$aGFzaA", /pbkdf2-sha256/],

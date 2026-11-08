@@ -347,12 +347,20 @@ const KNOWN_SCHEMES: &[&str] = &[
     "pbkdf2-sha512",
     "scrypt",
     "bcrypt",
+    "yescrypt",
+    "y",
+    "gy",
+    "7",
+    "2",
     "2a",
     "2b",
+    "2x",
     "2y",
     "1",
     "5",
     "6",
+    "md5",
+    "sha1",
 ];
 
 /// The bounds of `Crypto::Argon2::Params` (`std/crypto.qz`).
@@ -401,7 +409,14 @@ fn parse_argon2(
     // the hash is never echoed.
     let ident = hash
         .strip_prefix('$')
-        .and_then(|rest| rest.split('$').next());
+        .and_then(|rest| rest.split('$').next())
+        .filter(|id| {
+            !id.is_empty()
+                && id.len() <= 32
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        });
     match ident {
         Some("argon2id") => {}
         Some(id) if KNOWN_SCHEMES.contains(&id) => {
