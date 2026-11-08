@@ -42,9 +42,7 @@ jobs:
 
   # The tests, in three jobs run side by side (#453): the two longest test
   # binaries, `tests/std.rs` and `tests/build.rs`, each in its own, and
-  # every other test target in the third. The third takes quarz-cli's
-  # test targets from Cargo (`cargo metadata`), so a new test file runs
-  # there without being listed. The jobs share one cache (`shared-key`),
+  # every other test (cargo-nextest's) in the third. The jobs share one cache (`shared-key`),
   # saved by one of them.
   test:
     name: Test (${{ matrix.part }})
@@ -71,23 +69,20 @@ jobs:
       - name: Test build.rs
         if: matrix.part == 'build'
         run: cargo test -p quarz-cli --test build
+      # The rest through cargo-nextest (#456): every test of every other
+      # binary on one scheduler, binaries side by side (`cargo test` runs
+      # one binary after another), then the doc tests, which nextest does
+      # not run. Its filter leaves out std and build by name, so a new test
+      # file runs here without being listed.
+      - name: Install cargo-nextest
+        if: matrix.part == 'rest'
+        uses: taiki-e/install-action@nextest
       - name: Test the rest
         if: matrix.part == 'rest'
-        shell: bash
         run: |
-          # quarz-cli's test targets as Cargo finds them (those `cargo test`
-          # runs), but std and build.
-          tests=$(cargo metadata --no-deps --format-version 1 |
-            jq -r '.packages[] | select(.name == "quarz-cli") | .targets[]
-              | select((.kind | index("test")) and .test) | .name
-              | select(. != "std" and . != "build")')
-          [ -n "$tests" ] || { echo "no test targets of quarz-cli found" >&2; exit 1; }
-          args=()
-          for t in $tests; do args+=(--test "$t"); done
-          echo "quarz-cli's test targets here: ${tests//$'\n'/ }"
-          cargo test --workspace --exclude quarz-cli
-          cargo test -p quarz-cli --lib --bins "${args[@]}"
-          cargo test -p quarz-cli --doc
+          cargo nextest run --workspace --no-fail-fast \
+            -E 'not (binary_id(quarz-cli::std) | binary_id(quarz-cli::build))'
+          cargo test --workspace --doc
 
   msrv:
     name: Check (Rust 1.96)
