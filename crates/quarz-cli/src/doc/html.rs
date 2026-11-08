@@ -53,7 +53,8 @@ fn href(loaded: &Loaded, api: &Api, target: &Target) -> Option<String> {
             anchor,
         } => {
             let base = loaded.docs_of(&loaded.world, *class)?;
-            Some(match anchor {
+            // (Only where that site has a page, and the member on it.)
+            Some(match loaded.foreign_has(base, page, anchor.as_deref())? {
                 Some(a) => format!("{base}/{}#{a}", page_file(page)),
                 None => format!("{base}/{}", page_file(page)),
             })
@@ -345,7 +346,7 @@ fn signature_html(loaded: &Loaded, api: &Api, current: Option<ClassId>, sig: &st
             .flatten()
             // (Not the page the signature is on.)
             .filter(|t| {
-                !matches!(t, Target::Page(p, None)
+                !matches!(t, Target::Page(p, _)
                     if current.is_some_and(|c| loaded.world.class(c).name == *p))
             })
             .and_then(|t| href(loaded, api, &t));

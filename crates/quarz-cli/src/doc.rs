@@ -177,6 +177,9 @@ pub(crate) struct Loaded {
     pub readme: Option<String>,
     /// Where the pages link beyond themselves.
     pub links: links::Links,
+    /// The APIs of the other sites linked to, by their URL, as `quarz
+    /// doc` makes them from their files (built when first linked to).
+    pub foreign: std::cell::RefCell<BTreeMap<String, Api>>,
 }
 
 impl Loaded {
@@ -231,6 +234,34 @@ impl Loaded {
             }
         }
         self.links.docs.get(c.file as usize)?.as_deref()
+    }
+
+    /// Whether the site at `base` has the page `page` and, of `anchor`,
+    /// a member there: the anchor to link to (`Some(None)` for the page
+    /// alone), or `None` for no page. The site's API is the one `quarz
+    /// doc` makes of the files whose declarations it holds, so that a
+    /// link goes only where it has a page (not to a `:nodoc:` one, nor to
+    /// a variant's generated reader).
+    pub fn foreign_has(
+        &self,
+        base: &str,
+        page: &str,
+        anchor: Option<&str>,
+    ) -> Option<Option<String>> {
+        let mut foreign = self.foreign.borrow_mut();
+        let api = foreign.entry(base.to_string()).or_insert_with(|| {
+            let files: Vec<u32> = (0..self.links.docs.len())
+                .filter(|&f| self.links.docs[f].as_deref() == Some(base))
+                .map(|f| f as u32)
+                .collect();
+            Api::of(&self.world, &files, false)
+        });
+        let p = api.page(page)?;
+        Some(
+            anchor
+                .filter(|a| p.members.iter().any(|m| anchor_of(m.kind, &m.name) == *a))
+                .map(str::to_string),
+        )
     }
 
     /// `file:line` of an offset; empty for none (a library's root
@@ -386,6 +417,7 @@ fn load(opts: &Opts) -> Option<Loaded> {
         title,
         readme,
         links,
+        foreign: Default::default(),
     })
 }
 
@@ -1326,6 +1358,15 @@ impl Api {
                         && !nodoc(&world.doc_at(info.span).cloned())
                         && !info.name.starts_with("__") =>
                     {
+                        // (A variant's `new`: the variant, on its enum's page.)
+                        if info.name == "initialize"
+                            && world.class(owner).kind == ClassKind::Variant
+                        {
+                            return Some(
+                                foreign_class(world, owner)
+                                    .unwrap_or(Target::Elsewhere { private }),
+                            );
+                        }
                         let Some(Target::Foreign { class, page, .. }) = foreign_class(world, owner)
                         else {
                             return Some(Target::Elsewhere { private });

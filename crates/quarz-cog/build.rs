@@ -32,12 +32,14 @@ fn main() {
         return;
     }
     // Again when HEAD moves: HEAD itself (another branch), its reflog (a
-    // commit), the ref it names and the packed refs; only those that
-    // exist (Cargo takes a missing one as always changed).
+    // commit), the ref it names, the packed refs and a reftable's list;
+    // only those that exist (Cargo takes a missing one as always changed).
     let mut watched = vec![
         "HEAD".to_string(),
         "logs/HEAD".to_string(),
         "packed-refs".to_string(),
+        // (A reftable repository keeps its refs in `reftable/`.)
+        "reftable/tables.list".to_string(),
     ];
     if let Some(r) = git(&["symbolic-ref", "-q", "HEAD"]) {
         watched.push(r);
