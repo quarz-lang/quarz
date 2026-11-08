@@ -611,30 +611,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             let mut out = Vec::new();
             for pattern in patterns {
                 for expanded in expand_braces(&pattern) {
-                    // (The base taken as written: its `[`, `*` and `?`
-                    // are no pattern's.)
-                    let full = match &base {
-                        Some(b) if !expanded.starts_with('/') => format!(
-                            "{}/{}",
-                            glob::Pattern::escape(b.trim_end_matches('/')),
-                            expanded
-                        ),
-                        _ => expanded.clone(),
-                    };
-                    let paths =
-                        glob::glob(&full).map_err(|e| format!("invalid glob pattern: {e}"))?;
-                    for path in paths.flatten() {
-                        let mut shown = path.to_string_lossy().into_owned();
-                        if let Some(b) = &base {
-                            if !expanded.starts_with('/') {
-                                let prefix = format!("{}/", b.trim_end_matches('/'));
-                                if let Some(rest) = shown.strip_prefix(&prefix) {
-                                    shown = rest.to_string();
-                                }
-                            }
-                        }
-                        out.push(shown);
-                    }
+                    glob_walk(base.as_deref(), &expanded, &mut out)?;
                 }
             }
             out.sort();
@@ -754,6 +731,202 @@ fn dir_children(interp: &Interp, path: &str) -> Result<Vec<String>, Flow> {
 }
 
 /// `{a,b}` alternatives in a glob pattern, expanded recursively.
+/// One pattern's matches (`Dir.glob`), into `out`: walked from `base`
+/// (taken as written, a path, not a pattern) or the current directory for
+/// a relative pattern, from `/` for an absolute one; relative to where the
+/// walk starts for a relative pattern. As Ruby's `Dir.glob`: `**` (a
+/// whole segment followed by others) matches zero or more directories,
+/// not entering a symbolic link to one nor a name starting with a dot; a
+/// wildcard (`*`, `?`, `[...]`) matches a leading dot only when the
+/// pattern's segment starts with one; a link a segment names (written,
+/// or matched) is followed. A `**` ending the pattern lists the
+/// directories below, recursively; a pattern ending in `/` matches
+/// directories only.
+fn glob_walk(base: Option<&str>, pattern: &str, out: &mut Vec<String>) -> Result<(), String> {
+    let absolute = pattern.starts_with('/');
+    let start = if absolute {
+        PathBuf::from("/")
+    } else {
+        match base {
+            Some(b) if !b.is_empty() => PathBuf::from(b),
+            _ => PathBuf::from("."),
+        }
+    };
+    let dirs_only = pattern.ends_with('/');
+    let mut segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+    if segs.is_empty() {
+        return Ok(());
+    }
+    // (A trailing `**`: the directories below, as `**/`.)
+    let trailing = *segs.last().unwrap() == "**";
+    if trailing {
+        segs.pop();
+    }
+    let mut compiled = Vec::with_capacity(segs.len());
+    for seg in &segs {
+        compiled.push(GlobSeg::of(seg)?);
+    }
+    let shown = if absolute {
+        "/".to_string()
+    } else {
+        String::new()
+    };
+    glob_segments(&start, &shown, &compiled, trailing, dirs_only, out);
+    Ok(())
+}
+
+/// A pattern's segment.
+enum GlobSeg {
+    /// `**`.
+    Any,
+    /// Without a wildcard: a name taken as written.
+    Name(String),
+    /// With one, and whether it starts with a dot.
+    Pattern(glob::Pattern, bool),
+}
+
+impl GlobSeg {
+    fn of(seg: &str) -> Result<GlobSeg, String> {
+        if seg == "**" {
+            return Ok(GlobSeg::Any);
+        }
+        if seg.contains("**") {
+            return Err(format!(
+                "invalid glob pattern: `**` must be a whole segment: {seg}"
+            ));
+        }
+        if !seg.contains(['*', '?', '[']) {
+            return Ok(GlobSeg::Name(seg.to_string()));
+        }
+        let p = glob::Pattern::new(seg).map_err(|e| format!("invalid glob pattern: {e}"))?;
+        Ok(GlobSeg::Pattern(p, seg.starts_with('.')))
+    }
+}
+
+/// `dir/name`, shown as `shown` joined with `name`.
+fn glob_join(shown: &str, name: &str) -> String {
+    if shown.is_empty() {
+        name.to_string()
+    } else if shown.ends_with('/') {
+        format!("{shown}{name}")
+    } else {
+        format!("{shown}/{name}")
+    }
+}
+
+/// Whether `path` is a directory, following a link.
+fn glob_is_dir(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.is_dir())
+}
+
+/// The names in directory `dir` (none when it cannot be read).
+fn glob_names(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect()
+}
+
+/// Match `segs` from directory `dir` (shown as `shown`).
+fn glob_segments(
+    dir: &Path,
+    shown: &str,
+    segs: &[GlobSeg],
+    trailing: bool,
+    dirs_only: bool,
+    out: &mut Vec<String>,
+) {
+    let Some((seg, rest)) = segs.split_first() else {
+        // (Matched: with a trailing `**`, the directories below instead.)
+        if trailing {
+            glob_dirs_below(dir, shown, out);
+        } else if !shown.is_empty() && (!dirs_only || glob_is_dir(dir)) {
+            out.push(shown.trim_end_matches('/').to_string());
+        }
+        return;
+    };
+    match seg {
+        GlobSeg::Any => {
+            // Zero directories, or one more (not a link, not hidden).
+            glob_segments(dir, shown, rest, trailing, dirs_only, out);
+            for name in glob_names(dir) {
+                if name.starts_with('.') {
+                    continue;
+                }
+                let path = dir.join(&name);
+                if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
+                    glob_segments(
+                        &path,
+                        &glob_join(shown, &name),
+                        segs,
+                        trailing,
+                        dirs_only,
+                        out,
+                    );
+                }
+            }
+        }
+        GlobSeg::Name(name) => {
+            let path = dir.join(name);
+            let exists = std::fs::symlink_metadata(&path).is_ok();
+            if exists && (rest.is_empty() && !trailing || glob_is_dir(&path)) {
+                glob_segments(
+                    &path,
+                    &glob_join(shown, name),
+                    rest,
+                    trailing,
+                    dirs_only,
+                    out,
+                );
+            }
+        }
+        GlobSeg::Pattern(p, dotted) => {
+            let opts = glob::MatchOptions {
+                case_sensitive: true,
+                require_literal_separator: true,
+                require_literal_leading_dot: !dotted,
+            };
+            let mut names = glob_names(dir);
+            names.sort();
+            for name in names {
+                if !p.matches_with(&name, opts) {
+                    continue;
+                }
+                let path = dir.join(&name);
+                if rest.is_empty() && !trailing || glob_is_dir(&path) {
+                    glob_segments(
+                        &path,
+                        &glob_join(shown, &name),
+                        rest,
+                        trailing,
+                        dirs_only,
+                        out,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The directories below `dir`, recursively (a trailing `**`): not
+/// entering a link nor a hidden name.
+fn glob_dirs_below(dir: &Path, shown: &str, out: &mut Vec<String>) {
+    for name in glob_names(dir) {
+        if name.starts_with('.') {
+            continue;
+        }
+        let path = dir.join(&name);
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
+            let s = glob_join(shown, &name);
+            out.push(s.clone());
+            glob_dirs_below(&path, &s, out);
+        }
+    }
+}
+
 fn expand_braces(pattern: &str) -> Vec<String> {
     let Some(open) = pattern.find('{') else {
         return vec![pattern.to_string()];

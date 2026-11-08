@@ -6721,8 +6721,13 @@ module Dir
   #
   # With `base`, a relative pattern is matched in that directory and the
   # paths are relative to it; without, in the current directory. `base`
-  # is taken as written: a `[`, `*` or `?` in it is part of the name. `*`
-  # matches names starting with a dot too, unlike Ruby's.
+  # is taken as written: a `[`, `*` or `?` in it is part of the name.
+  #
+  # As Ruby's: `**/` matches zero or more directories, not entering a
+  # symbolic link to one (a link the pattern names, written or matched by
+  # a wildcard, is followed; a link to a file matches as a file); `*`, `?`
+  # and `[...]` match a name starting with a dot only when the pattern's
+  # segment starts with one (`src/.*`), and `**/` does not enter one.
   #
   # ## Raises
   #
