@@ -1,0 +1,12 @@
+# A `data` type whose field with a non-literal default comes before other
+# fields: its constructor binds its defaults itself, so a debug build's
+# check of native defaults leaves it alone (#388).
+data Session(values: Hash[String, String] = {}, changed: Bool = false, dropped: Bool = false)
+end
+
+data Job = (id: Int, tags: Array[String] = [], at: Int = 0, name: String = "job")
+
+p Session.new(changed: true)
+p Session.new
+p Job.new(1, at: 5)
+p Job.new(2, ["a"], 3)
