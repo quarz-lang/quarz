@@ -9516,12 +9516,24 @@ impl Checker {
                 // (The block's frame, once entered.)
                 let block_frame = self.env.frames.len();
                 let mut uses = Vec::new();
+                // (An implicit call on a `self` that is a union, in a block
+                // whose receiver type is one, `T.()` with `T = P | Q`:
+                // whether each member's check fell through to an
+                // enclosing `self`, and to which slot, #335.)
+                let on_union_self = call.recv.is_none();
+                let mut falls = Vec::new();
                 for m in &members {
                     if let (Some(k), Some(saved)) = (&bang, &bang_saved) {
                         self.narrow_subject(k, saved.clone());
                     }
                     let start = self.self_uses.len();
+                    if on_union_self {
+                        self.out.outer_self_calls.remove(&expr.id);
+                    }
                     let t = self.check_call_on(expr, call, m, implicit_self, expected);
+                    if on_union_self {
+                        falls.push(self.fell_through(expr));
+                    }
                     uses.push((start, self.self_uses.len()));
                     targets.push(match self.out.calls.get(&expr.id) {
                         Some(CallTarget::Method { method }) => Some(*method),
@@ -9548,12 +9560,19 @@ impl Checker {
                     result = Type::Nothing;
                     targets.clear();
                     uses.clear();
+                    falls.clear();
                     for m in &members {
                         if let (Some(k), Some(saved)) = (&bang, &bang_saved) {
                             self.narrow_subject(k, saved.clone());
                         }
                         let start = self.self_uses.len();
+                        if on_union_self {
+                            self.out.outer_self_calls.remove(&expr.id);
+                        }
                         let t = self.check_call_on(expr, call, m, implicit_self, expected);
+                        if on_union_self {
+                            falls.push(self.fell_through(expr));
+                        }
                         uses.push((start, self.self_uses.len()));
                         targets.push(match self.out.calls.get(&expr.id) {
                             Some(CallTarget::Method { method }) => Some(*method),
@@ -9564,6 +9583,25 @@ impl Checker {
                     for id in added {
                         self.int_literals.remove(&id);
                     }
+                }
+                // The compiled call reads one `self` for every member: the
+                // members must all fall through to the same one, or none.
+                if let Some(k) = falls.iter().position(|f| *f != falls[0]) {
+                    let what = |f: &Option<VarRef>, m: &Type| match f {
+                        Some(_) => format!(
+                            "falls through to the enclosing `self` for {}",
+                            self.world.type_name(m)
+                        ),
+                        None => format!("is the receiver's own for {}", self.world.type_name(m)),
+                    };
+                    let (a, b) = (what(&falls[0], &members[0]), what(&falls[k], &members[k]));
+                    self.error(
+                        format!(
+                            "`{name}` {a} and {b}: a block whose receiver is a union must resolve its calls the same way for every member; write the receiver (`self.{name}`, or the enclosing one), or narrow the receiver with `case`",
+                            name = call.name
+                        ),
+                        expr.span,
+                    );
                 }
                 if with_block {
                     self.union_block_calls -= 1;
@@ -10758,6 +10796,16 @@ impl Checker {
     /// overloads chosen per member, would run the wrong method or on the
     /// wrong object (`self_uses_differ`). `uses` holds each
     /// member's range of `self_uses`.
+    /// Whether the implicit call `expr`, just checked, fell through to an
+    /// enclosing `self`, and to which hidden slot.
+    fn fell_through(&self, expr: &Expr) -> Option<VarRef> {
+        if self.out.outer_self_calls.contains(&expr.id) {
+            self.out.var_refs.get(&expr.span).copied()
+        } else {
+            None
+        }
+    }
+
     fn compare_self_uses(
         &mut self,
         call: &Call,
