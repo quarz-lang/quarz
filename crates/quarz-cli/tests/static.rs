@@ -1367,3 +1367,36 @@ ok = JSON.decode[Wrap[Wrap[Int]]]('{"x": {"x": 1}}')
     // (A nesting written out is no recursion.)
     assert!(!err.contains("Wrap"), "{err}");
 }
+
+#[test]
+fn compile_time_purity_is_an_allow_list() {
+    // A native that draws randomness refuses the statement before it runs
+    // (#399), as one acting on the world does; a pure use of the same
+    // library (verifying a signature) runs at compile time.
+    let pem = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvXSjzZicRhyOrbfEWfcN\nIUQmSOHU8HBnBzZpXWSSY+02CO+cA8Q1aU8HYw+TBQa5Ni638E3EeAf3DsVA0fJL\nSDU5VL6QIsL+uhjTce7XK4OP/dgzLwRAclPNWo4ASeMkHSrP9+0/LtVxCpIup7zL\n+2lsBdNEirMS7IAbQycONanJ/VRSpgFH3CxkgKiZlb0A+QzXl/0PnLqALCio2iHW\neOLwODywEkvKn7rQ3JEjSmwm7TtQu4cufwDgSc9NeSl9JdetZ3yClZGGOE8Zschf\nxYMsnhwAEoZDGN9lA41J2oTKK81Ni1mf8hBkeEIkRGl+w/p09KxKuFkngqsEGWVM\nUwIDAQAB\n-----END PUBLIC KEY-----\n";
+    let lib = format!(
+        "require \"crypto\"\nrequire \"base64\"\nclass K\n  PEM = \"{pem}\"\n  static def self.gen -> Void\n    salt = Crypto.random_bytes(4).to_s\n    def_class_method(:salt) {{ salt }}\n  end\n  static def self.hashed -> Void\n    h = Crypto::Argon2.hash(\"pw\")\n    def_class_method(:h) {{ h }}\n  end\n  static def self.keyed -> Void\n    k = Crypto::RSA::PrivateKey.generate.to_pem\n    def_class_method(:k) {{ k }}\n  end\n  static def self.verified -> Void\n    ok = Crypto::RSA::PublicKey.from_pem(PEM).verify(\"hello\", Base64.decode(\"rFXxSLIUWR/cKBx0V2o82USETmjP9Jv6Vvti1LBYWT89NbNu9/gTCNjEjoq5y96Ag6kICcP+GEuc8Lno1wvGRa6hPxKEFCnAjLhoxniPlxhbr0iR8OCczQB1E1m/Xev/U3as86Ab25xJN/sX9QrqN/em40tOjKn639nUhUl2W6BQ+FzSAA5MSj/vX5autUXeiydM199OhtmNfphqW0UVWKXq9TBL2bOxQ4jDgZoYb45xrv91qEOkTBMUX6uylsa1I/EiDKyltkswMYnHaJw7Np/H4YcMBf3j571vbdZoUUjZxxdgDmOv5SsCLMm2xPaVdDIKnuR/Skxl5aLMlpHlUw==\"), :sha256)\n    def_class_method(:ok) {{ ok }}\n  end\nend\n"
+    );
+    let d = dir();
+    write(&d.0, "lib.qz", &lib);
+    for (stmt, via) in [
+        ("gen", "`gen` reaches `Crypto.random_bytes`, which cannot run at compile time"),
+        ("hashed", "`hashed` reaches `Crypto.random_bytes` (via Crypto::Argon2.hash), which cannot run at compile time"),
+        ("keyed", "`keyed` reaches `Crypto::RSA.generate_der` (via Crypto::RSA::PrivateKey.generate), which cannot run at compile time"),
+    ] {
+        let app = write(
+            &d.0,
+            "app.qz",
+            &format!("require_relative \"lib\"\nclass A < K\n  {stmt}\nend\n"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        assert!(!ok);
+        assert!(err.contains(&format!("app.qz:3:3: error: {via}")), "{err}");
+    }
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass A < K\n  verified\nend\np A.ok\n",
+    );
+    run_and_build(&d.0, &app, "true\n");
+}

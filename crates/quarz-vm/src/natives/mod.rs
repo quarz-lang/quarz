@@ -161,90 +161,202 @@ pub struct Natives {
     pub owned: Registry<OwnedNativeFn>,
 }
 
-/// Whether a class's natives are denied at compile time (docs/14 §5):
-/// the classes that act on the outside world, wait, or depend on the
-/// moment. Their values come only from such natives (or from a constant
-/// initialized by one, `STDOUT`), so their methods (an override of
-/// `Object#to_s`, say) cannot be reached otherwise; `Time` values made
-/// from parts exist, but `Time` has no methods of its own in Quarz.
-pub fn compile_time_denied_class(class: &str) -> bool {
-    const DENIED_CLASSES: &[&str] = &[
-        "IO",
-        "File",
-        "Dir",
-        "Process",
-        "Task",
-        "Channel",
-        "Atom",
-        "Signal",
-        "Random",
-        "TCPSocket",
-        "TCPServer",
-        "UDPSocket",
-        "UNIXSocket",
-        "UNIXServer",
-        "Socket",
-        "TLSSocket",
-        "Time",
-    ];
-    DENIED_CLASSES.contains(&class)
+/// Whether a native may run at compile time (docs/14 §3, §5): every
+/// native key is classified here (`PURITY_BY_KEY`, else its class's line
+/// in `PURITY_BY_CLASS`), and a key with no line is denied: a new native
+/// is classified to land (`every_native_is_classified`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Purity {
+    /// May run at compile time: depends only on its arguments. Printing
+    /// counts (it goes to the compiler's standard error).
+    Pure,
+    /// Acts on the outside world, waits, or is nondeterministic (the
+    /// moment, randomness).
+    Denied,
+    /// Exists at compile time only: the reflection on a class and the
+    /// generation (docs/14 §4, §5). A method reaching one is compile-time
+    /// only.
+    CompileTimeOnly,
 }
 
-/// Whether a native may run at compile time (docs/14 §5): nothing that
-/// reads or writes the outside world, waits, or depends on the moment.
-/// Printing is allowed (it goes to the compiler's standard error).
+use Purity::{CompileTimeOnly as CtOnly, Denied, Pure};
+
+/// The classification by class: the class of a key is its part before
+/// `#`, or before `.` after the last `::` (`Crypto::RSA` of
+/// `Crypto::RSA.public_der`).
+const PURITY_BY_CLASS: &[(&str, Purity)] = &[
+    // The world, waiting, the moment, randomness. Their values come only
+    // from such natives (or a constant one initialized, `STDOUT`).
+    ("IO", Denied),
+    ("File", Denied),
+    ("Dir", Denied),
+    ("Process", Denied),
+    ("Process::Child", Denied),
+    ("Process::Output", Denied),
+    ("Task", Denied),
+    ("Task::Scope", Denied),
+    ("Channel", Denied),
+    ("Channel::Selector", Denied),
+    ("Atom", Denied),
+    ("Signal", Denied),
+    ("Random", Denied),
+    ("Socket", Denied),
+    ("TCPSocket", Denied),
+    ("TCPServer", Denied),
+    ("UDPSocket", Denied),
+    ("UNIXSocket", Denied),
+    ("UNIXServer", Denied),
+    ("TLSSocket", Denied),
+    // Values and what computes from them.
+    ("Object", Pure),
+    ("Kernel", Pure),
+    ("Nil", Pure),
+    ("Bool", Pure),
+    ("Int", Pure),
+    ("Integer", Pure),
+    ("Float", Pure),
+    ("Math", Pure),
+    ("Comparable", Pure),
+    ("String", Pure),
+    ("String::Builder", Pure),
+    ("Symbol", Pure),
+    ("Regexp", Pure),
+    ("MatchData", Pure),
+    ("Bytes", Pure),
+    ("Bytes::Builder", Pure),
+    ("Bytes::MatchData", Pure),
+    ("Array", Pure),
+    ("Array::Builder", Pure),
+    ("Hash", Pure),
+    ("Hash::Builder", Pure),
+    ("Set", Pure),
+    ("Set::Builder", Pure),
+    ("Range", Pure),
+    ("Enumerable", Pure),
+    ("Enumerator", Pure),
+    ("Proc", Pure),
+    ("Exception", Pure),
+    ("Duration", Pure),
+    // `Time` values made from parts or parsed; reading the clock is not.
+    ("Time", Pure),
+    ("Type", Pure),
+    ("Cog", Pure),
+    ("Meta", Pure),
+    ("Meta::ClassDef", Pure),
+    ("Meta::FieldRef", Pure),
+    ("Meta::Method", Pure),
+    ("Meta::StatementValues", Pure),
+    ("JSON", Pure),
+    ("Base64", Pure),
+    ("Digest::MD5", Pure),
+    ("Digest::SHA256", Pure),
+    ("Digest::HMAC", Pure),
+    ("Digest::PBKDF2", Pure),
+    // Keys and signatures given; sealing with a given nonce. What draws
+    // randomness is denied below (AES's `generate` and `encrypt`, and
+    // Argon2's salted `hash`, draw it in Quarz through
+    // `Crypto.random_bytes`).
+    ("Crypto", Pure),
+    ("Crypto::AES", Pure),
+    ("Crypto::Argon2", Pure),
+    ("Crypto::RSA", Pure),
+    ("Crypto::RSA::PrivateKey", Pure),
+    ("Crypto::RSA::PublicKey", Pure),
+    ("TLS::Roots", Pure),
+    ("TLS::ServerConfig", Pure),
+];
+
+/// The keys classified apart from their class's line.
+const PURITY_BY_KEY: &[(&str, Purity)] = &[
+    ("Kernel#gets", Denied),
+    ("Kernel#gets?", Denied),
+    ("Kernel#readline", Denied),
+    ("Kernel#readlines", Denied),
+    ("Kernel#exit", Denied),
+    ("Kernel#exit!", Denied),
+    ("Kernel#abort", Denied),
+    ("Kernel#at_exit", Denied),
+    ("Kernel#sleep", Denied),
+    ("Kernel#rand", Denied),
+    ("Kernel#srand", Denied),
+    ("Time.now", Denied),
+    ("Time.monotonic", Denied),
+    ("Crypto.random_bytes", Denied),
+    ("Crypto::RSA.generate_der", Denied),
+    // (A random salt.)
+    ("Crypto::RSA::PrivateKey#sign_pss", Denied),
+    // (On a socket.)
+    ("TLS::ServerConfig#accept", Denied),
+    ("Type#fields", CtOnly),
+    ("Type#field", CtOnly),
+    ("Type#methods", CtOnly),
+    ("Type#method?", CtOnly),
+    ("Type#includes?", CtOnly),
+    ("Meta::ClassDef#def_method", CtOnly),
+    ("Meta::ClassDef#def_class_method", CtOnly),
+    ("Meta::ClassDef#def_initialize", CtOnly),
+    ("Meta::ClassDef#def_field", CtOnly),
+    ("Meta::ClassDef#field_ref", CtOnly),
+    ("Meta::ClassDef#method_ref", CtOnly),
+    ("Meta::ClassDef#class_method_ref", CtOnly),
+    ("Meta::ClassDef#doc", CtOnly),
+    ("Meta.__static_enter", CtOnly),
+    ("Meta.__static_leave", CtOnly),
+];
+
+/// The class a native key belongs to (`Crypto::RSA` of
+/// `Crypto::RSA.public_der`, `Process::Child` of `Process::Child#wait`).
+pub fn native_class(key: &str) -> &str {
+    let start = key.rfind("::").map_or(0, |i| i + 2);
+    match key[start..].find(['#', '.']) {
+        Some(i) => &key[..start + i],
+        None => key,
+    }
+}
+
+/// The classification of native `key`; `None` for a key with no line,
+/// which is denied.
+pub fn purity(key: &str) -> Option<Purity> {
+    if let Some((_, p)) = PURITY_BY_KEY.iter().find(|(k, _)| *k == key) {
+        return Some(*p);
+    }
+    let class = native_class(key);
+    PURITY_BY_CLASS
+        .iter()
+        .find(|(c, _)| *c == class)
+        .map(|(_, p)| *p)
+}
+
+/// Whether the natives of `class` are all denied at compile time (its
+/// line, or its outermost module's: `Process::Output` is `Process`'s).
+/// Their values come only from such natives (or from a constant
+/// initialized by one, `STDOUT`), so their methods (an override of
+/// `Object#to_s`, say) cannot be reached otherwise.
+pub fn compile_time_denied_class(class: &str) -> bool {
+    let line = |c: &str| {
+        PURITY_BY_CLASS
+            .iter()
+            .find(|(n, _)| *n == c)
+            .map(|(_, p)| *p)
+    };
+    line(class) == Some(Denied) || line(class.split("::").next().unwrap_or("")) == Some(Denied)
+}
+
+/// Whether a native may run at compile time (docs/14 §3): one classified
+/// pure or compile-time only (`purity`); an unclassified one is not.
 ///
 /// `Interp::invoke` refuses a denied plain native under a deadline, as a
 /// guard behind the analysis; the `fast!` and `owned!` paths skip that
 /// guard, so their keys must all be allowed (`fast_and_owned_natives_are_
 /// pure` checks it).
 pub fn compile_time_allowed(key: &str) -> bool {
-    const DENIED_KERNEL: &[&str] = &[
-        "Kernel#gets",
-        "Kernel#gets?",
-        "Kernel#readline",
-        "Kernel#readlines",
-        "Kernel#exit",
-        "Kernel#exit!",
-        "Kernel#abort",
-        "Kernel#at_exit",
-        "Kernel#sleep",
-        "Kernel#rand",
-        "Kernel#srand",
-    ];
-    // Pure arithmetic of a denied file (`Duration`, `Time` values made
-    // from parts) stays allowed: the denial is by class.
-    // The class is the key's first name (`Process::Output#status` is
-    // `Process`'s).
-    let class = key.split(['#', '.', ':']).next().unwrap_or("");
-    if compile_time_denied_class(class) {
-        return matches!(key, "Time.at" | "Time.utc" | "Time.local" | "Time.parse")
-            || key.starts_with("Time#");
-    }
-    !DENIED_KERNEL.contains(&key)
+    matches!(purity(key), Some(Pure | CtOnly))
 }
 
 /// The natives that exist at compile time only: the reflection on a class
 /// (docs/14 §4). A method reaching one is compile-time only.
 pub fn compile_time_only(key: &str) -> bool {
-    matches!(
-        key,
-        "Type#fields"
-            | "Type#field"
-            | "Type#methods"
-            | "Type#method?"
-            | "Type#includes?"
-            | "Meta::ClassDef#def_method"
-            | "Meta::ClassDef#def_class_method"
-            | "Meta::ClassDef#def_initialize"
-            | "Meta::ClassDef#def_field"
-            | "Meta::ClassDef#field_ref"
-            | "Meta::ClassDef#method_ref"
-            | "Meta::ClassDef#class_method_ref"
-            | "Meta::ClassDef#doc"
-            | "Meta.__static_enter"
-            | "Meta.__static_leave"
-    )
+    purity(key) == Some(CtOnly)
 }
 
 pub fn all() -> Natives {
@@ -525,17 +637,59 @@ mod compile_time_tests {
         }
     }
 
+    /// Every native key, of the three registries.
+    fn every_key() -> Vec<&'static str> {
+        let mut keys: Vec<&str> = registry().entries.iter().map(|e| e.0).collect();
+        keys.extend(fast_registry().entries.iter().map(|e| e.0));
+        keys.extend(owned_registry().entries.iter().map(|e| e.0));
+        keys
+    }
+
+    /// A new native is classified to land (docs/14 §3): an unclassified
+    /// key would be denied at compile time by default, unnoticed.
+    #[test]
+    fn every_native_is_classified() {
+        let missing: Vec<&str> = every_key()
+            .into_iter()
+            .filter(|k| purity(k).is_none())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "classify these natives in `PURITY_BY_CLASS` or `PURITY_BY_KEY` (natives/mod.rs): {missing:?}"
+        );
+    }
+
+    /// Each line of the tables names natives that exist (with the
+    /// optional features off too: their stubs register the same keys).
+    #[test]
+    fn every_line_names_a_native() {
+        let keys = every_key();
+        for (k, _) in PURITY_BY_KEY {
+            assert!(keys.contains(k), "{k} is no native");
+        }
+        for (c, _) in PURITY_BY_CLASS {
+            assert!(
+                keys.iter().any(|k| native_class(k) == *c),
+                "{c} has no native"
+            );
+        }
+    }
+
     #[test]
     fn the_registry_is_classified_as_intended() {
-        let all = registry();
-        for (key, _, _) in &all.entries {
-            let class = key.split(['#', '.', ':']).next().unwrap_or("");
+        for key in every_key() {
+            let class = native_class(key);
             let denied = matches!(
                 class,
-                "IO" | "File" | "Dir" | "Process" | "Task" | "Channel"
+                "IO" | "File" | "Dir" | "Process" | "Process::Child" | "Task" | "Channel"
             ) || matches!(
-                *key,
-                "Time.now" | "Kernel#sleep" | "Kernel#exit" | "Kernel#gets"
+                key,
+                "Time.now"
+                    | "Kernel#sleep"
+                    | "Kernel#exit"
+                    | "Kernel#gets"
+                    | "Crypto.random_bytes"
+                    | "Crypto::RSA.generate_der"
             );
             if denied {
                 assert!(
@@ -545,10 +699,16 @@ mod compile_time_tests {
             }
             if matches!(
                 class,
-                "String" | "Array" | "Hash" | "Int" | "Float" | "Symbol" | "Type"
+                "String" | "Array" | "Hash" | "Int" | "Float" | "Symbol" | "Type" | "JSON"
             ) || matches!(
-                *key,
-                "Kernel#puts" | "Kernel#p" | "Duration#+" | "Time#year"
+                key,
+                "Kernel#puts"
+                    | "Kernel#p"
+                    | "Duration#+"
+                    | "Time#year"
+                    | "Time.at"
+                    | "Crypto::RSA::PublicKey#verify"
+                    | "Crypto::AES.seal_with"
             ) {
                 assert!(
                     compile_time_allowed(key),
@@ -556,5 +716,8 @@ mod compile_time_tests {
                 );
             }
         }
+        assert_eq!(native_class("Crypto::RSA.public_der"), "Crypto::RSA");
+        assert_eq!(native_class("Process::Child#wait"), "Process::Child");
+        assert_eq!(native_class("Int#.."), "Int");
     }
 }

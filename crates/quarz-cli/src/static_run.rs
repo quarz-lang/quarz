@@ -1646,7 +1646,7 @@ fn may_receive(world: &RtWorld, o: MethodId, classes: &[ClassId]) -> bool {
 /// name (`==`, `to_s`) cannot reach it otherwise.
 fn denied_owner(world: &RtWorld, m: MethodId) -> bool {
     let owner = &world.classes[world.methods[m as usize].owner as usize];
-    compile_time_denied_class(owner.name.split("::").next().unwrap_or(""))
+    compile_time_denied_class(&owner.name)
 }
 
 fn method_name(world: &RtWorld, m: MethodId) -> String {
