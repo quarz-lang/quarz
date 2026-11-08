@@ -59,6 +59,14 @@ names = Array::Builder[String].new
 Dir.each_child(File.join(dir, "sub")) { |n| names << n }
 p names.to_a
 p Dir.glob("**/*.rb", base: dir), Dir.glob(File.join(dir, "sub", "*.{rb,txt}")).map { |x| File.basename(x) }, Dir.glob(["*.txt", "sub/*.bak"], dir), Dir.glob("nothing/*", dir)
+# A base is taken as written: its `[`, `*`, `?` and spaces are its name's.
+odd = File.join(dir, "g[1] *?")
+Dir.mkdir_p(File.join(odd, "src"))
+File.write(File.join(odd, "src", "a.qz"), "")
+open_bracket = File.join(dir, "b[")
+Dir.mkdir(open_bracket)
+File.write(File.join(open_bracket, "x.txt"), "")
+p Dir.glob("src/*.qz", odd), Dir.glob(["src/*", "*"], base: odd), Dir.glob("*.txt", open_bracket)
 p Dir.chdir(dir) { |d| [d == dir, Dir.pwd == dir, File.exist?("notes.txt")] }, Dir.pwd != dir, Dir.getwd == Dir.pwd, Dir.home.start_with?("/")
 p File.basename("/a/b/c.rb"), File.basename("/a/b/c.rb", ".rb"), File.basename("/a/b/c.rb", ".*"), File.basename("/a/b/"), File.basename("/"), File.basename("c")
 p File.dirname("/a/b/c.rb"), File.dirname("c.rb"), File.dirname("/a"), File.dirname("/"), File.dirname("a/b/")
