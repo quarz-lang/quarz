@@ -3691,6 +3691,16 @@ impl Value {
 /// variants compare field-wise.
 impl PartialEq for Value {
     fn eq(&self, other: &Value) -> bool {
+        // A walk into nested values: stopped, and raised by the operation,
+        // before the stack runs out (#437).
+        if matches!(
+            self,
+            Value::Array(_) | Value::Hash(_) | Value::Set(_) | Value::Object(_)
+        ) && crate::keys::stack_low()
+        {
+            crate::keys::too_deep("compare");
+            return false;
+        }
         match (self, other) {
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) => {
@@ -3772,6 +3782,15 @@ pub fn is_structural(obj: &Object) -> bool {
 
 impl Hash for Value {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        // As `eq`: a walk stopped before the stack runs out (#437).
+        if matches!(
+            self,
+            Value::Array(_) | Value::Hash(_) | Value::Set(_) | Value::Object(_)
+        ) && crate::keys::stack_low()
+        {
+            crate::keys::too_deep("hash");
+            return;
+        }
         match self {
             Value::Nil => 0u8.hash(state),
             Value::Bool(b) => b.hash(state),

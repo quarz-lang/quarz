@@ -3778,6 +3778,11 @@ impl Interp {
     }
 
     pub(crate) fn format_value(&self, v: &Value, inspect: bool) -> Result<String, Flow> {
+        // A value nested too deeply: raised before the stack runs out
+        // (#437).
+        if crate::sched::stack_exhausted() {
+            return Err(self.too_deep("inspect"));
+        }
         Ok(match v {
             Value::Nil => {
                 if inspect {
@@ -4027,9 +4032,21 @@ impl Interp {
         Ok(eq)
     }
 
+    /// A `SystemStackError` for a walk over a value nested too deeply to
+    /// `what` (`inspect`, `compare`) before the native stack runs out.
+    pub(crate) fn too_deep(&self, what: &str) -> Flow {
+        self.raise(
+            self.program.exc.system_stack,
+            &format!("a value nested too deeply to {what}"),
+        )
+    }
+
     /// `a <=> b` as an ordering, raising when incomparable.
     pub fn compare(&self, a: &Value, b: &Value) -> Result<std::cmp::Ordering, Flow> {
         use std::cmp::Ordering;
+        if crate::sched::stack_exhausted() {
+            return Err(self.too_deep("compare"));
+        }
         match (a, b) {
             (Value::Int(x), Value::Int(y)) => return Ok(x.cmp(y)),
             (Value::Float(x), Value::Float(y)) => return Ok(float_order(*x, *y)),

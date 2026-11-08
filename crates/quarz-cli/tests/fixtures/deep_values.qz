@@ -1,0 +1,57 @@
+# Values nested 100,000 deep (#437): freeing one never recurses in the
+# runtime (the marker at the bottom is freed, so the whole list was), and
+# `inspect`, `to_s`, `==` and `hash` either finish or raise a
+# `SystemStackError` before the native stack runs out (which of the two
+# depends on the stack: a task's is smaller than the root's), on the root
+# task and under `Task.spawn`.
+class Marker
+  @name: String
+  def initialize(@name: String)
+  end
+  def deinitialize
+    puts "#{@name}: the bottom freed"
+  end
+end
+
+enum L
+  variant End(marker: Marker)
+  variant Cons(head: Int, tail: L)
+end
+
+def build(n: Int, marker: Marker) -> L
+  l: L = L::End.new(marker)
+  n.times { |i| l = L::Cons.new(i, l) }
+  l
+end
+
+def probe(what: String, &blk: () -> Bool) -> Void
+  ok = begin
+    blk.call
+  rescue SystemStackError => e
+    e.message.start_with?("a value nested too deeply to ")
+  end
+  puts "#{what}: #{ok ? "ok" : "wrong"}"
+end
+
+def all(tag: String) -> Void
+  # (Equal lists: the same marker at the bottom of both.)
+  marker = Marker.new(tag)
+  a = build(100_000, marker)
+  b = build(100_000, marker)
+  probe("#{tag} inspect") { a.inspect.start_with?("L::Cons(") }
+  probe("#{tag} to_s") { a.to_s.start_with?("L::Cons(") }
+  probe("#{tag} ==") { a == b }
+  probe("#{tag} hash") { a.hash == b.hash }
+  probe("#{tag} as a key") { {a => 1}.size == 1 }
+end
+
+all("root")
+Task.spawn do
+  all("task")
+  nil
+end.await
+# A nested array, freed.
+nested: Array[Object] = []
+100_000.times { nested = [nested] }
+nested = []
+puts "done"
