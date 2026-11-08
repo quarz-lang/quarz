@@ -1,0 +1,12 @@
+# `env:` adds to the environment (and overrides), `chdir:` sets the
+# working directory, `:null` standard input ends `cat` at once.
+c = Process.spawn("sh", "-c", "echo \"$QZ_X $QZ_Y\"; test -n \"$PATH\" && echo path kept",
+                  env: {"QZ_X" => "1", "QZ_Y" => "two"}, stdout: :pipe)
+p c.stdout.read
+c.wait
+c = Process.spawn("pwd", chdir: "/", stdout: :pipe)
+p c.stdout.read
+c.wait
+c = Process.spawn("cat", stdin: :null, stdout: :pipe)
+p c.stdout.read
+p c.wait.code

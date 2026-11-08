@@ -167,3 +167,8 @@ fn deadlock_across_workers() {
 fn at_exit_blocks_share_shareable_values() {
     prints_its_out("at_exit_shareable.qz");
 }
+
+#[test]
+fn children_spawned_and_waited_for_on_every_worker() {
+    prints_its_out("processes.qz");
+}

@@ -1,0 +1,11 @@
+# A failing `exec` raises and the program goes on; one that succeeds
+# replaces the program: what it printed before comes first (flushed), and
+# nothing after `exec` runs.
+begin
+  Process.exec("no-such-program-for-quarz")
+rescue SystemCallError
+  puts "exec failed"
+end
+print "before exec, "
+Process.exec("echo", "from the new program")
+puts "never printed"

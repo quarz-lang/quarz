@@ -332,9 +332,14 @@ fn spawn(interp: &Interp, _: &Value, args: Args) -> EvalResult {
 }
 
 /// A pidfd for `pid` (close-on-exec, as `pidfd_open` makes it); `None`
-/// where the system has none.
+/// where the system has none, or with `QUARZ_NO_PIDFD=1` (which the
+/// tests set to run the other way).
 #[cfg(target_os = "linux")]
 fn pidfd_open(pid: u32) -> Option<OwnedFd> {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *OFF.get_or_init(|| std::env::var_os("QUARZ_NO_PIDFD").is_some_and(|v| v == "1")) {
+        return None;
+    }
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
     (fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd as libc::c_int) })
 }

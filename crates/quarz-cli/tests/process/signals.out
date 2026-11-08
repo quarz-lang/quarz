@@ -1,0 +1,15 @@
+true
+nil
+Process::Status(code: nil, signal: "TERM")
+nil
+"TERM"
+-1
+false
+false
+Process::Status(code: nil, signal: "TERM")
+true
+Process::Status(code: nil, signal: "TERM")
+"KILL"
+true
+"SIGKILL cannot be trapped"
+"unsupported signal: NOPE"

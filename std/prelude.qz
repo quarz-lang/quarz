@@ -7014,8 +7014,10 @@ module Process
   # Replaces the program with `command[0]` and the arguments that follow
   # (searched for as `.spawn` does), after flushing standard output and
   # error; `env` as for `.spawn`. It does not return: the other tasks and
-  # the worker threads end with the program. Files the program opened
-  # stay open in the new program (the runtime's own descriptors do not).
+  # the worker threads end with the program. The new program gets the
+  # standard input, output and error, and no other descriptor: the files
+  # and sockets the program opened, as the runtime's own, are closed on
+  # `exec` (as for a child of `.spawn`).
   #
   # ## Raises
   #

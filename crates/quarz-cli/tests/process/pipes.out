@@ -1,0 +1,11 @@
+"out\n"
+"err\n"
+Process::Status(code: 3, signal: nil)
+3
+nil
+false
+3
+"hello\nworld\n"
+true
+[1048576, 1048576]
+0

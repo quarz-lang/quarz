@@ -1,0 +1,22 @@
+# What `spawn` refuses.
+def attempt(&b: () -> Object) -> Void
+  b.call
+  puts "no error"
+rescue => e
+  puts "#{e.class}"
+end
+attempt { Process.spawn("no-such-program-for-quarz") }
+attempt { Process.spawn }
+attempt { Process.spawn("true", stdout: :file) }
+attempt { Process.spawn("true").stdout }
+attempt { Process.spawn("true", stdout: :null).stderr }
+attempt { Process.spawn("true", chdir: "/no/such/dir/for/quarz") }
+attempt { Process.exec }
+c = Process.spawn("true", stdin: :pipe)
+begin
+  c.stdout
+rescue => e
+  puts e.message
+end
+c.stdin.close
+p c.wait.success?
