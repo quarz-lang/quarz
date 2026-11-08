@@ -1,0 +1,29 @@
+# `super` in a class's own `hash`, `==` and `!=` (and `to_s`, `inspect`)
+# reaches `Object`'s, which computes its own result: not the receiver's
+# method again, which recursed until `SystemStackError` (#396). A `data`
+# type's default `hash` and `==` are by its fields.
+class P
+  @x: Int
+  def initialize(x: Int)
+    @x = x
+  end
+  def hash -> Int = super.to_s.size
+  def ==(o: Object) -> Bool = super(o)
+  def !=(o: Object) -> Bool = super(o)
+  def to_s -> String = "P(#{super.start_with?("#<P")})"
+  def inspect -> String = "<#{super.start_with?("#<P")}>"
+end
+
+data D(x: Int)
+  def hash -> Int = super + 1
+  def ==(o: Object) -> Bool = super(o)
+end
+
+a = P.new(1)
+puts a.hash > 0
+puts a == a, a == P.new(1), a != P.new(1)
+puts a.to_s, a.inspect
+d = D.new(1)
+puts d.hash == D.new(1).hash, d == D.new(1), d == D.new(2)
+h = { d => "d", a => "a" }
+puts h[D.new(1)], h[a]

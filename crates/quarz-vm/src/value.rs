@@ -3639,6 +3639,33 @@ impl Value {
 }
 
 impl Value {
+    /// The hash by the default (`Object#hash`): an object is not hashed
+    /// by its class's own `hash`, which `super` from it reaches this to
+    /// avoid (it would find that very method again); its fields still
+    /// are, by theirs. As `default_eq` for `==`.
+    pub fn default_hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Value::Object(o) if crate::keys::of(o.class).and_then(|k| k.hash).is_some() => {
+                if o.layout.exc.is_some() || o.exc_info().is_some() {
+                    if o.exc_info().is_none() {
+                        o.init_exc(ExcInfo::new(None, None));
+                    }
+                    32u8.hash(state);
+                    o.exc_info().map_or(0, |i| i.id).hash(state);
+                    return;
+                }
+                12u8.hash(state);
+                o.class.hash(state);
+                if is_structural(o) {
+                    o.hash_fields(state);
+                } else {
+                    (Rc::as_ptr(o).cast::<u8>() as usize).hash(state);
+                }
+            }
+            _ => self.hash(state),
+        }
+    }
+
     /// `==` by the default equality (`Object#==`): an object is not
     /// compared by its class's own `==`, which `super` from it reaches
     /// this to avoid; its fields still are, by theirs.
