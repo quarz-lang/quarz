@@ -611,10 +611,14 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             let mut out = Vec::new();
             for pattern in patterns {
                 for expanded in expand_braces(&pattern) {
+                    // (The base taken as written: its `[`, `*` and `?`
+                    // are no pattern's.)
                     let full = match &base {
-                        Some(b) if !expanded.starts_with('/') => {
-                            format!("{}/{}", b.trim_end_matches('/'), expanded)
-                        }
+                        Some(b) if !expanded.starts_with('/') => format!(
+                            "{}/{}",
+                            glob::Pattern::escape(b.trim_end_matches('/')),
+                            expanded
+                        ),
                         _ => expanded.clone(),
                     };
                     let paths =

@@ -49,6 +49,9 @@ true
 ["a.rb"]
 ["notes.txt", "sub/copy.txt.bak"]
 []
+["src/a.qz"]
+["src", "src/a.qz"]
+["x.txt"]
 [true, true, true]
 true
 true
