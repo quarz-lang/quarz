@@ -91,6 +91,12 @@ class HttpHardeningServerTest < Test::Case
       when "/cl" then HTTP::Server::Response.empty(200).header("content-length", "5")
       when "/status" then HTTP::Server::Response.text("x", 1000)
       when "/interim" then raise HTTP::Error.new(100)
+      when "/deep" then HTTP::Server::Response.text("#{HttpHardeningServerTest.deep(0)}")
+      when "/deep-stream"
+        HTTP::Server::Response.stream do |w|
+          w.write("x")
+          w.write("#{HttpHardeningServerTest.deep(0)}")
+        end
       else HTTP::Server::Response.text("ok #{req.body.read}")
       end
     end
@@ -130,6 +136,40 @@ class HttpHardeningServerTest < Test::Case
   end
 
   def raw(port: Int, text: String) -> String = HttpHardeningServerTest.raw(port, text)
+
+  # Recurses without end: `SystemStackError`.
+  def self.deep(n: Int) -> Int = 1 + deep(n + 1)
+
+  def test_on_error_that_overflows_ends_its_report_only
+    # `on_error` itself recursing without end: reported to STDERR, the
+    # server goes on (#377's review).
+    report: shareable (Exception, HTTP::Server::Request?) -> Void = ->(e: Exception, r: HTTP::Server::Request?) { HttpHardeningServerTest.deep(0); nil }
+    server = HTTP::Server.new(handler, host: "127.0.0.1", port: 0, on_error: report)
+    Task.scope do |scope|
+      scope.spawn { server.serve }
+      begin
+        port = server.local_address.port
+        assert_equal("HTTP/1.1 500 Internal Server Error|Content-Length: 0|Connection: close||",
+                     raw(port, "GET /deep HTTP/1.1\r\nConnection: close\r\n\r\n"))
+        assert_match(/\AHTTP\/1\.1 200 OK\|/, raw(port, "GET /alive HTTP/1.1\r\nConnection: close\r\n\r\n"))
+      ensure
+        server.shutdown
+      end
+    end
+  end
+
+  def test_stack_overflow_ends_its_request_only
+    serving do |port|
+      # In the handler: a 500, reported (not a `StandardError`, #377).
+      assert_equal("HTTP/1.1 500 Internal Server Error|Content-Length: 0|Connection: close||",
+                   raw(port, "GET /deep HTTP/1.1\r\nConnection: close\r\n\r\n"))
+      assert_equal("stack level too deep", @errors.receive)
+      # In a stream body, once the response started: its connection
+      # closed, reported.
+      assert_equal("HTTP/1.1 200 OK|Transfer-Encoding: chunked||1|x|", raw(port, "GET /deep-stream HTTP/1.1\r\n\r\n"))
+      assert_equal("stack level too deep", @errors.receive)
+    end
+  end
 
   def test_failing_stream_ends_its_connection_only
     serving do |port|

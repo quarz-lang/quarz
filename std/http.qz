@@ -1536,7 +1536,9 @@ module HTTP
       if cb
         begin
           cb.call(e, req)
-        rescue => e2
+        # (As the handler's: an `on_error` that recursed without end ends
+        # nothing but its report.)
+        rescue StandardError, SystemStackError, NoMemoryError => e2
           STDERR.puts "HTTP::Server: on_error raised #{e2.class.name}: #{e2.message}"
         end
       else
@@ -1603,7 +1605,11 @@ module HTTP
             @handler.call(req)
           rescue Error => e
             error_response(e)
-          rescue => e
+          # (A handler that recursed without end ends its request only:
+          # not a `StandardError`, but nothing for the server's other
+          # connections to share. A `NoMemoryError` only if raised: the
+          # runtime aborts when an allocation fails.)
+          rescue StandardError, SystemStackError, NoMemoryError => e
             report(e, req)
             Response.empty(500)
           end
@@ -1627,7 +1633,7 @@ module HTTP
         end
       rescue Task::Timeout, IOError, SystemCallError
         nil
-      rescue => e
+      rescue StandardError, SystemStackError, NoMemoryError => e
         # A Stream body, or the server itself, failed mid-response.
         report(e, current)
       ensure
