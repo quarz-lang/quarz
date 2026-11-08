@@ -10672,6 +10672,14 @@ impl Checker {
                 );
             }
         }
+        self.bind_outer_self_slot(expr, k);
+    }
+
+    /// Record that `expr` reads the `self` outside the `k`-th block with
+    /// a receiver around it, from the hidden slot of the frame that `self`
+    /// belongs to (`Output::outer_self_calls`, `self_slots`).
+    fn bind_outer_self_slot(&mut self, expr: &Expr, k: usize) {
+        let owner_frame = self.env.receivers[k].outer_frame;
         let frame = &mut self.env.frames[owner_frame];
         let slot = match frame.vars.iter().position(|v| v.name == SELF_SLOT) {
             Some(i) => i as u32,
@@ -14862,7 +14870,20 @@ impl Checker {
         // method, its target's own first, as `super` in a Ruby refinement,
         // docs/01 §7), chosen among as a call's overloads are (docs/01 §9);
         // none further, as Ruby's `super`.
-        let self_ty = self.env.self_type.clone();
+        // Inside a block with a receiver, the method's `self`, which the
+        // `super` runs on (as Ruby's `instance_exec`; #384): the `self`
+        // outside the outermost such block, or, in a block given to
+        // `def_method`, outside the outermost one inside it (the lifted
+        // block's own is the generated method's).
+        let method_self = self
+            .env
+            .receivers
+            .iter()
+            .position(|r| self.env.lifted_frame.is_none_or(|lf| r.outer_frame >= lf));
+        let self_ty = match method_self {
+            Some(k) => self.env.receivers[k].outer_self.clone(),
+            None => self.env.self_type.clone(),
+        };
         // An extension is not active in its own body unless `using`-ed
         // there: its method is listed (as the group to pass) only while it
         // is, last among the extensions in scope.
@@ -14989,6 +15010,11 @@ impl Checker {
         self.zsuper_forwards = saved;
         if let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id).cloned() {
             self.out.calls.insert(expr.id, CallTarget::Super { method });
+        }
+        // (The lowering passes that `self` as the receiver, read from the
+        // hidden slot, as an implicit call falling through to it.)
+        if let Some(k) = method_self {
+            self.bind_outer_self_slot(expr, k);
         }
         if m.name == "initialize" {
             // The superclass initialize assigned its fields, perhaps other

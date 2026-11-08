@@ -417,6 +417,9 @@ impl<'a> FnBuilder<'a> {
             Some(m.owner),
         );
         b.owner = Some(SelfOwner::Method(mid));
+        // (Before the parameters: a default may hold a block with a
+        // receiver that reads the method's `self` from the slot.)
+        b.store_self_slot(SelfOwner::Method(mid));
         // Parameters: bound by the runtime into argument slots in order;
         // the `&block` parameter comes last.
         b.binding_params = true;
@@ -486,7 +489,6 @@ impl<'a> FnBuilder<'a> {
         if out.usable_on_entry.contains(&SelfOwner::Method(mid)) {
             b.mark_usable();
         }
-        b.store_self_slot(SelfOwner::Method(mid));
         let v = b.body(body);
         b.term(Term::Return(v));
         b.finish()
@@ -4271,14 +4273,21 @@ impl<'a> FnBuilder<'a> {
                 Some(dst)
             }
         };
-        // (Run on the frame's `self`: in a block with a receiver, the
-        // receiver, not the method's.)
-        let on_self = self.on_methods_self();
+        // In a block with a receiver, the method's `self`, from its hidden
+        // slot (`outer_self_calls`), whether the block is lowered in place
+        // or as a function of its own (#384); elsewhere the frame's.
+        let recv = if self.out.outer_self_calls.contains(&e.id) {
+            let r = self.out.var_refs[&e.span];
+            Some(self.load_var(r))
+        } else {
+            None
+        };
+        let on_self = recv.is_some() || self.on_methods_self();
         let dst = self.reg();
         self.emit(Inst::Call {
             dst,
             kind: CallKind::Super(method),
-            recv: None,
+            recv,
             args: a.pos,
             splat: a.splat,
             kw: a.kw,
