@@ -1603,7 +1603,10 @@ module HTTP
             @handler.call(req)
           rescue Error => e
             error_response(e)
-          rescue => e
+          # (A handler that recursed without end, or ran out of memory,
+          # ends its request only: not a `StandardError`, but nothing for
+          # the server's other connections to share.)
+          rescue StandardError, SystemStackError, NoMemoryError => e
             report(e, req)
             Response.empty(500)
           end
@@ -1627,7 +1630,7 @@ module HTTP
         end
       rescue Task::Timeout, IOError, SystemCallError
         nil
-      rescue => e
+      rescue StandardError, SystemStackError, NoMemoryError => e
         # A Stream body, or the server itself, failed mid-response.
         report(e, current)
       ensure
