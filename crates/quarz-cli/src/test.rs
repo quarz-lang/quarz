@@ -27,6 +27,8 @@ pub fn command(args: &[String]) -> ExitCode {
     let mut release = false;
     let mut docs = Docs::Both;
     let mut std_docs = false;
+    // `--std=NAME`: one module's examples (`json`, `prelude`).
+    let mut std_module: Option<String> = None;
     let mut opts = quarz_cog::Options {
         verbose: true,
         ..Default::default()
@@ -40,6 +42,11 @@ pub fn command(args: &[String]) -> ExitCode {
             "--std" => {
                 std_docs = true;
                 docs = Docs::Only
+            }
+            _ if a.starts_with("--std=") => {
+                std_docs = true;
+                docs = Docs::Only;
+                std_module = Some(a["--std=".len()..].to_string());
             }
             "--locked" => opts.locked = true,
             "--offline" => opts.offline = true,
@@ -58,6 +65,12 @@ pub fn command(args: &[String]) -> ExitCode {
             _ => paths.push(PathBuf::from(a)),
         }
         i += 1;
+    }
+    if let Some(m) = &std_module {
+        if m != "prelude" && !quarz_types::STD_MODULES.iter().any(|(n, _)| n == m) {
+            eprintln!("quarz test: `--std={m}`: no such module of the standard library (`prelude`, or one `require` names)");
+            return ExitCode::from(2);
+        }
     }
     // The cog around the current directory, when the tests are its own
     // (none given, or all under its test/).
@@ -97,9 +110,15 @@ pub fn command(args: &[String]) -> ExitCode {
     if docs != Docs::None {
         quarz_types::want_docs();
     }
-    let Some((checked, sources, lowerer)) =
-        load_and_check(&files, cog.as_deref(), &opts, docs, std_docs, test_classes)
-    else {
+    let Some((checked, sources, lowerer)) = load_and_check(
+        &files,
+        cog.as_deref(),
+        &opts,
+        docs,
+        std_docs,
+        std_module.as_deref(),
+        test_classes,
+    ) else {
         return ExitCode::FAILURE;
     };
     if release {
@@ -245,6 +264,7 @@ fn load_and_check(
     opts: &quarz_cog::Options,
     docs: Docs,
     std_docs: bool,
+    std_module: Option<&str>,
     test_classes: bool,
 ) -> Option<(quarz_types::Checked, Vec<SourceFile>, quarz_lower::Lowerer)> {
     let prelude_file = SourceFile::new("<prelude>", quarz_types::PRELUDE_SOURCE);
@@ -286,14 +306,14 @@ fn load_and_check(
             let is_std = u.name.starts_with("<std:");
             let mine = match own_cog {
                 Some(c) => u.cog == Some(c),
-                None if std_docs => true,
+                None if std_docs => std_module.is_none_or(|m| u.name == format!("<std:{m}>")),
                 None => !is_std,
             };
             if mine {
                 own.push(i as u32 + 1);
             }
         }
-        if std_docs {
+        if std_docs && std_module.is_none_or(|m| m == "prelude") {
             own.push(0);
         }
     }
