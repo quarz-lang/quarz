@@ -307,6 +307,7 @@ impl Repl {
         let checkpoint = self.session.checkpoint();
         let (classes, methods, consts) =
             (checkpoint.classes, checkpoint.methods, checkpoint.consts);
+        let funcs = self.lowerer.next_func_id();
         let result = self.with_runner(f);
         if let Err(diags) = &result {
             self.failed_sources = diags
@@ -314,7 +315,7 @@ impl Repl {
                 .filter_map(|(i, _)| Some((*i, self.session.source(*i)?.clone())))
                 .collect();
             self.session.rollback(checkpoint);
-            self.lowerer.forget(methods, consts, classes);
+            self.lowerer.forget(methods, consts, classes, funcs);
             self.state.forget(consts, classes);
             quarz_vm::deinit::forget_classes_from(classes);
         }

@@ -933,3 +933,53 @@ fn a_name_reached_before_finds_a_library_method_required_with_a_statement() {
         "{out:?}"
     );
 }
+
+#[test]
+fn a_failed_input_with_static_rounds_leaves_nothing_for_the_next() {
+    // The failed input's rounds lowered `K`'s field default (calling
+    // methods of `K`) without reaching it; the input's methods are
+    // forgotten, and the next input's lowering must not follow that
+    // function's references to them (#390's review).
+    let dir = std::env::temp_dir().join(format!("quarz-repl-unwalked-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("libdef.qz"),
+        "class G\n  static def self.gen -> Void\n    def_class_method(:v) { 1 }\n  end\nend\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("lib.qz"),
+        "require_relative \"libdef\"\nclass K\n  @x: Int = K.helper1 + K.helper2 + K.helper3\n  def self.helper1 -> Int = 1\n  def self.helper2 -> Int = 1\n  def self.helper3 -> Int = 1\nend\nclass H < G\n  gen\nend\nclass Bad\n  def f -> Int = \"s\"\nend\n",
+    )
+    .unwrap();
+    let lib = dir.join("lib").display().to_string();
+    let (out, _) = values(&[&format!("require_relative \"{lib}\""), "1 + 1"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(out[0].starts_with("error: "), "{out:?}");
+    assert_eq!(out[1], "=> 2", "{out:?}");
+}
+
+#[test]
+fn a_failed_input_keeps_what_an_earlier_declarations_only_input_lowered() {
+    // An input of declarations only runs its static rounds but has no
+    // final lowering; the field default its round lowered without
+    // reaching waits for the next one, which a failed input in between
+    // must not drop: `Array#tally` is still lowered (#390's review).
+    let dir = std::env::temp_dir().join(format!("quarz-repl-unwalked2-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("libdef.qz"),
+        "class G\n  static def self.gen -> Void\n    def_class_method(:v) { 1 }\n  end\nend\n",
+    )
+    .unwrap();
+    let lib = dir.join("libdef").display().to_string();
+    let (out, _) = values(&[
+        &format!("require_relative \"{lib}\""),
+        "class K; @x: Int = [1, 2, 2].tally.size; def x -> Int = @x; end; class H < G; gen; end",
+        "class Bad; def f -> Int = \"s\"; end",
+        "K.new.x",
+    ]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(out[2].starts_with("error: "), "{out:?}");
+    assert_eq!(out[3], "=> 2", "{out:?}");
+}

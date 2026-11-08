@@ -83,10 +83,14 @@ pub struct Lowerer {
     /// (`walk_refs`), by function id.
     walk_refs: Vec<Option<std::rc::Rc<WalkRefs>>>,
     /// The walk of the last static round, by its statement, callee and
-    /// world (numbers of methods and classes): continued by the next
-    /// round of the same statement (`lower_static`).
+    /// world (numbers of methods and classes), and the `static_skip` it
+    /// left methods out by: continued by the next round of the same
+    /// statement (`lower_static`), not by a class-end hook's after the
+    /// class's statements ran.
+    #[allow(clippy::type_complexity)]
     last_walk: Option<(
         (quarz_syntax::ast::NodeId, MethodId, usize, usize),
+        HashSet<ClassId>,
         StaticWalk,
     )>,
     /// `overrides_of`, for the world of this number of classes: each with
@@ -196,6 +200,13 @@ struct StaticWalk {
     /// and those to walk: the natives reached call them.
     runtime: HashSet<&'static str>,
     runtime_todo: Vec<&'static str>,
+    /// Walking the methods of a name the runtime calls by
+    /// (`walk_runtime`): a native among them calls what that name's
+    /// calls do (`shake::calls_for`), not all its own kind calls.
+    via_runtime: bool,
+    /// The natives reached otherwise, whose own kind's calls
+    /// (`shake::native_calls`) were walked.
+    natives: HashSet<MethodId>,
     /// Functions walked or to walk, by id.
     funcs: Vec<bool>,
     todo: Vec<FuncId>,
@@ -276,15 +287,26 @@ impl Lowerer {
         r
     }
 
+    /// The id the next function lowered gets: the functions from it on
+    /// are an input's (`forget`).
+    pub fn next_func_id(&self) -> FuncId {
+        self.next_func
+    }
+
     /// Forget what was lowered for the methods, constants and classes
-    /// from `methods`, `consts` and `classes` on: the REPL rolled back a
-    /// failed input (docs/05 §7), whose ids the next input reuses. The
-    /// functions stay (their ids are not reused); nothing refers to them.
-    pub fn forget(&mut self, methods: usize, consts: usize, classes: usize) {
+    /// from `methods`, `consts` and `classes` on, and the functions from
+    /// `funcs` on (`next_func_id`): the REPL rolled back a failed input
+    /// (docs/05 §7), whose ids the next input reuses. The functions stay
+    /// (their ids are not reused); nothing refers to them.
+    pub fn forget(&mut self, methods: usize, consts: usize, classes: usize, funcs: FuncId) {
         self.last_walk = None;
         // (The ids from `methods` on are given to other methods next.)
         self.overrides_cache.1.clear();
         self.bounded_cache.1.clear();
+        // (The failed input's, which may refer to the methods forgotten;
+        // an earlier input's still wait for a final lowering when it
+        // had nothing to run, declarations only.)
+        self.unwalked.retain(|&id| id < funcs);
         self.method_funcs.truncate(methods);
         self.reached.truncate(methods);
         self.final_known = self.final_known.min(methods);
@@ -457,8 +479,11 @@ impl Lowerer {
             // `initialize`, may not have had its name reached: what the
             // final lowering reaches a call by.)
             for m in methods {
+                let Some(method) = world.methods.get(m as usize) else {
+                    continue;
+                };
+                let name = method.name.clone();
                 self.reach_method(world, m, &by_name, &mut work);
-                let name = world.methods[m as usize].name.clone();
                 self.reach_name(world, &name, &by_name, &mut work);
             }
             for n in names {
@@ -928,7 +953,7 @@ impl Lowerer {
         let by_name = methods_by_name(world);
         let key = (stmt.id, callee, world.methods.len(), world.classes.len());
         let mut walk = match self.last_walk.take() {
-            Some((k, mut w)) if k == key => {
+            Some((k, skip, mut w)) if k == key && skip == self.static_skip => {
                 for m in std::mem::take(&mut w.retry) {
                     w.lower.push(m);
                 }
@@ -987,7 +1012,7 @@ impl Lowerer {
             }
         }
         self.unwalked.retain(|&id| !walked(id));
-        self.last_walk = Some((key, walk));
+        self.last_walk = Some((key, self.static_skip.clone(), walk));
         let functions: Vec<Function> = self
             .pending
             .drain(..)
@@ -1050,6 +1075,17 @@ impl Lowerer {
         if i >= self.reached.len() {
             return;
         }
+        // What the runtime runs for a native: its calls by name on the
+        // values it is given (`shake::native_calls`), as the runner's
+        // `reached` counts them; for one the runtime calls by name,
+        // those of the name only (`walk_runtime`). (Before the check
+        // below: a native reached by a runtime name first may be reached
+        // by a call later.)
+        let m = &world.methods[i];
+        if is_native_code(m) && !walk.via_runtime && walk.natives.insert(mid) {
+            let calls = quarz_ir::shake::native_calls(&m.native_key(world));
+            walk.runtime_todo.extend_from_slice(calls);
+        }
         if walk.methods.len() <= i {
             walk.methods.resize(self.reached.len(), false);
         }
@@ -1062,13 +1098,8 @@ impl Lowerer {
         if let Some(orig) = m.alias_of {
             self.walk_method(world, orig, walk);
         }
-        // What the runtime runs for it: a native's calls by name on the
-        // values it is given (`shake::native_calls`), a data type's
-        // `with` the type's `initialize`s (`Interp`'s `DataWith`).
-        if m.is_native {
-            let calls = quarz_ir::shake::native_calls(&m.native_key(world));
-            walk.runtime_todo.extend_from_slice(calls);
-        }
+        // (A data type's `with` runs the type's `initialize`s:
+        // `Interp`'s `DataWith`.)
         if m.synth == quarz_types::Synth::DataWith {
             let owner = m.owner;
             if let Some(ids) = world.class(owner).methods.get("initialize") {
@@ -1198,10 +1229,14 @@ impl Lowerer {
         by_name: &HashMap<&str, Vec<MethodId>>,
         walk: &mut StaticWalk,
     ) {
-        if walk.names.contains(name) {
-            return;
+        // (Once by a call and once by the runtime, `walk_runtime`, which
+        // keeps its own set: a native differs by which.)
+        if !walk.via_runtime {
+            if walk.names.contains(name) {
+                return;
+            }
+            walk.names.insert(name.to_string());
         }
-        walk.names.insert(name.to_string());
         let runtime_name =
             !self.static_skip.is_empty() && quarz_ir::shake::RUNTIME_NAMES.contains(&name);
         let mut skipped = false;
@@ -1234,11 +1269,13 @@ impl Lowerer {
         if !walk.runtime.insert(name) {
             return;
         }
+        let before = std::mem::replace(&mut walk.via_runtime, true);
         self.walk_name(world, name, by_name, walk);
-        if by_name
-            .get(name)
-            .is_some_and(|ms| ms.iter().any(|&m| world.methods[m as usize].is_native))
-        {
+        walk.via_runtime = before;
+        if by_name.get(name).is_some_and(|ms| {
+            ms.iter()
+                .any(|&m| is_native_code(&world.methods[m as usize]))
+        }) {
             walk.runtime_todo
                 .extend_from_slice(quarz_ir::shake::calls_for(name));
         }
@@ -1349,6 +1386,13 @@ impl Lowerer {
         }
         self.reached_names.insert(name.to_string());
     }
+}
+
+/// Whether method `m` is a native the runtime runs (`RtMethod::native_key`
+/// is set): not a synthesized one (an `attr_reader`, a data type's
+/// methods), which the runtime runs by its `Synth`.
+fn is_native_code(m: &quarz_types::MethodInfo) -> bool {
+    m.is_native && m.synth == quarz_types::Synth::None
 }
 
 /// Whether a receiver that is an instance of one of `classes` or of a

@@ -1181,3 +1181,23 @@ fn data_with_reaches_the_initialize_taking_the_fields() {
         "{err}"
     );
 }
+
+#[test]
+fn a_class_end_hook_reaches_what_the_class_statements_left_out() {
+    // `plug`'s round left `C#to_s` out (a name the runtime calls by, of a
+    // class whose statements were still to run); the class-end hook's
+    // round, after them, reaches it: it does not continue `plug`'s walk,
+    // though the statement and the world are the same (#390's review).
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Endpoint\n  def self.make -> Endpoint = new\n  static def self.plug(n: Int) -> Void\n    statement_values[Int](:plugs).add(n)\n    at_class_end(:plugs) do |cls|\n      e = cls.type.make\n      s = \"#{e}\"\n      cls.def_class_method(:shown) { s }\n    end\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass C < Endpoint\n  plug 1\n  def to_s -> String = \"C!\"\nend\np C.shown\n",
+    );
+    run_and_build(&d.0, &app, "\"C!\"\n");
+}
