@@ -207,9 +207,10 @@ pub const FIELD_REF_SITE: &str = "__site";
 /// descriptor (`quarz_types::json_decode`), a string constant.
 pub const JSON_DECODE_TYPE: &str = "__decode_type";
 
-/// The keyword under which it passes the descriptor's `data` classes, an
-/// array of class values.
-pub const JSON_DECODE_CLASSES: &str = "__decode_classes";
+/// What a descriptor of `JSON.decode[T]` starts with
+/// (`quarz_types::json_decode::PREFIX`, the same): the tree shake keeps
+/// the `data` classes one names (`dC:...` nodes).
+pub const JSON_TYPE_PREFIX: &str = "\u{1}json-type:";
 
 /// The keyword the lowering passes `Meta::ClassDef#def_method`,
 /// `#def_class_method` and `#def_initialize` called in a generic method:

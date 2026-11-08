@@ -11857,7 +11857,21 @@ impl Checker {
             return;
         };
         let t = self.resolve(t);
-        if let Err(why) = crate::json_decode::descriptor(&self.world, &t) {
+        // In a block given to `def_method` and its kin, the enclosing
+        // method's type parameters may be carried into the generated
+        // method (docs/14 §5): `T` is decided there, at the statement.
+        let carried: Vec<TypeParamId> = match (self.env.lifted_frame, self.env.method) {
+            (Some(_), Some(mid)) => self
+                .world
+                .method(mid)
+                .type_params
+                .iter()
+                .map(|p| p.id)
+                .collect(),
+            _ => Vec::new(),
+        };
+        if let Err(why) = crate::json_decode::check_with(&self.world, &t, &|p| carried.contains(&p))
+        {
             self.error(
                 format!(
                     "`JSON.{}` cannot decode into {}: {why}",

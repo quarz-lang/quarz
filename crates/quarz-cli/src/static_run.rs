@@ -445,6 +445,28 @@ impl Runner {
                     world.type_name(&Type::Param(p))
                 )));
             }
+            // `JSON.decode[T]` in the body with `T` mentioning a carried
+            // type parameter: its descriptor with the classes given here,
+            // or an error at the statement (#409).
+            let mut decode = Vec::new();
+            for (marker, t) in self.deferred_decodes(g.func) {
+                let t = t.subst(&subst);
+                if let Some(p) = free_param(&t, &own) {
+                    return Err(fail(format!(
+                        "{at}: `JSON.decode` in the block decodes into a type that mentions `{}`, which the generated method cannot carry",
+                        world.type_name(&Type::Param(p))
+                    )));
+                }
+                match quarz_types::json_decode::descriptor(world, &t) {
+                    Ok(d) => decode.push((marker, d)),
+                    Err(why) => {
+                        return Err(fail(format!(
+                            "{at}: `JSON.decode` in the block cannot decode into {}: {why}",
+                            world.type_name(&t)
+                        )))
+                    }
+                }
+            }
             // The block's type must be settled: a parameter without an
             // annotation or a result nothing constrained is not.
             if param_types
@@ -554,6 +576,7 @@ impl Runner {
                     doc: g.doc,
                     keywords: keyword_hash,
                     initialize: g.initialize,
+                    decode,
                 }),
             };
             let mid = host
@@ -1185,6 +1208,40 @@ impl Runner {
                 format!("it may reach `{name}`{place}, which has errors (reported with it)")
             }
         }
+    }
+
+    /// The deferred `JSON.decode[T]` descriptors of block function `func`
+    /// and the blocks it makes: each marker and its `T`
+    /// (`Lowerer::decode_deferred`).
+    fn deferred_decodes(&self, func: FuncId) -> Vec<(String, Type)> {
+        let mut out = Vec::new();
+        let mut work = vec![func];
+        let mut seen = std::collections::HashSet::new();
+        while let Some(f) = work.pop() {
+            if !seen.insert(f) {
+                continue;
+            }
+            let Some(fun) = self.lowerer.done.get(f as usize) else {
+                continue;
+            };
+            for c in &fun.consts {
+                if let quarz_ir::Constant::Str(s) = c {
+                    if let Some(n) = quarz_types::json_decode::deferred_index(s) {
+                        if let Some(t) = self.lowerer.decode_deferred.get(n) {
+                            out.push((s.clone(), t.clone()));
+                        }
+                    }
+                }
+            }
+            for b in &fun.blocks {
+                for inst in &b.insts {
+                    if let quarz_ir::Inst::MakeBlock { func, .. } = inst {
+                        work.push(*func);
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// A method (`Ok`) or constant (`Err`, named) with errors that the

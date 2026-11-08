@@ -3976,23 +3976,22 @@ impl<'a> FnBuilder<'a> {
                     let p = m.type_params.first()?.id;
                     args.iter().find(|(q, _)| *q == p).map(|(_, t)| t.clone())
                 });
-                if let Some(Ok(d)) = t.map(|t| quarz_types::json_decode::descriptor(self.world, &t))
-                {
-                    let r = self.load_const(Constant::Str(d.text));
+                // (A `T` mentioning a type parameter carried into a
+                // generated method: a marker, which the statement's run
+                // turns into the descriptor, `json_decode::deferred`.)
+                let d = t.and_then(|t| {
+                    if t.mentions_any_param() {
+                        let n = self.lw.decode_deferred.len();
+                        self.lw.decode_deferred.push(t);
+                        Some(quarz_types::json_decode::deferred(n))
+                    } else {
+                        quarz_types::json_decode::descriptor(self.world, &t).ok()
+                    }
+                });
+                if let Some(d) = d {
+                    let r = self.load_const(Constant::Str(d));
                     let s = self.sym_const(quarz_ir::JSON_DECODE_TYPE);
                     a.kw.push((s, r));
-                    // (Class values: the tree shake keeps the classes the
-                    // native makes values of.)
-                    let mut items = Vec::new();
-                    for class in d.classes {
-                        let reg = self.reg();
-                        self.emit(Inst::ClassRef { dst: reg, class });
-                        items.push(ArrayItem { reg, splat: false });
-                    }
-                    let dst = self.reg();
-                    self.emit(Inst::MakeArray { dst, items });
-                    let s = self.sym_const(quarz_ir::JSON_DECODE_CLASSES);
-                    a.kw.push((s, dst));
                 }
             }
         }

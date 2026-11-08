@@ -118,11 +118,12 @@ enum Node {
     Data(ClassId, Vec<usize>),
 }
 
-/// The nodes of descriptor `text`, the root first; `classes` are the
-/// `data` classes it names by index. `None` for a malformed one (no
-/// lowering makes it).
-fn descriptor(text: &str, classes: &[ClassId]) -> Option<Vec<Node>> {
+/// The nodes of descriptor `text` (`quarz_types::json_decode`: a prefix,
+/// then the nodes), the root first. `None` for a malformed one (no
+/// lowering makes it), or a marker the statement's run did not replace.
+fn descriptor(text: &str, classes: usize) -> Option<Vec<Node>> {
     let num = |s: &str| s.parse::<usize>().ok();
+    let text = text.strip_prefix(quarz_ir::JSON_TYPE_PREFIX)?;
     text.split(';')
         .map(|n| {
             let (k, rest) = n.split_at(n.char_indices().nth(1).map_or(n.len(), |(i, _)| i));
@@ -149,7 +150,12 @@ fn descriptor(text: &str, classes: &[ClassId]) -> Option<Vec<Node>> {
                     } else {
                         fields.split(',').map(num).collect::<Option<Vec<_>>>()?
                     };
-                    Node::Data(*classes.get(num(c)?)?, fields)
+                    Node::Data(
+                        c.parse::<ClassId>()
+                            .ok()
+                            .filter(|c| (*c as usize) < classes)?,
+                        fields,
+                    )
                 }
                 _ => return None,
             })
@@ -181,18 +187,7 @@ fn decode(interp: &Interp, args: &crate::interp::Args, maybe: bool) -> EvalResul
             )
         }
     };
-    let data_classes: Vec<ClassId> = match args.kw(interp, quarz_ir::JSON_DECODE_CLASSES) {
-        Some(Value::Array(items)) => items
-            .values()
-            .iter()
-            .filter_map(|v| match v {
-                Value::Class(c) => Some(*c),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
-    let Some(nodes) = descriptor(&text, &data_classes) else {
+    let Some(nodes) = descriptor(&text, interp.program.world.classes.len()) else {
         return Err(interp.err_type("JSON.decode: a malformed type descriptor"));
     };
     let doc = match args.arg(0) {

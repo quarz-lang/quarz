@@ -347,6 +347,9 @@ module JSON
   # JSON.decode[Array[Int?]]("[1, null]")   # => [1, nil]
   # ```
   #
+  # `T` is written at the call; in a block given to `def_method` and its
+  # kin, it may mention a type parameter the generated method carries
+  # (docs/14 §5), and is then decided at the statement, with its class.
   # `T` is one of: `Int` (an integer that fits), `Integer` (any integer),
   # `Float` (any number), `String`, `Bool`, `Symbol` (from a string),
   # `Nil`, `U?` (`null` gives nil), `Array[U]`, `Set[U]`, `Hash[String, U]`

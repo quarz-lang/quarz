@@ -128,6 +128,10 @@ pub struct Lowerer {
     /// `def_initialize`: generated methods' bodies, which a static
     /// statement does not run (`lifted_block`).
     pub lifted_funcs: HashSet<FuncId>,
+    /// The types of the `JSON.decode[T]` calls whose `T` mentions a type
+    /// parameter (in a block a generated method carries it into), by
+    /// their markers' numbers (`quarz_types::json_decode::deferred`).
+    pub decode_deferred: Vec<quarz_types::Type>,
     /// A generating call (`def_method`, `def_class_method`,
     /// `def_initialize`) written in the body of a generic method: the
     /// type parameters the values it is passed under
@@ -1716,5 +1720,15 @@ pub fn lower_checked_with(mut lw: Lowerer, checked: &Checked, files: &[SourceFil
         world: delta.world,
         functions,
         units: delta.units,
+    }
+}
+
+#[cfg(test)]
+mod json_decode_tests {
+    /// The descriptor prefix the tree shake and the native read is the one
+    /// quarz-types writes (neither crate sees the other).
+    #[test]
+    fn the_prefixes_agree() {
+        assert_eq!(quarz_ir::JSON_TYPE_PREFIX, quarz_types::json_decode::PREFIX);
     }
 }

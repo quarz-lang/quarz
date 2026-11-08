@@ -412,6 +412,19 @@ fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
             Constant::Symbol(_) if exact => {}
             Constant::Symbol(s) => visit(Ref::Name(s)),
             Constant::Regexp { .. } => visit(Ref::Regexp),
+            // A `JSON.decode[T]` descriptor: the native builds values of
+            // the `data` classes it names (`dC:...`).
+            Constant::Str(s) if s.starts_with(crate::JSON_TYPE_PREFIX) => {
+                for n in s[crate::JSON_TYPE_PREFIX.len()..].split(';') {
+                    if let Some(c) = n
+                        .strip_prefix('d')
+                        .and_then(|n| n.split_once(':'))
+                        .and_then(|(c, _)| c.parse::<ClassId>().ok())
+                    {
+                        visit(Ref::Class(c));
+                    }
+                }
+            }
             Constant::Bytes(_) => visit(Ref::Bytes),
             _ => {}
         }
