@@ -6431,17 +6431,20 @@ class IO
   # Yields each remaining line, with its newline.
   native def each_line(&: (String) -> Void) -> Void
   # Shuts down the writing side of a socket: the peer reads the end of the
-  # stream, and the socket can still be read.
+  # stream, and the socket can still be read. On the pipe to a child's
+  # standard input (`Process::Child#stdin`), closes it: the child reads the
+  # end of its input.
   #
   # ## Raises
   #
-  # `TypeError` on a stream that is not a connected socket.
+  # `TypeError` on a stream that is neither a connected socket nor a pipe.
   native def close_write -> Void
-  # Shuts down the reading side of a socket.
+  # Shuts down the reading side of a socket; on a pipe from a child
+  # (`Process::Child#stdout`), closes it.
   #
   # ## Raises
   #
-  # `TypeError` on a stream that is not a connected socket.
+  # `TypeError` on a stream that is neither a connected socket nor a pipe.
   native def close_read -> Void
   # Writes out what the stream has buffered.
   native def flush -> Void

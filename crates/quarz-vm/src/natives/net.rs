@@ -540,7 +540,8 @@ fn make_socket_from(
         Stream::Unix(_) => (None, None, true),
         Stream::Pipe(_) => (None, None, false),
     };
-    let pipe = matches!(stream, Stream::Pipe(_));
+    // (A pipe's end is set by its maker, `process::pipe_io`.)
+    let pipe = matches!(stream, Stream::Pipe(_)).then_some(PipeEnd::Read);
     io(IoKind::Socket(IoCell::new(SocketState {
         stream: Some(stream),
         unix,
@@ -683,6 +684,10 @@ fn udp_fd(interp: &Interp, st: &IoCell<UdpState>) -> Result<RawFd, Flow> {
 pub(crate) trait Readable: Watched {
     fn buffer(&mut self) -> (&mut Vec<u8>, bool);
     fn fill(&mut self, chunk: &mut [u8]) -> Fill;
+    /// Not to read from (the end of a pipe the program writes).
+    fn write_only(&self) -> bool {
+        false
+    }
 }
 
 /// What reading more without waiting gave.
@@ -718,6 +723,10 @@ impl Readable for SocketState {
         (&mut self.rbuf, self.eof)
     }
 
+    fn write_only(&self) -> bool {
+        self.pipe == Some(PipeEnd::Write)
+    }
+
     fn fill(&mut self, chunk: &mut [u8]) -> Fill {
         let Some(stream) = self.stream.as_mut() else {
             return Fill::Closed;
@@ -748,6 +757,9 @@ fn read_with<S: Readable, R>(
     st: &IoCell<S>,
     mut take: impl FnMut(&mut Vec<u8>, bool) -> Option<R>,
 ) -> Result<R, Flow> {
+    if st.borrow().write_only() {
+        return Err(interp.raise(interp.program.exc.io_error, "not opened for reading"));
+    }
     let mut chunk = [0u8; 8192];
     loop {
         let mut s = st.borrow_mut();
@@ -874,6 +886,9 @@ pub(crate) fn socket_wait_readable<S: Readable>(
     st: &IoCell<S>,
     deadline: Option<std::time::Instant>,
 ) -> Result<bool, Flow> {
+    if st.borrow().write_only() {
+        return Err(interp.raise(interp.program.exc.io_error, "not opened for reading"));
+    }
     let mut chunk = [0u8; 8192];
     let mut timer = None;
     let r = loop {
@@ -932,6 +947,10 @@ pub(crate) fn socket_wait_readable<S: Readable>(
 }
 
 pub(crate) fn socket_eof<S: Readable>(interp: &Interp, st: &IoCell<S>) -> Result<bool, Flow> {
+    // (As for a `File` not opened for reading.)
+    if st.borrow().write_only() {
+        return Ok(true);
+    }
     read_with(interp, st, |buf, ended| {
         if !buf.is_empty() {
             return Some(false);
@@ -1021,6 +1040,9 @@ pub(crate) fn with_write_turn<S: WriteTurn, R>(
 
 /// Write all of `data`, in this task's write turn.
 pub fn socket_write(interp: &Interp, st: &IoCell<SocketState>, data: &[u8]) -> Result<(), Flow> {
+    if st.borrow().pipe == Some(PipeEnd::Read) {
+        return Err(interp.raise(interp.program.exc.io_error, "not opened for writing"));
+    }
     with_write_turn(interp, st, || socket_write_all(interp, st, data))
 }
 
@@ -1060,6 +1082,21 @@ fn read_partial(interp: &Interp, recv: &Value, max: usize) -> Result<Option<Vec<
 
 fn shutdown(interp: &Interp, recv: &Value, how: std::net::Shutdown) -> Result<(), Flow> {
     let r = match &io_of(interp, recv)?.kind {
+        // A pipe goes one way: `close_write` on the end the program
+        // writes (a child's stdin) closes it, ending the child's input,
+        // as `close_read` on the one it reads; the other does nothing.
+        IoKind::Socket(st) if st.borrow().pipe.is_some() => {
+            let end = st.borrow().pipe;
+            let mine = match how {
+                std::net::Shutdown::Write => end == Some(PipeEnd::Write),
+                std::net::Shutdown::Read => end == Some(PipeEnd::Read),
+                std::net::Shutdown::Both => true,
+            };
+            if mine {
+                close(interp, recv)?;
+            }
+            return Ok(());
+        }
         IoKind::Socket(st) => shutdown_stream(&st.borrow(), how),
         IoKind::Tls(st) => {
             if how == std::net::Shutdown::Write {
@@ -1220,7 +1257,7 @@ pub fn inspect_socket(interp: &Interp, io: &Rc<IoVal>) -> String {
     match &io.kind {
         IoKind::Socket(st) => {
             let s = st.borrow();
-            if s.pipe {
+            if s.pipe.is_some() {
                 format!("#<IO:pipe{closed}>")
             } else if s.unix {
                 format!(

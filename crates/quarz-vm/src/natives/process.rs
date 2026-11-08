@@ -26,8 +26,12 @@ use super::io::{io_of, os_error};
 use super::net::make_socket;
 use super::string;
 
-/// A status a helper thread's `waitpid` leaves (`ChildState::helper`).
-type Reaped = Arc<(Mutex<Option<ExitStatus>>, Condvar)>;
+/// What a helper thread's `waitpid` leaves (`ChildState::helper`): the
+/// status, or the error number of a failed wait. The helper reaps the
+/// child while holding the lock, which `signal` holds across its `kill`,
+/// so that no signal goes to a pid the system has given to another
+/// process.
+type Reaped = Arc<(Mutex<Option<Result<ExitStatus, i32>>>, Condvar)>;
 
 /// The state of a child process, shared by the tasks holding its
 /// `Process::Child`.
@@ -66,7 +70,11 @@ impl ChildState {
     fn poll(&mut self) -> std::io::Result<Option<ExitStatus>> {
         if self.status.is_none() {
             if let Some(h) = &self.helper {
-                self.status = *h.0.lock().unwrap_or_else(|e| e.into_inner());
+                match *h.0.lock().unwrap_or_else(|e| e.into_inner()) {
+                    Some(Ok(x)) => self.status = Some(x),
+                    Some(Err(n)) => return Err(std::io::Error::from_raw_os_error(n)),
+                    None => {}
+                }
             } else {
                 self.status = self.child.try_wait()?;
             }
@@ -160,11 +168,21 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         };
         let st = child(i, r)?;
         let mut s = st.borrow_mut();
-        // (Not once reaped: the pid may be another process's by now.)
+        // (Not once reaped: the pid may be another process's by now. The
+        // child is reaped under this lock, or the helper's, held here
+        // across the `kill`.)
         if s.poll().map_err(|e| os_error(i, e, "waitpid"))?.is_some() {
             return Ok(Value::Nil);
         }
+        let helper = s
+            .helper
+            .as_ref()
+            .map(|h| h.0.lock().unwrap_or_else(|e| e.into_inner()));
+        if helper.as_ref().is_some_and(|g| g.is_some()) {
+            return Ok(Value::Nil);
+        }
         let r = unsafe { libc::kill(s.pid as libc::pid_t, signo) };
+        drop(helper);
         if r != 0 {
             let e = std::io::Error::last_os_error();
             if e.raw_os_error() != Some(libc::ESRCH) {
@@ -259,14 +277,19 @@ fn stdio(r: Redirect) -> std::process::Stdio {
 }
 
 /// The parent's end of a pipe, made non-blocking, as an `IO`.
-fn pipe_io(interp: &Interp, fd: OwnedFd) -> Result<Rc<IoVal>, Flow> {
+fn pipe_io(interp: &Interp, fd: OwnedFd, end: PipeEnd) -> Result<Rc<IoVal>, Flow> {
     let raw = fd.as_raw_fd();
     let flags = unsafe { libc::fcntl(raw, libc::F_GETFL) };
     if flags < 0 || unsafe { libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
         return Err(os_error(interp, std::io::Error::last_os_error(), "pipe"));
     }
     match make_socket(interp, Stream::Pipe(std::fs::File::from(fd)), None) {
-        Value::Io(io) => Ok(io),
+        Value::Io(io) => {
+            if let IoKind::Socket(st) = &io.kind {
+                st.borrow_mut().pipe = Some(end);
+            }
+            Ok(io)
+        }
         _ => unreachable!("make_socket makes an IO"),
     }
 }
@@ -305,15 +328,15 @@ fn spawn(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     })?;
     let pid = child.id();
     let stdin = match child.stdin.take() {
-        Some(p) => Some(pipe_io(interp, OwnedFd::from(p))?),
+        Some(p) => Some(pipe_io(interp, OwnedFd::from(p), PipeEnd::Write)?),
         None => None,
     };
     let stdout = match child.stdout.take() {
-        Some(p) => Some(pipe_io(interp, OwnedFd::from(p))?),
+        Some(p) => Some(pipe_io(interp, OwnedFd::from(p), PipeEnd::Read)?),
         None => None,
     };
     let stderr = match child.stderr.take() {
-        Some(p) => Some(pipe_io(interp, OwnedFd::from(p))?),
+        Some(p) => Some(pipe_io(interp, OwnedFd::from(p), PipeEnd::Read)?),
         None => None,
     };
     Ok(Value::Io(Rc::new_shared(IoVal {
@@ -371,24 +394,39 @@ fn wait(interp: &Interp, recv: &Value) -> Result<ExitStatus, Flow> {
                 std::thread::Builder::new()
                     .name("quarz-waitpid".into())
                     .spawn(move || {
-                        let mut raw = 0;
-                        let r = loop {
-                            let r = unsafe { libc::waitpid(pid, &mut raw, 0) };
-                            if r >= 0
-                                || std::io::Error::last_os_error().raw_os_error()
-                                    != Some(libc::EINTR)
-                            {
-                                break r;
+                        let errno = || std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+                        // Wait for the end without reaping, then reap
+                        // under the lock (see `Reaped`).
+                        let ended = loop {
+                            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                            let r = unsafe {
+                                libc::waitid(
+                                    libc::P_PID,
+                                    pid as libc::id_t,
+                                    &mut info,
+                                    libc::WEXITED | libc::WNOWAIT,
+                                )
+                            };
+                            if r == 0 {
+                                break Ok(());
+                            }
+                            if errno() != libc::EINTR {
+                                break Err(errno());
                             }
                         };
-                        // (A failed `waitpid` cannot happen for our own
-                        // child; taken as a status of -1.)
-                        let status = if r >= 0 {
-                            ExitStatus::from_raw(raw)
-                        } else {
-                            ExitStatus::from_raw(0xff00)
-                        };
-                        *theirs.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(status);
+                        let mut g = theirs.0.lock().unwrap_or_else(|e| e.into_inner());
+                        *g = Some(ended.and_then(|()| {
+                            let mut raw = 0;
+                            loop {
+                                if unsafe { libc::waitpid(pid, &mut raw, 0) } >= 0 {
+                                    break Ok(ExitStatus::from_raw(raw));
+                                }
+                                if errno() != libc::EINTR {
+                                    break Err(errno());
+                                }
+                            }
+                        }));
+                        drop(g);
                         theirs.1.notify_all();
                     })
                     .map_err(|e| os_error(interp, e, "waitpid"))?;
@@ -405,6 +443,7 @@ fn wait(interp: &Interp, recv: &Value) -> Result<ExitStatus, Flow> {
             }
             g.expect("set above")
         })?;
+        let x = x.map_err(|n| os_error(interp, std::io::Error::from_raw_os_error(n), "waitpid"))?;
         st.borrow_mut().status = Some(x);
         return Ok(x);
     }
@@ -459,7 +498,21 @@ fn exec(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     command.args(&parts[1..]).envs(env);
     interp.flush();
     let _ = std::io::Write::flush(&mut std::io::stderr());
+    // The standard library sets SIGPIPE's action to the default and
+    // empties the thread's signal mask before `execvp`, in this process:
+    // restored when it fails (the runtime ignores SIGPIPE, or a trap
+    // handles it).
+    let mut pipe_action: libc::sigaction = unsafe { std::mem::zeroed() };
+    let mut mask: libc::sigset_t = unsafe { std::mem::zeroed() };
+    unsafe {
+        libc::sigaction(libc::SIGPIPE, std::ptr::null(), &mut pipe_action);
+        libc::pthread_sigmask(libc::SIG_SETMASK, std::ptr::null(), &mut mask);
+    }
     // Returns only when it fails.
     let e = command.exec();
+    unsafe {
+        libc::sigaction(libc::SIGPIPE, &pipe_action, std::ptr::null_mut());
+        libc::pthread_sigmask(libc::SIG_SETMASK, &mask, std::ptr::null_mut());
+    }
     Err(os_error(interp, e, &parts[0]))
 }

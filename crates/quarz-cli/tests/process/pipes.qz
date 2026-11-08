@@ -13,9 +13,36 @@ p status.code, status.signal, status.success?, status.to_i
 cat = Process.spawn("cat", stdin: :pipe, stdout: :pipe)
 cat.stdin.puts "hello"
 cat.stdin.write("world\n")
-cat.stdin.close
+p cat.stdin.eof?
+cat.stdin.close_write
 p cat.stdout.read
 p cat.wait.success?
+p cat.stdout.closed?, cat.stdin.closed?
+
+# A pipe goes one way.
+c = Process.spawn("cat", stdin: :pipe, stdout: :pipe)
+begin
+  c.stdin.gets
+rescue IOError => e
+  p e.message
+end
+begin
+  c.stdout.write("x")
+rescue IOError => e
+  p e.message
+end
+begin
+  c.stdout.rewind
+rescue IOError => e
+  p e.message
+end
+c.stdout.close_write
+c.stdin.close_read
+p c.stdin.closed?, c.stdout.closed?
+p c.stdin, c.stdout.class
+c.stdin.close
+p c.stdout.read
+c.wait
 
 big = Process.spawn("sh", "-c", "head -c 1048576 /dev/zero; head -c 1048576 /dev/zero >&2",
                     stdout: :pipe, stderr: :pipe)

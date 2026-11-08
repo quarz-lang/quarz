@@ -1,2 +1,3 @@
 exec failed
+broken pipe raised
 before exec, from the new program

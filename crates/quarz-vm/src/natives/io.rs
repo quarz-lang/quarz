@@ -270,6 +270,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 )?
                 .map_err(|e| os_error(i, e, "rewind"))?;
             }
+            IoKind::Socket(st) if st.borrow().pipe.is_some() => {
+                return Err(i.raise(i.program.exc.io_error, "cannot rewind a pipe"))
+            }
             IoKind::Socket(_) | IoKind::Listener(_) | IoKind::Udp(_) | IoKind::Tls(_) => {
                 return Err(i.raise(i.program.exc.io_error, "cannot rewind a socket"))
             }

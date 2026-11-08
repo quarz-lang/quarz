@@ -43,6 +43,8 @@ const NAMES: &[(&str, libc::c_int)] = &[
     ("USR2", libc::SIGUSR2),
     ("PIPE", libc::SIGPIPE),
     ("TERM", libc::SIGTERM),
+    // (To continue a child `STOP` stopped.)
+    ("CONT", libc::SIGCONT),
     // (Sent only: a trap cannot catch them, `Signal.trap` refuses them.)
     ("KILL", libc::SIGKILL),
     ("STOP", libc::SIGSTOP),

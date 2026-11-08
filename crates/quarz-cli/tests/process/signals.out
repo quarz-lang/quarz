@@ -9,6 +9,8 @@ false
 Process::Status(code: nil, signal: "TERM")
 true
 Process::Status(code: nil, signal: "TERM")
+true
+4
 "KILL"
 true
 "SIGKILL cannot be trapped"

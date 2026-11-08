@@ -15,6 +15,14 @@ c.signal("SIGTERM")
 c.kill
 p c.wait
 
+# `STOP` stops a child and `CONT` continues it.
+st = Process.spawn("sh", "-c", "sleep 0.3; exit 4")
+st.signal(:STOP)
+Task.sleep(500.ms)
+p st.running?
+st.signal(:CONT)
+p st.wait.code
+
 k = Process.spawn("sleep", "30")
 k.kill
 p k.wait.signal

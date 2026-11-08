@@ -2755,14 +2755,23 @@ impl Watched for UdpState {
     }
 }
 
+/// Which end of a pipe the program holds: it reads the one, writes the
+/// other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipeEnd {
+    Read,
+    Write,
+}
+
 #[derive(Debug)]
 pub struct SocketState {
     /// `None` once closed: the descriptor is released at `close`, not
     /// when the value is dropped.
     pub stream: Option<Stream>,
     pub unix: bool,
-    /// A pipe to a child process (`Stream::Pipe`): an `IO`, not a socket.
-    pub pipe: bool,
+    /// A pipe to a child process (`Stream::Pipe`), and which end: an
+    /// `IO`, not a socket.
+    pub pipe: Option<PipeEnd>,
     /// Bytes read from the socket but not yet consumed.
     pub rbuf: Vec<u8>,
     pub eof: bool,

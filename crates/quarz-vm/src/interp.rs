@@ -2352,7 +2352,7 @@ impl Interp {
             Value::Io(io) => match &io.kind {
                 IoKind::Socket(st) => {
                     let s = st.borrow();
-                    if s.pipe {
+                    if s.pipe.is_some() {
                         self.program.rt.io
                     } else if s.unix {
                         self.program.rt.unix_socket
@@ -3572,7 +3572,12 @@ impl Interp {
                 b.nil, b.bool_, b.int, b.integer, b.float, b.string, b.symbol, b.range, b.regexp,
                 b.proc_, b.task, b.channel, b.atom,
             ];
-            if own.contains(&class) || self.program.world.class_is_a(class, b.class_) {
+            let rt = &self.program.rt;
+            let opened = [rt.io, rt.file, rt.selector, rt.process_child];
+            if own.contains(&class)
+                || opened.contains(&class)
+                || self.program.world.class_is_a(class, b.class_)
+            {
                 return Err(self.err_type(&format!("`{}` is not built with `new`", info.name)));
             }
         }
