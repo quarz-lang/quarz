@@ -10,7 +10,7 @@ Quarz is a programming language that feels like Ruby, but is built on static typ
 
 ## Quarz at a glance
 
-```ruby
+```crystal
 data WordCount(word: String, count: Int)
   include Comparable[WordCount]
   def <=>(other: WordCount) -> Int = other.count <=> count
@@ -36,7 +36,7 @@ total.map { |word, count| WordCount.new(word, count) }
 
 The differences from Ruby show up in only three places: parameter types (`text: String`) and return types (`-> Hash[String, Int]`), immutable records via `data`, and `Task.scope`/`Task.spawn`/`await`. The rest is Ruby itself.
 
-```ruby
+```crystal
 enum Shape
   variant Circle(radius: Float)
   variant Rect(width: Float, height: Float)

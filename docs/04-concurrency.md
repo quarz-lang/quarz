@@ -10,7 +10,7 @@ And there is one rule that spans the whole language: **mutable objects never cro
 
 ## 1. Tasks
 
-```ruby
+```crystal
 t = Task.spawn { heavy_computation(42) }   # Task[Int]
 puts t.await                          # wait for completion and receive the value
 
@@ -29,7 +29,7 @@ Task.current                          # the current Task
 
 In practice, most concurrent work is "throw out some jobs and wait for all of them." `Task.scope` is the basic form for writing that safely.
 
-```ruby
+```crystal
 results = Task.scope do |scope|
   tasks = urls.map { |url| scope.spawn { fetch(url) } }
   tasks.map(&:await)
@@ -44,7 +44,7 @@ end
 
 ### Cancellation
 
-```ruby
+```crystal
 Task.scope do |scope|
   worker = scope.spawn { loop { process(queue.receive) } }
   Task.sleep(1.second)
@@ -63,7 +63,7 @@ Task.timeout(5.seconds) { slow_call }     # raises Task::Timeout when exceeded; 
 
 ## 3. Channels
 
-```ruby
+```crystal
 ch = Channel[String].new               # capacity 0 (synchronous)
 ch = Channel[String].new(capacity: 16) # bounded buffer
 
@@ -86,7 +86,7 @@ ch.each { |m| ... }  # keeps receiving until closed
 
 Executes exactly one of several channel operations, whichever becomes possible first. When several are ready, the first one written wins; a closed channel in a `receive` or `send` raises `Channel::Closed`.
 
-```ruby
+```crystal
 Channel.select do |s|
   s.receive(jobs) { |job| handle(job) }
   s.receive(quit) { |_| done = true }
@@ -102,7 +102,7 @@ The block gets a `Channel::Selector`, on which `receive`, `send`, `after` and `d
 
 State that is updated from multiple tasks goes into an `Atom`. Its contents are an immutable value, so an update is the operation "compute a new value from the old one and swap it in."
 
-```ruby
+```crystal
 counter = Atom.new(0)
 counter.update { |n| n + 1 }         # atomic update via a CAS loop. The block is re-run on conflict
 counter.value                        # read (also `get`)
@@ -118,7 +118,7 @@ registry.update { |h| h.put(name, ch) }
 - Updates to persistent data structures are cheap thanks to structural sharing, so even with a large `Hash` in an `Atom`, `update` is O(log n). (Currently collections are not persistent structures, see [03-data-model.md](03-data-model.md) §2: an update in an `Atom` copies the hash, O(n).)
 - Putting an `Atom` in a constant gives you a replacement for Ruby's class variables and global variables.
 
-```ruby
+```crystal
 STATS = Atom.new({ requests: 0, errors: 0 })
 STATS.update { |s| s.put(:requests, s[:requests] + 1) }
 ```
@@ -127,7 +127,7 @@ STATS.update { |s| s.put(:requests, s[:requests] + 1) }
 
 An Erlang process + mailbox can be expressed as a task + a single channel. If the message type is an `enum`, the combination of `receive` and `case/in` gets exhaustiveness checking.
 
-```ruby
+```crystal
 enum Msg
   variant Deposit(amount: Int)
   variant Withdraw(amount: Int, reply: Channel[Result[Int, String]])
@@ -177,7 +177,7 @@ The actor's state (`balance`) is a local variable of the task, so nothing outsid
 
 An Erlang supervisor can be written as a combination of `Task.scope` and a restart loop. The standard library will provide `Supervisor` (*planned*, as is `Task#on_exit` below).
 
-```ruby
+```crystal
 Supervisor.run(strategy: :one_for_one, max_restarts: 5, within: 10.seconds) do |sup|
   sup.child(:db) { db_actor(db_inbox) }
   sup.child(:http) { http_server(8080) }
@@ -198,11 +198,11 @@ end
   - **Closing fails what waits.** When a task closes a handle that another task is waiting on, the waiting operation raises `IOError` (`closed stream`), as does any later use.
 - `Task.blocking { }` runs its block on a helper thread (one is started whenever none is idle, so a long computation never holds up file IO), and only the calling task waits. Values are owned by one thread, so the block is *copied* to the helper: its captured variables must be Shareable (the same rule as `Task.spawn`), they cannot be assigned inside the block, and only immutable values cross over (numbers, strings, symbols, arrays, hashes, sets, ranges, `data`/`enum` values; a proc made inside the block can be returned, but one cannot be captured, since proc types are not Shareable yet). A `Channel`, `Atom`, `Task` or any mutable value is rejected with `ArgumentError`, since it would have to be shared rather than copied. The block's result or exception comes back the same way, and what it prints is written out when it finishes. Cancelling the waiting task raises in it, but the helper thread runs the block to its end. Tasks the block spawned and left running are cancelled when it returns, and waited for, as a scope's. Use it for long computations and for blocking foreign functions; for IO, the standard library already suspends only the task.
 
-```ruby
+```crystal
 digest = Task.blocking { expensive_hash(data) }     # the scheduler keeps running other tasks
 ```
 
-```ruby
+```crystal
 rows = Task.blocking { legacy_c_query(sql) }
 ```
 

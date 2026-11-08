@@ -48,7 +48,7 @@ Of Ruby's reserved words, `defined?`, `undef`, `redo`, `BEGIN`, `END`, and `__EN
 - Declarations (`class`/`module`/`data`/`enum`/`def`/`type`/constants) are **hoisted**. They can be referenced from lines before their definition within the file, and mutual recursion can be written.
 - Program arguments are `ARGV`, environment variables are `ENV`, and the standard streams are the constants `STDIN`/`STDOUT`/`STDERR`.
 
-```ruby
+```crystal
 # hello.qz
 require "json"
 
@@ -61,7 +61,7 @@ puts greet(ARGV.first? || "world")
 
 ## 3. Classes
 
-```ruby
+```crystal
 class Account
   @id: Int                 # immutable field; can only be assigned in initialize
   @owner: String
@@ -101,7 +101,7 @@ Differences from Ruby:
 - `attr_reader`/`attr_writer`/`attr_accessor` are built-in declarations that generate accessor methods for declared fields (`attr_writer`/`attr_accessor` can only be used on `var` fields).
 - Prefixing an `initialize` parameter with `@` also assigns the field (same as Crystal):
 
-```ruby
+```crystal
 class Account
   @id: Int
   @owner: String
@@ -113,7 +113,7 @@ end
 
 ### Inheritance and abstract classes
 
-```ruby
+```crystal
 abstract class Shape
   abstract def area -> Float
 
@@ -139,7 +139,7 @@ end
 
 Immutable record types, corresponding to Ruby 3.2's `Data`.
 
-```ruby
+```crystal
 data Point = (x: Int, y: Int)
 
 data Line(from: Point, to: Point)
@@ -168,7 +168,7 @@ A field (of a class or of another data type) whose declared type is a small immu
 
 Sum types (algebraic data types). Each variant can carry data. A body declares them with `variant`; the one-line form separates them by `|`, as in a union type.
 
-```ruby
+```crystal
 enum Color = Red | Green | Blue              # no body: one line, no `end`
 
 enum Shape
@@ -200,7 +200,7 @@ s.area
 
 As in Ruby, modules serve both as namespaces and as mixins. A module with abstract methods is the static replacement for Ruby's "interface expected through duck typing".
 
-```ruby
+```crystal
 module Comparable[T]
   abstract def <=>(other: T) -> Int
 
@@ -228,7 +228,7 @@ end
 
 A mechanism for adding methods to existing types after the fact. It is the static version of Ruby's refinements and is confined to a **lexical scope**.
 
-```ruby
+```crystal
 module StringShout
   extension String
     def shout -> String = upcase + "!"
@@ -255,7 +255,7 @@ using StringShout
 
 ## 8. Type aliases and constants
 
-```ruby
+```crystal
 type UserId = Int
 type Handler = (Request) -> Response
 
@@ -269,7 +269,7 @@ DEFAULT_HEADERS = { "Content-Type" => "application/json" }
 
 ## 9. Method definitions
 
-```ruby
+```crystal
 def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, **opts: String, &block: (Int) -> Void) -> Ret
 ```
 
@@ -304,7 +304,7 @@ def name(a: Int, b: String = "x", *rest: Int, *, flag: Bool, limit: Int? = nil, 
 
 ### Blocks, `yield` and procedures
 
-```ruby
+```crystal
 def each_pair(&: (Int, Int) -> Void) -> Void     # anonymous block: used with yield
   yield 1, 2
   yield 3, 4
@@ -348,7 +348,7 @@ double = ->(x: Int) { x * 2 }          # a procedure (equivalent to a Ruby lambd
 
 A procedure type can name a receiver: `Html.() -> Void` is a block that runs with `self` = an `Html` (Kotlin's `Html.() -> Unit`). Such a block is declared as a named block parameter and run with `instance_exec`, which replaces its `self`; it is how DSLs are built.
 
-```ruby
+```crystal
 class Html
   var @parts: Array[String] = []
   def title(s: String) -> Void = (@parts = @parts.push("<title>#{s}</title>"))
@@ -384,7 +384,7 @@ end
 
 ## 10. Variables and assignment
 
-```ruby
+```crystal
 x = 1                  # inferred as Int
 x = "one"              # error: a local variable's type is fixed at declaration (reassignment must have the same type)
 y: Int? = nil          # with a type annotation
@@ -400,7 +400,7 @@ xs.push!(4)            # xs = xs.push(4): a method call with `!` rebinds its rec
 - The type of a local variable is determined by its first assignment or its declaration.
 - **Explicit declarations.** `y: T = e` declares `y` with the type `T`, and `y := e` with the type of `e` (as `y = e` gives a new name: `y := nil` is `Nil`; widen with an annotation). Either makes a new variable in the innermost scope: the method body, a block, a lambda, a `case/in` arm (its guard and body), a rescue clause or the file's top level (an `if`, `while` or `begin` body is not a scope of its own, so a declaration there is in the enclosing one). A variable of the name already in that scope (declared, assigned, a parameter, an arm's pattern name, a rescue clause's variable) is an error, since a local variable's type is fixed at its declaration. One in an outer scope is hidden until the inner scope ends and is not changed, as a block parameter of its name hides it; the value is read before the declaration, so `y := y + 1` reads the outer `y`. Plain `y = e` keeps Ruby's rule: a new variable when no enclosing scope has `y`, else an assignment to it. A declaration starts a statement (in parentheses too: `p((y := 3))`), for a local only (`@x := e`, `X := e` and `a, b := ...` are errors). A closure keeps the variable it saw: one declared in a `while` body is one variable across iterations, as any local of the loop body, and one in an `each` block is new on each call.
 
-  ```ruby
+  ```crystal
   total = "none"
   [1, 2].each do |x|
     total := x * 10      # the block's own; the outer `total` is hidden
@@ -430,7 +430,7 @@ Different from Ruby:
 
 An expression that flattens nested blocks: it desugars to a chain of `flat_map`/`filter`/`map` (the shape of Ruby's Feature #22132). The body follows `do`, or starts on the next line.
 
-```ruby
+```crystal
 def pairs(n: Int, v: Int) -> Array[[Int, Int]]
   for i in 0...n,
       j in 0...n when i + j == v
@@ -455,7 +455,7 @@ for u in find_user(id), o in latest_order(u) do [u, o] end   # Result[[User, Ord
 
 Ruby 3's `case/in` is adopted as is, with static checks added.
 
-```ruby
+```crystal
 case event
 in Click(x:, y:) if x > 100 then handle_right(x, y)
 in Key(code: :escape | :q) then quit
@@ -479,7 +479,7 @@ end
 
 ## 12. Exceptions
 
-```ruby
+```crystal
 class ParseError < StandardError
   @line: Int
   attr_reader :line
@@ -506,7 +506,7 @@ value = risky rescue default   # the modifier form is also allowed
 
 - The exception hierarchy follows Ruby (`Exception` > `StandardError` > ...). The argument of `raise` is an exception class, an exception object, or a string (`RuntimeError`). `raise K, message` is `raise K.new(message)`: `K`'s `initialize` (and its fields' defaults) runs, and must take one String (its other parameters optional), else it is an error. `raise K` is `raise K.new("K")` (the class name as the message, `raise ArgumentError`'s message is `"ArgumentError"`), or `raise K.new` when `initialize` takes no String but needs no argument (`raise SystemExit`). Of several `initialize` overloads, the most specific that fits is run, as `new` would. An abstract class, or one that defines or inherits `self.new`, cannot be raised by name: build the exception and raise it. The class is written by name: raising a class value (`k: Type[StandardError]`, `raise k, message`) is an error, for the same reason `k.new` is: `k` may be a subclass whose `initialize` takes other arguments, so which `initialize` runs, and with what, is not known. The ways around it (with a `FooError` whose `initialize` takes a message and a code):
 
-  ```ruby
+  ```crystal
   raise FooError.new(msg, 42)            # build the exception by name
   e = FooError.new(msg, 42)              # or build it first, raise it later
   raise e
@@ -523,7 +523,7 @@ value = risky rescue default   # the modifier form is also allowed
 
 ## 13. String, array and hash literals
 
-```ruby
+```crystal
 s  = "name: #{name}\n"     # String
 s2 = 'raw \n'
 s3 = <<~EOS
@@ -545,7 +545,7 @@ bytes = b"\x00\xff"        # Bytes (binary)
 
 ## 14. FFI
 
-```ruby
+```crystal
 extern "C"
   def strlen(s: CString) -> SizeT
   def getpid -> Int32

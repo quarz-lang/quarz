@@ -89,7 +89,7 @@ class Inventory
 end
 ```
 
-```ruby
+```crystal
 # Quarz (immutable style)
 class Inventory
   @items: Hash[String, Int]
@@ -108,7 +108,7 @@ end
 puts Inventory.new.add("apple").add("pear", 2).report
 ```
 
-```ruby
+```crystal
 # Quarz (mutable style, for task-local use)
 class Inventory
   var @items: Hash[String, Int] = {}

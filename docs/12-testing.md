@@ -4,7 +4,7 @@
 
 ## 1. Shape
 
-```ruby
+```crystal
 # test/stack_test.qz
 require "test"
 
@@ -56,7 +56,7 @@ Finished in 0.012345 seconds.
 
 ## 3. The Library
 
-```ruby
+```crystal
 module Test
   # The assertions: `Case` includes them, and so may a module of tests
   # or helpers (§7). Each counts itself through `add_assertion`.
@@ -126,7 +126,7 @@ end
 
 Test::Unit's `data` runs one test method on several inputs. Here the data is a method, so the compiler can check it:
 
-```ruby
+```crystal
 class ParseTest < Test::Case
   def data_parse -> Hash[String, [String, Int]]
     {
@@ -150,7 +150,7 @@ end
 
 `quarz test` generates the runner, as `go test` generates its `main`, so neither the library nor the program needs reflection:
 
-```ruby
+```crystal
 # generated (the unit `<test-runner>`)
 suites: Array[Test::Suite] = [
   Test::Suite.new("StackTest", "test/stack_test.qz", -> { StackTest.new }, [
