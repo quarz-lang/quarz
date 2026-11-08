@@ -1400,3 +1400,33 @@ fn compile_time_purity_is_an_allow_list() {
     );
     run_and_build(&d.0, &app, "true\n");
 }
+
+#[test]
+fn compile_time_runs_take_utc_as_the_local_zone() {
+    // A compilation does not depend on the machine's time zone: a static
+    // statement's (and `static(...)`'s) local times are UTC; the program
+    // keeps the real zone (#399).
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Base\n  static def self.stamp -> Void\n    a = Time.at(0).to_s\n    b = Time.local(2026, 1, 2, 3, 4, 5).to_s\n    c = Time.parse(\"2026-01-02 03:04\").utc_offset\n    d = Time.utc(2026, 1, 2).getlocal.zone\n    def_class_method(:stamped) { \"#{a} | #{b} | #{c} | #{d}\" }\n  end\nend\nclass Clock\n  static def self.epoch -> String = Time.at(0).to_s\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass A < Base\n  stamp\nend\nputs A.stamped\nX = static(Clock.epoch)\nputs X\nputs Time.at(0).to_s\n",
+    );
+    for (tz, local) in [
+        ("UTC", "1970-01-01 00:00:00 +0000"),
+        ("Asia/Tokyo", "1970-01-01 09:00:00 +0900"),
+    ] {
+        let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[("TZ", tz)]);
+        assert!(ok, "{err}");
+        assert_eq!(
+            out,
+            format!("1970-01-01 00:00:00 +0000 | 2026-01-02 03:04:05 +0000 | 0 | +00:00\n1970-01-01 00:00:00 +0000\n{local}\n"),
+            "TZ={tz}"
+        );
+    }
+}

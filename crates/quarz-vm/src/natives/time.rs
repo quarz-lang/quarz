@@ -16,13 +16,9 @@ use super::{float, int, string};
 const NS: i64 = 1_000_000_000;
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
-    native!(m, "Time.now", |_, _, _| {
+    native!(m, "Time.now", |i, _, _| {
         let now = Local::now();
-        Ok(time(
-            now.timestamp_nanos_opt().unwrap_or(0),
-            now.offset().local_minus_utc(),
-            false,
-        ))
+        Ok(at_local(i, now.timestamp_nanos_opt().unwrap_or(0)))
     });
     native!(m, "Time.at", |i, _, a| {
         let ns = match a.arg(0) {
@@ -31,13 +27,13 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 .ok_or_else(|| i.raise(i.program.exc.range_error, "time out of range"))?,
             v => (float(i, v, "seconds")? * NS as f64).round() as i64,
         };
-        Ok(at_local(ns))
+        Ok(at_local(i, ns))
     });
     native!(m, "Time.utc", |i, _, a| make(i, &a, true));
     native!(m, "Time.local", |i, _, a| make(i, &a, false));
     native!(m, "Time.parse", |i, _, a| {
         let text = string(i, a.arg(0), "text")?;
-        match parse(text.trim()) {
+        match parse(text.trim(), i.local_utc.get()) {
             Ok((ns, off, utc)) => Ok(time(ns, off, utc)),
             Err(Parse::OutOfRange) => Err(i.raise(i.program.exc.range_error, "time out of range")),
             // As `Time.local` for a time that does not exist there.
@@ -154,8 +150,8 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "Time#hash", |i, r, _| Ok(Value::Int(tv(i, r)?.ns)));
     native!(m, "Time#utc", |i, r, _| Ok(time(tv(i, r)?.ns, 0, true)));
-    native!(m, "Time#getlocal", |i, r, _| Ok(at_local(tv(i, r)?.ns)));
-    native!(m, "Time#localtime", |i, r, _| Ok(at_local(tv(i, r)?.ns)));
+    native!(m, "Time#getlocal", |i, r, _| Ok(at_local(i, tv(i, r)?.ns)));
+    native!(m, "Time#localtime", |i, r, _| Ok(at_local(i, tv(i, r)?.ns)));
     native!(m, "Time#utc?", |i, r, _| Ok(Value::Bool(tv(i, r)?.utc)));
     native!(m, "Time#utc_offset", |i, r, _| {
         Ok(Value::Int(tv(i, r)?.offset as i64))
@@ -259,8 +255,12 @@ pub(super) fn json_time(t: &TimeVal) -> String {
     iso8601(&utc, digits)
 }
 
-/// The instant `ns` in the local time zone.
-pub(super) fn at_local(ns: i64) -> Value {
+/// The instant `ns` in the local time zone (UTC at compile time,
+/// `Interp::local_utc`).
+pub(super) fn at_local(interp: &Interp, ns: i64) -> Value {
+    if interp.local_utc.get() {
+        return time(ns, 0, false);
+    }
     let secs = ns.div_euclid(NS);
     let nsec = ns.rem_euclid(NS) as u32;
     let offset = match Local.timestamp_opt(secs, nsec) {
@@ -296,6 +296,12 @@ fn make(interp: &Interp, args: &Args, utc: bool) -> EvalResult {
             LocalResult::Single(dt) => from_datetime(&dt, true).ok_or_else(out_of_range),
             _ => Err(bad()),
         }
+    } else if interp.local_utc.get() {
+        // (The local zone is UTC at compile time.)
+        match Utc.with_ymd_and_hms(year, month, day, hour, min, sec) {
+            LocalResult::Single(dt) => from_datetime(&dt, false).ok_or_else(out_of_range),
+            _ => Err(bad()),
+        }
     } else {
         match Local.with_ymd_and_hms(year, month, day, hour, min, sec) {
             LocalResult::Single(dt) | LocalResult::Ambiguous(dt, _) => {
@@ -317,7 +323,7 @@ enum Parse {
     Gap,
 }
 
-fn parse(text: &str) -> Result<(i64, i32, bool), Parse> {
+fn parse(text: &str, local_utc: bool) -> Result<(i64, i32, bool), Parse> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(text) {
         return Ok((
             dt.timestamp_nanos_opt().ok_or(Parse::OutOfRange)?,
@@ -361,18 +367,25 @@ fn parse(text: &str) -> Result<(i64, i32, bool), Parse> {
         "%Y-%m-%d %H:%M",
     ] {
         if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(&normalized, fmt) {
-            return local_naive(naive);
+            return local_naive(naive, local_utc);
         }
     }
     if let Ok(date) = chrono::NaiveDate::parse_from_str(&normalized, "%Y-%m-%d") {
-        return local_naive(date.and_hms_opt(0, 0, 0).ok_or(Parse::OutOfRange)?);
+        return local_naive(
+            date.and_hms_opt(0, 0, 0).ok_or(Parse::OutOfRange)?,
+            local_utc,
+        );
     }
     Err(Parse::NoTime)
 }
 
 /// A local time, which may fall in a gap of the zone's (`Parse::Gap`) or
 /// past what a `Time` holds.
-fn local_naive(naive: chrono::NaiveDateTime) -> Result<(i64, i32, bool), Parse> {
+fn local_naive(naive: chrono::NaiveDateTime, local_utc: bool) -> Result<(i64, i32, bool), Parse> {
+    if local_utc {
+        let dt = Utc.from_utc_datetime(&naive);
+        return Ok((dt.timestamp_nanos_opt().ok_or(Parse::OutOfRange)?, 0, false));
+    }
     let dt = match Local.from_local_datetime(&naive) {
         LocalResult::Single(dt) | LocalResult::Ambiguous(dt, _) => dt,
         LocalResult::None => return Err(Parse::Gap),

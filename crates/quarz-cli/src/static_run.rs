@@ -1774,6 +1774,8 @@ impl Runner {
         interp
             .deadline
             .set(Some(std::time::Instant::now() + limit()));
+        // (A compilation does not depend on the machine's zone.)
+        interp.local_utc.set(true);
         interp
     }
 

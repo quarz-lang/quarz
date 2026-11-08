@@ -396,7 +396,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             Ok(d) => d.as_nanos() as i64,
             Err(e) => -(e.duration().as_nanos() as i64),
         };
-        Ok(super::time::at_local(ns))
+        Ok(super::time::at_local(i, ns))
     });
     native!(m, "File.delete", |i, _, a| {
         for p in &a.pos {

@@ -826,6 +826,11 @@ pub struct Interp {
     /// A compile-time run's time limit (docs/14): checked where code
     /// loops and calls; `None` for a program.
     pub deadline: Cell<Option<std::time::Instant>>,
+    /// The local time zone is UTC (the compile-time runs set it: a
+    /// compilation must not depend on the machine's zone, docs/14 §3):
+    /// what `Time.at`, `Time.local`, `Time#localtime` and a zone-less
+    /// `Time.parse` give.
+    pub local_utc: Cell<bool>,
     /// The declarations a compile-time run reflects on (docs/14).
     pub reflect: RefCell<Option<std::rc::Rc<dyn crate::reflect::Reflect>>>,
     /// Those of the other tasks of this worker that are suspended while
@@ -1097,6 +1102,7 @@ impl Interp {
             current_task_id: Cell::new(0),
             rescuing: RefCell::new(Vec::new()),
             deadline: Cell::new(None),
+            local_utc: Cell::new(false),
             reflect: RefCell::new(None),
             parked_rescuing: RefCell::new(FxHashMap::default()),
             native_bt: Cell::new(false),
