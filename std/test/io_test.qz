@@ -88,3 +88,77 @@ class FileCancelTest < Test::Case
     nil
   end
 end
+
+# `Dir.glob` as Ruby's (#440): `**` does not enter a symbolic link to a
+# directory, a wildcard does not match a leading dot unless the segment
+# starts with one.
+class DirGlobTest < Test::Case
+  # A tree of its own for each test (tests run in parallel), removed after.
+  def with_tree(name: String, &body: (String) -> Void) -> Void
+    root = "#{Dir.tmpdir}/quarz-glob-test-#{Process.pid}-#{name}"
+    Dir.rm_rf(root)
+    Dir.mkdir_p("#{root}/src/sub")
+    Dir.mkdir_p("#{root}/src/.hid")
+    ["src/a.qz", "src/sub/b.qz", "src/.dot.qz", "src/.hid/c.qz"].each { |f| File.write("#{root}/#{f}", "") }
+    begin
+      body.call(root)
+    ensure
+      Dir.rm_rf(root)
+    end
+  end
+
+  def link(root: String, target: String, name: String) -> Void
+    Process.run("ln", "-s", target, "#{root}/#{name}")
+  end
+
+  def test_a_link_to_an_ancestor_is_not_entered
+    with_tree("self") do |root|
+      link(root, ".", "src/self")
+      assert_equal(["src/a.qz", "src/sub/b.qz"], Dir.glob("src/**/*.qz", root))
+    end
+  end
+
+  def test_two_links_to_ancestors_return_at_once
+    with_tree("up") do |root|
+      link(root, ".", "src/self")
+      link(root, "..", "src/up")
+      assert_equal(["src/a.qz", "src/sub/b.qz"], Dir.glob("src/**/*.qz", root))
+      assert_equal(["src/sub"], Dir.glob("src/**/", root))
+      # (Repeated `**` is walked once.)
+      assert_equal(["src/a.qz", "src/sub/b.qz"], Dir.glob("src/**/**/**/**/*.qz", root))
+    end
+  end
+
+  def test_hidden_names_need_a_dot_in_the_pattern
+    with_tree("dots") do |root|
+      assert_equal(["src/a.qz", "src/sub"], Dir.glob("src/*", root))
+      # (`.*` matches `.`, not `..`, as Ruby's since 3.1.)
+      assert_equal(["src/.", "src/.dot.qz", "src/.hid"], Dir.glob("src/.*", root))
+      assert_equal(["src/.hid/c.qz"], Dir.glob("src/.hid/*.qz", root))
+      assert_equal(["src/.dot.qz"], Dir.glob("src/.d?t.qz", root))
+    end
+  end
+
+  def test_the_root_and_a_dot_prefix
+    assert_equal(["/"], Dir.glob("/"))
+    with_tree("prefix") do |root|
+      assert_equal(["./src/a.qz"], Dir.glob("./src/*.qz", root))
+    end
+  end
+
+  def test_a_link_to_a_file_matches_as_a_file
+    with_tree("file") do |root|
+      link(root, "a.qz", "src/alink.qz")
+      assert_equal(["src/a.qz", "src/alink.qz", "src/sub/b.qz"], Dir.glob("src/**/*.qz", root))
+    end
+  end
+
+  def test_a_link_named_in_the_pattern_is_followed
+    with_tree("named") do |root|
+      link(root, "sub", "src/linked")
+      assert_equal(["src/linked/b.qz"], Dir.glob("src/linked/*.qz", root))
+      assert_equal(["src/linked/b.qz"], Dir.glob("src/l*/*.qz", root))
+      assert_equal(["src/a.qz", "src/sub/b.qz"], Dir.glob("src/**/*.qz", root))
+    end
+  end
+end
