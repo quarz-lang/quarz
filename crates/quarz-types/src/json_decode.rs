@@ -30,6 +30,11 @@ pub fn is_decode(world: &World, m: &MethodInfo) -> bool {
         && world.class(m.owner).name == "JSON"
 }
 
+/// How many times a `data` type may be met inside itself with other type
+/// arguments (`W[W[Int]]` twice) before it counts as recursing without
+/// end.
+const MAX_NESTING: usize = 16;
+
 /// A type's descriptor: its text, and the `data` classes it names.
 pub struct Descriptor {
     pub text: String,
@@ -44,6 +49,7 @@ pub fn descriptor(world: &World, t: &Type) -> Result<Descriptor, String> {
         nodes: Vec::new(),
         seen: HashMap::default(),
         classes: Vec::new(),
+        within: Vec::new(),
     };
     b.node(t)?;
     Ok(Descriptor {
@@ -57,6 +63,8 @@ struct Builder<'a> {
     nodes: Vec<String>,
     seen: HashMap<Type, usize>,
     classes: Vec<ClassId>,
+    /// The `data` classes being described, outermost first.
+    within: Vec<ClassId>,
 }
 
 impl Builder<'_> {
@@ -80,6 +88,13 @@ impl Builder<'_> {
             Type::Union(ms) => {
                 let nil = Type::Class(b.nil, Vec::new());
                 let others: Vec<&Type> = ms.iter().filter(|m| **m != nil).collect();
+                // (`JSON::Value` holds `null` itself: `Value?` would read it
+                // as nil, and not give back what `generate` wrote.)
+                if others.len() == 1
+                    && matches!(others[0], Type::Class(v, _) if w.class(*v).name == "JSON::Value")
+                {
+                    return refuse("is nullable, but `JSON::Value` holds `null` already (`JSON::Value::Null`): write `JSON::Value`");
+                }
                 if others.len() == 1 && others.len() < ms.len() {
                     let n = self.node(others[0])?;
                     return Ok(format!("?{n}"));
@@ -127,12 +142,30 @@ impl Builder<'_> {
                 }
                 match class.kind {
                     ClassKind::Data => {
+                        // (Met again and again with other type arguments,
+                        // inside itself: `P[T]` holding a `P[Array[T]]`
+                        // would need a descriptor without end. A nesting
+                        // written out, `W[W[Int]]`, stops long before.)
+                        if self.within.iter().filter(|c| **c == id).count() >= MAX_NESTING {
+                            return Err(format!(
+                                "`{}` holds itself with other type arguments, without end",
+                                class.name
+                            ));
+                        }
+                        self.within.push(id);
                         let own = w.class_subst(id, args);
                         let mut kids = Vec::new();
                         for (f, sub) in w.all_fields(id) {
                             let ty = f.ty.subst(&sub).subst(&own);
-                            kids.push(self.node(&ty)?.to_string());
+                            match self.node(&ty) {
+                                Ok(n) => kids.push(n.to_string()),
+                                Err(e) => {
+                                    self.within.pop();
+                                    return Err(e);
+                                }
+                            }
                         }
+                        self.within.pop();
                         let c = match self.classes.iter().position(|c| *c == id) {
                             Some(c) => c,
                             None => {

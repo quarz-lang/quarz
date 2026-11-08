@@ -253,7 +253,7 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
                                 p.default.is_none()
                                     || d.is_some()
                                     || !later_positional(m, &p.name)
-                                    || m.synth != Synth::None,
+                                    || m.synth == Synth::DataInit,
                                 "native `{}`: the default of `{}` is not a literal, though a positional parameter follows it",
                                 m.name,
                                 p.name

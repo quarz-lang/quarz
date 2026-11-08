@@ -6293,6 +6293,17 @@ impl Checker {
                     );
                     return Type::Nothing;
                 }
+                // `JSON.decode[T]` takes `T` written at its call, which a
+                // reference cannot give.
+                if crate::json_decode::is_decode(&self.world, &m) {
+                    self.error(
+                        format!(
+                            "`JSON.{name}` takes the type to decode into written at the call: call it (`JSON.{name}[Args](text)`), there is no reference to it"
+                        ),
+                        expr.span,
+                    );
+                    return Type::Nothing;
+                }
                 if name == "deinitialize" && !m.singleton {
                     self.error(
                         format!("{DEINITIALIZE_CALLED} (in `.:deinitialize`)"),

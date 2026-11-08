@@ -1340,6 +1340,12 @@ w = JSON.decode[U]("{}")
 v = JSON.decode?[Hash[Int, Int]]("{}")
 def gen[T](s: String) -> T = JSON.decode[T](s)
 r: Int = JSON.decode("1")
+f = JSON.:decode
+data P[T] = (x: T, nxt: P[Array[T]]? = nil)
+q = JSON.decode[P[Int]]("{}")
+o = JSON.decode[JSON::Value?]("null")
+data Wrap[T] = (x: T)
+ok = JSON.decode[Wrap[Wrap[Int]]]('{"x": {"x": 1}}')
 "#,
     );
     let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
@@ -1352,7 +1358,12 @@ r: Int = JSON.decode("1")
         "`JSON.decode?` cannot decode into Hash[Int, Int]: `Hash[Int, Int]` has keys that are neither `String` nor `Symbol`",
         "`JSON.decode` cannot decode into T: `T` is a type parameter: the type must be written at the call",
         "`JSON.decode` takes the type to decode into explicitly (`JSON.decode[Args](text)`)",
+        "`JSON.decode` takes the type to decode into written at the call: call it (`JSON.decode[Args](text)`), there is no reference to it",
+        "`JSON.decode` cannot decode into P[Int]: `P` holds itself with other type arguments, without end",
+        "`JSON.decode` cannot decode into JSON::Value?: `JSON::Value?` is nullable, but `JSON::Value` holds `null` already",
     ] {
         assert!(err.contains(want), "{want}\n{err}");
     }
+    // (A nesting written out is no recursion.)
+    assert!(!err.contains("Wrap"), "{err}");
 }
