@@ -87,7 +87,12 @@ fn test_files() -> Vec<String> {
     files
 }
 
-/// Each test file in a process of its own; every test found and passed.
+/// At least as many tests as std/test held when this was written: a file
+/// whose tests are no longer found fails.
+const STD_TESTS: usize = 461;
+
+/// Each test file in a process of its own; every test found and passed,
+/// each file running some.
 fn each_test_file(release: bool) {
     let files = test_files();
     let tests: usize = pool(&files, |f| {
@@ -96,11 +101,14 @@ fn each_test_file(release: bool) {
             args.push("--release");
         }
         args.push(f.as_str());
-        quarz_test(&args, "1")
+        match quarz_test(&args, "1")? {
+            0 => Err(format!("quarz test {args:?}: no tests found")),
+            n => Ok(n),
+        }
     })
     .iter()
     .sum();
-    assert!(tests >= 293, "{tests} tests in std/test");
+    assert!(tests >= STD_TESTS, "{tests} tests in std/test");
 }
 
 #[test]
@@ -117,7 +125,7 @@ fn compiled() {
 #[test]
 fn in_parallel() {
     let tests = quarz_test(&["--parallel=8", "std/test"], "4").unwrap_or_else(|e| panic!("{e}"));
-    assert!(tests >= 293, "{tests} tests in std/test");
+    assert!(tests >= STD_TESTS, "{tests} tests in std/test");
 }
 
 /// The examples in the standard library's documentation comments
