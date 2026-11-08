@@ -1434,3 +1434,49 @@ fn compile_time_runs_take_utc_as_the_local_zone() {
         );
     }
 }
+
+#[test]
+fn json_decode_of_a_type_parameter_a_generated_method_carries() {
+    // `JSON.decode[A]` in a `def_method` block whose `A` the generated
+    // method carries (docs/14 §5): decided at the statement, with its
+    // class; a class that does not decode is refused there; a type
+    // parameter elsewhere stays refused (#409).
+    let lib = "require \"json\"\nclass Base\n  static def self.args[A](type: Type[A]) -> Void\n    def_method(:decode_args, :text) { |text: String| -> A JSON.decode[A](text) }\n    def_method(:many, :text) { |text: String| -> Array[A]? JSON.decode?[Array[A]?](text) }\n    def_method(:lit) { -> String \"\\u{1}json-type-deferred\" }\n  end\nend\n";
+    let d = dir();
+    write(&d.0, "lib.qz", lib);
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\ndata P = (x: Int, tags: Array[String] = [])\nclass J < Base\n  args P\nend\np J.new.decode_args('{\"x\": 1}')\np J.new.many('[{\"x\": 2}]')\np J.new.many(\"x\")\np J.new.lit\n",
+    );
+    // (A string the program writes equal to the marker stays as written.)
+    run_and_build(
+        &d.0,
+        &app,
+        "P(x: 1, tags: [])\n[P(x: 2, tags: [])]\nnil\n\"\\u0001json-type-deferred\"\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass Foo\nend\ndata W = (f: Foo)\nclass K < Base\n  args W\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.starts_with("app.qz:6:3: error: `def_method(:decode_args)`: `JSON.decode` in the block cannot decode into W: `Foo` is a class"),
+        "{err}"
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require \"json\"\ndef gen[T](s: String) -> T = JSON.decode[T](s)\nclass Base2\n  static def self.direct[A](type: Type[A]) -> Void\n    x = JSON.decode[A](\"1\")\n  end\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    for want in [
+        "app.qz:2:30: error: `JSON.decode` cannot decode into T: `T` is a type parameter",
+        "app.qz:5:9: error: `JSON.decode` cannot decode into A: `A` is a type parameter",
+    ] {
+        assert!(err.contains(want), "{want}\n{err}");
+    }
+}

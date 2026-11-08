@@ -192,6 +192,15 @@ impl Lowerer {
                 f.kind = FuncKind::Method(mid);
                 f.name = name.clone();
             }
+            // A `JSON.decode[T]` whose `T` the method carries: the
+            // descriptor the statement's run made, for the marker.
+            for (func, idx, d) in &g.decode {
+                if *func == old {
+                    if let Some(c) = f.consts.get_mut(*idx as usize) {
+                        *c = Constant::Str(d.clone());
+                    }
+                }
+            }
             let mut baker = Baker {
                 layouts: &self.layouts,
                 nregs: f.nregs,

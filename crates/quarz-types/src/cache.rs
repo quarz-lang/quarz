@@ -164,6 +164,9 @@ pub fn interface(world: &World, file: u32) -> u64 {
         // part of it either.
         if let Some(g) = &mut m.generated {
             g.func = 0;
+            for d in &mut g.decode {
+                d.0 = 0;
+            }
             g.by.1 = Default::default();
             g.block = Default::default();
         }

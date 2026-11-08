@@ -122,6 +122,10 @@ pub struct FnBuilder<'a> {
     cur: BlockId,
     dead: bool,
     const_index: HashMap<ConstKey, u32>,
+    /// The constants holding a deferred `JSON.decode[T]` descriptor's
+    /// marker, with their `Lowerer::decode_deferred` numbers: put in the
+    /// block's function's record (`Lowerer::decode_markers`).
+    decode_markers: Vec<(u32, usize)>,
     /// Whether each enclosing function level (outermost first, this one
     /// last) allocates a heap frame.
     levels: Vec<bool>,
@@ -208,6 +212,7 @@ impl<'a> FnBuilder<'a> {
             cur: 0,
             dead: false,
             const_index: HashMap::default(),
+            decode_markers: Vec::new(),
             levels,
             gaps,
             captured,
@@ -708,7 +713,11 @@ impl<'a> FnBuilder<'a> {
         b.store_self_slot(SelfOwner::Block(call_id));
         let v = b.body(&block.body);
         b.term(Term::Return(v));
+        let markers = std::mem::take(&mut b.decode_markers);
         let f = b.finish();
+        if !markers.is_empty() {
+            self.lw.decode_markers.insert(id, markers);
+        }
         self.lw.block_calls.insert(id, (call_id, block.span));
         // A generated method's body (docs/14 §5): its call resolves to the
         // generating native itself (`lifted_blocks` alone may name a call
@@ -3976,23 +3985,32 @@ impl<'a> FnBuilder<'a> {
                     let p = m.type_params.first()?.id;
                     args.iter().find(|(q, _)| *q == p).map(|(_, t)| t.clone())
                 });
-                if let Some(Ok(d)) = t.map(|t| quarz_types::json_decode::descriptor(self.world, &t))
-                {
-                    let r = self.load_const(Constant::Str(d.text));
+                // (A `T` mentioning a type parameter carried into a
+                // generated method: a marker, which the statement's run
+                // turns into the descriptor, `json_decode::deferred`.)
+                let r = match t {
+                    Some(t) if t.mentions_any_param() => {
+                        // (A constant of its own, not shared with a string
+                        // the program writes: it is found by its index.)
+                        let n = self.lw.decode_deferred.len();
+                        self.lw.decode_deferred.push(t);
+                        let idx = self.func.consts.len() as u32;
+                        self.func.consts.push(Constant::Str(
+                            quarz_types::json_decode::DEFERRED.to_string(),
+                        ));
+                        self.decode_markers.push((idx, n));
+                        let dst = self.reg();
+                        self.emit(Inst::LoadConst { dst, idx });
+                        Some(dst)
+                    }
+                    Some(t) => quarz_types::json_decode::descriptor(self.world, &t)
+                        .ok()
+                        .map(|d| self.load_const(Constant::Str(d))),
+                    None => None,
+                };
+                if let Some(r) = r {
                     let s = self.sym_const(quarz_ir::JSON_DECODE_TYPE);
                     a.kw.push((s, r));
-                    // (Class values: the tree shake keeps the classes the
-                    // native makes values of.)
-                    let mut items = Vec::new();
-                    for class in d.classes {
-                        let reg = self.reg();
-                        self.emit(Inst::ClassRef { dst: reg, class });
-                        items.push(ArrayItem { reg, splat: false });
-                    }
-                    let dst = self.reg();
-                    self.emit(Inst::MakeArray { dst, items });
-                    let s = self.sym_const(quarz_ir::JSON_DECODE_CLASSES);
-                    a.kw.push((s, dst));
                 }
             }
         }

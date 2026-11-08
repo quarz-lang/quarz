@@ -130,6 +130,13 @@ pub struct Generated {
     /// Made by `def_initialize` (docs/14 §5): an `initialize` overload.
     #[serde(default)]
     pub initialize: bool,
+    /// The `JSON.decode[T]` descriptors of the body whose `T` mentions a
+    /// type parameter the method carries: where each marker is (the
+    /// function, in the compile-time lowering, and the constant's index)
+    /// and the descriptor with the statement's classes, which the
+    /// method's lowering puts in its place.
+    #[serde(default)]
+    pub decode: Vec<(u32, u32, String)>,
 }
 
 /// A compile-time value a generated method embeds as a constant (docs/14
