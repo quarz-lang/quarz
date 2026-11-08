@@ -3969,6 +3969,32 @@ impl<'a> FnBuilder<'a> {
             {
                 self.pass_carried_type_args(e.id, &mut a);
             }
+            // `JSON.decode[T]`: `T`'s descriptor, which the native walks
+            // (the checker made sure there is one).
+            if quarz_types::json_decode::is_decode(self.world, m) {
+                let t = self.out.call_type_args.get(&e.id).and_then(|args| {
+                    let p = m.type_params.first()?.id;
+                    args.iter().find(|(q, _)| *q == p).map(|(_, t)| t.clone())
+                });
+                if let Some(Ok(d)) = t.map(|t| quarz_types::json_decode::descriptor(self.world, &t))
+                {
+                    let r = self.load_const(Constant::Str(d.text));
+                    let s = self.sym_const(quarz_ir::JSON_DECODE_TYPE);
+                    a.kw.push((s, r));
+                    // (Class values: the tree shake keeps the classes the
+                    // native makes values of.)
+                    let mut items = Vec::new();
+                    for class in d.classes {
+                        let reg = self.reg();
+                        self.emit(Inst::ClassRef { dst: reg, class });
+                        items.push(ArrayItem { reg, splat: false });
+                    }
+                    let dst = self.reg();
+                    self.emit(Inst::MakeArray { dst, items });
+                    let s = self.sym_const(quarz_ir::JSON_DECODE_CLASSES);
+                    a.kw.push((s, dst));
+                }
+            }
         }
         if let Some(b) = &call.block {
             let func = self.block_function(b, e.id, false);

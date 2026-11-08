@@ -234,6 +234,31 @@ fn from_datetime<Tz: TimeZone>(dt: &DateTime<Tz>, utc: bool) -> Option<Value> {
     ))
 }
 
+/// The `Time` an RFC 3339 string gives (`JSON.decode`), UTC when it ends
+/// in `Z`; `None` for another string.
+pub(super) fn parse_rfc3339(text: &str) -> Option<Value> {
+    let dt = DateTime::parse_from_rfc3339(text).ok()?;
+    from_datetime(&dt, text.ends_with('Z'))
+}
+
+/// `t` as `JSON.generate` writes it: RFC 3339 in UTC, with the fraction of
+/// a second when it has one (to the nanosecond, trailing zeros dropped),
+/// which `parse_rfc3339` reads back to the same instant.
+pub(super) fn json_time(t: &TimeVal) -> String {
+    let utc = TimeVal {
+        ns: t.ns,
+        offset: 0,
+        utc: true,
+    };
+    let frac = t.ns.rem_euclid(NS);
+    let digits = if frac == 0 {
+        0
+    } else {
+        9 - (0..9).take_while(|i| frac % 10i64.pow(*i + 1) == 0).count()
+    };
+    iso8601(&utc, digits)
+}
+
 /// The instant `ns` in the local time zone.
 pub(super) fn at_local(ns: i64) -> Value {
     let secs = ns.div_euclid(NS);

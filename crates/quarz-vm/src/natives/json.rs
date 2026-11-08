@@ -40,6 +40,8 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         generate(i, a.arg(0), Some("  "), &mut out, 0)?;
         Ok(Value::string(out))
     });
+    native!(m, "JSON.decode", |i, _, a| decode(i, &a, false));
+    native!(m, "JSON.decode?", |i, _, a| decode(i, &a, true));
 }
 
 /// The classes of `std/json.qz`, looked up by name.
@@ -52,6 +54,7 @@ struct Classes {
     object: ClassId,
     parse_error: ClassId,
     generator_error: ClassId,
+    decode_error: ClassId,
 }
 
 fn classes(interp: &Interp) -> Result<Classes, Flow> {
@@ -83,11 +86,386 @@ fn classes(interp: &Interp) -> Result<Classes, Flow> {
         object: variant("Object")?,
         parse_error: member("ParseError")?,
         generator_error: member("GeneratorError")?,
+        decode_error: member("DecodeError")?,
     })
 }
 
 fn variant(class: ClassId, field: Value) -> Value {
     Value::Object(Object::new(class, smallvec![field]))
+}
+
+// ----- decoding (`JSON.decode[T]`) ------------------------------------------------
+
+/// A node of a type's descriptor (`quarz_types::json_decode`).
+#[derive(Clone, Debug)]
+enum Node {
+    Int,
+    Integer,
+    Float,
+    Str,
+    Bool,
+    Sym,
+    Nil,
+    Time,
+    Bytes,
+    Value,
+    Opt(usize),
+    Array(usize),
+    Set(usize),
+    HashStr(usize),
+    HashSym(usize),
+    /// A `data` class and its fields' nodes.
+    Data(ClassId, Vec<usize>),
+}
+
+/// The nodes of descriptor `text`, the root first; `classes` are the
+/// `data` classes it names by index. `None` for a malformed one (no
+/// lowering makes it).
+fn descriptor(text: &str, classes: &[ClassId]) -> Option<Vec<Node>> {
+    let num = |s: &str| s.parse::<usize>().ok();
+    text.split(';')
+        .map(|n| {
+            let (k, rest) = n.split_at(n.char_indices().nth(1).map_or(n.len(), |(i, _)| i));
+            Some(match k {
+                "i" => Node::Int,
+                "I" => Node::Integer,
+                "f" => Node::Float,
+                "s" => Node::Str,
+                "b" => Node::Bool,
+                "y" => Node::Sym,
+                "n" => Node::Nil,
+                "t" => Node::Time,
+                "B" => Node::Bytes,
+                "v" => Node::Value,
+                "?" => Node::Opt(num(rest)?),
+                "a" => Node::Array(num(rest)?),
+                "e" => Node::Set(num(rest)?),
+                "h" => Node::HashStr(num(rest)?),
+                "H" => Node::HashSym(num(rest)?),
+                "d" => {
+                    let (c, fields) = rest.split_once(':')?;
+                    let fields = if fields.is_empty() {
+                        Vec::new()
+                    } else {
+                        fields.split(',').map(num).collect::<Option<Vec<_>>>()?
+                    };
+                    Node::Data(*classes.get(num(c)?)?, fields)
+                }
+                _ => return None,
+            })
+        })
+        .collect()
+}
+
+/// Why decoding stopped: the document's shape (`JSON::DecodeError`, or nil
+/// for `decode?`), or anything else raised (a field's default).
+enum DecodeFail {
+    Shape(String),
+    Raised(Flow),
+}
+
+impl From<Flow> for DecodeFail {
+    fn from(f: Flow) -> Self {
+        DecodeFail::Raised(f)
+    }
+}
+
+/// `JSON.decode[T](text)` / `(value)` and `JSON.decode?[T](text)`.
+fn decode(interp: &Interp, args: &crate::interp::Args, maybe: bool) -> EvalResult {
+    let classes = classes(interp)?;
+    let text = match args.kw(interp, quarz_ir::JSON_DECODE_TYPE) {
+        Some(v) => string(interp, v, "type")?.to_string(),
+        None => {
+            return Err(
+                interp.err_type("JSON.decode needs the type to decode into written at the call")
+            )
+        }
+    };
+    let data_classes: Vec<ClassId> = match args.kw(interp, quarz_ir::JSON_DECODE_CLASSES) {
+        Some(Value::Array(items)) => items
+            .values()
+            .iter()
+            .filter_map(|v| match v {
+                Value::Class(c) => Some(*c),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let Some(nodes) = descriptor(&text, &data_classes) else {
+        return Err(interp.err_type("JSON.decode: a malformed type descriptor"));
+    };
+    let doc = match args.arg(0) {
+        v @ (Value::Str(_) | Value::Short(_)) => {
+            let text = string(interp, v, "text")?;
+            let mut p = Parser {
+                interp,
+                classes: &classes,
+                src: text.as_bytes(),
+                pos: 0,
+                depth: 0,
+            };
+            p.skip_ws();
+            let parsed = p.value().and_then(|v| {
+                p.skip_ws();
+                if p.pos < p.src.len() {
+                    Err(p.error("unexpected token"))
+                } else {
+                    Ok(v)
+                }
+            });
+            match parsed {
+                Ok(v) => v,
+                Err(_) if maybe => return Ok(Value::Nil),
+                Err(e) => return Err(e),
+            }
+        }
+        v => v.clone(),
+    };
+    let mut d = Decoder {
+        interp,
+        classes: &classes,
+        nodes: &nodes,
+        path: String::from("$"),
+    };
+    match d.decode(&doc, 0) {
+        Ok(v) => Ok(v),
+        Err(DecodeFail::Shape(_)) if maybe => Ok(Value::Nil),
+        Err(DecodeFail::Shape(m)) => Err(interp.raise(classes.decode_error, &m)),
+        Err(DecodeFail::Raised(f)) => Err(f),
+    }
+}
+
+struct Decoder<'a> {
+    interp: &'a Interp,
+    classes: &'a Classes,
+    nodes: &'a [Node],
+    /// Where in the document (`$.user.tags[2]`).
+    path: String,
+}
+
+impl Decoder<'_> {
+    /// The value `v` (a `JSON::Value`) decoded as node `n`.
+    fn decode(&mut self, v: &Value, n: usize) -> Result<Value, DecodeFail> {
+        let node = self.nodes[n].clone();
+        // The variant and its field.
+        let (class, inner) = match v {
+            Value::Object(o) => (o.class, o.field(0)),
+            _ => return Err(self.shape(&node, "something that is no JSON value")),
+        };
+        let c = self.classes;
+        let is_null = class == c.null;
+        match node {
+            Node::Value => Ok(v.clone()),
+            Node::Opt(m) => {
+                if is_null {
+                    Ok(Value::Nil)
+                } else {
+                    self.decode(v, m)
+                }
+            }
+            Node::Nil if is_null => Ok(Value::Nil),
+            Node::Bool if class == c.boolean => Ok(inner.unwrap_or(Value::Nil)),
+            Node::Str if class == c.string => Ok(inner.unwrap_or(Value::Nil)),
+            Node::Sym if class == c.string => {
+                let s = string(self.interp, &inner.unwrap_or(Value::Nil), "string")?.to_string();
+                Ok(Value::Symbol(self.interp.intern(&s)))
+            }
+            Node::Int if class == c.number => match inner {
+                Some(Value::Int(i)) => Ok(Value::Int(i)),
+                _ => Err(self.shape(&node, &self.found(v))),
+            },
+            Node::Integer if class == c.number => match inner {
+                Some(Value::Int(i)) => Ok(Value::BigInt(Rc::new(num_bigint::BigInt::from(i)))),
+                Some(b @ Value::BigInt(_)) => Ok(b),
+                _ => Err(self.shape(&node, &self.found(v))),
+            },
+            Node::Float if class == c.number => match inner {
+                Some(Value::Int(i)) => Ok(Value::Float(i as f64)),
+                Some(Value::BigInt(b)) => {
+                    use num_traits::ToPrimitive;
+                    Ok(Value::Float(b.to_f64().unwrap_or(f64::NAN)))
+                }
+                Some(f @ Value::Float(_)) => Ok(f),
+                _ => Err(self.shape(&node, &self.found(v))),
+            },
+            Node::Time if class == c.string => {
+                let s = string(self.interp, &inner.unwrap_or(Value::Nil), "string")?.to_string();
+                super::time::parse_rfc3339(&s).ok_or_else(|| self.shape(&node, &self.found(v)))
+            }
+            Node::Bytes if class == c.string => {
+                use base64::Engine;
+                let s = string(self.interp, &inner.unwrap_or(Value::Nil), "string")?.to_string();
+                match base64::engine::general_purpose::STANDARD.decode(s.as_bytes()) {
+                    Ok(b) => Ok(Value::bytes(b)),
+                    Err(_) => Err(self.shape(&node, &self.found(v))),
+                }
+            }
+            Node::Array(m) | Node::Set(m) if class == c.array => {
+                let items = match inner {
+                    Some(Value::Array(items)) => items.values().to_vec(),
+                    _ => Vec::new(),
+                };
+                let mut out = Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    let len = self.path.len();
+                    self.path.push_str(&format!("[{i}]"));
+                    out.push(self.decode(item, m)?);
+                    self.path.truncate(len);
+                }
+                Ok(match node {
+                    Node::Set(_) => Value::Set(Rc::new(out.into_iter().collect())),
+                    _ => Value::array(out),
+                })
+            }
+            Node::HashStr(m) | Node::HashSym(m) if class == c.object => {
+                let members = self.members(inner);
+                let mut map = ValueMap::default();
+                for (k, item) in members {
+                    let len = self.path.len();
+                    self.push_key(&k);
+                    let value = self.decode(&item, m)?;
+                    self.path.truncate(len);
+                    let key = match node {
+                        Node::HashSym(_) => Value::Symbol(self.interp.intern(&k)),
+                        _ => Value::string(k),
+                    };
+                    map.insert(key, value);
+                }
+                Ok(Value::Hash(Rc::new(HashData::from(map))))
+            }
+            Node::Data(cid, ref fields) if class == c.object => {
+                let members: ValueMap = self
+                    .members(inner)
+                    .into_iter()
+                    .map(|(k, v)| (Value::string(k), v))
+                    .collect();
+                // Built from its fields, no `initialize` of its own run.
+                let obj = self
+                    .interp
+                    .construct(cid, None, smallvec![], Vec::new(), None)?;
+                let Value::Object(o) = &obj else {
+                    return Err(DecodeFail::Raised(
+                        self.interp.err_type("JSON.decode: not a data type"),
+                    ));
+                };
+                let rc = self.interp.program.world.class(cid);
+                for (i, (f, &m)) in rc.ivars.iter().zip(fields.iter()).enumerate() {
+                    let value = match members.get(&Value::string(f.name.clone())) {
+                        Some(item) => {
+                            let len = self.path.len();
+                            self.push_key(&f.name);
+                            let value = self.decode(item, m)?;
+                            self.path.truncate(len);
+                            value
+                        }
+                        None => match f.default {
+                            Some(d) => self.interp.run_init(d, obj.clone(), rc.file)?,
+                            None => {
+                                return Err(DecodeFail::Shape(format!(
+                                    "{}: missing field `{}` of {}",
+                                    self.path, f.name, rc.name
+                                )))
+                            }
+                        },
+                    };
+                    self.interp.logical_set(o, i, value);
+                }
+                Ok(obj)
+            }
+            _ => Err(self.shape(&node, &self.found(v))),
+        }
+    }
+
+    /// An object's members, by key.
+    fn members(&self, inner: Option<Value>) -> Vec<(String, Value)> {
+        match inner {
+            Some(Value::Hash(h)) => h
+                .as_map()
+                .iter()
+                .map(|(k, v)| {
+                    let k = match k {
+                        Value::Str(s) => s.to_string(),
+                        Value::Short(s) => s.as_str().to_string(),
+                        _ => String::new(),
+                    };
+                    (k, v.clone())
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn push_key(&mut self, k: &str) {
+        let plain = !k.is_empty()
+            && k.chars().all(|c| c.is_alphanumeric() || c == '_')
+            && !k.starts_with(|c: char| c.is_ascii_digit());
+        if plain {
+            self.path.push('.');
+            self.path.push_str(k);
+        } else {
+            let mut quoted = String::new();
+            escape(k, &mut quoted);
+            self.path.push_str(&format!("[{quoted}]"));
+        }
+    }
+
+    /// What `v` is, for an error: a scalar as written, an array or an
+    /// object by its kind.
+    fn found(&self, v: &Value) -> String {
+        let Value::Object(o) = v else {
+            return "something else".to_string();
+        };
+        let c = self.classes;
+        let inner = o.field(0);
+        if o.class == c.null {
+            "null".to_string()
+        } else if o.class == c.array {
+            "an array".to_string()
+        } else if o.class == c.object {
+            "an object".to_string()
+        } else if o.class == c.string {
+            let mut s = String::new();
+            if let Some(Value::Str(t)) = &inner {
+                escape(t, &mut s);
+            } else if let Some(Value::Short(t)) = &inner {
+                escape(t.as_str(), &mut s);
+            }
+            s
+        } else {
+            match inner {
+                Some(Value::Bool(b)) => b.to_string(),
+                Some(Value::Int(i)) => i.to_string(),
+                Some(Value::BigInt(b)) => b.to_string(),
+                Some(Value::Float(f)) => crate::interp::format_float(f),
+                _ => "something else".to_string(),
+            }
+        }
+    }
+
+    /// The error for a value that is not what `node` decodes.
+    fn shape(&self, node: &Node, found: &str) -> DecodeFail {
+        let expected = match node {
+            Node::Int => "an integer that fits an Int".to_string(),
+            Node::Integer => "an integer".to_string(),
+            Node::Float => "a number".to_string(),
+            Node::Str => "a string".to_string(),
+            Node::Bool => "true or false".to_string(),
+            Node::Sym => "a string (for a Symbol)".to_string(),
+            Node::Nil => "null".to_string(),
+            Node::Time => "an RFC 3339 time string".to_string(),
+            Node::Bytes => "a Base64 string".to_string(),
+            Node::Value => "a JSON value".to_string(),
+            Node::Opt(_) => "a value or null".to_string(),
+            Node::Array(_) | Node::Set(_) => "an array".to_string(),
+            Node::HashStr(_) | Node::HashSym(_) => "an object".to_string(),
+            Node::Data(cid, _) => format!(
+                "an object (for {})",
+                self.interp.program.world.class(*cid).name
+            ),
+        };
+        DecodeFail::Shape(format!("{}: expected {expected}, found {found}", self.path))
+    }
 }
 
 // ----- parsing ------------------------------------------------------------------
@@ -426,9 +804,16 @@ fn generate(
             generate_map(interp, &members, indent, out, depth)?;
         }
         Value::Class(c) => escape(&interp.program.world.class(*c).name, out),
-        Value::Time(_) | Value::Duration(_) | Value::Range(_) | Value::Regexp(_) => {
-            escape(&interp.to_s(v)?, out)
+        // (What `JSON.decode` reads back: RFC 3339 in UTC, and Base64.)
+        Value::Time(t) => escape(&super::time::json_time(t), out),
+        Value::Bytes(b) => {
+            use base64::Engine;
+            escape(
+                &base64::engine::general_purpose::STANDARD.encode(&b[..]),
+                out,
+            )
         }
+        Value::Duration(_) | Value::Range(_) | Value::Regexp(_) => escape(&interp.to_s(v)?, out),
         Value::Object(o) => {
             let class = interp.program.world.class(o.class);
             // `JSON::Value` is generated as the document it represents.

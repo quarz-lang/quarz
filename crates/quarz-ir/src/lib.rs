@@ -203,6 +203,14 @@ pub const KW_SPLAT: &str = "**";
 /// `#field_ref`, their call's node (docs/14 §5): no parameter has it.
 pub const FIELD_REF_SITE: &str = "__site";
 
+/// The keyword under which a call of `JSON.decode[T]` passes `T`'s
+/// descriptor (`quarz_types::json_decode`), a string constant.
+pub const JSON_DECODE_TYPE: &str = "__decode_type";
+
+/// The keyword under which it passes the descriptor's `data` classes, an
+/// array of class values.
+pub const JSON_DECODE_CLASSES: &str = "__decode_classes";
+
 /// The keyword the lowering passes `Meta::ClassDef#def_method`,
 /// `#def_class_method` and `#def_initialize` called in a generic method:
 /// the values of its `Type[T]` parameters, the classes its type
