@@ -317,7 +317,8 @@ p k.fire
 }
 
 /// `quarz --version` prints Cargo's version of the workspace, which a
-/// release tag (`v` and the version) names too.
+/// release tag (`v` and the version) names too, and the commit it was
+/// built from when built from a checkout (#449).
 #[test]
 fn version_prints_the_cargo_version() {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
@@ -325,8 +326,14 @@ fn version_prints_the_cargo_version() {
         .output()
         .expect("quarz");
     assert!(out.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        format!("quarz {}\n", env!("CARGO_PKG_VERSION"))
+    let text = String::from_utf8_lossy(&out.stdout);
+    let rest = text
+        .strip_prefix(&format!("quarz {}", env!("CARGO_PKG_VERSION")))
+        .unwrap_or_else(|| panic!("{text}"));
+    let commit = rest.strip_prefix(" (").and_then(|r| r.strip_suffix(")\n"));
+    assert!(
+        rest == "\n"
+            || commit.is_some_and(|c| c.len() == 12 && c.chars().all(|c| c.is_ascii_hexdigit())),
+        "{text}"
     );
 }

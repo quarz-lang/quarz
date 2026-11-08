@@ -721,3 +721,38 @@ fn html_colors_quarz_code_blocks() {
         assert!(page.contains(want), "no {want:?} in\n{page}");
     }
 }
+
+#[test]
+fn html_links_the_standard_librarys_source() {
+    // #449: a standard library declaration's location links to its line
+    // in quarz-lang/quarz at the commit (`--source-rev` for the std).
+    let d = Dir::new();
+    let site = d.0.join("site");
+    let out = quarz_in(
+        &d.0,
+        &[
+            "doc",
+            "--std",
+            "--html",
+            "-o",
+            site.to_str().unwrap(),
+            "--source-rev",
+            "deadbeef",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let json = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../std/json.qz"),
+    )
+    .unwrap();
+    let line = json
+        .lines()
+        .position(|l| l.starts_with("module JSON"))
+        .unwrap()
+        + 1;
+    let page = std::fs::read_to_string(site.join("JSON.html")).unwrap();
+    let want = format!(
+        "<a href=\"https://github.com/quarz-lang/quarz/blob/deadbeef/std/json.qz#L{line}\">&lt;std:json&gt;:{line}</a>"
+    );
+    assert!(page.contains(&want), "no {want} in\n{page}");
+}

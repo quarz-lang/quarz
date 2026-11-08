@@ -52,6 +52,12 @@ pub struct CogSection {
     /// C libraries to link (reserved for FFI).
     #[serde(default)]
     pub link: Vec<String>,
+    /// Where its API is published (`quarz doc --html`): a cog's pages
+    /// link a name of this cog's to it (docs/10 §8).
+    pub documentation: Option<String>,
+    /// Its repository's web page (`https://github.com/owner/repo`): the
+    /// API's pages link each declaration to its source there (docs/10 §8).
+    pub repository: Option<String>,
 }
 
 fn default_version() -> String {
@@ -264,6 +270,21 @@ impl Manifest {
                 self.cog.version
             )));
         }
+        for (key, url) in [
+            ("documentation", &self.cog.documentation),
+            ("repository", &self.cog.repository),
+        ] {
+            if let Some(url) = url {
+                let rest = url
+                    .strip_prefix("https://")
+                    .or_else(|| url.strip_prefix("http://"));
+                if rest.is_none_or(|r| r.is_empty() || r.contains(char::is_whitespace)) {
+                    return Err(Error::new(format!(
+                        "[cog] {key} `{url}` is not an http(s) URL"
+                    )));
+                }
+            }
+        }
         if !is_const_name(&self.module()) {
             return Err(Error::new(format!(
                 "[cog] module `{}` is not a constant name",
@@ -442,6 +463,16 @@ Utils = { git = "https://example.com/mono", rev = "3f2a9c1e0b4d7c6e8a1f2b3c4d5e6
         );
         assert!(err("[cog]\nname = \"X\"\n").contains("lowercase"));
         assert!(err("[cog]\nname = \"x\"\nfoo = 1\n").contains("unknown field"));
+        let m = Manifest::parse("[cog]\nname = \"x\"\ndocumentation = \"https://x.api.quarz.dev\"\nrepository = \"https://github.com/o/x\"\n").unwrap();
+        assert_eq!(
+            m.cog.documentation.as_deref(),
+            Some("https://x.api.quarz.dev")
+        );
+        assert_eq!(m.cog.repository.as_deref(), Some("https://github.com/o/x"));
+        assert!(
+            err("[cog]\nname = \"x\"\nrepository = \"git@github.com:o/x\"\n")
+                .contains("not an http(s) URL")
+        );
     }
 
     #[test]

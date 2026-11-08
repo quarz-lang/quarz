@@ -19,26 +19,7 @@ fn page_file(name: &str) -> String {
 
 /// The anchor of a member in its page.
 fn anchor(item: &Item) -> String {
-    let prefix = match item.kind {
-        Kind::Method => "method",
-        Kind::ClassMethod => "class-method",
-        Kind::Function => "function",
-        Kind::Const => "const",
-        Kind::Variant => "variant",
-        _ => "item",
-    };
-    let name: String = item
-        .name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                c.to_string()
-            } else {
-                format!("-{:x}", c as u32)
-            }
-        })
-        .collect();
-    format!("{prefix}-{name}")
+    super::anchor_of(item.kind, &item.name)
 }
 
 fn escape(s: &str) -> String {
@@ -55,8 +36,9 @@ fn escape(s: &str) -> String {
     out
 }
 
-/// The href of a link target, from a page in the same directory.
-fn href(api: &Api, target: &Target) -> Option<String> {
+/// The href of a link target, from a page in the same directory; one of
+/// another site, when its API is published (#448).
+fn href(loaded: &Loaded, api: &Api, target: &Target) -> Option<String> {
     match target {
         Target::Page(p, None) => Some(page_file(p)),
         Target::Page(p, Some(member)) => {
@@ -65,6 +47,17 @@ fn href(api: &Api, target: &Target) -> Option<String> {
             Some(format!("{}#{}", page_file(p), anchor(item)))
         }
         Target::Elsewhere { .. } => None,
+        Target::Foreign {
+            class,
+            page,
+            anchor,
+        } => {
+            let base = loaded.docs_of(&loaded.world, *class)?;
+            Some(match anchor {
+                Some(a) => format!("{base}/{}#{a}", page_file(page)),
+                None => format!("{base}/{}", page_file(page)),
+            })
+        }
     }
 }
 
@@ -149,7 +142,7 @@ fn markdown_html(
                 } else {
                     scope.and_then(|s| api.resolve_bare(world, s, &code))
                 };
-                match target.as_ref().and_then(|t| href(api, t)) {
+                match target.as_ref().and_then(|t| href(loaded, api, t)) {
                     Some(h) => out.push(Event::Html(CowStr::from(format!(
                         "<a href=\"{}\"><code>{}</code></a>",
                         escape(&h),
@@ -313,10 +306,91 @@ fn layout(title: &str, api: &Api, current: Option<&str>, body: &str) -> String {
     )
 }
 
+/// A signature, its names of classes linked where they have a page, here
+/// or on another site (#448).
+fn signature_html(loaded: &Loaded, api: &Api, scope: Option<ClassId>, sig: &str) -> String {
+    let mut out = String::with_capacity(sig.len() * 2);
+    let bytes = sig.as_bytes();
+    let mut i = 0;
+    while i < sig.len() {
+        let starts_name = bytes[i].is_ascii_uppercase()
+            && (i == 0
+                || !(bytes[i - 1].is_ascii_alphanumeric()
+                    || bytes[i - 1] == b'_'
+                    || bytes[i - 1] == b'@'));
+        if !starts_name {
+            let c = sig[i..].chars().next().unwrap_or(' ');
+            out.push_str(&escape(&c.to_string()));
+            i += c.len_utf8();
+            continue;
+        }
+        // `A`, `A::B`.
+        let mut end = i;
+        loop {
+            while end < sig.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+                end += 1;
+            }
+            if sig[end..].starts_with("::")
+                && sig[end + 2..].starts_with(|c: char| c.is_ascii_uppercase())
+            {
+                end += 2;
+            } else {
+                break;
+            }
+        }
+        let name = &sig[i..end];
+        // (Not the page the signature is on.)
+        let link = api
+            .resolve(&loaded.world, scope, name)
+            .filter(|t| {
+                !matches!(t, Target::Page(p, None)
+                    if scope.is_some_and(|c| loaded.world.class(c).name == *p))
+            })
+            .and_then(|t| href(loaded, api, &t));
+        match link {
+            Some(h) => {
+                let _ = write!(out, "<a href=\"{}\">{}</a>", escape(&h), escape(name));
+            }
+            None => out.push_str(&escape(name)),
+        }
+        i = end;
+    }
+    out
+}
+
+/// A location, `file:line`, linked to its line on GitHub when known
+/// (#449).
+fn location_html(loaded: &Loaded, offset: u32) -> String {
+    let at = loaded.location(offset);
+    match loaded.source_url(offset) {
+        Some(url) => format!("<a href=\"{}\">{}</a>", escape(&url), escape(&at)),
+        None => escape(&at),
+    }
+}
+
+/// A class's name, linked to its page here or on another site.
+fn class_link(loaded: &Loaded, api: &Api, name: &str, shown: &str) -> String {
+    match api
+        .resolve(&loaded.world, None, name)
+        .and_then(|t| href(loaded, api, &t))
+    {
+        Some(h) => format!(
+            "<a href=\"{}\"><code>{}</code></a>",
+            escape(&h),
+            escape(shown)
+        ),
+        None => format!("<code>{}</code>", escape(shown)),
+    }
+}
+
 fn member_html(loaded: &Loaded, api: &Api, page: &Page, m: &Item) -> String {
     let mut s = String::new();
     let _ = writeln!(s, "<section class=\"member\" id=\"{}\">", anchor(m));
-    let _ = writeln!(s, "<h3><code>{}</code></h3>", escape(&m.signature));
+    let _ = writeln!(
+        s,
+        "<h3><code>{}</code></h3>",
+        signature_html(loaded, api, Some(page.id), &m.signature)
+    );
     if let Some(ext) = &m.extension {
         let _ = writeln!(s, "<p class=\"from\">in <code>{}</code></p>", escape(ext));
     }
@@ -324,8 +398,11 @@ fn member_html(loaded: &Loaded, api: &Api, page: &Page, m: &Item) -> String {
         s.push_str(&markdown_html(loaded, api, Some(page.id), &d.text, 2));
     }
     if let Some(f) = &m.from {
-        let from = match api.page(f) {
-            Some(_) => format!("<a href=\"{}\">{}</a>", escape(&page_file(f)), escape(f)),
+        let link = api
+            .resolve(&loaded.world, None, f)
+            .and_then(|t| href(loaded, api, &t));
+        let from = match link {
+            Some(h) => format!("<a href=\"{}\">{}</a>", escape(&h), escape(f)),
             None => escape(f),
         };
         let _ = writeln!(s, "<p class=\"from\">from {from}</p>");
@@ -340,7 +417,7 @@ fn member_html(loaded: &Loaded, api: &Api, page: &Page, m: &Item) -> String {
     let _ = writeln!(
         s,
         "<p class=\"loc\">{}</p>\n</section>",
-        escape(&loaded.location(m.span.start))
+        location_html(loaded, m.span.start)
     );
     s
 }
@@ -368,21 +445,18 @@ fn summary_list(api: &Api, pages: &[&Page]) -> String {
 
 fn page_html(loaded: &Loaded, api: &Api, page: &Page) -> String {
     let mut s = String::new();
-    let _ = writeln!(s, "<h1><code>{}</code></h1>", escape(&page.signature));
+    let _ = writeln!(
+        s,
+        "<h1><code>{}</code></h1>",
+        signature_html(loaded, api, Some(page.id), &page.signature)
+    );
     if !page.includes.is_empty() {
         let names: Vec<String> = page
             .includes
             .iter()
             .map(|n| {
                 let base = n.split('[').next().unwrap_or(n);
-                match api.page(base) {
-                    Some(_) => format!(
-                        "<a href=\"{}\"><code>{}</code></a>",
-                        escape(&page_file(base)),
-                        escape(n)
-                    ),
-                    None => format!("<code>{}</code>", escape(n)),
-                }
+                class_link(loaded, api, base, n)
             })
             .collect();
         let _ = writeln!(s, "<p>include {}</p>", names.join(", "));
@@ -395,9 +469,12 @@ fn page_html(loaded: &Loaded, api: &Api, page: &Page) -> String {
         }
         _ => {}
     }
-    let at = loaded.location(page.span.start);
-    if !at.is_empty() {
-        let _ = writeln!(s, "<p class=\"loc\">{}</p>", escape(&at));
+    if !loaded.location(page.span.start).is_empty() {
+        let _ = writeln!(
+            s,
+            "<p class=\"loc\">{}</p>",
+            location_html(loaded, page.span.start)
+        );
     }
     let prefix = format!("{}::", page.name);
     let nested: Vec<&Page> = api
@@ -476,14 +553,18 @@ fn index_html(loaded: &Loaded, api: &Api) -> String {
         let _ = writeln!(s, "<h2>{title}</h2>");
         for k in items {
             let _ = writeln!(s, "<section class=\"member\" id=\"{}\">", anchor(k));
-            let _ = writeln!(s, "<h3><code>{}</code></h3>", escape(&k.signature));
+            let _ = writeln!(
+                s,
+                "<h3><code>{}</code></h3>",
+                signature_html(loaded, api, None, &k.signature)
+            );
             if let Some(d) = &k.doc {
                 s.push_str(&markdown_html(loaded, api, None, &d.text, 2));
             }
             let _ = writeln!(
                 s,
                 "<p class=\"loc\">{}</p>\n</section>",
-                escape(&loaded.location(k.span.start))
+                location_html(loaded, k.span.start)
             );
         }
     }

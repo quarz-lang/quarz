@@ -11,6 +11,34 @@ pub mod lock;
 pub mod manifest;
 pub mod version;
 
+/// The commit `quarz` was built from (its build script), if built from a
+/// git checkout.
+pub const GIT_SHA: Option<&str> = option_env!("QUARZ_GIT_SHA");
+
+/// A GitHub repository's web page, `https://github.com/owner/repo`, from
+/// a URL of it as git or a browser writes it (`git@github.com:o/r.git`,
+/// `https://github.com/o/r.git`, `ssh://git@github.com/o/r`); `None` for
+/// another host (only GitHub's source links are made, docs/13).
+pub fn github_page(url: &str) -> Option<String> {
+    let url = url.trim().trim_end_matches('/');
+    let rest = url
+        .strip_prefix("git@github.com:")
+        .or_else(|| url.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| url.strip_prefix("https://github.com/"))
+        .or_else(|| url.strip_prefix("http://github.com/"))
+        .or_else(|| url.strip_prefix("git://github.com/"))?;
+    let rest = rest.strip_suffix(".git").unwrap_or(rest);
+    let mut parts = rest.split('/');
+    let (owner, repo) = (parts.next()?, parts.next()?);
+    let ok = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    (ok(owner) && ok(repo) && parts.next().is_none())
+        .then(|| format!("https://github.com/{owner}/{repo}"))
+}
+
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -1694,4 +1722,25 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), Error> {
 /// The path of the lock file of the application in `root`.
 pub fn lock_path(root: &Path) -> PathBuf {
     root.join(LOCK)
+}
+
+#[cfg(test)]
+mod github_tests {
+    #[test]
+    fn github_pages() {
+        for url in [
+            "git@github.com:quarz-lang/pg.git",
+            "https://github.com/quarz-lang/pg.git",
+            "https://github.com/quarz-lang/pg/",
+            "ssh://git@github.com/quarz-lang/pg",
+        ] {
+            assert_eq!(
+                super::github_page(url).as_deref(),
+                Some("https://github.com/quarz-lang/pg"),
+                "{url}"
+            );
+        }
+        assert_eq!(super::github_page("https://gitlab.com/o/r"), None);
+        assert_eq!(super::github_page("https://github.com/o/r/tree/main"), None);
+    }
 }

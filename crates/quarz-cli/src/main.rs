@@ -115,7 +115,10 @@ fn main() -> ExitCode {
         Some("test") => test::command(&args[1..]),
         Some("doc") => doc::command(&args[1..]),
         Some("--version") => {
-            println!("quarz {}", env!("CARGO_PKG_VERSION"));
+            match quarz_cog::GIT_SHA {
+                Some(sha) => println!("quarz {} ({})", env!("CARGO_PKG_VERSION"), &sha[..12]),
+                None => println!("quarz {}", env!("CARGO_PKG_VERSION")),
+            }
             ExitCode::SUCCESS
         }
         Some("-h" | "--help" | "help") => {
