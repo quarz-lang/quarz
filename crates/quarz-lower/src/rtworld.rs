@@ -247,9 +247,13 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
                             let d = p.default.as_deref().and_then(literal_constant);
                             // (A call may skip it to name a later one by
                             // keyword: `Interp::native_positions` passes
-                            // only a literal.)
+                            // only a literal. A data type's constructor
+                            // binds its own, `Interp::bind_data_args`.)
                             debug_assert!(
-                                p.default.is_none() || d.is_some() || !later_positional(m, &p.name),
+                                p.default.is_none()
+                                    || d.is_some()
+                                    || !later_positional(m, &p.name)
+                                    || m.synth == Synth::DataInit,
                                 "native `{}`: the default of `{}` is not a literal, though a positional parameter follows it",
                                 m.name,
                                 p.name

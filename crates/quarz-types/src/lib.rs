@@ -11,6 +11,7 @@ pub mod cache;
 pub mod check;
 pub mod declare;
 pub mod init;
+pub mod json_decode;
 pub mod load;
 pub mod patterns;
 mod reloc;

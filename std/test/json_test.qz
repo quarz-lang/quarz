@@ -14,6 +14,26 @@ class JsonTestTemp
   def to_json -> String = JSON.generate({ unit: "C", value: @celsius })
 end
 
+data JsonTestArgs = (user_id: Int, template: String = "welcome", tags: Array[String] = [])
+
+data JsonTestPair[T] = (a: T, b: T)
+
+data JsonTestNode = (name: String, kids: Array[JsonTestNode] = [])
+
+data JsonTestAll = (
+  i: Int, big: Integer, f: Float, s: String, b: Bool, sym: Symbol, n: Nil,
+  opt: Int?, none: String?, list: Array[Int], set: Set[String],
+  by_s: Hash[String, Float], by_sym: Hash[Symbol, Array[Bool]],
+  at: Time, raw: Bytes, doc: JSON::Value, pair: JsonTestPair[Int]
+)
+
+# An `initialize` of its own does not run when decoding.
+data JsonTestOwnInit(x: Int)
+  def initialize(s: String)
+    @x = s.size
+  end
+end
+
 enum JsonTestColor
   variant Red
   variant Green
@@ -101,7 +121,7 @@ class JsonGenerateTest < Test::Case
 
   def test_enum_and_time
     assert_equal("\"Red\"", JSON.generate(JsonTestColor::Red))
-    assert_equal("\"2026-01-02 03:04:05 UTC\"", JSON.generate(Time.utc(2026, 1, 2, 3, 4, 5)))
+    assert_equal("\"2026-01-02T03:04:05Z\"", JSON.generate(Time.utc(2026, 1, 2, 3, 4, 5)))
   end
 end
 
@@ -130,5 +150,78 @@ class JsonErrorTest < Test::Case
     doc = JSON.parse('{"name": "quarz"}')
     e = assert_raise(TypeError) { doc["name"].as_i; nil }
     assert_equal("not a JSON number: JSON::Value::String(value: \"quarz\")", e.message)
+  end
+end
+
+class JsonDecodeTest < Test::Case
+  def test_data_with_defaults_and_extra_keys
+    args = JSON.decode[JsonTestArgs]('{"user_id": 42, "tags": ["a"], "other": {"x": 1}}')
+    assert_equal(JsonTestArgs.new(user_id: 42, template: "welcome", tags: ["a"]), args)
+  end
+
+  def test_round_trip_of_every_kind
+    all = JsonTestAll.new(
+      i: -7, big: 123456789012345678901234567890, f: 2.5, s: "q\"é😀\n", b: true, sym: :sym, n: nil,
+      opt: 3, none: nil, list: [1, 2], set: Set["a", "b"],
+      by_s: { "x" => 1.5 }, by_sym: { k: [true, false] },
+      at: Time.iso8601("2023-11-14T22:13:20.00000012Z"), raw: b"hi\x00\xff",
+      doc: JSON.parse('{"z": [null]}'), pair: JsonTestPair[Int].new(a: 1, b: 2)
+    )
+    assert_equal(all, JSON.decode[JsonTestAll](JSON.generate(all)))
+    assert_equal(all, JSON.decode[JsonTestAll](JSON.pretty_generate(all)))
+  end
+
+  def test_scalars_and_collections
+    expected: Array[Int?] = [1, nil]
+    assert_equal(expected, JSON.decode[Array[Int?]]("[1, null]"))
+    assert_equal(2.0, JSON.decode[Float]("2"))
+    assert_equal(:abc, JSON.decode[Symbol]('"abc"'))
+    assert_equal(Set[1, 2], JSON.decode[Set[Int]]("[1, 2, 2]"))
+    assert_equal({ "a" => [1] }, JSON.decode[Hash[String, Array[Int]]]('{"a": [1]}'))
+    assert_equal(JsonTestPair[Float].new(a: 1.0, b: 2.5), JSON.decode[JsonTestPair[Float]]('{"a": 1, "b": 2.5}'))
+  end
+
+  def test_recursive_data
+    node = JSON.decode[JsonTestNode]('{"name": "r", "kids": [{"name": "c"}]}')
+    assert_equal(JsonTestNode.new(name: "r", kids: [JsonTestNode.new(name: "c", kids: [])]), node)
+    assert_equal(node, JSON.decode[JsonTestNode](JSON.generate(node)))
+  end
+
+  def test_time_and_bytes_are_generated_to_be_read_back
+    assert_equal("\"2023-11-14T22:13:20Z\"", JSON.generate(Time.at(1700000000)))
+    assert_equal("\"2023-11-14T22:13:20.5Z\"", JSON.generate(Time.at(1700000000) + 500.ms))
+    assert_equal("\"aGkA\"", JSON.generate(b"hi\x00"))
+    assert_equal(Time.at(1700000000), JSON.decode[Time]('"2023-11-14T23:13:20+01:00"'))
+  end
+
+  def test_from_a_parsed_value
+    doc = JSON.parse('{"job": {"user_id": 1}}')
+    assert_equal(JsonTestArgs.new(user_id: 1), JSON.decode[JsonTestArgs](doc["job"]))
+  end
+
+  def test_own_initialize_does_not_run
+    assert_equal(5, JSON.decode[JsonTestOwnInit]('{"x": 5}').x)
+  end
+
+  def test_errors_name_the_path
+    e = assert_raise(JSON::DecodeError) { JSON.decode[JsonTestArgs]('{"user_id": 1, "tags": ["a", 3]}'); nil }
+    assert_equal("$.tags[1]: expected a string, found 3", e.message)
+    e = assert_raise(JSON::DecodeError) { JSON.decode[JsonTestArgs]('{"tags": []}'); nil }
+    assert_equal("$: missing field `user_id` of JsonTestArgs", e.message)
+    e = assert_raise(JSON::DecodeError) { JSON.decode[Array[JsonTestArgs]]('[{"user_id": null}]'); nil }
+    assert_equal("$[0].user_id: expected an integer that fits an Int, found null", e.message)
+    e = assert_raise(JSON::DecodeError) { JSON.decode[Int]("12345678901234567890123"); nil }
+    assert_equal("$: expected an integer that fits an Int, found 12345678901234567890123", e.message)
+    e = assert_raise(JSON::DecodeError) { JSON.decode[Hash[String, Int]]('{"a b": {"c": 1}}'); nil }
+    assert_equal("$[\"a b\"]: expected an integer that fits an Int, found an object", e.message)
+    e = assert_raise(JSON::DecodeError) { JSON.decode[Time]('"yesterday"'); nil }
+    assert_equal("$: expected an RFC 3339 time string, found \"yesterday\"", e.message)
+    assert_raise(JSON::ParseError) { JSON.decode[Int]("[1,"); nil }
+  end
+
+  def test_decode_or_nil
+    assert_nil(JSON.decode?[JsonTestArgs]("not json"))
+    assert_nil(JSON.decode?[JsonTestArgs]("{}"))
+    assert_equal(JsonTestArgs.new(user_id: 3), JSON.decode?[JsonTestArgs]('{"user_id": 3}'))
   end
 end

@@ -10,8 +10,11 @@
 # ```
 #
 # `JSON.generate` accepts `nil`, booleans, numbers, strings, symbols, arrays,
-# hashes, sets, `data` values and `JSON::Value`. Other objects are
-# generated from their fields, unless they define `to_json -> String`.
+# hashes, sets, `data` values and `JSON::Value`, a `Time` as an RFC 3339
+# string in UTC and `Bytes` as standard Base64 (what `JSON.decode` reads
+# back). Other objects are generated from their fields, unless they define
+# `to_json -> String`. `JSON.decode[T]` decodes into a type written at the
+# call: `JSON.decode[Args](text)`.
 module JSON
   # The version of the library.
   VERSION = "0.1.0"
@@ -28,6 +31,13 @@ module JSON
   # JSON.generate(1.0 / 0.0)   # raises JSON::GeneratorError
   # ```
   class GeneratorError < StandardError
+  end
+
+  # Raised by `JSON.decode` when the document does not have the shape of
+  # the type asked for. The message gives where (`$.user.tags[2]`), what
+  # was expected and what was found (a scalar as written; an array or an
+  # object only by its kind).
+  class DecodeError < StandardError
   end
 
   # A parsed JSON document, its variants named as Rust's serde_json
@@ -326,6 +336,50 @@ module JSON
   # JSON.parse("1 2")          # raises JSON::ParseError
   # ```
   native def self.parse(text: String) -> Value
+
+  # Decodes the JSON document `text` into a value of type `T`, written at
+  # the call:
+  #
+  # ```
+  # data Args = (user_id: Int, template: String = "welcome", tags: Array[String] = [])
+  # JSON.decode[Args]('{"user_id": 42, "tags": ["a"]}')
+  # # => Args(user_id: 42, template: "welcome", tags: ["a"])
+  # JSON.decode[Array[Int?]]("[1, null]")   # => [1, nil]
+  # ```
+  #
+  # `T` is one of: `Int` (an integer that fits), `Integer` (any integer),
+  # `Float` (any number), `String`, `Bool`, `Symbol` (from a string),
+  # `Nil`, `U?` (`null` gives nil), `Array[U]`, `Set[U]`, `Hash[String, U]`
+  # and `Hash[Symbol, U]` (from an object), `Time` (an RFC 3339 string),
+  # `Bytes` (a standard Base64 string), `JSON::Value` (the sub-tree as it
+  # is), and a `data` type whose fields are of these types (its type
+  # arguments applied), from an object. A field the object does not have
+  # takes its default, and one without a default is an error; keys the
+  # type has no field for are ignored. A `data` value is built from its
+  # fields: no `initialize` of its own runs. The checker refuses another
+  # `T` (a class, an enum, a procedure, `Object`, a type parameter) at the
+  # call.
+  #
+  # `JSON.generate` is the inverse: `JSON.decode[T](JSON.generate(x)) == x`
+  # for a value `x` of such a type.
+  #
+  # ## Raises
+  #
+  # `JSON::ParseError` on malformed text; `JSON::DecodeError` when the
+  # document does not have the shape of `T` (the message gives where).
+  native def self.decode[T](text: String) -> T
+
+  # Decodes a parsed document (or a part of one) into a value of type `T`,
+  # as `.decode` decodes text.
+  #
+  # ## Raises
+  #
+  # `JSON::DecodeError` when the value does not have the shape of `T`.
+  native def self.decode[T](value: Value) -> T
+
+  # As `.decode`, but nil for malformed text or a document that does not
+  # have the shape of `T`.
+  native def self.decode?[T](text: String) -> T?
 
   # The compact JSON text of a value.
   native def self.generate(value: Object) -> String

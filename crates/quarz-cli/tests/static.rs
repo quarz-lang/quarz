@@ -1297,3 +1297,73 @@ fn a_block_a_union_receiver_may_call_stays_in_the_reach() {
         "{err}"
     );
 }
+
+#[test]
+fn json_decode_runs_at_compile_time() {
+    // `JSON.decode[T]` is pure: a `static def` decodes its argument into a
+    // `data` value it bakes into a generated method (#400).
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "require \"json\"\ndata Conf = (name: String, size: Int = 3)\nclass Base\n  static def self.configure(text: String) -> Void\n    c = JSON.decode[Conf](text)\n    def_class_method(:conf) { c }\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass App < Base\n  configure '{\"name\": \"x\"}'\nend\np App.conf\n",
+    );
+    run_and_build(&d.0, &app, "Conf(name: \"x\", size: 3)\n");
+}
+
+#[test]
+fn json_decode_refuses_a_type_json_does_not_decode_into() {
+    // `JSON.decode[T]`: the checker refuses a `T` JSON does not decode
+    // into, naming the type at fault, and a call without `T` written
+    // (#400).
+    let d = dir();
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require "json"
+class Foo
+end
+enum E
+  variant A
+end
+data W = (f: Foo)
+data U = (x: Int | String)
+x = JSON.decode[Object]("1")
+y = JSON.decode[W]("{}")
+z = JSON.decode[E]("1")
+w = JSON.decode[U]("{}")
+v = JSON.decode?[Hash[Int, Int]]("{}")
+def gen[T](s: String) -> T = JSON.decode[T](s)
+r: Int = JSON.decode("1")
+f = JSON.:decode
+data P[T] = (x: T, nxt: P[Array[T]]? = nil)
+q = JSON.decode[P[Int]]("{}")
+o = JSON.decode[JSON::Value?]("null")
+data Wrap[T] = (x: T)
+ok = JSON.decode[Wrap[Wrap[Int]]]('{"x": {"x": 1}}')
+"#,
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    for want in [
+        "`JSON.decode` cannot decode into Object: `Object` is a class: only `data` types are decoded from objects",
+        "`JSON.decode` cannot decode into W: `Foo` is a class",
+        "`JSON.decode` cannot decode into E: `E` is an enum",
+        "`JSON.decode` cannot decode into U: `Int | String` is a union: only a type or nil (`T?`) is decoded",
+        "`JSON.decode?` cannot decode into Hash[Int, Int]: `Hash[Int, Int]` has keys that are neither `String` nor `Symbol`",
+        "`JSON.decode` cannot decode into T: `T` is a type parameter: the type must be written at the call",
+        "`JSON.decode` takes the type to decode into explicitly (`JSON.decode[Args](text)`)",
+        "`JSON.decode` takes the type to decode into written at the call: call it (`JSON.decode[Args](text)`), there is no reference to it",
+        "`JSON.decode` cannot decode into P[Int]: `P` holds itself with other type arguments, without end",
+        "`JSON.decode` cannot decode into JSON::Value?: `JSON::Value?` is nullable, but `JSON::Value` holds `null` already",
+    ] {
+        assert!(err.contains(want), "{want}\n{err}");
+    }
+    // (A nesting written out is no recursion.)
+    assert!(!err.contains("Wrap"), "{err}");
+}

@@ -6293,6 +6293,17 @@ impl Checker {
                     );
                     return Type::Nothing;
                 }
+                // `JSON.decode[T]` takes `T` written at its call, which a
+                // reference cannot give.
+                if crate::json_decode::is_decode(&self.world, &m) {
+                    self.error(
+                        format!(
+                            "`JSON.{name}` takes the type to decode into written at the call: call it (`JSON.{name}[Args](text)`), there is no reference to it"
+                        ),
+                        expr.span,
+                    );
+                    return Type::Nothing;
+                }
                 if name == "deinitialize" && !m.singleton {
                     self.error(
                         format!("{DEINITIALIZE_CALLED} (in `.:deinitialize`)"),
@@ -11821,6 +11832,43 @@ impl Checker {
         Type::Nothing
     }
 
+    /// `JSON.decode[T]`'s `T`: written at the call, and a type JSON
+    /// decodes into (`json_decode::descriptor`), else an error naming the
+    /// type at fault.
+    fn check_json_decode_type(
+        &mut self,
+        expr: &Expr,
+        call: &Call,
+        m: &MethodInfo,
+        args: &[(TypeParamId, Type)],
+    ) {
+        if call.type_args.is_empty() {
+            self.error(
+                format!(
+                    "`JSON.{}` takes the type to decode into explicitly (`JSON.{}[Args](text)`)",
+                    m.name, m.name
+                ),
+                expr.span,
+            );
+            return;
+        }
+        let t_param = m.type_params.first().map(|p| p.id);
+        let Some((_, t)) = args.iter().find(|(p, _)| Some(*p) == t_param) else {
+            return;
+        };
+        let t = self.resolve(t);
+        if let Err(why) = crate::json_decode::descriptor(&self.world, &t) {
+            self.error(
+                format!(
+                    "`JSON.{}` cannot decode into {}: {why}",
+                    m.name,
+                    self.world.type_name(&t)
+                ),
+                expr.span,
+            );
+        }
+    }
+
     /// `statement_values[U]`'s `U` (docs/14 §5): written, concrete (no
     /// type parameter, which would let one key hold the values of
     /// different instantiations of a generic `static def`), and bakeable
@@ -11966,6 +12014,10 @@ impl Checker {
                     }
                     self.out.type_args.insert(expr.id, args);
                 } else {
+                    // `JSON.decode[T]`: `T` written, and decodable.
+                    if crate::json_decode::is_decode(&self.world, m) {
+                        self.check_json_decode_type(expr, call, m, &args);
+                    }
                     self.out.call_type_args.insert(expr.id, args);
                 }
             }
