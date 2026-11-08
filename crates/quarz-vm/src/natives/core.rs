@@ -570,6 +570,7 @@ fn gen_request(
             .collect::<Result<_, _>>()?,
         Some(_) => return Err(interp.err_type("internal: type arguments that are not an array")),
     };
+    let override_ = matches!(a.kw(interp, "override"), Some(Value::Bool(true)));
     Ok(crate::reflect::GenRequest {
         class,
         name,
@@ -581,6 +582,7 @@ fn gen_request(
         keywords,
         initialize,
         type_args,
+        override_,
     })
 }
 
