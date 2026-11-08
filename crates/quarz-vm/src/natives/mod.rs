@@ -279,6 +279,10 @@ const PURITY_BY_KEY: &[(&str, Purity)] = &[
     ("Kernel#sleep", Denied),
     ("Kernel#rand", Denied),
     ("Kernel#srand", Denied),
+    // (The process's default random generator, seeded from the moment.)
+    ("Array#shuffle", Denied),
+    ("Array#sample", Denied),
+    ("Array::Builder#shuffle!", Denied),
     ("Time.now", Denied),
     ("Time.monotonic", Denied),
     ("Crypto.random_bytes", Denied),
@@ -690,6 +694,8 @@ mod compile_time_tests {
                     | "Kernel#gets"
                     | "Crypto.random_bytes"
                     | "Crypto::RSA.generate_der"
+                    | "Array#shuffle"
+                    | "Array#sample"
             );
             if denied {
                 assert!(
@@ -697,19 +703,21 @@ mod compile_time_tests {
                     "{key} must be denied at compile time"
                 );
             }
-            if matches!(
+            if (matches!(
                 class,
                 "String" | "Array" | "Hash" | "Int" | "Float" | "Symbol" | "Type" | "JSON"
-            ) || matches!(
-                key,
-                "Kernel#puts"
-                    | "Kernel#p"
-                    | "Duration#+"
-                    | "Time#year"
-                    | "Time.at"
-                    | "Crypto::RSA::PublicKey#verify"
-                    | "Crypto::AES.seal_with"
-            ) {
+            ) && !matches!(key, "Array#shuffle" | "Array#sample"))
+                || matches!(
+                    key,
+                    "Kernel#puts"
+                        | "Kernel#p"
+                        | "Duration#+"
+                        | "Time#year"
+                        | "Time.at"
+                        | "Crypto::RSA::PublicKey#verify"
+                        | "Crypto::AES.seal_with"
+                )
+            {
                 assert!(
                     compile_time_allowed(key),
                     "{key} must be allowed at compile time"
