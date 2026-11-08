@@ -1480,3 +1480,36 @@ fn json_decode_of_a_type_parameter_a_generated_method_carries() {
         assert!(err.contains(want), "{want}\n{err}");
     }
 }
+
+#[test]
+fn a_handle_typed_with_a_static_defs_parameter_called_by_name_elsewhere() {
+    // The program calls a method named `args` elsewhere (`e.args`), so the
+    // type arguments of statements calling `Base.args` do not hold
+    // (docs/14 §5, by name): a handle typed with `A` is refused, the error
+    // naming that call and suggesting another name; renamed, it is
+    // accepted (#417).
+    let lib = |name: &str| {
+        format!("class Base\n  static def self.{name}[A](type: Type[A]) -> Void\n    perform = method_ref[(A) -> String](:perform)\n    def_method(:run_with, :a) {{ |a: A| -> String perform.bind(self).call(a) }}\n  end\nend\n")
+    };
+    let app = |name: &str| {
+        format!("require_relative \"lib\"\ndata W = (x: Int)\nclass Entry\n  def args -> String = \"e\"\nend\nclass Use\n  def show(e: Entry) -> String = e.args\nend\nclass J < Base\n  def perform(a: W) -> String = \"#{{a.x}}\"\n  {name} W\nend\np J.new.run_with(W.new(2))\np Use.new.show(Entry.new)\n")
+    };
+    let d = dir();
+    write(&d.0, "lib.qz", &lib("args"));
+    let path = write(&d.0, "app.qz", &app("args"));
+    let exe = d.0.join("app-bin");
+    for args in [
+        vec!["run", path.to_str().unwrap()],
+        vec!["build", path.to_str().unwrap(), "-o", exe.to_str().unwrap()],
+    ] {
+        let (ok, _, err) = quarz(&d.0, &args, &[]);
+        assert!(!ok);
+        assert!(
+            err.starts_with("app.qz:11:3: error: `method_ref(:perform)`: the handle to `J#perform` is made with `A`, a type parameter of `args`, which has no class here: the program also calls a method named `args` (at app.qz:7), so the type arguments of the statements calling `args` do not hold (docs/14 §5, by name over the whole program); give the `static def` a less common name"),
+            "{args:?}: {err}"
+        );
+    }
+    write(&d.0, "lib.qz", &lib("job_args"));
+    let path = write(&d.0, "app.qz", &app("job_args"));
+    run_and_build(&d.0, &path, "\"2\"\n\"e\"\n");
+}
