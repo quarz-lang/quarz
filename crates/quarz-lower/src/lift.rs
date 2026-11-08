@@ -194,9 +194,9 @@ impl Lowerer {
             }
             // A `JSON.decode[T]` whose `T` the method carries: the
             // descriptor the statement's run made, for the marker.
-            for c in f.consts.iter_mut() {
-                if let Constant::Str(m) = c {
-                    if let Some((_, d)) = g.decode.iter().find(|(k, _)| k == m) {
+            for (func, idx, d) in &g.decode {
+                if *func == old {
+                    if let Some(c) = f.consts.get_mut(*idx as usize) {
                         *c = Constant::Str(d.clone());
                     }
                 }

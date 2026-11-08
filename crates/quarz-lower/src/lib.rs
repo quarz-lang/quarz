@@ -132,6 +132,9 @@ pub struct Lowerer {
     /// parameter (in a block a generated method carries it into), by
     /// their markers' numbers (`quarz_types::json_decode::deferred`).
     pub decode_deferred: Vec<quarz_types::Type>,
+    /// The constants of block functions holding such a marker: by
+    /// function, each constant's index and the marker's number.
+    pub decode_markers: HashMap<FuncId, Vec<(u32, usize)>>,
     /// A generating call (`def_method`, `def_class_method`,
     /// `def_initialize`) written in the body of a generic method: the
     /// type parameters the values it is passed under

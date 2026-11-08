@@ -17,7 +17,7 @@
 //!
 //! In a block given to `def_method` and its kin, `T` may mention a type
 //! parameter the generated method carries (docs/14 §5): the lowering then
-//! bakes a marker (`deferred`), which the runner turns into the
+//! bakes a marker (`DEFERRED`), which the runner turns into the
 //! descriptor of `T` with the classes the statement gives, at the
 //! statement (an error there when it does not decode), and the generated
 //! method's lowering puts in its place (`Generated::decode`).
@@ -46,8 +46,9 @@ const MAX_NESTING: usize = 16;
 /// not see (quarz-lower tests they agree).
 pub const PREFIX: &str = "\u{1}json-type:";
 
-/// What a deferred descriptor's marker starts with, before its number.
-pub const DEFERRED: &str = "\u{1}json-type-deferred:";
+/// A deferred descriptor's marker, in its own constant (found by its
+/// index, not its text).
+pub const DEFERRED: &str = "\u{1}json-type-deferred";
 
 /// The descriptor of `t`, or why it cannot be decoded, naming the type at
 /// fault (`` `Foo` is a class ``).
@@ -79,27 +80,6 @@ fn describe_with(
     };
     b.node(t)?;
     Ok(format!("{PREFIX}{}", b.nodes.join(";")))
-}
-
-/// The marker of the `n`-th deferred descriptor.
-pub fn deferred(n: usize) -> String {
-    format!("{DEFERRED}{n}")
-}
-
-/// The number of a deferred descriptor's marker.
-pub fn deferred_index(s: &str) -> Option<usize> {
-    s.strip_prefix(DEFERRED)?.parse().ok()
-}
-
-/// The `data` classes descriptor `text` names (for the tree shake).
-pub fn class_ids(text: &str) -> Vec<ClassId> {
-    let Some(nodes) = text.strip_prefix(PREFIX) else {
-        return Vec::new();
-    };
-    nodes
-        .split(';')
-        .filter_map(|n| n.strip_prefix('d')?.split_once(':')?.0.parse().ok())
-        .collect()
 }
 
 struct Builder<'a> {

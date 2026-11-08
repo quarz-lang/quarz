@@ -449,7 +449,7 @@ impl Runner {
             // type parameter: its descriptor with the classes given here,
             // or an error at the statement (#409).
             let mut decode = Vec::new();
-            for (marker, t) in self.deferred_decodes(g.func) {
+            for (func, idx, t) in self.deferred_decodes(g.func) {
                 let t = t.subst(&subst);
                 if let Some(p) = free_param(&t, &own) {
                     return Err(fail(format!(
@@ -458,7 +458,7 @@ impl Runner {
                     )));
                 }
                 match quarz_types::json_decode::descriptor(world, &t) {
-                    Ok(d) => decode.push((marker, d)),
+                    Ok(d) => decode.push((func, idx, d)),
                     Err(why) => {
                         return Err(fail(format!(
                             "{at}: `JSON.decode` in the block cannot decode into {}: {why}",
@@ -1211,9 +1211,9 @@ impl Runner {
     }
 
     /// The deferred `JSON.decode[T]` descriptors of block function `func`
-    /// and the blocks it makes: each marker and its `T`
-    /// (`Lowerer::decode_deferred`).
-    fn deferred_decodes(&self, func: FuncId) -> Vec<(String, Type)> {
+    /// and the blocks it makes: each marker's function and constant, and
+    /// its `T` (`Lowerer::decode_markers`, `decode_deferred`).
+    fn deferred_decodes(&self, func: FuncId) -> Vec<(FuncId, u32, Type)> {
         let mut out = Vec::new();
         let mut work = vec![func];
         let mut seen = std::collections::HashSet::new();
@@ -1224,13 +1224,9 @@ impl Runner {
             let Some(fun) = self.lowerer.done.get(f as usize) else {
                 continue;
             };
-            for c in &fun.consts {
-                if let quarz_ir::Constant::Str(s) = c {
-                    if let Some(n) = quarz_types::json_decode::deferred_index(s) {
-                        if let Some(t) = self.lowerer.decode_deferred.get(n) {
-                            out.push((s.clone(), t.clone()));
-                        }
-                    }
+            for &(idx, n) in self.lowerer.decode_markers.get(&f).into_iter().flatten() {
+                if let Some(t) = self.lowerer.decode_deferred.get(n) {
+                    out.push((f, idx, t.clone()));
                 }
             }
             for b in &fun.blocks {
