@@ -96,6 +96,13 @@ pub struct Lowerer {
         usize,
         HashMap<MethodId, (usize, std::rc::Rc<Vec<MethodId>>)>,
     ),
+    /// `bounded_overrides`, for the world of this number of classes and
+    /// extensions: each with the number of `overrides_of` it filtered.
+    #[allow(clippy::type_complexity)]
+    bounded_cache: (
+        (usize, usize),
+        HashMap<(MethodId, Box<[ClassId]>), (usize, std::rc::Rc<Vec<MethodId>>)>,
+    ),
     /// In a static round: the classes whose `static` statements have not
     /// all run (and their descendants). A reach by one of the names the
     /// runtime calls by (`shake::RUNTIME_NAMES`: `to_s`, `initialize`,
@@ -277,6 +284,7 @@ impl Lowerer {
         self.last_walk = None;
         // (The ids from `methods` on are given to other methods next.)
         self.overrides_cache.1.clear();
+        self.bounded_cache.1.clear();
         self.method_funcs.truncate(methods);
         self.reached.truncate(methods);
         self.final_known = self.final_known.min(methods);
@@ -1101,13 +1109,48 @@ impl Lowerer {
         // generated, and a dispatch to one before then finds no
         // body.)
         let runtime_name = quarz_ir::shake::RUNTIME_NAMES.contains(&m.name.as_str());
-        for o in self.overrides_of(world, mid, by_name).iter() {
-            if !(runtime_name && self.static_skip.contains(&world.methods[*o as usize].owner))
-                && bound.is_none_or(|b| may_receive(world, *o, b))
-            {
+        let overrides = match bound {
+            None => self.overrides_of(world, mid, by_name),
+            Some(b) => self.bounded_overrides(world, mid, b, by_name),
+        };
+        for o in overrides.iter() {
+            if !(runtime_name && self.static_skip.contains(&world.methods[*o as usize].owner)) {
                 self.walk_method(world, *o, walk);
             }
         }
+    }
+
+    /// `overrides_of(mid)` that a receiver bounded by `bound` may find
+    /// (`may_receive`), kept as `overrides_of` is (`may_receive` looks
+    /// through every class): a static round's walk asks again for what
+    /// the previous rounds' did.
+    fn bounded_overrides(
+        &mut self,
+        world: &World,
+        mid: MethodId,
+        bound: &[ClassId],
+        by_name: &HashMap<&str, Vec<MethodId>>,
+    ) -> std::rc::Rc<Vec<MethodId>> {
+        let all = self.overrides_of(world, mid, by_name);
+        let shape = (world.classes.len(), world.extensions.len());
+        if self.bounded_cache.0 != shape {
+            self.bounded_cache = (shape, HashMap::default());
+        }
+        let key = (mid, Box::<[ClassId]>::from(bound));
+        let (from, mut o) = match self.bounded_cache.1.get(&key) {
+            Some((n, o)) if *n == all.len() => return o.clone(),
+            Some((n, o)) => (*n, (**o).clone()),
+            None => (0, Vec::new()),
+        };
+        o.extend(
+            all[from..]
+                .iter()
+                .copied()
+                .filter(|&x| may_receive(world, x, bound)),
+        );
+        let o = std::rc::Rc::new(o);
+        self.bounded_cache.1.insert(key, (all.len(), o.clone()));
+        o
     }
 
     /// The methods that may run for a call resolved to `mid`
