@@ -24,9 +24,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # Caches are saved from main only: the repository's caches are over
+      # GitHub's limit, and a pull request's would evict main's.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: lint
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Format
         run: cargo fmt --all -- --check
       - name: Lint
@@ -57,7 +60,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test
-          save-if: ${{ matrix.part == 'rest' }}
+          save-if: ${{ matrix.part == 'rest' && github.ref == 'refs/heads/main' }}
       - name: Toolchain for the LLVM backend
         run: clang --version
       - name: Build
@@ -70,12 +73,15 @@ jobs:
         run: cargo test -p quarz-cli --test build
       - name: Test the rest
         if: matrix.part == 'rest'
+        shell: bash
         run: |
-          # quarz-cli's test targets as Cargo finds them, but std and build.
+          # quarz-cli's test targets as Cargo finds them (those `cargo test`
+          # runs), but std and build.
           tests=$(cargo metadata --no-deps --format-version 1 |
             jq -r '.packages[] | select(.name == "quarz-cli") | .targets[]
-              | select(.kind | index("test")) | .name
+              | select((.kind | index("test")) and .test) | .name
               | select(. != "std" and . != "build")')
+          [ -n "$tests" ] || { echo "no test targets of quarz-cli found" >&2; exit 1; }
           args=()
           for t in $tests; do args+=(--test "$t"); done
           echo "quarz-cli's test targets here: ${tests//$'\n'/ }"
@@ -130,6 +136,7 @@ jobs:
       # a minute.
       - name: Download the Lean toolchain
         if: steps.lean-toolchain.outputs.cache-hit != 'true'
+        shell: bash
         run: |
           v="${{ steps.lean.outputs.version }}"
           url="https://github.com/leanprover/lean4/releases/download/$v/lean-${v#v}-linux.tar.zst"
