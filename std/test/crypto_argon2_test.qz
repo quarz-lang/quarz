@@ -1,0 +1,137 @@
+# Crypto::Argon2: known answers (checked against OpenSSL 3.5's ARGON2ID
+# KDF and the reference implementation's README), round trips, salts,
+# Params' bounds, needs_rehash?, the hashes verify? refuses, and tasks
+# hashing at once.
+require "crypto"
+require "test"
+
+class CryptoArgon2Test < Test::Case
+  SALT = "saltsaltsaltsalt"
+
+  # Cheap parameters, for the tests that hash often.
+  def cheap -> Crypto::Argon2::Params
+    Crypto::Argon2::Params.new(memory_kib: 64, iterations: 1, parallelism: 1)
+  end
+
+  def test_known_answers
+    p = Crypto::Argon2::Params.new(memory_kib: 4096, iterations: 3, parallelism: 1)
+    assert_equal("$argon2id$v=19$m=4096,t=3,p=1$c2FsdHNhbHRzYWx0c2FsdA$fxbFVdPGPQ1NJoy87CaTabyrXOKZepZ9SGBFwPkPJ28",
+                 Crypto::Argon2.hash("password", params: p, salt: SALT.to_bytes))
+    # Lanes: four of them.
+    p4 = Crypto::Argon2::Params.new(memory_kib: 64, iterations: 1, parallelism: 4)
+    assert_equal("$argon2id$v=19$m=64,t=1,p=4$c2FsdHNhbHRzYWx0c2FsdA$Y1yyL+scViiFWUX0MUmVpiAHOQ2sIL48DAiiplqsyqY",
+                 Crypto::Argon2.hash("password".to_bytes, params: p4, salt: SALT.to_bytes))
+    # The reference implementation's example (an 8-byte salt: verify?
+    # reads what other implementations wrote).
+    ref = "$argon2id$v=19$m=65536,t=2,p=1$c29tZXNhbHQ$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc"
+    assert(Crypto::Argon2.verify?("password", ref))
+    assert(!Crypto::Argon2.verify?("passwore", ref))
+  end
+
+  def test_round_trip
+    h = Crypto::Argon2.hash("correct horse")
+    assert(h.start_with?("$argon2id$v=19$m=19456,t=2,p=1$"))
+    assert(Crypto::Argon2.verify?("correct horse", h))
+    assert(Crypto::Argon2.verify?("correct horse".to_bytes, h))
+    assert(!Crypto::Argon2.verify?("correct horsf", h))
+    assert(!Crypto::Argon2.verify?("", h))
+    # A random salt: two hashes differ, both verify.
+    h2 = Crypto::Argon2.hash("correct horse", params: cheap)
+    h3 = Crypto::Argon2.hash("correct horse", params: cheap)
+    assert(h2 != h3)
+    assert(Crypto::Argon2.verify?("correct horse", h2) && Crypto::Argon2.verify?("correct horse", h3))
+    # Non-ASCII and empty passwords.
+    ["パスワード", ""].each do |pw|
+      assert(Crypto::Argon2.verify?(pw, Crypto::Argon2.hash(pw, params: cheap)))
+    end
+  end
+
+  def test_salt
+    s = Bytes.from((0...48).to_a)
+    assert_equal(Crypto::Argon2.hash("pw", params: cheap, salt: s), Crypto::Argon2.hash("pw", params: cheap, salt: s))
+    assert(Crypto::Argon2.verify?("pw", Crypto::Argon2.hash("pw", params: cheap, salt: s)))
+    assert_raise(ArgumentError) { Crypto::Argon2.hash("pw", params: cheap, salt: Bytes.from((0...15).to_a)) }
+    assert_raise(ArgumentError) { Crypto::Argon2.hash("pw", params: cheap, salt: Bytes.from((0...49).to_a)) }
+  end
+
+  def test_params
+    d = Crypto::Argon2::Params::DEFAULT
+    assert_equal([19_456, 2, 1], [d.memory_kib, d.iterations, d.parallelism])
+    assert_equal("#<Crypto::Argon2::Params m=19456 t=2 p=1>", d.inspect)
+    assert_equal(d.inspect, d.to_s)
+    assert_equal(d, Crypto::Argon2::Params.new(19_456, 2, 1))
+    # The bounds.
+    Crypto::Argon2::Params.new(memory_kib: 8, iterations: 1, parallelism: 1)
+    Crypto::Argon2::Params.new(memory_kib: 4_194_304, iterations: 4_294_967_295, parallelism: 255)
+    Crypto::Argon2::Params.new(memory_kib: 2040, iterations: 1, parallelism: 255)
+    [[7, 1, 1], [4_194_305, 1, 1], [64, 0, 1], [64, 4_294_967_296, 1], [64, 1, 0], [4096, 1, 256], [2039, 1, 255], [15, 1, 2]].each do |m|
+      assert_raise(ArgumentError) { Crypto::Argon2::Params.new(m[0], m[1], m[2]) }
+    end
+    # Of a hash.
+    h = Crypto::Argon2.hash("pw", params: Crypto::Argon2::Params.new(memory_kib: 72, iterations: 3, parallelism: 2))
+    assert_equal(Crypto::Argon2::Params.new(72, 3, 2), Crypto::Argon2::Params.of(h))
+    assert_raise(Crypto::Error) { Crypto::Argon2::Params.of("$pbkdf2-sha256$600000$c2FsdA$aGFzaA") }
+    assert_raise(Crypto::Error) { Crypto::Argon2::Params.of("$argon2id$v=19$m=64,t=1") }
+  end
+
+  def test_needs_rehash
+    h = Crypto::Argon2.hash("pw", params: Crypto::Argon2::Params.new(memory_kib: 64, iterations: 2, parallelism: 2))
+    at = ->(m: Int, t: Int, p: Int) { Crypto::Argon2.needs_rehash?(h, Crypto::Argon2::Params.new(m, t, p)) }
+    assert(!at.call(64, 2, 2))
+    assert(!at.call(32, 1, 1))
+    assert(at.call(65, 2, 2))
+    assert(at.call(64, 3, 2))
+    assert(at.call(64, 2, 3))
+    assert(!at.call(64, 1, 2))
+    assert(Crypto::Argon2.needs_rehash?(h))
+    assert(!Crypto::Argon2.needs_rehash?(Crypto::Argon2.hash("pw")))
+    # Other schemes: true, to rehash them.
+    assert(Crypto::Argon2.needs_rehash?("$pbkdf2-sha256$600000$c2FsdA$aGFzaA"))
+    assert(Crypto::Argon2.needs_rehash?("$argon2i$v=19$m=65536,t=2,p=1$c29tZXNhbHQ$9sTbSlTio3Biev89thdrlKKiCaYsjjYVJxGAL3swxpQ"))
+    assert(Crypto::Argon2.needs_rehash?(""))
+    # An argon2id string that does not parse: an error.
+    assert_raise(Crypto::Error) { Crypto::Argon2.needs_rehash?("$argon2id$v=19$m=64,t=1,p=1$c2FsdHNhbHRzYWx0c2FsdA") }
+    assert_raise(Crypto::Error) { Crypto::Argon2.needs_rehash?("$argon2id$v=16$m=64,t=1,p=1$c2FsdHNhbHRzYWx0c2FsdA$Y1yyL+scViiFWUX0MUmVpiAHOQ2sIL48DAiiplqsyqY") }
+  end
+
+  def test_refused_hashes
+    secret = "hunter2-the-password"
+    good = Crypto::Argon2.hash(secret, params: cheap, salt: SALT.to_bytes)
+    salt = "c2FsdHNhbHRzYWx0c2FsdA"
+    out = good.split("$").last
+    [
+      ["$argon2i$v=19$m=64,t=1,p=1$#{salt}$#{out}", /argon2i\$ hash/],
+      ["$argon2d$v=19$m=64,t=1,p=1$#{salt}$#{out}", /argon2d\$ hash/],
+      ["$argon2id$v=16$m=64,t=1,p=1$#{salt}$#{out}", /v=16/],
+      ["$argon2id$m=64,t=1,p=1$#{salt}$#{out}", /version/],
+      ["$argon2id$v=19$m=64,t=1,p=1$#{salt}", /without its hash/],
+      ["$argon2id$v=19$m=64,t=1,p=1", /without its salt/],
+      ["$argon2id$v=19$m=64,t=1$#{salt}$#{out}", /parameter p/],
+      ["$argon2id$v=19$m=64,t=1,p=1,keyid=AAAA$#{salt}$#{out}", /keyid/],
+      ["$argon2id$v=19$m=64,t=1,p=1,data=AAAA$#{salt}$#{out}", /data/],
+      ["$argon2id$v=19$m=4194305,t=1,p=1$#{salt}$#{out}", /memory_kib/],
+      ["$argon2id$v=19$m=64,t=0,p=1$#{salt}$#{out}", /iterations/],
+      ["$argon2id$v=19$m=64,t=1,p=9$#{salt}$#{out}", /8 \* parallelism/],
+      [good.slice(0, good.size - 50), /./],
+      ["$pbkdf2-sha256$600000$c2FsdA$aGFzaA", /pbkdf2-sha256/],
+      ["not a hash", /PHC/],
+      ["", /PHC/]
+    ].each do |c|
+      e = assert_raise(Crypto::Error) { Crypto::Argon2.verify?(secret, c[0]) }
+      assert_match(c[1], e.message)
+      assert(!e.message.include?(secret))
+    end
+    assert(Crypto::Argon2.verify?(secret, good))
+  end
+
+  def test_tasks_hash_at_once
+    tasks = 4.times.map do |i|
+      Task.spawn do
+        pw = "password #{i}"
+        h = Crypto::Argon2.hash(pw, params: Crypto::Argon2::Params.new(memory_kib: 1024, iterations: 1, parallelism: 1))
+        Crypto::Argon2.verify?(pw, h) && !Crypto::Argon2.verify?("password #{i + 1}", h)
+      end
+    end
+    assert_equal([true, true, true, true], tasks.map(&:await))
+  end
+end

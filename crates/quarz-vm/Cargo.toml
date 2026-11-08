@@ -48,6 +48,11 @@ pem-rfc7468 = { version = "1", features = ["alloc"], optional = true }
 # as `rsa`; `getrandom` for `Crypto.random_bytes`.
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc", "zeroize"], optional = true }
 getrandom = { version = "0.4", optional = true }
+# argon2id password hashes (`Crypto::Argon2`), on the same
+# password-hash/rand_core line; its PHC strings come from `password-hash`.
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "password-hash", "zeroize"], optional = true }
+# To clear the copy of a password the helper thread hashes.
+zeroize = { version = "1", optional = true }
 # The allocator (see `src/alloc.rs`): C sources built with the system's
 # compiler.
 # Pinned with libmimalloc-sys: `alloc.rs` sets an option by its number in
@@ -60,8 +65,9 @@ default = ["mimalloc", "tls", "crypto"]
 mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
 # TLS (`TLSSocket`, `std/tls.qz`): without it, connecting raises.
 tls = ["dep:rustls", "dep:rustls-native-certs", "dep:openssl-probe"]
-# RSA keys and signatures (`std/crypto.qz`): without it, they raise.
-crypto = ["dep:rsa", "dep:rand", "dep:pem-rfc7468", "dep:aes-gcm", "dep:getrandom"]
+# RSA, AES-GCM, argon2id and random bytes (`std/crypto.qz`): without
+# it, they raise.
+crypto = ["dep:rsa", "dep:rand", "dep:pem-rfc7468", "dep:aes-gcm", "dep:getrandom", "dep:argon2", "dep:zeroize"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -292,7 +292,8 @@ fn registry() -> Registry<NativeFn> {
     m
 }
 
-/// Without the `crypto` feature: RSA raises.
+/// Without the `crypto` feature: RSA, AES-GCM, argon2id and random
+/// bytes raise.
 #[cfg(not(feature = "crypto"))]
 fn no_crypto(m: &mut Registry<NativeFn>) {
     native!(
@@ -301,6 +302,9 @@ fn no_crypto(m: &mut Registry<NativeFn>) {
             "Crypto.random_bytes",
             "Crypto::AES.seal_with",
             "Crypto::AES.open_with",
+            "Crypto::Argon2.hash_with",
+            "Crypto::Argon2.verify_with",
+            "Crypto::Argon2.params_with",
             "Crypto::RSA.private_der",
             "Crypto::RSA.private_pem",
             "Crypto::RSA.public_der",
@@ -320,7 +324,7 @@ fn no_crypto(m: &mut Registry<NativeFn>) {
         |i, _, _| {
             Err(i.raise(
                 i.program.exc.not_implemented,
-                "RSA is not built in (the `crypto` feature of quarz-vm)",
+                "cryptography is not built in (the `crypto` feature of quarz-vm)",
             ))
         }
     );
