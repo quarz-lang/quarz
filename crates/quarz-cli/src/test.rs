@@ -181,6 +181,13 @@ pub(crate) fn test_specs(
     opts: &quarz_cog::Options,
 ) -> Result<Vec<quarz_types::CogSpec>, String> {
     let movement = quarz_cog::open(root, opts).map_err(|e| e.to_string())?;
+    Ok(specs_of(&movement))
+}
+
+/// The specs `test_specs` gives, of an opened movement: an application's
+/// cogs in `movement.cogs` order; for a library, a test application
+/// first, then the cogs (spec `k` is `movement.cogs[k - 1]`).
+pub(crate) fn specs_of(movement: &quarz_cog::Movement) -> Vec<quarz_types::CogSpec> {
     let spec = |c: &quarz_cog::CogEntry, module: Option<String>, shift: u32| quarz_types::CogSpec {
         name: c.name.clone(),
         version: c.version.clone(),
@@ -206,7 +213,7 @@ pub(crate) fn test_specs(
                 specs[0].imports.push((k.clone(), *j as u32));
             }
         }
-        return Ok(specs);
+        return specs;
     }
     let mut imports = vec![(app.module.clone(), 1)];
     for (k, j) in app.imports.iter().chain(&app.dev_imports) {
@@ -229,7 +236,7 @@ pub(crate) fn test_specs(
             .iter()
             .map(|c| spec(c, Some(c.module.clone()), 1)),
     );
-    Ok(specs)
+    specs
 }
 
 fn load_and_check(

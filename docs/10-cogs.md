@@ -33,6 +33,8 @@ name    = "webkit"
 version = "0.3.1"
 module  = "Webkit"      # the module the cog's declarations live in; default: `name` in CamelCase
 quarz   = "0.1"         # the language version it is written for
+documentation = "https://webkit.api.quarz.dev"   # where its API is published (§8)
+repository    = "https://github.com/foo/webkit"  # its source, for the API's links to it (§8)
 
 [dependencies]
 # key = the module the cog is seen as; `git` is required, with at most one of tag/rev/branch
@@ -56,6 +58,7 @@ Httpx = { path = "../httpx" }
 - A cog fetched from elsewhere may not name a repository on this machine in its dependencies (a `file://` URL): only the application, a patched cog and a cog that is itself local may. Only the application's `[patch]` applies (as in Cargo): another cog's is not read, and a fetched cog's gets a warning when it is resolved (`rotor 0.1.0: its [patch] is not read; only the application's applies (SOURCE)`), its author's setting for working on it.
 - **`Cog.local.toml`**, beside `Cog.toml`, holds a `[patch]` table and nothing else (another table is an error naming the file): this machine's replacements, kept out of version control (`quarz cog init` lists it in `.gitignore`), so that a cog developed against a local copy of a dependency commits no path. Its entries are merged over `Cog.toml`'s `[patch]`, the local file's entry taking a key both name, and apply where a `[patch]` does: at the root of the movement (the application, or the cog itself under `quarz test`). A cog that depends on another under development writes `[patch] PG = { path = "../pg" }` there. The lock is resolved, checked and written as if the file were not there (as Go's `go.work` leaves `go.mod` alone): the build uses the local directories, `Cog.lock` keeps the git sources' commits, and `quarz cog vendor` copies those; switching a local patch on or off changes no committed file. A local copy that needs what the lock does not hold (a cog it lacks, a later version, another commit) is resolved afresh for the build, without writing the lock (each build, then: the lock's warnings are not repeated, and `quarz cog outdated` knows only the lock's cogs), and refused with `--locked` (or `--offline`), which names the file; `quarz cog tree` shows a locally patched cog's directory and the version the lock holds for its source.
 - `quarz` is the minimum language version the cog needs (as `go 1.21` in a `go.mod` and `minimum_zig_version` in Zig); a program refuses to build with an older `quarz`.
+- `documentation` and `repository`, optional, are http(s) URLs: where the cog's API is published (`quarz doc --html`) and its repository's web page; §8 says what reads them.
 - A cog with `extern "C"` declarations will need to name the C libraries to link; `[cog] link = ["ssl"]` is reserved for that and not designed further here.
 
 ## 3. The Lock File: `Cog.lock`
@@ -174,7 +177,49 @@ A class body's `static` statement ([14-metaprogramming.md](14-metaprogramming.md
 | `quarz cog verify` | Check the cache and `vendor/` against the lock's hashes |
 | `quarz run`/`build`/`check`/`ir` [`--locked`] [`--offline`] [TARGET] | TARGET is the application's directory, its `src/main.qz`, or nothing for the application around the current directory (`quarz run -- ARGS`); a `.qz` file elsewhere is a script. Use the lock, or resolve and write it; `--locked` fails instead of writing, `--offline` fetches nothing. `quarz build` writes the executable next to the manifest, named after the cog, unless `-o` says otherwise. In a library (a cog without `src/main.qz`), `quarz check` checks its files as its users load them, its root module wrapping them (saying on standard error that it checked a library), and the others refuse it: there is nothing to run |
 
-## 8. Design Notes
+## 8. Publishing the API
+
+A cog publishes its API as the site `quarz doc --html` makes ([13-doc-comments.md](13-doc-comments.md) §6), and its manifest says where (`documentation`), so that the pages of the cogs that depend on it link to it: a class or method of its named in their signatures and text (`Rotor::Changeset` on bezel's pages) goes to its page and member there, `quarz doc` laying every site out the same way (only to a page and member that site has: anything `:nodoc:` stays text, as do a constant, a public function and an extension's method for now). The standard library's names link to [api.quarz.dev](https://api.quarz.dev/) (`--std-url URL` for another, a local build's). A dependency without `documentation` keeps its names as text.
+
+Each declaration's location links to its line on GitHub at the commit the pages are made from (`https://github.com/OWNER/REPO/blob/COMMIT/src/x.qz#L12`): the documented cog's from `repository` (else its checkout's `origin`) at `git rev-parse HEAD` (`--source-rev` in CI, which has `GITHUB_SHA`); the standard library's site's from quarz-lang/quarz at `--source-rev` (docs.yml gives `GITHUB_SHA`) or else the commit the `quarz` binary was built from (`quarz --version` shows it). (A dependency's file would link to its `repository` at the commit `Cog.lock` holds, but the pages show only the documented files' locations.) Only GitHub's URLs are made; without one, a location stays text.
+
+The quarz-lang cogs publish theirs as the standard library does, with GitHub Pages, at `<cog>.api.quarz.dev`. quarz's `.github/workflows/docs.yml` is the shape to copy:
+
+```yaml
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # quarz: built from source or installed (the version Cog.toml's `quarz` asks for)
+      - run: quarz doc --check
+      - run: quarz doc --html -o site --source-rev "$GITHUB_SHA"
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
+```
+
+The repository's Pages source is "GitHub Actions", and its custom domain (`pg.api.quarz.dev`) is set in the repository's Pages settings: a site published by Actions needs no `CNAME` file. DNS has a record for the name, a wildcard `*.api.quarz.dev` pointing at `quarz-lang.github.io` serving them all.
+
+## 9. Design Notes
 
 - **Git, not a registry.** A registry needs a server, an account system and a policy for names; a URL needs none of these and leaves the publisher in control of their repository. Discovery (a searchable index of known cogs) can be added later without changing how a cog is named or fetched, as Go's `pkg.go.dev` was.
 - **Source, not binaries.** A cog is compiled on the user's machine with the user's `quarz`; the fetched tree is verified by content, and the cache keyed by content keeps the cost to the first build. Separate compilation ([05-execution.md](05-execution.md) §2) is what makes this cheap.
@@ -186,7 +231,7 @@ A class body's `static` statement ([14-metaprogramming.md](14-metaprogramming.md
 - **Rejected: URLs in `require`** (Deno). Two files could then name two versions of one library, which a movement with one global class table cannot hold; and a URL in every file is not Ruby.
 - **Rejected: coexisting versions of one cog** (Cargo, Java shading). Technically open, since every cog has its own root, but two `Tomlz::Value` types in one program would confuse more than they help. If needed later it can be allowed per dependency without changing the manifest's shape.
 
-## 9. Open Questions
+## 10. Open Questions
 
 - The name a class prints: the diagnostic at a use site can show the name visible there (`AUtil::Table`), while `Type#name` at run time gives the declared one (`Util::Table`); Ruby's `Namespace` has the same question open (Bug #21316).
 - Whether `branch` should be allowed at all outside `[patch]`.

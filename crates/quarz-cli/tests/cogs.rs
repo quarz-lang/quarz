@@ -2226,3 +2226,83 @@ fn the_author_sees_a_tag_that_disagrees_with_the_manifest() {
         out.stderr
     );
 }
+
+/// `quarz doc --html` links a dependency's names to its `documentation`
+/// (#448), the standard library's to api.quarz.dev or `--std-url`, and
+/// the documented cog's locations to its `repository` at `--source-rev`
+/// (#449).
+#[test]
+fn doc_links_other_cogs_the_std_and_the_source() {
+    let w = World::new();
+    w.write(
+        "dep/Cog.toml",
+        "[cog]\nname = \"dep\"\nversion = \"1.0.0\"\ndocumentation = \"https://dep.example/api/\"\nrepository = \"https://github.com/o/dep\"\n",
+    );
+    w.write(
+        "dep/src/thing.qz",
+        "# A thing.\nclass Thing\n  # Goes.\n  def go -> String = \"go\"\nend\n\n# A base.\nclass Base\nend\n\n# Colors.\nenum Color\n  variant Red\nend\n\n# :nodoc:\nclass Hidden\nend\n\n# A point.\ndata Point = (x: Int)\n",
+    );
+    w.commit("dep", Some("v1.0.0"));
+    w.write(
+        "lib/Cog.toml",
+        &format!(
+            "[cog]\nname = \"mylib\"\nversion = \"0.1.0\"\nrepository = \"https://github.com/me/mylib\"\n\n[dependencies]\nDep = {{ git = \"{}\", tag = \"v1.0.0\" }}\n",
+            w.url("dep")
+        ),
+    );
+    w.write(
+        "lib/src/user.qz",
+        "# Uses `Dep::Thing#go` and `String`; `Dep::Color::Red`, `Dep::Hidden`, `Dep::Point.new`.\nclass User < Dep::Base\n  # Makes one.\n  def make(name: String) -> Dep::Thing = Dep::Thing.new\nend\n",
+    );
+    w.ok(
+        "lib",
+        &["doc", "--html", "-o", "site", "--source-rev", "abc123"],
+    );
+    let page = std::fs::read_to_string(w.path("lib/site/Mylib--User.html")).unwrap();
+    for href in [
+        "https://dep.example/api/Dep--Thing.html",
+        "https://dep.example/api/Dep--Thing.html#method-go",
+        "https://dep.example/api/Dep--Base.html",
+        "https://api.quarz.dev/String.html",
+        "https://github.com/me/mylib/blob/abc123/src/user.qz#L2",
+        "https://github.com/me/mylib/blob/abc123/src/user.qz#L4",
+        // A variant on its enum's page; a data type's `new` (no member
+        // of its page) on the type's page.
+        "https://dep.example/api/Dep--Color.html#variant-Red",
+        "https://dep.example/api/Dep--Point.html",
+    ] {
+        assert!(
+            page.contains(&format!("href=\"{href}\"")),
+            "no {href} in\n{page}"
+        );
+    }
+    // A `:nodoc:` class has no page there.
+    assert!(!page.contains("Dep--Hidden"), "{page}");
+    w.ok(
+        "lib",
+        &[
+            "doc",
+            "--html",
+            "-o",
+            "site2",
+            "--std-url",
+            "http://localhost:8000/",
+        ],
+    );
+    let page = std::fs::read_to_string(w.path("lib/site2/Mylib--User.html")).unwrap();
+    assert!(
+        page.contains("href=\"http://localhost:8000/String.html\""),
+        "{page}"
+    );
+    // Without a repository, origin, nor a documentation: plain text.
+    w.write(
+        "lib/Cog.toml",
+        &format!(
+            "[cog]\nname = \"mylib\"\nversion = \"0.1.0\"\n\n[dependencies]\nDep = {{ git = \"{}\", tag = \"v1.0.0\" }}\n",
+            w.url("dep")
+        ),
+    );
+    w.ok("lib", &["doc", "--html", "-o", "site3"]);
+    let page = std::fs::read_to_string(w.path("lib/site3/Mylib--User.html")).unwrap();
+    assert!(!page.contains("github.com"), "{page}");
+}

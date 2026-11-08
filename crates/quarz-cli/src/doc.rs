@@ -14,6 +14,7 @@ use quarz_types::{ClassId, ClassKind, Member, MethodId, Synth, Type, World};
 
 pub(crate) mod examples;
 mod html;
+mod links;
 
 struct Opts {
     name: Option<String>,
@@ -25,6 +26,12 @@ struct Opts {
     json: bool,
     private: bool,
     std: bool,
+    /// `--std-url`: the standard library's published API (#448).
+    std_url: Option<String>,
+    /// `--source-rev`: the commit the documented files link to (#449).
+    source_rev: Option<String>,
+    /// `--readme`: the front page's Markdown, in place of the README.
+    readme: Option<PathBuf>,
     cog: quarz_cog::Options,
 }
 
@@ -40,6 +47,9 @@ pub fn command(args: &[String]) -> ExitCode {
         json: false,
         private: false,
         std: false,
+        std_url: None,
+        source_rev: None,
+        readme: None,
         cog: quarz_cog::Options {
             verbose: true,
             ..Default::default()
@@ -54,6 +64,17 @@ pub fn command(args: &[String]) -> ExitCode {
                 match args.get(i) {
                     Some(d) => opts.out = Some(PathBuf::from(d)),
                     None => return usage(),
+                }
+            }
+            "--std-url" | "--source-rev" | "--readme" => {
+                i += 1;
+                let Some(v) = args.get(i) else {
+                    return usage();
+                };
+                match a.as_str() {
+                    "--std-url" => opts.std_url = Some(v.clone()),
+                    "--source-rev" => opts.source_rev = Some(v.clone()),
+                    _ => opts.readme = Some(PathBuf::from(v)),
                 }
             }
             "--check" => opts.check = true,
@@ -139,7 +160,7 @@ pub fn command(args: &[String]) -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: quarz doc [FILE] [NAME] [--html [-o DIR]] [--check] [--missing] [--json] [--private] [--std]"
+        "usage: quarz doc [FILE] [NAME] [--html [-o DIR] [--std-url URL] [--source-rev REV] [--readme FILE]] [--check] [--missing] [--json] [--private] [--std]"
     );
     ExitCode::from(2)
 }
@@ -154,6 +175,11 @@ pub(crate) struct Loaded {
     pub own: Vec<u32>,
     pub title: String,
     pub readme: Option<String>,
+    /// Where the pages link beyond themselves.
+    pub links: links::Links,
+    /// The APIs of the other sites linked to, by their URL, as `quarz
+    /// doc` makes them from their files (built when first linked to).
+    pub foreign: std::cell::RefCell<BTreeMap<String, Api>>,
 }
 
 impl Loaded {
@@ -182,6 +208,62 @@ impl Loaded {
         }
     }
 
+    /// The URL of an offset's line in its source on GitHub, when known.
+    pub fn source_url(&self, offset: u32) -> Option<String> {
+        if offset == 0 {
+            return None;
+        }
+        let i = self
+            .files
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.base <= offset && offset <= f.base + f.text.len() as u32)
+            .max_by_key(|(_, f)| f.base)?
+            .0;
+        let base = self.links.source.get(i)?.as_ref()?;
+        Some(format!("{base}#L{}", self.files[i].line_col(offset).line))
+    }
+
+    /// The published API a class's declaration is on, when it is another
+    /// site's (#448): a dependency cog's, the standard library's.
+    pub fn docs_of(&self, world: &World, class: ClassId) -> Option<&str> {
+        let c = world.class(class);
+        if c.file == 0 && c.span.start == 0 {
+            if let Some(cog) = c.cog {
+                return self.links.cog_docs.get(cog as usize)?.as_deref();
+            }
+        }
+        self.links.docs.get(c.file as usize)?.as_deref()
+    }
+
+    /// Whether the site at `base` has the page `page` and, of `anchor`,
+    /// a member there: the anchor to link to (`Some(None)` for the page
+    /// alone), or `None` for no page. The site's API is the one `quarz
+    /// doc` makes of the files whose declarations it holds, so that a
+    /// link goes only where it has a page (not to a `:nodoc:` one, nor to
+    /// a variant's generated reader).
+    pub fn foreign_has(
+        &self,
+        base: &str,
+        page: &str,
+        anchor: Option<&str>,
+    ) -> Option<Option<String>> {
+        let mut foreign = self.foreign.borrow_mut();
+        let api = foreign.entry(base.to_string()).or_insert_with(|| {
+            let files: Vec<u32> = (0..self.links.docs.len())
+                .filter(|&f| self.links.docs[f].as_deref() == Some(base))
+                .map(|f| f as u32)
+                .collect();
+            Api::of(&self.world, &files, false)
+        });
+        let p = api.page(page)?;
+        Some(
+            anchor
+                .filter(|a| p.members.iter().any(|m| anchor_of(m.kind, &m.name) == *a))
+                .map(str::to_string),
+        )
+    }
+
     /// `file:line` of an offset; empty for none (a library's root
     /// module, which has no declaration).
     pub fn location(&self, offset: u32) -> String {
@@ -205,14 +287,17 @@ fn load(opts: &Opts) -> Option<Loaded> {
     } else {
         quarz_cog::find_root(&here)
     };
+    let mut opened: Option<quarz_cog::Movement> = None;
     let (units, decls, diagnostics, own_cog, title, readme) = if let Some(root) = &cog {
-        let specs = match crate::test::test_specs(root, &opts.cog) {
-            Ok(s) => s,
+        let movement = match quarz_cog::open(root, &opts.cog) {
+            Ok(m) => m,
             Err(e) => {
                 eprintln!("quarz: {e}");
                 return None;
             }
         };
+        let specs = crate::test::specs_of(&movement);
+        opened = Some(movement);
         let app = root.join("src").join("main.qz").is_file();
         let (units, decls, diags) = quarz_types::load_movement_tests(&specs, &[]);
         let name = specs[if app { 0 } else { 1 }].name.clone();
@@ -249,6 +334,24 @@ fn load(opts: &Opts) -> Option<Loaded> {
         return None;
     }
     let sources: Vec<SourceFile> = units.iter().map(|u| u.source.clone()).collect();
+    let cog_of: Vec<Option<u32>> = units.iter().map(|u| u.cog).collect();
+    // Each cog spec's movement entry (a library's specs start with its
+    // test application, which has none) and whether it is documented.
+    let cog_entries: Vec<(Option<&quarz_cog::CogEntry>, bool)> = match (&opened, own_cog) {
+        (Some(m), Some(own)) => {
+            let shift = own;
+            let n = m.cogs.len() + shift as usize;
+            (0..n)
+                .map(|k| {
+                    let entry = (k as u32)
+                        .checked_sub(shift)
+                        .and_then(|j| m.cogs.get(j as usize));
+                    (entry, k as u32 == own)
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
     let mut own: Vec<u32> = Vec::new();
     for (i, u) in units.iter().enumerate() {
         let file = i as u32 + 1;
@@ -287,12 +390,34 @@ fn load(opts: &Opts) -> Option<Loaded> {
     let checked = checked?;
     let mut files = vec![prelude_file];
     files.extend(sources);
+    let links = links::Links::new(
+        &links::Asked {
+            std: cog.is_none() && opts.file.is_none(),
+            std_url: opts.std_url.as_deref(),
+            source_rev: opts.source_rev.as_deref(),
+        },
+        &files,
+        &cog_of,
+        &cog_entries,
+    );
+    let readme = match &opts.readme {
+        Some(path) if opts.html => match std::fs::read_to_string(path) {
+            Ok(text) => Some(text),
+            Err(e) => {
+                eprintln!("quarz doc: {}: {e}", path.display());
+                return None;
+            }
+        },
+        _ => readme,
+    };
     Some(Loaded {
         world: checked.world,
         files,
         own,
         title,
         readme,
+        links,
+        foreign: Default::default(),
     })
 }
 
@@ -968,8 +1093,92 @@ pub(crate) enum Target {
     /// member `Stack#pop`).
     Page(String, Option<String>),
     /// Something that exists but has no page (a private method, a
-    /// constant of the program, a class of another cog).
+    /// constant of the program).
     Elsewhere { private: bool },
+    /// A public declaration of a class with no page here (another cog's,
+    /// the standard library's): its page there and the member's anchor,
+    /// as `quarz doc` lays every site out (#448).
+    Foreign {
+        class: ClassId,
+        page: String,
+        anchor: Option<String>,
+    },
+}
+
+/// A class with no page here, on its own site (`Target::Foreign`): its
+/// page, or for an enum's variant the variant on the enum's page; `None`
+/// for one `:nodoc:` (no page anywhere).
+fn foreign_class(world: &World, class: ClassId) -> Option<Target> {
+    let c = world.class(class);
+    if nodoc(&world.doc_at(c.span).cloned()) {
+        return None;
+    }
+    if c.kind == ClassKind::Variant {
+        let e = world.classes.iter().find(|e| e.variants.contains(&class))?;
+        if nodoc(&world.doc_at(e.span).cloned()) {
+            return None;
+        }
+        let short = c.name.rsplit("::").next().unwrap_or(&c.name);
+        return Some(Target::Foreign {
+            class: e.id,
+            page: e.name.clone(),
+            anchor: Some(anchor_of(Kind::Variant, short)),
+        });
+    }
+    Some(Target::Foreign {
+        class,
+        page: c.name.clone(),
+        anchor: None,
+    })
+}
+
+impl Api {
+    /// A class by its declared name (`Dep::Thing`, as signatures print
+    /// it, whatever the scope), as a link target: its page here, or there.
+    pub(crate) fn class_target(&self, world: &World, name: &str) -> Option<Target> {
+        let c = world.classes.iter().find(|c| c.name == name)?;
+        if let Some(p) = self.page(&c.name) {
+            return Some(Target::Page(p.name.clone(), None));
+        }
+        if c.kind == ClassKind::Variant {
+            // (A variant here: on its enum's page.)
+            if let Some(e) = world.classes.iter().find(|e| e.variants.contains(&c.id)) {
+                if let Some(p) = self.page(&e.name) {
+                    let member = c.name.clone();
+                    return p
+                        .members
+                        .iter()
+                        .any(|m| m.path == member)
+                        .then(|| Target::Page(p.name.clone(), Some(member)));
+                }
+            }
+        }
+        foreign_class(world, c.id)
+    }
+}
+
+/// The anchor of a member in its page (`method-pop`), on this site and
+/// any other `quarz doc` makes.
+pub(crate) fn anchor_of(kind: Kind, name: &str) -> String {
+    let prefix = match kind {
+        Kind::Method => "method",
+        Kind::ClassMethod => "class-method",
+        Kind::Function => "function",
+        Kind::Const => "const",
+        Kind::Variant => "variant",
+        _ => "item",
+    };
+    let name: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c.to_string()
+            } else {
+                format!("-{:x}", c as u32)
+            }
+        })
+        .collect();
+    format!("{prefix}-{name}")
 }
 
 /// Whether `s` has the shape of a declaration's name: `Foo`, `Foo::Bar`,
@@ -1097,7 +1306,7 @@ impl Api {
         match method {
             None => Some(match page_of(class) {
                 Some(p) => Target::Page(p, None),
-                None => Target::Elsewhere { private: false },
+                None => foreign_class(world, class).unwrap_or(Target::Elsewhere { private: false }),
             }),
             // A cog's public function, `Lib.f` (docs/10 §6), on the root
             // module's page.
@@ -1141,6 +1350,48 @@ impl Api {
                     Some(p) if !private => {
                         let member = format!("{p}{member_sep}{shown}");
                         Some(Target::Page(p, Some(member)))
+                    }
+                    // (A cog's top-level function has no page of its owner;
+                    // a `:nodoc:` method or a `__` one is not on its page.)
+                    None if !private
+                        && world.class(owner).kind != ClassKind::Main
+                        && !nodoc(&world.doc_at(info.span).cloned())
+                        && !info.name.starts_with("__") =>
+                    {
+                        // (A variant's `new`: the variant, on its enum's page.)
+                        if info.name == "initialize"
+                            && world.class(owner).kind == ClassKind::Variant
+                        {
+                            return Some(
+                                foreign_class(world, owner)
+                                    .unwrap_or(Target::Elsewhere { private }),
+                            );
+                        }
+                        let Some(Target::Foreign { class, page, .. }) = foreign_class(world, owner)
+                        else {
+                            return Some(Target::Elsewhere { private });
+                        };
+                        // (As `page` names its members: `new` only on the
+                        // class that defines `initialize`, and not a data
+                        // type's; another `new` goes to the class's page.)
+                        let anchor = if info.name == "initialize" {
+                            (info.owner == owner && !matches!(info.synth, Synth::DataInit))
+                                .then(|| anchor_of(Kind::ClassMethod, "new"))
+                        } else {
+                            let kind = if info.singleton {
+                                Kind::ClassMethod
+                            } else if kernel {
+                                Kind::Function
+                            } else {
+                                Kind::Method
+                            };
+                            Some(anchor_of(kind, shown))
+                        };
+                        Some(Target::Foreign {
+                            class,
+                            page,
+                            anchor,
+                        })
                     }
                     _ => Some(Target::Elsewhere { private }),
                 }

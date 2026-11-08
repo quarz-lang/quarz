@@ -177,7 +177,11 @@ fn html() {
         index.contains("<a href=\"Stack.html#method-pop\"><code>Stack#pop</code></a>"),
         "{index}"
     );
-    assert!(index.contains("<code>LIMIT: Int</code>"), "{index}");
+    // (A standard library class links to api.quarz.dev, #448.)
+    assert!(
+        index.contains("<code>LIMIT: <a href=\"https://api.quarz.dev/Int.html\">Int</a></code>"),
+        "{index}"
+    );
     let stack = std::fs::read_to_string(site.join("Stack.html")).unwrap();
     assert!(
         stack.contains("<h1><code>class Stack[T]</code></h1>"),
@@ -505,7 +509,9 @@ fn abstract_methods_and_headings_in_docs() {
     );
     let shape = std::fs::read_to_string(site.join("Shape.html")).unwrap();
     assert!(
-        shape.contains("<code>abstract def area -&gt; Float</code>"),
+        shape.contains(
+            "<code>abstract def area -&gt; <a href=\"https://api.quarz.dev/Float.html\">Float</a></code>"
+        ),
         "{shape}"
     );
     // A heading in a member's doc is below its signature (`<h4>`), one in
@@ -685,7 +691,7 @@ fn a_static_def_says_so() {
     let page = std::fs::read_to_string(site.join("Base.html")).unwrap();
     assert!(
         page.contains("<h2>Class methods</h2>")
-            && page.contains("<code>static def self.counter(name: Symbol) -&gt; Void</code>"),
+            && page.contains("<code>static def self.counter(name: <a href=\"https://api.quarz.dev/Symbol.html\">Symbol</a>) -&gt; Void</code>"),
         "{page}"
     );
 }
@@ -720,4 +726,65 @@ fn html_colors_quarz_code_blocks() {
     ] {
         assert!(page.contains(want), "no {want:?} in\n{page}");
     }
+}
+
+#[test]
+fn html_links_the_standard_librarys_source() {
+    // #449: a standard library declaration's location links to its line
+    // in quarz-lang/quarz at the commit (`--source-rev` for the std).
+    let d = Dir::new();
+    let site = d.0.join("site");
+    let out = quarz_in(
+        &d.0,
+        &[
+            "doc",
+            "--std",
+            "--html",
+            "-o",
+            site.to_str().unwrap(),
+            "--source-rev",
+            "deadbeef",
+        ],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let json = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../std/json.qz"),
+    )
+    .unwrap();
+    let line = json
+        .lines()
+        .position(|l| l.starts_with("module JSON"))
+        .unwrap()
+        + 1;
+    let page = std::fs::read_to_string(site.join("JSON.html")).unwrap();
+    let want = format!(
+        "<a href=\"https://github.com/quarz-lang/quarz/blob/deadbeef/std/json.qz#L{line}\">&lt;std:json&gt;:{line}</a>"
+    );
+    assert!(page.contains(&want), "no {want} in\n{page}");
+}
+
+#[test]
+fn html_links_an_enums_other_variants_from_its_page() {
+    // A signature on an enum's page links its other variants, not the
+    // variant whose heading it is (#450).
+    let d = Dir::new();
+    d.write(
+        "e.qz",
+        "# Shapes.\nenum Shape\n  # A circle.\n  variant Circle(radius: Int)\n  # A square.\n  variant Square(side: Int)\n  # The unit circle.\n  def self.unit -> Shape::Circle = Shape::Circle.new(1)\nend\n",
+    );
+    let site = d.0.join("site");
+    let out = quarz_in(
+        &d.0,
+        &["doc", "e.qz", "--html", "-o", site.to_str().unwrap()],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let page = std::fs::read_to_string(site.join("Shape.html")).unwrap();
+    assert!(
+        page.contains("-&gt; <a href=\"Shape.html#variant-Circle\">Shape::Circle</a>"),
+        "{page}"
+    );
+    assert!(
+        page.contains("<h3><code>variant Shape::Circle(radius:"),
+        "{page}"
+    );
 }

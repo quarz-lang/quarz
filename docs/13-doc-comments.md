@@ -139,7 +139,7 @@ A fenced code block in a documentation comment is a Quarz program, and `quarz te
 |---|---|
 | `quarz doc [FILE] NAME` | Print the documentation of `NAME` (`Stack`, `Stack#pop`, `Stack.new`, `HTTP::Server::Response.text`, `puts`) as text, with the signature; for a class, its summary and its members' summaries. Resolved in the cog around the current directory, in the script `FILE` and what it requires when one is given, or in the standard library alone otherwise |
 | `quarz doc` | The cog's public API, one line per declaration |
-| `quarz doc --html [-o DIR]` | A static site of the cog (default `doc/`): one page per class and module, the `README.md` as the front page, a search box (a JSON index loaded by the page), each member with its signature, text and source location. `--std` generates the standard library's |
+| `quarz doc --html [-o DIR]` | A static site of the cog (default `doc/`): one page per class and module, the `README.md` as the front page (`--readme FILE` for another), a search box (a JSON index loaded by the page), each member with its signature, text and source location. Names in signatures and text link to their pages, a dependency cog's and the standard library's on their published sites (`--std-url URL` for the standard library's), and locations to their lines on GitHub at the commit (`--source-rev REV` for the documented files'); [10-cogs.md](10-cogs.md) §8. `--std` generates the standard library's |
 | `quarz doc --check` | Report dangling links (§3), an unterminated fence and a `# =>` after `puts` or `print`; `--missing` also reports public declarations without a comment (exit 0 or 1 for CI) |
 | `quarz doc --json` | The API with its documentation as JSON, for other tools |
 | `quarz test [--doc\|--no-doc] [--std]` | §4 |
@@ -161,7 +161,7 @@ The REPL's completion shows a candidate's summary.
 
 - `DEPRECATED:` as a compiler warning at the call sites (the checker has the docs), with `--deny-deprecated`.
 - Hover and completion documentation in an editor (the language server), and a `help` command in the REPL, which has no command layer today (every line is an expression, and `Stack#pop` lexes as a comment).
-- A hosted site of cogs' docs (the `docs.rs` of cogs; 10-cogs.md §8 leaves discovery for later). The standard library's are at [api.quarz.dev](https://api.quarz.dev/), which this repository's `docs.yml` publishes on every push to main.
+- A hosted site of cogs' docs (the `docs.rs` of cogs; 10-cogs.md §9 leaves discovery for later; each quarz-lang cog publishes its own at `<cog>.api.quarz.dev`, 10-cogs.md §8). The standard library's are at [api.quarz.dev](https://api.quarz.dev/), which this repository's `docs.yml` publishes on every push to main.
 - Doc coverage in `quarz doc --missing`'s output as a percentage.
 - Examples that check what a program prints (with `capture_output`, 12-testing.md §9).
 
