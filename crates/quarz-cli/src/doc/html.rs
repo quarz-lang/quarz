@@ -5,7 +5,9 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use pulldown_cmark::{html, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{
+    html, CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
+};
 
 use super::{first_line, Api, Item, Kind, Loaded, Page, Target};
 use quarz_types::ClassId;
@@ -102,8 +104,30 @@ fn markdown_html(
     let world = &loaded.world;
     let events: Vec<Event> = Parser::new_ext(md, Options::ENABLE_TABLES).collect();
     let mut out: Vec<Event> = Vec::with_capacity(events.len());
+    // A Quarz code block being read: its text, colored at its end.
+    let mut quarz_block: Option<String> = None;
     for (i, e) in events.iter().enumerate() {
+        if let Some(code) = quarz_block.as_mut() {
+            match e {
+                Event::Text(t) => {
+                    code.push_str(t);
+                    continue;
+                }
+                Event::End(TagEnd::CodeBlock) => {
+                    let code = quarz_block.take().unwrap_or_default();
+                    let body = quarz_cli::highlight::html(&code).unwrap_or_else(|| escape(&code));
+                    out.push(Event::Html(CowStr::from(format!(
+                        "<pre><code class=\"quarz\">{body}</code></pre>\n"
+                    ))));
+                    continue;
+                }
+                _ => {}
+            }
+        }
         match e.clone() {
+            Event::Start(Tag::CodeBlock(kind)) if quarz_fence(&kind) => {
+                quarz_block = Some(String::new());
+            }
             Event::Html(t) | Event::InlineHtml(t) => out.push(Event::Text(t)),
             Event::Start(Tag::Heading {
                 level,
@@ -182,6 +206,26 @@ fn markdown_html(
     s
 }
 
+/// Whether a code block holds Quarz code, colored (#446): one with no
+/// info string (the doc comments' convention), `quarz` with or without
+/// options (`quarz no_run`), or `crystal` (the READMEs' fences, for
+/// GitHub's colors); any other language is shown plain.
+fn quarz_fence(kind: &CodeBlockKind) -> bool {
+    match kind {
+        CodeBlockKind::Indented => true,
+        CodeBlockKind::Fenced(info) => {
+            // (A language's name in any case, as GitHub reads it.)
+            let lang = info
+                .split(|c: char| c.is_whitespace() || c == ',')
+                .next()
+                .unwrap_or("");
+            lang.is_empty()
+                || lang.eq_ignore_ascii_case("quarz")
+                || lang.eq_ignore_ascii_case("crystal")
+        }
+    }
+}
+
 /// A heading `shift` levels down, at most `<h6>`, and when shifted below
 /// what it is in (a `#` in a member's doc is still an `<h4>`).
 fn shifted(level: HeadingLevel, shift: usize) -> HeadingLevel {
@@ -206,6 +250,8 @@ code, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; fo
 code { background: var(--code-bg); padding: 0.1em 0.3em; border-radius: 4px; }
 pre { background: var(--code-bg); padding: 0.8rem 1rem; border-radius: 6px; overflow-x: auto; }
 pre code, h1 code, h3 code { background: none; padding: 0; }
+pre code .k { color: #cf222e; } pre code .l { color: #0550ae; } pre code .n { color: #0550ae; } pre code .s { color: #0a3069; } pre code .r { color: #116329; } pre code .y { color: #8250df; } pre code .t { color: #953800; } pre code .v { color: #0550ae; } pre code .c { color: #59636e; font-style: italic; } pre code .i { color: inherit; } pre code .o { color: #57606a; }
+@media (prefers-color-scheme: dark) { pre code .k { color: #ff7b72; } pre code .l, pre code .n, pre code .v { color: #79c0ff; } pre code .s { color: #a5d6ff; } pre code .r { color: #7ee787; } pre code .y { color: #d2a8ff; } pre code .t { color: #ffa657; } pre code .c { color: #8b949e; } pre code .o { color: #b1bac4; } }
 h1 { overflow-wrap: anywhere; }
 .member { border-top: 1px solid var(--rule); padding-top: 0.5rem; margin-top: 1.2rem; }
 .member h3 { font-size: 1rem; margin: 0.3rem 0; overflow-wrap: anywhere; }

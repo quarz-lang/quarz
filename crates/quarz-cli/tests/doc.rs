@@ -689,3 +689,35 @@ fn a_static_def_says_so() {
         "{page}"
     );
 }
+
+#[test]
+fn html_colors_quarz_code_blocks() {
+    // #446: a Quarz block (no info string, `quarz no_run`) has a span per
+    // token kind; `text` and a block the lexer rejects are plain.
+    let d = Dir::new();
+    d.write(
+        "h.qz",
+        "# Colors.\n#\n# ```\n# x = :sym # a comment\n# puts \"n=#{x} <b>\" if true\n# ```\n#\n# ```Crystal\n# Hl.new\n# ```\n#\n# ```text\n# if x then \"y\"\n# ```\n#\n# ```quarz no_run\n# s = \"open\n# ```\nmodule Hl\nend\n",
+    );
+    let site = d.0.join("site");
+    let out = quarz_in(
+        &d.0,
+        &["doc", "h.qz", "--html", "-o", site.to_str().unwrap()],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let page = std::fs::read_to_string(site.join("Hl.html")).unwrap();
+    for want in [
+        "<span class=\"i\">x</span>",
+        "<span class=\"y\">:sym</span>",
+        "<span class=\"c\"># a comment</span>",
+        "<span class=\"k\">if</span>",
+        "<span class=\"l\">true</span>",
+        "<span class=\"s\">&quot;n=#{</span>",
+        "<span class=\"s\">} &lt;b&gt;&quot;</span>",
+        "<span class=\"t\">Hl</span>",
+        "<pre><code class=\"language-text\">if x then \"y\"\n</code></pre>",
+        "<pre><code class=\"quarz\">s = &quot;open\n</code></pre>",
+    ] {
+        assert!(page.contains(want), "no {want:?} in\n{page}");
+    }
+}
