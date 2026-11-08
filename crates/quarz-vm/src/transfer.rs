@@ -463,9 +463,11 @@ fn push_parts(node: &Node, work: &mut Vec<(Ix, bool)>) -> bool {
 
 /// The value of a transfer, without recursion. When it holds an instance
 /// of a class with its own `hash` or `==` (called as a hash or set holding
-/// it is rebuilt), the nodes are imported depth first, each after its parts,
-/// in the order the recursion imported them, so those run in the same
-/// order; otherwise from the last node back.
+/// it is rebuilt), the nodes are imported depth first, each after its
+/// parts, first to last, so that those run in nearly the recursion's
+/// order (one difference: a hash's pairs are all built before they are
+/// inserted, where the recursion inserted each pair before building the
+/// next); otherwise from the last node back.
 pub fn import(interp: &Interp, t: Transfer) -> Value {
     let mut nodes = t.nodes;
     let mut built: Vec<Option<Built>> = (0..nodes.len()).map(|_| None).collect();
