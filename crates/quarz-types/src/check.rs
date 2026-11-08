@@ -12182,6 +12182,16 @@ impl Checker {
             })
             .map(|x| x.1)
             .collect();
+        // A tie whose methods one of them overrides all the others goes to
+        // that one, as dispatch would run it (docs/01 §9, #436).
+        if top.len() > 1 {
+            if let Some(&x) = top.iter().find(|&&x| {
+                let o = self.overridden_by(x);
+                top.iter().all(|y| *y == x || o.contains(y))
+            }) {
+                return (x, Vec::new());
+            }
+        }
         let winner = top.first().copied().unwrap_or(level[0].1);
         (winner, top.into_iter().skip(1).collect())
     }
@@ -12200,17 +12210,6 @@ impl Checker {
         block_arity: Option<usize>,
     ) -> bool {
         let (a, b) = (self.world.method(x.1), self.world.method(y.1));
-        // An own method hides an inherited one it overrides (docs/01 §9,
-        // #436): a call both fit runs the override, as dispatch does on
-        // a receiver of the overriding class.
-        if a.owner != b.owner {
-            if self.overrides_method(x.1, y.1) {
-                return true;
-            }
-            if self.overrides_method(y.1, x.1) {
-                return false;
-            }
-        }
         let (sa, sb) = (&cands[x.0].1, &cands[y.0].1);
         let (ab, ba) = (
             self.as_specific(a, sa, b, sb),
@@ -12244,10 +12243,15 @@ impl Checker {
         a.owner != b.owner && !(main(a.owner) && main(b.owner)) && x.0 < y.0
     }
 
-    /// Whether method `m` overrides `o` (`World::overridden_methods_in`,
-    /// the relation dispatch uses).
-    fn overrides_method(&self, m: MethodId, o: MethodId) -> bool {
+    /// The methods `m` overrides (`World::overridden_methods_in`, the
+    /// relation dispatch uses, as `rtworld::overridden_methods`): none for
+    /// a top-level function, nor for an extension's method, which the
+    /// runtime does not put in place of the class's.
+    fn overridden_by(&self, m: MethodId) -> Vec<MethodId> {
         let mm = self.world.method(m);
+        if mm.extension.is_some() || self.world.class(mm.owner).kind == ClassKind::Main {
+            return Vec::new();
+        }
         let own: Vec<Type> = self
             .world
             .class(mm.owner)
@@ -12256,7 +12260,7 @@ impl Checker {
             .map(|tp| Type::Param(tp.id))
             .collect();
         let ancs = self.world.ancestors(mm.owner, &own);
-        self.world.overridden_methods_in(mm, &ancs).contains(&o)
+        self.world.overridden_methods_in(mm, &ancs)
     }
 
     /// Whether `a` is at least as specific as `b`: every call `a` takes,

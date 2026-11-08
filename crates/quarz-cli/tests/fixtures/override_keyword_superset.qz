@@ -16,3 +16,15 @@ p b.with(a: 2)
 def via(b: Base) -> String = b.with(a: 3)
 p via(A.new)
 p A.new.foo(1), A.new.foo("s")
+
+# The override takes the inherited method's place in the ranking: here
+# `f(Int, Int = 0)` wins over `f(Int | String, *Int)` and the call runs
+# its override.
+class P
+  def f(a: Int | String, *b: Int) -> String = "P rest"
+  def f(a: Int, b: Int = 0) -> String = "P int"
+end
+class Q < P
+  def f(a: Object, b: Object = 0, *c: Object) -> String = "Q"
+end
+p Q.new.f(1), Q.new.f(1, 2)
