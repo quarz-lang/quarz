@@ -13,8 +13,10 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  test:
-    name: Test (stable)
+  # Format, lint and the standard library's docs: apart from the tests, so
+  # that they run beside them.
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -23,21 +25,63 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lint
       - name: Format
         run: cargo fmt --all -- --check
       - name: Lint
         run: cargo clippy --all-targets -- -D warnings
-      - name: Toolchain for the LLVM backend
-        run: clang --version
-      - name: Build
-        run: cargo build --workspace
-      - name: Test
-        run: cargo test --workspace
       # The standard library's API reference is published from main by
       # docs.yml (https://api.quarz.dev/); here its links are checked, so
       # a pull request that breaks them fails.
       - name: Check the standard library's docs
-        run: ./target/debug/quarz doc --std --check
+        run: cargo run -q --bin quarz -- doc --std --check
+
+  # The tests, in three jobs run side by side (#453): the two longest test
+  # binaries, `tests/std.rs` and `tests/build.rs`, each in its own, and
+  # every other test target in the third. The third takes quarz-cli's
+  # test targets from Cargo (`cargo metadata`), so a new test file runs
+  # there without being listed. The jobs share one cache (`shared-key`),
+  # saved by one of them.
+  test:
+    name: Test (${{ matrix.part }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [std, build, rest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          save-if: ${{ matrix.part == 'rest' }}
+      - name: Toolchain for the LLVM backend
+        run: clang --version
+      - name: Build
+        run: cargo build --workspace
+      - name: Test std.rs
+        if: matrix.part == 'std'
+        run: cargo test -p quarz-cli --test std
+      - name: Test build.rs
+        if: matrix.part == 'build'
+        run: cargo test -p quarz-cli --test build
+      - name: Test the rest
+        if: matrix.part == 'rest'
+        run: |
+          # quarz-cli's test targets as Cargo finds them, but std and build.
+          tests=$(cargo metadata --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.name == "quarz-cli") | .targets[]
+              | select(.kind | index("test")) | .name
+              | select(. != "std" and . != "build")')
+          args=()
+          for t in $tests; do args+=(--test "$t"); done
+          echo "quarz-cli's test targets here: ${tests//$'\n'/ }"
+          cargo test --workspace --exclude quarz-cli
+          cargo test -p quarz-cli --lib --bins "${args[@]}"
+          cargo test -p quarz-cli --doc
 
   msrv:
     name: Check (Rust 1.96)
