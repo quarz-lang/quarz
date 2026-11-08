@@ -370,14 +370,14 @@ fn load(opts: &Opts) -> Option<Loaded> {
         &cog_entries,
     );
     let readme = match &opts.readme {
-        Some(path) => match std::fs::read_to_string(path) {
+        Some(path) if opts.html => match std::fs::read_to_string(path) {
             Ok(text) => Some(text),
             Err(e) => {
                 eprintln!("quarz doc: {}: {e}", path.display());
                 return None;
             }
         },
-        None => readme,
+        _ => readme,
     };
     Some(Loaded {
         world: checked.world,
@@ -1073,6 +1073,58 @@ pub(crate) enum Target {
     },
 }
 
+/// A class with no page here, on its own site (`Target::Foreign`): its
+/// page, or for an enum's variant the variant on the enum's page; `None`
+/// for one `:nodoc:` (no page anywhere).
+fn foreign_class(world: &World, class: ClassId) -> Option<Target> {
+    let c = world.class(class);
+    if nodoc(&world.doc_at(c.span).cloned()) {
+        return None;
+    }
+    if c.kind == ClassKind::Variant {
+        let e = world.classes.iter().find(|e| e.variants.contains(&class))?;
+        if nodoc(&world.doc_at(e.span).cloned()) {
+            return None;
+        }
+        let short = c.name.rsplit("::").next().unwrap_or(&c.name);
+        return Some(Target::Foreign {
+            class: e.id,
+            page: e.name.clone(),
+            anchor: Some(anchor_of(Kind::Variant, short)),
+        });
+    }
+    Some(Target::Foreign {
+        class,
+        page: c.name.clone(),
+        anchor: None,
+    })
+}
+
+impl Api {
+    /// A class by its declared name (`Dep::Thing`, as signatures print
+    /// it, whatever the scope), as a link target: its page here, or there.
+    pub(crate) fn class_target(&self, world: &World, name: &str) -> Option<Target> {
+        let c = world.classes.iter().find(|c| c.name == name)?;
+        if let Some(p) = self.page(&c.name) {
+            return Some(Target::Page(p.name.clone(), None));
+        }
+        if c.kind == ClassKind::Variant {
+            // (A variant here: on its enum's page.)
+            if let Some(e) = world.classes.iter().find(|e| e.variants.contains(&c.id)) {
+                if let Some(p) = self.page(&e.name) {
+                    let member = c.name.clone();
+                    return p
+                        .members
+                        .iter()
+                        .any(|m| m.path == member)
+                        .then(|| Target::Page(p.name.clone(), Some(member)));
+                }
+            }
+        }
+        foreign_class(world, c.id)
+    }
+}
+
 /// The anchor of a member in its page (`method-pop`), on this site and
 /// any other `quarz doc` makes.
 pub(crate) fn anchor_of(kind: Kind, name: &str) -> String {
@@ -1222,11 +1274,7 @@ impl Api {
         match method {
             None => Some(match page_of(class) {
                 Some(p) => Target::Page(p, None),
-                None => Target::Foreign {
-                    class,
-                    page: world.class(class).name.clone(),
-                    anchor: None,
-                },
+                None => foreign_class(world, class).unwrap_or(Target::Elsewhere { private: false }),
             }),
             // A cog's public function, `Lib.f` (docs/10 §6), on the root
             // module's page.
@@ -1271,20 +1319,37 @@ impl Api {
                         let member = format!("{p}{member_sep}{shown}");
                         Some(Target::Page(p, Some(member)))
                     }
-                    // (A cog's top-level function has no page of its owner.)
-                    None if !private && world.class(owner).kind != ClassKind::Main => {
-                        // (As `page` names its members.)
-                        let kind = if info.singleton || info.name == "initialize" {
-                            Kind::ClassMethod
-                        } else if kernel {
-                            Kind::Function
+                    // (A cog's top-level function has no page of its owner;
+                    // a `:nodoc:` method or a `__` one is not on its page.)
+                    None if !private
+                        && world.class(owner).kind != ClassKind::Main
+                        && !nodoc(&world.doc_at(info.span).cloned())
+                        && !info.name.starts_with("__") =>
+                    {
+                        let Some(Target::Foreign { class, page, .. }) = foreign_class(world, owner)
+                        else {
+                            return Some(Target::Elsewhere { private });
+                        };
+                        // (As `page` names its members: `new` only on the
+                        // class that defines `initialize`, and not a data
+                        // type's; another `new` goes to the class's page.)
+                        let anchor = if info.name == "initialize" {
+                            (info.owner == owner && !matches!(info.synth, Synth::DataInit))
+                                .then(|| anchor_of(Kind::ClassMethod, "new"))
                         } else {
-                            Kind::Method
+                            let kind = if info.singleton {
+                                Kind::ClassMethod
+                            } else if kernel {
+                                Kind::Function
+                            } else {
+                                Kind::Method
+                            };
+                            Some(anchor_of(kind, shown))
                         };
                         Some(Target::Foreign {
-                            class: owner,
-                            page: world.class(owner).name.clone(),
-                            anchor: Some(anchor_of(kind, shown)),
+                            class,
+                            page,
+                            anchor,
                         })
                     }
                     _ => Some(Target::Elsewhere { private }),

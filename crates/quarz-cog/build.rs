@@ -24,16 +24,30 @@ fn git(args: &[&str]) -> Option<String> {
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    // Again when HEAD moves: HEAD itself (another branch), the ref it
-    // names (a commit) and the packed refs.
-    for path in ["HEAD", "packed-refs"] {
-        if let Some(p) = git(&["rev-parse", "--git-path", path]) {
-            println!("cargo:rerun-if-changed={}", absolute(&p).display());
-        }
+    // Only in quarz's own repository (not a copy unpacked inside another).
+    let dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
+    let workspace = std::fs::canonicalize(dir.join("../..")).ok();
+    let top = git(&["rev-parse", "--show-toplevel"]).and_then(|t| std::fs::canonicalize(t).ok());
+    if workspace.is_none() || top != workspace {
+        return;
     }
+    // Again when HEAD moves: HEAD itself (another branch), its reflog (a
+    // commit), the ref it names and the packed refs; only those that
+    // exist (Cargo takes a missing one as always changed).
+    let mut watched = vec![
+        "HEAD".to_string(),
+        "logs/HEAD".to_string(),
+        "packed-refs".to_string(),
+    ];
     if let Some(r) = git(&["symbolic-ref", "-q", "HEAD"]) {
-        if let Some(p) = git(&["rev-parse", "--git-path", &r]) {
-            println!("cargo:rerun-if-changed={}", absolute(&p).display());
+        watched.push(r);
+    }
+    for path in watched {
+        if let Some(p) = git(&["rev-parse", "--git-path", &path]) {
+            let p = absolute(&p);
+            if p.exists() {
+                println!("cargo:rerun-if-changed={}", p.display());
+            }
         }
     }
     if let Some(sha) = git(&["rev-parse", "HEAD"]) {

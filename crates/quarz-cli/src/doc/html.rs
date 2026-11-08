@@ -307,44 +307,46 @@ fn layout(title: &str, api: &Api, current: Option<&str>, body: &str) -> String {
 }
 
 /// A signature, its names of classes linked where they have a page, here
-/// or on another site (#448).
-fn signature_html(loaded: &Loaded, api: &Api, scope: Option<ClassId>, sig: &str) -> String {
+/// or on another site (#448). A signature names classes by their declared
+/// names (`Dep::Thing`, `Time`), whatever the page's scope.
+fn signature_html(loaded: &Loaded, api: &Api, current: Option<ClassId>, sig: &str) -> String {
     let mut out = String::with_capacity(sig.len() * 2);
-    let bytes = sig.as_bytes();
-    let mut i = 0;
-    while i < sig.len() {
-        let starts_name = bytes[i].is_ascii_uppercase()
-            && (i == 0
-                || !(bytes[i - 1].is_ascii_alphanumeric()
-                    || bytes[i - 1] == b'_'
-                    || bytes[i - 1] == b'@'));
+    let mut prev: Option<char> = None;
+    let mut rest = sig;
+    while let Some(c) = rest.chars().next() {
+        let starts_name = c.is_ascii_uppercase()
+            && !prev.is_some_and(|p| p.is_alphanumeric() || p == '_' || p == '@');
         if !starts_name {
-            let c = sig[i..].chars().next().unwrap_or(' ');
             out.push_str(&escape(&c.to_string()));
-            i += c.len_utf8();
+            prev = Some(c);
+            rest = &rest[c.len_utf8()..];
             continue;
         }
         // `A`, `A::B`.
-        let mut end = i;
+        let bytes = rest.as_bytes();
+        let mut end = 0;
         loop {
-            while end < sig.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+            while end < rest.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
                 end += 1;
             }
-            if sig[end..].starts_with("::")
-                && sig[end + 2..].starts_with(|c: char| c.is_ascii_uppercase())
+            if rest[end..].starts_with("::")
+                && rest[end + 2..].starts_with(|c: char| c.is_ascii_uppercase())
             {
                 end += 2;
             } else {
                 break;
             }
         }
-        let name = &sig[i..end];
-        // (Not the page the signature is on.)
-        let link = api
-            .resolve(&loaded.world, scope, name)
+        // (A name running into a non-ASCII letter is no name.)
+        let name = &rest[..end];
+        let whole = !rest[end..].starts_with(|c: char| c.is_alphanumeric());
+        let link = whole
+            .then(|| api.class_target(&loaded.world, name))
+            .flatten()
+            // (Not the page the signature is on.)
             .filter(|t| {
                 !matches!(t, Target::Page(p, None)
-                    if scope.is_some_and(|c| loaded.world.class(c).name == *p))
+                    if current.is_some_and(|c| loaded.world.class(c).name == *p))
             })
             .and_then(|t| href(loaded, api, &t));
         match link {
@@ -353,7 +355,8 @@ fn signature_html(loaded: &Loaded, api: &Api, scope: Option<ClassId>, sig: &str)
             }
             None => out.push_str(&escape(name)),
         }
-        i = end;
+        prev = name.chars().last();
+        rest = &rest[end..];
     }
     out
 }
@@ -371,7 +374,7 @@ fn location_html(loaded: &Loaded, offset: u32) -> String {
 /// A class's name, linked to its page here or on another site.
 fn class_link(loaded: &Loaded, api: &Api, name: &str, shown: &str) -> String {
     match api
-        .resolve(&loaded.world, None, name)
+        .class_target(&loaded.world, name)
         .and_then(|t| href(loaded, api, &t))
     {
         Some(h) => format!(
@@ -399,7 +402,7 @@ fn member_html(loaded: &Loaded, api: &Api, page: &Page, m: &Item) -> String {
     }
     if let Some(f) = &m.from {
         let link = api
-            .resolve(&loaded.world, None, f)
+            .class_target(&loaded.world, f)
             .and_then(|t| href(loaded, api, &t));
         let from = match link {
             Some(h) => format!("<a href=\"{}\">{}</a>", escape(&h), escape(f)),

@@ -12,8 +12,11 @@ pub mod manifest;
 pub mod version;
 
 /// The commit `quarz` was built from (its build script), if built from a
-/// git checkout.
-pub const GIT_SHA: Option<&str> = option_env!("QUARZ_GIT_SHA");
+/// git checkout: 40 hexadecimal digits.
+pub const GIT_SHA: Option<&str> = match option_env!("QUARZ_GIT_SHA") {
+    Some(s) if s.len() == 40 => Some(s),
+    _ => None,
+};
 
 /// A GitHub repository's web page, `https://github.com/owner/repo`, from
 /// a URL of it as git or a browser writes it (`git@github.com:o/r.git`,

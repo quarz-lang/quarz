@@ -177,7 +177,11 @@ fn html() {
         index.contains("<a href=\"Stack.html#method-pop\"><code>Stack#pop</code></a>"),
         "{index}"
     );
-    assert!(index.contains("<code>LIMIT: Int</code>"), "{index}");
+    // (A standard library class links to api.quarz.dev, #448.)
+    assert!(
+        index.contains("<code>LIMIT: <a href=\"https://api.quarz.dev/Int.html\">Int</a></code>"),
+        "{index}"
+    );
     let stack = std::fs::read_to_string(site.join("Stack.html")).unwrap();
     assert!(
         stack.contains("<h1><code>class Stack[T]</code></h1>"),
@@ -505,7 +509,9 @@ fn abstract_methods_and_headings_in_docs() {
     );
     let shape = std::fs::read_to_string(site.join("Shape.html")).unwrap();
     assert!(
-        shape.contains("<code>abstract def area -&gt; Float</code>"),
+        shape.contains(
+            "<code>abstract def area -&gt; <a href=\"https://api.quarz.dev/Float.html\">Float</a></code>"
+        ),
         "{shape}"
     );
     // A heading in a member's doc is below its signature (`<h4>`), one in
@@ -685,7 +691,7 @@ fn a_static_def_says_so() {
     let page = std::fs::read_to_string(site.join("Base.html")).unwrap();
     assert!(
         page.contains("<h2>Class methods</h2>")
-            && page.contains("<code>static def self.counter(name: Symbol) -&gt; Void</code>"),
+            && page.contains("<code>static def self.counter(name: <a href=\"https://api.quarz.dev/Symbol.html\">Symbol</a>) -&gt; Void</code>"),
         "{page}"
     );
 }
