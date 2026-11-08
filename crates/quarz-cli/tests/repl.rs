@@ -891,3 +891,95 @@ fn class_end_hooks_run_when_the_class_is_entered() {
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(out, vec!["", "...", "...", "...", "", "=> [:auth, :log]"]);
 }
+
+#[test]
+fn a_name_reached_before_finds_a_library_method_required_with_a_statement() {
+    // `&:as_s` reached the name in an earlier input; a later one requires
+    // `json` together with a file whose `static` statement runs. The
+    // statement's rounds do not lower `JSON::Value#as_s` (it does not
+    // reach it), and the input's own lowering still does: it reaches the
+    // methods new since its previous one whose name was reached (#387).
+    let dir = std::env::temp_dir().join(format!("quarz-repl-names-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("libdef.qz"),
+        "class Mk\n  static def self.mark -> Void\n    def_class_method(:marked) { 1 }\n  end\nend\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("lib.qz"),
+        "require \"json\"\nrequire_relative \"libdef\"\nclass D < Mk\n  mark\nend\n",
+    )
+    .unwrap();
+    let lib = dir.join("lib").display().to_string();
+    let (out, _) = values(&[
+        "class P1",
+        "  def as_s -> String = \"p1\"",
+        "end",
+        "class P2",
+        "  def as_s -> String = \"p2\"",
+        "end",
+        "a: Array[P1 | P2] = [P1.new, P2.new]",
+        "a.map(&:as_s)",
+        &format!("require_relative \"{lib}\""),
+        "D.marked",
+        "v: Array[P1 | JSON::Value] = [P1.new, JSON.parse(\"\\\"x\\\"\")]",
+        "v.map(&:as_s)",
+    ]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        out.last().map(String::as_str),
+        Some("=> [\"p1\", \"x\"]"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn a_failed_input_with_static_rounds_leaves_nothing_for_the_next() {
+    // The failed input's rounds lowered `K`'s field default (calling
+    // methods of `K`) without reaching it; the input's methods are
+    // forgotten, and the next input's lowering must not follow that
+    // function's references to them (#390's review).
+    let dir = std::env::temp_dir().join(format!("quarz-repl-unwalked-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("libdef.qz"),
+        "class G\n  static def self.gen -> Void\n    def_class_method(:v) { 1 }\n  end\nend\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("lib.qz"),
+        "require_relative \"libdef\"\nclass K\n  @x: Int = K.helper1 + K.helper2 + K.helper3\n  def self.helper1 -> Int = 1\n  def self.helper2 -> Int = 1\n  def self.helper3 -> Int = 1\nend\nclass H < G\n  gen\nend\nclass Bad\n  def f -> Int = \"s\"\nend\n",
+    )
+    .unwrap();
+    let lib = dir.join("lib").display().to_string();
+    let (out, _) = values(&[&format!("require_relative \"{lib}\""), "1 + 1"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(out[0].starts_with("error: "), "{out:?}");
+    assert_eq!(out[1], "=> 2", "{out:?}");
+}
+
+#[test]
+fn a_failed_input_keeps_what_an_earlier_declarations_only_input_lowered() {
+    // An input of declarations only runs its static rounds but has no
+    // final lowering; the field default its round lowered without
+    // reaching waits for the next one, which a failed input in between
+    // must not drop: `Array#tally` is still lowered (#390's review).
+    let dir = std::env::temp_dir().join(format!("quarz-repl-unwalked2-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("libdef.qz"),
+        "class G\n  static def self.gen -> Void\n    def_class_method(:v) { 1 }\n  end\nend\n",
+    )
+    .unwrap();
+    let lib = dir.join("libdef").display().to_string();
+    let (out, _) = values(&[
+        &format!("require_relative \"{lib}\""),
+        "class K; @x: Int = [1, 2, 2].tally.size; def x -> Int = @x; end; class H < G; gen; end",
+        "class Bad; def f -> Int = \"s\"; end",
+        "K.new.x",
+    ]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(out[2].starts_with("error: "), "{out:?}");
+    assert_eq!(out[3], "=> 2", "{out:?}");
+}

@@ -658,6 +658,51 @@ fn an_array_receiver_does_not_reach_another_classs_method_of_the_name() {
 }
 
 #[test]
+fn a_round_lowers_and_checks_what_its_statement_reaches() {
+    // `touch` reached `Base#dispatch`; `wire` then generated `A#dispatch`,
+    // which calls `A#act`, whose `H.helper` a later statement generates.
+    // `mark` reaches nothing of `Base`: its round neither lowers nor
+    // checks `A#act`, so the check does not run before `helpers` and
+    // `mark` is not blamed for it (#387; docs/14 §7).
+    let lib = "class Base\n  def dispatch -> Int = 0\n  def self.make -> Base = new\n  static def self.touch -> Void\n    n = Base.make.dispatch\n    def_class_method(:touched) { n }\n  end\n  static def self.wire -> Void\n    h = method_ref[() -> Int](:act)\n    def_method(:dispatch) { h.bind(self).call }\n  end\nend\nclass Plain\n  static def self.mark -> Void\n    def_class_method(:marked) { 1 }\n  end\nend\nclass HelperGen\n  static def self.helpers -> Void\n    def_class_method(:helper) { 1 }\n  end\nend\n";
+    let d = dir();
+    write(&d.0, "lib.qz", lib);
+    let app = write(
+        &d.0,
+        "main.qz",
+        "require_relative \"lib\"\nclass S1 < Base\n  touch\nend\nclass A < Base\n  wire\n  def act -> Int = H.helper\nend\nclass P < Plain\n  mark\nend\nclass H < HelperGen\n  helpers\nend\np A.new.dispatch\np P.marked\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "1\n1\n");
+    let exe = d.0.join("main-bin");
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", exe.to_str().unwrap()],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "1\n1\n");
+    // A statement that does reach it before `helpers` ran (`touch` after
+    // `wire`, through `Base#dispatch`'s override) is still refused: the
+    // order of the statements (docs/14 §2).
+    let d = dir();
+    write(&d.0, "lib.qz", lib);
+    let app = write(
+        &d.0,
+        "main.qz",
+        "require_relative \"lib\"\nclass A < Base\n  wire\n  def act -> Int = H.helper\nend\nclass S2 < Base\n  touch\nend\nclass H < HelperGen\n  helpers\nend\np A.new.dispatch\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("main.qz:7:3: error: `touch` did not run: it may reach `A#act` (main.qz:4), which has errors: undefined method `helper` for Type[H]"),
+        "{err}"
+    );
+}
+
+#[test]
 fn a_statement_reaches_dispatch_one_step() {
     // What dispatch may find for a call, not what it may find for those
     // in turn (`Loud#label` reached for `A#label`, not every `label`),
@@ -1058,4 +1103,101 @@ fn class_end_hooks_combine_a_bodys_statements() {
         err.contains("box.qz:12:5: error: statement values of type X cannot be kept: their type must be a concrete one, not a type parameter"),
         "{err}"
     );
+}
+
+/// `quarz run` and `quarz build` of `app` in `d`: both print `expected`,
+/// and the compile-time runs warn of nothing (a `deinitialize` with no
+/// body only warns).
+fn run_and_build(d: &std::path::Path, app: &std::path::Path, expected: &str) {
+    let (ok, out, err) = quarz(d, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok && !err.contains("warning"), "{err}");
+    assert_eq!(out, expected);
+    let exe = d.join("app-bin");
+    let (ok, _, err) = quarz(
+        d,
+        &["build", app.to_str().unwrap(), "-o", exe.to_str().unwrap()],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+}
+
+#[test]
+fn a_round_reaches_the_names_the_runtime_calls_for_its_reach() {
+    // A round reaches the methods the runtime calls by name for what its
+    // statement reaches, not every method of those names: `mark` does not
+    // reach `App#call`, whose `H.helper` a later statement generates
+    // (bezel's router, #387; docs/14 §7). `join_things` reaches `Thing#to_s`
+    // through `Array#join`, a native calling `to_s` by name, `Pt#with` the
+    // `initialize` taking the fields, and a construction the
+    // `deinitialize`s: all lowered for the run.
+    let lib = "class Plain\n  static def self.mark -> Void\n    def_class_method(:marked) { 1 }\n  end\nend\nclass HelperGen\n  static def self.helpers -> Void\n    def_class_method(:helper) { 1 }\n  end\nend\nclass Thing\n  def to_s -> String = \"t\"\n  def deinitialize -> Void\n    x = 1\n  end\nend\ndata Pt(x: Int, y: Int)\n  def initialize(x: Int, y: Int)\n    @x = x * 10\n    @y = y\n  end\n  def initialize(s: String)\n    @x = s.size\n    @y = 0\n  end\nend\nclass Joiner\n  static def self.join_things -> Void\n    s = [Thing.new, Thing.new].join(\",\")\n    q = Pt.new(\"abc\").with(y: 2)\n    def_class_method(:joined) { s }\n    def_class_method(:pt) { q.x }\n  end\nend\n";
+    let d = dir();
+    write(&d.0, "lib.qz", lib);
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass App\n  def call(x: Int) -> Int = H.helper + x\nend\nclass P < Plain\n  mark\nend\nclass J < Joiner\n  join_things\nend\nclass H < HelperGen\n  helpers\nend\np App.new.call(1)\np P.marked\np J.joined\np J.pt\n",
+    );
+    run_and_build(&d.0, &app, "2\n1\n\"t,t\"\n30\n");
+    // What a native reached calls by name is still checked: a `to_s`
+    // with errors refuses `join_things`.
+    let d = dir();
+    write(&d.0, "lib.qz", lib);
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass Bad\n  def to_s -> String = H.helper.to_s\nend\nclass J < Joiner\n  join_things\nend\nclass H < HelperGen\n  helpers\nend\np J.joined\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("app.qz:6:3: error: `join_things` did not run: it may reach `Bad#to_s` (app.qz:3), which has errors"),
+        "{err}"
+    );
+}
+
+#[test]
+fn data_with_reaches_the_initialize_taking_the_fields() {
+    // `with` on a data type builds the copy with the type's `initialize`
+    // taking the fields: an impure one refuses the statement before it
+    // runs (#389).
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "data Pt(x: Int, y: Int)\n  def initialize(x: Int, y: Int)\n    File.read(\"/etc/hostname\")\n    @x = x\n    @y = y\n  end\n\n  def initialize(s: String)\n    @x = s.size\n    @y = 0\n  end\nend\n\nclass Model\n  static def self.gen(s: String) -> Void\n    q = Pt.new(s).with(x: 5)\n    def_class_method(:total) { q.x }\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass App < Model\n  gen \"abc\"\nend\np App.total\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.starts_with("app.qz:3:3: error: `gen` reaches `File.read` (via Pt#with, Pt#initialize), which cannot run at compile time"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_class_end_hook_reaches_what_the_class_statements_left_out() {
+    // `plug`'s round left `C#to_s` out (a name the runtime calls by, of a
+    // class whose statements were still to run); the class-end hook's
+    // round, after them, reaches it: it does not continue `plug`'s walk,
+    // though the statement and the world are the same (#390's review).
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Endpoint\n  def self.make -> Endpoint = new\n  static def self.plug(n: Int) -> Void\n    statement_values[Int](:plugs).add(n)\n    at_class_end(:plugs) do |cls|\n      e = cls.type.make\n      s = \"#{e}\"\n      cls.def_class_method(:shown) { s }\n    end\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass C < Endpoint\n  plug 1\n  def to_s -> String = \"C!\"\nend\np C.shown\n",
+    );
+    run_and_build(&d.0, &app, "\"C!\"\n");
 }
