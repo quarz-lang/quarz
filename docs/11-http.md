@@ -6,7 +6,7 @@ This is implemented in `std/http.qz` (and `Signal` in the prelude, with a few na
 
 ## 1. Shape
 
-```ruby
+```crystal
 require "http"
 
 handler = HTTP.handler do |req|
@@ -21,7 +21,7 @@ HTTP::Server.new(handler, port: 8080).serve
 
 ## 2. Handlers and Middleware
 
-```ruby
+```crystal
 module HTTP
   module Handler
     include Shareable
@@ -35,7 +35,7 @@ end
 
 Middleware is a handler that holds the next one. A `data` type is Shareable when its fields are, and `Handler` is (a middleware holding a Builder or another mutable object is an error):
 
-```ruby
+```crystal
 data Logging(inner: HTTP::Handler)
   include HTTP::Handler
   def call(req: HTTP::Server::Request) -> HTTP::Server::Response
@@ -49,7 +49,7 @@ end
 
 ## 3. Requests
 
-```ruby
+```crystal
 class HTTP::Server   # (its requests and responses are its own types)
   data Request(
     method: String,                 # "GET"; any token the client sent, not a Symbol
@@ -82,7 +82,7 @@ end
 
 The body is read from the socket as the handler asks for it, so `Body` is a class confined to the connection's task (not Shareable):
 
-```ruby
+```crystal
 class Body
   def read -> String                   # the whole body; HTTP::PayloadTooLarge past max_body_bytes
   def read_bytes -> Bytes
@@ -97,7 +97,7 @@ end
 
 ### Headers
 
-```ruby
+```crystal
 data Field = (name: String, value: String)        # a name lowercased
 
 data Headers(entries: Array[Field])               # in order; a name may repeat
@@ -119,7 +119,7 @@ Names are case-insensitive: they are stored lowercased and written out in the co
 
 ## 4. Responses
 
-```ruby
+```crystal
 class HTTP::Server
   data Response(status: Int, headers: Headers, body: Content)   # the generated `new` takes a Content
     def self.empty(status: Int = 204, headers: Headers = Headers.empty) -> Response
@@ -157,7 +157,7 @@ The server adds what the body implies: `Content-Length` for `Text`, `Binary` and
 
 ## 5. The Server
 
-```ruby
+```crystal
 module HTTP
   class Server
     include Shareable                 # a Signal.trap block or another task may hold it: its state is in Atoms and Channels
@@ -209,7 +209,7 @@ With `trusted_proxies: ["127.0.0.1", "::1"]` (addresses, or networks as `"10.0.0
 
 `shutdown` stops accepting, closes the connections waiting for a request (their reader gets `IOError`, 04-concurrency §6), lets the ones in a handler finish, and after `timeout` cancels them (`Task::Cancelled` at their next wait); then `serve` returns. `shutdown` returns once it has begun, so a handler may call it; `wait` waits for `serve` to return. A shutdown before `serve` makes `serve` return at once. A connection accepted that has not sent a byte yet counts as waiting, and is closed; with `tls:`, one still in its TLS handshake does not, and ends within `read_header_timeout`. `Signal` is added with this work, enough for it:
 
-```ruby
+```crystal
 server = HTTP::Server.new(handler, port: 8080)
 Signal.trap(:TERM) { server.shutdown }
 Signal.trap(:INT) { server.shutdown(timeout: 1.second) }
@@ -222,7 +222,7 @@ server.serve
 
 A small router is part of the library, as Go's `ServeMux` is; patterns with constraints, regular expressions or typed parameters are left to cogs.
 
-```ruby
+```crystal
 router = HTTP::Router.build do |r|
   r.get("/users/{id}") { |req| HTTP::Server::Response.json(user_json(req.params["id"])) }
   r.post("/users", CreateUser.new(db))           # a Handler, or a block
@@ -250,7 +250,7 @@ A handler is called directly: `handler.call(HTTP::Server::Request.get("/users/1"
 
 An HTTP/1.1 client over `TCPSocket` and `TLSSocket`, for programs that call other services (fetching and delivering activities, webfinger, webhooks, REST APIs). Its shape is nearer Go's client and Elixir's Req than Ruby's `net/http`: a Shareable client holding a pool of kept connections, requests and responses as values, bodies streamed.
 
-```ruby
+```crystal
 client = HTTP::Client.new                      # Shareable: one per program, shared by tasks
 res = client.get("https://example.com/users/alice",
                  headers: {"Accept" => "application/activity+json"})
@@ -265,7 +265,7 @@ client.request(signer.sign(req)).ensure_success
 HTTP.get(url)              # the module functions use HTTP::Client.default
 ```
 
-```ruby
+```crystal
 module HTTP
   class Client
     include Shareable

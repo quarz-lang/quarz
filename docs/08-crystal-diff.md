@@ -77,7 +77,7 @@ ps.each &.step(0.1)
 puts ps.map(&.pos.x).sum
 ```
 
-```ruby
+```crystal
 # Quarz
 data Vec2(x: Float, y: Float)
   def +(o: Vec2) -> Vec2 = Vec2.new(x + o.x, y + o.y)

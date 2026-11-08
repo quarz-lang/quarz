@@ -112,7 +112,7 @@ Resolution follows Go's *minimal version selection*: every manifest in the graph
 
 The declarations of a cog never reach the top level. Its files are the body of one module, the one `[cog] module` names (by default the cog's name in CamelCase), as if each file were written inside `module Httpx … end`:
 
-```ruby
+```crystal
 # httpx/src/client.qz          → everything here is inside `Httpx`
 class Client
   def get(url: String) -> Response … end     # `Response` is in response.qz: no require
@@ -127,7 +127,7 @@ def helper(…) … end                          # a function private to the cog
 
 The user of the cog names it in `[dependencies]` and sees it under the key:
 
-```ruby
+```crystal
 # src/main.qz of the application; `Httpx = { git = … }` in its Cog.toml
 res = Httpx.get("https://example.com")
 client = Httpx::Client.new
@@ -146,7 +146,7 @@ client = Httpx::Client.new
 
 Inside a cog its own declarations are visible by their bare names, so the root is rarely named. For the cases where it must be, `cog` is a keyword that denotes the current cog's root module (Rust's `crate`):
 
-```ruby
+```crystal
 cog::Response        # the root's `Response`, when a nested scope shadows the name
 cog.get(url)         # the cog's public function, from inside a class (or `get(url)`)
 cog.name             # "httpx", from the manifest

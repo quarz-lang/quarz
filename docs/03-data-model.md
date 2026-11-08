@@ -20,7 +20,7 @@ The following types are **immutable**. There are no methods that modify a value;
 
 The Implementation column is the design. Currently `Array` is a flat vector (an array of only `Int`s or only `Float`s stores machine words), `Hash` an insertion-ordered hash table (one whose keys and values are all `Int` is stored unboxed), `Set` an insertion-ordered hash set, and `String` a flat UTF-8 string (at most 14 bytes inside the value itself; no rope). An update is in place when the reference is unique, as below, and otherwise copies the whole collection, in O(n).
 
-```ruby
+```crystal
 a = [1, 2, 3]
 b = a.push(4)        # a is still [1, 2, 3], b is [1, 2, 3, 4]
 h = { name: "alice" }
@@ -33,7 +33,7 @@ Of Ruby's destructive methods (`push`/`<<`/`[]=`/`sort!`/`map!`/`concat`/`delete
 
 Discarding the result of a pure method produces a warning: today the methods of the built-in immutable types (`Array`, `Hash`, `Set`, `String`, `Bytes`, and `Enumerable`/`Comparable` on them) that take no block, so `xs.push(1)` or `xs.sort` as a statement is reported. Marking other methods or types is planned.
 
-```ruby
+```crystal
 arr.push(4)          # warning: result unused. arr does not change
 arr = arr.push(4)    # OK
 ```
@@ -42,7 +42,7 @@ arr = arr.push(4)    # OK
 
 With the persistent structures of the design, an update would be `O(log32 n)`, effectively constant in practice; today an update of a shared collection copies it, in O(n). In either case, since Quarz's memory management is reference counting ([05-execution.md](05-execution.md) §5), if there is only one reference to `arr` at the point of `arr.push(4)`, the **original array's storage is updated in place** instead of creating a new array.
 
-```ruby
+```crystal
 def collect(n: Int) -> Array[Int]
   acc: Array[Int] = []
   n.times { |i| acc = acc.push(i * i) }   # acc always has exactly one reference → appended in place every time, amortized O(1)
@@ -52,7 +52,7 @@ end
 
 Passing a value on does not add a reference when the variable is not read again: the value moves into the call, and a parameter takes it over. A helper that returns the updated collection keeps it unique, so this loop is linear as well:
 
-```ruby
+```crystal
 def add(xs: Array[Int], v: Int) -> Array[Int] = xs.push(v)
 
 ys: Array[Int] = []
@@ -65,7 +65,7 @@ This is the same technique as "functional but in-place" in Lean 4 / Koka, and it
 
 For complex construction, the boundary with FFI, and algorithms that genuinely need mutation (heap sort, the visited set in a graph search, and so on), mutable versions of the types are provided.
 
-```ruby
+```crystal
 buf = String::Builder.new
 buf << "hello" << " " << "world"
 buf.to_s                            # => "hello world" (O(1): freezes the buffer and hands it over)
@@ -88,7 +88,7 @@ str = String.build { |b| b << "x" * 3; b << "y" }
 
 ## 4. Immutability of User-Defined Classes
 
-```ruby
+```crystal
 class Node
   @value: Int
   @children: Array[Node] = []
@@ -115,7 +115,7 @@ The Ruby-style design of "line up `attr_accessor`s and change state through sett
 
 Memory is reference counted ([05-execution.md](05-execution.md) §5), so a value is released when its last reference goes, and most values are released at their last use. A value whose release can be observed lives to the end of its scope instead, as in Swift (since 5.7), C++ and Rust:
 
-```ruby
+```crystal
 class TempFile
   @path: String
   def initialize(@path: String) end
@@ -175,7 +175,7 @@ Where Shareable is required:
 | `T` of `Task[T]` (return value) | Passed to another task via `await` (the `Task.spawn`, `scope.spawn` or `Task.blocking` block's result) |
 | Exceptions | Propagate across task boundaries |
 
-```ruby
+```crystal
 counter = Counter.new            # mutable
 Task.spawn { counter.increment }      # error: Counter is not Shareable
 

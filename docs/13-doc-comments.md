@@ -4,7 +4,7 @@ A comment written directly above a declaration documents it. The text is Markdow
 
 ## 1. Shape
 
-```ruby
+```crystal
 # A last-in, first-out collection of `T`s. Immutable: `push` and `pop`
 # return the new stack, as `Array#push` does.
 #
@@ -73,7 +73,7 @@ A documentation comment goes above:
 - a field (`@items: Array[T]`, `var @n: Int = 0`), and so the accessor `attr_reader`/`attr_accessor` makes of it; an `attr_reader :a, :b` line documents each accessor whose field has no comment;
 - a field of a `data` or a `variant` in a multi-line form, above its line:
 
-  ```ruby
+  ```crystal
   data Suite = (
     # The class's name, as `StackTest`.
     name: String,
@@ -105,7 +105,7 @@ Parameters, the result and the block are described in prose: the signature alrea
 
 A fenced code block in a documentation comment is a Quarz program, and `quarz test` compiles and runs it, as `cargo test` runs Rust's doc examples, so that the documentation cannot drift from the code.
 
-```ruby
+```crystal
 # ```
 # Stack[Int].new.push(1).size   # => 1
 # Stack[Int].new.pop            # raises Stack::Empty
@@ -115,7 +115,7 @@ A fenced code block in a documentation comment is a Quarz program, and `quarz te
 ```
 
 - `expr # => text` checks that `expr.inspect` is `text` (whitespace at the ends aside): the expression statement that ends on that line, an assignment's value being what it assigned. Alone on the line after a statement, `# => text` applies to that statement. `expr # raises Klass` checks that it raises `Klass` or a subclass. What the program prints is not compared (12-testing.md §9, `capture_output`): write the result instead of printing it. Elsewhere in these docs `# =>` marks what `puts` printed; in an example it is `inspect`, and `quarz doc --check` warns about a `# =>` after `puts` or `print`, whose value is `nil` (`p` returns its argument, so `p x # => 2` holds).
-- The fence's info string: none or `quarz` is run; `quarz no_run` is compiled only (a server loop, a network call); any other language (`text`, `sh`, `toml`) is shown only. (In these docs, `docs/*.md`, a fence of Quarz code says `ruby`, which GitHub colors and the website reads as `quarz`, and one of Ruby's own code says `rb`.)
+- The fence's info string: none or `quarz` is run; `quarz no_run` is compiled only (a server loop, a network call); any other language (`text`, `sh`, `toml`) is shown only. (In these docs, `docs/*.md`, and this repository's README, a fence of Quarz code says `crystal`, the closest grammar GitHub colors, and one of Ruby's own code says `rb`; `.gitattributes` has `.qz` files colored as Crystal too.)
 - Each example is a test of its own, named after the declaration, `Stack#pop#example 1` (selected by `-n Stack#pop`), reported with the other tests of `quarz test`; a failed `# =>` says `src/stack.qz:12: expected => 2, was 3`. `quarz test --doc` runs the examples only, `--no-doc` leaves them out; `quarz test --doc --std` runs the standard library's (embedded in the compiler, so not given as files). `quarz test FILE...` (12-testing.md §8) also runs the examples of the files given and of what they `require_relative`.
 - An example sees its cog as a user does (12-testing.md §2): a library under its module (`Mathx.square(3)`, `Mathx::Stack`), an application bare. An example of an extension's method starts with `using Shout`, as a user's file does. A standard library example writes `HTTP::Server::Response`, and `require`s nothing: the modules load by name.
 - An example may declare classes and methods. Each example is a unit of its own, so its `def`s are its own, as a file's are (01-syntax.md §2); classes are global, so an example's class must not share its name with another example's, the cog's or the tests'. Since the examples of a cog are compiled into one program (§7), name them apart (`Point` in one, `Point3` in another).
@@ -126,7 +126,7 @@ A fenced code block in a documentation comment is a Quarz program, and `quarz te
 - `Stack.new` is documented by the comment of `initialize`, and a `data`'s generated methods (`new`, `with`, `to_h`, the field readers) from the type's and the fields' comments.
 - `:ditto:` as the whole comment repeats the previous declaration's comment: for an overload that differs only in a parameter's type.
 
-  ```ruby
+  ```crystal
   # The first `n` elements.
   def first(n: Int) -> Array[T] = take(n)
   # :ditto:

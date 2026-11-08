@@ -76,7 +76,7 @@ Numeric operations have the same meaning as in Ruby: `7 / 2` is `3`, `-7 / 2` is
 
 ## 3. Generics
 
-```ruby
+```crystal
 class Stack[T]
   @items: Array[T] = []
   def push(x: T) -> Stack[T] = Stack[T].from(@items.push(x))
@@ -102,7 +102,7 @@ end
 
 ## 4. Union Types and Nil Safety
 
-```ruby
+```crystal
 def find(id: Int) -> User?
   users[id]?
 end
@@ -128,7 +128,7 @@ Inference is **bidirectional and local**. Since parameter types are known, infer
 - **Return type**: declared, not inferred. A method without one is `-> Void`, as Swift's `func` without `->` returns `Void`: its body's last value is not used and it returns nil (`def report` that prints, `def test_pop`, a setter). `-> Nil` is strict, as any type: its body must give `Nil`. A method defined with `=` gives a value, so it declares its type (`def area -> Float = w * h`; `def area = w * h` is an error). `abstract def` and `extern def` declare it too. `return x` with a value in a `-> Void` method is an error, and an override returns the overridden method's type or a subtype of it (covariantly: `-> Int` may override `-> Object`), so a `def to_s` without `-> String` is an error. Since a signature says everything a caller needs, each file can be checked on its own (05-execution.md §2), and no method's type depends on another's body.
 - **Empty literals**: `[]`, `{}` and `Set[]` follow the expected type if there is one; otherwise they carry a type variable such as `Array[?T]`, fixed by the later uses in the same method. Only uses of the values fix it (an assignment to a typed place, an argument, `push`): a pattern or type test narrows a value of a type not fixed yet only inside its branch (and `case`/`in` on it needs no `else` to be exhaustive), an `if` whose value is not used does not join its branches, and joining it with another type leaves it undecided (`x = xs[0] if c` is `?T?`, `xs[0] || "s"` is `?T | String`); calling a method other than `Object`'s on such a union is a use that decides `?T` as the rest.
 
-```ruby
+```crystal
 counts = words.reduce({}) { |h, w| h.put(w, h.fetch(w, 0) + 1) }   # {} is Hash[String, Int]
 names: Array[String] = []          # from the expected type
 xs = []                            # Array[?T] for now
@@ -144,7 +144,7 @@ xs = xs.push(1)                    # ... fixed here: xs is Array[Int]
 
 Conditional branches narrow the types of local variables.
 
-```ruby
+```crystal
 def describe(x: Int | String | Nil) -> String
   return "nothing" if x.nil?          # from here on, x: Int | String
   if x.is_a?(Int)
@@ -174,7 +174,7 @@ Closures capture locals by reference, so a closure that may run later (a lambda,
 
 ## 7. Casts
 
-```ruby
+```crystal
 n = obj.as(Int)         # TypeError on failure
 n = obj.as?(Int)        # Int?
 f = n.to_f              # a conversion method (not a cast)
@@ -195,7 +195,7 @@ Downcasts are checked at run time (`as`, `as?` and `is_a?`), together with the e
 
 `Shareable` is a marker module denoting "a type whose values can safely be passed to another task". The compiler derives it for `data` and `enum` types from their fields; a class or module declares it with `include Shareable`, and the compiler holds it, and every class that inherits or includes it, to the rules. The details are in [03-data-model.md](03-data-model.md) §5; from the type system's point of view it is used as follows.
 
-```ruby
+```crystal
 class Channel[T <: Shareable]
 class Atom[T <: Shareable]
 def self.spawn[T <: Shareable](&block: () -> T) -> Task[T]   # the variables captured by the block must be Shareable too
@@ -207,7 +207,7 @@ A type parameter is Shareable when one of its bounds makes every type it admits 
 
 A procedure type is not Shareable: a block reads and assigns the variables of the code around it, which another task must not. `shareable (A) -> R` is the type of one that is. A block or lambda written where such a type is expected (a block parameter `&job: shareable (Int) -> Void`, an argument, an annotated variable) captures by value, as a `Task.spawn` block does: the variables it reads are copied when it is made, their values must be Shareable (and so must `self`, if it uses it), and it cannot assign them; a block there cannot `return` or `break` either (01-syntax.md §9): it may run in another task or after its method has returned. Any task may then call it, at once with others: a worker pool or a server loop can take one and run it in tasks of its own. A block with a receiver (`shareable Foo.() -> R`) does not capture its `self`: that is the receiver given at each call, so calls on it, implicit or through `self`, are fine whatever `Foo` is; a call that falls through to the enclosing `self` (a method the receiver lacks, [01-syntax.md](01-syntax.md) §9) captures that one, which must then be Shareable.
 
-```ruby
+```crystal
 def each_in_tasks(n: Int, &job: shareable (Int) -> Void) -> Void
   Task.scope { |s| n.times { |i| s.spawn { job.call(i) } } }
 end
