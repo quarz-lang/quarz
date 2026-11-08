@@ -1,7 +1,7 @@
 //! Object, Nil, Bool, Class, Kernel, Comparable and Exception.
 
 use crate::rc::Rc;
-use std::hash::{Hash, Hasher};
+use std::hash::Hasher;
 
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::value::*;
@@ -315,9 +315,13 @@ fn obj_equal(_: &Interp, recv: &Value, args: Args) -> EvalResult {
     Ok(Value::Bool(recv.identical(args.arg(0))))
 }
 
+/// `Object#hash`: by the default (`Value::default_hash`), not the
+/// receiver's own `hash` again, which `super` from it would find (#396).
 fn obj_hash(_: &Interp, recv: &Value, _: Args) -> EvalResult {
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    recv.hash(&mut h);
+    recv.default_hash(&mut h);
+    // (A field's own `hash` may raise: `crate::keys`.)
+    crate::keys::check()?;
     Ok(Value::Int((h.finish() >> 1) as i64))
 }
 
