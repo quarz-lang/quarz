@@ -624,3 +624,5 @@ lake env lean Axioms.lean  # no sorryAx
 Where `release.lean-lang.org` is not reachable (the devcontainer's
 proxy), the toolchain is the GitHub release's archive, linked:
 `elan toolchain link leanprover/lean4:v4.35.0 DIR`.
+CI uses no elan: it downloads that archive and runs `lean` and `lake`
+from its `bin/` (`.github/workflows/ci.yml`).

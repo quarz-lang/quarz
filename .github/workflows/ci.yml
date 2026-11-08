@@ -114,33 +114,35 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install elan
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o elan-init.sh
-          sh elan-init.sh -y --default-toolchain none
-          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
-      # The toolchain `lean-toolchain` names, from the GitHub release
-      # (elan's own source, releases.lean-lang.org, is not reachable from
-      # the runners), linked as formal/README.md's Setup describes.
+      # The toolchain `lean-toolchain` names, from the GitHub release, run
+      # directly from its `bin/` (#459: no elan, whose own download from
+      # GitHub's releases failed the job with 504s; elan's source,
+      # releases.lean-lang.org, is not reachable from the runners).
       - name: Lean version
         id: lean
         run: echo "version=$(sed 's|^leanprover/lean4:||' lean-toolchain)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v6
         id: lean-toolchain
         with:
-          path: ~/.elan/manual/lean
+          path: ~/.lean-toolchain
           key: lean-toolchain-${{ steps.lean.outputs.version }}
+      # On a miss: retried through transient errors, and once more after
+      # a minute.
       - name: Download the Lean toolchain
         if: steps.lean-toolchain.outputs.cache-hit != 'true'
         run: |
           v="${{ steps.lean.outputs.version }}"
-          mkdir -p ~/.elan/manual/lean
-          curl -sSfL "https://github.com/leanprover/lean4/releases/download/$v/lean-${v#v}-linux.tar.zst" |
-            tar --zstd -x --strip-components=1 -C ~/.elan/manual/lean
-      - name: Link the Lean toolchain
+          url="https://github.com/leanprover/lean4/releases/download/$v/lean-${v#v}-linux.tar.zst"
+          get() {
+            rm -rf ~/.lean-toolchain && mkdir -p ~/.lean-toolchain &&
+              curl -sSfL --retry 5 --retry-all-errors --retry-delay 10 "$url" |
+              tar --zstd -x --strip-components=1 -C ~/.lean-toolchain
+          }
+          get || { sleep 60; get; }
+      - name: Put the Lean toolchain on the path
         run: |
-          elan toolchain link "leanprover/lean4:${{ steps.lean.outputs.version }}" ~/.elan/manual/lean
-          lean --version
+          echo "$HOME/.lean-toolchain/bin" >> "$GITHUB_PATH"
+          "$HOME/.lean-toolchain/bin/lean" --version
       - uses: actions/cache@v6
         with:
           path: formal/quarz-core/.lake
