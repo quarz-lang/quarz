@@ -702,16 +702,50 @@ impl Runner {
             let callee = world.method(*method);
             if callee.type_params.iter().any(|q| q.id == p) {
                 let name = &callee.name;
-                let place = match called_kind(host, *method) {
-                    Called::Yes(Some((file, span))) => match self.files.get(file as usize) {
-                        Some(f) => format!(" (at {}:{})", f.name, f.line_col(span.start).line),
-                        None => String::new(),
-                    },
-                    _ => String::new(),
+                // Why the statement's type arguments do not hold
+                // (`statement_type_args`), when they do not.
+                let plain = name
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphabetic() || c == '_');
+                let aliased = callee.alias_of.is_some()
+                    || world.methods.iter().any(|m| {
+                        m.alias_of.is_some_and(|a| world.method(a).name == *name) && m.name != *name
+                    });
+                let why = if !plain || quarz_ir::shake::RUNTIME_NAMES.contains(&name.as_str()) {
+                    Some(format!(
+                        "the runtime (or an operator) calls `{name}` by its name, so the type arguments of the statements calling it do not hold (docs/14 §5); give the `static def` another name"
+                    ))
+                } else if aliased {
+                    Some(format!(
+                        "`{name}` has an alias, a call of which a statement does not see, so the type arguments of the statements calling it do not hold (docs/14 §5)"
+                    ))
+                } else {
+                    match called_kind(host, *method) {
+                        Called::Yes(at_call) => {
+                            let place = match at_call.and_then(|(file, span)| {
+                                self.files.get(file as usize).map(|f| (f, span))
+                            }) {
+                                Some((f, span)) => {
+                                    format!(" (at {}:{})", f.name, f.line_col(span.start).line)
+                                }
+                                None => String::new(),
+                            };
+                            Some(format!(
+                                "the program also calls a method named `{name}`{place}, so the type arguments of the statements calling `{name}` do not hold (docs/14 §5, by name over the whole program); give the `static def` a less common name"
+                            ))
+                        }
+                        Called::OnSelf => Some(format!(
+                            "`{name}` calls itself on `self` in its own body, with type arguments a statement does not give, so only its receiver's hold (docs/14 §5)"
+                        )),
+                        Called::No => None,
+                    }
                 };
-                return format!(
-                    "{at}: the handle to `{shown}` is made with `{param}`, a type parameter of `{name}`, which has no class here: the program also calls a method named `{name}`{place}, so the type arguments of the statements calling `{name}` do not hold (docs/14 §5, by name over the whole program); give the `static def` a less common name"
-                );
+                if let Some(why) = why {
+                    return format!(
+                        "{at}: the handle to `{shown}` is made with `{param}`, a type parameter of `{name}`, which has no class here: {why}"
+                    );
+                }
             }
         }
         format!(
