@@ -75,6 +75,10 @@ as above. The pull request says which case it was.
 - Force-pushing after the subagent review or the local checks changed
   the commits is fine at any stage (amend or rebase as needed, onto
   main too): the merge names the head commit it was approved on.
+- A rebase onto main that applied without conflicts needs no local rerun
+  of the full suite: CI runs it on the new head. Rerun the affected tests
+  locally when the rebase resolved a conflict or main changed a path the
+  branch touches.
 - Mark it ready for review only when the subagent review of the branch's
   diff and the local checks above that apply have passed; from then on
   review every change, added or rewritten, before pushing it.
