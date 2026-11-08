@@ -27,6 +27,9 @@ pub(crate) struct Links {
     /// Per cog (`World::cogs`' index): the same for its root module,
     /// which has no file.
     pub cog_docs: Vec<Option<String>>,
+    /// Per file: its path relative to its cog's root (`src/x.qz`), shown
+    /// in place of the path it was loaded from (#458).
+    pub shown: Vec<Option<String>>,
 }
 
 /// What `quarz doc` was asked for, for the links.
@@ -194,6 +197,7 @@ impl Links {
             let cog = i
                 .checked_sub(1)
                 .and_then(|j| cog_of.get(j).copied().flatten());
+            let mut shown = None;
             let (source, docs) = if let Some(path) = std_path(&f.name) {
                 (
                     std_source.as_ref().map(|s| format!("{s}{path}")),
@@ -201,6 +205,7 @@ impl Links {
                 )
             } else if let Some(site) = cog.and_then(|c| sites.get(c as usize)?.as_ref()) {
                 let path = Path::new(&f.name);
+                shown = relative(path, &site.dir);
                 (
                     site.source
                         .as_ref()
@@ -229,6 +234,7 @@ impl Links {
             };
             links.source.push(source);
             links.docs.push(docs);
+            links.shown.push(shown);
         }
         links
     }

@@ -788,3 +788,50 @@ fn html_links_an_enums_other_variants_from_its_page() {
         "{page}"
     );
 }
+
+#[test]
+fn html_of_a_cog_headings_locations_and_variants() {
+    // #460: a data type's heading without its fields (a variant's keeps
+    // them); #458: a location by its path in the cog; #452: a variant in
+    // the text links to it on its enum's page.
+    let d = Dir::new();
+    d.write(
+        "Cog.toml",
+        "[cog]\nname = \"shapes\"\nversion = \"0.1.0\"\n",
+    );
+    d.write(
+        "src/shapes.qz",
+        "# A point; see `Shape::Circle`, `Shape::Circle.new` and `Shape::Hidden`.\ndata Point = (x: Int, y: Int = 0)\n\n# Shapes.\nenum Shape\n  # A circle.\n  variant Circle(radius: Int)\n  # :nodoc:\n  variant Hidden(x: Int)\nend\n",
+    );
+    let site = d.0.join("site");
+    let out = quarz_in(&d.0, &["doc", "--html", "-o", site.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let point = std::fs::read_to_string(site.join("Shapes--Point.html")).unwrap();
+    assert!(
+        point.contains("<h1><code>data Shapes::Point</code></h1>"),
+        "{point}"
+    );
+    assert!(point.contains(">src/shapes.qz:2</"), "{point}");
+    // (A `:nodoc:` variant stays text.)
+    assert!(
+        point.contains("<code>Shape::Hidden</code>") && !point.contains("Shape::Hidden</code></a>"),
+        "{point}"
+    );
+    assert!(
+        point.contains(
+            "<a href=\"Shapes--Shape.html#variant-Circle\"><code>Shape::Circle</code></a>"
+        ),
+        "{point}"
+    );
+    assert!(
+        point.contains(
+            "<a href=\"Shapes--Shape.html#variant-Circle\"><code>Shape::Circle.new</code></a>"
+        ),
+        "{point}"
+    );
+    let shape = std::fs::read_to_string(site.join("Shapes--Shape.html")).unwrap();
+    assert!(
+        shape.contains("<h3><code>variant Shapes::Shape::Circle(radius: "),
+        "{shape}"
+    );
+}
