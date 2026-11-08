@@ -1240,3 +1240,60 @@ fn a_super_in_a_block_with_a_receiver_runs_on_the_methods_self() {
         }
     }
 }
+
+#[test]
+fn a_generated_methods_body_is_not_in_its_statements_reach() {
+    // A block given to `def_method` and its kin becomes a method's body,
+    // which the statement does not run: what it reaches (IO, a task
+    // scope, a method doing IO) does not refuse the statement (#397;
+    // docs/14 §5). What the statement itself runs still does.
+    let lib = "class Base\n  def self.read_it -> String = File.read(\"/etc/hostname\")\n  static def self.gen -> Void\n    def_class_method(:hostname) { File.read(\"/etc/hostname\") }\n  end\n  static def self.gen_kw -> Void\n    def_class_method(:hostname2, keywords: [Meta::Keyword.new(:x, Int, true)]) do |given| -> String\n      Base.read_it\n    end\n  end\n  static def self.gen_task -> Void\n    def_class_method(:t) do -> Int\n      Task.scope { |s| s.spawn { 1 }.await }\n    end\n    def_method(:size_of_host) { File.read(\"/etc/hostname\").size }\n  end\n  static def self.bad -> Void\n    s = File.read(\"/etc/hostname\")\n    def_class_method(:h) { s }\n  end\nend\n";
+    let d = dir();
+    write(&d.0, "lib.qz", lib);
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass A < Base\n  gen\nend\nclass B < Base\n  gen_kw\nend\nclass C < Base\n  gen_task\nend\nputs A.hostname.size > 0\nputs B.hostname2(x: 1).size > 0\np C.t\nputs C.new.size_of_host > 0\n",
+    );
+    run_and_build(&d.0, &app, "true\ntrue\n1\ntrue\n");
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass A < Base\n  bad\nend\np A.h\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.starts_with(
+            "app.qz:3:3: error: `bad` reaches `File.read`, which cannot run at compile time"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_block_a_union_receiver_may_call_stays_in_the_reach() {
+    // `r.def_method(:x) { ... }` on `Type[Base] | Runner`: the block may
+    // be `Runner#def_method`'s, which calls it at compile time, so it is
+    // no generated body: walked, lowered and checked (#402's review).
+    let lib = |body: &str| {
+        format!("class Helper\n  def self.compute -> Int = 41\nend\nclass Runner\n  def def_method[R](name: Symbol, &body: () -> R) -> R = body.call\nend\nclass Base\n  static def self.gen(flag: Bool) -> Void\n    r = flag ? self : Runner.new\n    r.def_method(:hostname) {{ {body} }}\n    def_class_method(:x) {{ 1 }}\n  end\nend\n")
+    };
+    let d = dir();
+    write(&d.0, "lib.qz", &lib("Helper.compute"));
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass A < Base\n  gen(false)\nend\np A.x\n",
+    );
+    run_and_build(&d.0, &app, "1\n");
+    write(&d.0, "lib.qz", &lib("File.read(\"/etc/hostname\")"));
+    let (ok, _, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.starts_with(
+            "app.qz:3:3: error: `gen` reaches `File.read`, which cannot run at compile time"
+        ),
+        "{err}"
+    );
+}

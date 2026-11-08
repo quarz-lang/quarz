@@ -710,6 +710,23 @@ impl<'a> FnBuilder<'a> {
         b.term(Term::Return(v));
         let f = b.finish();
         self.lw.block_calls.insert(id, (call_id, block.span));
+        // A generated method's body (docs/14 §5): its call resolves to the
+        // generating native itself (`lifted_blocks` alone may name a call
+        // a union receiver resolves to a user method of the name too).
+        if self.out.lifted_blocks.contains_key(&call_id)
+            && matches!(self.out.calls.get(&call_id), Some(CallTarget::Method { method })
+            if {
+                let m = self.world.method(*method);
+                m.owner == self.world.builtin.meta_classdef
+                    && m.is_native
+                    && matches!(
+                        m.name.as_str(),
+                        "def_method" | "def_class_method" | "def_initialize"
+                    )
+            })
+        {
+            self.lw.lifted_funcs.insert(id);
+        }
         self.lw.set_func(id, f);
         id
     }
