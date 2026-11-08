@@ -1646,7 +1646,7 @@ fn may_receive(world: &RtWorld, o: MethodId, classes: &[ClassId]) -> bool {
 /// name (`==`, `to_s`) cannot reach it otherwise.
 fn denied_owner(world: &RtWorld, m: MethodId) -> bool {
     let owner = &world.classes[world.methods[m as usize].owner as usize];
-    compile_time_denied_class(owner.name.split("::").next().unwrap_or(""))
+    compile_time_denied_class(&owner.name)
 }
 
 fn method_name(world: &RtWorld, m: MethodId) -> String {
@@ -1774,6 +1774,8 @@ impl Runner {
         interp
             .deadline
             .set(Some(std::time::Instant::now() + limit()));
+        // (A compilation does not depend on the machine's zone.)
+        interp.local_utc.set(true);
         interp
     }
 
