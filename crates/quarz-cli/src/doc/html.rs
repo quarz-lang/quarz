@@ -310,7 +310,15 @@ fn layout(title: &str, api: &Api, current: Option<&str>, body: &str) -> String {
 /// A signature, its names of classes linked where they have a page, here
 /// or on another site (#448). A signature names classes by their declared
 /// names (`Dep::Thing`, `Time`), whatever the page's scope.
-fn signature_html(loaded: &Loaded, api: &Api, current: Option<ClassId>, sig: &str) -> String {
+/// `current` is the page it is on and `member` the member it is of
+/// (neither is linked to: a page's own heading, a variant's).
+fn signature_html(
+    loaded: &Loaded,
+    api: &Api,
+    current: Option<ClassId>,
+    member: Option<&str>,
+    sig: &str,
+) -> String {
     let mut out = String::with_capacity(sig.len() * 2);
     let mut prev: Option<char> = None;
     let mut rest = sig;
@@ -344,10 +352,13 @@ fn signature_html(loaded: &Loaded, api: &Api, current: Option<ClassId>, sig: &st
         let link = whole
             .then(|| api.class_target(&loaded.world, name))
             .flatten()
-            // (Not the page the signature is on.)
-            .filter(|t| {
-                !matches!(t, Target::Page(p, _)
-                    if current.is_some_and(|c| loaded.world.class(c).name == *p))
+            // (Not the page the signature is on, nor its own member.)
+            .filter(|t| match t {
+                Target::Page(p, m) => {
+                    !current.is_some_and(|c| loaded.world.class(c).name == *p)
+                        || m.as_deref().is_some_and(|m| Some(m) != member)
+                }
+                _ => true,
             })
             .and_then(|t| href(loaded, api, &t));
         match link {
@@ -393,7 +404,7 @@ fn member_html(loaded: &Loaded, api: &Api, page: &Page, m: &Item) -> String {
     let _ = writeln!(
         s,
         "<h3><code>{}</code></h3>",
-        signature_html(loaded, api, Some(page.id), &m.signature)
+        signature_html(loaded, api, Some(page.id), Some(&m.path), &m.signature)
     );
     if let Some(ext) = &m.extension {
         let _ = writeln!(s, "<p class=\"from\">in <code>{}</code></p>", escape(ext));
@@ -452,7 +463,7 @@ fn page_html(loaded: &Loaded, api: &Api, page: &Page) -> String {
     let _ = writeln!(
         s,
         "<h1><code>{}</code></h1>",
-        signature_html(loaded, api, Some(page.id), &page.signature)
+        signature_html(loaded, api, Some(page.id), None, &page.signature)
     );
     if !page.includes.is_empty() {
         let names: Vec<String> = page
@@ -560,7 +571,7 @@ fn index_html(loaded: &Loaded, api: &Api) -> String {
             let _ = writeln!(
                 s,
                 "<h3><code>{}</code></h3>",
-                signature_html(loaded, api, None, &k.signature)
+                signature_html(loaded, api, None, None, &k.signature)
             );
             if let Some(d) = &k.doc {
                 s.push_str(&markdown_html(loaded, api, None, &d.text, 2));

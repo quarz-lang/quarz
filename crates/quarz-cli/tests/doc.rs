@@ -762,3 +762,29 @@ fn html_links_the_standard_librarys_source() {
     );
     assert!(page.contains(&want), "no {want} in\n{page}");
 }
+
+#[test]
+fn html_links_an_enums_other_variants_from_its_page() {
+    // A signature on an enum's page links its other variants, not the
+    // variant whose heading it is (#450).
+    let d = Dir::new();
+    d.write(
+        "e.qz",
+        "# Shapes.\nenum Shape\n  # A circle.\n  variant Circle(radius: Int)\n  # A square.\n  variant Square(side: Int)\n  # The unit circle.\n  def self.unit -> Shape::Circle = Shape::Circle.new(1)\nend\n",
+    );
+    let site = d.0.join("site");
+    let out = quarz_in(
+        &d.0,
+        &["doc", "e.qz", "--html", "-o", site.to_str().unwrap()],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let page = std::fs::read_to_string(site.join("Shape.html")).unwrap();
+    assert!(
+        page.contains("-&gt; <a href=\"Shape.html#variant-Circle\">Shape::Circle</a>"),
+        "{page}"
+    );
+    assert!(
+        page.contains("<h3><code>variant Shape::Circle(radius:"),
+        "{page}"
+    );
+}
