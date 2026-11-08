@@ -477,8 +477,11 @@ impl Drop for Freeing {
 
 /// Free the value at `ptr` and then, in a loop, what freeing it released.
 /// Each value's releases are reversed on the stack as they were pushed,
-/// so values are freed in the order the recursion freed them (depth
-/// first, fields in order): `deinitialize`s are queued as before.
+/// so values are freed depth first, fields in order, as the recursion
+/// freed them, but for one case: a value two fields refer to, its last
+/// reference in the first's subtree, was freed there and is now freed
+/// after it (all of a value's fields are released before any of them is
+/// freed).
 ///
 /// # Safety
 /// `ptr` is the last reference of a live `Rc` of the type `free` frees.
@@ -486,6 +489,11 @@ impl Drop for Freeing {
 #[inline(never)]
 unsafe fn free_all(ptr: NonNull<u8>, free: unsafe fn(NonNull<u8>)) {
     let _reset = Freeing;
+    // (With the thread's locals being destroyed: freed here.)
+    if DEFERRED.try_with(|_| ()).is_err() {
+        // SAFETY: as the caller promises.
+        return unsafe { free(ptr) };
+    }
     let mut next = Some((ptr, free));
     while let Some((p, f)) = next {
         let before = DEFERRED.with(|d| d.borrow().len());
@@ -497,6 +505,13 @@ unsafe fn free_all(ptr: NonNull<u8>, free: unsafe fn(NonNull<u8>)) {
             d.pop()
         });
     }
+    // (Not kept large after freeing a wide value.)
+    DEFERRED.with(|d| {
+        let mut d = d.borrow_mut();
+        if d.capacity() > 4096 {
+            d.shrink_to(1024);
+        }
+    });
 }
 
 impl<T: ?Sized + Target> Rc<T> {
@@ -509,13 +524,25 @@ impl<T: ?Sized + Target> Rc<T> {
             // collection, which must not find it.
             crate::cycles::forget(inner.shared.get());
         }
-        // Inside another value's freeing: wait (see `FREEING`). (While the
-        // thread's locals are being destroyed, freed here.)
-        match FREEING.try_with(|f| f.replace(true)) {
-            Ok(true) => DEFERRED.with(|d| d.borrow_mut().push((self.ptr, Self::free_at))),
+        // A value that releases nothing in turn (a string, bytes) cannot
+        // recurse: freed here, as wide collections of them are common.
+        if !std::mem::needs_drop::<T>() {
             // SAFETY: the caller holds the last reference.
-            Ok(false) => unsafe { free_all(self.ptr, Self::free_at) },
-            Err(_) => unsafe { Self::free_at(self.ptr) },
+            return unsafe { Self::free_at(self.ptr) };
+        }
+        // Inside another value's freeing: wait (see `FREEING`); freed here
+        // when the stack is gone (the thread's locals being destroyed).
+        if FREEING.with(|f| f.replace(true)) {
+            let pushed = DEFERRED
+                .try_with(|d| d.borrow_mut().push((self.ptr, Self::free_at)))
+                .is_ok();
+            if !pushed {
+                // SAFETY: as below.
+                unsafe { Self::free_at(self.ptr) };
+            }
+        } else {
+            // SAFETY: the caller holds the last reference.
+            unsafe { free_all(self.ptr, Self::free_at) };
         }
     }
 
