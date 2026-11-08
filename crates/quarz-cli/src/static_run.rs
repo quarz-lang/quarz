@@ -2487,7 +2487,7 @@ fn generated_override(world: &World, mid: MethodId) -> Result<(), String> {
         .map(|tp| Type::Param(tp.id))
         .collect();
     let ancs = world.ancestors(m.owner, &own);
-    let overridden = world.overridden_methods_in(m, &ancs);
+    let mut overridden = world.overridden_methods_in(m, &ancs);
     let side = if m.singleton { "." } else { "#" };
     // The inherited methods of the name, with their ancestors' arguments.
     let mut inherited: Vec<(MethodId, rustc_hash::FxHashMap<TypeParamId, Type>)> = Vec::new();
@@ -2511,16 +2511,69 @@ fn generated_override(world: &World, mid: MethodId) -> Result<(), String> {
             inherited.push((o, subst));
         }
     }
+    // A class method: the instance methods of the modules the class or
+    // an ancestor `extend`s are its class side's too (which
+    // `overridden_methods_in` does not look at): overridden when it takes
+    // their every call and returns what their callers take.
+    if m.singleton {
+        let no_subst = rustc_hash::FxHashMap::default();
+        for (anc, _) in &ancs {
+            for e in &world.class(*anc).extends {
+                let Type::Class(module, margs) = e else {
+                    continue;
+                };
+                for (mc, mcargs) in world.ancestors(*module, margs) {
+                    let mcc = world.class(mc);
+                    for &o in mcc.methods.get(&m.name).into_iter().flatten() {
+                        let subst: rustc_hash::FxHashMap<TypeParamId, Type> = mcc
+                            .type_params
+                            .iter()
+                            .map(|tp| tp.id)
+                            .zip(mcargs.iter().cloned())
+                            .collect();
+                        let om = world.method(o);
+                        if world.takes_calls_of(m, &no_subst, om, &subst)
+                            && !overridden.contains(&o)
+                        {
+                            overridden.push(o);
+                        }
+                        inherited.push((o, subst));
+                    }
+                }
+            }
+        }
+    }
     let shown = |o: MethodId| {
         let om = world.method(o);
-        let params: Vec<String> = om
-            .params
-            .iter()
-            .map(|p| {
-                let default = if p.default.is_some() { " = ..." } else { "" };
-                format!("{}: {}{default}", p.name, world.type_name(&p.ty))
-            })
-            .collect();
+        let mut params: Vec<String> = Vec::new();
+        let mut star = false;
+        for p in &om.params {
+            let default = if p.default.is_some() { " = ..." } else { "" };
+            // (`*xs: T` held as `Array[T]`, `**opts: T` as `Hash[Symbol, T]`.)
+            let elem = |i: usize| match &p.ty {
+                Type::Class(_, args) if args.len() > i => world.type_name(&args[i]),
+                t => world.type_name(t),
+            };
+            match p.kind {
+                ParamKind::Rest => {
+                    star = true;
+                    params.push(format!("*{}: {}", p.name, elem(0)));
+                }
+                ParamKind::KeywordRest => params.push(format!("**{}: {}", p.name, elem(1))),
+                ParamKind::KeywordOnly => {
+                    if !star {
+                        params.push("*".to_string());
+                        star = true;
+                    }
+                    params.push(format!("{}: {}{default}", p.name, world.type_name(&p.ty)));
+                }
+                _ => params.push(format!("{}: {}{default}", p.name, world.type_name(&p.ty))),
+            }
+        }
+        if let Some((name, t)) = &om.block {
+            let name = if name == "&" { "" } else { name.as_str() };
+            params.push(format!("&{name}: {}", world.type_name(t)));
+        }
         format!(
             "`{}{side}{}({}) -> {}`",
             world.class(om.owner).name,
@@ -2563,6 +2616,12 @@ fn generated_override(world: &World, mid: MethodId) -> Result<(), String> {
             .map(|(_, s)| s.clone())
             .unwrap_or_default();
         let theirs = om.ret.subst(&subst);
+        if om.ret.mentions_param(SELF_PARAM) {
+            return Err(format!(
+                "`override: true`, but {} returns `Self`, which a generated method cannot override (docs/14 §5): its result is a class, not each subclass's own",
+                shown(o)
+            ));
+        }
         if !(m.ret == theirs || world.is_subtype(&m.ret, &theirs)) {
             return Err(format!(
                 "`override: true`, but its result {} is not a {}, the result of {}",
@@ -2591,6 +2650,21 @@ fn override_misfit(
         );
     }
     for (p, q) in ps.iter().zip(&qs) {
+        if p.kind != q.kind {
+            let what = |k: ParamKind| {
+                if k == ParamKind::Rest {
+                    "a rest parameter"
+                } else {
+                    "a positional parameter"
+                }
+            };
+            return format!(
+                "its parameter `{}` is {}, where the inherited one has {}",
+                q.name,
+                what(q.kind),
+                what(p.kind)
+            );
+        }
         let pt = p.ty.subst(osubst);
         if !(pt == q.ty || world.is_subtype(&pt, &q.ty)) {
             return format!(
@@ -2645,6 +2719,11 @@ fn override_misfit(
             "it requires the keyword `{}`, which the inherited one does not take",
             q.name
         );
+    }
+    if o.params.iter().any(|p| p.kind == ParamKind::KeywordRest)
+        && !m.params.iter().any(|q| q.kind == ParamKind::KeywordRest)
+    {
+        return "it takes no `**` keywords, which the inherited one takes".to_string();
     }
     match (&o.block, &m.block) {
         (Some(_), None) => "it takes no block".to_string(),
