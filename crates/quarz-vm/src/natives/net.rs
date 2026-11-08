@@ -538,10 +538,13 @@ fn make_socket_from(
     let (local, peer, unix) = match &stream {
         Stream::Tcp(s) => (s.local_addr().ok(), s.peer_addr().ok().or(peer), false),
         Stream::Unix(_) => (None, None, true),
+        Stream::Pipe(_) => (None, None, false),
     };
+    let pipe = matches!(stream, Stream::Pipe(_));
     io(IoKind::Socket(IoCell::new(SocketState {
         stream: Some(stream),
         unix,
+        pipe,
         rbuf: Vec::new(),
         eof: false,
         closed: false,
@@ -623,6 +626,7 @@ fn listener_accept(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
                     Stream::Unix(s) => s
                         .set_nonblocking(true)
                         .map_err(|e| os_error(interp, e, &label))?,
+                    Stream::Pipe(_) => unreachable!("accepted a pipe"),
                 }
                 return Ok(make_socket_from(interp, stream, path, peer));
             }
@@ -1079,6 +1083,8 @@ pub(crate) fn shutdown_stream(
     Some(match s.stream.as_ref()? {
         Stream::Tcp(t) => t.shutdown(how),
         Stream::Unix(u) => u.shutdown(how),
+        // (A pipe goes one way: `close` ends it.)
+        Stream::Pipe(_) => Err(std::io::Error::from(std::io::ErrorKind::Unsupported)),
     })
 }
 
@@ -1091,6 +1097,8 @@ pub(crate) fn close_stream(interp: &Interp, s: &mut SocketState) -> Vec<crate::s
         let _ = match &stream {
             Stream::Tcp(t) => t.shutdown(std::net::Shutdown::Both),
             Stream::Unix(u) => u.shutdown(std::net::Shutdown::Both),
+            // (Dropped below, which closes it.)
+            Stream::Pipe(_) => Ok(()),
         };
     }
     s.closed = true;
@@ -1212,7 +1220,9 @@ pub fn inspect_socket(interp: &Interp, io: &Rc<IoVal>) -> String {
     match &io.kind {
         IoKind::Socket(st) => {
             let s = st.borrow();
-            if s.unix {
+            if s.pipe {
+                format!("#<IO:pipe{closed}>")
+            } else if s.unix {
                 format!(
                     "#<UNIXSocket {}{closed}>",
                     s.path.clone().unwrap_or_default()

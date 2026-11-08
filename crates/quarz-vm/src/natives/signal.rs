@@ -43,10 +43,23 @@ const NAMES: &[(&str, libc::c_int)] = &[
     ("USR2", libc::SIGUSR2),
     ("PIPE", libc::SIGPIPE),
     ("TERM", libc::SIGTERM),
+    // (Sent only: a trap cannot catch them, `Signal.trap` refuses them.)
+    ("KILL", libc::SIGKILL),
+    ("STOP", libc::SIGSTOP),
 ];
+
+/// The number of the signal `name` (`"TERM"`, `"SIGTERM"`) in the table
+/// `Signal.number` reads, for `Process::Child#signal`.
+pub(crate) fn number(name: &str) -> Option<libc::c_int> {
+    let name = name.strip_prefix("SIG").unwrap_or(name);
+    NAMES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
+}
 
 fn signo(interp: &Interp, v: &Value) -> Result<libc::c_int, crate::interp::Flow> {
     let n = int(interp, v, "signal")?;
+    if n == libc::SIGKILL as i64 || n == libc::SIGSTOP as i64 {
+        return Err(interp.err_arg("SIGKILL and SIGSTOP cannot be trapped"));
+    }
     if NAMES.iter().any(|(_, s)| *s as i64 == n) {
         Ok(n as libc::c_int)
     } else {
@@ -67,9 +80,8 @@ fn set_action(sig: libc::c_int, handler: libc::sighandler_t) {
 pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Signal.number", |i, _, a| {
         let name = string(i, a.arg(0), "name")?;
-        let name = name.strip_prefix("SIG").unwrap_or(name);
-        Ok(match NAMES.iter().find(|(n, _)| *n == name) {
-            Some((_, s)) => Value::Int(*s as i64),
+        Ok(match number(name) {
+            Some(s) => Value::Int(s as i64),
             None => Value::Nil,
         })
     });

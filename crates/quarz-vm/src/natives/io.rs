@@ -645,7 +645,7 @@ pub(super) fn io(kind: IoKind) -> Value {
     Value::Io(Rc::new_shared(IoVal { kind }))
 }
 
-pub(super) fn io_of<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<IoVal>, Flow> {
+pub(crate) fn io_of<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<IoVal>, Flow> {
     match v {
         Value::Io(io) => Ok(io),
         _ => Err(interp.err_type("expected an IO")),
@@ -1127,7 +1127,7 @@ fn io_write_bytes(interp: &Interp, recv: &Value, bytes: &[u8]) -> Result<(), Flo
         }
         IoKind::Socket(st) => net::socket_write(interp, st, bytes)?,
         IoKind::Tls(st) => super::tls_io::write(interp, st, bytes)?,
-        IoKind::Listener(_) | IoKind::Udp(_) => {
+        IoKind::Listener(_) | IoKind::Udp(_) | IoKind::Child(_) => {
             return Err(interp.raise(interp.program.exc.io_error, "not opened for writing"))
         }
     }

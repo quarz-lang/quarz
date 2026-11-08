@@ -519,6 +519,8 @@ pub struct RtClasses {
     pub file: ClassId,
     pub math: ClassId,
     pub process: ClassId,
+    pub process_child: ClassId,
+    pub process_status: ClassId,
     pub result_ok: ClassId,
     pub result_err: ClassId,
     pub socket_address: ClassId,
@@ -1001,6 +1003,8 @@ impl Interp {
             file: class_by_name("File"),
             math: class_by_name("Math"),
             process: class_by_name("Process"),
+            process_child: class_by_name("Process::Child"),
+            process_status: class_by_name("Process::Status"),
             result_ok: class_by_name("Result::Ok"),
             result_err: class_by_name("Result::Err"),
             socket_address: library_class("Socket::Address"),
@@ -2347,7 +2351,10 @@ impl Interp {
             Value::Enumerator(_) => self.program.rt.enumerator,
             Value::Io(io) => match &io.kind {
                 IoKind::Socket(st) => {
-                    if st.borrow().unix {
+                    let s = st.borrow();
+                    if s.pipe {
+                        self.program.rt.io
+                    } else if s.unix {
                         self.program.rt.unix_socket
                     } else {
                         self.program.rt.tcp_socket
@@ -2362,6 +2369,7 @@ impl Interp {
                 }
                 IoKind::Udp(_) => self.program.rt.udp_socket,
                 IoKind::Tls(_) => self.program.rt.tls_socket,
+                IoKind::Child(_) => self.program.rt.process_child,
                 _ => self.program.rt.io,
             },
             Value::Bytes(_) => b.bytes,
@@ -3951,6 +3959,7 @@ impl Interp {
                 IoKind::Socket(_) | IoKind::Listener(_) | IoKind::Udp(_) | IoKind::Tls(_) => {
                     natives::net::inspect_socket(self, io)
                 }
+                IoKind::Child(st) => natives::process::inspect_child(st),
             },
             Value::Random(r) => format!("#<Random seed={}>", r.borrow().seed),
             Value::Bytes(b) => natives::bytes::inspect_bytes(b),
