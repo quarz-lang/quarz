@@ -682,6 +682,77 @@ impl Runner {
         Ok(())
     }
 
+    /// The error for a handle typed with type parameter `p`, which has no
+    /// class here: one of the statement's `static def`'s own when the
+    /// program also calls a method of its name (docs/14 §5: its type
+    /// arguments then do not hold; one such call is named, #417), else
+    /// another method's.
+    fn unknown_handle_param(
+        &self,
+        host: &dyn StaticHost,
+        stmt: &StaticStmt,
+        at: &str,
+        shown: &str,
+        p: TypeParamId,
+    ) -> String {
+        use quarz_types::check::CallTarget;
+        let world = host.world();
+        let param = world.type_name(&Type::Param(p));
+        if let Some(CallTarget::Method { method }) = host.output().calls.get(&stmt.expr.id) {
+            let callee = world.method(*method);
+            if callee.type_params.iter().any(|q| q.id == p) {
+                let name = &callee.name;
+                // Why the statement's type arguments do not hold
+                // (`statement_type_args`), when they do not.
+                let plain = name
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphabetic() || c == '_');
+                let aliased = callee.alias_of.is_some()
+                    || world.methods.iter().any(|m| {
+                        m.alias_of.is_some_and(|a| world.method(a).name == *name) && m.name != *name
+                    });
+                let why = if !plain || quarz_ir::shake::RUNTIME_NAMES.contains(&name.as_str()) {
+                    Some(format!(
+                        "the runtime (or an operator) calls `{name}` by its name, so the type arguments of the statements calling it do not hold (docs/14 §5); give the `static def` another name"
+                    ))
+                } else if aliased {
+                    Some(format!(
+                        "`{name}` has an alias, a call of which a statement does not see, so the type arguments of the statements calling it do not hold (docs/14 §5)"
+                    ))
+                } else {
+                    match called_kind(host, *method) {
+                        Called::Yes(at_call) => {
+                            let place = match at_call.and_then(|(file, span)| {
+                                self.files.get(file as usize).map(|f| (f, span))
+                            }) {
+                                Some((f, span)) => {
+                                    format!(" (at {}:{})", f.name, f.line_col(span.start).line)
+                                }
+                                None => String::new(),
+                            };
+                            Some(format!(
+                                "the program also calls a method named `{name}`{place}, so the type arguments of the statements calling `{name}` do not hold (docs/14 §5, by name over the whole program); give the `static def` a less common name"
+                            ))
+                        }
+                        Called::OnSelf => Some(format!(
+                            "`{name}` calls itself on `self` in its own body, with type arguments a statement does not give, so only its receiver's hold (docs/14 §5)"
+                        )),
+                        Called::No => None,
+                    }
+                };
+                if let Some(why) = why {
+                    return format!(
+                        "{at}: the handle to `{shown}` is made with `{param}`, a type parameter of `{name}`, which has no class here: {why}"
+                    );
+                }
+            }
+        }
+        format!(
+            "{at}: the handle to `{shown}` is made with `{param}`, a type parameter of another method than the `static def` the statement calls: a handle's type is written as a type or one of that `static def`'s type parameters"
+        )
+    }
+
     /// The method handles the methods a statement generated captured
     /// (docs/14 §5), resolved now that every member it generates is
     /// declared: a `def_method`'s to the method it made, a `method_ref`'s
@@ -784,10 +855,7 @@ impl Runner {
                         .map(|p| p.id)
                         .collect();
                     if let Some(t) = free_param(&p, &fixed) {
-                        return Err(format!(
-                            "{at}: the handle to `{shown}` is made with `{}`, a type parameter of another method than the `static def` the statement calls: a handle's type is written as a type or one of that `static def`'s type parameters",
-                            world.type_name(&Type::Param(t))
-                        ));
+                        return Err(self.unknown_handle_param(host, stmt, at, &shown, t));
                     }
                     let Type::Proc(None, ps, ret, shareable, kws) = &p else {
                         return Err(format!(
@@ -1006,9 +1074,12 @@ impl Runner {
                         .map(|p| p.id)
                         .collect();
                     if let Some(p) = free_param(&u, &fixed) {
-                        return Err(format!(
-                            "{at}: the handle to `@{name}` is made with `{}`, a type parameter of another method than the `static def` the statement calls: a handle's type is written as a type or one of that `static def`'s type parameters",
-                            world.type_name(&Type::Param(p))
+                        return Err(self.unknown_handle_param(
+                            host,
+                            stmt,
+                            at,
+                            &format!("@{name}"),
+                            p,
                         ));
                     }
                     if !world.same_type(&field.ty, &u) {
@@ -2279,10 +2350,15 @@ fn statement_type_args(
             .filter(|(p, _)| !own.contains(p))
             .map(|(p, t)| (*p, t.clone()))
             .collect(),
-        Called::Yes => Default::default(),
+        Called::Yes(_) => Default::default(),
     };
-    // (The scan, once per callee and program: what it reads only grows
-    // with declarations, which the key counts.)
+    keep(called_kind(host, callee_id))
+}
+
+/// `called_by_name`, once per callee and program: what it reads only
+/// grows with declarations, which the key counts.
+fn called_kind(host: &dyn StaticHost, callee_id: MethodId) -> Called {
+    let world = host.world();
     let key = (
         callee_id,
         world.methods.len(),
@@ -2291,11 +2367,11 @@ fn statement_type_args(
         world.classes.len(),
     );
     if let Some(kind) = CALLED.with(|c| c.borrow().get(&key).copied()) {
-        return keep(kind);
+        return kind;
     }
     let kind = called_by_name(host, callee_id);
     CALLED.with(|c| c.borrow_mut().insert(key, kind));
-    keep(kind)
+    kind
 }
 
 /// Whether the program names a `static def` as called (`statement_type_args`).
@@ -2303,7 +2379,8 @@ fn statement_type_args(
 enum Called {
     No,
     OnSelf,
-    Yes,
+    /// With where one such call is (its file and span), when it is one.
+    Yes(Option<(u32, Span)>),
 }
 
 type CalledKey = (MethodId, usize, usize, usize, usize);
@@ -2323,27 +2400,29 @@ fn called_by_name(host: &dyn StaticHost, callee_id: MethodId) -> Called {
     let mut on_self = false;
     // Whether `exprs` name it otherwise than allowed (`own`: the callee's
     // own body, where a call on `self` is allowed).
+    // (`Some`: where, the call's span or, for a `super`, none.)
     let mut named = |exprs: &[quarz_syntax::ast::Expr],
                      extra: &[&quarz_syntax::ast::Expr],
                      own: bool,
                      method_name: Option<&str>|
-     -> bool {
+     -> Option<Option<Span>> {
         let (sites, supers) = quarz_lower::call_sites(exprs, extra, out, world);
         if supers && method_name == Some(name) && !own {
-            return true;
+            return Some(None);
         }
-        for (id, self_call, n) in sites {
+        for (id, span, self_call, n) in sites {
             if n != name || tops.contains(&id) {
                 continue;
             }
             if own && self_call {
                 on_self = true;
             } else {
-                return true;
+                return Some(Some(span));
             }
         }
-        false
+        None
     };
+    let at = |file: u32, span: Option<Span>| Called::Yes(span.map(|s| (file, s)));
     for m in &world.methods {
         let Some(def) = m.body.clone() else {
             continue;
@@ -2355,27 +2434,27 @@ fn called_by_name(host: &dyn StaticHost, callee_id: MethodId) -> Called {
             .iter()
             .filter_map(|p| p.default.as_ref())
             .collect();
-        if named(body, &defaults, m.id == callee_id, Some(m.name.as_str())) {
-            return Called::Yes;
+        if let Some(span) = named(body, &defaults, m.id == callee_id, Some(m.name.as_str())) {
+            return at(m.file, span);
         }
     }
     for st in &world.static_stmts {
-        if named(std::slice::from_ref(&*st.expr), &[], false, None) {
-            return Called::Yes;
+        if let Some(span) = named(std::slice::from_ref(&*st.expr), &[], false, None) {
+            return at(st.file, span);
         }
     }
     for c in &world.consts {
         if let Some(v) = &c.value {
-            if named(std::slice::from_ref(&**v), &[], false, None) {
-                return Called::Yes;
+            if named(std::slice::from_ref(&**v), &[], false, None).is_some() {
+                return Called::Yes(None);
             }
         }
     }
     for k in &world.classes {
         for f in &k.fields {
             if let Some(v) = &f.default {
-                if named(std::slice::from_ref(&**v), &[], false, None) {
-                    return Called::Yes;
+                if named(std::slice::from_ref(&**v), &[], false, None).is_some() {
+                    return Called::Yes(None);
                 }
             }
         }
