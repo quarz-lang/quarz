@@ -6727,7 +6727,9 @@ module Dir
   # symbolic link to one (a link the pattern names, written or matched by
   # a wildcard, is followed; a link to a file matches as a file); `*`, `?`
   # and `[...]` match a name starting with a dot only when the pattern's
-  # segment starts with one (`src/.*`), and `**/` does not enter one.
+  # segment starts with one (`src/.*`, which matches `src/.` too, not
+  # `src/..`), and `**/` does not enter one. A path is shown as the
+  # pattern starts it: `Dir.glob("./*")` gives `"./a"`.
   #
   # ## Raises
   #

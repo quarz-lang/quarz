@@ -124,15 +124,25 @@ class DirGlobTest < Test::Case
       link(root, "..", "src/up")
       assert_equal(["src/a.qz", "src/sub/b.qz"], Dir.glob("src/**/*.qz", root))
       assert_equal(["src/sub"], Dir.glob("src/**/", root))
+      # (Repeated `**` is walked once.)
+      assert_equal(["src/a.qz", "src/sub/b.qz"], Dir.glob("src/**/**/**/**/*.qz", root))
     end
   end
 
   def test_hidden_names_need_a_dot_in_the_pattern
     with_tree("dots") do |root|
       assert_equal(["src/a.qz", "src/sub"], Dir.glob("src/*", root))
-      assert_equal(["src/.dot.qz", "src/.hid"], Dir.glob("src/.*", root))
+      # (`.*` matches `.`, not `..`, as Ruby's since 3.1.)
+      assert_equal(["src/.", "src/.dot.qz", "src/.hid"], Dir.glob("src/.*", root))
       assert_equal(["src/.hid/c.qz"], Dir.glob("src/.hid/*.qz", root))
       assert_equal(["src/.dot.qz"], Dir.glob("src/.d?t.qz", root))
+    end
+  end
+
+  def test_the_root_and_a_dot_prefix
+    assert_equal(["/"], Dir.glob("/"))
+    with_tree("prefix") do |root|
+      assert_equal(["./src/a.qz"], Dir.glob("./src/*.qz", root))
     end
   end
 

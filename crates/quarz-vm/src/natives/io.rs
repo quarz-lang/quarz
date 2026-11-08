@@ -730,7 +730,6 @@ fn dir_children(interp: &Interp, path: &str) -> Result<Vec<String>, Flow> {
     names.map_err(|e| os_error(interp, e, path))
 }
 
-/// `{a,b}` alternatives in a glob pattern, expanded recursively.
 /// One pattern's matches (`Dir.glob`), into `out`: walked from `base`
 /// (taken as written, a path, not a pattern) or the current directory for
 /// a relative pattern, from `/` for an absolute one; relative to where the
@@ -754,7 +753,12 @@ fn glob_walk(base: Option<&str>, pattern: &str, out: &mut Vec<String>) -> Result
     };
     let dirs_only = pattern.ends_with('/');
     let mut segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+    // (`**/**` is `**`: walked once.)
+    segs.dedup_by(|a, b| *a == "**" && *b == "**");
     if segs.is_empty() {
+        if absolute {
+            out.push("/".to_string());
+        }
         return Ok(());
     }
     // (A trailing `**`: the directories below, as `**/`.)
@@ -890,6 +894,11 @@ fn glob_segments(
                 require_literal_leading_dot: !dotted,
             };
             let mut names = glob_names(dir);
+            // (`.` too, as Ruby's since 3.1, for a segment starting with a
+            // dot; never `..`.)
+            if *dotted {
+                names.push(".".to_string());
+            }
             names.sort();
             for name in names {
                 if !p.matches_with(&name, opts) {
@@ -927,6 +936,7 @@ fn glob_dirs_below(dir: &Path, shown: &str, out: &mut Vec<String>) {
     }
 }
 
+/// `{a,b}` alternatives in a glob pattern, expanded recursively.
 fn expand_braces(pattern: &str) -> Vec<String> {
     let Some(open) = pattern.find('{') else {
         return vec![pattern.to_string()];
