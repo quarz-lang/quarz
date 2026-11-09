@@ -1940,7 +1940,10 @@ impl Checker {
                 .iter()
                 .find(|f| f.name == name)
                 .map_or(class.span, |f| f.span);
-            self.error(
+            // (In the class's own file: see `check_default_uses`.)
+            let file = class.file;
+            self.error_in(
+                file,
                 format!(
                     "field `@{name}` has no default and `{}` has no `initialize` to assign it",
                     class.name
@@ -1997,8 +2000,11 @@ impl Checker {
                 }
             }
         }
+        // In the class's own file, not the unit being checked (a required
+        // standard library's, #405).
+        let file = self.world.class(cid).file;
         for (msg, span) in errors {
-            self.error(msg, span);
+            self.error_in(file, msg, span);
         }
     }
 
