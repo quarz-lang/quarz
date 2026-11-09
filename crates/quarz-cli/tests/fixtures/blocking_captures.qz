@@ -1,0 +1,54 @@
+# A capture of a `Task.blocking` block that the caller reads no more is
+# moved to the helper thread rather than copied (#478); one it reads
+# again, one another closure shares, one a handler reads, or one a loop
+# reads again stays the caller's. The values are the same either way.
+def moved -> Int
+  big = "x" * 1000
+  Task.blocking { big.size }
+end
+
+def read_after -> Int
+  big = "x" * 1000
+  n = Task.blocking { big.size }
+  n + big.size
+end
+
+def shared -> Int
+  big = "x" * 1000
+  f = -> { big.size }
+  n = Task.blocking { big.size }
+  n + f.call
+end
+
+def in_a_loop -> Int
+  total = 0
+  keep = "k" * 10
+  3.times do |i|
+    s = "y" * (100 + i)
+    total += Task.blocking { s.size + keep.size }
+  end
+  total
+end
+
+def handled -> String
+  big = "q" * 50
+  begin
+    Task.blocking { raise "boom #{big.size}" }
+    ""
+  rescue => e
+    "#{e.message} #{big.size}"
+  end
+end
+
+def twice -> Int
+  big = "r" * 500
+  m = Task.blocking { big.size }
+  m + Task.blocking { big.size }
+end
+
+p moved
+p read_after
+p shared
+p in_a_loop
+p handled
+p twice

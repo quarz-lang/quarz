@@ -418,3 +418,64 @@ fn inst_name(inst: &Inst) -> String {
     let s = format!("{inst:?}");
     s.split([' ', '{', '(']).next().unwrap_or("").to_string()
 }
+
+/// The frame slots `Task.blocking` moved a capture out of (#478), by
+/// frame address, while the moved shadow is on: reading one before it is
+/// written again is a bug in `live::blocking_takes`. (Global: a task may
+/// move to another worker thread.)
+static TAKEN: std::sync::Mutex<Vec<(usize, u32)>> = std::sync::Mutex::new(Vec::new());
+
+/// Slot `slot` of the frame at `frame` was moved out.
+pub fn frame_taken(frame: *const u8, slot: u32) {
+    if moves() {
+        TAKEN.lock().unwrap().push((frame as usize, slot));
+    }
+}
+
+/// The frame at `frame` is freed: its address may be another's next.
+pub fn frame_dropped(frame: *const u8) {
+    if moves() {
+        let mut taken = TAKEN.lock().unwrap();
+        if !taken.is_empty() {
+            taken.retain(|(f, _)| *f != frame as usize);
+        }
+    }
+}
+
+impl Interp {
+    /// The moved shadow of frame slots: `inst` reading a slot that
+    /// `Task.blocking` moved out stops the program; writing it makes it
+    /// valid again.
+    pub(crate) fn shadow_frame(&self, act: &crate::vm::Activation, inst: &Inst) {
+        let (depth, slot, write) = match inst {
+            Inst::FrameGet { depth, slot, .. } => (*depth, *slot, false),
+            Inst::OwnedCall {
+                recv: quarz_ir::VarLoc::Frame { depth, slot },
+                ..
+            } => (*depth, *slot, false),
+            Inst::FrameSet { depth, slot, .. } => (*depth, *slot, true),
+            _ => return,
+        };
+        let mut taken = TAKEN.lock().unwrap();
+        if taken.is_empty() {
+            return;
+        }
+        let mut frame: &crate::value::Frame = self.frame(act);
+        for _ in 0..depth {
+            match frame.parent.as_deref() {
+                Some(p) => frame = p,
+                None => return,
+            }
+        }
+        let key = (std::ptr::from_ref(frame).cast::<u8>() as usize, slot);
+        if write {
+            taken.retain(|k| *k != key);
+        } else if taken.contains(&key) {
+            drop(taken);
+            self.violated(format!(
+                "{} reads frame slot {slot} (depth {depth}), which Task.blocking moved out",
+                inst_name(inst)
+            ));
+        }
+    }
+}

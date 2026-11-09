@@ -91,6 +91,12 @@ pub struct Function {
     /// line `INLINE_LINE_FLAG | i` refers to `inlined[i]`.
     #[serde(default)]
     pub inlined: Vec<InlineOrigin>,
+    /// For a block given to `Task.blocking`: the slots of the frame it
+    /// is made in (its closure's frame) that the call may move rather
+    /// than copy, the caller reading them no more (`live::blocking_takes`,
+    /// #478).
+    #[serde(default)]
+    pub takes: Vec<u32>,
 }
 
 /// A function without its body (`Function::split`): what the runtime
@@ -120,6 +126,9 @@ pub struct FrameFacts {
     pub uses: Vec<(u32, u32)>,
     /// The functions of the blocks it creates.
     pub blocks: Vec<FuncId>,
+    /// `Function::takes`.
+    #[serde(default)]
+    pub takes: Vec<u32>,
 }
 
 /// The bit that marks a line number as an index into `Function::inlined`.
@@ -149,6 +158,7 @@ impl Function {
             consts: Vec::new(),
             blocks: Vec::new(),
             inlined: Vec::new(),
+            takes: Vec::new(),
         }
     }
 
@@ -176,7 +186,8 @@ impl Function {
 
     /// Its body apart.
     pub fn split(self) -> (FuncInfo, Vec<Block>) {
-        let facts = self.frame_facts();
+        let mut facts = self.frame_facts();
+        facts.takes = self.takes;
         let info = FuncInfo {
             name: self.name,
             kind: self.kind,

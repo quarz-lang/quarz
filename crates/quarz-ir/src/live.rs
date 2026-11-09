@@ -582,3 +582,220 @@ pub fn numeric_param(f: &Function, methods: &[RtMethod], index: u32) -> bool {
                 && matches!(p.ty.as_deref(), Some("Int" | "Float"))
         })
 }
+
+/// The slots of the frame its closure is made in that block function
+/// `func` (and the blocks made inside it, however nested) reads or
+/// writes: what `Task.blocking` exports of that frame.
+fn closure_frame_uses(functions: &[Function], func: u32) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    // (function, frames between its closure's frame and the frame seen)
+    let mut work: Vec<(u32, i64)> = vec![(func, 0)];
+    while let Some((id, base)) = work.pop() {
+        if !seen.insert((id, base)) {
+            continue;
+        }
+        let Some(f) = functions.get(id as usize) else {
+            continue;
+        };
+        let facts = f.frame_facts();
+        let own = i64::from(f.frame_size > 0);
+        for &(depth, slot) in &facts.uses {
+            if i64::from(depth) - own + base == 0 {
+                out.push(slot);
+            }
+        }
+        for &b in &facts.blocks {
+            work.push((b, base - own));
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// What `Task.blocking` may move out of its caller's frame rather than
+/// copy (#478), written into the block's `Function::takes`: for a call
+/// `Task.blocking { ... }` in a function that owns its frame (not a
+/// REPL input, whose frame later inputs see), the frame slots the block
+/// uses that
+/// - no other block made in the function may use (it shares the frame;
+///   another `Task.blocking` block, dropped after its call, is a read at
+///   its call),
+/// - the function never reads again after the call: no read
+///   (`FrameGet`, an in-place update of the slot, a block made that uses
+///   it) on any path from the call, its handler included, before the slot
+///   is written.
+///
+/// The block's closure must be made just for the call (read by nothing
+/// else). The runtime takes the values out of the slots, leaving `nil`,
+/// and the moves verifier checks that nothing reads them.
+pub fn blocking_takes(functions: &mut [Function], blocking: &[bool]) {
+    let mut found: Vec<(u32, Vec<u32>)> = Vec::new();
+    for f in functions.iter() {
+        if f.frame_size == 0 || f.kind == FuncKind::Repl {
+            continue;
+        }
+        let calls = blocking_calls(f, blocking);
+        if calls.is_empty() {
+            continue;
+        }
+        // The slots each block made here uses.
+        let mut makes: Vec<(u32, Vec<u32>)> = Vec::new();
+        for inst in f.blocks.iter().flat_map(|b| &b.insts) {
+            if let Inst::MakeBlock { func, .. } = inst {
+                makes.push((*func, closure_frame_uses(functions, *func)));
+            }
+        }
+        let nslots = f.frame_size as usize;
+        let live = slot_liveness(f, &makes, nslots);
+        // Another `Task.blocking` block reads its slots at its own call
+        // only (it is dropped after): the liveness accounts for that.
+        let once: Vec<u32> = calls.iter().map(|c| c.2).collect();
+        for &(bi, ii, func) in &calls {
+            // Made once, for this call only.
+            if makes.iter().filter(|(g, _)| *g == func).count() != 1 {
+                continue;
+            }
+            let uses = &makes.iter().find(|(g, _)| *g == func).unwrap().1;
+            let after = &live[bi][ii + 1];
+            let handler = f.blocks[bi].handler.map(|h| &live[h.block as usize][0]);
+            let takes: Vec<u32> = uses
+                .iter()
+                .copied()
+                .filter(|&s| (s as usize) < nslots)
+                .filter(|&s| {
+                    !makes
+                        .iter()
+                        .any(|(g, u)| *g != func && !once.contains(g) && u.contains(&s))
+                })
+                .filter(|&s| !after[s as usize] && !handler.is_some_and(|h| h[s as usize]))
+                .collect();
+            if !takes.is_empty() {
+                found.push((func, takes));
+            }
+        }
+    }
+    for (func, takes) in found {
+        functions[func as usize].takes = takes;
+    }
+}
+
+/// The `Task.blocking` calls of `f` given a block made by a `MakeBlock`
+/// earlier in the same basic block, whose register nothing else reads:
+/// (block, instruction, the block's function).
+fn blocking_calls(f: &Function, blocking: &[bool]) -> Vec<(usize, usize, u32)> {
+    let mut reads: std::collections::HashMap<Reg, usize> = std::collections::HashMap::new();
+    for blk in &f.blocks {
+        for inst in &blk.insts {
+            for r in inst.uses() {
+                *reads.entry(r).or_default() += 1;
+            }
+        }
+        if let Some(r) = blk.term.uses() {
+            *reads.entry(r).or_default() += 1;
+        }
+    }
+    let mut out = Vec::new();
+    for (bi, blk) in f.blocks.iter().enumerate() {
+        for (ii, inst) in blk.insts.iter().enumerate() {
+            let Inst::Call {
+                kind: crate::CallKind::Method(m),
+                block: Some(b),
+                ..
+            } = inst
+            else {
+                continue;
+            };
+            if !blocking.get(*m as usize).copied().unwrap_or(false) || reads.get(b) != Some(&1) {
+                continue;
+            }
+            // The block's closure: the last write of its register before
+            // the call, a `MakeBlock`.
+            let made = blk.insts[..ii].iter().rev().find(|i| i.defs().contains(b));
+            if let Some(Inst::MakeBlock { func, .. }) = made {
+                out.push((bi, ii, *func));
+            }
+        }
+    }
+    out
+}
+
+/// Frame-slot liveness: `result[b][i][s]` says whether slot `s` of the
+/// function's own frame may be read before being written from
+/// instruction `i` of block `b` on (`insts.len()`: the terminator). A
+/// block made that uses a slot reads it (the closure may run any time
+/// after); a block's handler can be entered from any of its
+/// instructions.
+fn slot_liveness(f: &Function, makes: &[(u32, Vec<u32>)], n: usize) -> Vec<Vec<Vec<bool>>> {
+    let reads = |inst: &Inst| -> Vec<u32> {
+        match inst {
+            Inst::FrameGet { depth: 0, slot, .. }
+            | Inst::OwnedCall {
+                recv: crate::VarLoc::Frame { depth: 0, slot },
+                ..
+            } => vec![*slot],
+            Inst::MakeBlock { func, .. } => makes
+                .iter()
+                .find(|(g, _)| g == func)
+                .map(|(_, u)| u.clone())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    };
+    let nb = f.blocks.len();
+    let mut live_in: Vec<Vec<bool>> = vec![vec![false; n]; nb];
+    let mut result: Vec<Vec<Vec<bool>>> = f
+        .blocks
+        .iter()
+        .map(|b| vec![vec![false; n]; b.insts.len() + 1])
+        .collect();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for bi in (0..nb).rev() {
+            let blk = &f.blocks[bi];
+            let mut cur = vec![false; n];
+            match &blk.term {
+                Term::Jump(t) => or_into(&mut cur, &live_in[*t as usize]),
+                Term::Branch { then, els, .. } => {
+                    or_into(&mut cur, &live_in[*then as usize]);
+                    or_into(&mut cur, &live_in[*els as usize]);
+                }
+                _ => {}
+            }
+            let handler = blk.handler.map(|h| live_in[h.block as usize].clone());
+            if let Some(h) = &handler {
+                or_into(&mut cur, h);
+            }
+            result[bi][blk.insts.len()] = cur.clone();
+            for (ii, inst) in blk.insts.iter().enumerate().rev() {
+                if let Inst::FrameSet { depth: 0, slot, .. } = inst {
+                    if let Some(c) = cur.get_mut(*slot as usize) {
+                        *c = false;
+                    }
+                }
+                for s in reads(inst) {
+                    if let Some(c) = cur.get_mut(s as usize) {
+                        *c = true;
+                    }
+                }
+                if let Some(h) = &handler {
+                    or_into(&mut cur, h);
+                }
+                result[bi][ii] = cur.clone();
+            }
+            if cur != live_in[bi] {
+                live_in[bi] = cur;
+                changed = true;
+            }
+        }
+    }
+    result
+}
+
+fn or_into(a: &mut [bool], b: &[bool]) {
+    for (x, y) in a.iter_mut().zip(b) {
+        *x |= *y;
+    }
+}

@@ -555,6 +555,7 @@ impl Lowerer {
                 handler: None,
             }],
             inlined: Vec::new(),
+            takes: Vec::new(),
         }
     }
 
@@ -1695,6 +1696,14 @@ pub fn lower_checked_with(mut lw: Lowerer, checked: &Checked, files: &[SourceFil
     check(&functions, verify::Stage::Release);
     borrow::mark_borrows(&mut functions);
     check(&functions, verify::Stage::Borrow);
+    // What `Task.blocking` may move out of its caller's frame (#478).
+    let blocking: Vec<bool> = delta
+        .world
+        .methods
+        .iter()
+        .map(|m| m.native_key.as_deref() == Some("Task.blocking"))
+        .collect();
+    quarz_ir::live::blocking_takes(&mut functions, &blocking);
     let before = verify::enabled().then(|| functions.clone());
     let maps = regshare::share_registers(&mut functions, &delta.world.methods);
     if let Some(before) = before {

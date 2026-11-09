@@ -137,8 +137,21 @@ impl<T: ?Sized + crate::rc::Target> Moved<T> {
             return Err(rc);
         }
         Rc::mark_shared(&rc);
+        count_move();
         Ok(Moved(SendRc::new(rc)))
     }
+}
+
+/// How many values crossed `Task.blocking` moved rather than copied
+/// (`QUARZ_COUNT_COPIES` prints it at exit, after the copies).
+static MOVED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn count_move() {
+    MOVED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn moved() -> u64 {
+    MOVED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// An exception's: its identity (`ExcInfo::id`), backtrace and cause.
@@ -226,6 +239,7 @@ fn later(nodes: &mut Vec<Node>, jobs: &mut Vec<(Ix, Job)>, job: Job) -> Ix {
 }
 
 /// The node of a value with no parts, if `v` is one.
+#[inline(always)]
 fn leaf(interp: &Interp, v: &Value) -> Option<Node> {
     Some(match v {
         Value::Nil => Node::Nil,
@@ -279,6 +293,25 @@ fn part(interp: &Interp, nodes: &mut Vec<Node>, jobs: &mut Vec<(Ix, Job)>, v: Va
 /// `Node::Ints`), so a caller that keeps using the value passes a clone,
 /// which leaves every part referred to twice.
 pub fn export(interp: &Interp, v: Value) -> Result<Transfer, Flow> {
+    export_taking(interp, v, None)
+}
+
+/// A `Task.blocking` block for the helper thread, with the values taken
+/// out of slots of its closure's frame (`frame`, now `nil` there: the
+/// caller reads them no more, #478) exported in their place, given up.
+pub fn export_block(
+    interp: &Interp,
+    block: Value,
+    frame: Rc<Frame>,
+    taken: Vec<(u32, Value)>,
+) -> Result<Transfer, Flow> {
+    export_taking(interp, block, Some((frame, taken)))
+}
+
+/// A block's frame, with the values taken out of its slots (#478).
+pub type Taken = (Rc<Frame>, Vec<(u32, Value)>);
+
+fn export_taking(interp: &Interp, v: Value, mut taken: Option<Taken>) -> Result<Transfer, Flow> {
     let mut nodes: Vec<Node> = Vec::new();
     let mut jobs: Vec<(Ix, Job)> = Vec::new();
     later(&mut nodes, &mut jobs, Job::Value(v));
@@ -290,12 +323,23 @@ pub fn export(interp: &Interp, v: Value) -> Result<Transfer, Flow> {
         let node = match job {
             Job::Value(v) => export_value(interp, v, &mut nodes, &mut jobs)?,
             Job::Frame(frame, needed, depth) => {
+                // The block's own frame, with the values taken out of it.
+                let mut given = match &taken {
+                    Some((f, _)) if depth == 0 && Rc::ptr_eq(f, &frame) => {
+                        taken.take().map(|(_, t)| t).unwrap_or_default()
+                    }
+                    _ => Vec::new(),
+                };
                 let mut slots = Vec::new();
                 for (j, v) in frame.slots().iter().enumerate() {
                     let wanted = needed
                         .as_ref()
                         .is_none_or(|n| n.contains(&(depth, j as u32)));
-                    slots.push(wanted.then(|| part(interp, &mut nodes, &mut jobs, v.clone())));
+                    let v = match given.iter().position(|(s, _)| *s == j as u32) {
+                        Some(k) => given.swap_remove(k).1,
+                        None => v.clone(),
+                    };
+                    slots.push(wanted.then(|| part(interp, &mut nodes, &mut jobs, v)));
                 }
                 let parent = frame.parent.as_ref().map(|p| {
                     later(
@@ -421,6 +465,49 @@ fn export_value(
     })
 }
 
+/// Whether `v` can cross to the helper thread whole: nothing in it that
+/// `export` refuses (an object whose class defines `deinitialize`, a
+/// mutable value, a procedure, a native), walked without recursion. A
+/// capture is taken out of its frame to be moved only then: taken and
+/// refused, it would be released at once, a `deinitialize` running early
+/// (#478).
+pub fn crosses(interp: &Interp, v: &Value) -> bool {
+    let mut work: Vec<Value> = vec![v.clone()];
+    while let Some(v) = work.pop() {
+        if leaf(interp, &v).is_some() {
+            continue;
+        }
+        match &v {
+            Value::Array(items) => {
+                if let ArrayData::Values(_) | ArrayData::Objects(_) = &**items {
+                    work.extend(items.iter());
+                }
+            }
+            Value::Hash(h) => {
+                for (k, x) in h.as_map().iter() {
+                    work.push(k.clone());
+                    work.push(x.clone());
+                }
+            }
+            Value::Set(s) => work.extend(s.iter().cloned()),
+            Value::Range(r) => {
+                work.push(r.lo.clone());
+                work.push(r.hi.clone());
+            }
+            Value::Regexp(_) => {}
+            Value::Object(o) => {
+                if crate::deinit::has(o.class) {
+                    return false;
+                }
+                work.extend(o.fields());
+                work.extend(o.cause());
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// The node of an array: its storage moved out when nothing else refers
 /// to it (the words of an `Array[Int]`/`Array[Float]` as they are; the
 /// elements of another, each given up in turn), copied otherwise.
@@ -432,8 +519,14 @@ fn export_array(
 ) -> Node {
     if let Some(data) = Rc::get_mut(&mut items) {
         return match std::mem::replace(data, ArrayData::Values(Vec::new())) {
-            ArrayData::Ints(words) => Node::Ints(words),
-            ArrayData::Floats(words) => Node::Floats(words),
+            ArrayData::Ints(words) => {
+                count_move();
+                Node::Ints(words)
+            }
+            ArrayData::Floats(words) => {
+                count_move();
+                Node::Floats(words)
+            }
             ArrayData::Values(vs) => Node::Array(
                 vs.into_iter()
                     .map(|v| part(interp, nodes, jobs, v))
