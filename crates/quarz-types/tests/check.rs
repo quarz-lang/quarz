@@ -5572,3 +5572,32 @@ fn a_call_falls_through_to_a_union_self_every_member_answers() {
     // #336: the arguments of a call that falls through fall through too.
     ok("class Q\nend\nclass O\n  def foo -> String = \"foo\"\n  def outer(s: String) -> String = s\n  def run -> String = on(Q.new) { outer(foo) }\n  def on(q: Q, &b: Q.() -> String) -> String = q.instance_exec(&b)\nend\n");
 }
+
+#[test]
+fn a_class_object_call_checks_alike_alone_and_after_another_member() {
+    // #324: a call on `Type[E] | Type[X]` (`E` extending `M`, `X` a type
+    // parameter under a class that extends `M`) was accepted alone but
+    // refused after a `Type[B] | Type[C]` check of the same call (a block
+    // checked once per member of `H1 | H2[X]`): a type parameter's class
+    // object is now taken as its bound's, whatever the order.
+    let head = "module M\n  def k -> String = \"M#k\"\nend\nclass Base\n  extend M\nend\nclass B < Base\n  def self.k -> String = \"B.k\"\nend\nclass C < Base\n  def self.k -> String = \"C.k\"\nend\nclass E\n  extend M\nend\nclass H1\n  def run(&blk: (Type[B] | Type[C]) -> String) -> String = blk.call(C)\nend\nclass H2[T <: Base]\n  def run(&blk: (Type[E] | Type[T]) -> String) -> String = blk.call(E)\nend\n";
+    // (A module listed first among the bounds: the class bound counts,
+    // as for the lookup.)
+    let head = head
+        .replace("module M\n", "module N\nend\nmodule M\n")
+        .replace(
+            "class Base\n  extend M\n",
+            "class Base\n  include N\n  extend M\n",
+        );
+    for bound in ["Base", "B", "C", "N & Base", "Base & N"] {
+        ok(&format!(
+            "{head}def alone[X <: {bound}](h: H2[X]) -> String = h.run {{ |x| x.k }}\n"
+        ));
+        ok(&format!(
+            "{head}def both[X <: {bound}](h: H1 | H2[X]) -> String = h.run {{ |x| x.k }}\n"
+        ));
+        ok(&format!(
+            "{head}def both[X <: {bound}](h: H2[X] | H1) -> String = h.run {{ |x| x.k }}\n"
+        ));
+    }
+}
