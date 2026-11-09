@@ -1,0 +1,33 @@
+# A call on class objects, one member a type parameter's (`Type[T]`,
+# `T <: Base`), checked in a block once per member of a union receiver:
+# accepted whatever the order of the checks, and each value runs its
+# class's own method (#324, after #258).
+module M
+  def k -> String = "M#k"
+end
+class Base
+  extend M
+end
+class B < Base
+  def self.k -> String = "B.k"
+end
+class C < Base
+  def self.k -> String = "C.k"
+end
+class E
+  extend M
+end
+class H1
+  def run(&blk: (Type[B] | Type[C]) -> String) -> String = blk.call(C)
+end
+class H2[T <: Base]
+  @t: Type[T]
+  def initialize(@t: Type[T]); end
+  def run(&blk: (Type[E] | Type[T]) -> String) -> String = blk.call(E) + " " + blk.call(@t)
+end
+def first[X <: Base](h: H1 | H2[X]) -> String = h.run { |x| x.k }
+def second[X <: Base](h: H2[X] | H1) -> String = h.run { |x| x.k }
+def alone[X <: Base](h: H2[X]) -> String = h.run { |x| x.k }
+p first(H1.new), first(H2[B].new(B)), first(H2[Base].new(Base))
+p second(H1.new), second(H2[C].new(C))
+p alone(H2[B].new(B)), alone(H2[Base].new(C))

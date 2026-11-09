@@ -2216,15 +2216,24 @@ impl World {
     fn extended_class_object_base(&self, table: &[(Type, MethodId)]) -> Option<MethodId> {
         let mut entries: Vec<(ClassId, MethodId)> = Vec::new();
         for (t, k) in table {
-            let Type::ClassObject(c, _) = t else {
-                return None;
+            // (A type parameter's class object, `Type[T]` with `T <: A`,
+            // as `Type[A]`, whose value may be any class below `A` too: so
+            // that the result does not depend on whether a check of the
+            // call with class objects came first, #324.)
+            let c = match t {
+                Type::ClassObject(c, _) => *c,
+                Type::TypeOf(inner) => match &**inner {
+                    Type::Param(p) => self.class_bound(*p)?,
+                    _ => return None,
+                },
+                _ => return None,
             };
             let i = self.method(*k);
             let module_side = !i.singleton && self.class(i.owner).kind == ClassKind::Module;
             if i.extension.is_some() || !(i.singleton || module_side) {
                 return None;
             }
-            entries.push((*c, *k));
+            entries.push((c, *k));
         }
         let name = &self.method(entries[0].1).name;
         // Candidates in the first member's lookup order, the most derived
@@ -2250,6 +2259,33 @@ impl World {
                             && self.class_side_dispatch(c, b) == Some(k)
                     })
             })
+    }
+
+    /// The class a type parameter's values are below, as a lookup on it
+    /// finds its methods: its first bound that is a class (not a module),
+    /// through the bounds of a parameter it is bounded by (a narrowed
+    /// one's).
+    fn class_bound(&self, p: TypeParamId) -> Option<ClassId> {
+        let mut work = vec![p];
+        let mut seen = Vec::new();
+        while let Some(p) = work.pop() {
+            if seen.contains(&p) {
+                continue;
+            }
+            seen.push(p);
+            let bounds = self.param_bounds(p);
+            if let Some(c) = bounds.iter().find_map(|b| match b {
+                Type::Class(c, _) if self.class(*c).kind != ClassKind::Module => Some(*c),
+                _ => None,
+            }) {
+                return Some(c);
+            }
+            work.extend(bounds.iter().rev().filter_map(|b| match b {
+                Type::Param(q) => Some(*q),
+                _ => None,
+            }));
+        }
+        None
     }
 
     /// What a call of class method (or extended module method) `b` on the
