@@ -3053,6 +3053,37 @@ impl World {
         }
     }
 
+    /// Whether a value of type `t` is immutable for the `!` rule (docs/01,
+    /// assignment): `x.foo!` rebinds `x` only then (a `foo!` of its own
+    /// is called as any method). The built-in immutable types (docs/03
+    /// §2), tuples, class objects, and a class whose values are objects (`data`, enums,
+    /// exceptions, the program's classes) with no `var` field, judged on
+    /// the class named (a subclass that adds one does not change it); a
+    /// union when every member is, a type parameter when a bound is.
+    /// Not Shareable's notion: a field may hold a mutable object here.
+    pub fn bang_immutable(&self, t: &Type) -> bool {
+        match t {
+            Type::Class(id, _) => self.immutable_class(*id),
+            // A class object (`Type[T]`, `T` a class or a parameter) holds no
+            // state to change.
+            Type::Tuple(_) | Type::ClassObject(..) | Type::TypeOf(_) => true,
+            Type::Union(ms) => ms.iter().all(|m| self.bang_immutable(m)),
+            Type::Param(p) => self.param_bounds(*p).iter().any(|b| self.bang_immutable(b)),
+            _ => false,
+        }
+    }
+
+    /// `bang_immutable` for the values of class `id`.
+    fn immutable_class(&self, id: ClassId) -> bool {
+        let b = &self.builtin;
+        [
+            b.nil, b.bool_, b.int, b.integer, b.float, b.string, b.symbol, b.array, b.hash, b.set,
+            b.range, b.regexp, b.bytes, b.class_,
+        ]
+        .contains(&id)
+            || self.instances_are_objects(id) && self.all_fields(id).iter().all(|(f, _)| !f.mutable)
+    }
+
     /// Whether values of the type may be shared between tasks.
     pub fn is_shareable(&mut self, t: &Type) -> bool {
         match t {

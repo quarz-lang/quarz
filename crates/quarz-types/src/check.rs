@@ -9998,7 +9998,23 @@ impl Checker {
                         // `it -1` in a block declaring no parameters.
                         format!("undefined method `it` for {}: {it}", self.name(recv_ty))
                     } else {
-                        let hint = self.immutable_hint(recv_ty, name, call.recv.as_ref());
+                        let mut hint = self.immutable_hint(recv_ty, name, call.recv.as_ref());
+                        if let Some(plain) = name.strip_suffix('!') {
+                            if call.recv.is_some()
+                                && !plain.is_empty()
+                                && !self.world.lookup_methods(recv_ty, plain).is_empty()
+                            {
+                                let var = match call.recv.as_ref().map(|r| &r.kind) {
+                                    Some(ExprKind::Local(v)) => v.clone(),
+                                    Some(ExprKind::IVar(v)) => format!("@{v}"),
+                                    _ => "x".to_string(),
+                                };
+                                let args = if call.args.is_empty() { "" } else { "(...)" };
+                                hint = format!(
+                                    "; `.{name}` rebinds its receiver only when the receiver's type is immutable: write `{var} = {var}.{plain}{args}`, or define `{name}`"
+                                );
+                            }
+                        }
                         format!("undefined method `{name}` for {}{hint}", self.name(recv_ty))
                     };
                     self.error(msg, expr.span);
@@ -10218,6 +10234,11 @@ impl Checker {
             );
             return None;
         }
+        // Only on immutable receivers; a mutable member without `foo!`
+        // reports the undefined method in its own check.
+        if !members.iter().all(|m| self.world.bang_immutable(m)) {
+            return None;
+        }
         let mut root = call.recv.as_ref()?;
         while let ExprKind::Call(inner) = &root.kind {
             if !self.out.bang_assign.contains(&root.id) {
@@ -10259,7 +10280,11 @@ impl Checker {
             return None;
         }
         let recv = call.recv.as_ref()?;
-        if self.world.lookup_methods(recv_ty, plain_name).is_empty() {
+        // Only on an immutable receiver: on a mutable one, `foo!` would
+        // read as a change of the object (docs/01, assignment).
+        if self.world.lookup_methods(recv_ty, plain_name).is_empty()
+            || !self.world.bang_immutable(recv_ty)
+        {
             return None;
         }
         // The place: the receiver, or, in a chain `x.foo!.bar!`, the

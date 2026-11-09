@@ -5464,3 +5464,57 @@ fn an_own_override_hides_the_inherited_method_at_a_call() {
         "the call of `with` is ambiguous",
     );
 }
+
+#[test]
+fn bang_sugar_only_on_immutable_receivers() {
+    // `x.foo!` is `x = x.foo` on an immutable receiver (docs/01,
+    // assignment; #472): a built-in immutable type, a `data`, a class with
+    // no `var` field, a union of those, a type parameter bounded by one.
+    ok("xs = [1]\nxs.push!(2)\np xs\n");
+    ok("data P(x: Int)\n  def up -> P = P.new(x + 1)\nend\np = P.new(1)\np.up!\n");
+    ok("class T\n  @n: Int\n  def initialize(n: Int)\n    @n = n\n  end\n  def up -> T = T.new(@n + 1)\nend\nt = T.new(1)\nt.up!\n");
+    ok("u: Int | String = 1\nu.to_s!\n");
+    // (On a variable of the parameter's type, the sugar applies, and the
+    // result must fit the variable, as for any receiver.)
+    err(
+        "def f[T <: String](s: T) -> T\n  t = s\n  t.strip!\n  t\nend\n",
+        "`.strip!` would assign String to `t` of type T",
+    );
+    // On a mutable receiver it is an undefined method, with a hint.
+    err(
+        "b = Array::Builder[Int].new\nb.to_a!\n",
+        "undefined method `to_a!` for Array::Builder[Int]; `.to_a!` rebinds its receiver only when the receiver's type is immutable: write `b = b.to_a`, or define `to_a!`",
+    );
+    err(
+        "class C\n  var @n: Int = 0\n  def bump -> C = C.new\nend\nc = C.new\nc.bump!\n",
+        "undefined method `bump!` for C; `.bump!` rebinds its receiver only when the receiver's type is immutable: write `c = c.bump`",
+    );
+    err(
+        "def f[T](x: T) -> T\n  x.to_s!\n  x\nend\n",
+        "undefined method `to_s!` for T",
+    );
+    // A union with a mutable member takes no sugar.
+    err(
+        "class C\n  var @n: Int = 0\n  def to_s -> String = \"c\"\nend\nu: C | String = \"a\"\nu = C.new if u.size > 5\nu.to_s!\n",
+        "undefined method `to_s!` for C",
+    );
+    // A union whose mutable member has its own `foo!` and immutable one
+    // only `foo` is still refused (the members would disagree).
+    err(
+        "class C\n  var @n: Int = 0\n  def up! -> Int = 1\nend\ndata D(x: Int)\n  def up -> D = D.new(x + 1)\nend\nu: C | D = D.new(1)\nu = C.new if u.x > 0\nr = u.up!\n",
+        "`up!` is a method of some members of the union and `up` of others; narrow the receiver first",
+    );
+    // An inherited `var` field makes the class mutable.
+    err(
+        "class B\n  var @n: Int = 0\nend\nclass C < B\n  def up -> C = C.new\nend\nc = C.new\nc.up!\n",
+        "undefined method `up!` for C",
+    );
+    // On a field, the hint names the field.
+    err(
+        "class C\n  var @b: Array::Builder[Int] = Array::Builder[Int].new\n  def go -> Nil\n    @b.to_a!\n    nil\n  end\nend\n",
+        "write `@b = @b.to_a`",
+    );
+    // A type's own `foo!` is called, immutable or not (#472, decided
+    // 2026-11-09: no rule against defining one).
+    ok("data P(x: Int)\n  def move! -> Int = x\nend\np = P.new(1)\nn: Int = p.move!\n");
+}
