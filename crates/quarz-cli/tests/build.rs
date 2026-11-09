@@ -204,32 +204,42 @@ fn frame_word_is_set_before_it_is_read() {
     );
     let ir = fs::read_to_string(exe.with_extension("ll")).unwrap();
     let _ = fs::remove_dir_all(&dir);
+    // `ptrs` is a compiled function's sixth stack slot (after the
+    // registers, the scratch list, the activation buffer, the result
+    // slot and the body pointer: gen.rs); its frame word is at 24.
+    if ir.contains("i8*") {
+        eprintln!("skipped: clang 14's typed-pointer IR");
+        return;
+    }
+    let mut reads = 0;
     let mut unset = Vec::new();
     for func in ir.split("\ndefine ").skip(1) {
         let body = func.split("\n}").next().unwrap();
-        let slots: Vec<&str> = body
+        if !body.contains("%slot5 = alloca [32 x i8], align 8") {
+            continue;
+        }
+        let words: Vec<&str> = body
             .lines()
-            .filter_map(|l| l.trim().strip_suffix(" = alloca [32 x i8], align 8"))
+            .filter_map(|l| {
+                l.trim()
+                    .strip_suffix("= getelementptr i8, ptr %slot5, i64 24")
+            })
+            .map(str::trim)
             .collect();
-        for slot in slots {
-            let gep = format!("= getelementptr i8, ptr {slot}, i64 24");
-            let words: Vec<&str> = body
-                .lines()
-                .filter_map(|l| l.trim().strip_suffix(gep.as_str()))
-                .map(str::trim)
-                .collect();
-            let read = words
-                .iter()
-                .any(|w| body.contains(&format!("load ptr, ptr {w},")));
-            let written = words.iter().any(|w| {
-                body.lines().any(|l| {
-                    l.trim().starts_with("store ptr ") && l.contains(&format!(", ptr {w},"))
-                })
-            });
-            if read && !written {
+        let read = words
+            .iter()
+            .any(|w| body.contains(&format!("load ptr, ptr {w},")));
+        let written = words.iter().any(|w| {
+            body.lines()
+                .any(|l| l.trim().starts_with("store ptr ") && l.contains(&format!(", ptr {w},")))
+        });
+        if read {
+            reads += 1;
+            if !written {
                 unset.push(func.split('(').next().unwrap().to_string());
             }
         }
     }
+    assert!(reads > 0, "no function of the fixture reads its frame word");
     assert!(unset.is_empty(), "frame word read unset in {unset:?}");
 }
