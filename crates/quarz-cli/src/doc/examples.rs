@@ -39,7 +39,13 @@ pub(crate) fn gather(world: &World, files: &[SourceFile], own: &[u32]) -> Vec<Ex
     // place (docs/14 §5).
     let mut seen: Vec<(u32, &str)> = Vec::new();
     let mut decls: Vec<(String, &quarz_syntax::doc::Doc)> = Vec::new();
-    // (Not a script's functions' yet: an example's unit cannot call them.)
+    // (A script's or an application's functions; a library's are on its
+    // root module's page.)
+    for f in &api.functions {
+        if let Some(d) = &f.doc {
+            decls.push((f.path.clone(), d));
+        }
+    }
     for k in &api.constants {
         if let Some(d) = &k.doc {
             decls.push((k.path.clone(), d));
@@ -50,6 +56,12 @@ pub(crate) fn gather(world: &World, files: &[SourceFile], own: &[u32]) -> Vec<Ex
             decls.push((p.name.clone(), d));
         }
         for m in &p.members {
+            // (A library's private function: its users cannot call it,
+            // and its examples see the library as they do, so they would
+            // not run; such a function is on no API page either.)
+            if m.kind == super::Kind::Function && !m.path.contains('.') {
+                continue;
+            }
             if let (Some(d), None) = (&m.doc, &m.from) {
                 decls.push((m.path.clone(), d));
             }

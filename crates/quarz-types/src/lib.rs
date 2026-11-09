@@ -896,6 +896,10 @@ pub fn set_prelude_cache(bytes: &'static [u8]) {
 pub struct ExtraSource {
     pub source: SourceFile,
     pub cog: Option<u32>,
+    /// The files whose top-level `def`s it sees besides its own
+    /// (`World::function_scopes`): a script's example, those its
+    /// documented file sees (#321).
+    pub sees: Vec<u32>,
 }
 
 /// What makes units from the checked world (the test runner, a cog's
@@ -1231,6 +1235,11 @@ pub fn check_with_extra(
                         let mut declarer = declare::Declarer::with_world(world);
                         for (k, (s, p)) in sources.iter().zip(&parsed).enumerate() {
                             let file = first + k as u32;
+                            if !s.sees.is_empty() {
+                                let mut scope = vec![file];
+                                scope.extend(s.sees.iter().copied().filter(|f| *f != file));
+                                declarer.world.function_scopes.insert(file, scope);
+                            }
                             match s.cog {
                                 Some(cog) if !cogs.is_empty() => {
                                     declarer.collect_cog_unit(&p.program, file, cog, true)

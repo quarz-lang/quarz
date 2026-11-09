@@ -835,3 +835,66 @@ fn html_of_a_cog_headings_locations_and_variants() {
         "{shape}"
     );
 }
+
+#[test]
+fn function_examples_run_in_a_library_and_a_script() {
+    // #321: a library's public function's example runs as its users call
+    // it, and fails when the function is broken; a private function's is
+    // not gathered (its users cannot call it).
+    let d = Dir::new();
+    d.write("Cog.toml", "[cog]\nname = \"mathx\"\nversion = \"0.1.0\"\n");
+    let lib = |body: &str| {
+        format!("# The square of `x`.\n#\n# ```\n# Mathx.square(3)   # => 9\n# ```\npublic def square(x: Int) -> Int = {body}\n\n# Twice `x`.\n#\n# ```\n# twice(4)   # => 8\n# ```\ndef twice(x: Int) -> Int = x * 2\n")
+    };
+    d.write("src/mathx.qz", &lib("x * x"));
+    let out = quarz_in(&d.0, &["test", "--doc"]);
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        stdout(&out).contains("1 tests, 1 assertions, 0 failures"),
+        "{}",
+        stdout(&out)
+    );
+    d.write("src/mathx.qz", &lib("x + x"));
+    let out = quarz_in(&d.0, &["test", "--doc"]);
+    assert!(!out.status.success());
+    assert!(
+        stdout(&out).contains("1 tests, 1 assertions, 1 failures"),
+        "{}",
+        stdout(&out)
+    );
+
+    // A script's function: its example sees the script's `def`s, and those
+    // of what the script requires.
+    let s = Dir::new();
+    s.write("util.qz", "def double(x: Int) -> Int = x * 2\n");
+    s.write(
+        "main.qz",
+        "require_relative \"util\"\n\n# Six times `x`.\n#\n# ```\n# sextuple(2)   # => 12\n# double(sextuple(1))   # => 12\n# ```\ndef sextuple(x: Int) -> Int = double(x) * 3\np sextuple(1)\n",
+    );
+    let out = quarz_in(&s.0, &["test", "--doc", "main.qz"]);
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        stdout(&out).contains("1 tests, 2 assertions, 0 failures"),
+        "{}",
+        stdout(&out)
+    );
+
+    // An application's: every file of the application's.
+    let a = Dir::new();
+    a.write("Cog.toml", "[cog]\nname = \"app\"\nversion = \"0.1.0\"\n");
+    a.write(
+        "src/main.qz",
+        "# ```\n# sextuple(2)   # => 12\n# double(1)   # => 2\n# ```\ndef sextuple(x: Int) -> Int = double(x) * 3\np sextuple(1)\n",
+    );
+    a.write(
+        "src/util.qz",
+        "# ```\n# double(4)   # => 8\n# sextuple(1) # => 6\n# ```\ndef double(x: Int) -> Int = x * 2\n",
+    );
+    let out = quarz_in(&a.0, &["test", "--doc"]);
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        stdout(&out).contains("2 tests, 4 assertions, 0 failures"),
+        "{}",
+        stdout(&out)
+    );
+}
