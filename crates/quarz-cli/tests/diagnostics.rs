@@ -273,3 +273,38 @@ fn procedure_type_keyword_syntax() {
     }
     assert!(!out.contains("take no default"), "{out}");
 }
+
+/// A field default's error and a required field's are reported in the
+/// class's own file, whatever unit is checked last: with a standard
+/// library required, they were at its line 1 (#405).
+#[test]
+fn field_errors_in_their_own_file_with_a_library_required() {
+    let dir = std::env::temp_dir().join(format!("quarz-field-file-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let body = "data D = (a: Int, b: Int = a * 2)\nclass C\n  @x: Int\nend\n";
+    let mut outs = Vec::new();
+    for (name, head) in [("with.qz", "require \"base64\"\n"), ("without.qz", "\n")] {
+        std::fs::write(dir.join(name), format!("{head}{body}")).unwrap();
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+            .args(["check", name])
+            .current_dir(&dir)
+            .env("QUARZ_NO_CACHE", "1")
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let err = String::from_utf8_lossy(&out.stderr).replace(name, "FILE");
+        outs.push(err);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    for err in &outs {
+        assert!(
+            err.contains("FILE:2:28: error: a field's default cannot use the object"),
+            "{err}"
+        );
+        assert!(
+            err.contains("FILE:4:3: error: field `@x` has no default and `C` has no `initialize` to assign it"),
+            "{err}"
+        );
+    }
+    assert_eq!(outs[0], outs[1]);
+}
