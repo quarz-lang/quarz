@@ -262,6 +262,7 @@ impl Runner {
                             alias_of: None,
                             file: stmt.file,
                             generated: None,
+                            builds_self: false,
                         };
                     if f.reader {
                         let m =
@@ -578,6 +579,7 @@ impl Runner {
                     initialize: g.initialize,
                     decode,
                 }),
+                builds_self: false,
             };
             let mid = host
                 .add_generated(info)

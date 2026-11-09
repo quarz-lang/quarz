@@ -4442,6 +4442,7 @@ impl<'ast> Declarer<'ast> {
             synth,
             alias_of: None,
             generated: None,
+            builds_self: false,
             file: self.file,
         });
     }
@@ -4836,6 +4837,11 @@ impl<'ast> Declarer<'ast> {
             synth: Synth::None,
             alias_of: None,
             generated: None,
+            builds_self: def.singleton
+                && def
+                    .body
+                    .as_deref()
+                    .is_some_and(crate::check::Checker::calls_new),
             file: self.file,
         });
     }

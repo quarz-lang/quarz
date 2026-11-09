@@ -701,6 +701,9 @@ enum TableUndo {
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Assigned {
     names: HashSet<String>,
+    /// A call of `new` with no receiver was seen outside the body's blocks
+    /// (`Checker::calls_new`).
+    implicit_new: bool,
     bangs: Vec<(String, String)>,
     /// How many places assign each name.
     counts: HashMap<String, u32>,
@@ -1110,6 +1113,9 @@ pub struct Checker {
     /// `check_constructor` for `Self.new` (`check_self_new`): an abstract
     /// class may be built, the receiver's class being concrete.
     constructing_self: bool,
+    /// Class methods called with an abstract class written as the
+    /// receiver: (method, class, span, file) (`check_call`).
+    abstract_receivers: Vec<(MethodId, ClassId, Span, u32)>,
     /// Set by `check_body` for the statement it checks next: its value is
     /// not used (a statement before the last, or the last of a body that
     /// discards it). `check_expr` takes it, so only that statement itself
@@ -1228,6 +1234,7 @@ impl Checker {
             generated_news: Vec::new(),
             repl_ctor_marks: (0, 0),
             constructing_self: false,
+            abstract_receivers: Vec::new(),
             stmt_unused: false,
             next_body_void: false,
         }
@@ -1345,6 +1352,31 @@ impl Checker {
             self.check_main(*file, body);
         }
         self.check_inherited_constructors();
+        self.check_abstract_receivers();
+    }
+
+    /// `J.run` where `run` calls `new` on its receiver and `J` is abstract:
+    /// it would instantiate `J` (#423). (A `Type[J]` value holding `J`
+    /// raises `TypeError` at run time instead.)
+    fn check_abstract_receivers(&mut self) {
+        let saved = self.env.file;
+        for (m, cid, span, file) in std::mem::take(&mut self.abstract_receivers) {
+            if !self.world.method(m).builds_self {
+                continue;
+            }
+            self.env.file = file;
+            let (class, name) = (
+                self.world.class(cid).name.clone(),
+                self.world.method(m).name.clone(),
+            );
+            self.error(
+                format!(
+                    "cannot call `{class}.{name}`: `{name}` calls `new` on its receiver, and `{class}` is abstract; call it on a concrete subclass"
+                ),
+                span,
+            );
+        }
+        self.env.file = saved;
     }
 
     /// The type arguments written in method signatures and field
@@ -2123,6 +2155,7 @@ impl Checker {
         // failed input is discarded, so what passed stays checked).
         let marks = self.repl_ctor_marks;
         self.check_inherited_constructors_from(marks);
+        self.check_abstract_receivers();
         self.repl_ctor_marks = (self.self_news.len(), self.world.classes.len());
     }
 
@@ -5256,6 +5289,10 @@ impl Checker {
                 Self::assigned_names_expr(value, out);
             }
             Call(call) => {
+                // (Not in a block: its receiver may be another's.)
+                if call.recv.is_none() && call.name == "new" && out.closure_depth == 0 {
+                    out.implicit_new = true;
+                }
                 if let Some(r) = &call.recv {
                     Self::assigned_names_expr(r, out);
                     // `x.foo!` rebinds `x` when its type has no `foo!`.
@@ -5421,6 +5458,16 @@ impl Checker {
             Retry => out.retries = true,
             _ => {}
         }
+    }
+
+    /// Whether `body` calls `new` with no receiver, outside its blocks and
+    /// lambdas (a class method's `new` builds its receiver's class:
+    /// `MethodInfo::builds_self`; in a block, whose receiver may be
+    /// another object, it is left to the run-time check).
+    pub(crate) fn calls_new(body: &[Expr]) -> bool {
+        let mut a = Assigned::default();
+        Self::assigned_names(body, &mut a);
+        a.implicit_new
     }
 
     /// The variables a pattern binds.
@@ -8804,7 +8851,30 @@ impl Checker {
     }
 
     fn check_call(&mut self, expr: &Expr, call: &Call, expected: Option<&Type>) -> Type {
-        self.check_call_with_types(expr, call, expected, false)
+        let t = self.check_call_with_types(expr, call, expected, false);
+        // A class method called on an abstract class written as its
+        // receiver (`J.run`): refused at the end of the check if the
+        // method calls `new` on its receiver (#423), which may be checked
+        // after this call.
+        if let (Some(r), Some(CallTarget::Method { method })) =
+            (&call.recv, self.out.calls.get(&expr.id).cloned())
+        {
+            let written = match self.out.const_targets.get(&r.id) {
+                Some(ConstTarget::Class(c)) => Some(*c),
+                Some(ConstTarget::Const(c)) => match self.world.through_alias(Member::Const(*c)) {
+                    Member::Class(c) => Some(c),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(cid) = written {
+                if self.world.class(cid).is_abstract && self.world.method(method).singleton {
+                    self.abstract_receivers
+                        .push((method, cid, expr.span, self.env.file));
+                }
+            }
+        }
+        t
     }
 
     /// `quiet`: used when re-typing a getter for compound assignment (the
@@ -9776,6 +9846,18 @@ impl Checker {
                         self.resolve_overloads(expr, call, recv_ty, own, implicit_self, expected);
                     self.check_class_bounds(&t, expr.span);
                     return t;
+                }
+                // In a class method, `new` builds the receiver's class, which
+                // may be a concrete subclass of an abstract one (#423).
+                let in_class_method = implicit_self
+                    && self.own_self()
+                    && self.world.class(cid).kind == ClassKind::Class
+                    && self
+                        .env
+                        .method
+                        .is_some_and(|m| self.world.method(m).singleton);
+                if in_class_method {
+                    self.constructing_self = true;
                 }
                 let t = self.check_constructor(expr, call, cid, &args, expected);
                 // `def self.build = new`: the instance is of the class the
