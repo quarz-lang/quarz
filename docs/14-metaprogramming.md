@@ -116,7 +116,7 @@ class Post < Model
 end
 ```
 
-`Meta::ClassDef[T]` generates methods of `T`, the class whose `ClassDef` it is (for `self`, the class the statement is declared in):
+`Meta::ClassDef[T]` generates methods of `T`, the class whose `ClassDef` it is (for `self`, the class the statement is declared in; at run time a `ClassDef` is that class's value, so a call through a union receiver one of whose members is a `ClassDef`, `Meta::ClassDef[Base] | Runner`, runs the `ClassDef`'s method when the value is the statement's class (`Base` or a subclass), a generating one generating into it, and the other member's otherwise, a `Type[Runner]` member's for `Runner`, #403; a class-object member of a class related to `Base` is ambiguous, #491):
 
 ```crystal
 def_method[R](name: Symbol, *, visibility: Symbol = :public, &body: T.() -> R) -> Method[T, () -> R]

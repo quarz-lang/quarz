@@ -109,6 +109,10 @@ struct Args {
 }
 
 pub struct FnBuilder<'a> {
+    /// For the call being lowered through a union: the hidden keyword
+    /// arguments of the members reaching a `Meta::ClassDef` native told
+    /// its call (`classdef_kw`), taken by `emit_call_by`.
+    member_kw: Vec<(MethodId, Vec<(u32, Reg)>)>,
     /// The `Quoted` values made for calls being lowered (call id, its
     /// register), released after their call (docs/14 §6).
     quoted_regs: Vec<(u32, Reg)>,
@@ -203,6 +207,7 @@ impl<'a> FnBuilder<'a> {
             func.frame_size = captured.iter().copied().max().unwrap_or(0) + 1;
         }
         FnBuilder {
+            member_kw: Vec::new(),
             quoted_regs: Vec::new(),
             lw,
             world,
@@ -1326,6 +1331,51 @@ impl<'a> FnBuilder<'a> {
     /// every value of a type mentioning `T` the method has then comes
     /// from that class (`as` cannot check a `T`), so the generated
     /// signature may say it.
+    /// Whether `m` is a `Meta::ClassDef` native told its call: its node
+    /// (`def_field`, the handles, `statement_values`) or the type arguments
+    /// carried into what it generates (`def_method`, ...).
+    fn classdef_told(&self, m: MethodId) -> bool {
+        let m = self.world.method(m);
+        m.owner == self.world.builtin.meta_classdef
+            && matches!(
+                m.name.as_str(),
+                "def_field"
+                    | "field_ref"
+                    | "method_ref"
+                    | "class_method_ref"
+                    | "statement_values"
+                    | "def_method"
+                    | "def_class_method"
+                    | "def_initialize"
+            )
+    }
+
+    /// What `classdef_told` natives are told, as keyword arguments under
+    /// names no parameter has: the call's node (the handle it makes
+    /// carries it, for the runner to find its `U`, `Output::type_args`,
+    /// docs/14 §5), or the carried type arguments.
+    fn classdef_kw(&mut self, call: ast::NodeId, m: MethodId) -> Vec<(u32, Reg)> {
+        let info = self.world.method(m);
+        let mut a = Args {
+            pos: Vec::new(),
+            splat: false,
+            kw: Vec::new(),
+            kw_splat: None,
+            block: None,
+        };
+        if matches!(
+            info.name.as_str(),
+            "def_field" | "field_ref" | "method_ref" | "class_method_ref" | "statement_values"
+        ) {
+            let site = self.load_const(Constant::Int(call as i64));
+            let s = self.sym_const(quarz_ir::FIELD_REF_SITE);
+            a.kw.push((s, site));
+        } else if info.is_native {
+            self.pass_carried_type_args(call, &mut a);
+        }
+        a.kw
+    }
+
     fn pass_carried_type_args(&mut self, call: ast::NodeId, a: &mut Args) {
         let Some(mid) = self.method else {
             return;
@@ -1969,7 +2019,7 @@ impl<'a> FnBuilder<'a> {
                         self.emit(Inst::IsA {
                             dst: is,
                             src: v,
-                            ty: rt_type(ty),
+                            ty: self.dispatch_type(ty),
                         });
                         let (yes, no) = (self.new_block(), self.new_block());
                         self.term(Term::Branch {
@@ -3060,6 +3110,8 @@ impl<'a> FnBuilder<'a> {
         table: Option<Vec<(Type, MethodId)>>,
         mut inst: Inst,
     ) {
+        // (Only this call's: the next call sets its own.)
+        let member_kw = std::mem::take(&mut self.member_kw);
         // An implicit call (`foo` in a block given to a union receiver,
         // checked once per member's receiver) whose checks found different
         // methods: on `self`, tested as any receiver is. (Not a function,
@@ -3137,14 +3189,17 @@ impl<'a> FnBuilder<'a> {
         let join = self.new_block();
         for (ty, method) in table.iter() {
             let mut call = inst.clone();
-            if let Inst::Call { kind, .. } = &mut call {
+            if let Inst::Call { kind, kw, .. } = &mut call {
                 *kind = CallKind::Method(*method);
+                if let Some((_, extra)) = member_kw.iter().find(|(m, _)| m == method) {
+                    kw.extend(extra.iter().copied());
+                }
             }
             let test = self.reg();
             self.emit(Inst::IsA {
                 dst: test,
                 src: recv,
-                ty: rt_type(ty),
+                ty: self.dispatch_type(ty),
             });
             let (yes, no) = (self.new_block(), self.new_block());
             self.term(Term::Branch {
@@ -3240,7 +3295,31 @@ impl<'a> FnBuilder<'a> {
         if table.iter().all(|(_, m)| *m == table[0].1) {
             return None;
         }
-        Some(table.iter().map(|(t, m)| (rt_type(t), *m)).collect())
+        Some(
+            table
+                .iter()
+                .map(|(t, m)| (self.dispatch_type(t), *m))
+                .collect(),
+        )
+    }
+
+    /// The run-time test of a member of a union a call dispatches on: as
+    /// `rt_type`, but a `Meta::ClassDef` (`self` in a `static def`) is a
+    /// class value at run time, the class whose body runs the statement
+    /// (#403).
+    /// A class value is tested for its class (`Type[Runner]`: `Runner` or
+    /// a subclass; `Meta::ClassDef[Base]`: `Base` or a subclass), so that
+    /// such members apart are told apart.
+    fn dispatch_type(&self, t: &Type) -> RtType {
+        let b = &self.world.builtin;
+        match t {
+            Type::Class(c, args) if *c == b.meta_classdef => match args.first() {
+                Some(Type::Class(of, _)) if *of != b.object => RtType::ClassOf(*of),
+                _ => RtType::ClassObject,
+            },
+            Type::ClassObject(of, _) if *of != b.object => RtType::ClassOf(*of),
+            t => rt_type(t),
+        }
     }
 
     /// Whether `call` is `Object#nil?` (no arguments, no block, no `&.`):
@@ -3953,30 +4032,31 @@ impl<'a> FnBuilder<'a> {
         // `def_field`/`field_ref` are told their call's node, under a name
         // no parameter has: the handle they make carries it, for the
         // runner to find its `U` (`Output::type_args`, docs/14 §5).
+        // Through a union whose member reaches one of those natives
+        // (`Meta::ClassDef[B] | Runner`, #403): that member's call gets
+        // them, in the dispatch (`emit_call_by`).
+        // (When the members call different methods, each call gets its
+        // own: the other member's method is not given them.)
+        self.member_kw.clear();
+        let per_member = self
+            .out
+            .union_calls
+            .get(&e.id)
+            .is_some_and(|t| t.iter().any(|(_, m)| *m != t[0].1));
+        if per_member {
+            let table = self.out.union_calls[&e.id].clone();
+            for (_, m) in table {
+                if self.classdef_told(m) && !self.member_kw.iter().any(|(k, _)| *k == m) {
+                    let kw = self.classdef_kw(e.id, m);
+                    self.member_kw.push((m, kw));
+                }
+            }
+        }
         if let Some(CallTarget::Method { method }) = target {
             let m = self.world.method(*method);
-            if m.owner == self.world.builtin.meta_classdef
-                && matches!(
-                    m.name.as_str(),
-                    "def_field"
-                        | "field_ref"
-                        | "method_ref"
-                        | "class_method_ref"
-                        | "statement_values"
-                )
-            {
-                let site = self.load_const(Constant::Int(e.id as i64));
-                let s = self.sym_const(quarz_ir::FIELD_REF_SITE);
-                a.kw.push((s, site));
-            }
-            if m.owner == self.world.builtin.meta_classdef
-                && m.is_native
-                && matches!(
-                    m.name.as_str(),
-                    "def_method" | "def_class_method" | "def_initialize"
-                )
-            {
-                self.pass_carried_type_args(e.id, &mut a);
+            if !per_member && self.classdef_told(*method) {
+                let kw = self.classdef_kw(e.id, *method);
+                a.kw.extend(kw);
             }
             // `JSON.decode[T]`: `T`'s descriptor, which the native walks
             // (the checker made sure there is one).
