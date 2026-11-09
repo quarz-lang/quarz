@@ -1,0 +1,56 @@
+# Boxed values a `Task.blocking` block returns that nothing else on the
+# helper thread refers to, with nothing in them bound to its interpreter,
+# are handed over whole rather than rebuilt node by node (#479); a part
+# the caller still holds, a symbol, a variant without data are copied as
+# before. The values are the same either way.
+data Row = (id: Int, name: String)
+enum Shape
+  variant Circle(r: Float)
+  variant Dot
+end
+rows = Task.blocking { (1..1000).map { |i| Row.new(i, "row #{i} " * 2) } }
+p rows.size
+p rows[999].name
+keep = Row.new(0, "kept " * 4)
+pair = Task.blocking { [keep, Row.new(1, "fresh " * 4)] }
+p pair[0] == keep
+p pair[1].name
+h = Task.blocking { {"a" * 20 => [1, 2], "b" * 20 => [3]} }
+p h
+syms = Task.blocking { [:alpha, "s" * 20, :beta] }
+p syms
+p syms[0] == :alpha
+shapes = Task.blocking { [Shape::Circle.new(1.5), Shape::Dot, Shape::Circle.new(2.0)] }
+p shapes
+enum L
+  variant Nil
+  variant Cons(head: Int, tail: L)
+end
+deep = Task.blocking do
+  l: L = L::Nil
+  100_000.times { |i| l = L::Cons.new(i, l) }
+  l
+end
+n = 0
+cur = deep
+loop do
+  case cur
+  in L::Cons(tail:)
+    n += 1
+    cur = tail
+  else
+    break
+  end
+end
+p n
+rows2 = rows.map { |r| r.id }.sum
+p rows2
+
+# A key holding, at any depth, an object with a `hash` of its own: the
+# table is rebuilt on the caller's side, which calls it there.
+data P(n: Int)
+  def hash -> Int = n * 7
+  def ==(other: Object) -> Bool = other.is_a?(P) && other.n == n
+end
+keyed = Task.blocking { {[P.new(1)] => "one"} }
+p keyed[[P.new(1)]]

@@ -128,3 +128,13 @@ fn task_blocking_moves_the_captures_its_caller_reads_no_more() {
     assert_eq!(on_vm(&path, MOVED), 5, "on the VM");
     assert_eq!(compiled(&path, MOVED), 5, "compiled");
 }
+
+#[test]
+fn task_blocking_hands_unique_boxed_values_over_whole() {
+    // #479: of the fixture's results, the rows, a fresh row beside a kept
+    // one, the hash, the string among symbols and the two circles move;
+    // the rest is copied, on the VM and compiled.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/blocking_boxed.qz");
+    assert_eq!(on_vm(&path, MOVED), 6, "on the VM");
+    assert_eq!(compiled(&path, MOVED), 6, "compiled");
+}

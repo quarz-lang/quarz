@@ -86,6 +86,10 @@ enum Node {
     /// update in place (`Rc::get_mut`).
     MovedStr(Moved<str>),
     MovedBytes(Moved<[u8]>),
+    /// A value nothing else refers to, with nothing in it bound to its
+    /// thread's interpreter (`movable_whole`): marked shared, as a value
+    /// one task hands to another is, and handed over whole (#479).
+    Whole(SharedValue),
     Array(Vec<Ix>),
     /// An `Array[Int]`/`Array[Float]` stored as words, its vector moved
     /// out when nothing else refers to the array, copied otherwise: no
@@ -220,7 +224,9 @@ pub struct WorkerOutcome {
 
 /// What a node is exported from.
 enum Job {
-    Value(Value),
+    /// A value, and how many levels down from it a part nothing else
+    /// refers to may still be handed over whole (`whole`).
+    Value(Value, u8),
     /// Frame `depth` of a closure's chain, keeping only the slots in
     /// `needed` (all of them when `None`).
     Frame(
@@ -277,13 +283,19 @@ fn owned_leaf(interp: &Interp, v: Value) -> Result<Node, Value> {
 
 /// A node for `v`: a leaf's at once, another's filled in later. (`v` is
 /// given up: what only it refers to is moved, not copied.)
-fn part(interp: &Interp, nodes: &mut Vec<Node>, jobs: &mut Vec<(Ix, Job)>, v: Value) -> Ix {
+fn part(
+    interp: &Interp,
+    nodes: &mut Vec<Node>,
+    jobs: &mut Vec<(Ix, Job)>,
+    v: Value,
+    whole: u8,
+) -> Ix {
     match owned_leaf(interp, v) {
         Ok(node) => {
             nodes.push(node);
             (nodes.len() - 1) as Ix
         }
-        Err(v) => later(nodes, jobs, Job::Value(v)),
+        Err(v) => later(nodes, jobs, Job::Value(v, whole)),
     }
 }
 
@@ -314,14 +326,14 @@ pub type Taken = (Rc<Frame>, Vec<(u32, Value)>);
 fn export_taking(interp: &Interp, v: Value, mut taken: Option<Taken>) -> Result<Transfer, Flow> {
     let mut nodes: Vec<Node> = Vec::new();
     let mut jobs: Vec<(Ix, Job)> = Vec::new();
-    later(&mut nodes, &mut jobs, Job::Value(v));
+    later(&mut nodes, &mut jobs, Job::Value(v, WHOLE_LEVELS));
     while let Some((ix, job)) = jobs.pop() {
         // (A node's parts are pushed in order and reversed below, so that
         // they are exported first to last, as the recursion did: of two
         // parts that cannot cross, the first is the one reported.)
         let start = jobs.len();
         let node = match job {
-            Job::Value(v) => export_value(interp, v, &mut nodes, &mut jobs)?,
+            Job::Value(v, whole) => export_value(interp, v, whole, &mut nodes, &mut jobs)?,
             Job::Frame(frame, needed, depth) => {
                 // The block's own frame, with the values taken out of it.
                 let mut given = match &taken {
@@ -339,7 +351,8 @@ fn export_taking(interp: &Interp, v: Value, mut taken: Option<Taken>) -> Result<
                         Some(k) => given.swap_remove(k).1,
                         None => v.clone(),
                     };
-                    slots.push(wanted.then(|| part(interp, &mut nodes, &mut jobs, v)));
+                    slots
+                        .push(wanted.then(|| part(interp, &mut nodes, &mut jobs, v, WHOLE_LEVELS)));
                 }
                 let parent = frame.parent.as_ref().map(|p| {
                     later(
@@ -361,6 +374,7 @@ fn export_taking(interp: &Interp, v: Value, mut taken: Option<Taken>) -> Result<
 fn export_value(
     interp: &Interp,
     v: Value,
+    whole: u8,
     nodes: &mut Vec<Node>,
     jobs: &mut Vec<(Ix, Job)>,
 ) -> Result<Node, Flow> {
@@ -368,11 +382,23 @@ fn export_value(
         Ok(node) => return Ok(node),
         Err(v) => v,
     };
+    if whole > 0 && movable_whole(interp, &v) {
+        count_move();
+        return Ok(Node::Whole(SharedValue::new(v)));
+    }
     let v = match v {
-        Value::Array(items) => return Ok(export_array(interp, items, nodes, jobs)),
+        Value::Array(items) => {
+            return Ok(export_array(
+                interp,
+                items,
+                whole.saturating_sub(1),
+                nodes,
+                jobs,
+            ))
+        }
         v => v,
     };
-    let mut p = |v: &Value| part(interp, nodes, jobs, v.clone());
+    let mut p = |v: &Value| part(interp, nodes, jobs, v.clone(), 0);
     Ok(match &v {
         Value::Hash(h) => Node::Hash(h.as_map().iter().map(|(k, v)| (p(k), p(v))).collect()),
         Value::Set(s) => Node::Set(s.iter().map(&mut p).collect()),
@@ -444,11 +470,11 @@ fn export_value(
                 .frame
                 .as_ref()
                 .map(|f| later(nodes, jobs, Job::Frame(f.clone(), needed, 0)));
-            let self_val = part(interp, nodes, jobs, c.self_val.clone());
+            let self_val = part(interp, nodes, jobs, c.self_val.clone(), 0);
             let method_block = c
                 .method_block
                 .as_ref()
-                .map(|b| part(interp, nodes, jobs, b.clone()));
+                .map(|b| part(interp, nodes, jobs, b.clone(), 0));
             Node::Proc(Box::new(ProcNode {
                 body,
                 frame,
@@ -463,6 +489,79 @@ fn export_value(
         }
         _ => return Err(not_transferable(interp, &v)),
     })
+}
+
+/// How many levels down from a value exported (a block's result, a
+/// capture) a part may still be handed over whole: the check walks the
+/// part, so a bound keeps the export linear in the value's size however
+/// deep it is (#465).
+const WHOLE_LEVELS: u8 = 3;
+
+/// Whether `v` can be handed to the other thread whole (`Node::Whole`):
+/// every allocation in it referred to once (by `v`, given up, or by its
+/// container), and nothing in it bound to this thread's interpreter or
+/// to its copy semantics: no symbol (interned per interpreter), no
+/// procedure, regular expression or exception, no object but a `data`
+/// value or an enum variant with data (the runtime does not know which
+/// classes are immutable; a variant without data is its interpreter's
+/// singleton), no object whose class defines `deinitialize` or a `hash`
+/// or `==` of its own (`object_movable`). A flat walk.
+fn movable_whole(interp: &Interp, v: &Value) -> bool {
+    // (The walk holds a clone of each value it looks at: one referred to
+    // once otherwise is referred to twice while looked at.)
+    let unique = |n: usize| n == 2;
+    let mut work: Vec<Value> = vec![v.clone()];
+    while let Some(v) = work.pop() {
+        match &v {
+            Value::Nil
+            | Value::Bool(_)
+            | Value::Int(_)
+            | Value::Float(_)
+            | Value::Class(_)
+            | Value::Duration(_)
+            | Value::Short(_) => {}
+            Value::Str(s) if unique(Rc::strong_count(s)) => {}
+            Value::Bytes(b) if unique(Rc::strong_count(b)) => {}
+            Value::BigInt(b) if unique(Rc::strong_count(b)) => {}
+            Value::Time(t) if unique(Rc::strong_count(t)) => {}
+            Value::Array(a) if unique(Rc::strong_count(a)) => match &**a {
+                ArrayData::Ints(_) | ArrayData::Floats(_) => {}
+                data => work.extend(data.iter()),
+            },
+            Value::Hash(h) if unique(Rc::strong_count(h)) => {
+                if let HashData::Values(map) = &**h {
+                    for (k, x) in map.iter() {
+                        work.push(k.clone());
+                        work.push(x.clone());
+                    }
+                }
+            }
+            Value::Set(s) if unique(Rc::strong_count(s)) => work.extend(s.iter().cloned()),
+            Value::Range(r) if unique(Rc::strong_count(r)) => {
+                work.push(r.lo.clone());
+                work.push(r.hi.clone());
+            }
+            Value::Object(o) if unique(Rc::strong_count(o)) && object_movable(interp, o) => {
+                work.extend(o.fields())
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// An object `movable_whole` may hand over: a `data` value or a variant
+/// with data, no `deinitialize`, and no `hash` or `==` of its own (a
+/// hash or set holding it, at any depth of a key, is rebuilt by the copy,
+/// which calls them on the receiving side).
+fn object_movable(interp: &Interp, o: &Rc<Object>) -> bool {
+    use quarz_ir::RtClassKind;
+    let class = interp.program.world.class(o.class);
+    matches!(class.kind, RtClassKind::Data | RtClassKind::Variant)
+        && !class.is_exception
+        && !crate::deinit::has(o.class)
+        && crate::keys::of(o.class).is_none()
+        && o.field_count() > 0
 }
 
 /// Whether `v` can cross to the helper thread whole: nothing in it that
@@ -514,6 +613,7 @@ pub fn crosses(interp: &Interp, v: &Value) -> bool {
 fn export_array(
     interp: &Interp,
     mut items: Rc<ArrayData>,
+    whole: u8,
     nodes: &mut Vec<Node>,
     jobs: &mut Vec<(Ix, Job)>,
 ) -> Node {
@@ -529,12 +629,12 @@ fn export_array(
             }
             ArrayData::Values(vs) => Node::Array(
                 vs.into_iter()
-                    .map(|v| part(interp, nodes, jobs, v))
+                    .map(|v| part(interp, nodes, jobs, v, whole))
                     .collect(),
             ),
             ArrayData::Objects(os) => Node::Array(
                 os.into_iter()
-                    .map(|o| part(interp, nodes, jobs, Value::Object(o)))
+                    .map(|o| part(interp, nodes, jobs, Value::Object(o), whole))
                     .collect(),
             ),
         };
@@ -542,7 +642,11 @@ fn export_array(
     match &*items {
         ArrayData::Ints(words) => Node::Ints(words.clone()),
         ArrayData::Floats(words) => Node::Floats(words.clone()),
-        data => Node::Array(data.iter().map(|v| part(interp, nodes, jobs, v)).collect()),
+        data => Node::Array(
+            data.iter()
+                .map(|v| part(interp, nodes, jobs, v, 0))
+                .collect(),
+        ),
     }
 }
 
@@ -732,6 +836,7 @@ fn import_node(interp: &Interp, node: Node, built: &mut [Option<Built>]) -> Valu
         Node::BigInt(b) => integer(*b),
         Node::Str(s) => Value::string(s),
         Node::MovedStr(m) => Value::Str(m.0.into_inner()),
+        Node::Whole(v) => v.into_inner(),
         Node::MovedBytes(m) => Value::Bytes(m.0.into_inner()),
         Node::Ints(words) if words.is_empty() => Value::empty_array(),
         Node::Ints(words) => Value::ints(words),
