@@ -312,6 +312,12 @@ pub(crate) fn gen_function<B: Builder>(
                         | Inst::SelfRef { .. }
                         | Inst::FrameGet { .. }
                         | Inst::FrameSet { .. }
+                        // An in-place update of a captured variable reads
+                        // the frame too (`frame_slot_addr`).
+                        | Inst::OwnedCall {
+                            recv: VarLoc::Frame { .. },
+                            ..
+                        }
                 )
             })
         });

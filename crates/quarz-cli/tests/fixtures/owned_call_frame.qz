@@ -1,0 +1,13 @@
+# A block whose only use of its activation is an in-place append to a
+# captured variable reads the frame through it: compiled, the frame word
+# must be set up for it (#474).
+events = ["start"]
+a = Channel[Int].new
+Channel.select do |s|
+  s.receive(a) { |v| events = events.push("a #{v}") }
+  s.after(5.ms) { events = events.push("timeout") }
+end
+counts = {1 => 1}
+[2, 3].each { |k| counts = counts.put(k, k * 10) }
+p events
+p counts
