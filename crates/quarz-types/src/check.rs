@@ -9939,8 +9939,9 @@ impl Checker {
                 // functions are not methods of it, and come after the
                 // cog's top-level `def`s (docs/01 §1).
                 let no_method = cands.is_empty();
-                // (Also in the block of a call re-checked on an enclosing
-                // `self`, where calls do not fall through.)
+                // (Not for the call being re-checked on an enclosing `self`
+                // itself; its arguments and block fall through as any,
+                // #336.)
                 if call.recv.is_none() && implicit_self && self.outer_recheck != Some(expr.id) {
                     let falls = no_method
                         && !self.env.receivers.is_empty()
@@ -9982,13 +9983,21 @@ impl Checker {
                         // other on purpose; a different class is worth a word,
                         // where its method is another declaration than the
                         // receiver's (not one both inherit: `to_s`, `hash`).
+                        // (A union `self`: any member's own method.)
                         Some((outer, _))
                             if outer != *recv_ty
-                                && !self
-                                    .world
-                                    .lookup_methods(&outer, name)
-                                    .iter()
-                                    .all(|(m, _)| cands.iter().any(|(c, _)| c == m)) =>
+                                && match &outer {
+                                    Type::Union(ms) => ms.clone(),
+                                    t => vec![t.clone()],
+                                }
+                                .iter()
+                                .any(|o| {
+                                    !self
+                                        .world
+                                        .lookup_methods(o, name)
+                                        .iter()
+                                        .all(|(m, _)| cands.iter().any(|(c, _)| c == m))
+                                }) =>
                         {
                             self.warning(
                             format!(
@@ -10723,8 +10732,13 @@ impl Checker {
         // enclosing blocks that are marked too are not implicit (the
         // lexical `self` always is).
         let dsl = self.world.top_class("DslScope");
+        // (A union is marked when its members all are.)
         let marked = |world: &World, t: &Type| -> bool {
-            matches!(t, Type::Class(c, _) if dsl.is_some_and(|d| world.class_is_a(*c, d)))
+            let one = |t: &Type| matches!(t, Type::Class(c, _) if dsl.is_some_and(|d| world.class_is_a(*c, d)));
+            match t {
+                Type::Union(ms) => ms.iter().all(one),
+                t => one(t),
+            }
         };
         let inner_marked = marked(&self.world, &self.env.self_type.clone());
         for k in (0..self.env.receivers.len()).rev() {
