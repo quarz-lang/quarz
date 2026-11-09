@@ -1,0 +1,53 @@
+# What a `Task.blocking` block returns or raises, when nothing else on
+# the helper thread refers to it, moves to the caller instead of being
+# copied (#468): a string's or bytes' allocation, an Array[Int] or
+# Array[Float]'s words. What is referred to twice is still copied. The
+# values are the same either way.
+data Row = (id: Int, name: String)
+
+s = Task.blocking { "x" * 100_000 }
+p s.size
+b = Task.blocking { ("ab" * 50_000).encode }
+p b.size
+xs = Task.blocking { (1..100_000).to_a }
+p xs.sum
+fs = Task.blocking { (1..1000).map { |i| i.to_f / 2 } }
+p fs.sum
+
+# Moved values are the caller's: updated, compared and kept as any other.
+xs = xs.push(1)
+p xs.size
+t = s + "y"
+p t.size
+p s.size
+
+# Referred to twice in the result: the first reference copied, the
+# second (then the only one) moved; equal.
+pair = Task.blocking do
+  w = "w" * 50
+  [w, w]
+end
+p pair[0] == pair[1]
+
+# A captured value returned: the caller keeps its own.
+big = "z" * 1000
+back = Task.blocking { big }
+p back == big
+p big.size
+
+# An exception still crosses (its fields are copied: objects are
+# rebuilt node by node, #479).
+begin
+  Task.blocking { raise ArgumentError.new("m" * 100) }
+rescue ArgumentError => e
+  p e.message.size
+end
+
+# Boxed elements are still walked one by one.
+rows = Task.blocking { (1..1000).map { |i| Row.new(i, "row #{i} " * 3) } }
+p rows.size
+p rows[999].name
+ints = Task.blocking { [[1, 2], [3, 4]] }
+p ints
+empty = Task.blocking { [1].select { |x| x > 5 } }
+p empty

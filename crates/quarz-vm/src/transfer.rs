@@ -9,7 +9,7 @@
 //! values travel; mutable ones and the concurrency primitives are
 //! rejected, since they would have to be shared, not copied.
 
-use crate::rc::Rc;
+use crate::rc::{Rc, SendRc};
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
@@ -57,10 +57,10 @@ unsafe impl Sync for ProgramImage {}
 
 /// A value in transit between threads: its nodes, the root first. A
 /// node refers to its parts by their indices, always after its own, so
-/// that a value nested however deeply is exported, imported, cloned and
-/// dropped without recursion (#466: a list 100,000 cells deep overflowed
-/// a thread's stack).
-#[derive(Clone, Debug)]
+/// that a value nested however deeply is exported, imported and dropped
+/// without recursion (#466: a list 100,000 cells deep overflowed a
+/// thread's stack).
+#[derive(Debug)]
 pub struct Transfer {
     nodes: Vec<Node>,
 }
@@ -68,7 +68,7 @@ pub struct Transfer {
 /// A node's index in its `Transfer`.
 type Ix = u32;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 enum Node {
     Nil,
     Bool(bool),
@@ -79,7 +79,19 @@ enum Node {
     Duration(i64),
     BigInt(Box<BigInt>),
     Str(String),
+    /// A string or byte sequence nothing else refers to, moved rather
+    /// than copied (#468): its allocation itself, marked shared (as a
+    /// value a task hands to another is, `crate::rc`), so that the other
+    /// thread may own it; the import makes it local again on its first
+    /// update in place (`Rc::get_mut`).
+    MovedStr(Moved<str>),
+    MovedBytes(Moved<[u8]>),
     Array(Vec<Ix>),
+    /// An `Array[Int]`/`Array[Float]` stored as words, its vector moved
+    /// out when nothing else refers to the array, copied otherwise: no
+    /// node per element.
+    Ints(Vec<i64>),
+    Floats(Vec<f64>),
     Hash(Vec<(Ix, Ix)>),
     Set(Vec<Ix>),
     Range {
@@ -107,15 +119,37 @@ enum Node {
     Pending,
 }
 
+/// A shared allocation in transit (see `Node::MovedStr`).
+struct Moved<T: ?Sized + crate::rc::Target>(SendRc<T>);
+
+impl<T: ?Sized + crate::rc::Target> std::fmt::Debug for Moved<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Moved")
+    }
+}
+
+impl<T: ?Sized + crate::rc::Target> Moved<T> {
+    /// `rc` moved, when it is its allocation's only reference: marked
+    /// shared, and with it what it refers to (nothing, for a string or
+    /// bytes). Otherwise `rc` back.
+    fn of(rc: Rc<T>) -> Result<Moved<T>, Rc<T>> {
+        if Rc::strong_count(&rc) != 1 {
+            return Err(rc);
+        }
+        Rc::mark_shared(&rc);
+        Ok(Moved(SendRc::new(rc)))
+    }
+}
+
 /// An exception's: its identity (`ExcInfo::id`), backtrace and cause.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct ExcNode {
     id: Option<u64>,
     backtrace: Option<Vec<String>>,
     cause: Option<Ix>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct ProcNode {
     body: ProcBody,
     frame: Option<Ix>,
@@ -128,7 +162,7 @@ struct ProcNode {
     file: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 enum ProcBody {
     Func(FuncId),
     MethodName(
@@ -210,37 +244,58 @@ fn leaf(interp: &Interp, v: &Value) -> Option<Node> {
     })
 }
 
-/// A node for `v`: a leaf's at once, another's filled in later.
-fn part(interp: &Interp, nodes: &mut Vec<Node>, jobs: &mut Vec<(Ix, Job)>, v: &Value) -> Ix {
-    match leaf(interp, v) {
-        Some(node) => {
+/// The node of `v` when it has no parts, moving what it owns alone (a
+/// string's or bytes' allocation); else `v` back.
+fn owned_leaf(interp: &Interp, v: Value) -> Result<Node, Value> {
+    let v = match v {
+        Value::Str(s) => match Moved::of(s) {
+            Ok(m) => return Ok(Node::MovedStr(m)),
+            Err(s) => Value::Str(s),
+        },
+        Value::Bytes(b) => match Moved::of(b) {
+            Ok(m) => return Ok(Node::MovedBytes(m)),
+            Err(b) => Value::Bytes(b),
+        },
+        v => v,
+    };
+    leaf(interp, &v).ok_or(v)
+}
+
+/// A node for `v`: a leaf's at once, another's filled in later. (`v` is
+/// given up: what only it refers to is moved, not copied.)
+fn part(interp: &Interp, nodes: &mut Vec<Node>, jobs: &mut Vec<(Ix, Job)>, v: Value) -> Ix {
+    match owned_leaf(interp, v) {
+        Ok(node) => {
             nodes.push(node);
             (nodes.len() - 1) as Ix
         }
-        None => later(nodes, jobs, Job::Value(v.clone())),
+        Err(v) => later(nodes, jobs, Job::Value(v)),
     }
 }
 
 /// `v` for another thread, exported from a work list (no recursion,
-/// however deeply it is nested).
-pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
+/// however deeply it is nested). `v` is given up: a part nothing else
+/// refers to may be moved rather than copied (`Node::MovedStr`,
+/// `Node::Ints`), so a caller that keeps using the value passes a clone,
+/// which leaves every part referred to twice.
+pub fn export(interp: &Interp, v: Value) -> Result<Transfer, Flow> {
     let mut nodes: Vec<Node> = Vec::new();
     let mut jobs: Vec<(Ix, Job)> = Vec::new();
-    later(&mut nodes, &mut jobs, Job::Value(v.clone()));
+    later(&mut nodes, &mut jobs, Job::Value(v));
     while let Some((ix, job)) = jobs.pop() {
         // (A node's parts are pushed in order and reversed below, so that
         // they are exported first to last, as the recursion did: of two
         // parts that cannot cross, the first is the one reported.)
         let start = jobs.len();
         let node = match job {
-            Job::Value(v) => export_value(interp, &v, &mut nodes, &mut jobs)?,
+            Job::Value(v) => export_value(interp, v, &mut nodes, &mut jobs)?,
             Job::Frame(frame, needed, depth) => {
                 let mut slots = Vec::new();
                 for (j, v) in frame.slots().iter().enumerate() {
                     let wanted = needed
                         .as_ref()
                         .is_none_or(|n| n.contains(&(depth, j as u32)));
-                    slots.push(wanted.then(|| part(interp, &mut nodes, &mut jobs, v)));
+                    slots.push(wanted.then(|| part(interp, &mut nodes, &mut jobs, v.clone())));
                 }
                 let parent = frame.parent.as_ref().map(|p| {
                     later(
@@ -261,16 +316,20 @@ pub fn export(interp: &Interp, v: &Value) -> Result<Transfer, Flow> {
 /// The node of `v`, its parts left for later.
 fn export_value(
     interp: &Interp,
-    v: &Value,
+    v: Value,
     nodes: &mut Vec<Node>,
     jobs: &mut Vec<(Ix, Job)>,
 ) -> Result<Node, Flow> {
-    if let Some(node) = leaf(interp, v) {
-        return Ok(node);
-    }
-    let mut p = |v: &Value| part(interp, nodes, jobs, v);
-    Ok(match v {
-        Value::Array(items) => Node::Array(items.values().iter().map(&mut p).collect()),
+    let v = match owned_leaf(interp, v) {
+        Ok(node) => return Ok(node),
+        Err(v) => v,
+    };
+    let v = match v {
+        Value::Array(items) => return Ok(export_array(interp, items, nodes, jobs)),
+        v => v,
+    };
+    let mut p = |v: &Value| part(interp, nodes, jobs, v.clone());
+    Ok(match &v {
         Value::Hash(h) => Node::Hash(h.as_map().iter().map(|(k, v)| (p(k), p(v))).collect()),
         Value::Set(s) => Node::Set(s.iter().map(&mut p).collect()),
         Value::Range(r) => Node::Range {
@@ -286,7 +345,7 @@ fn export_value(
                 &format!(
                     "an instance of {} cannot cross Task.blocking: its class defines \
                      `deinitialize`, and the other thread would get a copy",
-                    interp.class_name(v)
+                    interp.class_name(&v)
                 ),
             ));
         }
@@ -333,7 +392,7 @@ fn export_value(
                     name: name.to_string(),
                     method: *method,
                 },
-                ClosureBody::Native(_) => return Err(not_transferable(interp, v)),
+                ClosureBody::Native(_) => return Err(not_transferable(interp, &v)),
             };
             // (In the recursion's order: the receiver, the frame, `self`,
             // the method's block.)
@@ -341,11 +400,11 @@ fn export_value(
                 .frame
                 .as_ref()
                 .map(|f| later(nodes, jobs, Job::Frame(f.clone(), needed, 0)));
-            let self_val = part(interp, nodes, jobs, &c.self_val);
+            let self_val = part(interp, nodes, jobs, c.self_val.clone());
             let method_block = c
                 .method_block
                 .as_ref()
-                .map(|b| part(interp, nodes, jobs, b));
+                .map(|b| part(interp, nodes, jobs, b.clone()));
             Node::Proc(Box::new(ProcNode {
                 body,
                 frame,
@@ -358,8 +417,40 @@ fn export_value(
                 file: c.file,
             }))
         }
-        _ => return Err(not_transferable(interp, v)),
+        _ => return Err(not_transferable(interp, &v)),
     })
+}
+
+/// The node of an array: its storage moved out when nothing else refers
+/// to it (the words of an `Array[Int]`/`Array[Float]` as they are; the
+/// elements of another, each given up in turn), copied otherwise.
+fn export_array(
+    interp: &Interp,
+    mut items: Rc<ArrayData>,
+    nodes: &mut Vec<Node>,
+    jobs: &mut Vec<(Ix, Job)>,
+) -> Node {
+    if let Some(data) = Rc::get_mut(&mut items) {
+        return match std::mem::replace(data, ArrayData::Values(Vec::new())) {
+            ArrayData::Ints(words) => Node::Ints(words),
+            ArrayData::Floats(words) => Node::Floats(words),
+            ArrayData::Values(vs) => Node::Array(
+                vs.into_iter()
+                    .map(|v| part(interp, nodes, jobs, v))
+                    .collect(),
+            ),
+            ArrayData::Objects(os) => Node::Array(
+                os.into_iter()
+                    .map(|o| part(interp, nodes, jobs, Value::Object(o)))
+                    .collect(),
+            ),
+        };
+    }
+    match &*items {
+        ArrayData::Ints(words) => Node::Ints(words.clone()),
+        ArrayData::Floats(words) => Node::Floats(words.clone()),
+        data => Node::Array(data.iter().map(|v| part(interp, nodes, jobs, v)).collect()),
+    }
 }
 
 /// The `(depth, slot)` pairs of the closure's frame chain that the
@@ -396,10 +487,10 @@ fn needed_slots(interp: &Interp, fid: FuncId) -> std::collections::HashSet<(i64,
 
 /// An exception raised on the helper thread, for the caller: when it
 /// holds what cannot cross, the exception that says so instead.
-fn export_raised(interp: &Interp, e: &Value) -> Transfer {
+fn export_raised(interp: &Interp, e: Value) -> Transfer {
     match export(interp, e) {
         Ok(t) => t,
-        Err(Flow::Raise(why)) => export(interp, &why).unwrap_or_else(|_| Transfer::nil()),
+        Err(Flow::Raise(why)) => export(interp, why).unwrap_or_else(|_| Transfer::nil()),
         Err(_) => Transfer::nil(),
     }
 }
@@ -547,6 +638,12 @@ fn import_node(interp: &Interp, node: Node, built: &mut [Option<Built>]) -> Valu
         Node::Duration(d) => Value::Duration(d),
         Node::BigInt(b) => integer(*b),
         Node::Str(s) => Value::string(s),
+        Node::MovedStr(m) => Value::Str(m.0.into_inner()),
+        Node::MovedBytes(m) => Value::Bytes(m.0.into_inner()),
+        Node::Ints(words) if words.is_empty() => Value::empty_array(),
+        Node::Ints(words) => Value::ints(words),
+        Node::Floats(words) if words.is_empty() => Value::empty_array(),
+        Node::Floats(words) => Value::floats(words),
         Node::Array(items) => Value::array(items.into_iter().map(|i| value(built, i)).collect()),
         Node::Hash(pairs) => Value::Hash(Rc::new(crate::value::HashData::from(
             pairs
@@ -721,12 +818,14 @@ pub fn run_on_thread(
     };
     let exit = interp.run_closure(closure);
     let exit = match exit {
-        Ok(v) => match export(&interp, &v) {
+        // The block's result and exception are given up: what only they
+        // refer to moves to the caller's thread (#468).
+        Ok(v) => match export(&interp, v) {
             Ok(t) => WorkerExit::Value(t),
-            Err(Flow::Raise(e)) => WorkerExit::Raise(export_raised(&interp, &e)),
+            Err(Flow::Raise(e)) => WorkerExit::Raise(export_raised(&interp, e)),
             Err(_) => WorkerExit::Exit(1),
         },
-        Err(Flow::Raise(e)) => WorkerExit::Raise(export_raised(&interp, &e)),
+        Err(Flow::Raise(e)) => WorkerExit::Raise(export_raised(&interp, e)),
         Err(Flow::Exit(code)) => WorkerExit::Exit(code),
         Err(_) => WorkerExit::Exit(1),
     };
