@@ -360,9 +360,28 @@ fn load_and_check(
                 example: Some((unit.lines, ex.line)),
                 file: ex.file.clone(),
             });
+            // A script's or an application's example sees the functions
+            // its documented file sees (a library's sees the library as
+            // its users do).
+            let sees = match all_files.iter().position(|f| f.name == ex.file) {
+                Some(i)
+                    if !matches!(
+                        world.file_groups.get(&(i as u32)),
+                        Some(quarz_types::UnitGroup::Cog(_))
+                    ) =>
+                {
+                    world
+                        .function_scopes
+                        .get(&(i as u32))
+                        .cloned()
+                        .unwrap_or_else(|| vec![i as u32])
+                }
+                _ => Vec::new(),
+            };
             out.push(quarz_types::ExtraSource {
                 source,
                 cog: unit_cog,
+                sees,
             });
             suites.push(ExampleSuite {
                 class: unit.class,
@@ -380,7 +399,11 @@ fn load_and_check(
             example: None,
             file: String::new(),
         });
-        out.push(quarz_types::ExtraSource { source, cog: None });
+        out.push(quarz_types::ExtraSource {
+            source,
+            cog: None,
+            sees: Vec::new(),
+        });
         Ok(out)
     };
     let (checked, mut diagnostics) = quarz_types::check_with_extra(
