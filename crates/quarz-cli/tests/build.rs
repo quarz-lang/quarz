@@ -178,3 +178,68 @@ fn top_level_fixtures_match_the_vm() {
     let cases: Vec<(PathBuf, Vec<String>)> = paths.into_iter().map(|p| (p, Vec::new())).collect();
     all_same_as_vm(&cases);
 }
+
+/// A compiled function that reads its activation's frame word (the
+/// fourth of the 32-byte `[args, self, nargs, frame]` slot) stores it
+/// first: a block whose only use of its activation is an in-place update
+/// of a captured variable read it uninitialized (#474).
+#[test]
+fn frame_word_is_set_before_it_is_read() {
+    let path = fixture("owned_call_frame.qz");
+    let dir = std::env::temp_dir().join(format!("quarz-frame-word-test-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join("owned_call_frame");
+    let built = Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .arg("build")
+        .arg(&path)
+        .arg("-o")
+        .arg(&exe)
+        .env("QUARZ_KEEP_IR", "1")
+        .output()
+        .expect("run quarz build");
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let ir = fs::read_to_string(exe.with_extension("ll")).unwrap();
+    let _ = fs::remove_dir_all(&dir);
+    // `ptrs` is a compiled function's sixth stack slot (after the
+    // registers, the scratch list, the activation buffer, the result
+    // slot and the body pointer: gen.rs); its frame word is at 24.
+    if ir.contains("i8*") {
+        eprintln!("skipped: clang 14's typed-pointer IR");
+        return;
+    }
+    let mut reads = 0;
+    let mut unset = Vec::new();
+    for func in ir.split("\ndefine ").skip(1) {
+        let body = func.split("\n}").next().unwrap();
+        if !body.contains("%slot5 = alloca [32 x i8], align 8") {
+            continue;
+        }
+        let words: Vec<&str> = body
+            .lines()
+            .filter_map(|l| {
+                l.trim()
+                    .strip_suffix("= getelementptr i8, ptr %slot5, i64 24")
+            })
+            .map(str::trim)
+            .collect();
+        let read = words
+            .iter()
+            .any(|w| body.contains(&format!("load ptr, ptr {w},")));
+        let written = words.iter().any(|w| {
+            body.lines()
+                .any(|l| l.trim().starts_with("store ptr ") && l.contains(&format!(", ptr {w},")))
+        });
+        if read {
+            reads += 1;
+            if !written {
+                unset.push(func.split('(').next().unwrap().to_string());
+            }
+        }
+    }
+    assert!(reads > 0, "no function of the fixture reads its frame word");
+    assert!(unset.is_empty(), "frame word read unset in {unset:?}");
+}
