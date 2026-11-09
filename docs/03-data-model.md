@@ -29,7 +29,7 @@ s = "abc"
 t = s + "d"
 ```
 
-Of Ruby's destructive methods (`push`/`<<`/`[]=`/`sort!`/`map!`/`concat`/`delete`/`clear`/`gsub!`…), the immutable types only have the "return a new value" versions. `<<`, `[]=` and `!`-suffixed methods are not defined on immutable types. If you write `arr << x`, the compiler reports an error suggesting that you use `Array::Builder` or write `arr = arr.push(x)` (likewise `<<` on `Set`, `String` and `Bytes`, and `[]=` on `Array` and `Hash`).
+Of Ruby's destructive methods (`push`/`<<`/`[]=`/`sort!`/`map!`/`concat`/`delete`/`clear`/`gsub!`…), the immutable types only have the "return a new value" versions. `<<`, `[]=` and `!`-suffixed methods are not defined on immutable types: on them `x.foo!` is sugar for `x = x.foo` ([01-syntax.md](01-syntax.md), assignment), which it is only on an immutable receiver (these, a `data` type, an enum, a class with no `var` field). If you write `arr << x`, the compiler reports an error suggesting that you use `Array::Builder` or write `arr = arr.push(x)` (likewise `<<` on `Set`, `String` and `Bytes`, and `[]=` on `Array` and `Hash`).
 
 Discarding the result of a pure method produces a warning: today the methods of the built-in immutable types (`Array`, `Hash`, `Set`, `String`, `Bytes`, and `Enumerable`/`Comparable` on them) that take no block, so `xs.push(1)` or `xs.sort` as a statement is reported. Marking other methods or types is planned.
 
@@ -81,7 +81,7 @@ end
 str = String.build { |b| b << "x" * 3; b << "y" }
 ```
 
-- Builders have almost the same API as Ruby's mutable `Array`/`Hash`/`String` (`<<`, `[]=`, `push`, `pop`, `sort!`, `map!`, `delete`, `clear`, `concat`…). Destructive methods return `self`.
+- Builders have almost the same API as Ruby's mutable `Array`/`Hash`/`String` (`<<`, `[]=`, `push`, `pop`, `sort!`, `map!`, `delete`, `clear`, `concat`…). Destructive methods return `self`. Their `!` methods are the destructive ones, seen by every alias of the builder; `!` on an immutable value rebinds the variable instead.
 - `to_a`/`to_h`/`to_s`/`freeze` extract the immutable value in O(1): they hand the contents over and leave the Builder empty, ready to be filled again. If you only want to peek repeatedly, use `snapshot` (an O(n) copy).
 - Builders are **not Shareable**. Sending one over a channel, capturing one in a `Task.spawn` block, putting one in an `Atom` or making one a constant are compile errors, and a class with a Builder field is not Shareable.
 - In the `Array.build { }` form, the compiler can guarantee that the Builder does not escape the block, and can optimize the allocation.
