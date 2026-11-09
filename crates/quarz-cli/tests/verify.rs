@@ -756,3 +756,34 @@ fn a_run_reading_a_moved_register_stops() {
     assert_eq!(code, Some(101), "{err}");
     assert!(err.contains("QIR fact violated: IsNil reads r"), "{err}");
 }
+
+#[test]
+fn a_read_of_a_capture_task_blocking_moved_stops() {
+    // `live::blocking_takes` moves a capture only when the caller reads it
+    // no more (#478): told to move one it reads after, the run stops.
+    let name = "a_read_of_a_capture_task_blocking_moved_stops";
+    let (code, err) = in_child_with(name, "moves", || {
+        let mut module = common::lower(
+            "def g -> Int\n  big = \"x\" * 100\n  n = Task.blocking { big.size }\n  n + big.size\nend\np g\n",
+        );
+        let block = module
+            .functions
+            .iter()
+            .flat_map(|f| f.blocks.iter().flat_map(|b| &b.insts))
+            .find_map(|i| match i {
+                Inst::MakeBlock { func, .. } => Some(*func),
+                _ => None,
+            })
+            .expect("the block");
+        let f = &mut module.functions[block as usize];
+        assert!(f.takes.is_empty(), "read after the call, yet moved");
+        let (_, slot) = f.frame_facts().uses[0];
+        f.takes = vec![slot];
+        module
+    });
+    assert_eq!(code, Some(101), "{err}");
+    assert!(
+        err.contains("QIR fact violated: FrameGet reads frame slot"),
+        "{err}"
+    );
+}

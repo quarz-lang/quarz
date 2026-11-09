@@ -414,6 +414,7 @@ unsafe impl crate::rc::Target for Frame {
 
 impl<S: ?Sized + FrameTail> Drop for FrameOf<S> {
     fn drop(&mut self) {
+        crate::verify::frame_dropped(std::ptr::from_mut(self).cast::<u8>());
         if self.grown.get_mut().is_some() {
             // The tail's slots were moved out; the vector drops its own.
             return;

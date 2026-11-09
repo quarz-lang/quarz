@@ -786,6 +786,7 @@ impl Interp {
                     self.verify_before(regs, inst);
                     if let Some(sh) = &shadow {
                         self.shadow_reads(sh, inst);
+                        self.shadow_frame(act, inst);
                     }
                 }
                 match self.exec_inst(f, pool, act, regs, pending, inst) {

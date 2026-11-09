@@ -151,9 +151,13 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Task.blocking", |i, _, a| {
         use crate::transfer::{self, WorkerExit};
         let b = block(i, &a)?;
-        // (A clone: the caller keeps the block and what it captures, so
-        // nothing is moved.)
-        let closure = transfer::export(i, b.clone())?;
+        // (A clone: the caller keeps the block, and what it captures stays
+        // in its frame, but for the slots the caller reads no more, which
+        // are taken out to be moved, #478.)
+        let closure = match take_captures(i, &b) {
+            Some((frame, taken)) => transfer::export_block(i, b.clone(), frame, taken)?,
+            None => transfer::export(i, b.clone())?,
+        };
         let image = i.image();
         let argv = i.program.argv.clone();
         // What was printed before goes out first (an `exit!` on the helper
@@ -1194,4 +1198,35 @@ fn atom_update(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
             return Ok(new);
         }
     }
+}
+
+/// The captures of a `Task.blocking` block that its caller reads no more
+/// (`Function::takes`, #478): taken out of the closure's frame, `nil`
+/// left in their slots, with the frame.
+fn take_captures(i: &Interp, b: &Value) -> Option<crate::transfer::Taken> {
+    let Value::Proc(c) = b else {
+        return None;
+    };
+    let ClosureBody::Func(id) = &c.body else {
+        return None;
+    };
+    let frame = c.frame.clone()?;
+    let takes = i.funcs.borrow().get(*id as usize)?.facts.takes.clone();
+    if takes.is_empty() {
+        return None;
+    }
+    let taken = takes
+        .into_iter()
+        .filter(|s| (*s as usize) < frame.slots().len())
+        // (What cannot cross stays: the export's error, and its release,
+        // are then as before.)
+        .filter(|s| crate::transfer::crosses(i, &frame.slots()[*s as usize]))
+        .map(|s| {
+            let v = frame.get(0, s);
+            frame.set(0, s, Value::Nil);
+            crate::verify::frame_taken(crate::rc::Rc::as_ptr(&frame).cast::<u8>(), s);
+            (s, v)
+        })
+        .collect();
+    Some((frame, taken))
 }

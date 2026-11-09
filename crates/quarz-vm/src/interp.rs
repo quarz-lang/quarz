@@ -1276,6 +1276,10 @@ impl Interp {
                 "quarz: {} copies of shared collections",
                 crate::value::copies()
             );
+            eprintln!(
+                "quarz: {} values moved across Task.blocking",
+                crate::transfer::moved()
+            );
         }
         code
     }

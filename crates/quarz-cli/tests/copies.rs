@@ -15,8 +15,9 @@ fn program(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// The count `QUARZ_COUNT_COPIES` reported on standard error.
-fn copies(out: &Output, what: &str) -> u64 {
+/// The count `QUARZ_COUNT_COPIES` reported on standard error (the line
+/// ending in `suffix`).
+fn counted(out: &Output, what: &str, suffix: &str) -> u64 {
     assert!(
         out.status.success(),
         "{what} failed: {}",
@@ -26,24 +27,27 @@ fn copies(out: &Output, what: &str) -> u64 {
     err.lines()
         .find_map(|l| {
             l.strip_prefix("quarz: ")?
-                .strip_suffix(" copies of shared collections")?
+                .strip_suffix(suffix)?
                 .parse()
                 .ok()
         })
-        .unwrap_or_else(|| panic!("{what}: no copy count in {err:?}"))
+        .unwrap_or_else(|| panic!("{what}: no count in {err:?}"))
 }
 
-fn on_vm(path: &Path) -> u64 {
+const COPIES: &str = " copies of shared collections";
+const MOVED: &str = " values moved across Task.blocking";
+
+fn on_vm(path: &Path, suffix: &str) -> u64 {
     let out = Command::new(env!("CARGO_BIN_EXE_quarz"))
         .arg("run")
         .arg(path)
         .env("QUARZ_COUNT_COPIES", "1")
         .output()
         .expect("run quarz");
-    copies(&out, &format!("quarz run {}", path.display()))
+    counted(&out, &format!("quarz run {}", path.display()), suffix)
 }
 
-fn compiled(path: &Path) -> u64 {
+fn compiled(path: &Path, suffix: &str) -> u64 {
     // One directory per program: the tests run in parallel.
     let dir = std::env::temp_dir().join(format!(
         "quarz-copies-test-{}-{}",
@@ -70,13 +74,13 @@ fn compiled(path: &Path) -> u64 {
         .output()
         .expect("run the executable");
     let _ = std::fs::remove_dir_all(&dir);
-    copies(&out, &format!("{} (compiled)", path.display()))
+    counted(&out, &format!("{} (compiled)", path.display()), suffix)
 }
 
 fn check(name: &str, want: u64) {
     let path = program(name);
-    assert_eq!(on_vm(&path), want, "{name} on the VM");
-    assert_eq!(compiled(&path), want, "{name} compiled");
+    assert_eq!(on_vm(&path, COPIES), want, "{name} on the VM");
+    assert_eq!(compiled(&path, COPIES), want, "{name} compiled");
 }
 
 #[test]
@@ -112,4 +116,15 @@ fn a_quoted_block_leaves_no_reference_behind() {
 fn a_field_read_through_a_handle_copies_nothing() {
     // docs/14 §5: `ref.get(self)` is the field read `@items` is.
     check("handles.qz", 0);
+}
+
+#[test]
+fn task_blocking_moves_the_captures_its_caller_reads_no_more() {
+    // #478: of the fixture's captures, those read again, shared with
+    // another closure, read by a handler or by the next turn of a loop
+    // are copied; the five others (one per call that is their last use)
+    // move, on the VM and compiled.
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/blocking_captures.qz");
+    assert_eq!(on_vm(&path, MOVED), 5, "on the VM");
+    assert_eq!(compiled(&path, MOVED), 5, "compiled");
 }
