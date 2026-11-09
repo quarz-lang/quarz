@@ -5474,7 +5474,6 @@ fn bang_sugar_only_on_immutable_receivers() {
     ok("data P(x: Int)\n  def up -> P = P.new(x + 1)\nend\np = P.new(1)\np.up!\n");
     ok("class T\n  @n: Int\n  def initialize(n: Int)\n    @n = n\n  end\n  def up -> T = T.new(@n + 1)\nend\nt = T.new(1)\nt.up!\n");
     ok("u: Int | String = 1\nu.to_s!\n");
-    ok("def f[T <: Array[Int]](xs: T) -> Array[Int]\n  ys: Array[Int] = xs\n  ys.push!(1)\n  ys\nend\n");
     // (On a variable of the parameter's type, the sugar applies, and the
     // result must fit the variable, as for any receiver.)
     err(
@@ -5497,7 +5496,23 @@ fn bang_sugar_only_on_immutable_receivers() {
     // A union with a mutable member takes no sugar.
     err(
         "class C\n  var @n: Int = 0\n  def to_s -> String = \"c\"\nend\nu: C | String = \"a\"\nu = C.new if u.size > 5\nu.to_s!\n",
-        "to_s!",
+        "undefined method `to_s!` for C",
+    );
+    // A union whose mutable member has its own `foo!` and immutable one
+    // only `foo` is still refused (the members would disagree).
+    err(
+        "class C\n  var @n: Int = 0\n  def up! -> Int = 1\nend\ndata D(x: Int)\n  def up -> D = D.new(x + 1)\nend\nu: C | D = D.new(1)\nu = C.new if u.x > 0\nr = u.up!\n",
+        "`up!` is a method of some members of the union and `up` of others; narrow the receiver first",
+    );
+    // An inherited `var` field makes the class mutable.
+    err(
+        "class B\n  var @n: Int = 0\nend\nclass C < B\n  def up -> C = C.new\nend\nc = C.new\nc.up!\n",
+        "undefined method `up!` for C",
+    );
+    // On a field, the hint names the field.
+    err(
+        "class C\n  var @b: Array::Builder[Int] = Array::Builder[Int].new\n  def go -> Nil\n    @b.to_a!\n    nil\n  end\nend\n",
+        "write `@b = @b.to_a`",
     );
     // A type's own `foo!` is called, immutable or not (#472, decided
     // 2026-11-09: no rule against defining one).

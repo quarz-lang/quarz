@@ -10005,8 +10005,9 @@ impl Checker {
                                 && !self.world.lookup_methods(recv_ty, plain).is_empty()
                             {
                                 let var = match call.recv.as_ref().map(|r| &r.kind) {
-                                    Some(ExprKind::Local(v)) => v.as_str(),
-                                    _ => "x",
+                                    Some(ExprKind::Local(v)) => v.clone(),
+                                    Some(ExprKind::IVar(v)) => format!("@{v}"),
+                                    _ => "x".to_string(),
                                 };
                                 let args = if call.args.is_empty() { "" } else { "(...)" };
                                 hint = format!(
@@ -10219,7 +10220,7 @@ impl Checker {
             self.world.lookup_methods(m, &call.name).is_empty()
                 && !self.world.lookup_methods(m, plain).is_empty()
         });
-        if !sugar || !members.iter().all(|m| self.world.bang_immutable(m)) {
+        if !sugar {
             return None;
         }
         if own {
@@ -10231,6 +10232,11 @@ impl Checker {
                 ),
                 span,
             );
+            return None;
+        }
+        // Only on immutable receivers; a mutable member without `foo!`
+        // reports the undefined method in its own check.
+        if !members.iter().all(|m| self.world.bang_immutable(m)) {
             return None;
         }
         let mut root = call.recv.as_ref()?;
