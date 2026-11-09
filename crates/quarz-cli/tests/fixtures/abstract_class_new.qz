@@ -19,3 +19,18 @@ begin
 rescue TypeError => e
   puts "TypeError: #{e.message}"
 end
+
+# An abstract class with no subclass at all: the construction still goes
+# through the run-time check.
+abstract class Lone
+  abstract def perform -> Void
+  def self.run -> Void = new.perform
+end
+def via_lone(t: Type[Lone]) -> Void
+  t.run
+end
+begin
+  via_lone(Lone)
+rescue TypeError => e
+  puts "TypeError: #{e.message}"
+end

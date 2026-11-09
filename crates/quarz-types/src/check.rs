@@ -701,7 +701,8 @@ enum TableUndo {
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Assigned {
     names: HashSet<String>,
-    /// A call of `new` with no receiver was seen (`Checker::calls_new`).
+    /// A call of `new` with no receiver was seen outside the body's blocks
+    /// (`Checker::calls_new`).
     implicit_new: bool,
     bangs: Vec<(String, String)>,
     /// How many places assign each name.
@@ -2154,6 +2155,7 @@ impl Checker {
         // failed input is discarded, so what passed stays checked).
         let marks = self.repl_ctor_marks;
         self.check_inherited_constructors_from(marks);
+        self.check_abstract_receivers();
         self.repl_ctor_marks = (self.self_news.len(), self.world.classes.len());
     }
 
@@ -5287,7 +5289,8 @@ impl Checker {
                 Self::assigned_names_expr(value, out);
             }
             Call(call) => {
-                if call.recv.is_none() && call.name == "new" {
+                // (Not in a block: its receiver may be another's.)
+                if call.recv.is_none() && call.name == "new" && out.closure_depth == 0 {
                     out.implicit_new = true;
                 }
                 if let Some(r) = &call.recv {
@@ -5457,8 +5460,10 @@ impl Checker {
         }
     }
 
-    /// Whether `body` calls `new` with no receiver (a class method's
-    /// `new` builds its receiver's class: `MethodInfo::builds_self`).
+    /// Whether `body` calls `new` with no receiver, outside its blocks and
+    /// lambdas (a class method's `new` builds its receiver's class:
+    /// `MethodInfo::builds_self`; in a block, whose receiver may be
+    /// another object, it is left to the run-time check).
     pub(crate) fn calls_new(body: &[Expr]) -> bool {
         let mut a = Assigned::default();
         Self::assigned_names(body, &mut a);
@@ -9845,6 +9850,7 @@ impl Checker {
                 // In a class method, `new` builds the receiver's class, which
                 // may be a concrete subclass of an abstract one (#423).
                 let in_class_method = implicit_self
+                    && self.own_self()
                     && self.world.class(cid).kind == ClassKind::Class
                     && self
                         .env

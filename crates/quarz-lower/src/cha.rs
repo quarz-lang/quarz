@@ -137,7 +137,11 @@ fn rewrite_in(f: &mut Function, world: &RtWorld, has_subclass: &[bool]) {
                     moved,
                     recv_classes: _,
                     on_self: _,
-                } if !has_subclass[class as usize] => {
+                    // (An abstract class's stays: the runtime refuses to
+                    // build it, #423.)
+                } if !has_subclass[class as usize]
+                    && !world.classes[class as usize].is_abstract =>
+                {
                     insts.push(Inst::Call {
                         dst,
                         kind: CallKind::Construct { class, init },

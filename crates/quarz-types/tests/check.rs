@@ -5535,6 +5535,13 @@ fn new_in_an_abstract_class_method() {
     );
     // A class method that builds nothing is called as before.
     ok("abstract class J\n  abstract def perform -> Void\n  def self.label -> String = \"j\"\nend\np J.label\n");
+    // `new` in a block with another receiver is that receiver's: an
+    // abstract one stays refused, a concrete one makes no `builds_self`.
+    err(
+        "abstract class K\n  abstract def perform -> Void\nend\nabstract class J\n  abstract def perform -> Void\n  def self.run -> Void = K.instance_exec { new.perform }\nend\n",
+        "cannot instantiate `K`",
+    );
+    ok("class P\n  def hi -> Void = puts \"p\"\nend\nabstract class J\n  abstract def perform -> Void\n  def self.run -> Void = P.instance_exec { new.hi }\nend\nJ.run\n");
     // `J.new` itself stays refused.
     err(
         "abstract class J\n  abstract def perform -> Void\nend\nJ.new\n",
