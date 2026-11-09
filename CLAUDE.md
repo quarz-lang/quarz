@@ -50,6 +50,23 @@ run (an edited function or match arm in a shared file, `value.rs`, the
 checker, lowering or the IR passes) runs the full `cargo test` locally
 as above. The pull request says which case it was.
 
+While iterating, run the test binary for the area, and the full run
+only at the end when the case above calls for it: `cargo test -p
+quarz-cli --test std` for the language and standard library
+(interpreted and compiled), `--test build` for codegen and the runtime
+compiled programs call, `--test builtins` for fixtures on the VM,
+`--test diagnostics` and `cargo test -p quarz-types` (its
+`tests/check.rs`) for the checker, `--test copies` and `--test verify`
+with `std` and `build` for lowering and the IR passes, `--test threads`
+for scheduling, `--test repl` for the REPL. The binaries that compile
+programs link `target/debug/libquarz_vm.a`, which only `cargo build`
+refreshes: build after a change to `quarz-vm`. A second `git worktree`
+rebuilds its own `target/`; `CARGO_TARGET_DIR=<main checkout>/target`
+there reuses the dependencies, but the two checkouts then overwrite
+each other's `quarz` and runtime library (`cargo build` after each
+switch), cargo runs on one target directory wait for each other's lock,
+and measurements keep a separate one (see "Performance work").
+
 - Commit and push at good stopping points. Stage files by explicit path,
   never `git add -A`. Remove a stray `examples/shapes` that tests leave.
 - Never print secrets (tokens, credentials). Leave credential commands to
