@@ -1963,37 +1963,49 @@ impl Runner {
         host: &mut dyn StaticHost,
         last: &StaticStmt,
         hooks: &[Hook],
-    ) -> Result<(), StaticFailure> {
+    ) -> Result<(), (StaticStmt, StaticFailure)> {
         for hook in hooks {
-            // The world as the statements left it: the hook's statement
-            // lowered again (what it generates is in the class now).
-            let _ = self.lower(host, &hook.stmt, hook.callee);
-            let callee_name = host.world().method(hook.callee).name.clone();
-            let context = EndContext {
-                stmt: None,
-                hook_of: Some(last.class),
-            };
-            let mut reflect =
-                WorldReflect::snapshot(host.world()).with_ends(&*host, self.ends.clone(), context);
-            self.note_pending(host, &mut reflect);
-            let reflect = Rc::new(reflect);
-            let interp = self.interp(&reflect);
-            let result =
-                interp.run_static_block(hook.block.clone(), vec![Value::Class(last.class)]);
-            let what = format!(
-                "the class-end hook `:{}` (registered by `{callee_name}`)",
-                hook.key
-            );
-            let (_, pending, interp) = self.finish(&interp, &reflect, result, &what)?;
-            drop(interp);
-            // Generated as by the statement that registered it (its
-            // location, its call's type arguments).
-            self.generate(host, &hook.stmt, pending)
-                .map_err(|f| StaticFailure {
-                    message: format!("{what}: {}", f.message),
-                    notes: f.notes,
-                })?;
+            self.run_hook(host, last, hook)
+                .map_err(|f| (hook.stmt.clone(), f))?;
         }
+        Ok(())
+    }
+
+    /// One class-end hook, reported (by `run_hooks`) at the statement that
+    /// registered it.
+    fn run_hook(
+        &mut self,
+        host: &mut dyn StaticHost,
+        last: &StaticStmt,
+        hook: &Hook,
+    ) -> Result<(), StaticFailure> {
+        // The world as the statements left it: the hook's statement
+        // lowered again (what it generates is in the class now).
+        let _ = self.lower(host, &hook.stmt, hook.callee);
+        let callee_name = host.world().method(hook.callee).name.clone();
+        let context = EndContext {
+            stmt: None,
+            hook_of: Some(last.class),
+        };
+        let mut reflect =
+            WorldReflect::snapshot(host.world()).with_ends(&*host, self.ends.clone(), context);
+        self.note_pending(host, &mut reflect);
+        let reflect = Rc::new(reflect);
+        let interp = self.interp(&reflect);
+        let result = interp.run_static_block(hook.block.clone(), vec![Value::Class(last.class)]);
+        let what = format!(
+            "the class-end hook `:{}` (registered by `{callee_name}`)",
+            hook.key
+        );
+        let (_, pending, interp) = self.finish(&interp, &reflect, result, &what)?;
+        drop(interp);
+        // Generated as by the statement that registered it (its
+        // location, its call's type arguments).
+        self.generate(host, &hook.stmt, pending)
+            .map_err(|f| StaticFailure {
+                message: format!("{what}: {}", f.message),
+                notes: f.notes,
+            })?;
         Ok(())
     }
 }
@@ -2014,7 +2026,7 @@ impl StaticRunner for Runner {
         &mut self,
         host: &mut dyn StaticHost,
         last: &StaticStmt,
-    ) -> Result<(), StaticFailure> {
+    ) -> Result<(), (StaticStmt, StaticFailure)> {
         let hooks = match self.ends.borrow_mut().classes.get_mut(&last.class) {
             Some(end) => std::mem::take(&mut end.hooks),
             None => return Ok(()),

@@ -1018,6 +1018,13 @@ class Endpoint
   static def self.adding -> Void
     at_class_end(:adding) { |cls| cls.statement_values[Plug](:plugs).add(Plug.new("x", 0)) }
   end
+  # Several lines, one hook: the first line registers it (#444).
+  static def self.check_name(n: String) -> Void
+    statement_values[String](:names).add(n)
+    at_class_end(:names) do |cls|
+      cls.statement_values[String](:names).values.each { |x| raise ArgumentError, "bad name #{x}" if x == "bad" }
+    end
+  end
 end
 "##;
 
@@ -1054,12 +1061,13 @@ fn class_end_hooks_combine_a_bodys_statements() {
     assert!(text.contains("\"name\":\"plugs\""), "{text}");
     assert!(text.contains("\"generated\":true"), "{text}");
 
-    // The errors, at the statement (a hook's at the class's last one,
-    // naming its key and the `static def` that registered it).
+    // The errors, at the statement (a hook's at the statement that
+    // registered it, the first under its key, naming its key and that
+    // `static def`, #444).
     let bad = write(
         &d.0,
         "bad.qz",
-        "require_relative \"lib\"\nclass A < Endpoint\n  plug Plug.new(\"a\", 1)\n  misnamed\nend\nclass B < Endpoint\n  failing\n  plug Plug.new(\"b\", 1)\nend\nclass C < Endpoint\n  nesting\nend\nclass D < Endpoint\n  adding\nend\n",
+        "require_relative \"lib\"\nclass A < Endpoint\n  plug Plug.new(\"a\", 1)\n  misnamed\nend\nclass B < Endpoint\n  failing\n  plug Plug.new(\"b\", 1)\nend\nclass C < Endpoint\n  nesting\nend\nclass D < Endpoint\n  adding\nend\nclass E < Endpoint\n  check_name \"ok\"\n  check_name \"bad\"\n  plug Plug.new(\"e\", 1)\nend\n",
     );
     let (ok, _, err) = quarz(&d.0, &["check", bad.to_str().unwrap()], &[]);
     assert!(!ok);
@@ -1068,7 +1076,7 @@ fn class_end_hooks_combine_a_bodys_statements() {
         "{err}"
     );
     assert!(
-        err.contains("bad.qz:8:3: error: the class-end hook `:failing` (registered by `failing`) raised ArgumentError: no plugs"),
+        err.contains("bad.qz:7:3: error: the class-end hook `:failing` (registered by `failing`) raised ArgumentError: no plugs"),
         "{err}"
     );
     assert!(
@@ -1077,6 +1085,12 @@ fn class_end_hooks_combine_a_bodys_statements() {
     );
     assert!(
         err.contains("bad.qz:14:3: error: the class-end hook `:adding` (registered by `adding`) raised RuntimeError: a class-end hook cannot add statement values (`:plugs`)"),
+        "{err}"
+    );
+    // Two lines register `:names`; the hook fails on the second's data,
+    // and is located at the first, which registered it (#444).
+    assert!(
+        err.contains("bad.qz:17:3: error: the class-end hook `:names` (registered by `check_name`) raised ArgumentError: bad name bad"),
         "{err}"
     );
     // A class one of whose statements failed runs no hook.

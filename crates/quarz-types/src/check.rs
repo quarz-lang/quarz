@@ -2567,8 +2567,8 @@ impl Checker {
             });
             if last && !failed.contains(&stmt.class) {
                 if let Some(r) = runner.as_deref_mut() {
-                    if let Err(failure) = r.class_end(self, &stmt) {
-                        self.static_failure(&stmt, failure);
+                    if let Err((at, failure)) = r.class_end(self, &stmt) {
+                        self.static_failure(&at, failure);
                     }
                 }
             }

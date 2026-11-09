@@ -711,12 +711,14 @@ pub trait StaticRunner {
         })
     }
     /// The class of `last`, its last statement, has run every statement:
-    /// run the hooks they registered (`at_class_end`, docs/14 §5).
+    /// run the hooks they registered (`at_class_end`, docs/14 §5). A
+    /// hook's failure comes with the statement that registered it (the
+    /// first under its key), where it is reported.
     fn class_end(
         &mut self,
         _host: &mut dyn StaticHost,
         _last: &StaticStmt,
-    ) -> Result<(), StaticFailure> {
+    ) -> Result<(), (StaticStmt, StaticFailure)> {
         Ok(())
     }
     /// Forget everything lowered and run so far: the check starts over
