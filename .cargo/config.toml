@@ -12,3 +12,9 @@ QUARZ_CACHE_DIR = { value = "target/quarz-cache", relative = true }
 # The interpreter checks the facts compiled code trusts, and the moves
 # (crates/quarz-vm/src/verify.rs), in every test and `cargo run`.
 QUARZ_VERIFY = "moves"
+# clang compiles the tests' programs at -O0 (the default, and what users
+# get, is 2): the tests compile a few hundred programs and the optimizer
+# was most of their time. CI sets 2, so a bug only the optimizer shows is
+# caught there. An installed `quarz` is unaffected, and a QUARZ_AOT_OPT
+# already in the environment wins.
+QUARZ_AOT_OPT = "0"
