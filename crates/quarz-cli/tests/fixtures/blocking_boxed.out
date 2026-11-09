@@ -1,0 +1,11 @@
+1000
+"row 1000 row 1000 "
+true
+"fresh fresh fresh fresh "
+{"aaaaaaaaaaaaaaaaaaaa" => [1, 2], "bbbbbbbbbbbbbbbbbbbb" => [3]}
+[:alpha, "ssssssssssssssssssss", :beta]
+true
+[Shape::Circle(r: 1.5), Shape::Dot, Shape::Circle(r: 2.0)]
+100000
+500500
+"one"
