@@ -151,7 +151,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Task.blocking", |i, _, a| {
         use crate::transfer::{self, WorkerExit};
         let b = block(i, &a)?;
-        let closure = transfer::export(i, &b)?;
+        // (A clone: the caller keeps the block and what it captures, so
+        // nothing is moved.)
+        let closure = transfer::export(i, b.clone())?;
         let image = i.image();
         let argv = i.program.argv.clone();
         // What was printed before goes out first (an `exit!` on the helper
