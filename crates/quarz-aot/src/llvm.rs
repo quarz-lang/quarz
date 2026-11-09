@@ -1016,15 +1016,35 @@ fn typed_signature(sig: &unbox::TypedSig) -> (Vec<Ty>, Vec<Ty>) {
     (params, vec![Ty::I64])
 }
 
+/// clang's optimization level: `QUARZ_AOT_OPT` (0 to 3) when set, else 2.
+/// `.cargo/config.toml` sets 0 for the tests, whose time the optimizer
+/// would dominate; CI sets 2.
+fn opt_level() -> Result<&'static str, String> {
+    match std::env::var_os("QUARZ_AOT_OPT") {
+        None => Ok("-O2"),
+        Some(v) => match v.to_str() {
+            Some("0") => Ok("-O0"),
+            Some("1") => Ok("-O1"),
+            Some("2") => Ok("-O2"),
+            Some("3") => Ok("-O3"),
+            _ => Err(format!(
+                "QUARZ_AOT_OPT must be 0, 1, 2 or 3, not {:?}",
+                v.to_string_lossy()
+            )),
+        },
+    }
+}
+
 /// Compile a module to the object file `object`.
 pub fn compile(module: &Module, object: &Path) -> Result<(), String> {
+    let opt = opt_level()?;
     let (clang, major) = find_clang()?;
     let opaque = major >= 15;
     let ir = emit(module, opaque)?;
     let ll_path = object.with_extension("ll");
     std::fs::write(&ll_path, &ir).map_err(|e| format!("{}: {e}", ll_path.display()))?;
     let output = Command::new(&clang)
-        .args(["-O2", "-c", "-x", "ir", "-Wno-override-module", "-o"])
+        .args([opt, "-c", "-x", "ir", "-Wno-override-module", "-o"])
         .arg(object)
         .arg(&ll_path)
         .output()

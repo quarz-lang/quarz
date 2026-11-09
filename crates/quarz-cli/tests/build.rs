@@ -243,3 +243,46 @@ fn frame_word_is_set_before_it_is_read() {
     assert!(reads > 0, "no function of the fixture reads its frame word");
     assert!(unset.is_empty(), "frame word read unset in {unset:?}");
 }
+
+/// `QUARZ_AOT_OPT` picks clang's level (0 and 2 both build a program
+/// that runs as the VM does); anything but 0 to 3 is an error naming it.
+#[test]
+fn aot_opt_levels() {
+    let path = fixture("control_flow.qz");
+    let want = fs::read_to_string(path.with_extension("out")).unwrap();
+    let dir = std::env::temp_dir().join(format!("quarz-aot-opt-test-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let build = |level: &str, exe: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_quarz"))
+            .arg("build")
+            .arg(&path)
+            .arg("-o")
+            .arg(exe)
+            .env("QUARZ_AOT_OPT", level)
+            .output()
+            .expect("run quarz build")
+    };
+    for level in ["0", "2"] {
+        let exe = dir.join(format!("control_flow_{level}"));
+        let built = build(level, &exe);
+        assert!(
+            built.status.success(),
+            "QUARZ_AOT_OPT={level}: {}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let out = Command::new(&exe).output().expect("run the executable");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            want,
+            "QUARZ_AOT_OPT={level}"
+        );
+    }
+    let built = build("x", &dir.join("control_flow_x"));
+    let _ = fs::remove_dir_all(&dir);
+    let err = String::from_utf8_lossy(&built.stderr);
+    assert!(!built.status.success(), "QUARZ_AOT_OPT=x built");
+    assert!(
+        err.contains("QUARZ_AOT_OPT") && err.contains("\"x\""),
+        "{err}"
+    );
+}
