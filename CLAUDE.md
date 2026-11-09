@@ -117,6 +117,13 @@ as above. The pull request says which case it was.
   one worker per CPU. `tests/threads.rs` runs `tests/threads/*.qz` with
   four workers: programs there must print the same whatever the
   scheduling.
+- `.cargo/config.toml` also sets `QUARZ_AOT_OPT=0` for `cargo test` and
+  `cargo run` (clang's level for compiled programs, 0 to 3; the default
+  is 2), the final local run before a pull request goes ready included.
+  CI runs with 2, and a compiled-code bug that shows only under
+  optimization is CI's to find: run the failing binary with
+  `QUARZ_AOT_OPT=2` (`cargo test --test build` or `--test std`) locally
+  only when debugging such a CI failure.
 - The checker keeps each file's results between runs (docs/05 §2) under
   `QUARZ_CACHE_DIR`, which `.cargo/config.toml` points at
   `target/quarz-cache` for `cargo test`; `QUARZ_NO_CACHE=1` turns it off.
@@ -198,6 +205,9 @@ as above. The pull request says which case it was.
   `git worktree` with its own `CARGO_TARGET_DIR` (and
   `QUARZ_RT_LIB=<that target>/release/libquarz_vm.a` for its AOT
   builds).
+- Measure compiled programs built by an installed or directly run
+  `quarz` (`target/release/quarz build`, as `bench/` does), or with
+  `QUARZ_AOT_OPT=2`: through `cargo run` they are compiled at -O0.
 - Compiled benchmarks in `bench/` take 20–200 ms (start-up is about
   1 ms of that): still short enough that AOT cycles can differ by several
   percent between builds with identical instruction counts (code layout):

@@ -11,6 +11,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # The compiled tests at the level users get (.cargo/config.toml has 0
+  # for local runs): CI is what catches a bug only the optimizer shows.
+  QUARZ_AOT_OPT: "2"
 
 jobs:
   # Format, lint and the standard library's docs: apart from the tests, so
