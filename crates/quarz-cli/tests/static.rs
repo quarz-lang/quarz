@@ -1568,3 +1568,62 @@ fn override_true_requires_a_generated_method_to_override() {
         assert!(err.starts_with(&format!("app.qz:3:3: error: {want}")), "{stmt}: {err}");
     }
 }
+
+#[test]
+fn class_def_calls_through_a_union_receiver() {
+    // #403: a receiver typed `Meta::ClassDef[Base] | Runner`, the class
+    // value at run time, raised "cannot cast Type[A]" for any call: the
+    // union's dispatch tested it as an object of `Meta::ClassDef`. Calls
+    // reach the class's methods and natives, the generating ones
+    // included (into the statement's class), interpreted and compiled.
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Runner\n  def def_method[R](name: Symbol, &body: () -> R) -> R = body.call\n  def name -> String = \"runner\"\n  def to_s -> String = \"runner\"\n  def at_class_end(key: Symbol, &hook: () -> Void) -> Void = nil\n  def method_ref[F](name: Symbol) -> String = \"ref\"\nend\nclass Base\n  def go -> Int = 7\n  static def self.gen(flag: Bool) -> Void\n    r = flag ? self : Runner.new\n    puts r.to_s, r.name\n    r.def_method(:hostname) { \"h\" }\n    r.at_class_end(:ended) { nil }\n    h = r.method_ref[() -> Int](:go)\n    puts h.is_a?(String) ? \"string ref\" : \"method ref\"\n    q = flag ? self : Runner.new\n    q.instance_exec { def_method(:c) { 3 } }\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "main.qz",
+        "require_relative \"lib\"\nclass A < Base\n  gen(true)\nend\nclass B < Base\n  gen(false)\nend\np A.new.hostname, A.new.c, B.new.go\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "\"h\"\n3\n7\n");
+    // (What the statements print at compile time, on standard error.)
+    // (And the warning the `instance_exec` block's `def_method` gives.)
+    assert!(
+        err.starts_with("A\nA\nmethod ref\nrunner\nrunner\nstring ref\n"),
+        "{err}"
+    );
+    let exe = d.0.join("app-bin");
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", exe.to_str().unwrap()],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "\"h\"\n3\n7\n");
+
+    // A class-object member is told apart from the `ClassDef` one by its
+    // class, and the hidden keywords a native is told stay its own (a
+    // `**opts` of the other member's method sees none).
+    write(
+        &d.0,
+        "lib2.qz",
+        "class Runner\n  def self.def_method[R](name: Symbol, &body: () -> R) -> R\n    puts \"Runner.def_method\"\n    body.call\n  end\n  def self.method_ref[F](name: Symbol, **opts: Int) -> String = \"ref #{opts.size}\"\nend\nclass Base\n  def go -> Int = 7\n  static def self.gen(flag: Bool) -> Void\n    r = flag ? Runner : self\n    r.def_method(:hostname) { \"h\" }\n    h = r.method_ref[() -> Int](:go)\n    puts h.is_a?(String) ? h : \"method ref\"\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "main2.qz",
+        "require_relative \"lib2\"\nclass A < Base\n  gen(true)\nend\nclass B < Base\n  gen(false)\nend\np A.new.respond_to?(:hostname), B.new.respond_to?(:hostname)\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "false\ntrue\n");
+    assert!(
+        err.starts_with("Runner.def_method\nref 0\nmethod ref\n"),
+        "{err}"
+    );
+}
