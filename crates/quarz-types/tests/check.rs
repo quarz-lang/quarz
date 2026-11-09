@@ -5548,3 +5548,27 @@ fn new_in_an_abstract_class_method() {
         "cannot instantiate `J`",
     );
 }
+
+#[test]
+fn a_call_falls_through_to_a_union_self_every_member_answers() {
+    // #429: accepted when every member of the enclosing `self` answers,
+    // refused naming one that does not.
+    let head = "class P\n  def foo -> String = \"P\"\nend\nclass R\n  def bar -> String = \"R\"\nend\ndef onr(r: R, &b: R.() -> String) -> String = r.instance_exec(&b)\n";
+    ok(&format!("{head}class Q\n  def foo -> String = \"Q\"\nend\ntype PQ = P | Q\ndef onu(x: PQ, &b: PQ.() -> String) -> String = x.instance_exec(&b)\nx: P | Q = Q.new\nputs onu(x) {{ onr(R.new) {{ foo }} }}\n"));
+    err(
+        &format!("{head}class Q\n  def other -> String = \"Q\"\nend\ntype PQ = P | Q\ndef onu(x: PQ, &b: PQ.() -> String) -> String = x.instance_exec(&b)\nx: P | Q = Q.new\nputs onu(x) {{ onr(R.new) {{ foo }} }}\n"),
+        "undefined local variable or method `foo` for Q",
+    );
+    // Members all marked `DslScope`: the union is marked too.
+    err(
+        "class P\n  include DslScope\n  def foo -> String = \"P\"\nend\nclass Q\n  include DslScope\n  def foo -> String = \"Q\"\nend\nclass R\n  include DslScope\nend\ntype PQ = P | Q\ndef onu(x: PQ, &b: PQ.() -> String) -> String = x.instance_exec(&b)\ndef onr(r: R, &b: R.() -> String) -> String = r.instance_exec(&b)\na: PQ = Q.new\nputs onu(a) { onr(R.new) { foo } }\n",
+        "undefined local variable or method `foo` for R",
+    );
+    // The receiver's own method, also a union `self`'s: the warning.
+    warns(
+        "class P\n  def foo -> String = \"P\"\nend\nclass Q\n  def foo -> String = \"Q\"\nend\nclass R\n  def foo -> String = \"R\"\nend\ntype PQ = P | Q\ndef onu(x: PQ, &b: PQ.() -> String) -> String = x.instance_exec(&b)\ndef onr(r: R, &b: R.() -> String) -> String = r.instance_exec(&b)\nx: PQ = Q.new\nputs onu(x) { onr(R.new) { foo } }\n",
+        "`foo` is a method of both the block's receiver R and the enclosing P | Q; the receiver's is called",
+    );
+    // #336: the arguments of a call that falls through fall through too.
+    ok("class Q\nend\nclass O\n  def foo -> String = \"foo\"\n  def outer(s: String) -> String = s\n  def run -> String = on(Q.new) { outer(foo) }\n  def on(q: Q, &b: Q.() -> String) -> String = q.instance_exec(&b)\nend\n");
+}

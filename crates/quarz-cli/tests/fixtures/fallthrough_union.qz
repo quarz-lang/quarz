@@ -1,0 +1,31 @@
+# An implicit call in a receiver block falls through to an enclosing
+# `self` whose type is a union when every member answers it, dispatched
+# per member (#429); the arguments of a call that falls through fall
+# through too (#336). The generic form worked before and still does.
+class P
+  def foo -> String = "P"
+end
+class Q
+  def foo -> String = "Q"
+end
+class R
+  def bar -> String = "R"
+end
+type PQ = P | Q
+def onu(x: PQ, &b: PQ.() -> String) -> String = x.instance_exec(&b)
+def onr(r: R, &b: R.() -> String) -> String = r.instance_exec(&b)
+def ong[T](x: T, &b: T.() -> String) -> String = x.instance_exec(&b)
+x: P | Q = Q.new
+puts onu(x) { foo }
+puts onu(x) { onr(R.new) { foo } }
+y: P | Q = P.new
+puts onu(y) { onr(R.new) { foo + bar } }
+puts ong(y) { onr(R.new) { foo } }
+
+class O
+  def foo -> String = "foo"
+  def outer(s: String) -> String = "outer(#{s})"
+  def run -> String = on(R.new) { outer(foo) + bar }
+  def on(r: R, &b: R.() -> String) -> String = r.instance_exec(&b)
+end
+puts O.new.run
