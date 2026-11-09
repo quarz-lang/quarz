@@ -1065,8 +1065,10 @@ pub struct Checker {
     repl_env: Option<Env>,
     /// Methods currently being checked (to detect inference cycles).
     in_progress: Vec<MethodId>,
-    /// While re-checking an implicit-self call on an enclosing `self`.
-    in_outer_self: bool,
+    /// While re-checking an implicit-self call on an enclosing `self`: that
+    /// call (its arguments are other calls, which fall through as any,
+    /// #336).
+    in_outer_self: Option<NodeId>,
     /// The call being re-checked so (noted once, `note_self_use`).
     outer_recheck: Option<NodeId>,
     /// While checking a call with a block on a union receiver, once per
@@ -1218,7 +1220,7 @@ impl Checker {
             file_mains,
             repl_env: None,
             in_progress: Vec::new(),
-            in_outer_self: false,
+            in_outer_self: None,
             outer_recheck: None,
             self_uses: Vec::new(),
             union_block_calls: 0,
@@ -9596,7 +9598,9 @@ impl Checker {
                 // whose receiver type is one, `T.()` with `T = P | Q`:
                 // whether each member's check fell through to an
                 // enclosing `self`, and to which slot, #335.)
-                let on_union_self = call.recv.is_none();
+                // (Not when the union is an enclosing `self` the call fell
+                // through to, already bound to its slot, #429.)
+                let on_union_self = call.recv.is_none() && self.in_outer_self != Some(expr.id);
                 let mut falls = Vec::new();
                 for m in &members {
                     if let (Some(k), Some(saved)) = (&bang, &bang_saved) {
@@ -9938,7 +9942,9 @@ impl Checker {
                 // (Also in the block of a call re-checked on an enclosing
                 // `self`, where calls do not fall through.)
                 if call.recv.is_none() && implicit_self && self.outer_recheck != Some(expr.id) {
-                    let falls = no_method && !self.env.receivers.is_empty() && !self.in_outer_self;
+                    let falls = no_method
+                        && !self.env.receivers.is_empty()
+                        && self.in_outer_self != Some(expr.id);
                     let fell = match falls {
                         true => self.outer_self_for(name),
                         false => None,
@@ -9958,18 +9964,18 @@ impl Checker {
                 if call.recv.is_none()
                     && implicit_self
                     && !self.env.receivers.is_empty()
-                    && !self.in_outer_self
+                    && self.in_outer_self != Some(expr.id)
                 {
                     // Inside a block with a receiver: the enclosing selves,
                     // innermost first, answer what the receiver does not.
                     match self.outer_self_for(name) {
                         Some((outer, k)) if no_method => {
                             self.bind_outer_self(expr, k);
-                            self.in_outer_self = true;
+                            let outer_saved = self.in_outer_self.replace(expr.id);
                             let recheck = self.outer_recheck.replace(expr.id);
                             let t = self.check_call_on(expr, call, &outer, true, expected);
                             self.outer_recheck = recheck;
-                            self.in_outer_self = false;
+                            self.in_outer_self = outer_saved;
                             return t;
                         }
                         // Nested blocks on the same class shadow each
@@ -10009,7 +10015,7 @@ impl Checker {
                 // functions only (docs/01 §2).
                 let self_methods = if call.recv.is_none()
                     && implicit_self
-                    && !self.in_outer_self
+                    && self.in_outer_self != Some(expr.id)
                     && self.function_self()
                 {
                     std::mem::take(&mut cands)
@@ -10047,7 +10053,7 @@ impl Checker {
                     || self.function_self()
                         && call.recv.is_none()
                         && self_methods.is_empty()
-                        && !self.in_outer_self
+                        && self.in_outer_self != Some(expr.id)
                         && (name == "respond_to?"
                             || !self
                                 .world
@@ -10728,6 +10734,18 @@ impl Checker {
             }
             if !self.world.lookup_methods(&outer, name).is_empty() {
                 return Some((outer, k));
+            }
+            // A union `self` (a block on `PQ.()` with `PQ = P | Q`) answers
+            // when every member does (#429): the call then dispatches per
+            // member, as on any union receiver; a member that does not
+            // answer is named by the call's own error.
+            if let Type::Union(members) = &outer {
+                if members
+                    .iter()
+                    .any(|m| !self.world.lookup_methods(m, name).is_empty())
+                {
+                    return Some((outer, k));
+                }
             }
             // A module's `static def`'s `self`: the module's methods too.
             if let Some(own) = self.module_static_self(&outer) {

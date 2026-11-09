@@ -5548,3 +5548,17 @@ fn new_in_an_abstract_class_method() {
         "cannot instantiate `J`",
     );
 }
+
+#[test]
+fn a_call_falls_through_to_a_union_self_every_member_answers() {
+    // #429: accepted when every member of the enclosing `self` answers,
+    // refused naming one that does not.
+    let head = "class P\n  def foo -> String = \"P\"\nend\nclass R\n  def bar -> String = \"R\"\nend\ndef onr(r: R, &b: R.() -> String) -> String = r.instance_exec(&b)\n";
+    ok(&format!("{head}class Q\n  def foo -> String = \"Q\"\nend\ntype PQ = P | Q\ndef onu(x: PQ, &b: PQ.() -> String) -> String = x.instance_exec(&b)\nx: P | Q = Q.new\nputs onu(x) {{ onr(R.new) {{ foo }} }}\n"));
+    err(
+        &format!("{head}class Q\n  def other -> String = \"Q\"\nend\ntype PQ = P | Q\ndef onu(x: PQ, &b: PQ.() -> String) -> String = x.instance_exec(&b)\nx: P | Q = Q.new\nputs onu(x) {{ onr(R.new) {{ foo }} }}\n"),
+        "undefined local variable or method `foo` for Q",
+    );
+    // #336: the arguments of a call that falls through fall through too.
+    ok("class Q\nend\nclass O\n  def foo -> String = \"foo\"\n  def outer(s: String) -> String = s\n  def run -> String = on(Q.new) { outer(foo) }\n  def on(q: Q, &b: Q.() -> String) -> String = q.instance_exec(&b)\nend\n");
+}
