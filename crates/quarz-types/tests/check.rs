@@ -5518,3 +5518,26 @@ fn bang_sugar_only_on_immutable_receivers() {
     // 2026-11-09: no rule against defining one).
     ok("data P(x: Int)\n  def move! -> Int = x\nend\np = P.new(1)\nn: Int = p.move!\n");
 }
+
+#[test]
+fn new_in_an_abstract_class_method() {
+    // #423: accepted, for the concrete subclass it runs on; refused when
+    // the abstract class is written as the receiver, wherever the call is
+    // checked relative to the method.
+    ok("abstract class J\n  abstract def perform -> Void\n  def self.run -> Void = new.perform\n  def self.make -> Self = new\nend\nclass W < J\n  def perform -> Void = puts \"w\"\nend\nW.run\nw: W = W.make\n");
+    err(
+        "abstract class J\n  abstract def perform -> Void\n  def self.run -> Void = new.perform\nend\nJ.run\n",
+        "cannot call `J.run`: `run` calls `new` on its receiver, and `J` is abstract",
+    );
+    err(
+        "def go -> Void = J.run\nabstract class J\n  abstract def perform -> Void\n  def self.run -> Void = new.perform\nend\n",
+        "cannot call `J.run`",
+    );
+    // A class method that builds nothing is called as before.
+    ok("abstract class J\n  abstract def perform -> Void\n  def self.label -> String = \"j\"\nend\np J.label\n");
+    // `J.new` itself stays refused.
+    err(
+        "abstract class J\n  abstract def perform -> Void\nend\nJ.new\n",
+        "cannot instantiate `J`",
+    );
+}

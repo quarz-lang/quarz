@@ -103,6 +103,12 @@ pub struct MethodInfo {
     /// A method a `static` statement generated (`Meta::ClassDef#def_method`,
     /// docs/14 §5): its body is a block lifted to a method.
     pub generated: Option<Generated>,
+    /// A class method that calls `new` on its receiver (`def self.run =
+    /// new.perform`): called with an abstract class written as the
+    /// receiver it is refused (#423). Part of the interface, so that
+    /// callers in other files see it.
+    #[serde(default)]
+    pub builds_self: bool,
 }
 
 /// What a `static` statement's `def_method` recorded (docs/14 §5): the

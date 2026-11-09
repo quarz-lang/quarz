@@ -1,0 +1,21 @@
+# An abstract class's class method may call `new`: it builds the concrete
+# subclass it runs on; through a `Type[J]` holding `J` itself it raises (#423).
+abstract class J
+  abstract def perform -> Void
+  def self.run -> Void = new.perform
+  def self.make -> Self = new
+end
+class W < J
+  def perform -> Void = puts "w"
+end
+W.run
+p W.make.class
+def via(t: Type[J]) -> Void
+  t.run
+end
+via(W)
+begin
+  via(J)
+rescue TypeError => e
+  puts "TypeError: #{e.message}"
+end
