@@ -936,54 +936,61 @@ fn glob_dirs_below(dir: &Path, shown: &str, out: &mut Vec<String>) {
     }
 }
 
-/// `{a,b}` alternatives in a glob pattern, expanded recursively.
+/// `{a,b}` alternatives in a glob pattern, expanded (braces nested in an
+/// alternative too), from a work list: a pattern with thousands of braces
+/// must not overflow the helper thread's stack.
 fn expand_braces(pattern: &str) -> Vec<String> {
-    let Some(open) = pattern.find('{') else {
-        return vec![pattern.to_string()];
-    };
+    let mut out = Vec::new();
+    let mut work = vec![pattern.to_string()];
+    while let Some(pattern) = work.pop() {
+        match first_braces(&pattern) {
+            None => out.push(pattern),
+            Some((open, close)) => {
+                let (head, rest) = (&pattern[..open], &pattern[close + 1..]);
+                let inner = &pattern[open + 1..close];
+                // Split on top-level commas.
+                let mut alternatives = Vec::new();
+                let mut depth = 0;
+                let mut start = 0;
+                for (k, c) in inner.char_indices() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => depth -= 1,
+                        ',' if depth == 0 => {
+                            alternatives.push(&inner[start..k]);
+                            start = k + 1;
+                        }
+                        _ => {}
+                    }
+                }
+                alternatives.push(&inner[start..]);
+                // (Pushed last first: expanded in order.)
+                for alt in alternatives.into_iter().rev() {
+                    work.push(format!("{head}{alt}{rest}"));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The first `{` of a pattern and its matching `}`, by nesting depth.
+fn first_braces(pattern: &str) -> Option<(usize, usize)> {
+    let open = pattern.find('{')?;
     let mut depth = 0;
-    let mut close = None;
     for (k, c) in pattern[open..].char_indices() {
         match c {
             '{' => depth += 1,
             '}' => {
                 depth -= 1;
                 if depth == 0 {
-                    close = Some(open + k);
-                    break;
+                    return Some((open, open + k));
                 }
             }
             _ => {}
         }
     }
-    let Some(close) = close else {
-        return vec![pattern.to_string()];
-    };
-    let (head, rest) = (&pattern[..open], &pattern[close + 1..]);
-    let inner = &pattern[open + 1..close];
-    // Split on top-level commas.
-    let mut alternatives = Vec::new();
-    let mut depth = 0;
-    let mut start = 0;
-    for (k, c) in inner.char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => depth -= 1,
-            ',' if depth == 0 => {
-                alternatives.push(&inner[start..k]);
-                start = k + 1;
-            }
-            _ => {}
-        }
-    }
-    alternatives.push(&inner[start..]);
-    let mut out = Vec::new();
-    for alt in alternatives {
-        for tail in expand_braces(rest) {
-            out.push(format!("{head}{alt}{tail}"));
-        }
-    }
-    out
+    None
 }
 
 fn run_command(interp: &Interp, mut command: std::process::Command, name: &str) -> EvalResult {

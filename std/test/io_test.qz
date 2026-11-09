@@ -153,6 +153,53 @@ class DirGlobTest < Test::Case
     end
   end
 
+  # Ruby: `Dir.glob("{a/{b,lb},d}/*", base: "t")` gives `["a/b/x",
+  # "a/lb/y", "d/z"]` (#442).
+  def test_nested_braces
+    with_tree("braces") do |root|
+      Dir.mkdir_p("#{root}/t/a/b")
+      Dir.mkdir_p("#{root}/t/a/lb")
+      Dir.mkdir_p("#{root}/t/d")
+      ["t/a/b/x", "t/a/lb/y", "t/d/z"].each { |f| File.write("#{root}/#{f}", "") }
+      assert_equal(["a/b/x", "a/lb/y", "d/z"], Dir.glob("{a/{b,lb},d}/*", "#{root}/t"))
+      assert_equal(["a/b/x", "a/lb/y"], Dir.glob("a/{{b},l{b}}/*", "#{root}/t"))
+      assert_equal(["t/a", "t/d"], Dir.glob("t/{a,d}", root))
+      # (Expanded from a work list: thousands of braces are no deeper.)
+      assert_equal(["a"], Dir.glob("{" * 5000 + "a" + "}" * 5000, "#{root}/t"))
+    end
+  end
+
+  # The base is a path, walked from, never a pattern (#431). Ruby's
+  # `Dir.glob("*.qz", base:)` gives `["a.qz"]` for `./src`,
+  # `src//sub/..//` and a directory named `s[1]`, and `""` is the
+  # current directory.
+  def test_the_base_is_walked_from_as_written
+    with_tree("base") do |root|
+      # (Not `Dir.chdir`: the tests run in parallel.)
+      assert_equal(["a.qz"], Dir.glob("*.qz", "#{root}/./src"))
+      assert_equal(["a.qz"], Dir.glob("*.qz", "#{root}/src//sub/..//"))
+      assert_equal(Dir.glob("*"), Dir.glob("*", ""))
+      Dir.mkdir_p("#{root}/s[1]")
+      File.write("#{root}/s[1]/a.qz", "")
+      assert_equal(["a.qz"], Dir.glob("*.qz", "#{root}/s[1]"))
+      assert_equal(["a.qz"], Dir.glob("*.qz", "#{root}//src"))
+    end
+  end
+
+  # A base under a directory that can be entered but not listed.
+  def test_a_base_whose_parent_cannot_be_listed
+    with_tree("noread") do |root|
+      Dir.mkdir_p("#{root}/noread/q[1]")
+      File.write("#{root}/noread/q[1]/k.txt", "")
+      Process.run("chmod", "311", "#{root}/noread")
+      begin
+        assert_equal(["k.txt"], Dir.glob("*.txt", "#{root}/noread/q[1]"))
+      ensure
+        Process.run("chmod", "755", "#{root}/noread")
+      end
+    end
+  end
+
   def test_a_link_named_in_the_pattern_is_followed
     with_tree("named") do |root|
       link(root, "sub", "src/linked")
