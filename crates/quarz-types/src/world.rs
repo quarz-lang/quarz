@@ -2704,31 +2704,44 @@ impl World {
                 self.lookup_instance_methods(self.builtin.class_, &[instance], name, &mut out);
             }
             Type::TypeOf(t) => {
-                // For `T <: Bound` with a class bound, the bound's class
-                // methods (`Self` being `T`), before `Type[T]`'s own, as
-                // for a class object and at run time; a module's singleton
-                // methods are not inherited by the classes that include it.
+                // For `T <: Bound`, the bound's class methods (`Self` being
+                // `T`), before `Type[T]`'s own, as for a class object and
+                // at run time: a class bound's, and a module bound's `def
+                // self.` methods, which every class `T` admits has (it
+                // includes the module; through an extension, the module's
+                // own run, #494), abstract ones too (#501). Several bounds
+                // give each one's.
                 if let Type::Param(p) = &**t {
-                    for b in self.param_bounds(*p) {
+                    // (Through a bound that is a parameter, its bounds:
+                    // `[U <: M, T <: U]`; each parameter once.)
+                    let mut bounds = Vec::new();
+                    let mut work = vec![*p];
+                    let mut seen = Vec::new();
+                    while let Some(q) = work.pop() {
+                        if seen.contains(&q) {
+                            continue;
+                        }
+                        seen.push(q);
+                        for b in self.param_bounds(q) {
+                            match b {
+                                Type::Param(r) => work.push(r),
+                                b => bounds.push(b),
+                            }
+                        }
+                    }
+                    for b in bounds {
                         let Type::Class(bid, bargs) = &b else {
                             continue;
                         };
                         if self.class(*bid).kind == ClassKind::Module {
-                            // (`Self` in a module's code is a class that
-                            // includes the module itself: it has the
-                            // module's class methods, #494. Another
-                            // parameter's module bound may be met through
-                            // an extension, which brings none, #501.)
-                            if *p == u32::MAX {
-                                let on = Type::ClassObject(*bid, bargs.clone());
-                                for found in self.lookup_methods(&on, name) {
-                                    let fm = self.method(found.0);
-                                    if fm.singleton
-                                        && self.class(fm.owner).kind == ClassKind::Module
-                                        && !out.iter().any(|(m, _)| *m == found.0)
-                                    {
-                                        out.push(found);
-                                    }
+                            let on = Type::ClassObject(*bid, bargs.clone());
+                            for found in self.lookup_methods(&on, name) {
+                                let fm = self.method(found.0);
+                                if fm.singleton
+                                    && self.class(fm.owner).kind == ClassKind::Module
+                                    && !out.iter().any(|(m, _)| *m == found.0)
+                                {
+                                    out.push(found);
                                 }
                             }
                             continue;
