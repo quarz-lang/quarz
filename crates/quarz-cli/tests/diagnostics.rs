@@ -343,3 +343,38 @@ end
     );
     assert_eq!(out.matches("error:").count(), 1, "{out}");
 }
+
+/// A class conforming to a module only through an extension gets none of
+/// its class methods (#494): through a `Type[N]` value, the module's own
+/// `make` runs and builds the class with `new`'s arguments, so the class's
+/// `initialize` must take them; its own `self.make` (or a superclass's)
+/// does not take the module's place, nor is it checked as an override.
+#[test]
+fn an_extension_conformance_takes_the_modules_new_arguments() {
+    let out = common::diagnostics(
+        r#"module N
+  def self.make -> Self = new
+  def hi -> String = "hi"
+end
+class T
+  @a: Int
+  def initialize(a: Int)
+    @a = a
+  end
+  def self.make -> T = new(41)
+end
+extension T
+  include N
+end
+def g(k: Type[N]) -> N = k.make
+g(T)
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("`T#initialize` does not take the arguments of `new` in `N.make`, which `T` conforms to through an extension: keep the parameters of `Object#initialize`, their names and whether they are optional (adding only optional ones)"),
+        "{out}"
+    );
+    assert!(!out.contains("which it overrides"), "{out}");
+    assert_eq!(out.matches("error:").count(), 1, "{out}");
+}

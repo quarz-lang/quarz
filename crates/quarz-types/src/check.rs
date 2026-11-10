@@ -1651,6 +1651,19 @@ impl Checker {
                 // reaches the method's `new` with `sid` for `self`.
                 let mut chain: Vec<MethodId> = Vec::new();
                 let mut own_init: Option<Vec<MethodId>> = None;
+                // A module's class method (#494): only the class methods
+                // before the module on the class side take its place, none
+                // where the class conforms only through an extension, whose
+                // include brings no class methods.
+                let module_site = self.world.class(cid).kind == ClassKind::Module
+                    && self.world.method(method).singleton;
+                let via_extension = module_site
+                    && !self
+                        .world
+                        .class_side(sid, &[])
+                        .iter()
+                        .any(|(m, _)| *m == cid);
+                let mut past_module = via_extension;
                 let mut cur = Some(sid);
                 while let Some(c) = cur {
                     if c == cid {
@@ -1679,7 +1692,7 @@ impl Checker {
                     } else {
                         &class.methods
                     };
-                    if let Some(ids) = table.get(&mname) {
+                    if let Some(ids) = table.get(&mname).filter(|_| !past_module) {
                         if ids.iter().any(|&o| self.replaces_at_run_time(o, site.id)) {
                             overrides = true;
                             let with_super = ids
@@ -1688,6 +1701,17 @@ impl Checker {
                                 .find(|&o| Self::first_super(self.world.method(o)).is_some());
                             chain.push(with_super.unwrap_or(ids[0]));
                         }
+                    }
+                    // (Above the class that includes the module, the module's
+                    // class method comes first.)
+                    if module_site
+                        && self
+                            .world
+                            .class_modules(c, &[])
+                            .iter()
+                            .any(|(m, _)| *m == cid)
+                    {
+                        past_module = true;
                     }
                     cur = class.superclass.as_ref().and_then(|t| match t {
                         Type::Class(id, _) => Some(*id),
@@ -1786,7 +1810,11 @@ impl Checker {
                     self.diagnostics.push((
                         s.file,
                         Diagnostic::error(
-                            format!("{what} does not take the arguments of {new_in} in `{cname}{sep}{mname}`, which `{sname}` inherits: keep the parameters of `{iname}#initialize`, their names and whether they are optional (adding only optional ones), or override `{}{mname}` in `{sname}`", if singleton { "self." } else { "" }),
+                            if via_extension {
+                                format!("{what} does not take the arguments of {new_in} in `{cname}{sep}{mname}`, which `{sname}` conforms to through an extension: keep the parameters of `{iname}#initialize`, their names and whether they are optional (adding only optional ones)")
+                            } else {
+                                format!("{what} does not take the arguments of {new_in} in `{cname}{sep}{mname}`, which `{sname}` inherits: keep the parameters of `{iname}#initialize`, their names and whether they are optional (adding only optional ones), or override `{}{mname}` in `{sname}`", if singleton { "self." } else { "" })
+                            },
                             s.span,
                         ),
                     ));

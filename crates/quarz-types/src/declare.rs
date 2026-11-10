@@ -2047,6 +2047,12 @@ impl<'ast> Declarer<'ast> {
             .collect();
         let own = Type::Class(id, args.clone());
         let ancestors: Vec<(ClassId, Vec<Type>)> = self.world.ancestors(id, &args);
+        let class_side: Vec<ClassId> = self
+            .world
+            .class_side(id, &args)
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect();
         // What the superclass brings, it checked itself.
         let inherited: HashSet<ClassId> = match &class.superclass {
             Some(Type::Class(sup, _)) => self.world.ancestor_ids(*sup).into_iter().collect(),
@@ -2093,6 +2099,12 @@ impl<'ast> Declarer<'ast> {
                 }
                 for (a, aargs) in &ancestors[pos + 1..] {
                     if x_own.contains(a) || *a == x {
+                        continue;
+                    }
+                    // (A class method takes the place of a module's only
+                    // where the class includes the module itself: an
+                    // extension's include brings no class methods, #494.)
+                    if m.singleton && !class_side.contains(a) {
                         continue;
                     }
                     let ac = self.world.class(*a);
