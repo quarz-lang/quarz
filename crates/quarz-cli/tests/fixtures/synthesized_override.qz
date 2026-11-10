@@ -1,0 +1,20 @@
+# A synthesized method of a compatible signature overrides a written one
+# and runs through the superclass's type (#532): an `attr_reader` below
+# `A#name`, a `data` accessor below an included module's method.
+class A
+  def name -> String = "a"
+end
+class B < A
+  @name: String
+  attr_reader :name
+  def initialize; @name = "b"; end
+end
+module Named
+  def label -> String = "named"
+end
+data P(label: String)
+  include Named
+end
+def g(a: A) -> String = a.name
+def h(n: Named) -> String = n.label
+puts g(A.new), g(B.new), h(P.new("p"))

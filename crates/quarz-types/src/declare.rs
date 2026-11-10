@@ -2512,8 +2512,11 @@ impl<'ast> Declarer<'ast> {
                 // (An included module's abstract method never runs in place
                 // of the superclass's: the runtime goes on to it, which
                 // implements it, `check_implementation_seen`.)
+                // (A synthesized method, `attr_reader`'s or a `data`
+                // type's, is paired and checked as a written one, #532:
+                // the runtime dispatches to it alike; not a constructor.)
                 if m.owner != x
-                    || m.synth != Synth::None
+                    || m.synth == Synth::DataInit
                     || m.file == 0
                     || (!m.singleton && (m.name == "initialize" || m.name == "deinitialize"))
                     || (m.is_abstract && x != id)
@@ -2654,7 +2657,7 @@ impl<'ast> Declarer<'ast> {
         mine_subst.insert(SELF_PARAM, own.clone());
         for (mid, within) in mine {
             let m = self.world.method(mid);
-            if m.synth != Synth::None || m.name == "new" {
+            if m.synth == Synth::DataInit || m.name == "new" {
                 continue;
             }
             let name = m.name.clone();
