@@ -1,13 +1,13 @@
-# On the class side, a module the class extends comes after the class's
+# On the class side, a module the class includes comes after the class's
 # own class methods and before its superclass's (docs/01 §6), wherever
 # the call comes from.
 module Labeled
-  def label -> String = "labeled"
-  def weight(n: Object) -> Int = 1
+  def self.label -> String = "labeled"
+  def self.weight(n: Object) -> Int = 1
 end
 
 module Maker[X]
-  def make(x: X) -> X = x
+  def self.make(x: X) -> X = x
 end
 
 class Shape
@@ -18,22 +18,22 @@ class Shape
 end
 
 class Circle < Shape
-  extend Labeled
-  extend Maker[Int]
+  include Labeled
+  include Maker[Int]
 end
 
 class Disc < Circle
 end
 
 class Square < Shape
-  extend Labeled
+  include Labeled
   def self.label -> String = "square"
 end
 
 # An own class method of the name that takes other arguments is an
 # overload: the module's still comes before the superclass's.
 class Oval < Shape
-  extend Labeled
+  include Labeled
   def self.label(n: Int) -> String = "oval #{n}"
 end
 

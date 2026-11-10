@@ -71,7 +71,7 @@ impl Default for Declarer<'_> {
     }
 }
 
-/// `include Kernel` / `extend Kernel` (docs/01 §1).
+/// `include Kernel` (docs/01 §1).
 const KERNEL_MIXIN: &str =
     "`Kernel` holds functions, not methods: call them as `puts` or `Kernel.puts`";
 
@@ -88,9 +88,6 @@ pub struct Declarer<'ast> {
     /// Where an override error about a prelude method is reported (the
     /// class whose include brings it: `check_include_overrides`).
     override_span: Option<Span>,
-    /// How the class brings the module whose method `check_override_pair`
-    /// checks (`within`): "includes", or "extends".
-    override_via: &'static str,
     /// While `check_override_pair` compares with `Self` opaque: the
     /// overriding class (for the hint to write `Self`).
     self_opaque_class: Option<ClassId>,
@@ -199,7 +196,6 @@ impl<'ast> Declarer<'ast> {
             pending_ext: Vec::new(),
             override_pairs: HashSet::default(),
             override_span: None,
-            override_via: "includes",
             self_opaque_class: None,
             units: Vec::new(),
             class_usings: HashMap::default(),
@@ -1047,7 +1043,7 @@ impl<'ast> Declarer<'ast> {
             self.check_quoted_overrides(p.id);
             self.check_override_returns(p.id);
             self.check_include_overrides(p.id);
-            self.check_extend_overrides(p.id);
+            self.check_class_include_overrides(p.id);
             self.check_class_side_overrides(p.id);
             self.check_copied_deinitialize(p.id);
             self.check_eq_with_hash(p.id);
@@ -1055,6 +1051,9 @@ impl<'ast> Declarer<'ast> {
             self.check_static_mixins(p);
             self.world.active_extensions.clear();
         }
+        let modules: Vec<ClassId> = pending.iter().map(|p| p.id).collect();
+        self.check_module_static_defs(&modules);
+        self.mark_includer_methods(&modules);
         self.check_extensions_kept_blocks();
         self.check_extensions_overrides();
         self.check_extensions_duplicates();
@@ -1067,14 +1066,19 @@ impl<'ast> Declarer<'ast> {
         }
     }
 
-    /// A module with `static def`s (docs/14 §2) is extended, not
-    /// included, and as `extend M[C]` with `C` the extending class itself:
-    /// the `static def`s were checked with `self: Meta::ClassDef[T]` (`T`
-    /// the module's first type parameter), which holds only where they
-    /// run on `C` or a class under it.
+    /// A generic module with `static def self.` macros (docs/14 §2) is
+    /// included as `include M[C]` with `C` the including class itself:
+    /// the macros were checked with `self: Meta::ClassDef[T]` (`T` the
+    /// module's first type parameter), which holds only where they run on
+    /// `C` or a class under it. (A module without type parameters has
+    /// `self: Meta::ClassDef[Self]`, which holds anywhere.)
     fn check_static_mixins(&mut self, p: &PendingClass<'ast>) {
         for expr in p.body {
-            let ExprKind::Mixin { kind, types } = &expr.kind else {
+            let ExprKind::Mixin {
+                kind: MixinKind::Include,
+                types,
+            } = &expr.kind
+            else {
                 continue;
             };
             for t in types {
@@ -1083,6 +1087,10 @@ impl<'ast> Declarer<'ast> {
                     continue;
                 };
                 if !self.has_static_defs(mid) {
+                    continue;
+                }
+                let params = self.world.class(mid).type_params.clone();
+                if params.is_empty() {
                     continue;
                 }
                 let mname = self.world.class(mid).name.clone();
@@ -1098,57 +1106,156 @@ impl<'ast> Declarer<'ast> {
                         .map(|tp| Type::Param(tp.id))
                         .collect(),
                 );
-                let shown = self.world.type_name(&instance);
-                match kind {
-                    MixinKind::Include => self.error(
+                if self.world.class(p.id).kind == ClassKind::Module {
+                    self.error(
                         format!(
-                            "`{mname}` has `static def`s, which run on a class: extend it (`extend {mname}[{shown}]`) rather than include it"
+                            "`{mname}` has `static def self.` macros typed by its first type parameter, which run on the class including it: include it in that class (`include {mname}[Post]` in `Post`), not in a module"
                         ),
                         t.span,
-                    ),
-                    MixinKind::Extend => {
-                        let params = self.world.class(mid).type_params.clone();
-                        if params.is_empty() {
-                            continue;
-                        }
-                        if args.first() != Some(&instance) {
-                            let mut want = args.clone();
-                            want[0] = instance.clone();
-                            let want = self.world.type_name(&Type::Class(mid, want));
+                    );
+                    continue;
+                }
+                if args.first() != Some(&instance) {
+                    let mut want = args.clone();
+                    want[0] = instance.clone();
+                    let want = self.world.type_name(&Type::Class(mid, want));
+                    self.error(
+                        format!(
+                            "`{mname}` has `static def self.` macros, which run on the class including it: include it as `{want}`"
+                        ),
+                        t.span,
+                    );
+                    continue;
+                }
+                // The macros were checked under the bounds: the arguments
+                // must meet them, with the module's parameters taken as
+                // the arguments (`T <: Cmp[T]`).
+                let written = self.world.type_name(&Type::Class(mid, args.clone()));
+                let map: rustc_hash::FxHashMap<_, _> = params
+                    .iter()
+                    .map(|p| p.id)
+                    .zip(args.iter().cloned())
+                    .collect();
+                for (p, a) in params.iter().zip(&args) {
+                    for b in &p.bounds {
+                        let b = b.subst(&map);
+                        if !self.world.is_subtype(a, &b) {
+                            let an = self.world.type_name(a);
+                            let bn = self.world.type_name(&b);
                             self.error(
                                 format!(
-                                    "`{mname}` has `static def`s, which run on the class extending it: extend it as `{want}`"
+                                    "`{written}`: `{an}` is not a `{bn}`, which `{mname}`'s `static def`s were checked for (`{}`)",
+                                    p.name
                                 ),
                                 t.span,
                             );
-                            continue;
-                        }
-                        // The `static def`s were checked under the bounds:
-                        // the arguments must meet them, with the module's
-                        // parameters taken as the arguments (`T <: Cmp[T]`).
-                        let written = self.world.type_name(&Type::Class(mid, args.clone()));
-                        let map: rustc_hash::FxHashMap<_, _> = params
-                            .iter()
-                            .map(|p| p.id)
-                            .zip(args.iter().cloned())
-                            .collect();
-                        for (p, a) in params.iter().zip(&args) {
-                            for b in &p.bounds {
-                                let b = b.subst(&map);
-                                if !self.world.is_subtype(a, &b) {
-                                    let an = self.world.type_name(a);
-                                    let bn = self.world.type_name(&b);
-                                    self.error(
-                                        format!(
-                                            "`{written}`: `{an}` is not a `{bn}`, which `{mname}`'s `static def`s were checked for (`{}`)",
-                                            p.name
-                                        ),
-                                        t.span,
-                                    );
-                                }
-                            }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// A module's macros are class methods (docs/14 §2): an instance-side
+    /// `static def` in a module is refused.
+    fn check_module_static_defs(&mut self, ids: &[ClassId]) {
+        for &id in ids {
+            let c = self.world.class(id);
+            if c.kind != ClassKind::Module {
+                continue;
+            }
+            let bad: Vec<(String, Span, u32)> = c
+                .methods
+                .values()
+                .flatten()
+                .map(|m| self.world.method(*m))
+                .filter(|m| m.owner == id && m.is_static && !m.is_native && m.extension.is_none())
+                .map(|m| (m.name.clone(), m.span, m.file))
+                .collect();
+            for (name, span, file) in bad {
+                let saved = std::mem::replace(&mut self.file, file);
+                self.error(
+                    format!(
+                        "a module's macro is a class method, run on the class that includes the module: write `static def self.{name}`"
+                    ),
+                    span,
+                );
+                self.file = saved;
+            }
+        }
+    }
+
+    /// Mark the class methods of the modules among `ids` that depend on
+    /// the class including the module (`MethodInfo::needs_includer`): an
+    /// abstract one, one with `Self` in its signature, one calling `new`,
+    /// and one calling (with no receiver, or on `self`) a class method of
+    /// the module that is marked, until nothing changes.
+    fn mark_includer_methods(&mut self, ids: &[ClassId]) {
+        let mut todo: Vec<(MethodId, ClassId)> = Vec::new();
+        for &id in ids {
+            let c = self.world.class(id);
+            if c.kind != ClassKind::Module {
+                continue;
+            }
+            let mine: Vec<MethodId> = c.singleton_methods.values().flatten().copied().collect();
+            for m in mine {
+                let info = self.world.method(m);
+                if info.owner != id || info.extension.is_some() {
+                    continue;
+                }
+                let why = if info.is_abstract {
+                    Some("is abstract".to_string())
+                } else if crate::check::Checker::mentions_self(info) {
+                    Some("has `Self` in its signature".to_string())
+                } else if info.builds_self {
+                    Some("calls `new`, which builds the class it is called on".to_string())
+                } else {
+                    None
+                };
+                match why {
+                    Some(why) => self.world.methods[m as usize].needs_includer = Some(why),
+                    None => todo.push((m, id)),
+                }
+            }
+        }
+        let calls: Vec<HashSet<String>> = todo
+            .iter()
+            .map(|(m, _)| {
+                self.world
+                    .method(*m)
+                    .body
+                    .as_ref()
+                    .and_then(|d| d.body.as_deref())
+                    .map(crate::check::Checker::self_calls)
+                    .unwrap_or_default()
+            })
+            .collect();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for (k, &(m, id)) in todo.iter().enumerate() {
+                if self.world.method(m).needs_includer.is_some() {
+                    continue;
+                }
+                let on = Type::ClassObject(id, Vec::new());
+                let found = calls[k].iter().find_map(|name| {
+                    self.world
+                        .lookup_methods(&on, name)
+                        .into_iter()
+                        .map(|(f, _)| self.world.method(f))
+                        .find(|f| {
+                            f.singleton
+                                && f.id != m
+                                && self.world.class(f.owner).kind == ClassKind::Module
+                                && f.needs_includer.is_some()
+                        })
+                        .map(|f| f.name.clone())
+                });
+                if let Some(name) = found {
+                    self.world.methods[m as usize].needs_includer = Some(format!(
+                        "calls `{name}`, which depends on the class including the module"
+                    ));
+                    changed = true;
                 }
             }
         }
@@ -1158,7 +1265,7 @@ impl<'ast> Declarer<'ast> {
     fn has_static_defs(&self, module: ClassId) -> bool {
         let m = self.world.class(module);
         m.kind == ClassKind::Module
-            && m.methods.values().flatten().any(|id| {
+            && m.singleton_methods.values().flatten().any(|id| {
                 let info = self.world.method(*id);
                 info.owner == module && info.is_static && !info.is_native
             })
@@ -1212,8 +1319,7 @@ impl<'ast> Declarer<'ast> {
     /// reaches itself through an expansive edge is refused at the class or
     /// extension declared now (`ids`, `exts`; the cycle may go through
     /// earlier files' classes), and the parent that makes it is dropped, so
-    /// that what follows terminates. (`extend` is left out: a class's
-    /// extended modules give class methods, not supertypes.)
+    /// that what follows terminates.
     fn check_expansive_inheritance(&mut self, ids: &[ClassId], exts: &[ExtensionId]) {
         type Node = (ClassId, usize);
         #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -1972,6 +2078,24 @@ impl<'ast> Declarer<'ast> {
                         if !replaces {
                             continue;
                         }
+                        // (A module's class method that a class method of
+                        // the class itself hides runs in place of none.)
+                        if x != id && m.singleton {
+                            let hidden = self
+                                .world
+                                .class(id)
+                                .singleton_methods
+                                .get(&m.name)
+                                .is_some_and(|ids| {
+                                    ids.iter().any(|&k| {
+                                        self.world.method(k).owner == id
+                                            && self.same_signature_at_run_time(k, o)
+                                    })
+                                });
+                            if hidden {
+                                continue;
+                            }
+                        }
                         let mut subst = self.world.class_subst(*a, aargs);
                         subst.insert(SELF_PARAM, own.clone());
                         let mine_subst = x_subst.clone();
@@ -2022,9 +2146,9 @@ impl<'ast> Declarer<'ast> {
             .collect();
         let own = Type::Class(id, args.clone());
         let on = Type::Class(self.world.builtin.class_, vec![own.clone()]);
-        // Its own class methods, then the methods of the modules it
-        // extends (`Interp::class_side_override` finds those too), each
-        // module's reported once, naming the class.
+        // Its own class methods, then those of the modules it includes
+        // (`Interp::class_side_override` finds those too), each module's
+        // reported once, naming the class.
         let mut mine: Vec<(MethodId, Option<String>)> = class
             .singleton_methods
             .values()
@@ -2032,22 +2156,18 @@ impl<'ast> Declarer<'ast> {
             .filter(|m| self.world.method(**m).owner == id)
             .map(|m| (*m, None))
             .collect();
-        for t in &class.extends {
-            if let Type::Class(m, _) = t {
-                for anc in self.world.ancestor_ids(*m) {
-                    let mc = self.world.class(anc);
-                    if mc.file == 0 {
-                        continue;
-                    }
-                    mine.extend(
-                        mc.methods
-                            .values()
-                            .flatten()
-                            .filter(|x| self.world.method(**x).owner == anc)
-                            .map(|x| (*x, Some(class.name.clone()))),
-                    );
-                }
+        for (anc, _) in self.world.class_modules(id, &args) {
+            let mc = self.world.class(anc);
+            if mc.file == 0 {
+                continue;
             }
+            mine.extend(
+                mc.singleton_methods
+                    .values()
+                    .flatten()
+                    .filter(|x| self.world.method(**x).owner == anc)
+                    .map(|x| (*x, Some(class.name.clone()))),
+            );
         }
         let mut mine_subst = self.world.class_subst(id, &args);
         mine_subst.insert(SELF_PARAM, own.clone());
@@ -2080,11 +2200,9 @@ impl<'ast> Declarer<'ast> {
                 }
                 if within.is_some() {
                     self.override_span = Some(self.world.class(id).span);
-                    self.override_via = "extends";
                 }
                 self.check_override_pair(mid, o, &subst, &mine_subst, within);
                 self.override_span = None;
-                self.override_via = "includes";
                 break;
             }
         }
@@ -2123,9 +2241,10 @@ impl<'ast> Declarer<'ast> {
         }
     }
 
-    /// `check_override_pair` for the overrides class `id`'s extends make on
-    /// its class side (`World::extend_overrides_of`), each reported once.
-    fn check_extend_overrides(&mut self, id: ClassId) {
+    /// `check_override_pair` for the overrides class `id`'s includes make
+    /// on its class side (`World::class_include_overrides_of`), each
+    /// reported once.
+    fn check_class_include_overrides(&mut self, id: ClassId) {
         let own_args: Vec<Type> = self
             .world
             .class(id)
@@ -2134,7 +2253,7 @@ impl<'ast> Declarer<'ast> {
             .map(|p| Type::Param(p.id))
             .collect();
         let own = Type::Class(id, own_args);
-        for eo in self.world.extend_overrides_of(id) {
+        for eo in self.world.class_include_overrides_of(id) {
             let (o, by) = (eo.overridden, eo.by);
             if self.world.method(by).file == 0 && self.world.method(o).file == 0 {
                 continue;
@@ -2149,10 +2268,8 @@ impl<'ast> Declarer<'ast> {
             mine_subst.insert(SELF_PARAM, own.clone());
             let within = Some(self.world.class(id).name.clone());
             self.override_span = Some(self.world.class(id).span);
-            self.override_via = "extends";
             let ok = self.check_override_pair(by, o, &subst, &mine_subst, within);
             self.override_span = None;
-            self.override_via = "includes";
             if !ok {
                 self.override_pairs.insert((by, o));
             }
@@ -2208,7 +2325,7 @@ impl<'ast> Declarer<'ast> {
     }
 
     /// `overrides_at_run_time` on either side: a class method in place of
-    /// an extended module's (`Interp::class_side_override`).
+    /// an included module's (`Interp::class_method_override`).
     fn replaces_at_run_time(&self, m: MethodId, o: MethodId, a: ClassId, aargs: &[Type]) -> bool {
         let (m, om) = (self.world.method(m), self.world.method(o));
         if om.block.is_some() != m.block.is_some() {
@@ -2307,8 +2424,7 @@ impl<'ast> Declarer<'ast> {
         // (`M#f` against `A#f` in `C`, which includes `M`.)
         let context = match within {
             Some(c) => format!(
-                " in `{c}`, which {} `{}`",
-                self.override_via,
+                " in `{c}`, which includes `{}`",
                 self.world.class(m.owner).name
             ),
             None => String::new(),
@@ -3077,10 +3193,10 @@ impl<'ast> Declarer<'ast> {
     }
 
     /// A concrete class must implement every abstract method it inherits
-    /// or includes; a class that `extend`s a module must implement the
-    /// module's abstract methods on its class side. Including a module
-    /// that has no instance methods (a namespace) is pointless, and said
-    /// so with a warning.
+    /// or includes, and on its class side the abstract class methods of
+    /// the modules it includes. Including a module that has no methods (a
+    /// namespace of types and constants) is pointless, and said so with a
+    /// warning.
     /// The declaration-time checks of `classes` again, after a `static`
     /// statement generated members into one of them (docs/14 §5): each
     /// with its descendants and the classes that include it, since what
@@ -3097,7 +3213,7 @@ impl<'ast> Declarer<'ast> {
             let c = todo[i];
             i += 1;
             for k in &self.world.classes {
-                let inherits = k.superclass.iter().chain(&k.includes).chain(&k.extends);
+                let inherits = k.superclass.iter().chain(&k.includes);
                 if inherits
                     .clone()
                     .any(|t| matches!(t, Type::Class(id, _) if *id == c))
@@ -3132,7 +3248,7 @@ impl<'ast> Declarer<'ast> {
             self.check_quoted_overrides(id);
             self.check_override_returns(id);
             self.check_include_overrides(id);
-            self.check_extend_overrides(id);
+            self.check_class_include_overrides(id);
             self.check_class_side_overrides(id);
             self.check_copied_deinitialize(id);
             self.check_eq_with_hash(id);
@@ -3145,33 +3261,32 @@ impl<'ast> Declarer<'ast> {
         let mut included: Vec<(ClassId, Vec<Type>, Span)> = Vec::new();
         // Namespace modules used as mixins.
         for expr in p.body {
-            let ExprKind::Mixin { kind, types } = &expr.kind else {
+            let ExprKind::Mixin {
+                kind: MixinKind::Include,
+                types,
+            } = &expr.kind
+            else {
                 continue;
             };
             for t in types {
                 let Some(Type::Class(mid, margs)) = self.resolve_type_quietly(p.id, t) else {
                     continue;
                 };
-                if *kind == MixinKind::Include {
-                    included.push((mid, margs.clone(), t.span));
-                }
+                included.push((mid, margs.clone(), t.span));
                 let module = self.world.class(mid);
                 if module.kind != ClassKind::Module {
                     continue;
                 }
-                let has_instance_side = !module.methods.is_empty() || !module.includes.is_empty();
-                let has_class_side =
-                    !module.singleton_methods.is_empty() || !module.members.is_empty();
-                if !has_instance_side && has_class_side {
-                    let verb = match kind {
-                        MixinKind::Include => "including",
-                        MixinKind::Extend => "extending",
-                    };
+                // (Its class methods are the class's: docs/01 §6.)
+                let adds = !module.methods.is_empty()
+                    || !module.includes.is_empty()
+                    || !module.singleton_methods.is_empty();
+                if !adds && !module.members.is_empty() {
                     self.warning(
                         format!(
-                            "`{}` has no instance methods, so {verb} it adds nothing; \
-                             it is a namespace, use `{}.name` and `{}::Name` instead",
-                            module.name, module.name, module.name
+                            "`{}` has no methods, so including it adds nothing; \
+                             it is a namespace, use `{}::Name` instead",
+                            module.name, module.name
                         ),
                         t.span,
                     );
@@ -3329,25 +3444,21 @@ impl<'ast> Declarer<'ast> {
                 );
             }
         }
-        // Class side: abstract methods of extended modules must be
-        // implemented as singleton methods (or by another extended module).
+        // Class side: the abstract class methods of included modules
+        // (`abstract def self.name`) must be implemented as class methods
+        // (or by another included module).
         if class.kind != ClassKind::Module {
             let chain = self.world.superclass_chain(id);
             // Where the runtime looks for a method of the class object
-            // (`Interp::class_side_override`), in order: each class's own
-            // class methods, then the modules it extends (each with its
-            // ancestors), then its superclass's.
+            // (`Interp::class_method_override`), in order: each class's own
+            // class methods, then the modules it includes (the last first,
+            // each with what it includes), then its superclass's.
             let mut order: Vec<(ClassId, Option<Vec<Type>>)> = Vec::new();
             for cid in &chain {
                 order.push((*cid, None));
-                // (The last module extended first, as the runtime.)
-                for ext in self.world.class(*cid).extends.iter().rev() {
-                    if let Type::Class(m, margs) = ext {
-                        for (anc, aargs) in self.world.ancestors(*m, margs) {
-                            if !order.iter().any(|(c, a)| *c == anc && a.is_some()) {
-                                order.push((anc, Some(aargs)));
-                            }
-                        }
+                for (anc, aargs) in self.world.class_modules(*cid, &[]) {
+                    if !order.iter().any(|(c, a)| *c == anc && a.is_some()) {
+                        order.push((anc, Some(aargs)));
                     }
                 }
             }
@@ -3366,23 +3477,19 @@ impl<'ast> Declarer<'ast> {
                 let ids: Vec<MethodId> = self
                     .world
                     .class(mid)
-                    .methods
+                    .singleton_methods
                     .values()
                     .flatten()
                     .copied()
+                    .filter(|&m| self.world.method(m).owner == mid)
                     .collect();
                 for abs in ids {
                     let m = self.world.method(abs);
                     // What runs in its place: the first method found in
                     // that order taking the same arguments.
-                    let found = order.iter().find_map(|(c, a)| {
+                    let found = order.iter().find_map(|(c, _)| {
                         let k = self.world.class(*c);
-                        let table = if a.is_some() {
-                            &k.methods
-                        } else {
-                            &k.singleton_methods
-                        };
-                        table.get(&m.name)?.iter().copied().find(|i| {
+                        k.singleton_methods.get(&m.name)?.iter().copied().find(|i| {
                             // (An abstract one is passed over, its own too.)
                             !self.world.method(*i).is_abstract
                                 && (*i == abs || self.same_signature_at_run_time(*i, abs))
@@ -3404,7 +3511,7 @@ impl<'ast> Declarer<'ast> {
                     let on_module = extended.iter().any(|other| {
                         self.world
                             .class(*other)
-                            .methods
+                            .singleton_methods
                             .get(&m.name)
                             .is_some_and(|ids| ids.iter().any(|i| self.implements(*i, abs)))
                     });
@@ -3418,15 +3525,15 @@ impl<'ast> Declarer<'ast> {
             for (name, owner) in missing {
                 self.error(
                     format!(
-                        "`{}` must implement `self.{name}` (abstract in the extended module `{}`)",
+                        "`{}` must implement `self.{name}` (abstract in the included module `{}`)",
                         class.name,
                         self.world.class(owner).name
                     ),
                     class.span,
                 );
             }
-            // (What runs in place of an extended module's method must take
-            // and return what that one declares.)
+            // (What runs in place of an included module's class method must
+            // take and return what that one declares.)
             let own_args: Vec<Type> = class
                 .type_params
                 .iter()
@@ -3973,6 +4080,15 @@ impl<'ast> Declarer<'ast> {
         // Body-level items that affect the header: includes and fields.
         for expr in p.body {
             match &expr.kind {
+                ExprKind::Mixin {
+                    kind: MixinKind::Extend,
+                    ..
+                } => {
+                    self.error(
+                        "`extend` is not supported: a module's class methods reach a class through `include` (write them as `def self.` methods of the module, and include it)",
+                        expr.span,
+                    );
+                }
                 ExprKind::Mixin { kind, types } => {
                     for t in types {
                         let Some(ty) = self.resolve_type(t, &scope) else {
@@ -3996,13 +4112,12 @@ impl<'ast> Declarer<'ast> {
                                             t.span,
                                         );
                                     }
-                                    MixinKind::Include => {
+                                    MixinKind::Include | MixinKind::Extend => {
                                         self.world.class_mut(id).includes.push(ty)
                                     }
-                                    MixinKind::Extend => self.world.class_mut(id).extends.push(ty),
                                 }
                             }
-                            _ => self.error("only modules can be included or extended", t.span),
+                            _ => self.error("only modules can be included", t.span),
                         }
                     }
                 }
@@ -4443,6 +4558,7 @@ impl<'ast> Declarer<'ast> {
             alias_of: None,
             generated: None,
             builds_self: false,
+            needs_includer: None,
             file: self.file,
         });
     }
@@ -4842,6 +4958,7 @@ impl<'ast> Declarer<'ast> {
                     .body
                     .as_deref()
                     .is_some_and(crate::check::Checker::calls_new),
+            needs_includer: None,
             file: self.file,
         });
     }

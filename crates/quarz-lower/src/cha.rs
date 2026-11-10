@@ -138,9 +138,11 @@ fn rewrite_in(f: &mut Function, world: &RtWorld, has_subclass: &[bool]) {
                     recv_classes: _,
                     on_self: _,
                     // (An abstract class's stays: the runtime refuses to
-                    // build it, #423.)
+                    // build it, #423; a module's too, whose class methods
+                    // build the class including it, #494.)
                 } if !has_subclass[class as usize]
-                    && !world.classes[class as usize].is_abstract =>
+                    && !world.classes[class as usize].is_abstract
+                    && world.classes[class as usize].kind != quarz_ir::RtClassKind::Module =>
                 {
                     insts.push(Inst::Call {
                         dst,

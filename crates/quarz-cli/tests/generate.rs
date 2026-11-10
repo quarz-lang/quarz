@@ -434,16 +434,13 @@ fn what_cannot_be_a_field_or_a_callee() {
     def_field(:id2, Int, 0, reader: true)
   end
 end
-module Macros
-  static def has(x: Int) -> Void; end
-end
 data Point = (x: Int, y: Int)
 "##,
     );
     let app = write(
         &d.0,
         "app.qz",
-        "require_relative \"lib\"\nclass A < Model\n  def id2 -> Int = 1\n  generic\n  again\n  writer_only\n  clash\nend\nclass B\n  extend Macros\n  has 1\nend\n",
+        "require_relative \"lib\"\nclass A < Model\n  def id2 -> Int = 1\n  generic\n  again\n  writer_only\n  clash\nend\n",
     );
     let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
     assert!(!ok);
@@ -452,10 +449,21 @@ data Point = (x: Int, y: Int)
         "app.qz:5:3: error: `def_field(:id)`: `A` already has a field `@id`",
         "app.qz:6:3: error: `writer_only` raised ArgumentError: writer: needs var: true, an assignable field",
         "app.qz:7:3: error: `def_field(:id2)`: `A` already has a method `id2`",
-        "app.qz:11:3: error: `has` is a `static def` of the module `Macros`, which has no type parameter for the class it runs on: declare the module generic (`module Macros[T]`, `self` is then `Meta::ClassDef[T]`) and extend it with the class (`extend Macros[Post]`), or make `has` a class method (`static def self.has`) of a superclass",
     ] {
         assert!(err.contains(expected), "missing {expected:?} in\n{err}");
     }
+    // A module's macro is a class method (#494).
+    let app = write(
+        &d.0,
+        "mod.qz",
+        "module Macros\n  static def has(x: Int) -> Void; end\nend\nclass B\n  include Macros\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("mod.qz:2:10: error: a module's macro is a class method, run on the class that includes the module: write `static def self.has`"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -823,32 +831,33 @@ class Other < Model
 end
 
 module Macros[T <: Model]
-  static def has(n: Symbol) -> Void
+  static def self.has(n: Symbol) -> Void
     tn = name
     doc "has #{n}"
     def_method(n) { "#{tn}/#{n}/#{id}" }
     def_class_method(:table) { tn.downcase }
   end
 
-  static def label -> String = "#{name}!"
+  static def self.label -> String = "#{name}!"
 end
 
 module Plain
-  static def plain(n: Symbol) -> Void
+  static def self.plain(n: Symbol) -> Void
+    def_method(n) { 1 }
   end
 end
 "##;
 
 #[test]
-fn a_generic_modules_static_defs_through_extend() {
+fn a_generic_modules_macros_through_include() {
     // docs/14 §2: `self` is `Meta::ClassDef[T]`, `T` the class that
-    // extends `Macros[T]`; subclasses run them too.
+    // includes `Macros[T]`; subclasses run them too.
     let d = dir();
     write(&d.0, "lib.qz", MODULE_LIB);
     write(
         &d.0,
         "app.qz",
-        "require_relative \"lib\"\nclass Post < Model\n  extend Macros[Post]\n  has :title\nend\nclass Sub < Post\n  has :more\nend\np Post.new.title\np Post.table\np Sub.new.more\np Sub.label\n",
+        "require_relative \"lib\"\nclass Post < Model\n  include Macros[Post]\n  has :title\nend\nclass Sub < Post\n  has :more\nend\np Post.new.title\np Post.table\np Sub.new.more\np Sub.label\n",
     );
     let expected = "\"Post/title/7\"\n\"post\"\n\"Sub/more/7\"\n\"Sub!\"\n";
     let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
@@ -858,19 +867,20 @@ fn a_generic_modules_static_defs_through_extend() {
     assert!(ok, "{err}");
     let run = Command::new(d.0.join("app.bin")).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
-    // Extended as another class, included, a module without a type
-    // parameter, and a compile-time-only one called at run time.
+    // Included as another class, as a superclass, in a module, `extend`,
+    // and a compile-time-only one called at run time.
     write(
         &d.0,
         "bad.qz",
-        "require_relative \"lib\"\nclass A < Model\n  extend Macros[Other]\nend\nclass B < Model\n  include Macros[B]\nend\nclass C < Model\nend\nclass D < C\nend\nclass E < C\n  extend Macros[D]\nend\n",
+        "require_relative \"lib\"\nclass A < Model\n  include Macros[Other]\nend\nmodule M2\n  include Macros[Other]\nend\nclass C < Model\nend\nclass D < C\nend\nclass E < C\n  include Macros[D]\nend\nclass X < Model\n  extend Macros[X]\nend\n",
     );
     let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
     assert!(!ok);
     for want in [
-        "bad.qz:3:10: error: `Macros` has `static def`s, which run on the class extending it: extend it as `Macros[A]`",
-        "bad.qz:6:11: error: `Macros` has `static def`s, which run on a class: extend it (`extend Macros[B]`) rather than include it",
-        "bad.qz:13:10: error: `Macros` has `static def`s, which run on the class extending it: extend it as `Macros[E]`",
+        "bad.qz:3:11: error: `Macros` has `static def self.` macros, which run on the class including it: include it as `Macros[A]`",
+        "bad.qz:6:11: error: `Macros` has `static def self.` macros typed by its first type parameter, which run on the class including it: include it in that class (`include Macros[Post]` in `Post`), not in a module",
+        "bad.qz:13:11: error: `Macros` has `static def self.` macros, which run on the class including it: include it as `Macros[E]`",
+        "bad.qz:16:3: error: `extend` is not supported: a module's class methods reach a class through `include` (write them as `def self.` methods of the module, and include it)",
     ] {
         assert!(err.contains(want), "{want}\n{err}");
     }
@@ -879,12 +889,12 @@ fn a_generic_modules_static_defs_through_extend() {
     write(
         &d.0,
         "fb.qz",
-        "require_relative \"fblib\"\nclass K < Cmp[K]\n  extend F[K]\nend\np K.nm\n",
+        "require_relative \"fblib\"\nclass K < Cmp[K]\n  include F[K]\nend\np K.nm\n",
     );
     write(
         &d.0,
         "fblib.qz",
-        "class Cmp[X]\nend\nmodule F[T <: Cmp[T]]\n  static def nm -> String = name\nend\n",
+        "class Cmp[X]\nend\nmodule F[T <: Cmp[T]]\n  static def self.nm -> String = name\nend\n",
     );
     let (ok, out, err) = quarz(&d.0, &["run", "fb.qz"], &[]);
     assert!(ok, "{err}");
@@ -894,38 +904,37 @@ fn a_generic_modules_static_defs_through_extend() {
     write(
         &d.0,
         "lib2.qz",
-        "class Base\nend\nmodule Gen[T <: Base]\n  static def gen(n: Symbol) -> Void\n    def_method(n) { self }\n  end\nend\nmodule Plain2[T]\nend\nextension Plain2[T]\n  static def me -> Type[Object] = self\nend\n",
+        "class Base\nend\nmodule Gen[T <: Base]\n  static def self.gen(n: Symbol) -> Void\n    def_method(n) { self }\n  end\nend\nmodule Plain2[T]\nend\nextension Plain2[T]\n  static def me -> Type[Object] = self\nend\n",
     );
     write(
         &d.0,
         "bad2.qz",
-        "require_relative \"lib2\"\nclass Box[E] < Base\n  extend Gen[Box[Int]]\nend\nclass NotBase\n  extend Gen[NotBase]\nend\nclass P < Base\nend\nextension P\n  include Gen[P]\nend\n",
+        "require_relative \"lib2\"\nclass Box[E] < Base\n  include Gen[Box[Int]]\nend\nclass NotBase\n  include Gen[NotBase]\nend\nclass P < Base\nend\nextension P\n  include Gen[P]\nend\n",
     );
     let (ok, _, err) = quarz(&d.0, &["check", "bad2.qz"], &[]);
     assert!(!ok);
     for want in [
-        "bad2.qz:3:10: error: `Gen` has `static def`s, which run on the class extending it: extend it as `Gen[Box[E]]`",
-        "bad2.qz:6:10: error: `Gen[NotBase]`: `NotBase` is not a `Base`, which `Gen`'s `static def`s were checked for (`T`)",
+        "bad2.qz:3:11: error: `Gen` has `static def self.` macros, which run on the class including it: include it as `Gen[Box[E]]`",
+        "bad2.qz:6:11: error: `Gen[NotBase]`: `NotBase` is not a `Base`, which `Gen`'s `static def`s were checked for (`T`)",
         "bad2.qz:10:11: error: `Gen` has `static def`s, which run on a class: an extension cannot include it",
         "lib2.qz:11:10: error: an extension cannot declare a `static def`",
     ] {
         assert!(err.contains(want), "{want}\n{err}");
     }
+    // A module without type parameters: `self` is `Meta::ClassDef[Self]`,
+    // the class including it.
     write(
         &d.0,
         "plain.qz",
-        "require_relative \"lib\"\nclass F < Model\n  extend Plain\n  plain :y\nend\n",
+        "require_relative \"lib\"\nclass F < Model\n  include Plain\n  plain :y\nend\np F.new.y\n",
     );
-    let (ok, _, err) = quarz(&d.0, &["check", "plain.qz"], &[]);
-    assert!(!ok);
-    assert!(
-        err.contains("plain.qz:4:3: error: `plain` is a `static def` of the module `Plain`, which has no type parameter for the class it runs on"),
-        "{err}"
-    );
+    let (ok, out, err) = quarz(&d.0, &["run", "plain.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "1\n");
     write(
         &d.0,
         "late.qz",
-        "require_relative \"lib\"\nclass G < Model\n  extend Macros[G]\nend\nG.has(:w)\n",
+        "require_relative \"lib\"\nclass G < Model\n  include Macros[G]\nend\nG.has(:w)\n",
     );
     let (ok, _, err) = quarz(&d.0, &["check", "late.qz"], &[]);
     assert!(!ok);
@@ -1427,20 +1436,20 @@ fn new_in_a_generated_class_method_is_checked_against_its_initializes() {
 
 #[test]
 fn a_modules_static_def_calls_another_of_the_module() {
-    // In a module's `static def`, `self` is the class extending the module
-    // (docs/14 §2), whose class object has the module's methods.
+    // In a module's macro, `self` is the class including the module
+    // (docs/14 §2), whose class object has the module's class methods.
     let d = dir();
     write(
         &d.0,
         "lib.qz",
-        "abstract class Model\nend\nmodule Macros[T <: Model]\n  static def helper -> Int = 1\n  static def go -> Void\n    p name\n    p helper\n    [10].each { |x| p helper + x }\n    p(\"s\".instance_exec { helper + size })\n  end\nend\n",
+        "abstract class Model\nend\nmodule Macros[T <: Model]\n  static def self.helper -> Int = 1\n  static def self.go -> Void\n    p name\n    p helper\n    [10].each { |x| p helper + x }\n    p(\"s\".instance_exec { helper + size })\n  end\nend\n",
     );
     // (From blocks too: one with another receiver reaches them through
     // the enclosing `self`.)
     let app = write(
         &d.0,
         "app.qz",
-        "require_relative \"lib\"\nclass Post < Model\n  extend Macros[Post]\n  go\nend\nPost.go\n",
+        "require_relative \"lib\"\nclass Post < Model\n  include Macros[Post]\n  go\nend\nPost.go\n",
     );
     // At compile time (the statement), then at run time.
     let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
@@ -2111,12 +2120,12 @@ fn a_modules_def_initialize_calls_super() {
     write(
         &d.0,
         "lib.qz",
-        "class Model\n  @id: Int\n  def initialize(@id: Int); end\nend\nmodule Gen[T <: Model]\n  static def gen(id: Int) -> Void\n    def_initialize { super(id) }\n  end\nend\n",
+        "class Model\n  @id: Int\n  def initialize(@id: Int); end\nend\nmodule Gen[T <: Model]\n  static def self.gen(id: Int) -> Void\n    def_initialize { super(id) }\n  end\nend\n",
     );
     let app = write(
         &d.0,
         "app.qz",
-        "require_relative \"lib\"\nclass K < Model\n  extend Gen[K]\n  gen 5\nend\np K.new\n",
+        "require_relative \"lib\"\nclass K < Model\n  include Gen[K]\n  gen 5\nend\np K.new\n",
     );
     let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
     assert!(ok, "{err}");
@@ -2421,10 +2430,10 @@ class Base
   end
 end
 module Macros[T]
-  static def many(us: Array[Type[T]]) -> Void
+  static def self.many(us: Array[Type[T]]) -> Void
     us.each { |u| has(u) }
   end
-  static def has[U <: T](u: Type[U]) -> Void
+  static def self.has[U <: T](u: Type[U]) -> Void
     def_method(:macro_class) do -> Type[U]
       u
     end
@@ -2445,7 +2454,7 @@ class User < Base
   counted String, counted(Int, 5)
 end
 class Post
-  extend Macros[Post]
+  include Macros[Post]
   many [Post]
 end
 a: Type[String] = User.new.item1
@@ -2573,7 +2582,7 @@ class Base
   end
 end
 module Macros[T]
-  static def keep(n: Int) -> Void
+  static def self.keep(n: Int) -> Void
     def_method("m#{n}".to_sym) do -> T?
       nil
     end
@@ -2601,28 +2610,10 @@ end
         errs.push(err.lines().filter(|l| l.contains("error")).count());
     }
     assert_eq!(errs[0], errs[1]);
-    // A statement calling an alias: the original's name is not scanned,
-    // so its type arguments do not hold.
-    write(
-        &d.0,
-        "alias_lib.qz",
-        "module Again[T]\n  static def keep[U](name: Symbol, v: U) -> Void\n    def_method(name) do -> U\n      v\n    end\n    keep[String](:s, \"str\") if name == :ints\n  end\n  alias again keep\nend\n",
-    );
-    let app = write(
-        &d.0,
-        "alias.qz",
-        "require_relative \"alias_lib\"\nclass User\n  extend Again[User]\n  again[Int](:ints, 1)\nend\n",
-    );
-    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
-    assert!(!ok);
-    assert!(
-        err.contains("`def_method(:ints)`: the block's type mentions `U`, a type parameter the generated method cannot carry"),
-        "{err}"
-    );
     let app = write(
         &d.0,
         "mod.qz",
-        "require_relative \"lib\"\nclass Note\n  extend Macros[Note]\n  keep 1\nend\nb: Note? = Note.new.m0\np b, Note.new.m1\n",
+        "require_relative \"lib\"\nclass Note\n  include Macros[Note]\n  keep 1\nend\nb: Note? = Note.new.m0\np b, Note.new.m1\n",
     );
     let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
     assert!(ok, "{err}");

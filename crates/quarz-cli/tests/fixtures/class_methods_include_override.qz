@@ -1,0 +1,37 @@
+# `include` brings a module's class methods to the class side (docs/01
+# §6): a class method overrides the module's concrete one as a class's
+# own method overrides an included module's, and the module's other class
+# methods reach it.
+module Named
+  def self.label -> String = "named"
+  def self.greeting -> String = "I am #{label}"
+end
+
+class Plain
+  include Named
+end
+
+class Thing
+  include Named
+  def self.label -> String = "thing"
+end
+
+class Gadget < Thing
+  def self.label -> String = "gadget"
+end
+
+module Counted
+  def self.count -> Int = 1
+  def self.twice -> Int = count * 2
+end
+
+class Box
+  include Counted
+  def self.count -> Int = 21
+end
+
+puts Plain.greeting
+puts Thing.greeting
+puts Gadget.greeting
+puts Thing.label
+puts Box.twice

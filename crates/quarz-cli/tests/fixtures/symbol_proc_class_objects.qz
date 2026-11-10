@@ -1,6 +1,6 @@
 # `&:name` on class objects of a union (`Type[A] | Type[B]`) calls what the
-# block `{ |k| k.name }` does: the common class method, or the method of a
-# module a common superclass extends, running each receiver's own.
+# block `{ |k| k.name }` does: the common class method, or the class method
+# of a module a common superclass includes, running each receiver's own.
 class Shape
   def self.label -> String = "shape"
 end
@@ -11,10 +11,10 @@ class Square < Shape
   def self.label -> String = "square"
 end
 module Named
-  def name_of -> String = "unnamed"
+  def self.name_of -> String = "unnamed"
 end
 class Thing
-  extend Named
+  include Named
 end
 class Cup < Thing
   def self.name_of -> String = "cup"

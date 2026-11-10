@@ -107,14 +107,14 @@ begin
 rescue ZeroDivisionError => e
   puts "zero: #{e.message}"
 end
-# Module default methods on the class side (`extend`) dispatch to the
+# A module's default class methods (inherited through `include`) dispatch to the
 # class's own singleton methods.
 module Named
-  abstract def label -> String
-  def greeting -> String = "I am #{label}"
+  abstract def self.label -> String
+  def self.greeting -> String = "I am #{label}"
 end
 class Thing
-  extend Named
+  include Named
   def self.label -> String = "Thing"
 end
 class SubThing < Thing

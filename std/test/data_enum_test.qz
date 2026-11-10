@@ -1,4 +1,4 @@
-# Data classes, enums, Result, class-level modules (`extend`) and `for`
+# Data classes, enums, Result, modules with class methods (`include`) and `for`
 # comprehensions.
 require "test"
 
@@ -37,18 +37,18 @@ enum DeShape
 end
 
 module DeNamed
-  abstract def label -> String
-  def greeting -> String = "I am #{label}"
+  abstract def self.label -> String
+  def self.greeting -> String = "I am #{label}"
 end
 
 module DeCounting
-  abstract def count -> Int
-  def twice -> Int = count * 2
+  abstract def self.count -> Int
+  def self.twice -> Int = count * 2
 end
 
 class DeThing
-  extend DeNamed
-  extend DeCounting
+  include DeNamed
+  include DeCounting
   def self.label -> String = "Thing"
   def self.count -> Int = 21
 end
@@ -176,7 +176,7 @@ class ResultTest < Test::Case
   end
 end
 
-class ExtendTest < Test::Case
+class ModuleClassMethodTest < Test::Case
   def test_class_methods_from_modules
     assert_equal("I am Thing", DeThing.greeting)
     assert_equal(42, DeThing.twice)

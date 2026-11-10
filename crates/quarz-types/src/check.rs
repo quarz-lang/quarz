@@ -704,6 +704,9 @@ struct Assigned {
     /// A call of `new` with no receiver was seen outside the body's blocks
     /// (`Checker::calls_new`).
     implicit_new: bool,
+    /// The names called with no receiver or on `self`, blocks included
+    /// (`Checker::self_calls`).
+    self_calls: HashSet<String>,
     bangs: Vec<(String, String)>,
     /// How many places assign each name.
     counts: HashMap<String, u32>,
@@ -1414,17 +1417,11 @@ impl Checker {
             self.env.file = c.file;
             let fields: Vec<(Type, Span)> =
                 c.fields.iter().map(|f| (f.ty.clone(), f.span)).collect();
-            // The superclass and the modules included and extended, whose
+            // The superclass and the modules included, whose
             // arguments may be the class's own parameters (`G[U] < H[U]`):
             // a parameter meets a bound its own bounds imply.
             let span = c.span;
-            let heads: Vec<Type> = c
-                .superclass
-                .iter()
-                .chain(&c.includes)
-                .chain(&c.extends)
-                .cloned()
-                .collect();
+            let heads: Vec<Type> = c.superclass.iter().chain(&c.includes).cloned().collect();
             let param_bounds: Vec<Type> = c
                 .type_params
                 .iter()
@@ -1760,10 +1757,17 @@ impl Checker {
                         self.world.class(sid).name.clone(),
                         self.world.class(cid).name.clone(),
                     );
-                    // (Whose `initialize` `new` was checked against.)
+                    // (Whose `initialize` `new` was checked against: a
+                    // module without one, `Object`'s.)
                     let iname = init
                         .map(|i| self.world.class(self.world.method(i).owner).name.clone())
-                        .unwrap_or_else(|| cname.clone());
+                        .unwrap_or_else(|| {
+                            if self.world.class(cid).kind == ClassKind::Module {
+                                "Object".to_string()
+                            } else {
+                                cname.clone()
+                            }
+                        });
                     // (Generated, docs/14 §5: reported at the statement.)
                     let what = {
                         let oname = &self.world.class(s.owner).name;
@@ -2643,18 +2647,14 @@ impl Checker {
     }
 
     /// The classes and modules a class's statements run after (docs/14
-    /// §2): its superclasses and the modules it includes or extends,
+    /// §2): its superclasses and the modules it includes,
     /// theirs, and so on.
     fn statement_ancestors(&self, class: ClassId) -> HashSet<ClassId> {
         let mut seen: HashSet<ClassId> = HashSet::default();
         let mut stack = vec![class];
         while let Some(c) = stack.pop() {
             let info = self.world.class(c);
-            let edges = info
-                .superclass
-                .iter()
-                .chain(&info.includes)
-                .chain(&info.extends);
+            let edges = info.superclass.iter().chain(&info.includes);
             for t in edges {
                 if let Type::Class(id, _) = t {
                     if *id != class && seen.insert(*id) {
@@ -2764,28 +2764,27 @@ impl Checker {
         out
     }
 
-    /// How a class reaches a module's `static def` (docs/14 §2): through
-    /// `extend M[A]` in the class or an ancestor `A` itself, so that the
-    /// `Meta::ClassDef[A]` the body was checked with holds for the class
-    /// the statement runs on. A module without type parameters, or an
-    /// `extend` naming another class, is refused, with why.
-    fn extend_route(&self, class: ClassId, module: ClassId, name: &str) -> Result<(), String> {
+    /// How a class reaches a module's macro (docs/14 §2): any `include`
+    /// for a module without type parameters (`self: Meta::ClassDef[Self]`
+    /// holds on any class); for a generic one, `include M[A]` in the
+    /// class or an ancestor `A` itself, so that the `Meta::ClassDef[A]`
+    /// the body was checked with holds for the class the statement runs
+    /// on. Anything else is refused, with why.
+    fn include_route(&self, class: ClassId, module: ClassId, name: &str) -> Result<(), String> {
         let mname = self.world.class(module).name.clone();
         if self.world.class(module).type_params.is_empty() {
-            return Err(format!(
-                "`{name}` is a `static def` of the module `{mname}`, which has no type parameter for the class it runs on: declare the module generic (`module {mname}[T]`, `self` is then `Meta::ClassDef[T]`) and extend it with the class (`extend {mname}[Post]`), or make `{name}` a class method (`static def self.{name}`) of a superclass"
-            ));
+            return Ok(());
         }
         for a in self.world.ancestor_ids(class) {
             let c = self.world.class(a);
             if c.kind == ClassKind::Module {
                 continue;
             }
-            for t in &c.extends {
+            for t in &c.includes {
                 if let Type::Class(id, args) = t {
                     if *id == module {
                         return match args.first() {
-                            // The class's own instance type, as `extend`
+                            // The class's own instance type, as `include`
                             // requires (declare.rs, `check_static_mixins`).
                             Some(Type::Class(x, xargs))
                                 if *x == a
@@ -2798,7 +2797,7 @@ impl Checker {
                                 Ok(())
                             }
                             _ => Err(format!(
-                                "`{name}` is a `static def` of the module `{mname}`, which `{}` extends as `{}`: a statement runs it only through `extend {mname}[{}]`, the class itself as its first type argument",
+                                "`{name}` is a macro of the module `{mname}`, which `{}` includes as `{}`: a statement runs it only through `include {mname}[{}]`, the class itself as its first type argument",
                                 c.name,
                                 self.world.type_name(t),
                                 c.name
@@ -2809,7 +2808,7 @@ impl Checker {
             }
         }
         Err(format!(
-            "`{name}` is a `static def` of the module `{mname}`, which the class reaches only through another module: extend `{mname}` itself"
+            "`{name}` is a macro of the module `{mname}`, which the class reaches only through another module: include `{mname}` itself"
         ))
     }
 
@@ -2869,19 +2868,7 @@ impl Checker {
             }
         };
         let m = self.world.method(callee).clone();
-        let module_def = m.is_static
-            && !m.singleton
-            && !m.is_native
-            && self.world.class(m.owner).kind == ClassKind::Module;
-        if module_def {
-            // Through `extend M[C]` (docs/14 §2): its `self` is the
-            // module's first type parameter's `Meta::ClassDef`, which the
-            // class must be (or descend from) where it runs.
-            if let Err(message) = self.extend_route(stmt.class, m.owner, &m.name) {
-                self.error_in(stmt.file, message, stmt.span);
-                return None;
-            }
-        } else if !m.is_static || !m.singleton || m.is_native {
+        if !m.is_static || !m.singleton || m.is_native {
             let message = {
                 format!(
                     "a statement in a class body must call a `static def` class method; `{}` is not one",
@@ -2890,6 +2877,16 @@ impl Checker {
             };
             self.error_in(stmt.file, message, stmt.span);
             return None;
+        }
+        if self.world.class(m.owner).kind == ClassKind::Module {
+            // A module's macro (docs/14 §2), through `include`: a generic
+            // module's `self` is its first type parameter's
+            // `Meta::ClassDef`, which the class must be (or descend from)
+            // where it runs.
+            if let Err(message) = self.include_route(stmt.class, m.owner, &m.name) {
+                self.error_in(stmt.file, message, stmt.span);
+                return None;
+            }
         }
         let allowed = match self.repl_unit {
             Some((file, base)) => {
@@ -3185,22 +3182,23 @@ impl Checker {
                 .map(|p| Type::Param(p.id))
                 .collect(),
         );
-        let self_type = if info.singleton && info.is_static && !info.is_native {
-            // A `static` class method runs on the class being declared:
-            // `self` is its `Meta::ClassDef` (docs/14).
-            Type::Class(self.world.builtin.meta_classdef, vec![instance])
-        } else if info.is_static
+        let self_type = if info.singleton
+            && info.is_static
             && !info.is_native
             && class.kind == ClassKind::Module
-            && !class.type_params.is_empty()
         {
-            // A generic module's `static def`, which a class reaches
-            // through `extend M[C]`: it runs on that class, the module's
-            // first type parameter (docs/14 §2).
-            Type::Class(
-                self.world.builtin.meta_classdef,
-                vec![Type::Param(class.type_params[0].id)],
-            )
+            // A module's macro runs on a class that includes it (docs/14
+            // §2): a generic module's on its first type parameter, which
+            // `include M[C]` makes the class; another's on `Self`.
+            let on = match class.type_params.first() {
+                Some(p) => Type::Param(p.id),
+                None => Type::Param(SELF_PARAM),
+            };
+            Type::Class(self.world.builtin.meta_classdef, vec![on])
+        } else if info.singleton && info.is_static && !info.is_native {
+            // A `static` class method runs on the class being declared:
+            // `self` is its `Meta::ClassDef` (docs/14).
+            Type::Class(self.world.builtin.meta_classdef, vec![instance.clone()])
         } else if let (true, Some(ext)) = (info.singleton, info.extension) {
             // An extension's class method: the class as the extension
             // names it (`extension Box[T]`: its `T`, not the class's).
@@ -3284,8 +3282,14 @@ impl Checker {
             && info.is_static
             && !info.is_native
             && matches!(&self_type, Type::Class(c, _) if *c == self.world.builtin.meta_classdef);
-        let bound =
-            (opaque || static_class).then(|| Self::self_binding(&self.world, &info, &self_type));
+        let bound = (opaque || static_class).then(|| {
+            match Self::self_binding(&self.world, &info, &self_type) {
+                // (A module's macro on `Meta::ClassDef[Self]`: `Self` is a
+                // class including the module, #494.)
+                Type::Param(SELF_PARAM) => instance.clone(),
+                b => b,
+            }
+        });
         let saved_bound = std::mem::replace(&mut self.world.self_bound, bound);
         env.ret_expected = Some(info.ret.subst(&self_subst));
         env.block_type = info.block.as_ref().map(|(_, t)| t.subst(&self_subst));
@@ -5415,6 +5419,13 @@ impl Checker {
                 if call.recv.is_none() && call.name == "new" && out.closure_depth == 0 {
                     out.implicit_new = true;
                 }
+                if call
+                    .recv
+                    .as_ref()
+                    .is_none_or(|r| matches!(r.kind, ExprKind::SelfRef))
+                {
+                    out.self_calls.insert(call.name.clone());
+                }
                 if let Some(r) = &call.recv {
                     Self::assigned_names_expr(r, out);
                     // `x.foo!` rebinds `x` when its type has no `foo!`.
@@ -5590,6 +5601,14 @@ impl Checker {
         let mut a = Assigned::default();
         Self::assigned_names(body, &mut a);
         a.implicit_new
+    }
+
+    /// The names `body` calls with no receiver or on `self`, in its blocks
+    /// too (`MethodInfo::needs_includer`).
+    pub(crate) fn self_calls(body: &[Expr]) -> HashSet<String> {
+        let mut a = Assigned::default();
+        Self::assigned_names(body, &mut a);
+        a.self_calls
     }
 
     /// The variables a pattern binds.
@@ -5992,7 +6011,7 @@ impl Checker {
     // ----- bodies --------------------------------------------------------------
 
     /// Whether `Self` appears in the method's signature.
-    fn mentions_self(m: &MethodInfo) -> bool {
+    pub(crate) fn mentions_self(m: &MethodInfo) -> bool {
         let is = |t: &Type| t.mentions_param(SELF_PARAM);
         m.params.iter().any(|p| is(&p.ty))
             || m.block.as_ref().is_some_and(|(_, t)| is(t))
@@ -8994,6 +9013,20 @@ impl Checker {
                     self.abstract_receivers
                         .push((method, cid, expr.span, self.env.file));
                 }
+                // A module's class method that depends on the class
+                // including it, called on the module itself (#494).
+                let m = self.world.method(method);
+                if let (Some(why), ClassKind::Module) =
+                    (&m.needs_includer, self.world.class(cid).kind)
+                {
+                    let (module, name) = (self.world.class(cid).name.clone(), m.name.clone());
+                    self.error(
+                        format!(
+                            "cannot call `{module}.{name}` on the module itself: `{name}` {why}; call it on a class that includes `{module}`"
+                        ),
+                        expr.span,
+                    );
+                }
             }
         }
         t
@@ -9982,10 +10015,13 @@ impl Checker {
                     return t;
                 }
                 // In a class method, `new` builds the receiver's class, which
-                // may be a concrete subclass of an abstract one (#423).
+                // may be a concrete subclass of an abstract one (#423), or,
+                // in a module's, a class that includes it (#494).
+                let kind = self.world.class(cid).kind;
+                let builds = kind == ClassKind::Class || kind == ClassKind::Module;
                 let in_class_method = implicit_self
                     && self.own_self()
-                    && self.world.class(cid).kind == ClassKind::Class
+                    && builds
                     && self
                         .env
                         .method
@@ -9996,7 +10032,7 @@ impl Checker {
                 let t = self.check_constructor(expr, call, cid, &args, expected);
                 // `def self.build = new`: the instance is of the class the
                 // method is called on (a subclass, perhaps).
-                if implicit_self && self.world.class(cid).kind == ClassKind::Class {
+                if implicit_self && builds {
                     if let (Some(m), Some(CallTarget::Constructor { init, .. })) =
                         (self.env.method, self.out.calls.get(&expr.id).cloned())
                     {
@@ -10011,8 +10047,11 @@ impl Checker {
                                     .push((cid, init, m, expr.span, self.env.file));
                             }
                             // In a class method with `Self` in its
-                            // signature, the instance is a `Self`.
-                            if self.env.self_opaque && self.own_self() {
+                            // signature, the instance is a `Self`; in a
+                            // module's, always (no value is a module's).
+                            if (self.env.self_opaque || kind == ClassKind::Module)
+                                && self.own_self()
+                            {
                                 return Type::Param(SELF_PARAM);
                             }
                         }
@@ -10135,10 +10174,9 @@ impl Checker {
                         _ => {}
                     }
                 }
-                // In a module's `static def`, `self` is the class that
-                // extends the module (docs/14 §2: through `extend M[C]`, C
-                // itself), whose class object has the module's methods: an
-                // implicit call finds them.
+                // In a module's macro, `self` is the class that includes
+                // the module (docs/14 §2), whose class object has the
+                // module's class methods: an implicit call finds them.
                 if cands.is_empty() && call.recv.is_none() && implicit_self {
                     if let Some(own) = self.module_static_self(&self.env.self_type.clone()) {
                         cands = self.world.lookup_methods(&own, name);
@@ -10885,7 +10923,7 @@ impl Checker {
                     return Some((outer, k));
                 }
             }
-            // A module's `static def`'s `self`: the module's methods too.
+            // A module's macro's `self`: the module's class methods too.
             if let Some(own) = self.module_static_self(&outer) {
                 if !self.world.lookup_methods(&own, name).is_empty() {
                     return Some((own, k));
@@ -10895,10 +10933,10 @@ impl Checker {
         None
     }
 
-    /// In a module's `static def`, `self` (`t`) is the class that extends
-    /// the module (docs/14 §2: through `extend M[C]`, C itself), whose
-    /// class object has the module's methods: the module's type, for an
-    /// implicit call to find them.
+    /// In a module's macro, `self` (`t`) is the class that includes the
+    /// module (docs/14 §2), whose class object has the module's class
+    /// methods: the module's class object, for an implicit call to find
+    /// them.
     fn module_static_self(&self, t: &Type) -> Option<Type> {
         let (Type::Class(c, _), Some(m)) = (t, self.env.method) else {
             return None;
@@ -10907,7 +10945,7 @@ impl Checker {
         (*c == self.world.builtin.meta_classdef
             && self.world.class(owner).kind == ClassKind::Module)
             .then(|| {
-                Type::Class(
+                Type::ClassObject(
                     owner,
                     self.world
                         .class(owner)
@@ -11346,8 +11384,8 @@ impl Checker {
         // first, so that a construction among its arguments is checked as
         // any.)
         let constructing_self = std::mem::take(&mut self.constructing_self);
-        if (class.is_abstract && !constructing_self)
-            || matches!(class.kind, ClassKind::Module | ClassKind::Enum)
+        if ((class.is_abstract || class.kind == ClassKind::Module) && !constructing_self)
+            || class.kind == ClassKind::Enum
         {
             self.error(format!("cannot instantiate `{}`", class.name), expr.span);
             self.check_args_blindly(call);
@@ -14052,6 +14090,15 @@ impl Checker {
                 t => (false, t.clone()),
             };
             lifted_instance_side = !class_side;
+            // (`Self` itself, a module macro's: bounded as it is.)
+            let instance = match instance {
+                Type::Param(SELF_PARAM) => self
+                    .world
+                    .self_bound
+                    .clone()
+                    .unwrap_or(Type::Param(SELF_PARAM)),
+                t => t,
+            };
             saved_lifted_self = Some((
                 self.world.self_bound.replace(instance),
                 self.env.scope.self_type.take(),

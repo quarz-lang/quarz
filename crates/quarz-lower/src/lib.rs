@@ -1450,11 +1450,11 @@ fn may_receive(world: &World, o: MethodId, classes: &[ClassId]) -> bool {
 /// compile-time runner walks alike), as a receiver's lookup may find it:
 /// for a module's method or `Object`'s, any method of the name (an
 /// including class's superclass may implement it, a class may define its
-/// own `def self.`); for `Type`'s, a class method or an extended
-/// module's; for a
-/// class method, one of a class below it, or of a module a class below
-/// it extends; for another class's instance method, one of a class below
-/// it, or of a module a class below it includes.
+/// own `def self.`); for `Type`'s, a class method (a module's too); for
+/// a class method, one of a class below it, or of a module a class below
+/// it includes (for a module's, one beside it in an includer); for
+/// another class's instance method, one of a class below it, or of a
+/// module a class below it includes.
 fn is_override(world: &World, o: MethodId, m: MethodId) -> bool {
     let (om, mm) = (&world.methods[o as usize], &world.methods[m as usize]);
     if om.name != mm.name {
@@ -1463,17 +1463,17 @@ fn is_override(world: &World, o: MethodId, m: MethodId) -> bool {
     let owner = mm.owner;
     let module = |c: ClassId| world.class(c).kind == quarz_types::ClassKind::Module;
     if mm.singleton {
-        return if om.singleton {
-            world.class_is_a(om.owner, owner)
-        } else {
-            module(om.owner)
-                && world.classes.iter().any(|c| {
-                    world.class_is_a(c.id, owner)
-                        && c.extends.iter().any(|e| {
-                            matches!(e, quarz_types::Type::Class(m, _) if world.class_is_a(*m, om.owner))
-                        })
-                })
-        };
+        if !om.singleton {
+            return false;
+        }
+        if !module(om.owner) && !module(owner) {
+            return world.class_is_a(om.owner, owner);
+        }
+        // (A module's class method: on a class that has both.)
+        return world
+            .classes
+            .iter()
+            .any(|c| world.class_is_a(c.id, owner) && world.class_is_a(c.id, om.owner));
     }
     // An abstract method's implementation may come from above its owner
     // (a superclass's method of the name).
@@ -1481,16 +1481,9 @@ fn is_override(world: &World, o: MethodId, m: MethodId) -> bool {
         return true;
     }
     // `Type`'s (or a subclass's, `Meta::ClassDef`'s), on class objects: a
-    // class's own `def self.`, or an extended module's.
+    // class method (a module's included too).
     if world.class_is_a(owner, world.builtin.class_) {
-        return om.singleton
-            || world.class_is_a(om.owner, owner)
-            || (module(om.owner)
-                && world.classes.iter().any(|c| {
-                    c.extends.iter().any(|e| {
-                        matches!(e, quarz_types::Type::Class(m, _) if world.class_is_a(*m, om.owner))
-                    })
-                }));
+        return om.singleton || world.class_is_a(om.owner, owner);
     }
     if module(owner) || owner == world.builtin.object {
         return true;
@@ -1580,56 +1573,17 @@ fn overridden_methods(world: &World) -> HashSet<(ClassId, String)> {
         if c.kind == quarz_types::ClassKind::Main {
             continue;
         }
-        // (And the methods of the modules it extends, which the runtime
-        // finds there too.)
-        let extended = c.extends.iter().flat_map(|t| match t {
-            quarz_types::Type::Class(m, _) => ancestors[*m as usize].clone(),
-            _ => Vec::new(),
-        });
-        let names: Vec<String> = c
-            .singleton_methods
-            .keys()
-            .cloned()
-            .chain(
-                extended.flat_map(|m| world.class(m).methods.keys().cloned().collect::<Vec<_>>()),
-            )
-            .collect();
+        // (A module's too: an including class has them.)
+        let names: Vec<String> = c.singleton_methods.keys().cloned().collect();
         for name in names {
             for anc in type_side {
                 out.insert((*anc, name.clone()));
             }
         }
     }
-    // A module a class extends runs on the class object, where the class's
-    // own class methods (its superclasses' too), and the methods of the
-    // other modules it extends, override the module's (docs/01 §6).
-    for c in &world.classes {
-        let chain = world.superclass_chain(c.id);
-        let extended: Vec<ClassId> = chain
-            .iter()
-            .flat_map(|k| world.class(*k).extends.iter())
-            .filter_map(|t| match t {
-                quarz_types::Type::Class(m, _) => Some(*m),
-                _ => None,
-            })
-            .flat_map(|m| ancestors[m as usize].clone())
-            .collect();
-        if extended.is_empty() {
-            continue;
-        }
-        let mut names: Vec<String> = c.singleton_methods.keys().cloned().collect();
-        for m in &extended {
-            names.extend(world.class(*m).methods.keys().cloned());
-        }
-        for m in &extended {
-            for name in &names {
-                out.insert((*m, name.clone()));
-            }
-        }
-    }
-    // A superclass's class method that a module a class extends overrides
-    // (`World::extend_overrides`).
-    for (_, o, _) in world.extend_overrides() {
+    // A superclass's class method that a module a class includes overrides
+    // (`World::class_include_overrides`).
+    for (_, o, _) in world.class_include_overrides() {
         let om = world.method(o);
         out.insert((om.owner, format!("self.{}", om.name)));
     }

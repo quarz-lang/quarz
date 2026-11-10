@@ -255,11 +255,14 @@ impl Interp {
             CallOp::ConstructRecv { class, init } => {
                 let (cid, init) = self.receiver_class_init(&recv, class, init);
                 // A class method of an abstract class called through a
-                // `Type[J]` holding `J` itself (#423; written `J.run`, the
-                // checker refuses it).
+                // `Type[J]` holding `J` itself (#423), or a module's through
+                // a `Type[M]` holding the module (#494; written `J.run` or
+                // `M.make`, the checker refuses it).
                 let info = self.program.world.class(cid);
                 let r = if info.is_abstract {
                     Err(self.err_type(&format!("{} is abstract", info.name)))
+                } else if info.kind == quarz_ir::RtClassKind::Module {
+                    Err(self.err_type(&format!("{} is a module", info.name)))
                 } else {
                     self.construct(cid, init, pos, kw, block.clone())
                 };

@@ -3,10 +3,10 @@
 # accepted whatever the order of the checks, and each value runs its
 # class's own method (#324, after #258).
 module M
-  def k -> String = "M#k"
+  def self.k -> String = "M#k"
 end
 class Base
-  extend M
+  include M
 end
 class B < Base
   def self.k -> String = "B.k"
@@ -15,7 +15,7 @@ class C < Base
   def self.k -> String = "C.k"
 end
 class E
-  extend M
+  include M
 end
 class H1
   def run(&blk: (Type[B] | Type[C]) -> String) -> String = blk.call(C)
