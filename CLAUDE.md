@@ -45,7 +45,13 @@ feature-off stubs in `natives/mod.rs`, a new exception class in
 that module's tests in `std/test/` interpreted and compiled
 (`tests/std.rs`), its doc examples, clippy, rustfmt and the MSRV check;
 the full `cargo test` is CI's, which must be green before the pull
-request leaves draft. A change that alters a path existing programs
+request leaves draft. A small checker fix that only refuses more
+programs or changes a diagnostic (a new or tightened check in
+`quarz-types`, with its tests, touching no other crate) runs locally
+the area's binaries (`cargo test -p quarz-cli --test diagnostics` and
+`cargo test -p quarz-types`), clippy, rustfmt and the MSRV check; the
+full `cargo test` is CI's, which must be green before the pull request
+leaves draft. Any other change that alters a path existing programs
 run (an edited function or match arm in a shared file, `value.rs`, the
 checker, lowering or the IR passes) runs the full `cargo test` locally
 as above. The pull request says which case it was.
