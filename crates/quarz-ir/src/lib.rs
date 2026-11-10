@@ -1426,6 +1426,10 @@ pub struct RtClass {
     /// shared with the checker, #504).
     #[serde(default)]
     pub witness_sources: Vec<ClassId>,
+    /// Whether this class's values are made by the runtime, not by `new`
+    /// (`World::built_by_runtime`, #535).
+    #[serde(default)]
+    pub built_by_runtime: bool,
     /// Nested classes by short name.
     #[serde(serialize_with = "sorted")]
     pub members: HashMap<String, ClassId>,

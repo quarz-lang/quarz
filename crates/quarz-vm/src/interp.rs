@@ -3659,23 +3659,17 @@ impl Interp {
         block: Option<Value>,
     ) -> EvalResult {
         let info = self.program.world.class(class);
-        // (A value the runtime makes itself is no object of its class: the
-        // checker refuses `new` on such a class, this guards against it.
-        // Such classes have no fields, which most others pass by.)
-        if info.fields.is_empty() {
-            let b = &self.program.world.builtin;
-            let own = [
-                b.nil, b.bool_, b.int, b.integer, b.float, b.string, b.symbol, b.range, b.regexp,
-                b.proc_, b.task, b.channel, b.atom,
-            ];
-            let rt = &self.program.rt;
-            let opened = [rt.io, rt.file, rt.selector, rt.process_child];
-            if own.contains(&class)
-                || opened.contains(&class)
-                || self.program.world.class_is_a(class, b.class_)
-            {
-                return Err(self.err_type(&format!("`{}` is not built with `new`", info.name)));
-            }
+        // A value the runtime makes itself is no object of its class
+        // (`RtClass::built_by_runtime`, `World::built_by_runtime`): the
+        // checker refuses `new` on such a class, written or reached through
+        // a module's or a witness's `new` (the inherited-constructor rule),
+        // so reaching it here is a checker bug, an internal error (not
+        // #509's TypeError, which is for a case left to run time).
+        if info.built_by_runtime {
+            return Err(self.err_type(&format!(
+                "internal error: a checker bug: `new` reached `{}`, a class the runtime builds",
+                info.name
+            )));
         }
         // A data constructor given every physical field: copied in.
         if let Some(i) = init {

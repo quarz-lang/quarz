@@ -3974,6 +3974,7 @@ mod tests {
             singleton_methods: Default::default(),
             class_modules: Vec::new(),
             witness_sources: Vec::new(),
+            built_by_runtime: false,
             members: Default::default(),
             variants: Vec::new(),
             variant_of: None,
