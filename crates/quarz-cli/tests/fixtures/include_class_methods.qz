@@ -1,0 +1,91 @@
+# `include` brings a module's `def self.` methods to the class side
+# (#494, docs/01 §6): run on each includer as its own class method, also
+# through a `Type[Base]` value and by `super` from a class's own `def
+# self.`; `new` in one builds the class it is called on.
+module Registry
+  def self.label -> String = "registry of #{name}"
+  def self.make -> Self = new
+  def self.kind -> String = "module"
+end
+
+class Base
+  include Registry
+  def describe -> String = "a #{self.class.name}"
+end
+
+class Post < Base
+end
+
+class Comment
+  include Registry
+  def describe -> String = "a comment"
+  def self.kind -> String = "comment, #{super}"
+end
+
+puts Post.label
+puts Comment.label
+puts Post.make.describe
+puts Comment.make.describe
+puts Comment.kind
+
+ts: Array[Type[Base]] = [Base, Post]
+ts.each { |t| puts t.label, t.make.describe, t.kind }
+
+# A module's class method that depends on no includer is a namespace
+# function on the module itself too.
+puts Registry.label
+puts Registry.kind
+
+# Through a `Type[Registry]` value holding the module itself, `new`
+# raises.
+m: Type[Registry] = Registry
+begin
+  m.make
+rescue TypeError => e
+  puts "TypeError: #{e.message}"
+end
+
+# An abstract class method of a module is passed over for what comes
+# after it in the lookup order: a superclass's, or a module included
+# before it.
+module Kinded
+  abstract def self.kind -> String
+  def self.describe_kind -> String = "kind #{kind}"
+end
+
+class Shape
+  def self.kind -> String = "shape"
+end
+
+class Square < Shape
+  include Kinded
+end
+
+module Plain
+  def self.kind -> String = "plain"
+end
+
+class Dot
+  include Plain
+  include Kinded
+end
+
+puts Square.kind, Square.describe_kind, Dot.describe_kind
+
+# An extension's include brings no class methods: through a
+# `Type[Labeled]` value holding such a class, the module's own runs.
+module Labeled
+  def self.tag -> String = "labeled"
+  def labeled? -> Bool = true
+end
+
+class Thing
+  def self.tag -> String = "thing"
+end
+
+extension Thing
+  include Labeled
+end
+
+def tag_of(t: Type[Labeled]) -> String = t.tag
+puts tag_of(Thing), Thing.tag

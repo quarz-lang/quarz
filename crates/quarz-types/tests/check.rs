@@ -1590,20 +1590,19 @@ fn module_contracts() {
     );
     // An extension can supply the implementation.
     ok("module M\n  abstract def zero -> Int\nend\nclass A\n  include M\nend\nextension A\n  def zero -> Int = 0\nend\nputs A.new.zero");
-    // `extend`: the module's abstract methods are class-side contracts.
+    // A module's abstract class methods are class-side contracts of the
+    // classes including it.
     err(
-        "module M\n  abstract def zero -> Int\n  def one -> Int = zero + 1\nend\nclass A\n  extend M\nend",
-        "`A` must implement `self.zero` (abstract in the extended module `M`)",
+        "module M\n  abstract def self.zero -> Int\n  def self.one -> Int = zero + 1\nend\nclass A\n  include M\nend",
+        "`A` must implement `self.zero` (abstract in the included module `M`)",
     );
-    ok("module M\n  abstract def zero -> Int\n  def one -> Int = zero + 1\nend\nclass A\n  extend M\n  def self.zero -> Int = 5\nend\nputs A.one");
-    // Including a namespace adds nothing.
+    ok("module M\n  abstract def self.zero -> Int\n  def self.one -> Int = zero + 1\nend\nclass A\n  include M\n  def self.zero -> Int = 5\nend\nputs A.one");
+    // Including a namespace of constants and types adds nothing; one
+    // with class methods adds them (#494).
+    ok("module NS\n  def self.f -> Int = 1\nend\nclass A\n  include NS\nend\nputs A.f");
     warns(
-        "module NS\n  def self.f -> Int = 1\nend\nclass A\n  include NS\nend",
-        "`NS` has no instance methods, so including it adds nothing",
-    );
-    warns(
-        "module NS\n  X = 1\nend\nclass A\n  extend NS\nend",
-        "extending it adds nothing",
+        "module NS\n  X = 1\nend\nclass A\n  include NS\nend",
+        "`NS` has no methods, so including it adds nothing",
     );
     // Marker modules are fine.
     ok("module Marker\nend\nclass A\n  include Marker\nend\nputs 1");
@@ -2180,7 +2179,7 @@ fn checks_the_types_it_cannot_take_on_trust() {
     ok(&format!(
         "{shape}class G[U <: Shape] < H[U]\nend\nclass S2 < H[Sq]\nend\np G[Sq].new.k(Sq.new)"
     ));
-    err("class Model\n  def id -> Int = 1\nend\nmodule Gen[T <: Model]\n  def run(x: T) -> Int = x.id\nend\nclass NotModel\n  extend Gen[NotModel]\nend", "type argument NotModel for `T` of `Gen` must be Model");
+    err("class Model\n  def id -> Int = 1\nend\nmodule Gen[T <: Model]\n  def self.run(x: T) -> Int = x.id\nend\nclass NotModel\n  include Gen[NotModel]\nend", "type argument NotModel for `T` of `Gen` must be Model");
     err(
         "class Model\nend\nmodule Gen[T <: Model]\nend\nclass M2\n  include Gen[String]\nend",
         "type argument String for `T` of `Gen` must be Model",
@@ -2483,19 +2482,19 @@ fn calls_a_class_test_cannot_choose_are_errors() {
         "cannot tell at run time which `foo` to call on B: A#foo(Int) or B#foo(String)",
     );
     // Class objects whose class methods override no common one: two
-    // unrelated extended modules', or one of a different signature.
+    // unrelated included modules', or one of a different signature.
     err(
-        "module M\n  def k -> Int = 1\nend\nmodule N\n  def k -> Int = 2\nend\nclass A\n  extend M\nend\nclass B\n  extend N\nend\ndef f(t: Type[A] | Type[B]) -> Int = t.k\np f(A)",
-        "cannot tell at run time which `k` to call for Type[A] and Type[B]: M#k or N#k",
+        "module M\n  def self.k -> Int = 1\nend\nmodule N\n  def self.k -> Int = 2\nend\nclass A\n  include M\nend\nclass B\n  include N\nend\ndef f(t: Type[A] | Type[B]) -> Int = t.k\np f(A)",
+        "cannot tell at run time which `k` to call for Type[A] and Type[B]: M.k or N.k",
     );
     err(
-        "module M\n  def k -> Int = 1\nend\nclass A\n  extend M\nend\nclass B < A\n  def self.k(x: Int = 0) -> Int = 2\nend\nclass C < A\nend\ndef f(t: Type[B] | Type[C]) -> Int = t.k\np f(C)",
+        "module M\n  def self.k -> Int = 1\nend\nclass A\n  include M\nend\nclass B < A\n  def self.k(x: Int = 0) -> Int = 2\nend\nclass C < A\nend\ndef f(t: Type[B] | Type[C]) -> Int = t.k\np f(C)",
         "cannot tell at run time which `k` to call for Type[B] and Type[C]",
     );
     // `M#k` overrides `S.k` on `A`, not on `Z`, which `S.k` does not reach.
     err(
-        "module M\n  def k -> String = \"M\"\nend\nclass S\n  def self.k -> String = \"S\"\nend\nclass A < S\n  extend M\nend\nclass T < S\n  def self.k -> String = \"T\"\nend\nclass Z\n  extend M\nend\ndef f(t: Type[T] | Type[Z]) -> String = t.k\np f(Z)",
-        "cannot tell at run time which `k` to call for Type[T] and Type[Z]: T.k or M#k",
+        "module M\n  def self.k -> String = \"M\"\nend\nclass S\n  def self.k -> String = \"S\"\nend\nclass A < S\n  include M\nend\nclass T < S\n  def self.k -> String = \"T\"\nend\nclass Z\n  include M\nend\ndef f(t: Type[T] | Type[Z]) -> String = t.k\np f(Z)",
+        "cannot tell at run time which `k` to call for Type[T] and Type[Z]: T.k or M.k",
     );
     // `&:k` on class objects whose class methods override no common one,
     // as the block `{ |c| c.k }`.
@@ -2510,17 +2509,22 @@ fn calls_a_class_test_cannot_choose_are_errors() {
     // Each member's own result, as the block's: a generic module reached
     // with different arguments, and `Self` in a class method (instances).
     err(
-        "module M[T]\n  def get -> T = raise \"x\"\nend\nclass A\n  extend M[Int]\nend\nclass B\n  extend M[String]\nend\nxs: Array[Type[A] | Type[B]] = [A, B]\nys: Array[Int] = xs.map(&:get)",
+        "module M[T]\n  def self.get -> T = raise \"x\"\nend\nclass A\n  include M[Int]\nend\nclass B\n  include M[String]\nend\nxs: Array[Type[A] | Type[B]] = [A, B]\nys: Array[Int] = xs.map(&:get)",
         "`&:get` returns Int | String but Int was expected",
     );
     err(
         "class S\n  def self.build -> Self = new\nend\nclass A < S\nend\nxs: Array[Type[A]] = [A]\nys: Array[Type[A]] = xs.map(&:build)",
         "`&:build` returns A but Type[A] was expected",
     );
-    // (An extended module's `Self` is the class object it runs on.)
+    // (In a module's class method, `Self` is the including class's
+    // instances and `self` its class object, #329, #494.)
     err(
-        "module M\n  def me -> Self = self\nend\nclass A\n  extend M\nend\nxs: Array[Type[A]] = [A]\nys: Array[A] = xs.map(&:me)",
-        "`&:me` returns Type[A] but A was expected",
+        "module M\n  def self.me -> Self = self\nend\nclass A\n  include M\nend",
+        "method `me` returns Self but its body has type Type[M]",
+    );
+    err(
+        "module M\n  def self.me -> Self = new\nend\nclass A\n  include M\nend\nxs: Array[Type[A]] = [A]\nys: Array[Type[A]] = xs.map(&:me)",
+        "`&:me` returns A but Type[A] was expected",
     );
     ok("class S\n  def self.make -> S? = nil\n  private def self.k -> Int = 0\nend\nclass A < S\n  def self.make -> A = A.new\n  def self.k -> Int = 1\nend\nclass B < S\n  def self.make -> B = B.new\n  def self.k -> Int = 2\nend\nxs: Array[Type[A] | Type[B]] = [A, B]\nys: Array[A | B] = xs.map(&:make)\np xs.map(&:k)");
     // `&:name` on values of a union, as the block: refused where a class
@@ -3754,30 +3758,34 @@ fn an_extension_or_class_method_in_place_of_a_modules_keeps_its_types() {
         "`size2` returns String but `Sized#size2`, which it overrides, returns Int",
     );
     err(
-        "module Named\n  abstract def label -> Int\n  def twice -> Int = label + 1\nend\nclass Thing\n  extend Named\n  def self.label -> String = \"s\"\nend",
-        "`label` returns String but `Named#label`, which it overrides, returns Int",
+        "module Named\n  abstract def self.label -> Int\n  def self.twice -> Int = label + 1\nend\nclass Thing\n  include Named\n  def self.label -> String = \"s\"\nend",
+        "`label` returns String but `Named.label`, which it overrides, returns Int",
     );
     // Another extended module's method found first runs in its place.
     err(
-        "module Named\n  abstract def label -> Int\n  def twice -> Int = label + 1\nend\nmodule Other\n  def label -> String = \"o\"\nend\nclass A\n  extend Named\n  extend Other\nend",
-        "`label` returns String but `Named#label`, which it overrides, returns Int",
+        "module Named\n  abstract def self.label -> Int\n  def self.twice -> Int = label + 1\nend\nmodule Other\n  def self.label -> String = \"o\"\nend\nclass A\n  include Named\n  include Other\nend",
+        "`label` returns String but `Named.label`, which it overrides, returns Int",
     );
     // Generic extensions and extended modules are seen with their own
     // type arguments.
     ok("class Bag[T]\n  @items: Array[T]\n  def initialize(@items: Array[T])\n  end\n  def items -> Array[T] = @items\nend\nextension Bag[T]\n  include Enumerable[T]\n  def each(&: (T) -> Void) -> Void\n    items.each { |x| yield x }\n  end\nend\np Bag.new([1, 2]).map { |x| x * 2 }");
-    ok("module Factory[T]\n  abstract def make -> T\nend\nclass Foo\n  extend Factory[Foo]\n  def self.make -> Foo = Foo.new\nend");
+    ok("module Factory[T]\n  abstract def self.make -> T\nend\nclass Foo\n  include Factory[Foo]\n  def self.make -> Foo = Foo.new\nend");
     // A superclass's class method is not found before a module the class
-    // extends, whose method overrides it (docs/01 §6), nor is a wider
-    // parameter the same signature there.
+    // includes, whose class method overrides it (docs/01 §6).
     err(
-        "module Named\n  def label -> Int = 1\nend\nclass A\n  def self.label -> String = \"a\"\nend\nclass B < A\n  extend Named\nend",
-        "`label` returns Int but `A.label`, which it overrides in `B`, which extends `Named`, returns String",
+        "module Named\n  def self.label -> Int = 1\nend\nclass A\n  def self.label -> String = \"a\"\nend\nclass B < A\n  include Named\nend",
+        "`label` returns Int but `A.label`, which it overrides in `B`, which includes `Named`, returns String",
     );
-    ok("module Named\n  def f(x: Int) -> Int = x\nend\nclass A\n  extend Named\n  def self.f(x: Object) -> String = \"a\"\nend");
+    // A class method with a wider parameter overrides an included module's
+    // as it would a superclass's (#494).
+    err(
+        "module Named\n  def self.f(x: Int) -> Int = x\nend\nclass A\n  include Named\n  def self.f(x: Object) -> String = \"a\"\nend",
+        "`f` returns String but `Named.f`, which it overrides, returns Int",
+    );
     // A class method overrides an extended module's concrete method too.
     err(
-        "module Named\n  def label -> Int = 1\nend\nclass Thing\n  extend Named\n  def self.label -> String = \"s\"\nend",
-        "`label` returns String but `Named#label`, which it overrides, returns Int",
+        "module Named\n  def self.label -> Int = 1\nend\nclass Thing\n  include Named\n  def self.label -> String = \"s\"\nend",
+        "`label` returns String but `Named.label`, which it overrides, returns Int",
     );
 }
 
@@ -3944,7 +3952,7 @@ fn kernel_functions_are_no_methods() {
     // No class or extension includes or extends `Kernel`.
     let mixin = "`Kernel` holds functions, not methods: call them as `puts` or `Kernel.puts`";
     err("class F\n  include Kernel\nend", mixin);
-    err("class F\n  extend Kernel\nend", mixin);
+    err("class F\n  include Kernel\nend", mixin);
     err("module M\nend\nextension M\n  include Kernel\nend", mixin);
 }
 
@@ -4012,10 +4020,10 @@ fn a_double_splat_supplies_only_kwrest() {
 fn the_module_extended_last_comes_first() {
     // docs/01 §6: as with include, the last module extended is looked up
     // first, statically as at run time.
-    ok("class Animal\nend\nclass Dog < Animal\n  def bark -> String = \"woof\"\nend\nmodule First\n  def make -> Animal = Animal.new\nend\nmodule Second\n  def make -> Dog = Dog.new\nend\nclass Both\n  extend First\n  extend Second\nend\nputs Both.make.bark");
+    ok("class Animal\nend\nclass Dog < Animal\n  def bark -> String = \"woof\"\nend\nmodule First\n  def self.make -> Animal = Animal.new\nend\nmodule Second\n  def self.make -> Dog = Dog.new\nend\nclass Both\n  include First\n  include Second\nend\nputs Both.make.bark");
     err(
-        "module First\n  def label -> Int = 1\nend\nmodule Second\n  def label -> String = \"s\"\nend\nclass Both\n  extend First\n  extend Second\nend",
-        "`label` returns String but `First#label`, which it overrides, returns Int",
+        "module First\n  def self.label -> Int = 1\nend\nmodule Second\n  def self.label -> String = \"s\"\nend\nclass Both\n  include First\n  include Second\nend",
+        "`label` returns String but `First.label`, which it overrides, returns Int",
     );
 }
 
@@ -4110,8 +4118,8 @@ fn class_methods_override_types_methods() {
     // So is a method of a module the class extends, which the runtime
     // finds there too; an extension's method takes no part in dispatch.
     err(
-        "module M\n  def name -> Int = 3\nend\nclass A\n  extend M\nend",
-        "which it overrides in `A`, which extends `M`",
+        "module M\n  def self.name -> Int = 3\nend\nclass A\n  include M\nend",
+        "which it overrides in `A`, which includes `M`",
     );
     ok("extension Object\n  def describe -> String = \"obj\"\nend\nclass A\n  def self.describe -> Int = 3\nend");
 }
@@ -4121,25 +4129,25 @@ fn an_extended_module_overrides_the_superclass_class_method() {
     // On the class side an extended module's method comes before the
     // superclass's class methods (docs/01 §6): an override, checked.
     err(
-        "module M\n  def label -> Int = 42\nend\nclass Shape\n  def self.label -> String = \"shape\"\nend\nclass A < Shape\n  extend M\nend",
-        "`label` returns Int but `Shape.label`, which it overrides in `A`, which extends `M`, returns String",
+        "module M\n  def self.label -> Int = 42\nend\nclass Shape\n  def self.label -> String = \"shape\"\nend\nclass A < Shape\n  include M\nend",
+        "`label` returns Int but `Shape.label`, which it overrides in `A`, which includes `M`, returns String",
     );
     err(
-        "module M[X]\n  def none(n: Int) -> X? = nil\nend\nclass Shape\n  def self.none(n: Int) -> Int? = nil\nend\nclass A < Shape\n  extend M[String]\nend",
-        "`none` returns String? but `Shape.none`, which it overrides in `A`, which extends `M`, returns Int?",
+        "module M[X]\n  def self.none(n: Int) -> X? = nil\nend\nclass Shape\n  def self.none(n: Int) -> Int? = nil\nend\nclass A < Shape\n  include M[String]\nend",
+        "`none` returns String? but `Shape.none`, which it overrides in `A`, which includes `M`, returns Int?",
     );
-    ok("module M\n  def label -> String = \"m\"\nend\nclass Shape\n  def self.label -> String = \"shape\"\nend\nclass A < Shape\n  extend M\nend\nk: Type[Shape] = A\ns: String = k.label");
-    ok("module M[X]\n  def make(x: X) -> X = x\nend\nclass Shape\n  def self.make(x: Int) -> Int = 0\nend\nclass A < Shape\n  extend M[Int]\nend");
+    ok("module M\n  def self.label -> String = \"m\"\nend\nclass Shape\n  def self.label -> String = \"shape\"\nend\nclass A < Shape\n  include M\nend\nk: Type[Shape] = A\ns: String = k.label");
+    ok("module M[X]\n  def self.make(x: X) -> X = x\nend\nclass Shape\n  def self.make(x: Int) -> Int = 0\nend\nclass A < Shape\n  include M[Int]\nend");
     // One that takes other arguments is an overload.
-    ok("module M\n  def size(s: String) -> String = s\nend\nclass Shape\n  def self.size(n: Int) -> Int = n\nend\nclass A < Shape\n  extend M\nend");
+    ok("module M\n  def self.size(s: String) -> String = s\nend\nclass Shape\n  def self.size(n: Int) -> Int = n\nend\nclass A < Shape\n  include M\nend");
     // An own class method of the name that is an overload does not.
     err(
-        "module M\n  def label -> Int = 42\nend\nclass Shape\n  def self.label -> String = \"shape\"\nend\nclass A < Shape\n  extend M\n  def self.label(n: Int) -> String = \"a\"\nend",
-        "`label` returns Int but `Shape.label`, which it overrides in `A`, which extends `M`",
+        "module M\n  def self.label -> Int = 42\nend\nclass Shape\n  def self.label -> String = \"shape\"\nend\nclass A < Shape\n  include M\n  def self.label(n: Int) -> String = \"a\"\nend",
+        "`label` returns Int but `Shape.label`, which it overrides in `A`, which includes `M`",
     );
     // The class's own class method that overrides comes first: the
     // module's is not it.
-    ok("module M\n  def label -> Object = 42\nend\nclass Shape\n  def self.label -> String = \"shape\"\nend\nclass A < Shape\n  extend M\n  def self.label -> String = \"a\"\nend");
+    ok("module M\n  def self.label -> Object = 42\nend\nclass Shape\n  def self.label -> String = \"shape\"\nend\nclass A < Shape\n  include M\n  def self.label -> String = \"a\"\nend");
 }
 
 #[test]
@@ -4315,9 +4323,9 @@ fn self_in_a_body_is_the_signatures_self() {
         "method `mk` returns Self but its body has type Type[C]",
     );
     ok("class C\n  def self.mk -> Self = new\nend");
-    // A generic module's `static def`'s `self` is its `Self` (the
-    // receiver).
-    ok("abstract class Model\nend\nmodule Macros[T <: Model]\n  static def me -> Self = self\nend");
+    // A generic module's macro's `self` is a `Meta::ClassDef[T]`, a
+    // `Type[T]`.
+    ok("abstract class Model\nend\nmodule Macros[T <: Model]\n  static def self.me -> Type[T] = self\nend");
     // A class's `static def`: `Self` is the class's instances, as in any
     // class method; its `self` (a `Meta::ClassDef`) is none.
     ok("class C\n  def hello -> Int = 1\n  static def self.mk -> Int\n    k: Self = new\n    k.hello\n  end\nend");
@@ -4418,7 +4426,7 @@ fn an_inherited_class_method_takes_the_superclass_type_arguments() {
         "expects Int but found String",
     );
     // An extended module's methods, through `extend M[U]` in `F[U]`.
-    ok("module M[X]\n  def mk(x: X) -> X = x\nend\nclass F[U]\n  extend M[U]\nend\nclass E < F[Int]\nend\na: Int = F[Int].mk(1)\nb: Int = E.mk(2)");
+    ok("module M[X]\n  def self.mk(x: X) -> X = x\nend\nclass F[U]\n  include M[U]\nend\nclass E < F[Int]\nend\na: Int = F[Int].mk(1)\nb: Int = E.mk(2)");
 }
 
 #[test]
@@ -4506,8 +4514,8 @@ fn an_inherited_constructor_is_checked_with_the_superclass_arguments() {
 
 #[test]
 fn a_modules_static_def_reaches_its_methods_from_a_block_with_another_receiver() {
-    // Through the enclosing `self`, the class extending the module.
-    ok("abstract class Model\nend\nmodule Macros[T <: Model]\n  static def helper -> Int = 1\n  static def go -> Int = \"s\".instance_exec { helper + size }\nend");
+    // Through the enclosing `self`, the class including the module.
+    ok("abstract class Model\nend\nmodule Macros[T <: Model]\n  static def self.helper -> Int = 1\n  static def self.go -> Int = \"s\".instance_exec { helper + size }\nend");
 }
 
 #[test]
@@ -4609,8 +4617,8 @@ fn an_override_keeps_the_defaults() {
         "`m(x: Int)` overrides `Abs#m(x: Int = ...)` but drops the default of `x`",
     );
     err(
-        "module Ext\n  def e(x: Int = 1) -> Int = x\nend\nclass Ex\n  extend Ext\n  def self.e(x: Int) -> Int = x\nend",
-        "`e(x: Int)` overrides `Ext#e(x: Int = ...)` but drops the default of `x`",
+        "module Ext\n  def self.e(x: Int = 1) -> Int = x\nend\nclass Ex\n  include Ext\n  def self.e(x: Int) -> Int = x\nend",
+        "`e(x: Int)` overrides `Ext.e(x: Int = ...)` but drops the default of `x`",
     );
     // Another value, or a default added: kept.
     ok("class A\n  def k(x: Int = 1) -> Int = x\nend\nclass B < A\n  def k(x: Int = 7) -> Int = x\nend\nclass D\n  def k(x: Int) -> Int = x\nend\nclass E < D\n  def k(x: Int = 4) -> Int = x\nend");
@@ -4644,8 +4652,8 @@ fn a_symbol_procedure_on_class_objects_follows_the_blocks_rule() {
     );
     // An `extend`ed module's method on a class object: the same.
     err(
-        "module M\n  def k -> String = \"m\"\nend\nclass A\n  extend M\nend\nclass B\n  def self.k -> String = \"b\"\nend\ndef f(c: Type[A] | Type[B]) -> String = c.then(&:k)",
-        "cannot tell at run time which `k` `&:k` calls: M#k or B.k",
+        "module M\n  def self.k -> String = \"m\"\nend\nclass A\n  include M\nend\nclass B\n  def self.k -> String = \"b\"\nend\ndef f(c: Type[A] | Type[B]) -> String = c.then(&:k)",
+        "cannot tell at run time which `k` `&:k` calls: M.k or B.k",
     );
     // One they all override: called as it.
     ok("class Base\n  def self.k -> String = \"b\"\nend\nclass Sub < Base\n  def self.k -> String = \"s\"\nend\ndef f[T <: Sub](t: Type[T], base: Bool) -> String\n  c: Type[T] | Type[Base] = base ? Base : t\n  c.then(&:k)\nend");
@@ -5580,14 +5588,14 @@ fn a_class_object_call_checks_alike_alone_and_after_another_member() {
     // refused after a `Type[B] | Type[C]` check of the same call (a block
     // checked once per member of `H1 | H2[X]`): a type parameter's class
     // object is now taken as its bound's, whatever the order.
-    let head = "module M\n  def k -> String = \"M#k\"\nend\nclass Base\n  extend M\nend\nclass B < Base\n  def self.k -> String = \"B.k\"\nend\nclass C < Base\n  def self.k -> String = \"C.k\"\nend\nclass E\n  extend M\nend\nclass H1\n  def run(&blk: (Type[B] | Type[C]) -> String) -> String = blk.call(C)\nend\nclass H2[T <: Base]\n  def run(&blk: (Type[E] | Type[T]) -> String) -> String = blk.call(E)\nend\n";
+    let head = "module M\n  def self.k -> String = \"M#k\"\nend\nclass Base\n  include M\nend\nclass B < Base\n  def self.k -> String = \"B.k\"\nend\nclass C < Base\n  def self.k -> String = \"C.k\"\nend\nclass E\n  include M\nend\nclass H1\n  def run(&blk: (Type[B] | Type[C]) -> String) -> String = blk.call(C)\nend\nclass H2[T <: Base]\n  def run(&blk: (Type[E] | Type[T]) -> String) -> String = blk.call(E)\nend\n";
     // (A module listed first among the bounds: the class bound counts,
     // as for the lookup.)
     let head = head
         .replace("module M\n", "module N\nend\nmodule M\n")
         .replace(
-            "class Base\n  extend M\n",
-            "class Base\n  include N\n  extend M\n",
+            "class Base\n  include M\n",
+            "class Base\n  include N\n  include M\n",
         );
     for bound in ["Base", "B", "C", "N & Base", "Base & N"] {
         ok(&format!(
@@ -5600,4 +5608,88 @@ fn a_class_object_call_checks_alike_alone_and_after_another_member() {
             "{head}def both[X <: {bound}](h: H2[X] | H1) -> String = h.run {{ |x| x.k }}\n"
         ));
     }
+}
+
+#[test]
+fn include_brings_a_modules_class_methods() {
+    // #494: `include` inherits a module's `def self.` methods on the class
+    // side; `extend` is gone.
+    err(
+        "module M\n  def self.k -> Int = 1\nend\nclass A\n  extend M\nend",
+        "`extend` is not supported: a module's class methods reach a class through `include` (write them as `def self.` methods of the module, and include it)",
+    );
+    ok("module M\n  def self.k -> Int = 1\n  def self.twice -> Int = k * 2\nend\nclass A\n  include M\nend\nx: Int = A.twice + M.k");
+    // `Self` is the including class's instances; `new` builds the class
+    // the method is called on.
+    ok("module Make\n  def self.make -> Self = new\nend\nclass A\n  include Make\nend\na: A = A.make");
+    // Every includer takes `new`'s arguments (none), or overrides the
+    // method.
+    err(
+        "module Make\n  def self.make -> Self = new\nend\nclass A\n  include Make\n  def initialize(x: Int)\n  end\nend",
+        "`A#initialize` does not take the arguments of `new` in `Make.make`, which `A` inherits: keep the parameters of `Object#initialize`",
+    );
+    ok("module Make\n  def self.make -> Self = new\nend\nclass A\n  include Make\n  def initialize(x: Int)\n  end\n  def self.make -> Self = new(1)\nend");
+    // A class method that depends on the includer is not called on the
+    // module itself; one that does not is (a namespace function).
+    let module = "module Make\n  abstract def self.kind -> String\n  def self.make -> Self = new\n  def self.build -> Int\n    new\n    1\n  end\n  def self.describe -> String = \"a #{kind}\"\n  def self.twice -> String = describe * 2\n  def self.hello -> String = \"hello\"\nend\nclass A\n  include Make\n  def self.kind -> String = \"A\"\nend\n";
+    ok(&format!("{module}puts Make.hello, A.twice, A.make"));
+    for (call, why) in [
+        ("Make.make", "has `Self` in its signature"),
+        (
+            "Make.build",
+            "calls `new`, which builds the class it is called on",
+        ),
+        ("Make.kind", "is abstract"),
+        (
+            "Make.describe",
+            "calls `kind`, which depends on the class including the module",
+        ),
+        (
+            "Make.twice",
+            "calls `describe`, which depends on the class including the module",
+        ),
+    ] {
+        let name = call.split('.').nth(1).unwrap();
+        err(
+            &format!("{module}{call}"),
+            &format!("cannot call `{call}` on the module itself: `{name}` {why}; call it on a class that includes `Make`"),
+        );
+    }
+    // An abstract class method is a class-side requirement.
+    err(
+        "module M\n  abstract def self.kind -> String\nend\nclass A\n  include M\nend",
+        "`A` must implement `self.kind` (abstract in the included module `M`)",
+    );
+}
+
+#[test]
+fn a_modules_class_methods_review_cases() {
+    // #494's review: an abstract class method of a module is passed over
+    // for an implementation after it in the lookup order (a superclass's,
+    // or a module included before it), as on the instance side.
+    ok("module M\n  abstract def self.x -> String\nend\nclass Base\n  def self.x -> String = \"base\"\nend\nclass D < Base\n  include M\nend\nputs D.x");
+    ok("module M\n  abstract def self.x -> String\n  def self.y -> String = \"y\" + x\nend\nmodule N\n  def self.x -> String = \"nx\"\nend\nclass D\n  include N\n  include M\nend\nputs D.y");
+    // An abstract includer need not implement them; its concrete
+    // subclasses do.
+    ok("module M\n  abstract def self.x -> String\nend\nabstract class A\n  include M\nend");
+    err(
+        "module M\n  abstract def self.x -> String\nend\nabstract class A\n  include M\nend\nclass B < A\nend",
+        "`B` must implement `self.x` (abstract in the included module `M`)",
+    );
+    // `new` in a block or as `self.new` marks the method too, and a
+    // reference `M.:make` is refused as the call is.
+    let why =
+        "calls `new`, which builds the class it is called on; call it on a class that includes `M`";
+    err(
+        "module M\n  def self.b -> Array[String] = [1].map { |x| new.to_s }\nend\nclass C\n  include M\nend\nM.b",
+        &format!("cannot call `M.b` on the module itself: `b` {why}"),
+    );
+    err(
+        "module M\n  def self.a -> String = self.new.to_s\nend\nclass C\n  include M\nend\nM.a",
+        &format!("cannot call `M.a` on the module itself: `a` {why}"),
+    );
+    err(
+        "module M\n  def self.make -> String = new.to_s\nend\nclass C\n  include M\nend\nf = M.:make",
+        &format!("cannot call `M.make` on the module itself: `make` {why}"),
+    );
 }

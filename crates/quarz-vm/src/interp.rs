@@ -2646,10 +2646,9 @@ impl Interp {
             return Ok(mid);
         }
         if let Value::Class(cid) = recv {
-            // A module method running on a class object (`extend`): the
-            // class's own `def self.` methods override the module's, and
-            // the module's own is the one (not `Type`'s of its name,
-            // which the class object's class would find).
+            // A method of `Type` running on a class object: a class method
+            // of its signature (the class's, a superclass's or an included
+            // module's) overrides it.
             if let Some(found) = self.class_side_override(*cid, mid) {
                 return Ok(found);
             }
@@ -2676,10 +2675,10 @@ impl Interp {
         Ok(found)
     }
 
-    /// The implementation of a module instance method `mid` for the class
-    /// object `cid`: a singleton method of the class (or a superclass), or
-    /// a concrete method of a module the class extends (`mid` itself when
-    /// that module's is the one).
+    /// The implementation of `Type`'s method `mid` for the class object
+    /// `cid`: a class method of the class (or a superclass) of its
+    /// signature, or of a module it includes (docs/01 §6); `mid` itself
+    /// when none.
     fn class_side_override(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
         if let Some(found) = self.class_dispatch_cache.borrow().get(&(cid, mid)) {
             return *found;
@@ -2728,14 +2727,18 @@ impl Interp {
                         .filter(|&id| self.program.method(id).owner == c),
                 );
             }
-            // The last module extended first (docs/01 §6), as for include.
-            for module in class.extends.iter().rev() {
-                for anc in &self.program.world.class(*module).ancestors {
-                    if let Some(ids) = self.program.world.class(*anc).methods.get(&m.name) {
-                        if let Some(id) = ids.iter().copied().find(|id| accepts(*id)) {
-                            found = Some(id);
-                            break 'chain;
-                        }
+            // Then the class methods of the modules it includes, the last
+            // first (docs/01 §6).
+            for module in &class.class_modules {
+                let mc = self.program.world.class(*module);
+                if let Some(ids) = mc.singleton_methods.get(&m.name) {
+                    if let Some(id) = ids
+                        .iter()
+                        .copied()
+                        .find(|&id| self.program.method(id).owner == *module && accepts(id))
+                    {
+                        found = Some(id);
+                        break 'chain;
                     }
                 }
             }
@@ -2754,28 +2757,62 @@ impl Interp {
             return *found;
         }
         let m = self.program.method(mid);
+        // (An abstract one is passed over: an implementation after it in
+        // the lookup order, a superclass's or another module's, runs.)
+        let replaces = |id: MethodId| {
+            let im = self.program.method(id);
+            !im.is_abstract && (self.same_signature(id, mid) || im.overrides.contains(&mid))
+        };
         let mut found = None;
-        let mut cur = Some(cid);
-        while let Some(c) = cur {
-            if c == m.owner {
+        // (A module's class method reaches only the classes that include the
+        // module themselves: an extension's include brings no class
+        // methods, #494. Elsewhere, through a `Type[M]` value holding such a
+        // class, the module's own runs.)
+        let module_owner = self.program.world.class(m.owner).kind == quarz_ir::RtClassKind::Module;
+        let mut cur = if module_owner && !self.includes_on_class_side(cid, m.owner) {
+            None
+        } else {
+            Some(cid)
+        };
+        'chain: while let Some(c) = cur {
+            if c == m.owner && !m.is_abstract {
                 break;
             }
             let class = self.program.world.class(c);
             if let Some(ids) = class.singleton_methods.get(&m.name) {
-                if let Some(id) = ids.iter().copied().find(|id| {
-                    self.same_signature(*id, mid)
-                        || self.program.method(*id).overrides.contains(&mid)
-                }) {
+                if let Some(id) = ids.iter().copied().find(|&id| replaces(id)) {
                     found = Some(id);
                     break;
                 }
             }
-            // Then a method of a module it extends (docs/01 §6,
-            // `World::extend_overrides`).
+            // A module's class method (`include`, docs/01 §6): the
+            // modules the class includes, the last first, up to the one
+            // that declares it.
+            for module in &class.class_modules {
+                if *module == m.owner {
+                    if m.is_abstract {
+                        continue;
+                    }
+                    break 'chain;
+                }
+                let mc = self.program.world.class(*module);
+                if let Some(ids) = mc.singleton_methods.get(&m.name) {
+                    if let Some(id) = ids
+                        .iter()
+                        .copied()
+                        .find(|&id| self.program.method(id).owner == *module && replaces(id))
+                    {
+                        found = Some(id);
+                        break 'chain;
+                    }
+                }
+            }
+            // Then a module's class method overriding a superclass's
+            // (docs/01 §6, `World::class_include_overrides`).
             if let Some(&(_, _, by)) = self
                 .program
                 .world
-                .extend_overrides
+                .class_include_overrides
                 .iter()
                 .find(|(k, o, _)| *k == c && *o == mid)
             {
@@ -2788,6 +2825,20 @@ impl Interp {
             .borrow_mut()
             .insert((cid, mid), found);
         found
+    }
+
+    /// Whether class `cid` or a superclass includes `module` itself (its
+    /// class methods are on `cid`'s class side, `RtClass::class_modules`).
+    fn includes_on_class_side(&self, cid: ClassId, module: ClassId) -> bool {
+        let mut cur = Some(cid);
+        while let Some(c) = cur {
+            let class = self.program.world.class(c);
+            if class.class_modules.contains(&module) {
+                return true;
+            }
+            cur = class.superclass;
+        }
+        false
     }
 
     /// The extension's method that implements abstract method `abs` for

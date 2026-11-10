@@ -172,7 +172,8 @@ pub enum ExprKind {
         kind: AttrKind,
         names: Vec<String>,
     },
-    /// `include M`, `extend M`
+    /// `include M` (`extend M` is parsed for the error that says to
+    /// include it)
     Mixin {
         kind: MixinKind,
         types: Vec<TypeExpr>,

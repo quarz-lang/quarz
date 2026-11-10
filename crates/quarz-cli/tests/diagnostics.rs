@@ -308,3 +308,73 @@ fn field_errors_in_their_own_file_with_a_library_required() {
     }
     assert_eq!(outs[0], outs[1]);
 }
+
+/// An extension's include brings no class methods (#494): a module with
+/// abstract class methods cannot be included there, since a `Type[M]`
+/// value could then hold a class without them.
+#[test]
+fn an_extension_cannot_include_a_module_with_abstract_class_methods() {
+    let out = common::diagnostics(
+        r#"module M
+  abstract def self.x -> String
+  def self.y -> String = "y"
+  def m -> Int = 1
+end
+module N
+  def self.y -> String = "y"
+  def n -> Int = 1
+end
+class Foo
+end
+extension Foo
+  include M
+end
+class Bar
+end
+extension Bar
+  include N
+end
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("an extension's include brings no class methods; `M` has abstract class methods (`x`) a class including it must implement"),
+        "{out}"
+    );
+    assert_eq!(out.matches("error:").count(), 1, "{out}");
+}
+
+/// A class conforming to a module only through an extension gets none of
+/// its class methods (#494): through a `Type[N]` value, the module's own
+/// `make` runs and builds the class with `new`'s arguments, so the class's
+/// `initialize` must take them; its own `self.make` (or a superclass's)
+/// does not take the module's place, nor is it checked as an override.
+#[test]
+fn an_extension_conformance_takes_the_modules_new_arguments() {
+    let out = common::diagnostics(
+        r#"module N
+  def self.make -> Self = new
+  def hi -> String = "hi"
+end
+class T
+  @a: Int
+  def initialize(a: Int)
+    @a = a
+  end
+  def self.make -> T = new(41)
+end
+extension T
+  include N
+end
+def g(k: Type[N]) -> N = k.make
+g(T)
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("`T#initialize` does not take the arguments of `new` in `N.make`, which `T` conforms to through an extension: keep the parameters of `Object#initialize`, their names and whether they are optional (adding only optional ones)"),
+        "{out}"
+    );
+    assert!(!out.contains("which it overrides"), "{out}");
+    assert_eq!(out.matches("error:").count(), 1, "{out}");
+}

@@ -173,8 +173,8 @@ struct Shake<'a> {
     names: HashSet<String>,
     /// Classes with possible instances (or class objects).
     live: Vec<bool>,
-    /// Classes whose methods may run: the ancestors of the live ones, and
-    /// the modules they extend.
+    /// Classes whose methods may run: the ancestors of the live ones (the
+    /// modules they include, whose class methods they have, among them).
     active: Vec<bool>,
     work: Vec<FuncId>,
 }
@@ -214,14 +214,9 @@ impl Shake<'_> {
         *seen = true;
         let classes = &self.module.world.classes;
         let class = &classes[c as usize];
+        // (The modules whose class methods it has are among them.)
         let mut act: Vec<ClassId> = class.ancestors.clone();
         act.push(c);
-        for a in class.ancestors.iter().chain([&c]) {
-            for e in &classes[*a as usize].extends {
-                act.extend(classes[*e as usize].ancestors.iter().copied());
-                act.push(*e);
-            }
-        }
         for a in act {
             self.activate(a);
         }

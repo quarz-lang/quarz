@@ -1,0 +1,30 @@
+# With several modules with class methods included, the module included
+# last comes first on the class side too (docs/01 §6); the class's own
+# class methods come before both.
+module First
+  def self.label -> String = "first"
+  def self.twice -> String = "#{label} #{label}"
+end
+
+module Second
+  def self.label -> String = "second"
+end
+
+class Both
+  include First
+  include Second
+end
+
+class Own
+  include First
+  include Second
+  def self.label -> String = "own"
+end
+
+class Sub < Both
+end
+
+puts Both.label
+puts Both.twice
+puts Own.twice
+puts Sub.twice

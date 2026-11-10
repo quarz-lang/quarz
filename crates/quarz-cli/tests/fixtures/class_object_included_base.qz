@@ -1,11 +1,12 @@
-# Class objects whose class methods all override a method of a module a
-# common superclass extends: a call on their union runs the receiver's own.
+# Class objects whose class methods all override a class method of a module
+# a common superclass includes: a call on their union runs the receiver's
+# own.
 module Named
-  def label -> String = "unnamed"
+  def self.label -> String = "unnamed"
 end
 
 class Shape
-  extend Named
+  include Named
 end
 
 class Circle < Shape
@@ -37,11 +38,11 @@ kinds.each { |k| p k.label }
 
 # An abstract module method, which every class gives.
 module Sized
-  abstract def size -> Int
+  abstract def self.size -> Int
 end
 
 class Part
-  extend Sized
+  include Sized
   def self.size -> Int = 0
 end
 
@@ -59,10 +60,10 @@ end
 
 p size_of(Bolt) + size_of(Nut)
 
-# A module extended below the class whose class method it overrides
+# A module included below the class whose class method it overrides
 # (docs/01 §6): its method is the common one.
 module Loud
-  def sound -> String = "LOUD"
+  def self.sound -> String = "LOUD"
 end
 
 class Animal
@@ -70,7 +71,7 @@ class Animal
 end
 
 class Pet < Animal
-  extend Loud
+  include Loud
 end
 
 class Dog < Pet
@@ -90,11 +91,11 @@ p sound(Cat)
 # A class method overriding one that overrides the module's (with an
 # optional parameter of its own): found from the module's method too.
 module Greets
-  def greet -> String = "hello"
+  def self.greet -> String = "hello"
 end
 
 class Person
-  extend Greets
+  include Greets
 end
 
 class Child < Person
@@ -121,19 +122,19 @@ p greet_either(Baby)
 p greet_either(Child)
 p greet_either(Adult)
 
-# One overriding a class method above the class that extends the module
-# (with an optional parameter, so not the module's signature) does not
-# replace the module's method.
+# A class method below the class that includes the module, with an
+# optional parameter of its own, overrides the module's method as it
+# would a superclass's (and is checked as an override of both): it runs.
 class Vehicle
   def self.wheels -> Int = 0
 end
 
 module FourWheeled
-  def wheels -> Int = 4
+  def self.wheels -> Int = 4
 end
 
 class Car < Vehicle
-  extend FourWheeled
+  include FourWheeled
 end
 
 class Toy < Car

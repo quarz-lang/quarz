@@ -263,6 +263,7 @@ impl Runner {
                             file: stmt.file,
                             generated: None,
                             builds_self: false,
+                            needs_includer: None,
                         };
                     if f.reader {
                         let m =
@@ -410,7 +411,7 @@ impl Runner {
                 for (p, bounds, c) in checked {
                     let t = Type::Class(c, Vec::new());
                     // (A bound naming a type parameter nothing gives here, a
-                    // module's own `T` that `extend` binds, holds of the
+                    // module's own `T` that `include` binds, holds of the
                     // class the call was checked with: the class is one.
                     // One naming only the target's own, `Self` of a generic
                     // class, is decided with them as they are.)
@@ -580,6 +581,7 @@ impl Runner {
                     decode,
                 }),
                 builds_self: false,
+                needs_includer: None,
             };
             let mid = host
                 .add_generated(info)
@@ -1704,23 +1706,25 @@ fn overrides_of(
 /// Whether a call resolved to `m` may run `o` (of its name), as a
 /// receiver's lookup may find it (`is_override` in the lowering, alike):
 /// for a module's method or `Object`'s, any; for `Type`'s, a class
-/// method or an extended module's; for a class method, one of a class below it, or of a
-/// module a class below it extends; for another class's instance method,
-/// one of a class below it, or of a module a class below it includes.
+/// method (a module's too); for a class method, one of a class below it,
+/// or of a module a class below it includes (or, for a module's class
+/// method, one of a class or module beside it in an includer); for
+/// another class's instance method, one of a class below it, or of a
+/// module a class below it includes.
 fn may_dispatch_to(world: &RtWorld, o: MethodId, m: MethodId) -> bool {
     let (om, rm) = (&world.methods[o as usize], &world.methods[m as usize]);
     let owner = rm.owner;
     let module = |c: ClassId| world.classes[c as usize].kind == RtClassKind::Module;
     if rm.singleton {
-        return if om.singleton {
-            world.class_is_a(om.owner, owner)
-        } else {
-            module(om.owner)
-                && world.classes.iter().enumerate().any(|(c, rc)| {
-                    world.class_is_a(c as ClassId, owner)
-                        && rc.extends.iter().any(|&m| world.class_is_a(m, om.owner))
-                })
-        };
+        if !om.singleton {
+            return false;
+        }
+        if !module(om.owner) && !module(owner) {
+            return world.class_is_a(om.owner, owner);
+        }
+        // (A module's class method: on a class that has both.)
+        return (0..world.classes.len() as ClassId)
+            .any(|c| world.class_is_a(c, owner) && world.class_is_a(c, om.owner));
     }
     // An abstract method's implementation may come from above its owner
     // (a superclass's method of the name).
@@ -1728,15 +1732,9 @@ fn may_dispatch_to(world: &RtWorld, o: MethodId, m: MethodId) -> bool {
         return true;
     }
     // `Type`'s (or a subclass's, `Meta::ClassDef`'s), on class objects: a
-    // class's own `def self.`, or an extended module's.
+    // class method (a module's included too).
     if world.class_is_a(owner, world.builtin.class_) {
-        return om.singleton
-            || world.class_is_a(om.owner, owner)
-            || (module(om.owner)
-                && world
-                    .classes
-                    .iter()
-                    .any(|rc| rc.extends.iter().any(|&m| world.class_is_a(m, om.owner))));
+        return om.singleton || world.class_is_a(om.owner, owner);
     }
     if module(owner) || owner == world.builtin.object {
         return true;
@@ -2320,7 +2318,7 @@ fn bake(
 /// program names it as called (a call, `x.:m`, `&:m`, a compound
 /// assignment's reader, a `super` in a method of its name, an alias of
 /// it) but statements' own calls; the receiver's (a module's `T`, which
-/// `extend` fixes) when the only others are calls of it on its own
+/// `include` fixes) when the only others are calls of it on its own
 /// `self` in its own body; none otherwise, the `Type[T]` parameters then
 /// carrying what they hold. By name over the whole program, so that the
 /// result does not depend on what was checked first (more refusals than
@@ -2525,34 +2523,30 @@ fn generated_override(world: &World, mid: MethodId) -> Result<(), String> {
             inherited.push((o, subst));
         }
     }
-    // A class method: the instance methods of the modules the class or
-    // an ancestor `extend`s are its class side's too (which
-    // `overridden_methods_in` does not look at): overridden when it takes
-    // their every call and returns what their callers take.
+    // A class method: the class methods of the modules the class or an
+    // ancestor includes (among the inherited ones above) are overridden
+    // when it takes their every call and returns what their callers take
+    // (`overridden_methods_in` does not look at them).
     if m.singleton {
         let no_subst = rustc_hash::FxHashMap::default();
-        for (anc, _) in &ancs {
-            for e in &world.class(*anc).extends {
-                let Type::Class(module, margs) = e else {
+        for (mc, mcargs) in &ancs {
+            let mcc = world.class(*mc);
+            if mcc.kind != quarz_types::ClassKind::Module {
+                continue;
+            }
+            for &o in mcc.singleton_methods.get(&m.name).into_iter().flatten() {
+                let om = world.method(o);
+                if om.owner != *mc {
                     continue;
-                };
-                for (mc, mcargs) in world.ancestors(*module, margs) {
-                    let mcc = world.class(mc);
-                    for &o in mcc.methods.get(&m.name).into_iter().flatten() {
-                        let subst: rustc_hash::FxHashMap<TypeParamId, Type> = mcc
-                            .type_params
-                            .iter()
-                            .map(|tp| tp.id)
-                            .zip(mcargs.iter().cloned())
-                            .collect();
-                        let om = world.method(o);
-                        if world.takes_calls_of(m, &no_subst, om, &subst)
-                            && !overridden.contains(&o)
-                        {
-                            overridden.push(o);
-                        }
-                        inherited.push((o, subst));
-                    }
+                }
+                let subst: rustc_hash::FxHashMap<TypeParamId, Type> = mcc
+                    .type_params
+                    .iter()
+                    .map(|tp| tp.id)
+                    .zip(mcargs.iter().cloned())
+                    .collect();
+                if world.takes_calls_of(m, &no_subst, om, &subst) && !overridden.contains(&o) {
+                    overridden.push(o);
                 }
             }
         }

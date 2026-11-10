@@ -17,7 +17,6 @@ const DECLARATION_WORDS: &[&str] = &[
     "enum",
     "extension",
     "include",
-    "extend",
     "require",
     "require_relative",
     "using",
@@ -110,22 +109,12 @@ impl Completions {
             let mut singles: Vec<String> = ancestors
                 .iter()
                 .flat_map(|a| {
-                    let c = world.class(*a);
-                    let extended = c.extends.iter().filter_map(|t| match t {
-                        Type::Class(m, _) => Some(*m),
-                        _ => None,
-                    });
-                    std::iter::once(*a)
-                        .map(|a| {
-                            world
-                                .class(a)
-                                .singleton_methods
-                                .keys()
-                                .cloned()
-                                .collect::<Vec<_>>()
-                        })
-                        .chain(extended.map(|m| world.class(m).methods.keys().cloned().collect()))
-                        .flatten()
+                    // (An included module's class methods are the class's.)
+                    world
+                        .class(*a)
+                        .singleton_methods
+                        .keys()
+                        .cloned()
                         .collect::<Vec<_>>()
                 })
                 .collect();

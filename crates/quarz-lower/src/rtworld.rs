@@ -158,13 +158,10 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                extends: c
-                    .extends
-                    .iter()
-                    .filter_map(|t| match t {
-                        Type::Class(id, _) => Some(*id),
-                        _ => None,
-                    })
+                class_modules: world
+                    .class_modules(c.id, &[])
+                    .into_iter()
+                    .map(|(m, _)| m)
                     .collect(),
                 members,
                 variants: c.variants.clone(),
@@ -200,8 +197,8 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
             let owner = world.class(m.owner);
             let overloaded = owner.methods.get(&m.name).is_some_and(|ids| ids.len() > 1);
             // An abstract method is always dispatched dynamically: its
-            // implementation may be a singleton method of a class that
-            // extends the module, which the class hierarchy walk does not see.
+            // implementation may be a class method of a class that
+            // includes the module, which the class hierarchy walk does not see.
             // A class method is dispatched on the class it is called on
             // (`Circle.describe` runs `Circle.label` for an implicit
             // `label` in `Shape.describe`).
@@ -403,7 +400,7 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
         extensions,
         ext_impls: world.ext_impls.clone(),
         include_overrides: world.include_overrides(),
-        extend_overrides: world.extend_overrides(),
+        class_include_overrides: world.class_include_overrides(),
         top,
         builtin,
         file_names,

@@ -1417,8 +1417,10 @@ pub struct RtClass {
     /// `def self.` methods, by name.
     #[serde(serialize_with = "sorted")]
     pub singleton_methods: HashMap<String, Vec<MethodId>>,
-    /// Modules whose instance methods are this class's class methods.
-    pub extends: Vec<ClassId>,
+    /// The modules whose `def self.` methods are this class's class
+    /// methods, in lookup order after its own, those its superclass
+    /// brings left out (`World::class_modules`).
+    pub class_modules: Vec<ClassId>,
     /// Nested classes by short name.
     #[serde(serialize_with = "sorted")]
     pub members: HashMap<String, ClassId>,
@@ -1663,11 +1665,11 @@ pub struct RtWorld {
     /// includes over its superclass's (`World::include_overrides`).
     #[serde(default)]
     pub include_overrides: Vec<(ClassId, MethodId, MethodId)>,
-    /// (class, overridden, overriding): a method of a module the class
-    /// extends over its superclass's class method
-    /// (`World::extend_overrides`).
+    /// (class, overridden, overriding): a class method of a module the
+    /// class includes over its superclass's class method
+    /// (`World::class_include_overrides`).
     #[serde(default)]
-    pub extend_overrides: Vec<(ClassId, MethodId, MethodId)>,
+    pub class_include_overrides: Vec<(ClassId, MethodId, MethodId)>,
     /// Top-level classes and modules by name.
     #[serde(serialize_with = "sorted")]
     pub top: HashMap<String, ClassId>,

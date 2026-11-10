@@ -9,10 +9,10 @@ end
 class B < A
 end
 module Named
-  def name -> String = "from Named"
+  def self.name -> String = "from Named"
 end
 class C
-  extend Named
+  include Named
 end
 def name_of(k: Type) -> String = k.name
 def shown(k: Type) -> String = k.inspect
