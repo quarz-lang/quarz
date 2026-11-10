@@ -838,8 +838,11 @@ impl GlobSeg {
                 }
                 '[' => {
                     magic = true;
+                    // (One not closed matches nothing, as Ruby's.)
                     let Some((class, len)) = glob_class(&chars[k..]) else {
-                        return Err(format!("invalid glob pattern: `[` not closed: {seg}"));
+                        toks.push(GlobTok::Class(false, Vec::new()));
+                        k = chars.len();
+                        continue;
                     };
                     toks.push(class);
                     k += len;
@@ -865,14 +868,14 @@ impl GlobSeg {
     }
 }
 
-/// The `[...]` class starting `chars`, as Ruby's: a `!` first negates, a
-/// `]` closes it even first (`[]` matches nothing, `[!]` any character),
+/// The `[...]` class starting `chars`, as Ruby's: a `!` or `^` first
+/// negates, a `]` closes it even first (`[]` matches nothing, `[!]` any character),
 /// a `\` makes the character after it a member, `a-z` is a range (a `-`
 /// first or last is a member). The class and the number of characters
 /// it took; none when it is not closed.
 fn glob_class(chars: &[char]) -> Option<(GlobTok, usize)> {
     let mut k = 1;
-    let negated = chars.get(k) == Some(&'!');
+    let negated = matches!(chars.get(k), Some('!' | '^'));
     if negated {
         k += 1;
     }

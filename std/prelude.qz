@@ -6731,16 +6731,20 @@ module Dir
   # `src/..`), and `**/` does not enter one. A path is shown as the
   # pattern starts it: `Dir.glob("./*")` gives `"./a"`. A `\` makes the
   # character after it literal, in braces and in `[...]` too
-  # (`"a\\*"` matches only `a*`); a pattern with a `{` that is not
-  # closed matches nothing.
+  # (`"a\\*"` matches only `a*`); a `^` first in `[...]` negates it as a
+  # `!` does; a pattern with a `{` or a `[` that is not closed matches
+  # nothing.
   #
-  # Unlike Ruby's, an alternative that leaves the pattern empty matches
-  # nothing: `Dir.glob("{,a}", base)` gives at most `["a"]`, where Ruby's
-  # gives `["", "a"]`.
+  # Unlike Ruby's: a pattern left empty (by an empty alternative, or a
+  # lone `\`) matches nothing (`Dir.glob("{,a}", base)` gives at most
+  # `["a"]`, where Ruby's gives `["", "a"]`); a `\` before a `/` is dropped, the `/` still
+  # separating (`"a\\/*"` matches what `"a/*"` does, Ruby's nothing); and
+  # a `\` ending the pattern after a `/` is dropped with it (`"a/\\"`
+  # gives `"a"` for a directory `a`, Ruby's `"a/"`).
   #
   # ## Raises
   #
-  # `ArgumentError` for a malformed pattern (`"["`).
+  # `ArgumentError` for a `**` that is not a whole segment (`"a**"`).
   native def self.glob(pattern: String, base: String? = nil) -> Array[String]
   # The paths matching any of `patterns`, sorted, each once.
   native def self.glob(patterns: Array[String], base: String? = nil) -> Array[String]

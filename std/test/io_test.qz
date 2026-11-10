@@ -222,6 +222,32 @@ class DirGlobTest < Test::Case
     end
   end
 
+  # An unclosed `[` matches nothing (#496) and `[^...]` negates (#497),
+  # each result Ruby's for the same tree; a `\` next to a `/` keeps
+  # Quarz's documented behaviour (#498).
+  def test_unclosed_class_negation_and_slash_escapes
+    with_tree("classes") do |root|
+      t = "#{root}/t"
+      Dir.mkdir_p("#{t}/a")
+      ["ac", "ab", "a!", "a#", "a-", "a0", "a_", "a]", "a[", "a[b", "[", "!x", "a/b", "a/x"].each do |f|
+        File.write("#{t}/#{f}", "")
+      end
+      assert_empty(Dir.glob("a[", t))
+      assert_empty(Dir.glob("a[b", t))
+      assert_empty(Dir.glob("[", t))
+      assert_empty(Dir.glob("a[!", t))
+      assert_empty(Dir.glob("a[\\]", t))
+      assert_empty(Dir.glob("a/[", t))
+      assert_equal(["a!", "a#", "a-", "a0", "a[", "a]", "a_", "ab"], Dir.glob("a[^c]", t))
+      assert_equal(["a!", "a#", "a-", "a0", "a[", "a]", "a_"], Dir.glob("a[^a-c]", t))
+      assert_empty(Dir.glob("[^!]x", t))
+      assert_equal(["a!", "a#", "a-", "a0", "a[", "a]", "a_", "ab", "ac"], Dir.glob("a[^]", t))
+      # Quarz's documented differences (Ruby's: `[]` and `["a/"]`).
+      assert_equal(["a/b", "a/x"], Dir.glob("a\\/*", t))
+      assert_equal(["a"], Dir.glob("a/\\", t))
+    end
+  end
+
   # The base is a path, walked from, never a pattern (#431). Ruby's
   # `Dir.glob("*.qz", base:)` gives `["a.qz"]` for `./src`,
   # `src//sub/..//` and a directory named `s[1]`, and `""` is the
