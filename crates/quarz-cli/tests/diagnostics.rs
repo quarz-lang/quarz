@@ -1630,3 +1630,41 @@ puts g(K)
         "{out}"
     );
 }
+
+#[test]
+fn an_extension_declares_no_abstract_method() {
+    // #534: an `abstract def` in an extension, whatever its target and on
+    // either side, is an error at the declaration (nothing would
+    // implement it: the requirement belongs to the module or abstract
+    // class itself).
+    let out = common::diagnostics(
+        r#"module P
+end
+extension P
+  abstract def self.make -> Self
+  abstract def foo -> Int
+end
+class C
+end
+extension C
+  abstract def self.make -> Self
+  abstract def foo -> Int
+end
+abstract class A
+end
+extension A
+  abstract def foo -> Int
+end
+"#,
+    )
+    .join("\n");
+    for line in [4, 5, 10, 11, 16] {
+        assert!(
+            out.contains(&format!(
+                "{line}:12: error: an extension cannot declare an abstract method"
+            )),
+            "{line}: {out}"
+        );
+    }
+    assert_eq!(out.matches("error:").count(), 5, "{out}");
+}
