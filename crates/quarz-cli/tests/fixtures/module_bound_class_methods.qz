@@ -1,0 +1,45 @@
+# `Type[T]` with a module bound `T <: Named` has the module's class
+# methods (#501), dispatched on the class `T` holds at run time: an
+# includer's own override, the module's default calling the includer's
+# implementation of an abstract one, and `new` building that class.
+# Through an extension's include the module's own runs (#494).
+module Named
+  abstract def self.kind -> String
+  def self.label -> String = "named #{kind}"
+  def self.make -> Self = new
+  def tag -> String = "a #{self.class.name}"
+end
+
+class Post
+  include Named
+  def self.kind -> String = "post"
+end
+
+class Comment
+  include Named
+  def self.kind -> String = "comment"
+  def self.label -> String = "comment's own label"
+end
+
+def show[T <: Named](t: Type[T]) -> String = "#{t.label}, #{t.make.tag}"
+
+puts show(Post)
+puts show(Comment)
+
+module Greeting
+  def self.hello -> String = "hello from Greeting"
+  def greets? -> Bool = true
+end
+
+class Visitor
+  def self.hello -> String = "Visitor's own hello"
+end
+
+extension Visitor
+  include Greeting
+end
+
+def greet[T <: Greeting](t: Type[T]) -> String = t.hello
+
+puts greet(Visitor)
+puts Visitor.hello
