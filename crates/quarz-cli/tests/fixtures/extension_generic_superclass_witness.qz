@@ -1,0 +1,18 @@
+# A generic superclass's class method is the witness as the class sees it:
+# `Base[Int]`'s `make(x: T)` takes `Int`, `Maker[Int]`'s (#514's review).
+module Maker[T]
+  abstract def self.make(x: T) -> Self
+end
+class Base[T]
+  @x: T
+  def initialize(@x: T); end
+  def self.make(x: T) -> Self = new(x)
+  def x -> T = @x
+end
+class C < Base[Int]
+end
+extension C
+  include Maker[Int]
+end
+def mk(t: Type[Maker[Int]]) -> Maker[Int] = t.make(1)
+p mk(C).as(C).x + 1, C.make(5).x

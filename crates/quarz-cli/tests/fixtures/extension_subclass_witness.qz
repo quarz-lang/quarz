@@ -1,0 +1,39 @@
+# Witnesses are fixed (#504): a conformance through an extension binds
+# each class method of the module to its witness, which runs through
+# `Type[P]` and `T <: P` for the class and its subclasses alike; a
+# subclass's own `def self.parse` is its own class method (`Sub.parse`)
+# but not a witness. A subclass that wants its own conforms on its own,
+# here by its own extension, whose witnesses apply to it and below.
+module P
+  abstract def self.parse(s: String) -> Self
+  def self.again(s: String) -> Self = parse(s)
+end
+class Num
+  @w: String
+  def initialize(@w: String = "n"); end
+  def w -> String = @w
+end
+module X
+  extension Num
+    include P
+    def self.parse(s: String) -> Self = new("num " + s)
+  end
+  extension Own
+    include P
+    def self.parse(s: String) -> Self = new("own " + s)
+  end
+  def self.gen[T <: P](t: Type[T], s: String) -> T = t.again(s)
+  def self.via(t: Type[P], s: String) -> P = t.again(s)
+  def self.run -> Void
+    puts gen(Sub, "a").w, via(Sub, "b").as(Num).w, Sub.parse("c").w
+    puts gen(Own, "d").w, via(Own, "e").as(Num).w, gen(Below, "f").w
+  end
+end
+class Sub < Num
+  def self.parse(s: String) -> Self = new("sub " + s)
+end
+class Own < Num
+end
+class Below < Own
+end
+X.run

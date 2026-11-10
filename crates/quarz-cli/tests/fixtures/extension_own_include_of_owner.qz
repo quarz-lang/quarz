@@ -1,0 +1,26 @@
+# A subclass including the module that declares a witnessed class method
+# conforms on its own: its own `make` runs, and its `new` arguments are
+# its own (#504).
+module M
+  abstract def self.make -> Self
+end
+module N
+  include M
+end
+class A
+  def initialize; end
+end
+extension A
+  include N
+  def self.make -> Self = new
+end
+class B < A
+  include M
+  @s: String
+  def initialize(@s: String); end
+  def self.make -> Self = new("b")
+  def s -> String = @s
+end
+def g[T <: M](t: Type[T]) -> T = t.make
+def h[T <: N](t: Type[T]) -> T = t.make
+puts g(B).s

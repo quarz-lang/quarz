@@ -88,6 +88,9 @@ pub struct Declarer<'ast> {
     /// Where an override error about a prelude method is reported (the
     /// class whose include brings it: `check_include_overrides`).
     override_span: Option<Span>,
+    /// Report override errors at `override_span` for any method (a
+    /// witness of an extension's conformance: at the extension, #504).
+    override_span_always: bool,
     /// While `check_override_pair` compares with `Self` opaque: the
     /// overriding class (for the hint to write `Self`).
     self_opaque_class: Option<ClassId>,
@@ -196,6 +199,7 @@ impl<'ast> Declarer<'ast> {
             pending_ext: Vec::new(),
             override_pairs: HashSet::default(),
             override_span: None,
+            override_span_always: false,
             self_opaque_class: None,
             units: Vec::new(),
             class_usings: HashMap::default(),
@@ -1280,8 +1284,8 @@ impl<'ast> Declarer<'ast> {
 
     /// An extension declares no `static def` (its `self` would be typed by
     /// the module it extends, not by the class it runs on), and includes
-    /// no module that has some (docs/14 §2), nor one with abstract class
-    /// methods (an extension's include brings no class methods, #494).
+    /// no module that has some (docs/14 §2); what it includes brings class
+    /// methods as conformance (`check_extension_class_side`, #504).
     fn check_extension_static(&mut self, e: &PendingExtension<'ast>) {
         let ids: Vec<MethodId> = self.world.extensions[e.id as usize]
             .methods
@@ -1301,7 +1305,7 @@ impl<'ast> Declarer<'ast> {
         }
         let includes = self.world.extensions[e.id as usize].includes.clone();
         for t in includes {
-            if let Type::Class(mid, _) = t {
+            if let Type::Class(mid, margs) = t {
                 if self.has_static_defs(mid) {
                     let mname = self.world.class(mid).name.clone();
                     self.error(
@@ -1312,38 +1316,457 @@ impl<'ast> Declarer<'ast> {
                     );
                     continue;
                 }
-                // An extension's include brings no class methods (#494):
-                // `Type[M]` would hold a class without M's abstract ones.
-                let mut abstract_names: Vec<String> = self
-                    .world
-                    .ancestor_ids(mid)
-                    .into_iter()
-                    .flat_map(|a| {
-                        self.world
-                            .class(a)
-                            .singleton_methods
-                            .values()
-                            .flatten()
-                            .map(|m| self.world.method(*m))
-                            .filter(move |m| m.owner == a && m.is_abstract)
-                            .map(|m| format!("`{}`", m.name))
-                            .collect::<Vec<_>>()
-                    })
-                    .collect();
-                abstract_names.sort();
-                abstract_names.dedup();
-                if !abstract_names.is_empty() {
-                    let mname = self.world.class(mid).name.clone();
-                    self.error(
-                        format!(
-                            "an extension's include brings no class methods; `{mname}` has abstract class methods ({}) a class including it must implement",
-                            abstract_names.join(", ")
-                        ),
-                        e.def.target.span,
-                    );
+                self.check_extension_class_side(e.id, mid, margs, e.def.target.span);
+            }
+        }
+    }
+
+    /// An extension's include brings the module's class methods to the
+    /// target class as conformance (#504, Swift's retroactive conformance;
+    /// an extension takes no part in dynamic dispatch, docs/01 §7): for
+    /// each class method of the module (and of what it includes), its
+    /// witness for the class is the extension's own `def self.` or the
+    /// class's own (or a superclass's) class method of the signature,
+    /// checked as an override here and recorded (`World::class_ext_impls`);
+    /// an abstract one without a witness is an error at the extension. A
+    /// generic module is included with one set of arguments (a second
+    /// conformance with others, by the class or another extension, is an
+    /// error naming both).
+    fn check_extension_class_side(
+        &mut self,
+        ext: ExtensionId,
+        module: ClassId,
+        margs: Vec<Type>,
+        span: Span,
+    ) {
+        let target = self.world.extensions[ext as usize].target;
+        // An extension of a module cannot include a module with class
+        // methods (or one bringing such a module): the classes including
+        // the target would conform through it, which the conformance
+        // enumeration does not follow yet (#530, the fallback decided on
+        // #504).
+        if self.world.class(target).kind == ClassKind::Module {
+            if let Some(m) = self.world.ancestor_ids(module).into_iter().find(|&m| {
+                self.world.class(m).kind == ClassKind::Module
+                    && self
+                        .world
+                        .class(m)
+                        .singleton_methods
+                        .values()
+                        .flatten()
+                        .any(|&x| self.world.method(x).owner == m)
+            }) {
+                let (tname, mname) = (
+                    self.world.class(target).name.clone(),
+                    self.world.class(module).name.clone(),
+                );
+                let has = if m == module {
+                    format!("`{mname}` has class methods")
+                } else {
+                    format!(
+                        "`{mname}` brings `{}`, which has class methods",
+                        self.world.class(m).name
+                    )
+                };
+                self.error(
+                    format!(
+                        "an extension of the module `{tname}` cannot include `{mname}`: {has} (not supported yet, #530); include it in the classes, or extend them"
+                    ),
+                    span,
+                );
+                return;
+            }
+        }
+        if !self.check_not_included_already(target, module, span)
+            || !self.check_one_conformance(ext, target, module, &margs, span)
+        {
+            return;
+        }
+        let own: Vec<MethodId> = self.world.extensions[ext as usize]
+            .methods
+            .values()
+            .flatten()
+            .copied()
+            .filter(|&m| self.world.method(m).singleton)
+            .collect();
+        let target_args: Vec<Type> = self
+            .world
+            .class(target)
+            .type_params
+            .iter()
+            .map(|p| Type::Param(p.id))
+            .collect();
+        let instance = Type::Class(target, target_args);
+        let mut missing: Vec<(String, String)> = Vec::new();
+        // (A module the class includes itself, through its own or a
+        // superclass's include, is its own conformance: ordinary dispatch,
+        // no witness, #504.)
+        let own_modules: Vec<ClassId> = self
+            .world
+            .ancestors_with_no_extensions(target)
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect();
+        for (anc, aargs) in self.world.ancestors(module, &margs) {
+            if self.world.class(anc).kind != ClassKind::Module || own_modules.contains(&anc) {
+                continue;
+            }
+            let ms: Vec<MethodId> = self
+                .world
+                .class(anc)
+                .singleton_methods
+                .values()
+                .flatten()
+                .copied()
+                .filter(|&m| self.world.method(m).owner == anc)
+                .collect();
+            // (The module's arguments in the target's own parameters, for
+            // a class's or a module's method; the extension's own are in
+            // the extension's.)
+            let cargs_t = self
+                .conformance_args(ext, &margs, target)
+                .unwrap_or_else(|| margs.clone());
+            let in_target: Vec<(ClassId, Vec<Type>)> = self
+                .world
+                .ancestors_with_no_extensions(target)
+                .into_iter()
+                .chain(self.world.ancestors(module, &cargs_t))
+                .collect();
+            let aargs_t = in_target
+                .iter()
+                .find(|(k, _)| *k == anc)
+                .map(|(_, a)| a.clone())
+                .unwrap_or_else(|| aargs.clone());
+            for m in ms {
+                let info = self.world.method(m).clone();
+                // A witness takes every call the module's method takes, with
+                // the module's arguments substituted (`d(x: Int)` for
+                // `M[Int]`'s `d(x: T)`); an abstract one is checked as an
+                // override below.
+                let fits = |this: &Self, i: MethodId| {
+                    if !this.implements(i, m) {
+                        return false;
+                    }
+                    if info.is_abstract || this.same_signature_at_run_time(i, m) {
+                        return true;
+                    }
+                    let im = this.world.method(i);
+                    let (isubst, msubst) = if own.contains(&i) {
+                        (HashMap::default(), this.world.class_subst(anc, &aargs))
+                    } else {
+                        let isubst = in_target
+                            .iter()
+                            .find(|(k, _)| *k == im.owner)
+                            .map(|(k, a)| this.world.class_subst(*k, a))
+                            .unwrap_or_default();
+                        (isubst, this.world.class_subst(anc, &aargs_t))
+                    };
+                    this.world.takes_calls_of(im, &isubst, &info, &msubst)
+                };
+                // The extension's own, else the class's (its own class
+                // methods, or a superclass's: not a module's or another
+                // extension's, which take no part in dispatch).
+                let by = own.iter().copied().find(|&i| fits(self, i)).or_else(|| {
+                    self.world
+                        .superclass_chain(target)
+                        .into_iter()
+                        .find_map(|c| {
+                            self.world
+                                .class(c)
+                                .singleton_methods
+                                .get(&info.name)
+                                .and_then(|ids| {
+                                    ids.iter()
+                                        .copied()
+                                        .find(|&i| self.world.method(i).owner == c && fits(self, i))
+                                })
+                        })
+                });
+                // Else the nearest in the included module's own ancestry
+                // (`N`'s `def self.d` over the `M` it includes), as an own
+                // include of `N` would run.
+                let by = by.or_else(|| {
+                    self.world
+                        .ancestor_ids(module)
+                        .into_iter()
+                        .take_while(|&x| x != anc)
+                        .find_map(|x| {
+                            self.world
+                                .class(x)
+                                .singleton_methods
+                                .get(&info.name)
+                                .and_then(|ids| {
+                                    ids.iter().copied().find(|&i| {
+                                        let im = self.world.method(i);
+                                        im.owner == x && !im.is_abstract && fits(self, i)
+                                    })
+                                })
+                        })
+                });
+                // (A default nothing replaces is its own witness: the class
+                // conforms, the module's runs.)
+                let by = by.or((!info.is_abstract).then_some(m));
+                match by {
+                    Some(i) if i == m => {
+                        let w = ClassWitness {
+                            ext,
+                            class: target,
+                            module,
+                            args: margs.clone(),
+                            method: m,
+                            by: m,
+                        };
+                        if !self.world.class_ext_impls.contains(&w) {
+                            self.world.class_ext_impls.push(w);
+                        }
+                    }
+                    Some(i) => {
+                        let w = ClassWitness {
+                            ext,
+                            class: target,
+                            module,
+                            args: margs.clone(),
+                            method: m,
+                            by: i,
+                        };
+                        if !self.world.class_ext_impls.contains(&w) {
+                            self.world.class_ext_impls.push(w);
+                        }
+                        // (Checked as an override, seen from the class.)
+                        // (At the extension, unless its own method.)
+                        self.override_span = Some(span);
+                        self.override_span_always = !own.contains(&i);
+                        // (A superclass's or a module's, seen through the
+                        // class's arguments for it: `Base[Int]`'s `T`.
+                        // Checked for each conformance, not once per pair.)
+                        let owner = self.world.method(i).owner;
+                        // (The module's ancestry in the target's own
+                        // parameters too, as `aargs_here` below.)
+                        let cargs_t = self
+                            .conformance_args(ext, &margs, target)
+                            .unwrap_or_else(|| margs.clone());
+                        let oargs = (owner != target)
+                            .then(|| {
+                                self.world
+                                    .ancestors_with_no_extensions(target)
+                                    .into_iter()
+                                    .chain(self.world.ancestors(module, &cargs_t))
+                                    .find(|(k, _)| *k == owner)
+                                    .map(|(_, a)| a)
+                            })
+                            .flatten();
+                        // (The module's arguments in the target's own
+                        // parameters for a class's method: the extension's
+                        // `U` is not `G`'s.)
+                        let aargs_here = if own.contains(&i) {
+                            aargs.clone()
+                        } else {
+                            self.conformance_args(ext, &margs, target)
+                                .and_then(|cargs| {
+                                    self.world
+                                        .ancestors(module, &cargs)
+                                        .into_iter()
+                                        .find(|(k, _)| *k == anc)
+                                        .map(|(_, a)| a)
+                                })
+                                .unwrap_or_else(|| aargs.clone())
+                        };
+                        self.override_pairs.remove(&(i, m));
+                        self.check_implementation_seen(
+                            i,
+                            m,
+                            anc,
+                            &aargs_here,
+                            instance.clone(),
+                            owner,
+                            oargs,
+                        );
+                        self.override_span = None;
+                        self.override_span_always = false;
+                    }
+                    None if info.is_abstract => {
+                        missing.push((info.name.clone(), self.world.class(anc).name.clone()));
+                    }
+                    None => {}
                 }
             }
         }
+        missing.sort();
+        missing.dedup();
+        let cname = self.world.class(target).name.clone();
+        for (name, owner) in missing {
+            self.error(
+                format!(
+                    "`{cname}` must implement `self.{name}` (abstract in `{owner}`, which this extension includes): define `def self.{name}` in the extension or in `{cname}`"
+                ),
+                span,
+            );
+        }
+    }
+
+    /// An extension cannot include a module its target already has through
+    /// its own or a superclass's own `include` (the user's decision on
+    /// #504): the class conforms already, and overrides the module's
+    /// methods with its own by ordinary dispatch. A superclass's
+    /// conformance through an extension does not count (a subclass may
+    /// conform on its own, #517). Whether the include may stand.
+    fn check_not_included_already(&mut self, target: ClassId, module: ClassId, span: Span) -> bool {
+        // (The module itself: one it brings that the class includes is
+        // the class's own conformance, whose methods go by ordinary
+        // dispatch through `Type[M]`, #504.)
+        let Some(by) = self.world.superclass_chain(target).into_iter().find(|&x| {
+            self.world.class(x).includes.iter().any(
+                |t| matches!(t, Type::Class(m, _) if self.world.ancestor_ids(*m).contains(&module)),
+            )
+        }) else {
+            return true;
+        };
+        let (cname, mname) = (
+            self.world.class(target).name.clone(),
+            self.world.class(module).name.clone(),
+        );
+        let whose = if by == target {
+            "its own `include`".to_string()
+        } else {
+            format!("`{}`'s `include`", self.world.class(by).name)
+        };
+        self.error(
+            format!(
+                "`{cname}` already includes `{mname}` (through {whose}): an extension cannot include it again; override its methods in `{cname}` itself"
+            ),
+            span,
+        );
+        false
+    }
+
+    /// A class conforms to a generic module with one set of arguments
+    /// (#504, as `check_reinclude` rules for includes): the class's own
+    /// includes (through its ancestors) and every extension of it that
+    /// includes the module must agree; a disagreement is an error at the
+    /// extension `ext`, naming the other. Whether `ext`'s include agrees.
+    fn check_one_conformance(
+        &mut self,
+        ext: ExtensionId,
+        target: ClassId,
+        module: ClassId,
+        margs: &[Type],
+        span: Span,
+    ) -> bool {
+        let include = self.world.type_name(&Type::Class(module, margs.to_vec()));
+        let cur = self.world.extensions[ext as usize]
+            .includes
+            .iter()
+            .position(|t| matches!(t, Type::Class(m, a) if *m == module && a.as_slice() == margs))
+            .unwrap_or(0);
+        // Every class the conformance reaches (`World::conformance_sources`:
+        // the target, its subclasses, the classes including a module
+        // target), the target first: in each, the generic modules this
+        // include brings must have the arguments of every other
+        // conformance of the class (`World::conformances`: its own
+        // includes, the earlier extensions' and includes'), compared in
+        // the class's own parameters.
+        let mut reached: Vec<ClassId> = (0..self.world.classes.len() as ClassId)
+            .filter(|&c| {
+                c != target
+                    && self.world.class(c).kind != ClassKind::Module
+                    && self.world.conformance_sources(c).contains(&target)
+            })
+            .collect();
+        if self.world.class(target).kind != ClassKind::Module {
+            reached.insert(0, target);
+        }
+        for c in reached {
+            let Some(mine) = self.brought_in(ext, module, margs, c) else {
+                continue;
+            };
+            let others: Vec<Conformance> = self
+                .world
+                .conformances(c)
+                .into_iter()
+                .filter(|(src, _, a)| {
+                    !a.is_empty()
+                        && match src {
+                            None => true,
+                            Some((k, i)) => *k < ext || (*k == ext && *i < cur),
+                        }
+                })
+                .collect();
+            for (m, args) in &mine {
+                let Some((src, _, oargs)) = others.iter().find(|(_, x, a)| x == m && a != args)
+                else {
+                    continue;
+                };
+                let cname = self.world.class(c).name.clone();
+                let other = self.world.type_name(&Type::Class(*m, oargs.clone()));
+                let written = self.world.type_name(&Type::Class(*m, args.clone()));
+                let mname = self.world.class(*m).name.clone();
+                let through = if *m == module {
+                    String::new()
+                } else {
+                    format!(" (through `{include}`)")
+                };
+                match src {
+                    None => self.error(
+                        format!(
+                            "`{cname}` already conforms to `{other}` (its own include): this extension cannot include `{written}`{through}, a generic module `{mname}` is included with one set of arguments"
+                        ),
+                        span,
+                    ),
+                    Some((k, _)) => {
+                        let whose = self
+                            .world
+                            .class(self.world.extensions[*k as usize].target)
+                            .name
+                            .clone();
+                        let via = if *k == ext {
+                            "through an earlier `include` of this extension".to_string()
+                        } else {
+                            format!("through another extension ({})", self.world.extension_label(*k))
+                        };
+                        self.error(
+                            format!(
+                                "`{whose}` already conforms to `{other}` {via}: this extension cannot make `{cname}` conform to `{written}`{through}, a generic module `{mname}` is included with one set of arguments"
+                            ),
+                            span,
+                        );
+                    }
+                }
+                return false;
+            }
+        }
+        true
+    }
+
+    /// The generic modules extension `ext`'s include of `module` (with
+    /// `margs`, in its parameters) brings, the module and what it
+    /// includes, with their arguments in class `frame`'s parameters.
+    fn brought_in(
+        &self,
+        ext: ExtensionId,
+        module: ClassId,
+        margs: &[Type],
+        frame: ClassId,
+    ) -> Option<Vec<(ClassId, Vec<Type>)>> {
+        let args = self.conformance_args(ext, margs, frame)?;
+        Some(
+            self.world
+                .ancestors(module, &args)
+                .into_iter()
+                .filter(|(m, a)| self.world.class(*m).kind == ClassKind::Module && !a.is_empty())
+                .collect(),
+        )
+    }
+
+    /// The arguments `margs` (written in extension `ext`'s parameters) of a
+    /// module the extension includes, in the parameters of class `frame`,
+    /// the extension's target or a subclass of it.
+    fn conformance_args(
+        &self,
+        ext: ExtensionId,
+        margs: &[Type],
+        frame: ClassId,
+    ) -> Option<Vec<Type>> {
+        self.world.conformance_args(ext, margs, frame)
     }
 
     /// Expansive inheritance is an error (Kennedy and Pierce): with
@@ -2490,7 +2913,7 @@ impl<'ast> Declarer<'ast> {
         let mname = m.name.clone();
         // (A prelude method's own span is in no file of the program.)
         let span = match self.override_span {
-            Some(class) if m.file == 0 => class,
+            Some(class) if m.file == 0 || self.override_span_always => class,
             _ => m.span,
         };
         let see = |t: &Type| {
@@ -3516,7 +3939,7 @@ impl<'ast> Declarer<'ast> {
             let mut order: Vec<(ClassId, Option<Vec<Type>>)> = Vec::new();
             for cid in &chain {
                 order.push((*cid, None));
-                for (anc, aargs) in self.world.class_modules(*cid, &[]) {
+                for (anc, aargs) in self.world.class_modules_included(*cid, &[]) {
                     if !order.iter().any(|(c, a)| *c == anc && a.is_some()) {
                         order.push((anc, Some(aargs)));
                     }

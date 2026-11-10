@@ -1,0 +1,18 @@
+# A module's class method implementing an abstract one of a module it
+# includes is the witness of an extension's include of it (#514's review).
+module M
+  abstract def self.make -> Self
+end
+module N
+  include M
+  def self.make -> Self = new
+end
+class Num
+  def initialize; end
+  def v -> String = "num"
+end
+extension Num
+  include N
+end
+def f[T <: M](t: Type[T]) -> T = t.make
+puts f(Num).v

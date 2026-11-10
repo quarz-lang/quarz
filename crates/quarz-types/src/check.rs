@@ -969,7 +969,7 @@ pub struct ReplSnapshot {
     file_mains: Vec<Option<ClassId>>,
     self_news: Vec<SelfNew>,
     generated_news: Vec<(ClassId, ClassId, MethodId, Option<MethodId>)>,
-    repl_ctor_marks: (usize, usize),
+    repl_ctor_marks: (usize, usize, usize),
 }
 
 /// Why a call of `deinitialize` is refused (docs/03 §4).
@@ -1113,8 +1113,10 @@ pub struct Checker {
     /// In the REPL, how many `self_news` sites and classes the inherited
     /// constructor check has seen: an input checks its new classes
     /// against every site and its new sites against every class, the
-    /// pairs before it being checked already.
-    repl_ctor_marks: (usize, usize),
+    /// pairs before it being checked already; and how many witnesses
+    /// (`World::class_ext_impls`): a new one may pin an old site for an
+    /// old class, so every pair is checked again (#504).
+    repl_ctor_marks: (usize, usize, usize),
     /// `check_constructor` for `Self.new` (`check_self_new`): an abstract
     /// class may be built, the receiver's class being concrete.
     constructing_self: bool,
@@ -1237,7 +1239,7 @@ impl Checker {
             last_winner: None,
             self_news: Vec::new(),
             generated_news: Vec::new(),
-            repl_ctor_marks: (0, 0),
+            repl_ctor_marks: (0, 0, 0),
             constructing_self: false,
             abstract_receivers: Vec::new(),
             stmt_unused: false,
@@ -1607,6 +1609,89 @@ impl Checker {
 
     /// As `check_inherited_constructors`, for the pairs of a site and a
     /// class not both seen before (`marks`: the sites and classes seen).
+    /// Whether class `sid` or a superclass includes module `m` itself
+    /// (its own includes, through what they include): the module's class
+    /// methods then go by ordinary dispatch, not by witnesses (#504).
+    fn includes_itself(&self, sid: ClassId, m: ClassId) -> bool {
+        self.world.superclass_chain(sid).into_iter().any(|c| {
+            self.world
+                .class_modules_included(c, &[])
+                .iter()
+                .any(|(x, _)| *x == m)
+        })
+    }
+
+    /// Whether class `sid` conforms to module `m` through an extension's
+    /// include (recorded witnesses, for the class, a superclass, or a
+    /// module one of them includes), whatever extensions are active.
+    fn conforms_by_extension(&self, sid: ClassId, m: ClassId) -> bool {
+        self.world.class_ext_impls.iter().any(|w| {
+            self.world.ancestor_ids(w.module).contains(&m)
+                && self.world.superclass_chain(sid).into_iter().any(|x| {
+                    x == w.class
+                        || self
+                            .world
+                            .class_modules_included(x, &[])
+                            .iter()
+                            .any(|(k, _)| *k == w.class)
+                })
+        })
+    }
+
+    /// The class at which dispatch through `Type[M]` starts for class
+    /// `sid` and a class method named `name`, when a fixed witness of that
+    /// name (an extension's own, or a class's) runs for it: the witness's
+    /// class, or the class in `sid`'s chain that includes the module the
+    /// witness was recorded for (#504).
+    fn witness_floor(&self, sid: ClassId, name: &str) -> Option<ClassId> {
+        // (Of several witnesses of the name, for different modules, the
+        // highest: below it some witness may run instead of the class's
+        // own.)
+        let chain = self.world.superclass_chain(sid);
+        let floors: Vec<ClassId> = self
+            .world
+            .class_ext_impls
+            .iter()
+            .filter_map(|w| {
+                let mm = self.world.method(w.method);
+                if w.by == w.method
+                    || mm.name != name
+                    || self.includes_itself(sid, mm.owner)
+                    || self.witness_for(sid, w.method) != Some(w.by)
+                {
+                    return None;
+                }
+                self.world.superclass_chain(sid).into_iter().find(|&x| {
+                    x == w.class
+                        || self
+                            .world
+                            .class_modules_included(x, &[])
+                            .iter()
+                            .any(|(k, _)| *k == w.class)
+                })
+            })
+            .collect();
+        floors
+            .into_iter()
+            .max_by_key(|f| chain.iter().position(|c| c == f).unwrap_or(0))
+    }
+
+    /// The witness the runtime runs for module class method `mid` on class
+    /// `sid` (`Interp::class_witness`): recorded for the nearest class up
+    /// the chain, or for a module it includes itself (last first), before
+    /// its superclass.
+    fn witness_for(&self, sid: ClassId, mid: MethodId) -> Option<MethodId> {
+        let at = |k: ClassId| {
+            self.world
+                .class_ext_impls
+                .iter()
+                .find(|w| w.class == k && w.method == mid)
+                .map(|w| w.by)
+        };
+        // (`World::conformance_sources`, the runtime's order too.)
+        self.world.conformance_sources(sid).into_iter().find_map(at)
+    }
+
     fn check_inherited_constructors_from(&mut self, marks: (usize, usize)) {
         let (sites_seen, classes_seen) = marks;
         let new_sites: HashSet<(ClassId, MethodId, u32, Option<MethodId>)> = self
@@ -1638,9 +1723,12 @@ impl Checker {
                 if !site_new && (sid as usize) < classes_seen {
                     continue;
                 }
+                // (Or conforming to the module through an extension, which
+                // need not be active here: its witnesses run anywhere,
+                // #504.)
                 if sid == cid
                     || self.world.class(sid).kind != ClassKind::Class
-                    || !self.world.class_is_a(sid, cid)
+                    || !(self.world.class_is_a(sid, cid) || self.conforms_by_extension(sid, cid))
                 {
                     continue;
                 }
@@ -1652,18 +1740,42 @@ impl Checker {
                 let mut chain: Vec<MethodId> = Vec::new();
                 let mut own_init: Option<Vec<MethodId>> = None;
                 // A module's class method (#494): only the class methods
-                // before the module on the class side take its place, none
-                // where the class conforms only through an extension, whose
-                // include brings no class methods.
+                // before the module on the class side take its place (an
+                // extension's include brings it too, #504).
                 let module_site = self.world.class(cid).kind == ClassKind::Module
                     && self.world.method(method).singleton;
-                let via_extension = module_site
-                    && !self
-                        .world
-                        .class_side(sid, &[])
-                        .iter()
-                        .any(|(m, _)| *m == cid);
-                let mut past_module = via_extension;
+                // A class that conforms to the module through an extension
+                // only: its witness takes the module's place (#504), none
+                // of its own class methods otherwise (an extension takes
+                // no part in dispatch, docs/01 §7).
+                let via_extension = module_site && !self.includes_itself(sid, cid);
+                // A class method that is a witness of an extension's
+                // conformance runs, through `Type[M]`, for every subclass
+                // whose witness it is, as the runtime picks it
+                // (`witness_for`): no class method of the subclass excuses
+                // it (witnesses are fixed, #504).
+                let pinned = self.world.class_ext_impls.iter().any(|w| {
+                    w.by == method
+                        && w.by != w.method
+                        && !self.includes_itself(sid, self.world.method(w.method).owner)
+                        && self.witness_for(sid, w.method) == Some(method)
+                });
+                let mut past_module = via_extension || pinned;
+                // Through `Type[M]` a fixed witness of this name runs for
+                // `sid`, so dispatch starts at the witness's class: classes
+                // below it do not take this method's place (a `super` in
+                // the witness reaches it with `sid` for `self`, #514's
+                // review). `None`: no such witness.
+                let floor = self.witness_floor(sid, &mname);
+                // (The witness of an extension's conformance takes the
+                // module's place, #504; a default is the module's own.)
+                if let Some(by) = self
+                    .witness_for(sid, method)
+                    .filter(|&b| via_extension && b != method)
+                {
+                    overrides = true;
+                    chain.push(by);
+                }
                 let mut cur = Some(sid);
                 while let Some(c) = cur {
                     if c == cid {
@@ -1692,7 +1804,10 @@ impl Checker {
                     } else {
                         &class.methods
                     };
-                    if let Some(ids) = table.get(&mname).filter(|_| !past_module) {
+                    // (`c` strictly below the witness's class.)
+                    let below_floor = floor
+                        .is_some_and(|f| c != f && self.world.superclass_chain(c).contains(&f));
+                    if let Some(ids) = table.get(&mname).filter(|_| !past_module && !below_floor) {
                         if ids.iter().any(|&o| self.replaces_at_run_time(o, site.id)) {
                             overrides = true;
                             let with_super = ids
@@ -1707,7 +1822,7 @@ impl Checker {
                     if module_site
                         && self
                             .world
-                            .class_modules(c, &[])
+                            .class_modules_included(c, &[])
                             .iter()
                             .any(|(m, _)| *m == cid)
                     {
@@ -1810,8 +1925,10 @@ impl Checker {
                     self.diagnostics.push((
                         s.file,
                         Diagnostic::error(
-                            if via_extension {
-                                format!("{what} does not take the arguments of {new_in} in `{cname}{sep}{mname}`, which `{sname}` conforms to through an extension: keep the parameters of `{iname}#initialize`, their names and whether they are optional (adding only optional ones)")
+                            if via_extension || pinned {
+                                // (Witnesses are fixed: a subclass's own class
+                                // method does not replace one, #504.)
+                                format!("{what} does not take the arguments of {new_in} in `{cname}{sep}{mname}`, which runs for `{sname}` through its conformance by an extension: keep the parameters of `{iname}#initialize`, their names and whether they are optional (adding only optional ones), or make `{sname}` conform on its own (its own `include` of the module)")
                             } else {
                                 format!("{what} does not take the arguments of {new_in} in `{cname}{sep}{mname}`, which `{sname}` inherits: keep the parameters of `{iname}#initialize`, their names and whether they are optional (adding only optional ones), or override `{}{mname}` in `{sname}`", if singleton { "self." } else { "" })
                             },
@@ -2193,10 +2310,19 @@ impl Checker {
         // calling `new`, or an instance method calling `Self.new`, needs
         // an `initialize` that takes its arguments, as in a program (a
         // failed input is discarded, so what passed stays checked).
-        let marks = self.repl_ctor_marks;
+        let (sites, classes, witnesses) = self.repl_ctor_marks;
+        let marks = if self.world.class_ext_impls.len() == witnesses {
+            (sites, classes)
+        } else {
+            (0, 0)
+        };
         self.check_inherited_constructors_from(marks);
         self.check_abstract_receivers();
-        self.repl_ctor_marks = (self.self_news.len(), self.world.classes.len());
+        self.repl_ctor_marks = (
+            self.self_news.len(),
+            self.world.classes.len(),
+            self.world.class_ext_impls.len(),
+        );
     }
 
     /// What a REPL input may change, to roll it back if it fails

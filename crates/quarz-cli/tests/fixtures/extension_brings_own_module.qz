@@ -1,0 +1,36 @@
+# An extension's include of `N`, which brings `M` that the class has by a
+# superclass's own include (#504): for `M` the class's own conformance
+# holds, so `Type[M]` and `T <: M` go by ordinary dispatch (`M.d`, or
+# `Base2.d`); for `N` the extension's witnesses apply (`N.d`, or the
+# superclass's `Base2.d` of the signature, before the module's default).
+module M
+  def self.d -> String = "M"
+end
+module N
+  include M
+  def self.d -> String = "N"
+  def self.only -> String = "N only"
+end
+class Base
+  include M
+end
+class Base2
+  include M
+  def self.d -> String = "Base2"
+end
+class Num < Base
+end
+class Num2 < Base2
+end
+extension Num
+  include N
+end
+extension Num2
+  include N
+end
+def m(t: Type[M]) -> String = t.d
+def n(t: Type[N]) -> String = "#{t.d} / #{t.only}"
+def gm[T <: M](t: Type[T]) -> String = t.d
+def gn[T <: N](t: Type[T]) -> String = t.d
+puts m(Num), gm(Num), n(Num), gn(Num)
+puts m(Num2), gm(Num2), n(Num2), gn(Num2)

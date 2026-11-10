@@ -1,0 +1,23 @@
+# An extension's include makes no override of a superclass's class method
+# at run time (#504): `Base.make`, the witness, runs for `A` through
+# `Type[Base]`, though `A` includes another module itself.
+module Z
+  def z -> Int = 0
+end
+module M
+  def self.make -> Self = new
+end
+class Base
+  @i: Int
+  def initialize(@i: Int); end
+  def self.make -> Self = new(1)
+  def i -> Int = @i
+end
+class A < Base
+  include Z
+end
+extension A
+  include M
+end
+def k(t: Type[Base]) -> Base = t.make
+puts k(A).i + 1

@@ -1,0 +1,32 @@
+# An extension's include makes the class conform to the module but takes
+# no part in dynamic dispatch (docs/01 §7, #504's review): where it is not
+# active, a call runs the class's own (or its superclass's) method, and a
+# module an extension of `Int` includes changes neither `Int.name` nor
+# `Int#to_s`.
+module P
+  def describe -> String = "p"
+end
+class A
+  def describe -> Int = 1
+end
+class B < A
+end
+module Named
+  def self.name -> String = "hijacked"
+  def to_s -> String = "hijacked to_s"
+end
+module X
+  extension B
+    include P
+  end
+  extension Int
+    include Named
+  end
+end
+a: A = B.new
+puts a.describe + 1
+puts B.new.describe + 1
+puts Int.name
+k: Type = Int
+puts k.name
+puts 5.to_s, "#{5}"

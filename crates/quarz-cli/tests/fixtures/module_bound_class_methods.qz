@@ -2,7 +2,8 @@
 # methods (#501), dispatched on the class `T` holds at run time: an
 # includer's own override, the module's default calling the includer's
 # implementation of an abstract one, and `new` building that class.
-# Through an extension's include the module's own runs (#494).
+# Through an extension's include the class's own class method of the
+# signature is the conformance's witness and runs (#504).
 module Named
   abstract def self.kind -> String
   def self.label -> String = "named #{kind}"

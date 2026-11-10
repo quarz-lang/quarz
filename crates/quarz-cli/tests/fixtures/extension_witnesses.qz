@@ -1,0 +1,26 @@
+# The class-side witnesses of conformances (#504, as Swift's): through a
+# `Type[M]` value a module's class method runs what the class's
+# conformance to that module recorded. `C` includes `N` itself and
+# conforms to `Parsable` through an extension with its own `describe`:
+# through `Type[N]` `N`'s runs, through `Type[Parsable]` the extension's,
+# and on `C` itself (where the extension is active) the extension's.
+module Parsable
+  def self.describe -> String = "Parsable"
+end
+module N
+  def self.describe -> String = "N"
+end
+class C
+  include N
+end
+extension C
+  include Parsable
+  def self.describe -> String = "ext"
+end
+puts C.describe
+def f[T <: N](t: Type[T]) -> String = t.describe
+def g(t: Type[N]) -> String = t.describe
+def h(t: Type[Parsable]) -> String = t.describe
+def i[T <: Parsable](t: Type[T]) -> String = t.describe
+puts f(C), g(C), h(C), i(C)
+

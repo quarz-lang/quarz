@@ -983,3 +983,39 @@ fn a_failed_input_keeps_what_an_earlier_declarations_only_input_lowered() {
     assert!(out[2].starts_with("error: "), "{out:?}");
     assert_eq!(out[3], "=> 2", "{out:?}");
 }
+
+#[test]
+fn a_later_extension_pins_an_earlier_witness_for_an_earlier_class() {
+    // #514's review: `extension Q; include M` makes `P.make` the witness
+    // of `M.make` for `R`, declared in an earlier input, whose
+    // `initialize` does not take `P.make`'s `new` arguments: refused as in
+    // a program.
+    let (out, _) = values(&[
+        "class P; def initialize; end; def self.make -> Self = new; end",
+        "class Q < P; end",
+        "class R < Q; @x: Int; def initialize(@x: Int); end; def self.make -> Self = new(1); def x -> Int = @x; end",
+        "module M; abstract def self.make -> Self; end",
+        "extension Q; include M; end",
+    ]);
+    assert!(
+        out[4].contains("`R#initialize` does not take the arguments of `new` in `P.make`"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn a_declarations_only_input_checks_new_through_an_extension() {
+    // #514's review: an input of declarations alone activates no
+    // extension, yet `S` conforms to `N` through `G`'s extension wherever
+    // a `Type[N]` goes: `N.make`'s `new` is checked against `S`.
+    let (out, _) = values(&[
+        "module N; def self.make -> Self = new; end",
+        "class G; def initialize; end; end",
+        "class S < G; @x: Int; def initialize(@x: Int); end; def x -> Int = @x; end",
+        "extension G; include N; end",
+    ]);
+    assert!(
+        out[3].contains("`S#initialize` does not take the arguments of `new` in `N.make`"),
+        "{out:?}"
+    );
+}

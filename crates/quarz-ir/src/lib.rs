@@ -1421,6 +1421,11 @@ pub struct RtClass {
     /// methods, in lookup order after its own, those its superclass
     /// brings left out (`World::class_modules`).
     pub class_modules: Vec<ClassId>,
+    /// Where the witnesses of this class's conformances through
+    /// extensions are looked up, in order (`World::conformance_sources`,
+    /// shared with the checker, #504).
+    #[serde(default)]
+    pub witness_sources: Vec<ClassId>,
     /// Nested classes by short name.
     #[serde(serialize_with = "sorted")]
     pub members: HashMap<String, ClassId>,
@@ -1661,6 +1666,11 @@ pub struct RtWorld {
     /// (class, abstract method, implementation): its conformance, which
     /// holds wherever the value goes.
     pub ext_impls: Vec<(ClassId, MethodId, MethodId)>,
+    /// (class, module's class method, its witness): what runs in place of
+    /// a module's class method for a class conforming to the module
+    /// through an extension (`World::class_ext_impls`, #504).
+    #[serde(default)]
+    pub class_ext_impls: Vec<(ClassId, MethodId, MethodId)>,
     /// (class, overridden, overriding): a method of a module the class
     /// includes over its superclass's (`World::include_overrides`).
     #[serde(default)]
