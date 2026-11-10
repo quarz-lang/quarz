@@ -42,7 +42,8 @@ thread_local! {
 /// (dropping one would release what it holds under this program's
 /// table). The same program's (the REPL's previous input's) stay queued.
 /// (A program still running on the thread when another one starts there
-/// would lose its queue: nothing does that.)
+/// would lose its queue, and its cycles would leak, its candidates taken
+/// out of the list (`cycles::forget_all`): nothing does that.)
 pub fn set_classes(classes: Vec<bool>, program: u64) {
     if classes.iter().any(|c| *c) {
         ANY.store(true, Ordering::Relaxed);
@@ -54,6 +55,9 @@ pub fn set_classes(classes: Vec<bool>, program: u64) {
             if crate::cycles::candidates() != 0 {
                 crate::cycles::collect_now();
             }
+            // (What that leaves listed is live for good: the next program
+            // starts the collector afresh, #502.)
+            crate::cycles::forget_all();
             let stale = QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()));
             std::mem::forget(stale);
             PENDING.with(|p| p.set(false));

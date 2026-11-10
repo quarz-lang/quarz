@@ -108,3 +108,29 @@ fn task_blocking_runs_each_programs_own_code() {
         }
     }
 }
+
+/// Many programs run in turn on one thread (as the build tests run the
+/// fixtures): each starts the cycle collector afresh, so what earlier
+/// programs left live is not walked by its collections, which would make
+/// them less frequent (#502): after fixtures that leave live candidates
+/// (a fixed few, which touch nothing process-wide: the other tests run
+/// fixtures in this process at the same time), a program that makes no
+/// candidate leaves none listed.
+#[test]
+fn the_cycle_collector_starts_afresh_for_each_program_on_a_thread() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/builtins");
+    for name in [
+        "const_init.qz",
+        "collections.qz",
+        "case_self.qz",
+        "bytes_search.qz",
+        "cycles.qz",
+    ] {
+        let _ = common::run_path(&dir.join(name), &[]);
+    }
+    let after = quarz_vm::cycles::candidates();
+    let (_, out) = common::run("p 1\n", &[]);
+    assert_eq!(out, "1\n");
+    let left = quarz_vm::cycles::candidates();
+    assert_eq!(left, 0, "{after} after the fixtures");
+}
