@@ -1,0 +1,20 @@
+# A module's override is the witness of an extension's include of the
+# module that declares it; the compiled program keeps it though no class
+# includes that module itself (#514's review: shake).
+module M
+  def self.n -> Int = 1
+  def self.a -> Array[Int] = [1]
+end
+module N
+  include M
+  def self.n -> Int = 41
+  def self.a -> Array[Int] = [4, 5, 6]
+end
+class Num
+end
+extension Num
+  include N
+end
+def g(t: Type[M]) -> Int = t.n + 1
+def h[T <: M](t: Type[T]) -> Int = t.a.size
+puts g(Num), h(Num)

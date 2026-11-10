@@ -158,11 +158,14 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
+                // (A class's own includes': an extension's conformance
+                // brings witnesses, `class_ext_impls`, not dispatch, #504.)
                 class_modules: world
-                    .class_modules(c.id, &[])
+                    .class_modules_included(c.id, &[])
                     .into_iter()
                     .map(|(m, _)| m)
                     .collect(),
+                witness_sources: world.conformance_sources(c.id),
                 members,
                 variants: c.variants.clone(),
                 variant_of: c.variant_of,
@@ -399,6 +402,11 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
         consts,
         extensions,
         ext_impls: world.ext_impls.clone(),
+        class_ext_impls: world
+            .class_ext_impls
+            .iter()
+            .map(|w| (w.class, w.method, w.by))
+            .collect(),
         include_overrides: world.include_overrides(),
         class_include_overrides: world.class_include_overrides(),
         top,

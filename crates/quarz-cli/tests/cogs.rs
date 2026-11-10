@@ -2306,3 +2306,106 @@ fn doc_links_other_cogs_the_std_and_the_source() {
     let page = std::fs::read_to_string(w.path("lib/site3/Mylib--User.html")).unwrap();
     assert!(!page.contains("github.com"), "{page}");
 }
+
+#[test]
+fn a_type_value_reaches_a_conformance_from_another_cogs_extension() {
+    // #504: a library's extension makes its class conform to its module,
+    // class methods included (the extension is active in the library's
+    // files only); the application gets the class as a `Type[Parsable]`
+    // value and calls the module's class methods through it: the abstract
+    // one runs the extension's implementation, the default the module's,
+    // interpreted and compiled (dispatch at run time is global).
+    let w = World::new();
+    w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
+    w.write(
+        "lib/src/parsable.qz",
+        "module Parsable\n  abstract def self.parse(s: String) -> Self\n  def self.describe -> String = \"parsable #{name}\"\n  def parsed? -> Bool = true\nend\n",
+    );
+    w.write(
+        "lib/src/num.qz",
+        "class Num\n  @v: Int\n  def initialize(@v: Int); end\n  def to_s -> String = \"Num(#{@v})\"\nend\n",
+    );
+    w.write(
+        "lib/src/ext.qz",
+        "extension Num\n  include Parsable\n  def self.parse(s: String) -> Self = new(s.to_i)\nend\n",
+    );
+    w.write(
+        "lib/src/registry.qz",
+        "module Registry\n  def self.parser -> Type[Parsable] = Num\n  def self.via(t: Type[Num], s: String) -> String\n    u: Type[Parsable] = t\n    u.parse(s).to_s\n  end\nend\n",
+    );
+    w.commit("lib", Some("v0.1.0"));
+    let dep = format!("Lib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("lib"));
+    w.app(
+        &dep,
+        "t = Lib::Registry.parser\nputs t.parse(\"5\"), t.describe\nclass Sub < Lib::Num\n  def self.parse(s: String) -> Self = new(99)\nend\nputs Lib::Registry.via(Sub, \"6\"), Sub.parse(\"6\")\n",
+    );
+    // (A subclass in the application: the library's witness runs for it
+    // through `Type[Parsable]`, its own `parse` on itself, #504.)
+    let expected = "Num(5)\nparsable Lib::Num\nNum(6)\nNum(99)\n";
+    assert_eq!(w.ok("app", &["run"]), expected);
+    w.ok("app", &["build", "-o", "app.bin"]);
+    let run = std::process::Command::new(w.path("app/app.bin"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+}
+
+#[test]
+fn an_extension_cannot_include_what_a_library_superclass_includes() {
+    // #504: `Base` in a library includes `M` itself; an application's
+    // extension of a subclass cannot include it again.
+    let w = World::new();
+    w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
+    w.write(
+        "lib/src/base.qz",
+        "module M\n  def self.describe -> String = \"M\"\nend\nclass Base\n  include M\nend\n",
+    );
+    w.commit("lib", Some("v0.1.0"));
+    let dep = format!("Lib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("lib"));
+    w.app(
+        &dep,
+        "class A < Lib::Base\nend\nextension A\n  include Lib::M\nend\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("`A` already includes `Lib::M` (through `Lib::Base`'s `include`): an extension cannot include it again"),
+        "{err}"
+    );
+}
+
+#[test]
+fn witness_matrix_across_cogs() {
+    // The cross-cog column of the #504 witness matrix (the other columns:
+    // the `witness_matrix_*.qz` fixtures): a library's extensions make its
+    // classes conform to `M`, one per witness source; the application's
+    // subclasses of them reach the same witnesses through the library's
+    // `Type[M]` (the extensions are not active in the application), run
+    // and built.
+    let w = World::new();
+    w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
+    w.write(
+        "lib/src/m.qz",
+        "module M\n  def self.d -> String = \"M\"\nend\nmodule N\n  include M\n  def self.d -> String = \"N\"\nend\nclass B\n  def initialize; end\n  def self.d -> String = \"sup\"\nend\n",
+    );
+    w.write(
+        "lib/src/x.qz",
+        "class XExt\n  def initialize; end\nend\nextension XExt\n  include M\n  def self.d -> String = \"ext\"\nend\nclass XOwn\n  def initialize; end\n  def self.d -> String = \"own\"\nend\nextension XOwn\n  include M\nend\nclass XSup < B\nend\nextension XSup\n  include M\nend\nclass XN\n  def initialize; end\nend\nextension XN\n  include N\nend\nclass XDef\n  def initialize; end\nend\nextension XDef\n  include M\nend\n",
+    );
+    w.write(
+        "lib/src/reg.qz",
+        "module Reg\n  def self.ext(t: Type[XExt]) -> String\n    u: Type[M] = t\n    u.d\n  end\n  def self.own(t: Type[XOwn]) -> String\n    u: Type[M] = t\n    u.d\n  end\n  def self.sup(t: Type[XSup]) -> String\n    u: Type[M] = t\n    u.d\n  end\n  def self.n(t: Type[XN]) -> String\n    u: Type[M] = t\n    u.d\n  end\n  def self.default(t: Type[XDef]) -> String\n    u: Type[M] = t\n    u.d\n  end\nend\n",
+    );
+    w.commit("lib", Some("v0.1.0"));
+    let dep = format!("L = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("lib"));
+    w.app(
+        &dep,
+        "class SExt < L::XExt\nend\nclass SOwn < L::XOwn\nend\nclass SSup < L::XSup\nend\nclass SN < L::XN\nend\nclass SDef < L::XDef\nend\nputs L::Reg.ext(L::XExt), L::Reg.ext(SExt)\nputs L::Reg.own(L::XOwn), L::Reg.own(SOwn)\nputs L::Reg.sup(L::XSup), L::Reg.sup(SSup)\nputs L::Reg.n(L::XN), L::Reg.n(SN)\nputs L::Reg.default(L::XDef), L::Reg.default(SDef)\n",
+    );
+    let expected = "ext\next\nown\nown\nsup\nsup\nN\nN\nM\nM\n";
+    assert_eq!(w.ok("app", &["run"]), expected);
+    w.ok("app", &["build", "-o", "app.bin"]);
+    let run = std::process::Command::new(w.path("app/app.bin"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+}

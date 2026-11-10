@@ -2614,7 +2614,11 @@ impl Interp {
             // called on decides.
             return match recv {
                 Value::Class(cid) if m.overridden && *cid != m.owner => {
-                    if !self.program.world.class(*cid).ancestors.contains(&m.owner) {
+                    // (Or a class conforming through an extension, with a
+                    // witness up its chain, #504.)
+                    if !self.program.world.class(*cid).ancestors.contains(&m.owner)
+                        && !self.has_class_witness(*cid, mid)
+                    {
                         let what = format!(
                             "{} given to a call of `{}.{}`, a class no check saw",
                             self.program.world.class(*cid).name,
@@ -2769,11 +2773,21 @@ impl Interp {
         // methods, #494. Elsewhere, through a `Type[M]` value holding such a
         // class, the module's own runs.)
         let module_owner = self.program.world.class(m.owner).kind == quarz_ir::RtClassKind::Module;
-        let mut cur = if module_owner && !self.includes_on_class_side(cid, m.owner) {
-            None
-        } else {
-            Some(cid)
-        };
+        if module_owner && !self.includes_on_class_side(cid, m.owner) {
+            // A class conforming through an extension: the witness its
+            // conformance recorded, the nearest up the chain (a subclass
+            // conforming on its own has its own), run as is (#504).
+            // (Fixed: the witness runs for the class and its subclasses
+            // alike; the module's default is the module's own.)
+            if let Some(by) = self.class_witness(cid, mid) {
+                found = (by != mid).then_some(by);
+            }
+            self.class_method_cache
+                .borrow_mut()
+                .insert((cid, mid), found);
+            return found;
+        }
+        let mut cur = Some(cid);
         'chain: while let Some(c) = cur {
             if c == m.owner && !m.is_abstract {
                 break;
@@ -2825,6 +2839,27 @@ impl Interp {
             .borrow_mut()
             .insert((cid, mid), found);
         found
+    }
+
+    /// Whether class `cid` or a superclass conforms through an extension
+    /// with a witness for module class method `mid` (#504).
+    fn has_class_witness(&self, cid: ClassId, mid: MethodId) -> bool {
+        self.class_witness(cid, mid).is_some()
+    }
+
+    /// The witness of module class method `mid` for class `cid` (#504):
+    /// recorded for the nearest class up its superclass chain, or for a
+    /// module one of them includes (an extension of that module, `extension
+    /// Mid; include M`), as the instance side's `ext_impls` reach it.
+    fn class_witness(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
+        let w = &self.program.world;
+        // (`RtClass::witness_sources`: the checker's order.)
+        w.class(cid).witness_sources.iter().find_map(|k| {
+            w.class_ext_impls
+                .iter()
+                .find(|(x, o, _)| x == k && *o == mid)
+                .map(|(_, _, by)| *by)
+        })
     }
 
     /// Whether class `cid` or a superclass includes `module` itself (its

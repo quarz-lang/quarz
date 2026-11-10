@@ -1,0 +1,6 @@
+parsable Num
+parsable Num: Num(7)
+Num(8) / parsable Num
+Word / Word's own
+parsable Num: Num(9)
+42

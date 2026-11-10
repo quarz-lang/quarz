@@ -1,0 +1,62 @@
+# An extension's include brings the module's class methods (#504, as
+# Swift's retroactive conformance): the abstract ones implemented by the
+# extension's own `def self.` or the class's, the class's own coming
+# before the module's, and calls through `Type[M]` dispatching to the
+# class's implementation.
+module Parsable
+  abstract def self.parse(s: String) -> Self
+  def self.describe -> String = "parsable #{name}"
+  def self.both(s: String) -> String = "#{describe}: #{parse(s)}"
+  def parsed? -> Bool = true
+end
+
+class Num
+  @v: Int
+  def initialize(@v: Int); end
+  def to_s -> String = "Num(#{@v})"
+end
+
+extension Num
+  include Parsable
+  def self.parse(s: String) -> Self = new(s.to_i)
+end
+
+class Word
+  def self.describe -> String = "Word's own"
+  def self.parse(s: String) -> Self = new
+  def to_s -> String = "Word"
+end
+
+extension Word
+  include Parsable
+end
+
+puts Num.describe, Num.both("7")
+
+def via[T <: Parsable](t: Type[T], s: String) -> String = "#{t.parse(s)} / #{t.describe}"
+
+puts via(Num, "8"), via(Word, "x")
+m: Type[Parsable] = Num
+puts m.both("9")
+
+# A module's class method building `Self`: the class's own (here with its
+# `initialize`'s argument) takes its place, as for an include.
+module Made
+  def self.make -> Self = new
+  def made? -> Bool = true
+end
+
+class Pair
+  @a: Int
+  def initialize(@a: Int); end
+  def a -> Int = @a
+  def self.make -> Self = new(41)
+end
+
+extension Pair
+  include Made
+end
+
+def build[T <: Made](t: Type[T]) -> T = t.make
+
+p build(Pair).as(Pair).a + 1

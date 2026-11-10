@@ -72,8 +72,9 @@ end
 
 puts Square.kind, Square.describe_kind, Dot.describe_kind
 
-# An extension's include brings no class methods: through a
-# `Type[Labeled]` value holding such a class, the module's own runs.
+# An extension's include brings the module's class methods too (#504),
+# the class's own coming first: through a `Type[Labeled]` value holding
+# such a class, the class's own runs.
 module Labeled
   def self.tag -> String = "labeled"
   def labeled? -> Bool = true

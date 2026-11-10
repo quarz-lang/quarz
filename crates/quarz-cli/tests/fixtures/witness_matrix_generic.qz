@@ -1,0 +1,854 @@
+# The #504 witness matrix (generated; the cross-cog column is in
+# cogs.rs, the refusals in diagnostics.rs): target x conformance path
+# x witness source x module arguments, each cell printing what runs
+# through `Type[M]`, `T <: M` and a direct call where the extension is
+# active. The expected output was computed from the rules, not taken
+# from a run: the witness is the extension's own `def self.`, else the
+# target's own class method, else a superclass's of the signature,
+# else the nearest override in the included module's ancestry, else
+# the module's default; it runs for the target and its subclasses
+# alike, unless a subclass conforms on its own (its own extension's
+# witness); an own include goes by ordinary dispatch.
+# Skipped as identical by the rules or not expressible:
+# - module target (an extension of a module including one with class methods): refused, #530 (diagnostics.rs)
+# - own/super_own paths x witness ext/nmod: an extension including the module the class has by an own include is refused (diagnostics test); N brought by an own include is ordinary dispatch, as `own`
+# - own/super_own paths x witness sup: ordinary dispatch of a superclass's class method, the same as `own` one class up
+# - own/super_own paths x module target: a module includes no class to run
+# - mod_ext paths: they need the module target
+# - witness sup x module target: a module has no superclass
+# - args param x non-generic targets: no class parameter to pass
+# - generic target x args concrete x witness sup: `B[U].d(x: U)` is no witness of `M[Int].d(x: Int)` (another signature), refused as an override in its own diagnostics, not a run cell
+# - abstract target x path own/super_own: same as class
+# - module target x args param: `Mid` has no parameter of its own
+module M38
+  def self.d -> String = "M"
+end
+class X38[U]
+  include M38
+  def initialize; end
+  def self.d -> String = "own"
+end
+def f38(t: Type[M38]) -> String = t.d
+def g38[T <: M38](t: Type[T]) -> String = t.d
+puts "generic/own/own/none: #{f38(X38[Int])} #{g38(X38[Int])} #{X38[Int].d}"
+module M39[T]
+  def self.d(x: T) -> String = "M"
+end
+class X39[U]
+  include M39[Int]
+  def initialize; end
+  def self.d(x: Int) -> String = "own"
+end
+def f39(t: Type[M39[Int]]) -> String = t.d(1)
+def g39[T <: M39[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/own/own/concrete: #{f39(X39[Int])} #{g39(X39[Int])} #{X39[Int].d(1)}"
+module M40[T]
+  def self.d(x: T) -> String = "M"
+end
+class X40[U]
+  include M40[U]
+  def initialize; end
+  def self.d(x: U) -> String = "own"
+end
+def f40(t: Type[M40[Int]]) -> String = t.d(1)
+def g40[T <: M40[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/own/own/param: #{f40(X40[Int])} #{g40(X40[Int])} #{X40[Int].d(1)}"
+module M41
+  def self.d -> String = "M"
+end
+class X41[U]
+  include M41
+  def initialize; end
+end
+def f41(t: Type[M41]) -> String = t.d
+def g41[T <: M41](t: Type[T]) -> String = t.d
+puts "generic/own/default/none: #{f41(X41[Int])} #{g41(X41[Int])} #{X41[Int].d}"
+module M42[T]
+  def self.d(x: T) -> String = "M"
+end
+class X42[U]
+  include M42[Int]
+  def initialize; end
+end
+def f42(t: Type[M42[Int]]) -> String = t.d(1)
+def g42[T <: M42[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/own/default/concrete: #{f42(X42[Int])} #{g42(X42[Int])} #{X42[Int].d(1)}"
+module M43[T]
+  def self.d(x: T) -> String = "M"
+end
+class X43[U]
+  include M43[U]
+  def initialize; end
+end
+def f43(t: Type[M43[Int]]) -> String = t.d(1)
+def g43[T <: M43[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/own/default/param: #{f43(X43[Int])} #{g43(X43[Int])} #{X43[Int].d(1)}"
+module M44
+  def self.d -> String = "M"
+end
+class X44[U]
+  include M44
+  def initialize; end
+  def self.d -> String = "own"
+end
+class S44[U] < X44[U]
+end
+def f44(t: Type[M44]) -> String = t.d
+def g44[T <: M44](t: Type[T]) -> String = t.d
+puts "generic/super_own/own/none: #{f44(S44[Int])} #{g44(S44[Int])} #{S44[Int].d}"
+module M45[T]
+  def self.d(x: T) -> String = "M"
+end
+class X45[U]
+  include M45[Int]
+  def initialize; end
+  def self.d(x: Int) -> String = "own"
+end
+class S45[U] < X45[U]
+end
+def f45(t: Type[M45[Int]]) -> String = t.d(1)
+def g45[T <: M45[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/super_own/own/concrete: #{f45(S45[Int])} #{g45(S45[Int])} #{S45[Int].d(1)}"
+module M46[T]
+  def self.d(x: T) -> String = "M"
+end
+class X46[U]
+  include M46[U]
+  def initialize; end
+  def self.d(x: U) -> String = "own"
+end
+class S46[U] < X46[U]
+end
+def f46(t: Type[M46[Int]]) -> String = t.d(1)
+def g46[T <: M46[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/super_own/own/param: #{f46(S46[Int])} #{g46(S46[Int])} #{S46[Int].d(1)}"
+module M47
+  def self.d -> String = "M"
+end
+class X47[U]
+  include M47
+  def initialize; end
+end
+class S47[U] < X47[U]
+end
+def f47(t: Type[M47]) -> String = t.d
+def g47[T <: M47](t: Type[T]) -> String = t.d
+puts "generic/super_own/default/none: #{f47(S47[Int])} #{g47(S47[Int])} #{S47[Int].d}"
+module M48[T]
+  def self.d(x: T) -> String = "M"
+end
+class X48[U]
+  include M48[Int]
+  def initialize; end
+end
+class S48[U] < X48[U]
+end
+def f48(t: Type[M48[Int]]) -> String = t.d(1)
+def g48[T <: M48[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/super_own/default/concrete: #{f48(S48[Int])} #{g48(S48[Int])} #{S48[Int].d(1)}"
+module M49[T]
+  def self.d(x: T) -> String = "M"
+end
+class X49[U]
+  include M49[U]
+  def initialize; end
+end
+class S49[U] < X49[U]
+end
+def f49(t: Type[M49[Int]]) -> String = t.d(1)
+def g49[T <: M49[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/super_own/default/param: #{f49(S49[Int])} #{g49(S49[Int])} #{S49[Int].d(1)}"
+module M50
+  def self.d -> String = "M"
+end
+class X50[U]
+  def initialize; end
+end
+extension X50[V]
+  include M50
+  def self.d -> String = "ext"
+end
+def f50(t: Type[M50]) -> String = t.d
+def g50[T <: M50](t: Type[T]) -> String = t.d
+puts "generic/ext/ext/none: #{f50(X50[Int])} #{g50(X50[Int])} #{X50[Int].d}"
+module M51[T]
+  def self.d(x: T) -> String = "M"
+end
+class X51[U]
+  def initialize; end
+end
+extension X51[V]
+  include M51[Int]
+  def self.d(x: Int) -> String = "ext"
+end
+def f51(t: Type[M51[Int]]) -> String = t.d(1)
+def g51[T <: M51[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext/ext/concrete: #{f51(X51[Int])} #{g51(X51[Int])} #{X51[Int].d(1)}"
+module M52[T]
+  def self.d(x: T) -> String = "M"
+end
+class X52[U]
+  def initialize; end
+end
+extension X52[V]
+  include M52[V]
+  def self.d(x: V) -> String = "ext"
+end
+def f52(t: Type[M52[Int]]) -> String = t.d(1)
+def g52[T <: M52[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext/ext/param: #{f52(X52[Int])} #{g52(X52[Int])} #{X52[Int].d(1)}"
+module M53
+  def self.d -> String = "M"
+end
+class X53[U]
+  def initialize; end
+  def self.d -> String = "own"
+end
+extension X53[V]
+  include M53
+end
+def f53(t: Type[M53]) -> String = t.d
+def g53[T <: M53](t: Type[T]) -> String = t.d
+puts "generic/ext/own/none: #{f53(X53[Int])} #{g53(X53[Int])} #{X53[Int].d}"
+module M54[T]
+  def self.d(x: T) -> String = "M"
+end
+class X54[U]
+  def initialize; end
+  def self.d(x: Int) -> String = "own"
+end
+extension X54[V]
+  include M54[Int]
+end
+def f54(t: Type[M54[Int]]) -> String = t.d(1)
+def g54[T <: M54[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext/own/concrete: #{f54(X54[Int])} #{g54(X54[Int])} #{X54[Int].d(1)}"
+module M55[T]
+  def self.d(x: T) -> String = "M"
+end
+class X55[U]
+  def initialize; end
+  def self.d(x: U) -> String = "own"
+end
+extension X55[V]
+  include M55[V]
+end
+def f55(t: Type[M55[Int]]) -> String = t.d(1)
+def g55[T <: M55[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext/own/param: #{f55(X55[Int])} #{g55(X55[Int])} #{X55[Int].d(1)}"
+module M56
+  def self.d -> String = "M"
+end
+class B56[U]
+  def initialize; end
+  def self.d -> String = "sup"
+end
+class X56[U] < B56[U]
+  def initialize; end
+end
+extension X56[V]
+  include M56
+end
+def f56(t: Type[M56]) -> String = t.d
+def g56[T <: M56](t: Type[T]) -> String = t.d
+puts "generic/ext/sup/none: #{f56(X56[Int])} #{g56(X56[Int])} #{X56[Int].d}"
+module M57[T]
+  def self.d(x: T) -> String = "M"
+end
+class B57[U]
+  def initialize; end
+  def self.d(x: U) -> String = "sup"
+end
+class X57[U] < B57[U]
+  def initialize; end
+end
+extension X57[V]
+  include M57[V]
+end
+def f57(t: Type[M57[Int]]) -> String = t.d(1)
+def g57[T <: M57[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext/sup/param: #{f57(X57[Int])} #{g57(X57[Int])} #{X57[Int].d(1)}"
+module M58
+  def self.d -> String = "M"
+end
+module N58
+  include M58
+  def self.d -> String = "N"
+end
+class X58[U]
+  def initialize; end
+end
+extension X58[V]
+  include N58
+end
+def f58(t: Type[M58]) -> String = t.d
+def g58[T <: M58](t: Type[T]) -> String = t.d
+puts "generic/ext/nmod/none: #{f58(X58[Int])} #{g58(X58[Int])} #{X58[Int].d}"
+module M59[T]
+  def self.d(x: T) -> String = "M"
+end
+module N59[T]
+  include M59[T]
+  def self.d(x: T) -> String = "N"
+end
+class X59[U]
+  def initialize; end
+end
+extension X59[V]
+  include N59[Int]
+end
+def f59(t: Type[M59[Int]]) -> String = t.d(1)
+def g59[T <: M59[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext/nmod/concrete: #{f59(X59[Int])} #{g59(X59[Int])} #{X59[Int].d(1)}"
+module M60[T]
+  def self.d(x: T) -> String = "M"
+end
+module N60[T]
+  include M60[T]
+  def self.d(x: T) -> String = "N"
+end
+class X60[U]
+  def initialize; end
+end
+extension X60[V]
+  include N60[V]
+end
+def f60(t: Type[M60[Int]]) -> String = t.d(1)
+def g60[T <: M60[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext/nmod/param: #{f60(X60[Int])} #{g60(X60[Int])} #{X60[Int].d(1)}"
+module M61
+  def self.d -> String = "M"
+end
+class X61[U]
+  def initialize; end
+end
+extension X61[V]
+  include M61
+end
+def f61(t: Type[M61]) -> String = t.d
+def g61[T <: M61](t: Type[T]) -> String = t.d
+puts "generic/ext/default/none: #{f61(X61[Int])} #{g61(X61[Int])} #{X61[Int].d}"
+module M62[T]
+  def self.d(x: T) -> String = "M"
+end
+class X62[U]
+  def initialize; end
+end
+extension X62[V]
+  include M62[Int]
+end
+def f62(t: Type[M62[Int]]) -> String = t.d(1)
+def g62[T <: M62[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext/default/concrete: #{f62(X62[Int])} #{g62(X62[Int])} #{X62[Int].d(1)}"
+module M63[T]
+  def self.d(x: T) -> String = "M"
+end
+class X63[U]
+  def initialize; end
+end
+extension X63[V]
+  include M63[V]
+end
+def f63(t: Type[M63[Int]]) -> String = t.d(1)
+def g63[T <: M63[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext/default/param: #{f63(X63[Int])} #{g63(X63[Int])} #{X63[Int].d(1)}"
+module M64
+  def self.d -> String = "M"
+end
+class X64[U]
+  def initialize; end
+end
+extension X64[V]
+  include M64
+  def self.d -> String = "ext"
+end
+class S64[U] < X64[U]
+end
+def f64(t: Type[M64]) -> String = t.d
+def g64[T <: M64](t: Type[T]) -> String = t.d
+puts "generic/ext_sub/ext/none: #{f64(S64[Int])} #{g64(S64[Int])} #{S64[Int].d}"
+module M65[T]
+  def self.d(x: T) -> String = "M"
+end
+class X65[U]
+  def initialize; end
+end
+extension X65[V]
+  include M65[Int]
+  def self.d(x: Int) -> String = "ext"
+end
+class S65[U] < X65[U]
+end
+def f65(t: Type[M65[Int]]) -> String = t.d(1)
+def g65[T <: M65[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext_sub/ext/concrete: #{f65(S65[Int])} #{g65(S65[Int])} #{S65[Int].d(1)}"
+module M66[T]
+  def self.d(x: T) -> String = "M"
+end
+class X66[U]
+  def initialize; end
+end
+extension X66[V]
+  include M66[V]
+  def self.d(x: V) -> String = "ext"
+end
+class S66[U] < X66[U]
+end
+def f66(t: Type[M66[Int]]) -> String = t.d(1)
+def g66[T <: M66[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext_sub/ext/param: #{f66(S66[Int])} #{g66(S66[Int])} #{S66[Int].d(1)}"
+module M67
+  def self.d -> String = "M"
+end
+class X67[U]
+  def initialize; end
+  def self.d -> String = "own"
+end
+extension X67[V]
+  include M67
+end
+class S67[U] < X67[U]
+end
+def f67(t: Type[M67]) -> String = t.d
+def g67[T <: M67](t: Type[T]) -> String = t.d
+puts "generic/ext_sub/own/none: #{f67(S67[Int])} #{g67(S67[Int])} #{S67[Int].d}"
+module M68[T]
+  def self.d(x: T) -> String = "M"
+end
+class X68[U]
+  def initialize; end
+  def self.d(x: Int) -> String = "own"
+end
+extension X68[V]
+  include M68[Int]
+end
+class S68[U] < X68[U]
+end
+def f68(t: Type[M68[Int]]) -> String = t.d(1)
+def g68[T <: M68[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext_sub/own/concrete: #{f68(S68[Int])} #{g68(S68[Int])} #{S68[Int].d(1)}"
+module M69[T]
+  def self.d(x: T) -> String = "M"
+end
+class X69[U]
+  def initialize; end
+  def self.d(x: U) -> String = "own"
+end
+extension X69[V]
+  include M69[V]
+end
+class S69[U] < X69[U]
+end
+def f69(t: Type[M69[Int]]) -> String = t.d(1)
+def g69[T <: M69[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext_sub/own/param: #{f69(S69[Int])} #{g69(S69[Int])} #{S69[Int].d(1)}"
+module M70
+  def self.d -> String = "M"
+end
+class B70[U]
+  def initialize; end
+  def self.d -> String = "sup"
+end
+class X70[U] < B70[U]
+  def initialize; end
+end
+extension X70[V]
+  include M70
+end
+class S70[U] < X70[U]
+end
+def f70(t: Type[M70]) -> String = t.d
+def g70[T <: M70](t: Type[T]) -> String = t.d
+puts "generic/ext_sub/sup/none: #{f70(S70[Int])} #{g70(S70[Int])} #{S70[Int].d}"
+module M71[T]
+  def self.d(x: T) -> String = "M"
+end
+class B71[U]
+  def initialize; end
+  def self.d(x: U) -> String = "sup"
+end
+class X71[U] < B71[U]
+  def initialize; end
+end
+extension X71[V]
+  include M71[V]
+end
+class S71[U] < X71[U]
+end
+def f71(t: Type[M71[Int]]) -> String = t.d(1)
+def g71[T <: M71[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext_sub/sup/param: #{f71(S71[Int])} #{g71(S71[Int])} #{S71[Int].d(1)}"
+module M72
+  def self.d -> String = "M"
+end
+module N72
+  include M72
+  def self.d -> String = "N"
+end
+class X72[U]
+  def initialize; end
+end
+extension X72[V]
+  include N72
+end
+class S72[U] < X72[U]
+end
+def f72(t: Type[M72]) -> String = t.d
+def g72[T <: M72](t: Type[T]) -> String = t.d
+puts "generic/ext_sub/nmod/none: #{f72(S72[Int])} #{g72(S72[Int])} #{S72[Int].d}"
+module M73[T]
+  def self.d(x: T) -> String = "M"
+end
+module N73[T]
+  include M73[T]
+  def self.d(x: T) -> String = "N"
+end
+class X73[U]
+  def initialize; end
+end
+extension X73[V]
+  include N73[Int]
+end
+class S73[U] < X73[U]
+end
+def f73(t: Type[M73[Int]]) -> String = t.d(1)
+def g73[T <: M73[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext_sub/nmod/concrete: #{f73(S73[Int])} #{g73(S73[Int])} #{S73[Int].d(1)}"
+module M74[T]
+  def self.d(x: T) -> String = "M"
+end
+module N74[T]
+  include M74[T]
+  def self.d(x: T) -> String = "N"
+end
+class X74[U]
+  def initialize; end
+end
+extension X74[V]
+  include N74[V]
+end
+class S74[U] < X74[U]
+end
+def f74(t: Type[M74[Int]]) -> String = t.d(1)
+def g74[T <: M74[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext_sub/nmod/param: #{f74(S74[Int])} #{g74(S74[Int])} #{S74[Int].d(1)}"
+module M75
+  def self.d -> String = "M"
+end
+class X75[U]
+  def initialize; end
+end
+extension X75[V]
+  include M75
+end
+class S75[U] < X75[U]
+end
+def f75(t: Type[M75]) -> String = t.d
+def g75[T <: M75](t: Type[T]) -> String = t.d
+puts "generic/ext_sub/default/none: #{f75(S75[Int])} #{g75(S75[Int])} #{S75[Int].d}"
+module M76[T]
+  def self.d(x: T) -> String = "M"
+end
+class X76[U]
+  def initialize; end
+end
+extension X76[V]
+  include M76[Int]
+end
+class S76[U] < X76[U]
+end
+def f76(t: Type[M76[Int]]) -> String = t.d(1)
+def g76[T <: M76[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext_sub/default/concrete: #{f76(S76[Int])} #{g76(S76[Int])} #{S76[Int].d(1)}"
+module M77[T]
+  def self.d(x: T) -> String = "M"
+end
+class X77[U]
+  def initialize; end
+end
+extension X77[V]
+  include M77[V]
+end
+class S77[U] < X77[U]
+end
+def f77(t: Type[M77[Int]]) -> String = t.d(1)
+def g77[T <: M77[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/ext_sub/default/param: #{f77(S77[Int])} #{g77(S77[Int])} #{S77[Int].d(1)}"
+module M78
+  def self.d -> String = "M"
+end
+class X78[U]
+  def initialize; end
+end
+extension X78[V]
+  include M78
+  def self.d -> String = "ext"
+end
+class S78[U] < X78[U]
+end
+extension S78[V]
+  include M78
+  def self.d -> String = "subext"
+end
+def f78(t: Type[M78]) -> String = t.d
+def g78[T <: M78](t: Type[T]) -> String = t.d
+puts "generic/sub_own_ext/ext/none: #{f78(S78[Int])} #{g78(S78[Int])} #{S78[Int].d}"
+module M79[T]
+  def self.d(x: T) -> String = "M"
+end
+class X79[U]
+  def initialize; end
+end
+extension X79[V]
+  include M79[Int]
+  def self.d(x: Int) -> String = "ext"
+end
+class S79[U] < X79[U]
+end
+extension S79[V]
+  include M79[Int]
+  def self.d(x: Int) -> String = "subext"
+end
+def f79(t: Type[M79[Int]]) -> String = t.d(1)
+def g79[T <: M79[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/sub_own_ext/ext/concrete: #{f79(S79[Int])} #{g79(S79[Int])} #{S79[Int].d(1)}"
+module M80[T]
+  def self.d(x: T) -> String = "M"
+end
+class X80[U]
+  def initialize; end
+end
+extension X80[V]
+  include M80[V]
+  def self.d(x: V) -> String = "ext"
+end
+class S80[U] < X80[U]
+end
+extension S80[V]
+  include M80[V]
+  def self.d(x: V) -> String = "subext"
+end
+def f80(t: Type[M80[Int]]) -> String = t.d(1)
+def g80[T <: M80[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/sub_own_ext/ext/param: #{f80(S80[Int])} #{g80(S80[Int])} #{S80[Int].d(1)}"
+module M81
+  def self.d -> String = "M"
+end
+class X81[U]
+  def initialize; end
+  def self.d -> String = "own"
+end
+extension X81[V]
+  include M81
+end
+class S81[U] < X81[U]
+end
+extension S81[V]
+  include M81
+  def self.d -> String = "subext"
+end
+def f81(t: Type[M81]) -> String = t.d
+def g81[T <: M81](t: Type[T]) -> String = t.d
+puts "generic/sub_own_ext/own/none: #{f81(S81[Int])} #{g81(S81[Int])} #{S81[Int].d}"
+module M82[T]
+  def self.d(x: T) -> String = "M"
+end
+class X82[U]
+  def initialize; end
+  def self.d(x: Int) -> String = "own"
+end
+extension X82[V]
+  include M82[Int]
+end
+class S82[U] < X82[U]
+end
+extension S82[V]
+  include M82[Int]
+  def self.d(x: Int) -> String = "subext"
+end
+def f82(t: Type[M82[Int]]) -> String = t.d(1)
+def g82[T <: M82[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/sub_own_ext/own/concrete: #{f82(S82[Int])} #{g82(S82[Int])} #{S82[Int].d(1)}"
+module M83[T]
+  def self.d(x: T) -> String = "M"
+end
+class X83[U]
+  def initialize; end
+  def self.d(x: U) -> String = "own"
+end
+extension X83[V]
+  include M83[V]
+end
+class S83[U] < X83[U]
+end
+extension S83[V]
+  include M83[V]
+  def self.d(x: V) -> String = "subext"
+end
+def f83(t: Type[M83[Int]]) -> String = t.d(1)
+def g83[T <: M83[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/sub_own_ext/own/param: #{f83(S83[Int])} #{g83(S83[Int])} #{S83[Int].d(1)}"
+module M84
+  def self.d -> String = "M"
+end
+class B84[U]
+  def initialize; end
+  def self.d -> String = "sup"
+end
+class X84[U] < B84[U]
+  def initialize; end
+end
+extension X84[V]
+  include M84
+end
+class S84[U] < X84[U]
+end
+extension S84[V]
+  include M84
+  def self.d -> String = "subext"
+end
+def f84(t: Type[M84]) -> String = t.d
+def g84[T <: M84](t: Type[T]) -> String = t.d
+puts "generic/sub_own_ext/sup/none: #{f84(S84[Int])} #{g84(S84[Int])} #{S84[Int].d}"
+module M85[T]
+  def self.d(x: T) -> String = "M"
+end
+class B85[U]
+  def initialize; end
+  def self.d(x: U) -> String = "sup"
+end
+class X85[U] < B85[U]
+  def initialize; end
+end
+extension X85[V]
+  include M85[V]
+end
+class S85[U] < X85[U]
+end
+extension S85[V]
+  include M85[V]
+  def self.d(x: V) -> String = "subext"
+end
+def f85(t: Type[M85[Int]]) -> String = t.d(1)
+def g85[T <: M85[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/sub_own_ext/sup/param: #{f85(S85[Int])} #{g85(S85[Int])} #{S85[Int].d(1)}"
+module M86
+  def self.d -> String = "M"
+end
+module N86
+  include M86
+  def self.d -> String = "N"
+end
+class X86[U]
+  def initialize; end
+end
+extension X86[V]
+  include N86
+end
+class S86[U] < X86[U]
+end
+extension S86[V]
+  include N86
+  def self.d -> String = "subext"
+end
+def f86(t: Type[M86]) -> String = t.d
+def g86[T <: M86](t: Type[T]) -> String = t.d
+puts "generic/sub_own_ext/nmod/none: #{f86(S86[Int])} #{g86(S86[Int])} #{S86[Int].d}"
+module M87[T]
+  def self.d(x: T) -> String = "M"
+end
+module N87[T]
+  include M87[T]
+  def self.d(x: T) -> String = "N"
+end
+class X87[U]
+  def initialize; end
+end
+extension X87[V]
+  include N87[Int]
+end
+class S87[U] < X87[U]
+end
+extension S87[V]
+  include N87[Int]
+  def self.d(x: Int) -> String = "subext"
+end
+def f87(t: Type[M87[Int]]) -> String = t.d(1)
+def g87[T <: M87[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/sub_own_ext/nmod/concrete: #{f87(S87[Int])} #{g87(S87[Int])} #{S87[Int].d(1)}"
+module M88[T]
+  def self.d(x: T) -> String = "M"
+end
+module N88[T]
+  include M88[T]
+  def self.d(x: T) -> String = "N"
+end
+class X88[U]
+  def initialize; end
+end
+extension X88[V]
+  include N88[V]
+end
+class S88[U] < X88[U]
+end
+extension S88[V]
+  include N88[V]
+  def self.d(x: V) -> String = "subext"
+end
+def f88(t: Type[M88[Int]]) -> String = t.d(1)
+def g88[T <: M88[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/sub_own_ext/nmod/param: #{f88(S88[Int])} #{g88(S88[Int])} #{S88[Int].d(1)}"
+module M89
+  def self.d -> String = "M"
+end
+class X89[U]
+  def initialize; end
+end
+extension X89[V]
+  include M89
+end
+class S89[U] < X89[U]
+end
+extension S89[V]
+  include M89
+  def self.d -> String = "subext"
+end
+def f89(t: Type[M89]) -> String = t.d
+def g89[T <: M89](t: Type[T]) -> String = t.d
+puts "generic/sub_own_ext/default/none: #{f89(S89[Int])} #{g89(S89[Int])} #{S89[Int].d}"
+module M90[T]
+  def self.d(x: T) -> String = "M"
+end
+class X90[U]
+  def initialize; end
+end
+extension X90[V]
+  include M90[Int]
+end
+class S90[U] < X90[U]
+end
+extension S90[V]
+  include M90[Int]
+  def self.d(x: Int) -> String = "subext"
+end
+def f90(t: Type[M90[Int]]) -> String = t.d(1)
+def g90[T <: M90[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/sub_own_ext/default/concrete: #{f90(S90[Int])} #{g90(S90[Int])} #{S90[Int].d(1)}"
+module M91[T]
+  def self.d(x: T) -> String = "M"
+end
+class X91[U]
+  def initialize; end
+end
+extension X91[V]
+  include M91[V]
+end
+class S91[U] < X91[U]
+end
+extension S91[V]
+  include M91[V]
+  def self.d(x: V) -> String = "subext"
+end
+def f91(t: Type[M91[Int]]) -> String = t.d(1)
+def g91[T <: M91[Int]](t: Type[T]) -> String = t.d(1)
+puts "generic/sub_own_ext/default/param: #{f91(S91[Int])} #{g91(S91[Int])} #{S91[Int].d(1)}"

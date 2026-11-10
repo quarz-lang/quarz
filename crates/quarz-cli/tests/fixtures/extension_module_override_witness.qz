@@ -1,0 +1,24 @@
+# A module's class method overriding one of a module it includes is the
+# witness of an extension's include of it, as an own include would run it
+# (#514's review): `N.d` over `M.d`, statically and through `Type[M]` and
+# `T <: M` alike; and `N.make` implements `M`'s abstract one.
+module M
+  def self.d -> String = "M"
+end
+module N
+  include M
+  def self.d -> String = "N"
+end
+class K
+  include N
+end
+class Num
+end
+extension Num
+  include N
+end
+def f[T <: M](t: Type[T]) -> String = t.d
+def g(t: Type[M]) -> String = t.d
+def h[T <: N](t: Type[T]) -> String = t.d
+puts K.d, f(K), g(K), h(K)
+puts Num.d, f(Num), g(Num), h(Num)

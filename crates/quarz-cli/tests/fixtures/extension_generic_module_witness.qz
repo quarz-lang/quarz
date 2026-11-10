@@ -1,0 +1,23 @@
+# A generic module's override (`N[T].make` over `M[T]`'s) as the witness
+# for a generic class's extension is checked in the class's parameters
+# (#514's review).
+module M[T]
+  abstract def self.make(x: T) -> Self
+end
+module N[T]
+  include M[T]
+  def self.make(x: T) -> Self = raise "n"
+end
+class G[U]
+  @x: U
+  def initialize(@x: U); end
+end
+extension G[V]
+  include N[V]
+end
+def mk[U](t: Type[M[U]], v: U) -> M[U] = t.make(v)
+begin
+  p mk(G[String], "a").class
+rescue => e
+  puts e.message
+end

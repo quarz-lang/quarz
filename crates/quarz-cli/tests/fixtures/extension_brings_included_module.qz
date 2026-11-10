@@ -1,0 +1,19 @@
+# An extension may include a module that brings one the class includes
+# itself when that one has no class methods (`Enumerable` for `Array`,
+# `Shareable` for `String`): no witness of it is passed over (#504).
+module Each[T]
+  include Enumerable[T]
+  def second -> T? = drop(1).first
+end
+extension Array[T]
+  include Each[T]
+end
+puts [1, 2, 3].second
+module Val
+  include Shareable
+  def shout -> String = "val"
+end
+extension String
+  include Val
+end
+puts "x".shout
