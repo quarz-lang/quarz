@@ -16,7 +16,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 | Instance variables | Created on assignment | Declared in the class body with `@x: Int`. Immutable by default; mutable with `var @x: Int` |
 | Uninitialized instance variables | `nil` | Never seen: a field whose type does not admit `nil` and that has no initializer is assigned on every path through `initialize`, before the object is used (a compile error otherwise) |
 | Reopening classes | Allowed | Not allowed. Add within a lexical scope with `extension` + `using` |
-| `define_method`, `method_missing`, `send`, `eval`, `instance_eval`, `instance_variable_get` | Exist | Do not exist (`instance_exec` does, for blocks typed with a receiver) |
+| `define_method`, `method_missing`, `send`, `eval`, `instance_eval`, `instance_variable_get` | Exist | Do not exist (`instance_exec` does, for blocks typed with a receiver). `define_method` has a compile-time counterpart, `def_method`, called by a `static def` that a class body's `static` statement runs ([14-metaprogramming.md](14-metaprogramming.md) §5): typed, checked where the block is written and compiled like a written method; `send` and `instance_variable_get` have narrower compile-time counterparts, `method_ref` and `field_ref` (§5: a name fixed at compile time, in generated code only); `method_missing`, `eval` and `instance_eval` have none |
 | `Struct`/`Data` | `Data.define(:x, :y)` | `data Point = (x: Int, y: Int)` |
 | Sum types | No dedicated construct; written as a class hierarchy or several `Data` types | `enum` |
 | Interfaces | Duck typing | A `module` with `abstract def`. Retroactive conformance with `extension T; include M; end` |
@@ -70,6 +70,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 - `obj.:method` (method reference)
 - Blocks with a receiver (`Html.() -> Void`, run with `instance_exec`) for DSLs, and `using M do ... end`
 - Nil-returning variants such as `[]?` and `gets?`
+- `static def` methods, which a class body's `static` statement runs while the program is compiled, generating typed members of the class (`def_method`, `def_class_method`, `def_initialize`, `def_field`; [14-metaprogramming.md](14-metaprogramming.md))
 
 ## Rewriting example
 
