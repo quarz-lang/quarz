@@ -2712,7 +2712,24 @@ impl World {
                 // own run, #494), abstract ones too (#501). Several bounds
                 // give each one's.
                 if let Type::Param(p) = &**t {
-                    for b in self.param_bounds(*p) {
+                    // (Through a bound that is a parameter, its bounds:
+                    // `[U <: M, T <: U]`; each parameter once.)
+                    let mut bounds = Vec::new();
+                    let mut work = vec![*p];
+                    let mut seen = Vec::new();
+                    while let Some(q) = work.pop() {
+                        if seen.contains(&q) {
+                            continue;
+                        }
+                        seen.push(q);
+                        for b in self.param_bounds(q) {
+                            match b {
+                                Type::Param(r) => work.push(r),
+                                b => bounds.push(b),
+                            }
+                        }
+                    }
+                    for b in bounds {
                         let Type::Class(bid, bargs) = &b else {
                             continue;
                         };

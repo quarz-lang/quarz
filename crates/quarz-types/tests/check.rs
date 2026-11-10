@@ -5701,6 +5701,8 @@ fn a_module_bound_gives_its_class_methods() {
     // class); several bounds give each one's.
     ok("module Named\n  abstract def self.kind -> String\n  def self.label -> String = \"named\"\n  def self.make -> Self = new\n  def tag -> String = \"t\"\nend\ndef show[T <: Named](t: Type[T]) -> String = t.kind + t.label + t.make.tag");
     ok("module A\n  def self.a -> Int = 1\n  def x -> Int = 1\nend\nmodule B\n  def self.b -> Int = 2\n  def y -> Int = 1\nend\ndef f[T <: A & B](t: Type[T]) -> Int = t.a + t.b");
+    // (Through a bound that is a parameter.)
+    ok("module A\n  def self.a -> Int = 1\n  def x -> Int = 1\nend\ndef f[U <: A, T <: U](t: Type[T]) -> Int = t.a");
     err(
         "module A\n  def self.a -> Int = 1\n  def x -> Int = 1\nend\ndef f[T <: A](t: Type[T]) -> Int = t.nope",
         "undefined method `nope` for Type[T]",
