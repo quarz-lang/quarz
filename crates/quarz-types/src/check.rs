@@ -2006,22 +2006,9 @@ impl Checker {
     }
 
     /// Whether class method `o` takes the place of `site` for its class at
-    /// run time: the same signature (`Interp::same_signature`), or an
-    /// override of it (`RtMethod::overrides`).
+    /// run time: the override table (`World::overrides`).
     fn replaces_at_run_time(&self, o: MethodId, site: MethodId) -> bool {
-        if self.world.same_signature_at_run_time(o, site) {
-            return true;
-        }
-        let m = self.world.method(o);
-        let own: Vec<Type> = self
-            .world
-            .class(m.owner)
-            .type_params
-            .iter()
-            .map(|tp| Type::Param(tp.id))
-            .collect();
-        let ancs = self.world.ancestors(m.owner, &own);
-        self.world.overridden_methods_in(m, &ancs).contains(&site)
+        self.world.overrides(o).contains(&site)
     }
 
     /// Where the first `super` in `m`'s body is, if any.
@@ -7204,7 +7191,16 @@ impl Checker {
                                 && self.extension_bounds_hold(*id, subst)
                         })
                         .map(|(m, _)| m);
-                    let found = to_s.filter(|m| self.world.method(*m).extension.is_some());
+                    // (Called directly when the run time's lookup by name
+                    // would not find it: an extension's own `to_s`, or a
+                    // module's that only an active scoped or conditional
+                    // extension includes, outside `RtClass::lookup`;
+                    // docs/01 §7: the `to_s` found for the type here.)
+                    let found = to_s.filter(|m| {
+                        let mi = self.world.method(*m);
+                        mi.extension.is_some()
+                            || !self.world.lookup_ancestors(cid).contains(&mi.owner)
+                    });
                     self.note_interp_to_s(e.id, cid, found, e.span);
                 }
             }
@@ -9823,21 +9819,12 @@ impl Checker {
             return None;
         }
         // Each resolved method with those it overrides, as the runtime
-        // dispatches (`overridden_methods_in`: same signature).
+        // dispatches (the override table, `World::overrides`).
         let overridden: Vec<Vec<MethodId>> = resolved
             .iter()
             .map(|&r| {
-                let m = self.world.method(r);
-                let own: Vec<Type> = self
-                    .world
-                    .class(m.owner)
-                    .type_params
-                    .iter()
-                    .map(|tp| Type::Param(tp.id))
-                    .collect();
-                let ancs = self.world.ancestors(m.owner, &own);
                 let mut set = vec![r];
-                set.extend(self.world.overridden_methods_in(m, &ancs));
+                set.extend(self.world.overrides(r));
                 set
             })
             .collect();
@@ -11452,18 +11439,10 @@ impl Checker {
     /// override one), as the runtime dispatches: a call of either runs
     /// the receiver's own.
     fn overrides_one(&self, a: MethodId, b: MethodId) -> bool {
+        // (The override table, `World::overrides`.)
         let set = |r: MethodId| {
-            let m = self.world.method(r);
-            let own: Vec<Type> = self
-                .world
-                .class(m.owner)
-                .type_params
-                .iter()
-                .map(|tp| Type::Param(tp.id))
-                .collect();
-            let ancs = self.world.ancestors(m.owner, &own);
             let mut set = vec![r];
-            set.extend(self.world.overridden_methods_in(m, &ancs));
+            set.extend(self.world.overrides(r));
             set
         };
         let (sa, sb) = (set(a), set(b));
@@ -12777,24 +12756,16 @@ impl Checker {
         a.owner != b.owner && !(main(a.owner) && main(b.owner)) && x.0 < y.0
     }
 
-    /// The methods `m` overrides (`World::overridden_methods_in`, the
-    /// relation dispatch uses, as `rtworld::overridden_methods`): none for
-    /// a top-level function, nor for an extension's method, which the
+    /// The methods `m` overrides: its entry in the override table
+    /// (`World::overrides`, what dispatch reads, #536): none for a
+    /// top-level function, nor for an extension's method, which the
     /// runtime does not put in place of the class's.
     fn overridden_by(&self, m: MethodId) -> Vec<MethodId> {
         let mm = self.world.method(m);
         if mm.extension.is_some() || self.world.class(mm.owner).kind == ClassKind::Main {
             return Vec::new();
         }
-        let own: Vec<Type> = self
-            .world
-            .class(mm.owner)
-            .type_params
-            .iter()
-            .map(|tp| Type::Param(tp.id))
-            .collect();
-        let ancs = self.world.ancestors(mm.owner, &own);
-        self.world.overridden_methods_in(mm, &ancs)
+        self.world.overrides(m)
     }
 
     /// Whether `a` is at least as specific as `b`: every call `a` takes,

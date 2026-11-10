@@ -2164,3 +2164,74 @@ x.puts "hi"
         assert!(out.contains(want), "{out}");
     }
 }
+
+#[test]
+fn the_class_relative_override_pairs_are_checked() {
+    // #536 step 1: a later-included module's method over an earlier one's,
+    // a superclass's method implementing an included module's abstract
+    // one, and the class-side pair, all from the one override table, are
+    // checked as overrides (result type), once each.
+    for (src, want) in [
+        (r#"module M1
+  def m -> String = "a"
+end
+module M2
+  def m -> Int = 1
+end
+class C
+  include M1
+  include M2
+  def initialize; end
+end
+"#, "5:3: error: `m` returns Int but `M1#m`, which it overrides in `C`, which includes `M2`, returns String"),
+        (r#"module AK
+  abstract def m -> String
+end
+class AB
+  def initialize; end
+  def m -> Int = 1
+end
+class AS < AB
+  include AK
+end
+"#, "6:3: error: `m` returns Int but `AK#m`, which it overrides, returns String"),
+        (r#"module K1
+  def self.label -> String = "a"
+end
+module K2
+  def self.label -> Int = 1
+end
+class KC
+  include K1
+  include K2
+end
+"#, "5:3: error: `label` returns Int but `K1.label`, which it overrides, returns String"),
+    ] {
+        let out = common::diagnostics(src).join("\n");
+        assert!(out.contains(want), "{out}");
+        assert_eq!(out.matches("error:").count(), 1, "{out}");
+    }
+}
+
+/// #536 (g) on the std side: what a std class's own includes bring over a
+/// module an extension includes is checked at the extension.
+#[test]
+fn a_std_include_over_an_extensions_module_is_checked() {
+    let out = common::diagnostics(
+        "module OM\n  def first -> String = \"om\"\nend\nextension Set[T]\n  include OM\nend\n",
+    );
+    assert!(
+        out.iter()
+            .any(|d| d.contains("`first` returns T? but `OM#first`, which it overrides")),
+        "{out:?}"
+    );
+    // A std ancestor implementing the module's abstract method.
+    let out = common::diagnostics(
+        "module OM\n  abstract def hash -> String\nend\nextension Int\n  include OM\nend\n",
+    );
+    assert!(
+        out.iter()
+            .any(|d| d.contains("`hash` returns Int but `OM#hash`, which it overrides")),
+        "{out:?}"
+    );
+}

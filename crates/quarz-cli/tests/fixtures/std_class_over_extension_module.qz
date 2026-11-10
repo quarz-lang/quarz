@@ -1,0 +1,13 @@
+# #536 (g): a std class's own method overrides the method of a module an
+# extension includes; a compatible module method (or one of a name no std
+# class has) is called through the module type on a std value.
+module OM
+  def hash -> Int = 7
+  def om_name -> String = "om"
+end
+extension Object
+  include OM
+end
+def g(p: OM) -> String = "#{p.hash == 3.hash} #{p.om_name}"
+puts g(3)
+puts g("s")

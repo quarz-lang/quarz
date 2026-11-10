@@ -1,0 +1,5 @@
+Box[Int] direct: module
+Box[Int] through EA: base
+Box[Int] self call in EA: base
+Box[String] through EA: base
+Box[String] self call in EA: base

@@ -2487,10 +2487,9 @@ fn calls_a_class_test_cannot_choose_are_errors() {
         "module M\n  def self.k -> Int = 1\nend\nmodule N\n  def self.k -> Int = 2\nend\nclass A\n  include M\nend\nclass B\n  include N\nend\ndef f(t: Type[A] | Type[B]) -> Int = t.k\np f(A)",
         "cannot tell at run time which `k` to call for Type[A] and Type[B]: M.k or N.k",
     );
-    err(
-        "module M\n  def self.k -> Int = 1\nend\nclass A\n  include M\nend\nclass B < A\n  def self.k(x: Int = 0) -> Int = 2\nend\nclass C < A\nend\ndef f(t: Type[B] | Type[C]) -> Int = t.k\np f(C)",
-        "cannot tell at run time which `k` to call for Type[B] and Type[C]",
-    );
+    // (`B.k(x: Int = 0)` replaces `M.k` by the one pairing rule, an added
+    // optional parameter: a common one, #536.)
+    ok("module M\n  def self.k -> Int = 1\nend\nclass A\n  include M\nend\nclass B < A\n  def self.k(x: Int = 0) -> Int = 2\nend\nclass C < A\nend\ndef f(t: Type[B] | Type[C]) -> Int = t.k\np f(C)");
     // `M#k` overrides `S.k` on `A`, not on `Z`, which `S.k` does not reach.
     err(
         "module M\n  def self.k -> String = \"M\"\nend\nclass S\n  def self.k -> String = \"S\"\nend\nclass A < S\n  include M\nend\nclass T < S\n  def self.k -> String = \"T\"\nend\nclass Z\n  include M\nend\ndef f(t: Type[T] | Type[Z]) -> String = t.k\np f(Z)",
@@ -4047,7 +4046,7 @@ fn methods_are_implemented_and_overridden_by_signature() {
     // module-overrides-prelude-method.qz and
     // superclass-module-hidden-by-prelude.qz: a module's method over one
     // its includer's ancestors already have, `Object#to_s` among them.
-    err("module G\n  def who -> String = \"G\"\nend\nmodule R\n  def who -> Int = 1\nend\nmodule H\n  include R\n  include G\n  def g -> String = who + \"!\"\nend\nclass X\n  include G\n  include H\nend\nputs X.new.g", "`who` returns String but `R#who`, which it overrides in `H`, which includes `G`");
+    err("module G\n  def who -> String = \"G\"\nend\nmodule R\n  def who -> Int = 1\nend\nmodule H\n  include R\n  include G\n  def g -> String = who + \"!\"\nend\nclass X\n  include G\n  include H\nend\nputs X.new.g", "`who` returns Int but `G#who`, which it overrides in `X`, which includes `R`");
     err("module M\n  def to_s -> Int = 3\nend\nclass C\n  include M\nend\ndef f(x: Object) -> String = x.to_s + \"!\"\nputs f(C.new)", "`to_s` returns Int but `Object#to_s`, which it overrides in `C`, which includes `M`");
     err("module G\n  def between?(min: E, max: E) -> String = \"g\"\nend\nclass B\n  include G\nend\nclass E < B\n  include Comparable[E]\n  def <=>(other: E) -> Int = 0\nend\ndef id(v: B) -> B = v\ndef k -> String = id(E.new).between?(E.new, E.new) + \"!\"\nputs k", "`between?` returns Bool but `G#between?`, which it overrides in `E`, which includes `Comparable`");
     // An abstract method passes over to a concrete one further up, and a
@@ -4590,10 +4589,9 @@ fn class_objects_whose_class_methods_override_one() {
         "class Kind\n  def self.k -> String = \"kind\"\nend\nclass Other\n  def self.k -> String = \"other\"\nend\ndef f(c: Type[Kind] | Type[Other]) -> String = c.then { |x| x.k }",
         "cannot tell at run time which `k` to call for Type[Kind] and Type[Other]",
     );
-    err(
-        "class Kind\n  def self.k -> String = \"kind\"\nend\nclass SubKind < Kind\n  def self.k(x: Int = 1) -> String = \"sub\"\nend\ndef f[T <: SubKind](c: Type[Kind] | Type[T]) -> String = c.then { |x| x.k }",
-        "cannot tell at run time which `k` to call",
-    );
+    // (An added optional parameter is an override by the one pairing rule,
+    // #536: `SubKind.k` replaces `Kind.k`.)
+    ok("class Kind\n  def self.k -> String = \"kind\"\nend\nclass SubKind < Kind\n  def self.k(x: Int = 1) -> String = \"sub\"\nend\ndef f[T <: SubKind](c: Type[Kind] | Type[T]) -> String = c.then { |x| x.k }");
     // Extensions' class methods (found by name only where active): refused.
     err(
         "class Kind\nend\nclass SubKind < Kind\nend\nmodule Ext\n  extension Kind\n    def self.e -> String = \"k\"\n  end\n  extension SubKind\n    def self.e -> String = \"s\"\n  end\nend\nusing Ext\ndef f[T <: SubKind](c: Type[Kind] | Type[T]) -> String = c.then { |x| x.e }",
@@ -5745,4 +5743,140 @@ fn a_modules_new_never_reaches_a_class_the_runtime_builds() {
             "{name}: {errs}"
         );
     }
+}
+
+#[test]
+fn a_class_method_replacing_a_class_def_method_is_checked_as_its_override() {
+    // #536, decided (A): a class method of the name and a replacing
+    // signature of a `Meta::ClassDef` method (a static def's `self`)
+    // overrides it, as one of `Type`'s does.
+    err(
+        "class Post\n  def self.type(x: Int = 0) -> Int = 42\nend",
+        "`type` returns Int but `Meta::ClassDef#type`, which it overrides, returns Type[Post]",
+    );
+    ok("class Endpoint\n  def self.type -> Type[Endpoint] = self\nend");
+    // Another signature is an overload.
+    ok("class Post\n  def self.type(x: Int) -> Int = x\nend");
+}
+
+#[test]
+fn an_extensions_include_over_a_superclass_method_is_checked() {
+    // #536: a module an extension of the class includes overrides the
+    // superclass's method in that class like an own include.
+    err(
+        "module M\n  def m(x: Int) -> Int = 5\nend\nclass B\n  def initialize; end\n  def m(x: Int) -> String = \"B\"\nend\nclass C < B\n  def initialize; end\nend\nextension C\n  include M\nend",
+        "`m` returns Int but `B#m`, which it overrides in `C`, which includes `M`, returns String",
+    );
+}
+
+#[test]
+fn a_modules_class_method_is_checked_for_every_includer() {
+    // #536: `Meta::ClassDef#type` returns the includer's `Type[T]`, so a
+    // module's `def self.type` is checked for each class including it,
+    // whichever comes first.
+    let m = "module M\n  def self.type -> Type[C1] = C1\nend\n";
+    for classes in [
+        "class C1\n  include M\nend\nclass C2\n  include M\nend",
+        "class C2\n  include M\nend\nclass C1\n  include M\nend",
+    ] {
+        err(
+            &format!("{m}{classes}"),
+            "`type` returns Type[C1] but `Meta::ClassDef#type`, which it overrides in `C2`, which includes `M`, returns Type[C2]",
+        );
+    }
+}
+
+#[test]
+fn a_classs_own_method_over_a_conditional_extensions_module_is_checked() {
+    // #536: the class's own method overrides the module's where the bound
+    // holds (docs/01 §7), checked as an override.
+    err(
+        "module EM\n  def m(x: Int) -> String = \"module\"\nend\nclass Box[T]\n  def initialize; end\n  def m(x: Int) -> Int = 5\nend\nextension Box[T <: Int]\n  include EM\nend",
+        "`m` returns Int but `EM#m`, which it overrides, returns String",
+    );
+    // An extension's include brings no class method onto the class object
+    // (#494): no pair with `Meta::ClassDef`'s.
+    ok("module M\n  def self.method_ref[P](name: Symbol) -> Meta::Method[M, P] = raise ArgumentError.new(\"no\")\nend\nclass D\n  def initialize; end\nend\nextension D\n  include M\nend");
+}
+
+#[test]
+fn a_conditional_extensions_pairs_where_the_bound_may_hold() {
+    let em = "module EM\n  def m(x: Int) -> String = \"module\"\nend\n";
+    // A module target: the class's own method over the module the
+    // module's conditional extension includes.
+    err(
+        &format!("{em}module N[T]\nend\nextension N[T <: Int]\n  include EM\nend\nclass Box[T]\n  include N[T]\n  def initialize; end\n  def m(x: Int) -> Int = 5\nend"),
+        "`m` returns Int but `EM#m`, which it overrides, returns String",
+    );
+    // A bound failing for concrete arguments: no pair.
+    ok(&format!("{em}class Box[T]\n  def initialize; end\nend\nextension Box[T <: Int]\n  include EM\nend\nclass CSub < Box[String]\n  def initialize; end\n  def m(x: Int) -> Int = 5\nend"));
+    // (g) An extension declared in a module body holds everywhere too.
+    err(
+        &format!("{em}class Box\n  def initialize; end\n  def m(x: Int) -> Int = 5\nend\nmodule Scope\n  extension Box\n    include EM\n  end\nend"),
+        "`m` returns Int but `EM#m`, which it overrides, returns String",
+    );
+}
+
+#[test]
+fn refused_until_the_exact_may_hold() {
+    // Refused until #556: the arguments mention a parameter but no
+    // instantiation meets the bound, so no value reaches the pair; the
+    // approximation pairs them anyway (it errs toward refusing). #556
+    // turns each into `ok`.
+    let em = "module EM\n  def m(x: Int) -> String = \"module\"\nend\n";
+    let want = "`m` returns Int but `EM#m`, which it overrides, returns String";
+    // `Array[U] <: Int` for no `U`, a superclass's arguments.
+    err(&format!("{em}class Box[T]\n  def initialize; end\nend\nextension Box[T <: Int]\n  include EM\nend\nclass Sub[U] < Box[Array[U]]\n  def initialize; end\n  def m(x: Int) -> Int = 5\nend"), want);
+    // The same, a module's.
+    err(&format!("{em}module N[T]\nend\nextension N[T <: Int]\n  include EM\nend\nclass Box[T]\n  include N[Array[T]]\n  def initialize; end\n  def m(x: Int) -> Int = 5\nend"), want);
+    // `Sink[U] <: Sink[Int]` needs `Int <: U`, which `U <: String` rules out.
+    err(&format!("{em}class Sink[in T]\n  def initialize; end\nend\nclass Box[T]\n  def initialize; end\nend\nextension Box[T <: Sink[Int]]\n  include EM\nend\nclass Sub[U <: String] < Box[Sink[U]]\n  def initialize; end\n  def m(x: Int) -> Int = 5\nend"), want);
+}
+
+#[test]
+fn rule_5_takes_the_override_tables_class_object_entries() {
+    // #536: a class method of a replacing signature overrides `Type`'s
+    // method (docs/01 §9), so rule 5's tie-break takes it as the override
+    // that wins, not an ambiguity.
+    ok("class D\n  def self.inspect(x: Int = 0) -> String = \"D!\"\nend\nk: Type = D\nputs k.inspect");
+}
+
+#[test]
+fn a_std_classs_own_method_is_checked_against_an_extensions_module() {
+    // #536 (g): a std class's own method overrides the method of a module
+    // an extension includes, as a program class's does; checked at the
+    // extension, top-level or scoped.
+    let om = "module OM\n  def hash -> String = \"om-hash\"\nend\n";
+    let want =
+        "`hash` returns Int but `OM#hash`, which it overrides as `Object#hash`, returns String";
+    err(&format!("{om}extension Object\n  include OM\nend"), want);
+    err(
+        &format!("{om}module App\n  extension Object\n    include OM\n  end\nend"),
+        want,
+    );
+    // A compatible one, or a name no std class has, is fine.
+    ok("module OM\n  def hash -> Int = 7\n  def om_name -> String = \"om\"\nend\nextension Object\n  include OM\nend");
+}
+
+#[test]
+fn the_std_side_of_an_extensions_module_is_checked_in_every_direction() {
+    // #536 (g) on the std side, checked at the extension: what a std
+    // class's includes bring over the module's method, a std ancestor
+    // implementing its abstract method, a std class's class method on its
+    // class object.
+    // (What `Set`'s `Enumerable` brings: tests/diagnostics.rs, where the
+    // `set` module loads.)
+    err(
+        "module OM\n  def now -> String = \"om\"\nend\nextension Object\n  include OM\nend",
+        "`now` returns Time but `OM#now`, which it overrides as `Time.now`, returns String",
+    );
+    // A generic module's method, with the extension's arguments (#563):
+    // `Time.utc(year: Int)` replaces `OM[Int]#utc`.
+    err(
+        "module OM[U]\n  def utc(year: U) -> String = \"om\"\nend\nextension Object\n  include OM[Int]\nend",
+        "`utc` returns Time but `OM#utc`, which it overrides as `Time.utc`, returns String",
+    );
+    // A class's own method implementing the module's abstract one, over a
+    // superclass's of another result: the class's runs.
+    ok("module OM\n  abstract def m -> String\nend\nclass Base\n  def m -> Object = 1\nend\nclass Foo < Base\n  include OM\n  def m -> String = \"foo\"\nend\ndef g(p: OM) -> String = p.m\nputs g(Foo.new) + \"!\"");
 }

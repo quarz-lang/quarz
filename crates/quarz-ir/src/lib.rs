@@ -1391,8 +1391,21 @@ pub struct RtClass {
     pub name: String,
     pub kind: RtClassKind,
     pub superclass: Option<ClassId>,
-    /// Method resolution order, starting with the class itself.
+    /// Membership: every class and module the class's values are (its
+    /// superclasses, its own includes, and every extension's include,
+    /// scoped and conditional ones too: `World::runtime_ancestors`), in
+    /// resolution order, starting with the class itself. For `is_a?`,
+    /// conformance through a module type, and the walks that take the
+    /// override table's pairs (`Interp::find_override`); never for a
+    /// lookup by name, which `lookup` serves.
     pub ancestors: Vec<ClassId>,
+    /// Dispatch by name: the classes and modules whose methods a lookup by
+    /// name may find (`World::lookup_ancestors`): `ancestors` without the
+    /// modules of scoped or conditional extensions, which override none
+    /// of the class's or its ancestors' methods (docs/01 §7). For
+    /// `Interp::find_method` (natives' calls by name: `puts`, `hash`, `==`)
+    /// and `deinitialize`.
+    pub lookup: Vec<ClassId>,
     /// The physical fields, in layout order (inherited first): a data
     /// value held by value contributes its own physical fields.
     pub fields: Vec<RtField>,
@@ -1516,17 +1529,24 @@ pub struct RtMethod {
     /// Another method of the owner has the same name.
     pub overloaded: bool,
     /// Some descendant of the owner (or an extension on one) declares a
-    /// method of this name, so dynamic dispatch may pick it instead.
+    /// method of this name, so dynamic dispatch may pick it instead: a
+    /// name-based superset of the override table (`overrides`), deciding
+    /// only whether a call dispatches at all; #536 step 4 derives it from
+    /// one dispatch predicate.
     pub overridden: bool,
     pub fast_op: Option<FastOp>,
     pub file: u32,
     /// The declared return type's name, when known.
     #[serde(default)]
     pub ret: Option<String>,
-    /// Methods of ancestors this one overrides although their parameter
-    /// types are written differently (`put(x: T)` of `Box[T]` for
-    /// `put(x: Int)` of `IntBox < Box[Int]`); an exact signature match
-    /// needs no entry.
+    /// The override table's entry (`World::overrides`, the one pairing
+    /// rule `World::replaces`, #536): every method of an ancestor (or of an
+    /// extension of one) this one replaces at run time, and for a class
+    /// method the `Type` methods it replaces on its class object. The
+    /// single source every reader takes (the interpreter's dispatch,
+    /// devirtualization, the checker); with `RtWorld::include_overrides`
+    /// and `class_include_overrides` for a module's method in a class
+    /// including it.
     #[serde(default)]
     pub overrides: Vec<MethodId>,
     /// For a native: the classes in its result and block types, whose
@@ -1675,13 +1695,15 @@ pub struct RtWorld {
     /// through an extension (`World::class_ext_impls`, #504).
     #[serde(default)]
     pub class_ext_impls: Vec<(ClassId, MethodId, MethodId)>,
-    /// (class, overridden, overriding): a method of a module the class
-    /// includes over its superclass's (`World::include_overrides`).
+    /// (class, overridden, overriding): the class-relative part of the
+    /// override table (`World::include_overrides`, #536): a method of a
+    /// module the class includes over a later ancestor's (its superclass's
+    /// or an earlier-included module's), and an abstract one of such a
+    /// module with what implements it later.
     #[serde(default)]
     pub include_overrides: Vec<(ClassId, MethodId, MethodId)>,
-    /// (class, overridden, overriding): a class method of a module the
-    /// class includes over its superclass's class method
-    /// (`World::class_include_overrides`).
+    /// (class, overridden, overriding): the same on the class side
+    /// (`World::class_include_overrides`, #536).
     #[serde(default)]
     pub class_include_overrides: Vec<(ClassId, MethodId, MethodId)>,
     /// Top-level classes and modules by name.

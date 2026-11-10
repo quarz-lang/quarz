@@ -1098,7 +1098,17 @@ impl World {
     /// arguments expressed in terms of the given `args`. Retroactive
     /// conformance from active extensions is included.
     pub fn ancestors(&self, id: ClassId, args: &[Type]) -> Vec<(ClassId, Vec<Type>)> {
-        let exts = self.conformance_extensions();
+        self.ancestors_under(id, args, self.conformance_extensions())
+    }
+
+    /// `ancestors` with the conformances of extensions `exts`, remembered
+    /// alike.
+    fn ancestors_under(
+        &self,
+        id: ClassId,
+        args: &[Type],
+        exts: Vec<ExtensionId>,
+    ) -> Vec<(ClassId, Vec<Type>)> {
         if !self.ancestors_memo.on {
             return self.ancestors_with(id, args, &exts);
         }
@@ -1510,23 +1520,42 @@ impl World {
     pub fn include_overrides_of(&self, id: ClassId) -> Vec<IncludeOverride> {
         let mut out: Vec<IncludeOverride> = Vec::new();
         let c = self.class(id);
-        if c.kind == ClassKind::Module {
+        // (Only a class or module with includes of its own, or that an
+        // extension's include makes conform, has pairs: what its
+        // superclass includes is the superclass's.)
+        if c.includes.is_empty()
+            && !self
+                .extensions
+                .iter()
+                .any(|e| e.target == id && !e.includes.is_empty())
+        {
             return out;
         }
-        let Some(Type::Class(sup, _)) = &c.superclass else {
-            return out;
+        // (A module too: its own includes' pairs hold in every class
+        // including it, #536; it has no superclass.)
+        let inherited = match &c.superclass {
+            Some(Type::Class(sup, _)) => self.ancestor_ids(*sup),
+            _ if c.kind == ClassKind::Module => Vec::new(),
+            _ => return out,
         };
-        let inherited = self.ancestor_ids(*sup);
         // (The names the superclass chain has methods of, once: a module's
         // method of another name overrides nothing.)
-        let names: rustc_hash::FxHashSet<&str> = inherited
+        // (With the conditional extensions' modules, their bound assumed:
+        // a module the class includes overrides one of theirs as the
+        // class's own method does, docs/01 §7.)
+        let ancestors = self.own_ancestors(c.id);
+        // (Every ancestor's names: a module's method may override a
+        // superclass's or an earlier-included module's, #536.)
+        let names: rustc_hash::FxHashSet<&str> = ancestors
             .iter()
-            .flat_map(|s| self.class(*s).methods.keys().map(|n| n.as_str()))
+            .flat_map(|(s, _)| self.class(*s).methods.keys().map(|n| n.as_str()))
             .collect();
-        let own: Vec<Type> = c.type_params.iter().map(|p| Type::Param(p.id)).collect();
-        let ancestors = self.ancestors(c.id, &own);
-        for (x, xargs) in &ancestors {
-            if self.class(*x).kind != ClassKind::Module || inherited.contains(x) {
+        let overriding = self.overriding_modules(c.id);
+        for (xpos, (x, xargs)) in ancestors.iter().enumerate() {
+            if self.class(*x).kind != ClassKind::Module
+                || inherited.contains(x)
+                || !overriding.contains(x)
+            {
                 continue;
             }
             // The module's methods, and its prelude extensions', of such a
@@ -1580,8 +1609,11 @@ impl World {
                 {
                     continue;
                 }
-                for (s, sargs) in &ancestors {
-                    if !inherited.contains(s) || x_own.contains(s) {
+                // (Any ancestor after the module in the class's lookup
+                // order, outside the module's own ancestry: the superclass
+                // chain, or a module included before it.)
+                for (s, sargs) in &ancestors[xpos + 1..] {
+                    if x_own.contains(s) {
                         continue;
                     }
                     let base = self.class_subst(*s, sargs);
@@ -1600,8 +1632,9 @@ impl World {
                             ssubst.insert(p.id, Type::Param(q.id));
                         }
                         if om.singleton == m.singleton
-                            && self.takes_calls_of(m, msubst, om, &ssubst)
+                            && self.replaces_seen(mm, msubst, o, &ssubst)
                             && !out.iter().any(|e| e.overridden == o)
+                            && !self.replaced_before(&ancestors[..xpos], o, false)
                         {
                             out.push(IncludeOverride {
                                 class: c.id,
@@ -1611,6 +1644,64 @@ impl World {
                                 by_subst: msubst.clone(),
                                 module: *x,
                             });
+                        }
+                    }
+                }
+            }
+        }
+        // An abstract method of a module the class includes is replaced by
+        // what implements it later in the class's lookup order (a
+        // superclass's, or a module's included before it): the first that
+        // takes its calls (#536; the runtime passes the abstract one over).
+        for (xpos, (x, xargs)) in ancestors.iter().enumerate() {
+            if self.class(*x).kind != ClassKind::Module || inherited.contains(x) {
+                continue;
+            }
+            let x_own = self.ancestor_ids(*x);
+            let asubst = self.class_subst(*x, xargs);
+            for ids in self.class(*x).methods.values() {
+                for &am in ids {
+                    let a = self.method(am);
+                    // (Not when something before the module in the lookup
+                    // order, the class's own method, implements it: that
+                    // runs, and pairs with it as an override.)
+                    if a.owner != *x
+                        || !a.is_abstract
+                        || out.iter().any(|e| e.overridden == am)
+                        || self.replaced_before(&ancestors[..xpos], am, false)
+                    {
+                        continue;
+                    }
+                    'later: for (s, sargs) in &ancestors[xpos + 1..] {
+                        if x_own.contains(s) {
+                            continue;
+                        }
+                        let Some(os) = self.class(*s).methods.get(&a.name) else {
+                            continue;
+                        };
+                        for &o in os {
+                            let om = self.method(o);
+                            if om.owner != *s
+                                || om.is_abstract
+                                || om.type_params.len() != a.type_params.len()
+                            {
+                                continue;
+                            }
+                            let mut ssubst = self.class_subst(*s, sargs);
+                            for (p, q) in om.type_params.iter().zip(&a.type_params) {
+                                ssubst.insert(p.id, Type::Param(q.id));
+                            }
+                            if self.replaces_seen(o, &ssubst, am, &asubst) {
+                                out.push(IncludeOverride {
+                                    class: c.id,
+                                    overridden: am,
+                                    overridden_subst: asubst.clone(),
+                                    by: o,
+                                    by_subst: ssubst,
+                                    module: *x,
+                                });
+                                break 'later;
+                            }
                         }
                     }
                 }
@@ -1640,7 +1731,8 @@ impl World {
     pub fn class_include_overrides_of(&self, id: ClassId) -> Vec<IncludeOverride> {
         let mut out: Vec<IncludeOverride> = Vec::new();
         let c = self.class(id);
-        if c.kind == ClassKind::Module || c.includes.is_empty() || c.superclass.is_none() {
+        // (A module too: its own includes' pairs, #536.)
+        if c.includes.is_empty() || (c.superclass.is_none() && c.kind != ClassKind::Module) {
             return out;
         }
         let own: Vec<Type> = c.type_params.iter().map(|p| Type::Param(p.id)).collect();
@@ -1653,22 +1745,29 @@ impl World {
         // The class's own class methods come first: one that overrides `o`
         // as the runtime takes it (`Interp::class_method_override`) is the
         // one, an overload of the name is not.
-        let ancs = self.ancestors(id, &own);
+        // (The override table, #536.)
         let overridden_by_own = |o: MethodId| {
             c.singleton_methods
                 .get(&self.method(o).name)
                 .is_some_and(|mine| {
-                    mine.iter().any(|&a| {
-                        let am = self.method(a);
-                        am.owner == id
-                            && (self.same_signature_at_run_time(a, o)
-                                || self.overridden_methods_in(am, &ancs).contains(&o))
-                    })
+                    mine.iter()
+                        .any(|&a| self.method(a).owner == id && self.overrides(a).contains(&o))
                 })
         };
         // (The last module included first, as the runtime; the class's own
         // includes: an extension's take no part in dispatch, #504.)
-        for (x, xargs) in self.class_modules_included(id, &own) {
+        let modules = self.class_modules_included(id, &own);
+        for (xpos, (x, xargs)) in modules.iter().enumerate() {
+            let (x, xargs) = (*x, xargs.clone());
+            // (Over a superclass's, or a module included before it, outside
+            // its own ancestry, #536.)
+            let x_own = self.ancestor_ids(x);
+            let later: Vec<(ClassId, Vec<Type>)> = modules[xpos + 1..]
+                .iter()
+                .filter(|(k, _)| !x_own.contains(k))
+                .cloned()
+                .chain(supers.iter().cloned())
+                .collect();
             let msubst = self.class_subst(x, &xargs);
             for ids in self.class(x).singleton_methods.values() {
                 for &mm in ids {
@@ -1676,7 +1775,7 @@ impl World {
                     if m.owner != x || m.is_abstract || m.extension.is_some() {
                         continue;
                     }
-                    for (s, sargs) in &supers {
+                    for (s, sargs) in &later {
                         let Some(os) = self.class(*s).singleton_methods.get(&m.name) else {
                             continue;
                         };
@@ -1697,9 +1796,10 @@ impl World {
                             for (p, q) in om.type_params.iter().zip(&m.type_params) {
                                 ssubst.insert(p.id, Type::Param(q.id));
                             }
-                            if self.takes_calls_of(m, &msubst, om, &ssubst)
+                            if self.replaces_seen(mm, &msubst, o, &ssubst)
                                 && !out.iter().any(|e| e.overridden == o)
                                 && !overridden_by_own(o)
+                                && !self.replaced_before(&modules[..xpos], o, true)
                             {
                                 out.push(IncludeOverride {
                                     class: id,
@@ -1709,6 +1809,57 @@ impl World {
                                     by_subst: msubst.clone(),
                                     module: x,
                                 });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // An abstract class method of a module the class includes is
+        // replaced by what implements it later on its class side (a
+        // superclass's class method, or one of a module included before
+        // it): the first that takes its calls (#536).
+        for (xpos, (x, xargs)) in modules.iter().enumerate() {
+            let x_own = self.ancestor_ids(*x);
+            let asubst = self.class_subst(*x, xargs);
+            let later: Vec<(ClassId, Vec<Type>)> = modules[xpos + 1..]
+                .iter()
+                .filter(|(k, _)| !x_own.contains(k))
+                .cloned()
+                .chain(supers.iter().cloned())
+                .collect();
+            for ids in self.class(*x).singleton_methods.values() {
+                for &am in ids {
+                    let a = self.method(am);
+                    if a.owner != *x || !a.is_abstract || out.iter().any(|e| e.overridden == am) {
+                        continue;
+                    }
+                    'later: for (s, sargs) in &later {
+                        let Some(os) = self.class(*s).singleton_methods.get(&a.name) else {
+                            continue;
+                        };
+                        for &o in os {
+                            let om = self.method(o);
+                            if om.owner != *s
+                                || om.is_abstract
+                                || om.type_params.len() != a.type_params.len()
+                            {
+                                continue;
+                            }
+                            let mut ssubst = self.class_subst(*s, sargs);
+                            for (p, q) in om.type_params.iter().zip(&a.type_params) {
+                                ssubst.insert(p.id, Type::Param(q.id));
+                            }
+                            if self.replaces_seen(o, &ssubst, am, &asubst) {
+                                out.push(IncludeOverride {
+                                    class: id,
+                                    overridden: am,
+                                    overridden_subst: asubst.clone(),
+                                    by: o,
+                                    by_subst: ssubst,
+                                    module: *x,
+                                });
+                                break 'later;
                             }
                         }
                     }
@@ -2256,6 +2407,13 @@ impl World {
     pub fn same_signature_at_run_time(&self, m: MethodId, o: MethodId) -> bool {
         let (m, om) = (self.method(m), self.method(o));
         let (ps, qs) = (om.positional_params(), m.positional_params());
+        // (The shape first, cheap: the types, by name, only for a match.)
+        if om.block.is_some() != m.block.is_some()
+            || ps.len() != qs.len()
+            || ps.iter().zip(&qs).any(|(p, q)| p.kind != q.kind)
+        {
+            return false;
+        }
         let same = |p: &ParamInfo, q: &ParamInfo| self.same_at_run_time(om, &p.ty, m, &q.ty);
         let blocks = match (&om.block, &m.block) {
             (Some((_, b)), Some((_, c))) => self.same_at_run_time(om, b, m, c),
@@ -2268,7 +2426,7 @@ impl World {
                 .iter()
                 .zip(&qs)
                 .all(|(p, q)| p.kind == q.kind && same(p, q))
-            // (`Declarer::keywords_take`: each keyword shared, the same.)
+            // (Each keyword shared, the same.)
             && m.keywords_accept(om)
             && om
                 .params
@@ -2320,16 +2478,355 @@ impl World {
             }
     }
 
-    /// The methods of `m`'s ancestors that `m` overrides, as the runtime
-    /// dispatches (`RtMethod::overrides`): same name and kind, parameters
-    /// at least as wide as the ancestor's, substituted (`ancs`: `m`'s
-    /// owner's ancestors with its own type parameters), any added optional
-    /// or rest, a block that holds the ancestor's, every keyword call it
-    /// takes. (`rtworld::overridden_methods`, which skips functions.)
-    pub fn overridden_methods_in(
+    /// Whether method `m` replaces method `o` at run time, `o` being
+    /// declared in ancestor `a` with `aargs` as `m`'s owner sees it: the
+    /// one pairing rule of the override relation (#536 step 1; docs/01 §3).
+    /// Same name and side (the caller's lookup); `o`'s positional
+    /// parameters, substituted, each at least as wide in `m` (of the same
+    /// kind), `m`'s extra ones optional or rest; a block exactly when `o`
+    /// has one, of a type at least as wide; every keyword call `o` takes
+    /// (`MethodInfo::keywords_accept`), each shared keyword at least as
+    /// wide; or the same signature for the runtime
+    /// (`same_signature_at_run_time`: a type mentioning a method's own
+    /// type parameter, `Self` or an inference variable matches). Result
+    /// types are not part of it: a pair is then checked as an override
+    /// (`check_override_pair`).
+    pub fn replaces(&self, m: MethodId, o: MethodId, a: ClassId, aargs: &[Type]) -> bool {
+        self.replaces_seen(m, &HashMap::default(), o, &self.class_subst(a, aargs))
+    }
+
+    /// `replaces` with both sides' types seen through substitutions (a
+    /// module's method in a class including it: `msubst` its arguments
+    /// there; `osubst` the overridden one's owner's, with the method type
+    /// parameters renamed by the caller): the widening rule
+    /// (`takes_calls_of`) or the same signature for the runtime.
+    pub fn replaces_seen(
+        &self,
+        m: MethodId,
+        msubst: &HashMap<TypeParamId, Type>,
+        o: MethodId,
+        osubst: &HashMap<TypeParamId, Type>,
+    ) -> bool {
+        let (mi, oi) = (self.method(m), self.method(o));
+        self.takes_calls_of(mi, msubst, oi, osubst) || self.same_signature_at_run_time(m, o)
+    }
+
+    /// Whether a method of one of `earlier` (ancestors before a module in a
+    /// class's lookup order, on the instance or the class side) already
+    /// replaces `o` there, by being it or by its own table entry: a later
+    /// module's method then does not (#536: `M3` including `M1` puts its
+    /// `k` in `M1.k`'s place before `M2`'s does).
+    fn replaced_before(
+        &self,
+        earlier: &[(ClassId, Vec<Type>)],
+        o: MethodId,
+        singleton: bool,
+    ) -> bool {
+        let name = &self.method(o).name;
+        earlier.iter().any(|(y, _)| {
+            let yc = self.class(*y);
+            let table = if singleton {
+                &yc.singleton_methods
+            } else {
+                &yc.methods
+            };
+            table.get(name).is_some_and(|ids| {
+                ids.iter().any(|&k| {
+                    let km = self.method(k);
+                    km.owner == *y && !km.is_abstract && (k == o || self.overrides(k).contains(&o))
+                })
+            })
+        })
+    }
+
+    /// The override table's entry for method `m`: the methods of its
+    /// owner's ancestors (with its own type parameters) it replaces
+    /// (`replaces`). What `RtMethod::overrides` ships and every reader
+    /// takes (#536 step 1).
+    pub fn overrides(&self, m: MethodId) -> Vec<MethodId> {
+        let ancs = self.own_ancestors(self.method(m).owner);
+        self.overrides_with(
+            m,
+            &ancs,
+            &self.type_classes(),
+            &self.extension_methods_by_target(),
+        )
+    }
+
+    /// Class `c`'s ancestors with its own type parameters, then the
+    /// modules its classes' conditional extensions include, their bounds
+    /// assumed: what its methods may override (the override table and its
+    /// check, `check_override_returns`).
+    pub fn own_ancestors(&self, c: ClassId) -> Vec<(ClassId, Vec<Type>)> {
+        self.own_ancestors_under(c, &self.all_conformance_extensions())
+    }
+
+    /// The ancestors of class `id` the runtime looks methods up in
+    /// (`RtClass::ancestors`): as `ancestors` with no arguments, with every
+    /// extension's include (`all_conformance_extensions`), the same set the
+    /// override table takes, so the two cannot disagree (#554).
+    pub fn runtime_ancestors(&self, id: ClassId) -> Vec<(ClassId, Vec<Type>)> {
+        self.ancestors_under(id, &[], self.all_conformance_extensions())
+    }
+
+    /// The modules of class `c`'s ancestry whose methods may override the
+    /// class's or its ancestors' (docs/01 §7): those its own includes bring
+    /// (a superclass's too) and those an unconditional extension at the top
+    /// level includes, active everywhere in its cog or application. A
+    /// scoped (module-body) or conditional extension's module is
+    /// overridden by the class's own methods and includes, and overrides
+    /// none of them (#504's rule, (e)).
+    pub fn overriding_modules(&self, c: ClassId) -> Vec<ClassId> {
+        let top = self.top_level_conformance_extensions();
+        let own: Vec<Type> = self
+            .class(c)
+            .type_params
+            .iter()
+            .map(|tp| Type::Param(tp.id))
+            .collect();
+        self.ancestors_under(c, &own, top)
+            .into_iter()
+            .map(|(a, _)| a)
+            .filter(|a| self.class(*a).kind == ClassKind::Module)
+            .collect()
+    }
+
+    /// The unconditional extensions at the top level of a cog or the
+    /// application with includes: those
+    /// whose modules override the class's or its ancestors' methods
+    /// (docs/01 §7).
+    fn top_level_conformance_extensions(&self) -> Vec<ExtensionId> {
+        self.extensions
+            .iter()
+            .filter(|e| {
+                // (At the top level of the application, no namespace; or
+                // of a library cog, its root module, which holds its files'
+                // top level, as `ExtensionInfo::group` has it, and then
+                // only on a class the cog declares: a cog cannot
+                // monkey-patch its users' or std's classes, docs/10.)
+                !e.includes.is_empty()
+                    && match e.module {
+                        None => true,
+                        Some(ns) => {
+                            self.cogs.iter().any(|c| c.root == Some(ns))
+                                && self.encloses(ns, e.target)
+                        }
+                    }
+                    && e.type_params.iter().all(|tp| tp.bounds.is_empty())
+            })
+            .map(|e| e.id)
+            .collect()
+    }
+
+    /// Whether namespace `ns` holds class `c`, at any depth (`c`'s
+    /// `parent` chain reaches it).
+    fn encloses(&self, ns: ClassId, c: ClassId) -> bool {
+        let mut at = self.class(c).parent;
+        while let Some(p) = at {
+            if p == ns {
+                return true;
+            }
+            at = self.class(p).parent;
+        }
+        false
+    }
+
+    /// The ancestors of class `id` a lookup by name may find methods in
+    /// (`RtClass::lookup`): its own includes along the chain and the
+    /// modules of unconditional top-level extensions, in resolution order;
+    /// not the modules of scoped or conditional extensions, which are in
+    /// `runtime_ancestors` (membership) but override nothing of the
+    /// class's (docs/01 §7, `overriding_modules`).
+    pub fn lookup_ancestors(&self, id: ClassId) -> Vec<ClassId> {
+        self.ancestors_under(id, &[], self.top_level_conformance_extensions())
+            .into_iter()
+            .map(|(a, _)| a)
+            .collect()
+    }
+
+    /// Every extension with includes, not the ones active where this is
+    /// asked: conformance holds everywhere, and the override table must not
+    /// depend on which file was checked last, or on a warm cache.
+    pub fn all_conformance_extensions(&self) -> Vec<ExtensionId> {
+        self.extensions
+            .iter()
+            .filter(|e| !e.includes.is_empty())
+            .map(|e| e.id)
+            .collect()
+    }
+
+    /// `own_ancestors` with `all_conformance_extensions` found once.
+    pub fn own_ancestors_under(
+        &self,
+        c: ClassId,
+        exts: &[ExtensionId],
+    ) -> Vec<(ClassId, Vec<Type>)> {
+        let own: Vec<Type> = self
+            .class(c)
+            .type_params
+            .iter()
+            .map(|tp| Type::Param(tp.id))
+            .collect();
+        let mut out = self.ancestors_under(c, &own, exts.to_vec());
+        // (A conditional extension's include with its bound assumed: a
+        // class's own method, or a subclass's, overrides the module's where
+        // the bound holds, the only values a call through the module
+        // reaches (docs/01 §7); the include itself overrides nothing.)
+        if !exts.iter().any(|e| {
+            let ext = &self.extensions[*e as usize];
+            out.iter().any(|(a, _)| *a == ext.target)
+        }) {
+            return out;
+        }
+        // (Each ancestor, a module too, `extension N[T <: Int]` of a module
+        // `Box[T]` includes; the bound assumed wherever the arguments
+        // mention the class's own parameters, not for concrete ones that
+        // fail it, `Box[String]`'s. An approximation of "the bound holds
+        // for some instantiation": it errs toward pairing, so toward
+        // refusing an override no value can reach (`Box[Array[U]]`), never
+        // toward accepting an unchecked one; #556 makes it exact.)
+        // (Until no module is added: a conditional extension may include
+        // a module another conditional extension targets.)
+        let mut seen = 0;
+        while seen < out.len() {
+            let (a, args) = out[seen].clone();
+            seen += 1;
+            if !args.iter().any(|t| t.mentions_any_param()) {
+                continue;
+            }
+            for e in exts {
+                let ext = &self.extensions[*e as usize];
+                if ext.target != a || self.extension_bounds_hold(ext, &args) {
+                    continue;
+                }
+                let esubst = self.extension_subst(ext, &args);
+                for inc in &ext.includes {
+                    if let Type::Class(mid, margs) = inc.subst(&esubst) {
+                        let mut brought = vec![(mid, margs.clone())];
+                        brought.extend(
+                            self.ancestors_under(mid, &margs, exts.to_vec())
+                                .into_iter()
+                                .skip(1),
+                        );
+                        for b in brought {
+                            if !out.iter().any(|(x, _)| *x == b.0) {
+                                out.push(b);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The override table for every method (`overrides`), the classes that
+    /// are `Type`s found once: what the lowering ships.
+    pub fn override_table(&self) -> Vec<Vec<MethodId>> {
+        let types = self.type_classes();
+        let exts = self.extension_methods_by_target();
+        // (Each owner's ancestors once.)
+        let conf = self.all_conformance_extensions();
+        let mut ancs: HashMap<ClassId, Vec<(ClassId, Vec<Type>)>> = HashMap::default();
+        (0..self.methods.len() as MethodId)
+            .map(|m| {
+                let owner = self.method(m).owner;
+                let a = ancs
+                    .entry(owner)
+                    .or_insert_with(|| self.own_ancestors_under(owner, &conf));
+                self.overrides_with(m, a, &types, &exts)
+            })
+            .collect()
+    }
+
+    /// `Type` and its subclasses (`Meta::ClassDef`), the classes of class
+    /// objects, each with its ancestors in its own type parameter (the
+    /// class, substituted for it per class method).
+    #[allow(clippy::type_complexity)]
+    fn type_classes(&self) -> Vec<(Option<TypeParamId>, Vec<(ClassId, Vec<Type>)>)> {
+        self.classes
+            .iter()
+            .filter(|k| k.id == self.builtin.class_ || self.class_is_a(k.id, self.builtin.class_))
+            .map(|k| {
+                let param = (k.type_params.len() == 1).then(|| k.type_params[0].id);
+                let args: Vec<Type> = param.iter().map(|p| Type::Param(*p)).collect();
+                (param, self.ancestors(k.id, &args))
+            })
+            .collect()
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn overrides_with(
+        &self,
+        m: MethodId,
+        ancs: &[(ClassId, Vec<Type>)],
+        type_classes: &[(Option<TypeParamId>, Vec<(ClassId, Vec<Type>)>)],
+        ext_methods: &HashMap<(ClassId, &str), Vec<MethodId>>,
+    ) -> Vec<MethodId> {
+        let mi = self.method(m);
+        // A top-level `def` is a function: it overrides nothing (docs/01 §1).
+        if self.class(mi.owner).kind == ClassKind::Main {
+            return Vec::new();
+        }
+        let own: Vec<Type> = self
+            .class(mi.owner)
+            .type_params
+            .iter()
+            .map(|tp| Type::Param(tp.id))
+            .collect();
+        let mut out = self.overridden_methods_in_with(mi, ancs, ext_methods);
+        // A class method replaces, on its class object, the instance methods
+        // of `Type` (and a subclass's, `Meta::ClassDef`'s, whose value a
+        // static def's `self` is; and their ancestors) of the name it takes
+        // the calls of, each seen with the class as its argument
+        // (`Interp::class_side_override`).
+        // (Only a name some class object's class has an instance method
+        // of.)
+        if mi.singleton
+            && type_classes.iter().any(|(_, ancs)| {
+                ancs.iter()
+                    .any(|(anc, _)| self.class(*anc).methods.contains_key(&mi.name))
+            })
+        {
+            let class_ty = Type::Class(mi.owner, own);
+            for (param, ancs) in type_classes {
+                let subst: HashMap<TypeParamId, Type> =
+                    param.iter().map(|p| (*p, class_ty.clone())).collect();
+                for (anc, aargs) in ancs {
+                    let Some(ids) = self.class(*anc).methods.get(&mi.name) else {
+                        continue;
+                    };
+                    let aargs: Vec<Type> = aargs.iter().map(|t| t.subst(&subst)).collect();
+                    for &o in ids {
+                        if !out.contains(&o) && self.replaces(m, o, *anc, &aargs) {
+                            out.push(o);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The methods extensions give each class (any extension), by target
+    /// and name.
+    fn extension_methods_by_target(&self) -> HashMap<(ClassId, &str), Vec<MethodId>> {
+        let mut map: HashMap<(ClassId, &str), Vec<MethodId>> = HashMap::default();
+        for e in &self.extensions {
+            for (name, ids) in &e.methods {
+                map.entry((e.target, name.as_str()))
+                    .or_default()
+                    .extend(ids.iter().copied());
+            }
+        }
+        map
+    }
+
+    fn overridden_methods_in_with(
         &self,
         m: &MethodInfo,
         ancs: &[(ClassId, Vec<Type>)],
+        ext_methods: &HashMap<(ClassId, &str), Vec<MethodId>>,
     ) -> Vec<MethodId> {
         let mut out = Vec::new();
         for (anc, anc_args) in ancs {
@@ -2343,63 +2840,34 @@ impl World {
             } else {
                 &ac.methods
             };
-            let Some(ids) = table.get(&m.name) else {
-                continue;
-            };
-            let subst: rustc_hash::FxHashMap<_, _> = ac
-                .type_params
-                .iter()
-                .map(|tp| tp.id)
-                .zip(anc_args.iter().cloned())
+            // (And the methods extensions give the ancestor, any extension:
+            // the runtime replaces one by a subclass's own of the
+            // signature wherever it is called from.)
+            let ext_ids = ext_methods
+                .get(&(anc, m.name.as_str()))
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|&x| self.method(x).singleton == m.singleton);
+            let ids: Vec<MethodId> = table
+                .get(&m.name)
+                .into_iter()
+                .flatten()
+                .copied()
+                .chain(ext_ids)
                 .collect();
-            for &pid in ids {
-                let pm = self.method(pid);
-                // The override may add parameters the parent's callers never
-                // pass: with defaults, or rest parameters.
-                // (Keywords by name: every keyword call the parent takes,
-                // `MethodInfo::keywords_accept`, each of a type at least as
-                // wide.)
-                let (pps, cps) = (pm.positional_params(), m.positional_params());
-                let wider = |pp: &ParamInfo, cp: &ParamInfo| {
-                    let pt = pp.ty.subst(&subst);
-                    pt == cp.ty || self.is_subtype(&pt, &cp.ty)
-                };
-                // (A block of the parent's type, substituted, must do.)
-                let block_fits = match (&pm.block, &m.block) {
-                    (Some((_, pb)), Some((_, cb))) => {
-                        let pt = pb.subst(&subst);
-                        pt == *cb || self.is_subtype(&pt, cb)
-                    }
-                    (None, None) => true,
-                    _ => false,
-                };
-                let fits = pps.len() <= cps.len()
-                    && block_fits
-                    && pps
-                        .iter()
-                        .zip(&cps)
-                        .all(|(pp, cp)| pp.kind == cp.kind && wider(pp, cp))
-                    && cps[pps.len()..]
-                        .iter()
-                        .all(|cp| cp.default.is_some() || cp.kind == ParamKind::Rest)
-                    && m.keywords_accept(pm)
-                    && pm
-                        .params
-                        .iter()
-                        .filter(|pp| {
-                            matches!(pp.kind, ParamKind::KeywordOnly | ParamKind::KeywordRest)
-                        })
-                        .all(|pp| {
-                            // (By name, and `**rest` with `**rest`.)
-                            m.params
-                                .iter()
-                                .find(|cp| {
-                                    cp.kind == pp.kind
-                                        && (cp.kind == ParamKind::KeywordRest || cp.name == pp.name)
-                                })
-                                .is_none_or(|cp| wider(pp, cp))
-                        });
-                if fits {
+            if ids.is_empty() {
+                continue;
+            }
+            // (The ancestor's arguments, once per ancestor with a method of
+            // the name.)
+            let subst = self.class_subst(anc, anc_args);
+            let none = HashMap::default();
+            for pid in ids {
+                if pid != m.id
+                    && !out.contains(&pid)
+                    && self.replaces_seen(m.id, &none, pid, &subst)
+                {
                     out.push(pid);
                 }
             }
@@ -2510,7 +2978,8 @@ impl World {
     /// on `c`'s class side.
     fn class_side_dispatch(&self, c: ClassId, b: MethodId) -> Option<MethodId> {
         let bi = self.method(b);
-        let hit = |m: MethodId| m == b || self.same_signature_at_run_time(m, b);
+        // (Whether one replaces `b`: the override table, #536.)
+        let hit = |m: MethodId| m == b || self.overrides(m).contains(&b);
         let in_module = self.class(bi.owner).kind == ClassKind::Module;
         let chain = self.superclass_chain(c);
         // (A class's class method is looked for below its owner only, a
@@ -2534,6 +3003,15 @@ impl World {
                 }) {
                     return Some(m);
                 }
+            }
+            // (A module's class method the class's includes put in `b`'s
+            // place, before the walk below, as the runtime.)
+            if let Some(e) = self
+                .class_include_overrides_of(cur)
+                .into_iter()
+                .find(|e| e.overridden == b)
+            {
+                return Some(e.by);
             }
             // (As the runtime: the class's own includes, #504.)
             for (module, _) in self.class_modules_included(cur, &[]) {
@@ -2578,11 +3056,9 @@ impl World {
                 }
             }
         }
-        let overrides = |k: MethodId, base: MethodId| {
-            k == base
-                || (self.class_is_a(self.method(k).owner, self.method(base).owner)
-                    && self.same_signature(self.method(k), self.method(base)))
-        };
+        // (The override table, #536.)
+        let overrides =
+            |k: MethodId, base: MethodId| k == base || self.overrides(k).contains(&base);
         let bases: Vec<MethodId> = candidates
             .into_iter()
             .filter(|&b| methods.iter().all(|&k| overrides(k, b)))

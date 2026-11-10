@@ -1711,6 +1711,10 @@ fn overrides_of(
 /// method, one of a class or module beside it in an includer); for
 /// another class's instance method, one of a class below it, or of a
 /// module a class below it includes.
+///
+/// A reachability superset for static runs only (by name and hierarchy,
+/// wider than the override table `RtMethod::overrides`): never consulted
+/// for which method runs (#536).
 fn may_dispatch_to(world: &RtWorld, o: MethodId, m: MethodId) -> bool {
     let (om, rm) = (&world.methods[o as usize], &world.methods[m as usize]);
     let owner = rm.owner;
@@ -2492,14 +2496,12 @@ fn called_by_name(host: &dyn StaticHost, callee_id: MethodId) -> Called {
 /// the inherited signatures and what does not fit.
 fn generated_override(world: &World, mid: MethodId) -> Result<(), String> {
     let m = world.method(mid);
-    let own: Vec<Type> = world
-        .class(m.owner)
-        .type_params
-        .iter()
-        .map(|tp| Type::Param(tp.id))
-        .collect();
-    let ancs = world.ancestors(m.owner, &own);
-    let mut overridden = world.overridden_methods_in(m, &ancs);
+    // (The ancestry the override table takes, `World::own_ancestors`: the
+    // modules extensions include too, whose methods the class's own
+    // override, checked, docs/01 §7.)
+    let ancs = world.own_ancestors(m.owner);
+    // (The override table, `World::overrides`, #536.)
+    let mut overridden = world.overrides(mid);
     let side = if m.singleton { "." } else { "#" };
     // The inherited methods of the name, with their ancestors' arguments.
     let mut inherited: Vec<(MethodId, rustc_hash::FxHashMap<TypeParamId, Type>)> = Vec::new();
@@ -2523,10 +2525,15 @@ fn generated_override(world: &World, mid: MethodId) -> Result<(), String> {
             inherited.push((o, subst));
         }
     }
+    // (Of the table's entries, the inherited methods of the name above:
+    // not an extension's method, which takes no part in dispatch, nor a
+    // class object's `Type` method, which `override:` does not name.)
+    overridden.retain(|o| inherited.iter().any(|(i, _)| i == o));
     // A class method: the class methods of the modules the class or an
     // ancestor includes (among the inherited ones above) are overridden
     // when it takes their every call and returns what their callers take
-    // (`overridden_methods_in` does not look at them).
+    // (the table's class-method entries are the class object's, not
+    // these).
     if m.singleton {
         let no_subst = rustc_hash::FxHashMap::default();
         for (mc, mcargs) in &ancs {

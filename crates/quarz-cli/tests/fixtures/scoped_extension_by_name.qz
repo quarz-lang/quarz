@@ -1,0 +1,41 @@
+# #536 (docs/01 §7): a scoped extension's module overrides none of the
+# class's or its ancestors' methods, for a typed call and for a call by
+# name alike: `puts`, interpolation, `join`, a hash's keys find the class's
+# own `to_s`, `hash` and `==` (`RtClass::lookup`), even where the module
+# has methods of the name with other results.
+module EM
+  def to_s -> Int = 42
+  def hash -> String = "h"
+end
+class Box
+  @v: Int
+  def initialize(@v: Int)
+  end
+end
+module Scope
+  extension Box
+    include EM
+  end
+end
+b = Box.new(1)
+puts [b, b].join(",")
+h = {b => 1}
+puts h.size
+
+module P
+  def to_s -> String = "P to_s"
+end
+class A
+  def to_s -> String = "A to_s"
+end
+class B < A
+end
+module X
+  extension B
+    include P
+  end
+end
+a: A = B.new
+puts a.to_s
+puts a
+puts "#{a}"

@@ -1,0 +1,99 @@
+# #536 (docs/01 §7): a native's optional hook found by name on any value
+# (`JSON.generate`'s `to_json`) finds what `RtClass::lookup` has: not the
+# witness of a scoped extension (lexical, outside its scope here) nor of a
+# conditional one (whose bound the value may not meet), which only a call
+# conformance gates reaches.
+require "json"
+module ToJ
+  abstract def to_json -> String
+end
+class C
+  @v: Int
+  def initialize(@v: Int)
+  end
+  def v -> Int = @v
+end
+module Scope
+  extension C
+    include ToJ
+    def to_json -> String = "scoped #{v}"
+  end
+end
+puts JSON.generate(C.new(1))
+
+class G[T]
+  @v: T
+  def initialize(@v: T)
+  end
+end
+module ScopeG
+  extension G[T <: Int]
+    include ToJ
+    def to_json -> String = (@v + 1).to_s
+  end
+end
+puts JSON.generate(G.new("abc"))
+
+# A range's `include?` and a range pattern compare the endpoints by name
+# (`Range[T]` takes any `T`): not with a scoped extension's `<=>`, which
+# holds only where it is active (none here).
+class R
+  @v: Int
+  def initialize(@v: Int)
+  end
+  def v -> Int = @v
+end
+module ScopeR
+  extension R
+    include Comparable[R]
+    def <=>(other: R) -> Int
+      puts "scoped <=>"
+      v <=> other.v
+    end
+  end
+end
+case R.new(2)
+when R.new(1)..R.new(3) then puts "in"
+else puts "out"
+end
+
+# `Array::Builder#sort!` and `sort_pairs` (an unbounded element type, #560)
+# compare by name without a witness: a scoped extension's `<=>`, inactive
+# here, is not run (`undefined method`, as for a class with no `<=>`).
+class S
+  @v: Int
+  def initialize(@v: Int)
+  end
+  def v -> Int = @v
+end
+module ScopeS
+  extension S
+    include Comparable[S]
+    def <=>(other: S) -> Int
+      puts "scoped <=>"
+      v <=> other.v
+    end
+  end
+end
+begin
+  sb = Array::Builder[S].new
+  sb << S.new(2)
+  sb << S.new(1)
+  sb.sort!
+  p sb.to_a.map { |s| s.v }
+rescue RuntimeError => e
+  puts e.message
+end
+class Bag
+  include Enumerable[Int]
+  def each(&: (Int) -> Nil) -> Nil
+    yield 1
+    nil
+  end
+  def go -> Array[[S, Int]] = sort_pairs([[S.new(2), 1], [S.new(1), 2]])
+end
+begin
+  p Bag.new.go.map { |t| t[1] }
+rescue RuntimeError => e
+  puts e.message
+end

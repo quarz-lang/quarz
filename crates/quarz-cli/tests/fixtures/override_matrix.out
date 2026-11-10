@@ -1,0 +1,32 @@
+same signature: sub
+other name: base
+param wider: sub
+param narrower: base
+added optional: sub
+added required: base
+added rest: sub
+fewer params: base
+keyword same: sub
+keyword wider: sub
+keyword narrower: base
+keyword added optional: sub
+keyword added required: base
+block both: sub
+block added: base
+block dropped: base
+method type param: sub
+synthesized reader: sub
+abstract base: sub
+class args substituted: sub
+class args narrower: base
+module over superclass: sub
+later module over earlier: sub
+abstract module method, superclass implements: sub
+extension's module over superclass: sub
+scoped extension's module over superclass: base
+conditional extension's module over superclass: base
+class method same signature: sub
+class method narrower: base
+class method added optional: sub
+later module class method over earlier: sub
+abstract module class method, superclass implements: sub

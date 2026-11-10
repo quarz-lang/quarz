@@ -1,0 +1,20 @@
+# #536 (g): an extension's include holds everywhere (docs/01 §7), the
+# extension declared in a module body as at the top level: the class's
+# own method overrides the module's, so a call through the module runs
+# the class's, wherever the value goes.
+module EM
+  def m(x: Int) -> String = "module"
+end
+class Box
+  def initialize; end
+  def m(x: Int) -> String = "box"
+end
+module Scope
+  extension Box
+    include EM
+  end
+  def self.go -> EM = Box.new
+end
+def via(e: EM) -> String = e.m(1)
+puts "via EM: #{via(Scope.go)}"
+puts "direct: #{Box.new.m(1)}"

@@ -123,8 +123,10 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
                     _ => None,
                 },
                 ancestors: {
+                    // (Every extension's include, whichever are active
+                    // where the lowering runs, #554.)
                     let mut a: Vec<ClassId> = world
-                        .ancestors(c.id, &[])
+                        .runtime_ancestors(c.id)
                         .into_iter()
                         .map(|(id, _)| id)
                         .collect();
@@ -138,6 +140,19 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
                         a.push(marker);
                     }
                     a
+                },
+                // (Dispatch by name: without the modules of scoped and
+                // conditional extensions, docs/01 §7; the marker as above.)
+                lookup: {
+                    let mut l = world.lookup_ancestors(c.id);
+                    let marker = world.builtin.shareable;
+                    if c.type_params.is_empty()
+                        && !l.contains(&marker)
+                        && world.derived_shareable(c.id, &[])
+                    {
+                        l.push(marker);
+                    }
+                    l
                 },
                 fields,
                 ivars,
@@ -193,7 +208,8 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
             }
         })
         .collect();
-    let mut ancestors = HashMap::default();
+    // (The override table, once, #536.)
+    let table = world.override_table();
     let methods: Vec<RtMethod> = world
         .methods
         .iter()
@@ -285,7 +301,7 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
                     Type::Param(_) | Type::Var(_) => None,
                     t => Some(world.type_name(&world.devoid(t))),
                 },
-                overrides: overridden_methods(world, m, &mut ancestors),
+                overrides: table[m.id as usize].clone(),
                 makes: if m.is_native {
                     let mut out = Vec::new();
                     classes_in(&m.ret, &mut out);
@@ -415,34 +431,6 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
         file_names,
         file_mains,
     }
-}
-
-/// The methods of `m`'s ancestors that `m` overrides: same name, kind of
-/// method, parameters (plus optional ones) and block, with each parameter
-/// accepting what the ancestor's does (its types instantiated for `m`'s class). A method of
-/// the same name that narrows a parameter (`cmp(other: W)` in `W < V`
-/// next to `cmp(other: V)`) is an overload, not an override.
-fn overridden_methods(
-    world: &World,
-    m: &types::MethodInfo,
-    ancestors: &mut HashMap<ClassId, Vec<(ClassId, Vec<Type>)>>,
-) -> Vec<MethodId> {
-    // A top-level `def` is a function: it overrides nothing (docs/01 §1).
-    if world.class(m.owner).kind == types::ClassKind::Main {
-        return Vec::new();
-    }
-    // The owner's ancestors with its own type parameters, once per class
-    // (the world does not change while the runtime one is built).
-    let ancs = ancestors.entry(m.owner).or_insert_with(|| {
-        let own_args: Vec<Type> = world
-            .class(m.owner)
-            .type_params
-            .iter()
-            .map(|tp| Type::Param(tp.id))
-            .collect();
-        world.ancestors(m.owner, &own_args)
-    });
-    world.overridden_methods_in(m, ancs)
 }
 
 /// Whether a positional parameter of `m` follows the one named `name`.
