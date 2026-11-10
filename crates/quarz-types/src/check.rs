@@ -8258,6 +8258,11 @@ impl Checker {
                 let scope = self.env.scope.clone();
                 match self.resolve_type_expr(c, &scope) {
                     Some(t @ Type::Class(id, _)) if self.world.is_exception_class(id) => {
+                        // A `rescue` class is a run-time test as `is_a?` is
+                        // (docs/02 §7, #533): of a raised value, of any
+                        // exception class, it sees the class only.
+                        let raised = Type::class(self.world.builtin.exception);
+                        self.check_testable(&raised, &t, "rescue", c.span);
                         exc_ty = self.join(&exc_ty, &t);
                         class_ids.push(id);
                     }

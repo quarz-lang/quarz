@@ -2028,3 +2028,50 @@ w: Summ = Bx.new(mk)
         "{out}"
     );
 }
+
+#[test]
+fn a_rescue_class_is_a_run_time_test() {
+    // #533: a `rescue` class goes through the testability check as
+    // `is_a?` does (docs/02 §7): the test sees the class, not its type
+    // arguments, so `rescue MyErr[Int]` is an error (alone or beside
+    // another class); a generic exception class is rescued through a
+    // non-generic superclass (the fixture `rescue_generic_superclass.qz`).
+    let out = common::diagnostics(
+        r#"class MyErr[T <: Shareable] < StandardError
+  @payload: T
+  def initialize(@payload: T); super("e"); end
+  def payload -> T = @payload
+end
+begin
+  raise MyErr[String].new("s")
+rescue MyErr[Int] => e
+  p e.payload + 1
+end
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("8:8: error: `rescue` cannot check at run time that a value of type Exception is a MyErr[Int] (type arguments are not known then)"),
+        "{out}"
+    );
+    let out = common::diagnostics(
+        r#"class MyErr[T <: Shareable] < StandardError
+  @payload: T
+  def initialize(@payload: T); super("e"); end
+  def payload -> T = @payload
+end
+begin
+  raise MyErr[String].new("s")
+rescue ArgumentError, MyErr[String] => e
+  p e.message
+end
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains(
+            "`rescue` cannot check at run time that a value of type Exception is a MyErr[String]"
+        ),
+        "{out}"
+    );
+}
