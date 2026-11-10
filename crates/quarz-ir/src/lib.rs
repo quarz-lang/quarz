@@ -1665,8 +1665,8 @@ pub struct RtWorld {
     /// includes over its superclass's (`World::include_overrides`).
     #[serde(default)]
     pub include_overrides: Vec<(ClassId, MethodId, MethodId)>,
-    /// (class, overridden, overriding): a method of a module the class
-    /// extends over its superclass's class method
+    /// (class, overridden, overriding): a class method of a module the
+    /// class includes over its superclass's class method
     /// (`World::class_include_overrides`).
     #[serde(default)]
     pub class_include_overrides: Vec<(ClassId, MethodId, MethodId)>,

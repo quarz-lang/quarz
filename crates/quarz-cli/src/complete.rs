@@ -17,7 +17,6 @@ const DECLARATION_WORDS: &[&str] = &[
     "enum",
     "extension",
     "include",
-    "extend",
     "require",
     "require_relative",
     "using",

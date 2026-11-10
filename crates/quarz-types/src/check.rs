@@ -1458,7 +1458,7 @@ impl Checker {
     }
 
     /// The bounds of the classes and modules a class or extension builds
-    /// on (a superclass, the modules included or extended), whose
+    /// on (a superclass, the modules included), whose
     /// arguments may be its own parameters: a parameter meets a bound its
     /// own bounds imply.
     fn check_head_bounds(&mut self, heads: Vec<Type>, span: Span) {
@@ -2616,7 +2616,7 @@ impl Checker {
     /// The statements `stmts` (in file name order, then text order) in
     /// the order they run (docs/14 §2): a class's or module's after every
     /// statement among them of its ancestors (superclasses and the
-    /// modules it includes or extends, transitively), so that its own
+    /// modules it includes, transitively), so that its own
     /// see what theirs generated; otherwise in the order given.
     fn superclass_first(&self, stmts: Vec<(usize, StaticStmt)>) -> Vec<(usize, StaticStmt)> {
         let mut ancestors: HashMap<ClassId, HashSet<ClassId>> = HashMap::default();
@@ -13455,7 +13455,7 @@ impl Checker {
                                     && self.out.union_calls.contains_key(&e.id))
                                     || union_table.is_some();
                                 // A class object's methods (its class's, or an
-                                // `extend`ed module's) are never found by name
+                                // included module's) are never found by name
                                 // on it (no class test tells class objects
                                 // apart either): as the block `{ |c| c.name }`
                                 // on them is.

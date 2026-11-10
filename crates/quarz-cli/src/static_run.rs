@@ -411,7 +411,7 @@ impl Runner {
                 for (p, bounds, c) in checked {
                     let t = Type::Class(c, Vec::new());
                     // (A bound naming a type parameter nothing gives here, a
-                    // module's own `T` that `extend` binds, holds of the
+                    // module's own `T` that `include` binds, holds of the
                     // class the call was checked with: the class is one.
                     // One naming only the target's own, `Self` of a generic
                     // class, is decided with them as they are.)
@@ -2318,7 +2318,7 @@ fn bake(
 /// program names it as called (a call, `x.:m`, `&:m`, a compound
 /// assignment's reader, a `super` in a method of its name, an alias of
 /// it) but statements' own calls; the receiver's (a module's `T`, which
-/// `extend` fixes) when the only others are calls of it on its own
+/// `include` fixes) when the only others are calls of it on its own
 /// `self` in its own body; none otherwise, the `Type[T]` parameters then
 /// carrying what they hold. By name over the whole program, so that the
 /// result does not depend on what was checked first (more refusals than

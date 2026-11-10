@@ -370,8 +370,8 @@ stricter, not unsound.
   which does not dispatch), and a program's extension
   with a program's module (it may include it in a class the copies do
   not cover);
-  `super` in a module, `extend`, and modules' class methods are out of
-  range as elsewhere. `Object`'s methods on an array are out of range.
+  `super` in a module and modules' class methods (which `include`
+  brings to the class side) are out of range as elsewhere. `Object`'s methods on an array are out of range.
   An extension's methods are in range on a program's class (stage 6c,
   above), its type parameters when they are the class's own, in order,
   unbounded and invariant (the Rust checker does not check an
@@ -559,8 +559,8 @@ stricter, not unsound.
   parameters is out of range). Out of range there: a generic class's
   class methods and objects, a class method returning `Self` called on
   a subclass (the model's result is the method's class's instance), an
-  `extend`ed module's methods on a class object, and an extension's
-  class methods.
+  included module's class methods on a class object, and an
+  extension's class methods.
   A disagreement is the Rust checker narrowing further than the rules
   allow, or the model being stricter: either is looked at. The methods
   `attr_reader` and `attr_writer` make are methods of the model; another

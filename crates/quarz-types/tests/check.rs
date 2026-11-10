@@ -5609,3 +5609,55 @@ fn a_class_object_call_checks_alike_alone_and_after_another_member() {
         ));
     }
 }
+
+#[test]
+fn include_brings_a_modules_class_methods() {
+    // #494: `include` inherits a module's `def self.` methods on the class
+    // side; `extend` is gone.
+    err(
+        "module M\n  def self.k -> Int = 1\nend\nclass A\n  extend M\nend",
+        "`extend` is not supported: a module's class methods reach a class through `include` (write them as `def self.` methods of the module, and include it)",
+    );
+    ok("module M\n  def self.k -> Int = 1\n  def self.twice -> Int = k * 2\nend\nclass A\n  include M\nend\nx: Int = A.twice + M.k");
+    // `Self` is the including class's instances; `new` builds the class
+    // the method is called on.
+    ok("module Make\n  def self.make -> Self = new\nend\nclass A\n  include Make\nend\na: A = A.make");
+    // Every includer takes `new`'s arguments (none), or overrides the
+    // method.
+    err(
+        "module Make\n  def self.make -> Self = new\nend\nclass A\n  include Make\n  def initialize(x: Int)\n  end\nend",
+        "`A#initialize` does not take the arguments of `new` in `Make.make`, which `A` inherits: keep the parameters of `Object#initialize`",
+    );
+    ok("module Make\n  def self.make -> Self = new\nend\nclass A\n  include Make\n  def initialize(x: Int)\n  end\n  def self.make -> Self = new(1)\nend");
+    // A class method that depends on the includer is not called on the
+    // module itself; one that does not is (a namespace function).
+    let module = "module Make\n  abstract def self.kind -> String\n  def self.make -> Self = new\n  def self.build -> Int\n    new\n    1\n  end\n  def self.describe -> String = \"a #{kind}\"\n  def self.twice -> String = describe * 2\n  def self.hello -> String = \"hello\"\nend\nclass A\n  include Make\n  def self.kind -> String = \"A\"\nend\n";
+    ok(&format!("{module}puts Make.hello, A.twice, A.make"));
+    for (call, why) in [
+        ("Make.make", "has `Self` in its signature"),
+        (
+            "Make.build",
+            "calls `new`, which builds the class it is called on",
+        ),
+        ("Make.kind", "is abstract"),
+        (
+            "Make.describe",
+            "calls `kind`, which depends on the class including the module",
+        ),
+        (
+            "Make.twice",
+            "calls `describe`, which depends on the class including the module",
+        ),
+    ] {
+        let name = call.split('.').nth(1).unwrap();
+        err(
+            &format!("{module}{call}"),
+            &format!("cannot call `{call}` on the module itself: `{name}` {why}; call it on a class that includes `Make`"),
+        );
+    }
+    // An abstract class method is a class-side requirement.
+    err(
+        "module M\n  abstract def self.kind -> String\nend\nclass A\n  include M\nend",
+        "`A` must implement `self.kind` (abstract in the included module `M`)",
+    );
+}

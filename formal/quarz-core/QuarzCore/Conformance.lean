@@ -2110,7 +2110,7 @@ partial def call (T : Tables) (id : Nat) (c : Json) : CM Expr := do
   | "method" =>
     let m ← T.method (← nat (← field target "method"))
     -- (On a class's object: its class methods (its metaclass's) or a
-    -- built-in one; an `extend`ed module's, out of range, design §19.)
+    -- built-in one; an included module's, out of range, design §19.)
     let classMeth := (← field m "singleton") == .bool true && (T.metaOf (← nat (← field m "owner"))).isSome
     -- (In a class method, an implicit call: its class's class method (a
     -- `-> Self` one of its own class), a function or a built-in one.)

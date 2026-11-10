@@ -1,0 +1,14 @@
+registry of Post
+registry of Comment
+a Post
+a comment
+comment, module
+registry of Base
+a Base
+module
+registry of Post
+a Post
+module
+registry of Registry
+module
+TypeError: Registry is a module

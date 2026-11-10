@@ -4,7 +4,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 
 ## What works as is
 
-`def ... end`, `class`/`module`, `include`/`extend`, `attr_reader` and friends, blocks (`do ... end`/`{ }`), `yield`, `&block`, `&:sym`, `if`/`unless`/`while`/`until` and their modifier forms, `case/when`, `case/in` (pattern matching), `begin/rescue/ensure/retry`, `raise`, string interpolation, heredocs, `%w[]`/`%i[]`, symbols, ranges, regexp literals, `&.`, `||=`, multiple assignment, `*splat`, keyword argument call syntax, `private`/`protected`, `self.` methods, operator definitions, `<=>` and `Comparable`, `Enumerable`, `super`, `alias`, `__FILE__`/`__LINE__`, `ARGV`, `ENV`, `puts`/`p`/`pp`.
+`def ... end`, `class`/`module`, `include`, `attr_reader` and friends, blocks (`do ... end`/`{ }`), `yield`, `&block`, `&:sym`, `if`/`unless`/`while`/`until` and their modifier forms, `case/when`, `case/in` (pattern matching), `begin/rescue/ensure/retry`, `raise`, string interpolation, heredocs, `%w[]`/`%i[]`, symbols, ranges, regexp literals, `&.`, `||=`, multiple assignment, `*splat`, keyword argument call syntax, `private`/`protected`, `self.` methods, operator definitions, `<=>` and `Comparable`, `Enumerable`, `super`, `alias`, `__FILE__`/`__LINE__`, `ARGV`, `ENV`, `puts`/`p`/`pp`.
 
 ## What changes
 
@@ -20,6 +20,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 | `Struct`/`Data` | `Data.define(:x, :y)` | `data Point = (x: Int, y: Int)` |
 | Sum types | No dedicated construct; written as a class hierarchy or several `Data` types | `enum` |
 | Interfaces | Duck typing | A `module` with `abstract def`. Retroactive conformance with `extension T; include M; end` |
+| A module's class methods | Not inherited by `include`: `extend M`, or the `self.included(base)` hook calling `base.extend(ClassMethods)` | `include M` inherits M's `def self.` methods on the class side (`Self` the including class); there is no `extend` and no `included` hook. A namespace module's functions are inherited too when it is included |
 | `nil` | Fits in any variable | Only fits in types written as `T?`. Narrow with `if x` etc. |
 | Arrays, hashes, strings | Mutable | Immutable. `push`/`put` return new values. Use `Array::Builder` etc. when mutation is needed |
 | `arr << x`, `h[k] = v`, `str << "a"`, `sort!` | Destructive update | Not available on immutable types. `arr = arr.push(x)`, `h = h.put(k, v)`, Builders |

@@ -21,7 +21,7 @@ class_member   = field_decl | method_decl | attr_decl | include_decl | visibilit
 
 field_decl     = [ "var" ] IVAR ":" type [ "=" expression ] ;
 attr_decl      = ( "attr_reader" | "attr_writer" | "attr_accessor" ) SYMBOL { "," SYMBOL } ;
-include_decl   = ( "include" | "extend" ) type { "," type } ;
+include_decl   = "include" type { "," type } ;
 visibility     = ( "private" | "protected" | "public" ) [ method_decl | SYMBOL { "," SYMBOL } ] ;
 
 (* ---- data / enum ---- *)

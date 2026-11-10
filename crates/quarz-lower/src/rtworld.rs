@@ -197,8 +197,8 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
             let owner = world.class(m.owner);
             let overloaded = owner.methods.get(&m.name).is_some_and(|ids| ids.len() > 1);
             // An abstract method is always dispatched dynamically: its
-            // implementation may be a singleton method of a class that
-            // extends the module, which the class hierarchy walk does not see.
+            // implementation may be a class method of a class that
+            // includes the module, which the class hierarchy walk does not see.
             // A class method is dispatched on the class it is called on
             // (`Circle.describe` runs `Circle.label` for an implicit
             // `label` in `Shape.describe`).
