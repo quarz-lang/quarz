@@ -1668,3 +1668,69 @@ end
     }
     assert_eq!(out.matches("error:").count(), 5, "{out}");
 }
+
+#[test]
+fn a_synthesized_method_is_checked_as_an_override() {
+    // #532: `attr_reader`, `attr_accessor`, `attr_writer` and a `data`
+    // type's accessors are paired and checked as overrides as written
+    // methods are (the runtime dispatches to them alike).
+    for (src, want) in [
+        (
+            r#"class A
+  def name -> String = "a"
+end
+class B < A
+  @name: Int
+  attr_reader :name
+  def initialize; @name = 1; end
+end
+def g(a: A) -> String = a.name
+puts g(B.new).size
+"#,
+            "6:3: error: `name` returns Int but `A#name`, which it overrides, returns String",
+        ),
+        (
+            r#"class A
+  def name -> String = "a"
+  def name=(v: String) -> Void; end
+end
+class B < A
+  var @name: Int
+  attr_accessor :name
+  def initialize; @name = 1; end
+end
+"#,
+            "7:3: error: `name` returns Int but `A#name`, which it overrides, returns String",
+        ),
+        (
+            r#"class A
+  def name=(v: Int) -> String = "a"
+end
+class B < A
+  var @name: Int
+  attr_writer :name
+  def initialize; @name = 1; end
+end
+def g(a: A) -> Int = (a.name = 2).size
+p g(B.new)
+"#,
+            "6:3: error: `name=` returns Int but `A#name=`, which it overrides, returns String",
+        ),
+        (
+            r#"module Named
+  def name -> String = "named"
+end
+data P(name: Int)
+  include Named
+end
+def g(n: Named) -> String = n.name
+puts g(P.new(1)).size
+"#,
+            "4:8: error: `name` returns Int but `Named#name`, which it overrides, returns String",
+        ),
+    ] {
+        let out = common::diagnostics(src).join("\n");
+        assert!(out.contains(want), "{out}");
+        assert_eq!(out.matches("error:").count(), 1, "{out}");
+    }
+}
