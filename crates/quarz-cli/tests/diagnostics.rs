@@ -1734,3 +1734,297 @@ puts g(P.new(1)).size
         assert_eq!(out.matches("error:").count(), 1, "{out}");
     }
 }
+
+#[test]
+fn a_conditional_extensions_bound_is_tested_along_the_superclass_chain() {
+    // #516: `extension Box[T <: Int]` makes `Box[Int]` and a subclass of
+    // `Box[Int]` conform, not `Box[String]` nor a subclass of it, on the
+    // instance side and the class side.
+    let out = common::diagnostics(
+        r#"module Parsable[U]
+  abstract def parse(s: String) -> U
+end
+module Maker[U]
+  abstract def self.make(s: String) -> U
+  def self.again(s: String) -> U = make(s)
+end
+class Box[T]
+  @v: T
+  def initialize(@v: T); end
+end
+extension Box[T <: Int]
+  include Parsable[Int]
+  include Maker[Int]
+  def parse(s: String) -> Int = @v + s.to_i
+  def self.make(s: String) -> Int = s.to_i
+end
+class SI < Box[Int]
+  def initialize; super(1); end
+end
+class SS < Box[String]
+  def initialize; super("s"); end
+end
+def gen[T <: Maker[Int]](t: Type[T]) -> Int = t.again("6")
+a: Parsable[Int] = Box[Int].new(1)
+b: Parsable[Int] = SI.new
+p SI.again("2"), gen(SI), a.parse("1"), b.parse("1")
+c: Parsable[Int] = SS.new
+d: Parsable[Int] = Box[String].new("t")
+p SS.again("2")
+p gen(SS)
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("cannot assign SS to `c` of type Parsable[Int]"),
+        "{out}"
+    );
+    assert!(
+        out.contains("cannot assign Box[String] to `d` of type Parsable[Int]"),
+        "{out}"
+    );
+    assert!(
+        out.contains("undefined method `again` for Type[SS]"),
+        "{out}"
+    );
+    assert!(
+        out.contains("type argument SS for `T` does not satisfy the bound Maker[Int]"),
+        "{out}"
+    );
+    assert_eq!(out.matches("error:").count(), 4, "{out}");
+}
+
+#[test]
+fn a_class_a_conditional_extension_does_not_reach_needs_no_new_check() {
+    // #516: `SB < Box[String]` does not conform to `N` through
+    // `extension Box[T <: Int]`, so no `Type[N]` holds it and `N.make`'s
+    // `new` is not checked against its `initialize`.
+    let out = common::diagnostics(
+        r#"module N
+  def self.make -> Self = new
+end
+class Box[T]
+  def initialize; end
+end
+class SB < Box[String]
+  @x: Int
+  def initialize(@x: Int); end
+  def x -> Int = @x
+end
+extension Box[T <: Int]
+  include N
+end
+def f(t: Type[N]) -> N = t.make
+p f(Box[Int])
+p SB.new(3).x
+"#,
+    )
+    .join("\n");
+    assert!(!out.contains("error:"), "{out}");
+}
+
+#[test]
+fn a_module_bound_met_elsewhere_keeps_the_new_check() {
+    // #516: `extension Box[T <: Q]`'s bound is met for `SB < Box[String]`
+    // where `extension String; include Q` is active (in `X`), where a
+    // `Type[N]` may hold `SB`: `N.make`'s `new` is checked against it.
+    let out = common::diagnostics(
+        r#"module Q
+end
+module N
+  def self.make -> Self = new
+end
+class Box[T]
+  def initialize; end
+end
+class SB < Box[String]
+  @x: Int
+  def initialize(@x: Int); end
+  def x -> Int = @x
+end
+module X
+  extension String
+    include Q
+  end
+  extension Box[T <: Q]
+    include N
+  end
+  def self.t -> Type[N] = SB
+  def self.go -> Int
+    v = t.make
+    v.as(SB).x + 1
+  end
+end
+p X.go
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("`SB#initialize` does not take the arguments of `new` in `N.make`"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_nested_argument_not_inferred_yet_meets_a_conditional_bound() {
+    // #516 (#518's review): `Bx.new([])` is a `Bx[Array[?]]`; an argument
+    // with an inference variable at any depth counts as meeting
+    // `extension Bx[T <: Array[Int]]`'s bound, as method lookup treats it
+    // (assigned to `Summ` and passed as `Summ`); #519 tightens both.
+    let out = common::diagnostics(
+        r#"module Summ
+  abstract def total -> Int
+end
+class Bx[T]
+  @v: T
+  def initialize(@v: T); end
+  def v -> T = @v
+end
+extension Bx[T <: Array[Int]]
+  include Summ
+  def total -> Int = v.sum
+end
+def tk(s: Summ) -> Int = s.total
+w: Summ = Bx.new([])
+p w.total, tk(Bx.new([])), tk(Bx.new([1, 2]))
+y = Bx.new([])
+p y.total
+"#,
+    )
+    .join("\n");
+    assert!(!out.contains("error:"), "{out}");
+}
+
+#[test]
+fn an_argument_not_inferred_yet_meets_a_bound_only_if_it_still_can() {
+    // #518's review: an argument not inferred yet meets a bound when it
+    // does with its variables filled with `Nothing` or with `Object`:
+    // `Bx[Array[Array[?]]]` can never meet `T <: Array[Int]` (refused as a
+    // `Summ`); a bound naming a variable (`B <: Array[A]`) is met.
+    let out = common::diagnostics(
+        r#"module Summ
+  abstract def total -> Int
+end
+class Bx[T]
+  @v: T
+  def initialize(@v: T); end
+  def v -> T = @v
+end
+extension Bx[T <: Array[Int]]
+  include Summ
+  def total -> Int = v.sum
+end
+w: Summ = Bx.new([[]])
+p w.total
+def tk(s: Summ) -> Int = s.total
+p tk(Bx.new([[]]))
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("cannot assign Bx[Array[Array[?1]]] to `w` of type Summ"),
+        "{out}"
+    );
+    let out = common::diagnostics(
+        r#"module Cnt
+  abstract def cnt -> Int
+end
+class P[A, B]
+  @a: A
+  @b: B
+  def initialize(@a: A, @b: B); end
+  def b -> B = @b
+end
+extension P[A, B <: Array[A]]
+  include Cnt
+  def cnt -> Int = b.size
+end
+def tk(s: Cnt) -> Int = s.cnt
+x = P.new([], [[1]])
+p x.cnt
+p tk(P.new([], [[1]]))
+w: Cnt = P.new([], [[1]])
+p w.cnt
+"#,
+    )
+    .join("\n");
+    assert!(!out.contains("error:"), "{out}");
+    // (Method lookup alike, #542: `Bx.new([[]]).total` is refused.)
+    let out = common::diagnostics(
+        r#"module Summ
+  abstract def total -> Int
+end
+class Bx[T]
+  @v: T
+  def initialize(@v: T); end
+  def v -> T = @v
+end
+extension Bx[T <: Array[Int]]
+  include Summ
+  def total -> Int = v.sum
+end
+y = Bx.new([[]])
+p y.total
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("`total` requires T to be Array[Int] (found Array[Array[?1]])"),
+        "{out}"
+    );
+    // (A union with a variable: `Array[Array[?] | String]` can never be an
+    // `Array[Int]`.)
+    let out = common::diagnostics(
+        r#"module Summ
+  abstract def total -> Int
+end
+class Bx[T]
+  @v: T
+  def initialize(@v: T); end
+  def v -> T = @v
+end
+extension Bx[T <: Array[Int]]
+  include Summ
+  def total -> Int = v.sum
+end
+w: Summ = Bx.new([[], "a"])
+p w.total
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("cannot assign Bx[Array[Array[?1] | String]] to `w` of type Summ"),
+        "{out}"
+    );
+    // (`Array[Foo | ?]` with `Foo` not shareable meets `T <: Shareable`
+    // with neither fill: refused, and `Object`'s overload runs.)
+    let out = common::diagnostics(
+        r#"module Summ
+  abstract def total -> Int
+end
+class Bx[T]
+  @v: T
+  def initialize(@v: T); end
+  def v -> T = @v
+end
+extension Bx[T <: Shareable]
+  include Summ
+  def total -> Int = 1
+end
+class Foo
+  var @n: Int
+  def initialize; @n = 0; end
+end
+def mk[A] -> Array[Foo | A] = [Foo.new]
+def f(s: Summ) -> String = "summ"
+def f(o: Object) -> String = "obj"
+p f(Bx.new(mk))
+w: Summ = Bx.new(mk)
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("cannot assign Bx[Array[Foo | ?4]] to `w` of type Summ"),
+        "{out}"
+    );
+}

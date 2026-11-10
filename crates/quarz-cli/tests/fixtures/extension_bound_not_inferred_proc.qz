@@ -1,0 +1,20 @@
+# A variable both a proc's parameter and its result (`(A) -> A`) can
+# meet `(Int) -> String` with neither fill (`Nothing`, `Object`): the
+# extension's `Summ` does not take it, `Object`'s overload runs (#543).
+module Summ
+  abstract def total -> Int
+end
+class Bx[T]
+  @v: T
+  def initialize(@v: T); end
+  def v -> T = @v
+end
+def f(s: Summ) -> String = "summ #{s.total}"
+def f(o: Object) -> String = "obj"
+
+extension Bx[T <: Array[(Int) -> String]]
+  include Summ
+  def total -> Int = v[0].call(1).size
+end
+def mk[A] -> Array[(A) -> A] = [->(x: A) { x }]
+p f(Bx.new(mk))

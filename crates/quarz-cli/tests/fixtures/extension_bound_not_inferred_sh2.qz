@@ -1,0 +1,23 @@
+# A conditional extension's bound against an argument not inferred yet,
+# decided with the subtyping rules (variance, derived Shareable): #518's
+# review.
+module Summ
+  abstract def total -> Int
+end
+class Bx[T]
+  @v: T
+  def initialize(@v: T); end
+  def v -> T = @v
+end
+data Pr[A] = (a: A)
+extension Bx[T <: Shareable]
+  include Summ
+  def total -> Int = 7
+end
+def f(s: Summ) -> String = "summ #{s.total}"
+def f(o: Object) -> String = "obj"
+p f(Bx.new(Pr.new([1])))
+p f(Bx.new(Pr.new([])))
+p f(Bx.new([]))
+p f(Bx.new([[]]))
+p f(Bx.new({}))

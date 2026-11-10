@@ -199,6 +199,30 @@ impl Type {
         }
     }
 
+    /// This type with every inference variable replaced by `with`.
+    pub fn fill_vars(&self, with: &Type) -> Type {
+        match self {
+            Type::Var(_) => with.clone(),
+            Type::Class(id, args) => {
+                Type::Class(*id, args.iter().map(|a| a.fill_vars(with)).collect())
+            }
+            Type::ClassObject(id, args) => {
+                Type::ClassObject(*id, args.iter().map(|a| a.fill_vars(with)).collect())
+            }
+            Type::TypeOf(t) => Type::type_of(t.fill_vars(with)),
+            Type::Union(ms) => Type::union_of(ms.iter().map(|m| m.fill_vars(with)).collect()),
+            Type::Tuple(ts) => Type::Tuple(ts.iter().map(|t| t.fill_vars(with)).collect()),
+            Type::Proc(rc, ps, r, sh, kws) => Type::Proc(
+                rc.as_ref().map(|t| Box::new(t.fill_vars(with))),
+                ps.iter().map(|p| p.fill_vars(with)).collect(),
+                Box::new(r.fill_vars(with)),
+                *sh,
+                ProcKw::map(kws, |t| t.fill_vars(with)),
+            ),
+            other => other.clone(),
+        }
+    }
+
     pub fn has_vars(&self) -> bool {
         match self {
             Type::Var(_) => true,
