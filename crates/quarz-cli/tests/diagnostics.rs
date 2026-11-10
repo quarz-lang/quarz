@@ -2075,3 +2075,92 @@ end
         "{out}"
     );
 }
+
+#[test]
+fn a_modules_new_reaching_a_runtime_built_class_is_refused() {
+    // #535: a module's class method calling `new` cannot build a class the
+    // runtime builds (`World::built_by_runtime`: `Time` and the other
+    // built-in values; `Array`, `Random` and the classes with a native
+    // `self.new`), reached through an extension's conformance; every such
+    // class is in quarz-types' generated test.
+    for (src, class) in [
+        (
+            r#"module M
+  def self.make -> Self = new
+end
+extension Time
+  include M
+end
+def mk(t: Type[M]) -> M = t.make
+x = mk(Time).as(Time)
+puts "made"
+p x.to_i
+"#,
+            "Time",
+        ),
+        (
+            r#"module M
+  def self.make -> Self = new
+end
+extension Array[T]
+  include M
+end
+def mk(t: Type[M]) -> M = t.make
+x = mk(Array[Int]).as(Array[Int])
+p x.size
+"#,
+            "Array",
+        ),
+        (
+            r#"module M
+  def self.make -> Self = new
+end
+extension Random
+  include M
+end
+def mk(t: Type[M]) -> M = t.make
+x = mk(Random).as(Random)
+p x.rand(10) < 10
+"#,
+            "Random",
+        ),
+    ] {
+        let out = common::diagnostics(src).join("\n");
+        assert!(
+            out.contains(&format!(
+                "2:27: error: `new` in `M.make` reaches `{class}`, whose values the runtime makes"
+            )),
+            "{out}"
+        );
+    }
+    // (A subclass too: a user's `MyR < Random` and `MyIO < IO`, written
+    // `new` included; std's `TCPSocket < IO` likewise, with `require`.)
+    for (src, want) in [
+        (
+            r#"module M
+  def self.make -> Self = new
+end
+class MyR < Random
+  include M
+end
+def mk(t: Type[M]) -> M = t.make
+x = mk(MyR).as(MyR)
+puts "made"
+p x.rand(10)
+"#,
+            "`new` in `M.make` reaches `MyR`, whose values the runtime makes",
+        ),
+        (
+            r#"class MyIO < IO
+end
+x = MyIO.new
+puts "made"
+x.puts "hi"
+"#,
+            "`MyIO` is not built with `new`",
+        ),
+    ] {
+        let out = common::diagnostics(src).join("\n");
+        assert!(out.contains(want), "{out}");
+    }
+}

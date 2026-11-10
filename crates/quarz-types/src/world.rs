@@ -3571,6 +3571,44 @@ impl World {
             || id == self.builtin.integer
     }
 
+    /// Whether class `id` is never made by a plain construct (#535): a
+    /// class whose values the runtime builds, or that declares a native
+    /// `self.new`, or a subclass of one (`TCPSocket < IO`, a user's
+    /// `class MyR < Random`: their objects need the runtime's state too),
+    /// is not (a built-in value, `is_value_class`; a class
+    /// object; `Proc`, `Integer`; the prelude's `IO`, `File`,
+    /// `Channel::Selector`, `Process::Child`; and any class with a native
+    /// `self.new`: a module's `new` reaching `Array` built "an Array that is
+    /// not one", reaching `Random` a `Random` without its state, the
+    /// probes behind that arm). The one rule the checker's refusal of
+    /// `new`, the inherited-constructor rule and the runtime's guard
+    /// (`RtClass::built_by_runtime`) read; written `new` on such a class
+    /// resolves to its own `self.new` where it has one.
+    pub fn built_by_runtime(&self, id: ClassId) -> bool {
+        self.superclass_chain(id)
+            .into_iter()
+            .any(|c| self.built_by_runtime_itself(c))
+    }
+
+    /// `built_by_runtime` for class `id` itself, not its superclasses.
+    fn built_by_runtime_itself(&self, id: ClassId) -> bool {
+        let b = &self.builtin;
+        let class = self.class(id);
+        let runtime_made = [b.proc_, b.integer].contains(&id)
+            || (class.file == 0
+                && ["IO", "File", "Channel::Selector", "Process::Child"]
+                    .contains(&class.name.as_str()));
+        // (And a class whose `self.new` is native: its values are the
+        // runtime's, `Array`, `Random`, ...)
+        let native_new = class.singleton_methods.get("new").is_some_and(|ids| {
+            ids.iter().any(|&m| {
+                let mi = self.method(m);
+                mi.owner == id && mi.is_native
+            })
+        });
+        self.is_value_class(id) || self.class_is_a(id, b.class_) || runtime_made || native_new
+    }
+
     /// The built-in classes whose values are the runtime's own (no user
     /// fields, no `deinitialize`): what they hold is their type
     /// arguments.

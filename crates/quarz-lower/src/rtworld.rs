@@ -166,6 +166,7 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
                     .map(|(m, _)| m)
                     .collect(),
                 witness_sources: world.conformance_sources(c.id),
+                built_by_runtime: world.built_by_runtime(c.id),
                 members,
                 variants: c.variants.clone(),
                 variant_of: c.variant_of,

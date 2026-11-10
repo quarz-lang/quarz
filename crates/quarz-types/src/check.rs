@@ -1873,6 +1873,31 @@ impl Checker {
                         _ => None,
                     });
                 }
+                // A class the runtime builds (`World::built_by_runtime`):
+                // the `new` reaching it would build no value of it (#535),
+                // reached as the method itself or through `super` from
+                // every override on the way.
+                if self.world.built_by_runtime(sid)
+                    && (!overrides
+                        || chain
+                            .iter()
+                            .all(|&o| Self::first_super(self.world.method(o)).is_some()))
+                {
+                    if reported.insert((sid, method)) {
+                        let (sname, cname) = (
+                            self.world.class(sid).name.clone(),
+                            self.world.class(cid).name.clone(),
+                        );
+                        self.diagnostics.push((
+                            self.world.method(method).file,
+                            Diagnostic::error(
+                                format!("{new_in} in `{cname}{sep}{mname}` reaches `{sname}`, whose values the runtime makes (`{sname}` is not built with `new`): do not make `{sname}` conform to `{cname}`, or override `{mname}` for it"),
+                                span,
+                            ),
+                        ));
+                    }
+                    continue;
+                }
                 let Some(sinit) = own_init else {
                     continue;
                 };
@@ -11604,18 +11629,10 @@ impl Checker {
         // A built-in value is the runtime's own: one without a `self.new`
         // of its own is made by its literal (or a builder), not with `new`
         // (which built an object of its class, no value of it).
+        // (`World::built_by_runtime`, the rule the runtime's guard reads.)
         let b = &self.world.builtin;
         let class_object = self.world.class_is_a(cid, b.class_);
-        // (And the prelude's `IO`, `File`, `Selector` and `Process::Child`,
-        // which the runtime opens or starts, `Proc`, `Integer`: what the
-        // runtime's guard refuses too.)
-        let runtime_made = [b.proc_, b.integer].contains(&cid)
-            || (class.file == 0
-                && ["IO", "File", "Channel::Selector", "Process::Child"]
-                    .contains(&class.name.as_str()));
-        if (self.world.is_value_class(cid) || class_object || runtime_made)
-            && ![b.array, b.hash, b.set].contains(&cid)
-        {
+        if self.world.built_by_runtime(cid) {
             let hint = if cid == b.string {
                 ": write `\"\"`, or `String::Builder.new` to build one".to_string()
             } else if cid == b.int {

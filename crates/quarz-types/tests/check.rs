@@ -5708,3 +5708,41 @@ fn a_module_bound_gives_its_class_methods() {
         "undefined method `nope` for Type[T]",
     );
 }
+
+#[test]
+fn a_modules_new_never_reaches_a_class_the_runtime_builds() {
+    // #535: for every class `World::built_by_runtime` names (generated from
+    // the predicate, so a class added later is covered), a module's class
+    // method calling `new` reaching it through an extension's include is
+    // refused at that `new`.
+    let prelude = parse(PRELUDE_SOURCE);
+    let base = unit_base(0);
+    let empty = parse_with_bases("", base, base);
+    let (checked, _) = check(&prelude.program, &empty.program);
+    let world = checked.expect("the prelude checks").world;
+    let mut names = Vec::new();
+    for c in &world.classes {
+        if world.built_by_runtime(c.id) && c.kind == quarz_types::ClassKind::Class {
+            let params: Vec<&str> = c.type_params.iter().map(|p| p.name.as_str()).collect();
+            let target = if params.is_empty() {
+                c.name.clone()
+            } else {
+                format!("{}[{}]", c.name, params.join(", "))
+            };
+            names.push((c.name.clone(), target));
+        }
+    }
+    assert!(names.len() >= 30, "{names:?}");
+    for (name, target) in names {
+        let src = format!(
+            "module M\n  def self.make -> Self = new\nend\nextension {target}\n  include M\nend\n"
+        );
+        let errs = diagnostics(&src).join("\n");
+        assert!(
+            errs.contains(&format!("reaches `{name}`, whose values the runtime makes"))
+                // (`Type` is no extension target.)
+                || errs.contains("an extension target must be a class or module"),
+            "{name}: {errs}"
+        );
+    }
+}
