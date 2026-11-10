@@ -1203,11 +1203,18 @@ impl<'ast> Declarer<'ast> {
                 if info.owner != id || info.extension.is_some() {
                     continue;
                 }
+                // (`new` on `self` anywhere in it, a block's or `self.new`
+                // too: on the module itself, any builds the module.)
+                let calls_new = info
+                    .body
+                    .as_ref()
+                    .and_then(|d| d.body.as_deref())
+                    .is_some_and(|b| crate::check::Checker::self_calls(b).contains("new"));
                 let why = if info.is_abstract {
                     Some("is abstract".to_string())
                 } else if crate::check::Checker::mentions_self(info) {
                     Some("has `Self` in its signature".to_string())
-                } else if info.builds_self {
+                } else if info.builds_self || calls_new {
                     Some("calls `new`, which builds the class it is called on".to_string())
                 } else {
                     None
@@ -1273,7 +1280,8 @@ impl<'ast> Declarer<'ast> {
 
     /// An extension declares no `static def` (its `self` would be typed by
     /// the module it extends, not by the class it runs on), and includes
-    /// no module that has some (docs/14 §2).
+    /// no module that has some (docs/14 §2), nor one with abstract class
+    /// methods (an extension's include brings no class methods, #494).
     fn check_extension_static(&mut self, e: &PendingExtension<'ast>) {
         let ids: Vec<MethodId> = self.world.extensions[e.id as usize]
             .methods
@@ -1299,6 +1307,37 @@ impl<'ast> Declarer<'ast> {
                     self.error(
                         format!(
                             "`{mname}` has `static def`s, which run on a class: an extension cannot include it"
+                        ),
+                        e.def.target.span,
+                    );
+                    continue;
+                }
+                // An extension's include brings no class methods (#494):
+                // `Type[M]` would hold a class without M's abstract ones.
+                let mut abstract_names: Vec<String> = self
+                    .world
+                    .ancestor_ids(mid)
+                    .into_iter()
+                    .flat_map(|a| {
+                        self.world
+                            .class(a)
+                            .singleton_methods
+                            .values()
+                            .flatten()
+                            .map(|m| self.world.method(*m))
+                            .filter(move |m| m.owner == a && m.is_abstract)
+                            .map(|m| format!("`{}`", m.name))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+                abstract_names.sort();
+                abstract_names.dedup();
+                if !abstract_names.is_empty() {
+                    let mname = self.world.class(mid).name.clone();
+                    self.error(
+                        format!(
+                            "an extension's include brings no class methods; `{mname}` has abstract class methods ({}) a class including it must implement",
+                            abstract_names.join(", ")
                         ),
                         e.def.target.span,
                     );
@@ -2110,7 +2149,14 @@ impl<'ast> Declarer<'ast> {
                         }
                         // (One error for each pair a module brings, naming
                         // the class that includes it.)
+                        // (A class's own method against an included
+                        // module's class method is checked again where the
+                        // module's requirements are, `check_implementation`:
+                        // once.)
                         let within = if x == id {
+                            if m.singleton && !self.override_pairs.insert((mid, o)) {
+                                continue;
+                            }
                             None
                         } else if self.override_pairs.contains(&(mid, o)) {
                             continue;
@@ -3446,7 +3492,9 @@ impl<'ast> Declarer<'ast> {
         }
         // Class side: the abstract class methods of included modules
         // (`abstract def self.name`) must be implemented as class methods
-        // (or by another included module).
+        // (or by another included module), by a concrete class as on the
+        // instance side (an abstract one's concrete subclasses are checked
+        // with the modules of their whole chain).
         if class.kind != ClassKind::Module {
             let chain = self.world.superclass_chain(id);
             // Where the runtime looks for a method of the class object
@@ -3515,7 +3563,7 @@ impl<'ast> Declarer<'ast> {
                             .get(&m.name)
                             .is_some_and(|ids| ids.iter().any(|i| self.implements(*i, abs)))
                     });
-                    if !on_class && !on_module {
+                    if !on_class && !on_module && !class.is_abstract {
                         missing.push((m.name.clone(), mid));
                     }
                 }

@@ -6010,6 +6010,21 @@ impl Checker {
 
     // ----- bodies --------------------------------------------------------------
 
+    /// The error for a module's class method that depends on the class
+    /// including the module (`MethodInfo::needs_includer`), called (or
+    /// referred to) on the module `cid` itself (#494).
+    fn module_call_refusal(&self, cid: ClassId, method: MethodId) -> Option<String> {
+        let m = self.world.method(method);
+        let why = m.needs_includer.as_ref()?;
+        if self.world.class(cid).kind != ClassKind::Module || !m.singleton {
+            return None;
+        }
+        let (module, name) = (&self.world.class(cid).name, &m.name);
+        Some(format!(
+            "cannot call `{module}.{name}` on the module itself: `{name}` {why}; call it on a class that includes `{module}`"
+        ))
+    }
+
     /// Whether `Self` appears in the method's signature.
     pub(crate) fn mentions_self(m: &MethodInfo) -> bool {
         let is = |t: &Type| t.mentions_param(SELF_PARAM);
@@ -6498,6 +6513,13 @@ impl Checker {
                         expr.span,
                     );
                     return Type::Nothing;
+                }
+                // (`M.:make` on the module itself, as the call `M.make`.)
+                if let Some(ConstTarget::Class(c)) = self.out.const_targets.get(&recv.id).cloned() {
+                    if let Some(msg) = self.module_call_refusal(c, mid) {
+                        self.error(msg, expr.span);
+                        return Type::Nothing;
+                    }
                 }
                 let mut subst = subst;
                 subst.insert(SELF_PARAM, Self::self_binding(&self.world, &m, &rt));
@@ -9013,19 +9035,8 @@ impl Checker {
                     self.abstract_receivers
                         .push((method, cid, expr.span, self.env.file));
                 }
-                // A module's class method that depends on the class
-                // including it, called on the module itself (#494).
-                let m = self.world.method(method);
-                if let (Some(why), ClassKind::Module) =
-                    (&m.needs_includer, self.world.class(cid).kind)
-                {
-                    let (module, name) = (self.world.class(cid).name.clone(), m.name.clone());
-                    self.error(
-                        format!(
-                            "cannot call `{module}.{name}` on the module itself: `{name}` {why}; call it on a class that includes `{module}`"
-                        ),
-                        expr.span,
-                    );
+                if let Some(msg) = self.module_call_refusal(cid, method) {
+                    self.error(msg, expr.span);
                 }
             }
         }

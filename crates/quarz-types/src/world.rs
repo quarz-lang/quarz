@@ -2318,22 +2318,30 @@ impl World {
         // (A class's class method is looked for below its owner only, a
         // module's in a class including the module.)
         if !in_module && !chain.contains(&bi.owner)
-            || in_module && !self.ancestor_ids(c).contains(&bi.owner)
+            || in_module && !self.class_side(c, &[]).iter().any(|(m, _)| *m == bi.owner)
         {
             return None;
         }
+        // (An abstract `b` is passed over: what comes after it runs, as the
+        // runtime finds it.)
         for cur in chain {
-            if cur == bi.owner {
+            if cur == bi.owner && !bi.is_abstract {
                 return Some(b);
             }
             let class = self.class(cur);
             if let Some(ids) = class.singleton_methods.get(&bi.name) {
-                if let Some(&m) = ids.iter().find(|&&m| self.method(m).owner == cur && hit(m)) {
+                if let Some(&m) = ids.iter().find(|&&m| {
+                    let mi = self.method(m);
+                    mi.owner == cur && !mi.is_abstract && hit(m)
+                }) {
                     return Some(m);
                 }
             }
             for (module, _) in self.class_modules(cur, &[]) {
                 if module == bi.owner {
+                    if bi.is_abstract {
+                        continue;
+                    }
                     return Some(b);
                 }
                 if let Some(ids) = self.class(module).singleton_methods.get(&bi.name) {
@@ -2706,6 +2714,23 @@ impl World {
                             continue;
                         };
                         if self.class(*bid).kind == ClassKind::Module {
+                            // (`Self` in a module's code is a class that
+                            // includes the module itself: it has the
+                            // module's class methods, #494. Another
+                            // parameter's module bound may be met through
+                            // an extension, which brings none, #501.)
+                            if *p == u32::MAX {
+                                let on = Type::ClassObject(*bid, bargs.clone());
+                                for found in self.lookup_methods(&on, name) {
+                                    let fm = self.method(found.0);
+                                    if fm.singleton
+                                        && self.class(fm.owner).kind == ClassKind::Module
+                                        && !out.iter().any(|(m, _)| *m == found.0)
+                                    {
+                                        out.push(found);
+                                    }
+                                }
+                            }
                             continue;
                         }
                         for found in

@@ -5661,3 +5661,35 @@ fn include_brings_a_modules_class_methods() {
         "`A` must implement `self.kind` (abstract in the included module `M`)",
     );
 }
+
+#[test]
+fn a_modules_class_methods_review_cases() {
+    // #494's review: an abstract class method of a module is passed over
+    // for an implementation after it in the lookup order (a superclass's,
+    // or a module included before it), as on the instance side.
+    ok("module M\n  abstract def self.x -> String\nend\nclass Base\n  def self.x -> String = \"base\"\nend\nclass D < Base\n  include M\nend\nputs D.x");
+    ok("module M\n  abstract def self.x -> String\n  def self.y -> String = \"y\" + x\nend\nmodule N\n  def self.x -> String = \"nx\"\nend\nclass D\n  include N\n  include M\nend\nputs D.y");
+    // An abstract includer need not implement them; its concrete
+    // subclasses do.
+    ok("module M\n  abstract def self.x -> String\nend\nabstract class A\n  include M\nend");
+    err(
+        "module M\n  abstract def self.x -> String\nend\nabstract class A\n  include M\nend\nclass B < A\nend",
+        "`B` must implement `self.x` (abstract in the included module `M`)",
+    );
+    // `new` in a block or as `self.new` marks the method too, and a
+    // reference `M.:make` is refused as the call is.
+    let why =
+        "calls `new`, which builds the class it is called on; call it on a class that includes `M`";
+    err(
+        "module M\n  def self.b -> Array[String] = [1].map { |x| new.to_s }\nend\nclass C\n  include M\nend\nM.b",
+        &format!("cannot call `M.b` on the module itself: `b` {why}"),
+    );
+    err(
+        "module M\n  def self.a -> String = self.new.to_s\nend\nclass C\n  include M\nend\nM.a",
+        &format!("cannot call `M.a` on the module itself: `a` {why}"),
+    );
+    err(
+        "module M\n  def self.make -> String = new.to_s\nend\nclass C\n  include M\nend\nf = M.:make",
+        &format!("cannot call `M.make` on the module itself: `make` {why}"),
+    );
+}

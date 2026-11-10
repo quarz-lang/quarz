@@ -842,8 +842,10 @@ module Macros[T <: Model]
 end
 
 module Plain
+  def self.tag -> String = "plain"
   static def self.plain(n: Symbol) -> Void
     def_method(n) { 1 }
+    def_class_method(:plain_tag) { tag }
   end
 end
 "##;
@@ -926,11 +928,12 @@ fn a_generic_modules_macros_through_include() {
     write(
         &d.0,
         "plain.qz",
-        "require_relative \"lib\"\nclass F < Model\n  include Plain\n  plain :y\nend\np F.new.y\n",
+        "require_relative \"lib\"\nclass F < Model\n  include Plain\n  plain :y\nend\np F.new.y, F.plain_tag\n",
     );
     let (ok, out, err) = quarz(&d.0, &["run", "plain.qz"], &[]);
     assert!(ok, "{err}");
-    assert_eq!(out, "1\n");
+    // (A lifted class-side block finds the module's class methods.)
+    assert_eq!(out, "1\n\"plain\"\n");
     write(
         &d.0,
         "late.qz",

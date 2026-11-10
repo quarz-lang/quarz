@@ -308,3 +308,38 @@ fn field_errors_in_their_own_file_with_a_library_required() {
     }
     assert_eq!(outs[0], outs[1]);
 }
+
+/// An extension's include brings no class methods (#494): a module with
+/// abstract class methods cannot be included there, since a `Type[M]`
+/// value could then hold a class without them.
+#[test]
+fn an_extension_cannot_include_a_module_with_abstract_class_methods() {
+    let out = common::diagnostics(
+        r#"module M
+  abstract def self.x -> String
+  def self.y -> String = "y"
+  def m -> Int = 1
+end
+module N
+  def self.y -> String = "y"
+  def n -> Int = 1
+end
+class Foo
+end
+extension Foo
+  include M
+end
+class Bar
+end
+extension Bar
+  include N
+end
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("an extension's include brings no class methods; `M` has abstract class methods (`x`) a class including it must implement"),
+        "{out}"
+    );
+    assert_eq!(out.matches("error:").count(), 1, "{out}");
+}

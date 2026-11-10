@@ -44,3 +44,48 @@ begin
 rescue TypeError => e
   puts "TypeError: #{e.message}"
 end
+
+# An abstract class method of a module is passed over for what comes
+# after it in the lookup order: a superclass's, or a module included
+# before it.
+module Kinded
+  abstract def self.kind -> String
+  def self.describe_kind -> String = "kind #{kind}"
+end
+
+class Shape
+  def self.kind -> String = "shape"
+end
+
+class Square < Shape
+  include Kinded
+end
+
+module Plain
+  def self.kind -> String = "plain"
+end
+
+class Dot
+  include Plain
+  include Kinded
+end
+
+puts Square.kind, Square.describe_kind, Dot.describe_kind
+
+# An extension's include brings no class methods: through a
+# `Type[Labeled]` value holding such a class, the module's own runs.
+module Labeled
+  def self.tag -> String = "labeled"
+  def labeled? -> Bool = true
+end
+
+class Thing
+  def self.tag -> String = "thing"
+end
+
+extension Thing
+  include Labeled
+end
+
+def tag_of(t: Type[Labeled]) -> String = t.tag
+puts tag_of(Thing), Thing.tag

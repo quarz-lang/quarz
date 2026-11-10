@@ -2757,13 +2757,25 @@ impl Interp {
             return *found;
         }
         let m = self.program.method(mid);
+        // (An abstract one is passed over: an implementation after it in
+        // the lookup order, a superclass's or another module's, runs.)
         let replaces = |id: MethodId| {
-            self.same_signature(id, mid) || self.program.method(id).overrides.contains(&mid)
+            let im = self.program.method(id);
+            !im.is_abstract && (self.same_signature(id, mid) || im.overrides.contains(&mid))
         };
         let mut found = None;
-        let mut cur = Some(cid);
+        // (A module's class method reaches only the classes that include the
+        // module themselves: an extension's include brings no class
+        // methods, #494. Elsewhere, through a `Type[M]` value holding such a
+        // class, the module's own runs.)
+        let module_owner = self.program.world.class(m.owner).kind == quarz_ir::RtClassKind::Module;
+        let mut cur = if module_owner && !self.includes_on_class_side(cid, m.owner) {
+            None
+        } else {
+            Some(cid)
+        };
         'chain: while let Some(c) = cur {
-            if c == m.owner {
+            if c == m.owner && !m.is_abstract {
                 break;
             }
             let class = self.program.world.class(c);
@@ -2778,6 +2790,9 @@ impl Interp {
             // that declares it.
             for module in &class.class_modules {
                 if *module == m.owner {
+                    if m.is_abstract {
+                        continue;
+                    }
                     break 'chain;
                 }
                 let mc = self.program.world.class(*module);
@@ -2810,6 +2825,20 @@ impl Interp {
             .borrow_mut()
             .insert((cid, mid), found);
         found
+    }
+
+    /// Whether class `cid` or a superclass includes `module` itself (its
+    /// class methods are on `cid`'s class side, `RtClass::class_modules`).
+    fn includes_on_class_side(&self, cid: ClassId, module: ClassId) -> bool {
+        let mut cur = Some(cid);
+        while let Some(c) = cur {
+            let class = self.program.world.class(c);
+            if class.class_modules.contains(&module) {
+                return true;
+            }
+            cur = class.superclass;
+        }
+        false
     }
 
     /// The extension's method that implements abstract method `abs` for
