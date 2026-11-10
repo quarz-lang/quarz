@@ -590,6 +590,30 @@ pub fn collect_now() {
     });
 }
 
+/// Start this thread's collector afresh, as a new thread's, for the next
+/// program to run on it (`crate::deinit::set_classes`): the candidates
+/// still listed are the previous program's that its last collection
+/// found live (what its constants and its leaked queue hold), which no
+/// later program can free; kept, every collection of the next programs
+/// would walk them as live, and the limit, twice the live values found,
+/// would grow with them program after program (#502).
+pub(crate) fn forget_all() {
+    let _ = STATE.try_with(|s| {
+        if s.running.get() {
+            return;
+        }
+        let mut list = s.list.borrow_mut();
+        for &(addr, _) in list.iter() {
+            // SAFETY: a candidate is live while listed; 1 marks it as in
+            // no list (`forget`).
+            unsafe { counts_at(addr).1.set(1) };
+        }
+        list.clear();
+        s.made.set(0);
+        s.limit.set(MIN_LIMIT);
+    });
+}
+
 /// How many candidates this thread has.
 pub fn candidates() -> usize {
     STATE.try_with(|s| s.list.borrow().len()).unwrap_or(0)
