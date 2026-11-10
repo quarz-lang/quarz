@@ -1,0 +1,27 @@
+# A conditional extension (`extension Box[T <: Int]`) makes `Box[Int]` and
+# a subclass of `Box[Int]` conform to what it includes, instance side and
+# class side (a subclass of `Box[String]` does not, #516).
+module Parsable[U]
+  abstract def parse(s: String) -> U
+end
+module Maker[U]
+  abstract def self.make(s: String) -> U
+  def self.again(s: String) -> U = make(s)
+end
+class Box[T]
+  @v: T
+  def initialize(@v: T); end
+end
+extension Box[T <: Int]
+  include Parsable[Int]
+  include Maker[Int]
+  def parse(s: String) -> Int = @v + s.to_i
+  def self.make(s: String) -> Int = s.to_i * 10
+end
+class SI < Box[Int]
+  def initialize; super(1); end
+end
+def gen[T <: Maker[Int]](t: Type[T]) -> Int = t.again("6")
+a: Parsable[Int] = Box[Int].new(1)
+b: Parsable[Int] = SI.new
+p SI.again("2"), gen(SI), gen(Box[Int]), a.parse("1"), b.parse("4")

@@ -1,0 +1,19 @@
+# A proc not inferred yet against a conditional extension's bound is
+# decided as `is_subtype` decides procs (keywords, receiver, shareable):
+# this one can never fit, so `Object`'s overload runs (#518's review).
+module Summ
+  abstract def total -> Int
+end
+class Bx[T]
+  @v: T
+  def initialize(@v: T); end
+  def v -> T = @v
+end
+extension Bx[T <: Array[(Int, *, k: Int) -> Int]]
+  include Summ
+  def total -> Int = v[0].call(1, k: 5)
+end
+def mk[A] -> Array[(A, *, k: String) -> Int] = [->(x: A, *, k: String) { k.size }]
+def f(s: Summ) -> String = "summ #{s.total}"
+def f(o: Object) -> String = "obj"
+p f(Bx.new(mk))

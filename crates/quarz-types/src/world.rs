@@ -1129,28 +1129,9 @@ impl World {
     /// superclass's (#504). An extension's own `def self.` methods are the
     /// extension's (`lookup_methods`).
     pub fn class_side(&self, id: ClassId, args: &[Type]) -> Vec<(ClassId, Vec<Type>)> {
-        // (A conditional extension, `extension Box[T <: Int]`, only where
-        // its bounds hold for the arguments; with none written, as its own
-        // class methods are found.)
-        let exts: Vec<ExtensionId> = self
-            .conformance_extensions()
-            .into_iter()
-            .filter(|&e| {
-                let ext = &self.extensions[e as usize];
-                ext.target != id || args.is_empty() || {
-                    let subst = self.extension_subst(ext, args);
-                    ext.type_params.iter().all(|tp| match subst.get(&tp.id) {
-                        // (Not known yet: as with no arguments.)
-                        Some(Type::Var(_)) => true,
-                        Some(t) => tp
-                            .bounds
-                            .iter()
-                            .all(|b| self.is_subtype(t, &b.subst(&subst))),
-                        None => true,
-                    })
-                }
-            })
-            .collect();
+        // (A conditional extension only where its bounds hold:
+        // `ancestors`' walk, `modules_of`.)
+        let exts = self.conformance_extensions();
         self.ancestors_with(id, args, &exts)
     }
 
@@ -1393,7 +1374,7 @@ impl World {
         }
         for ext_id in exts {
             let ext = &self.extensions[*ext_id as usize];
-            if ext.target != id {
+            if ext.target != id || !self.extension_bounds_hold(ext, args) {
                 continue;
             }
             let esubst = self.extension_subst(ext, args);
@@ -1413,6 +1394,49 @@ impl World {
         }
         cache.insert(key, out.clone());
         out
+    }
+
+    /// Whether a conditional extension (`extension Box[T <: Int]`) applies
+    /// to its target with `args`, the arguments the class has at this
+    /// point of a walk (a subclass's instantiation of it along the
+    /// superclass chain, #516): every bound holds for its argument. With
+    /// no arguments (a bare class) or one not inferred yet, it applies.
+    pub fn extension_bounds_hold(&self, ext: &ExtensionInfo, args: &[Type]) -> bool {
+        if args.is_empty() || ext.type_params.iter().all(|tp| tp.bounds.is_empty()) {
+            return true;
+        }
+        let subst = self.extension_subst(ext, args);
+        // (An argument not inferred yet, at any depth, counts as holding,
+        // as method lookup treats it: `Bx[Array[?]]`; #519 tightens both.)
+        ext.type_params.iter().all(|tp| match subst.get(&tp.id) {
+            None => true,
+            Some(t) => tp.bounds.iter().all(|b| {
+                let b = b.subst(&subst);
+                if t.has_vars() || b.has_vars() {
+                    self.may_be_subtype(t, &b)
+                } else {
+                    self.is_subtype(t, &b)
+                }
+            }),
+        })
+    }
+
+    /// Whether `t` can still be a subtype of `b` once their inference
+    /// variables are inferred (an argument not inferred yet, at any depth,
+    /// or a bound naming one), approximated by two fills: `is_subtype`
+    /// with every variable filled with `Nothing`, or with every variable
+    /// filled with `Object` (the same fill on both sides). So
+    /// `Bx[Array[?]]` may meet `T <: Array[Int]` (`Array` is covariant)
+    /// and `Bx[Array[Array[?]]]` never can; a variable in an invariant
+    /// position is refused unless a fill fits. The check when the
+    /// variables resolve, with plain `is_subtype`, is #519.
+    fn may_be_subtype(&self, t: &Type, b: &Type) -> bool {
+        if !t.has_vars() && !b.has_vars() {
+            return self.is_subtype(t, b);
+        }
+        let object = Type::class(self.builtin.object);
+        self.is_subtype(&t.fill_vars(&Type::Nothing), &b.fill_vars(&Type::Nothing))
+            || self.is_subtype(&t.fill_vars(&object), &b.fill_vars(&object))
     }
 
     /// The classes of `ancestors(id, ..)`, in the same order, without

@@ -1,0 +1,25 @@
+# A conditional extension's bound against an argument not inferred yet,
+# decided with the subtyping rules (variance, derived Shareable): #518's
+# review.
+module Summ
+  abstract def total -> Int
+end
+class Sink[in T]
+  def initialize; end
+  def put(x: T) -> Int = 1
+end
+class Bx[T]
+  @v: T
+  def initialize(@v: T); end
+  def v -> T = @v
+end
+extension Bx[T <: Sink[Array[Int]]]
+  include Summ
+  def total -> Int = v.put([1])
+end
+def mk[X] -> Sink[Enumerable[X]] = Sink[Enumerable[X]].new
+def f(s: Summ) -> String = "summ #{s.total}"
+def f(o: Object) -> String = "obj"
+s: Sink[Enumerable[Int]] = Sink[Enumerable[Int]].new
+p f(Bx.new(s))
+p f(Bx.new(mk))

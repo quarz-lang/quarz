@@ -1626,7 +1626,8 @@ impl Checker {
     /// module one of them includes), whatever extensions are active.
     fn conforms_by_extension(&self, sid: ClassId, m: ClassId) -> bool {
         self.world.class_ext_impls.iter().any(|w| {
-            self.world.ancestor_ids(w.module).contains(&m)
+            self.extension_may_reach(w.ext, sid)
+                && self.world.ancestor_ids(w.module).contains(&m)
                 && self.world.superclass_chain(sid).into_iter().any(|x| {
                     x == w.class
                         || self
@@ -1674,6 +1675,45 @@ impl Checker {
         floors
             .into_iter()
             .max_by_key(|f| chain.iter().position(|c| c == f).unwrap_or(0))
+    }
+
+    /// Whether extension `ext`'s conformance may hold for class `sid` (its
+    /// target, a subclass, or a class including the target module): false
+    /// only when `sid`'s instantiation of the target is known (no type
+    /// parameters), the target's parameters are invariant (no `Type[S] <:
+    /// Type[Box[Int]]` through variance), no bound names a module (which an
+    /// extension active elsewhere may meet), and a bound of the
+    /// conditional extension fails for it (#516).
+    fn extension_may_reach(&self, ext: ExtensionId, sid: ClassId) -> bool {
+        let e = &self.world.extensions[ext as usize];
+        if e.type_params.iter().all(|tp| tp.bounds.is_empty())
+            || self
+                .world
+                .class(e.target)
+                .type_params
+                .iter()
+                .any(|tp| tp.variance != Variance::Invariant)
+        {
+            return true;
+        }
+        let Some((_, targs)) = self
+            .world
+            .ancestors_with_no_extensions(sid)
+            .into_iter()
+            .find(|(k, _)| *k == e.target)
+        else {
+            return true;
+        };
+        // (A bound naming a module may be met through an extension active
+        // elsewhere, where the witness runs: counted as met.)
+        let module_bound = e.type_params.iter().any(|tp| {
+            tp.bounds.iter().any(|b| {
+                matches!(b, Type::Class(c, _) if self.world.class(*c).kind == ClassKind::Module)
+            })
+        });
+        module_bound
+            || targs.iter().any(|t| t.has_params())
+            || self.world.extension_bounds_hold(e, &targs)
     }
 
     /// The witness the runtime runs for module class method `mid` on class
