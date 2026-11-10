@@ -5372,7 +5372,15 @@ impl<'ast> Declarer<'ast> {
             // returns nil).
             None => Type::Void,
         };
-        if def.is_abstract
+        if def.is_abstract && extension.is_some() {
+            // An extension declares no abstract method (#534): the
+            // requirement belongs to the module or abstract class itself,
+            // and nothing would implement it.
+            self.error(
+                "an extension cannot declare an abstract method: declare it in the module or abstract class itself",
+                def.span,
+            );
+        } else if def.is_abstract
             && !self.world.class(owner).is_abstract
             && self.world.class(owner).kind != ClassKind::Module
         {
