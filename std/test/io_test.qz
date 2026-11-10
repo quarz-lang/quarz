@@ -169,6 +169,59 @@ class DirGlobTest < Test::Case
     end
   end
 
+  # Escapes and an unclosed `{` (#484), each result Ruby's
+  # (`Dir.glob(p, base: "t")` with these names in `t`).
+  def test_escapes_and_unclosed_brace
+    with_tree("escapes") do |root|
+      t = "#{root}/t"
+      Dir.mkdir_p("#{t}/a")
+      names = ["ac", "{a", "a*", "a]", "a-", "!x", "a\\b", "{,a}", "a,b", "[x]", ".x"]
+      (names + ["a!", "a#", "a0", "a_", "a."]).each do |f|
+        File.write("#{t}/#{f}", "")
+      end
+      assert_equal(["{,a}"], Dir.glob("\\{,a}", t))
+      assert_empty(Dir.glob("{\\,a}", t))
+      assert_equal(["ac"], Dir.glob("a\\c", t))
+      assert_equal(["a*"], Dir.glob("a\\*", t))
+      assert_equal(["a*"], Dir.glob("a[*]", t))
+      assert_equal(["a\\b"], Dir.glob("a\\\\b", t))
+      assert_equal(["[x]"], Dir.glob("\\[x\\]", t))
+      assert_equal(["{a"], Dir.glob("\\{a", t))
+      assert_equal(["a"], Dir.glob("\\a", t))
+      assert_equal([".x"], Dir.glob("\\.x", t))
+      assert_equal(["a,b"], Dir.glob("{a\\,b,q}", t))
+      # (A `\` ending the pattern is dropped.)
+      assert_equal(["a"], Dir.glob("a\\", t))
+      assert_equal(["a"], Dir.glob("{a,b}\\", t))
+      # In a class.
+      assert_equal(["a]"], Dir.glob("a[\\]]", t))
+      assert_equal(["a-"], Dir.glob("a[\\-]", t))
+      assert_equal(["!x"], Dir.glob("[\\!]x", t))
+      assert_equal(["!x"], Dir.glob("[\\!\\-]x", t))
+      assert_equal(["a-", "a]", "ac"], Dir.glob("a[\\]c\\-]", t))
+      # Ranges whose ends are `!`, `-`, `]`; a class never matches a
+      # leading dot; `[]` matches nothing, `[!]` any character.
+      assert_equal(["a!", "a#"], Dir.glob("a[\\!-#]", t))
+      assert_equal(["a-", "a.", "a0", "a_"], Dir.glob("a[_\\--0]", t))
+      assert_equal(["a]", "a_", "ac"], Dir.glob("a[c\\]-z]", t))
+      assert_equal(["a!", "a#"], Dir.glob("a[#-!]", t))
+      assert_empty(Dir.glob("[.]x", t))
+      assert_empty(Dir.glob("[\\.]x", t))
+      assert_empty(Dir.glob("a[]", t))
+      assert_empty(Dir.glob("a[]]", t))
+      assert_equal(["a!", "a#", "a*", "a-", "a.", "a0", "a]", "a_", "ac"], Dir.glob("a[!]", t))
+      # An unclosed `{` matches nothing, even a file of that name.
+      assert_empty(Dir.glob("{a", t))
+      assert_empty(Dir.glob("{a,b", t))
+      assert_empty(Dir.glob("{a,{b}", t))
+      assert_empty(Dir.glob("{a}{", t))
+      # Quarz's documented difference: an empty alternative matches
+      # nothing (Ruby's gives `["", "a"]`).
+      assert_equal(["a"], Dir.glob("{,a}", t))
+      assert_empty(Dir.glob("{}", t))
+    end
+  end
+
   # The base is a path, walked from, never a pattern (#431). Ruby's
   # `Dir.glob("*.qz", base:)` gives `["a.qz"]` for `./src`,
   # `src//sub/..//` and a directory named `s[1]`, and `""` is the
