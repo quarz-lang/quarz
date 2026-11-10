@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "quarz-lang": {
+      "source": {
+        "source": "github",
+        "repo": "quarz-lang/claude-plugins"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "long-jobs@quarz-lang": true
+  }
+}

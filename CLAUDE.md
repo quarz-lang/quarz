@@ -67,6 +67,10 @@ each other's `quarz` and runtime library (`cargo build` after each
 switch), cargo runs on one target directory wait for each other's lock,
 and measurements keep a separate one (see "Performance work").
 
+Long commands and waits (tests, builds, CI): follow the `long-jobs`
+skill (run them with `run_in_background`, keep the log and `exit=$?`,
+never use `pgrep -f` with a plain pattern).
+
 - Commit and push at good stopping points. Stage files by explicit path,
   never `git add -A`. Remove a stray `examples/shapes` that tests leave.
 - Never print secrets (tokens, credentials). Leave credential commands to
