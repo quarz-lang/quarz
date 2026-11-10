@@ -1019,19 +1019,25 @@ impl FieldLayout {
     }
 }
 
-/// Each class's layout, by class id (published whole: readers take no
-/// lock).
-static LAYOUTS: std::sync::atomic::AtomicPtr<Vec<&'static FieldLayout>> =
-    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
-static LAYOUTS_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+thread_local! {
+    /// The layouts of the classes of the program this thread runs, by
+    /// class id: set by `register_layouts` when the program's interpreter
+    /// is made on the thread (every thread that runs a program makes one:
+    /// the main one, each worker, a helper running an image), read when
+    /// an object is made. Per thread, not per process: programs run at
+    /// once in one process (the test binaries do) each make objects with
+    /// their own classes' layouts, which another program's ids would
+    /// mismatch (#502).
+    static LAYOUTS: std::cell::Cell<&'static [&'static FieldLayout]> =
+        const { std::cell::Cell::new(&[]) };
+}
 
 /// Make the layouts of `classes` (a program's, by id) the ones new
-/// objects get. A class whose fields are as before keeps its layout.
+/// objects made on this thread get. A class whose fields are as in the
+/// thread's table before (the REPL's earlier inputs, or a program run on
+/// the thread before) keeps its layout.
 pub fn register_layouts(classes: &[quarz_ir::RtClass]) {
-    let _guard = LAYOUTS_WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    let old = LAYOUTS.load(std::sync::atomic::Ordering::Acquire);
-    // SAFETY: a published table is never freed.
-    let old: &[&'static FieldLayout] = if old.is_null() { &[] } else { unsafe { &*old } };
+    let old = LAYOUTS.with(|l| l.get());
     // Exceptions get a word for what a raise captures (see `exc_info`).
     let table: Vec<&'static FieldLayout> = classes
         .iter()
@@ -1054,11 +1060,9 @@ pub fn register_layouts(classes: &[quarz_ir::RtClass]) {
         .collect();
     let same = table.len() == old.len() && table.iter().zip(old).all(|(a, b)| std::ptr::eq(*a, *b));
     if !same {
-        // The old table stays allocated: a reader may still hold it.
-        LAYOUTS.store(
-            Box::into_raw(Box::new(table)),
-            std::sync::atomic::Ordering::Release,
-        );
+        // (Leaked: an object made with a layout keeps referring to it.)
+        let table: &'static [&'static FieldLayout] = Box::leak(table.into_boxed_slice());
+        LAYOUTS.with(|l| l.set(table));
     }
 }
 
@@ -1140,13 +1144,9 @@ fn split_top(s: &str, sep: char) -> Vec<&str> {
 
 /// The layout of a new object of `class` with `n` fields.
 fn layout_for(class: ClassId, n: usize) -> &'static FieldLayout {
-    let table = LAYOUTS.load(std::sync::atomic::Ordering::Acquire);
-    if !table.is_null() {
-        // SAFETY: a published table is never freed.
-        if let Some(l) = unsafe { &*table }.get(class as usize) {
-            if l.kinds.len() == n {
-                return l;
-            }
+    if let Some(l) = LAYOUTS.with(|l| l.get()).get(class as usize) {
+        if l.kinds.len() == n {
+            return l;
         }
     }
     FieldLayout::values(n)
@@ -3950,6 +3950,68 @@ pub fn regexp_literal(source: &str, flags: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::acyclic_type;
+
+    /// A class `name` with fields of the declared types `fields`.
+    fn class(name: &str, fields: &[&str]) -> quarz_ir::RtClass {
+        quarz_ir::RtClass {
+            name: name.to_string(),
+            kind: quarz_ir::RtClassKind::Class,
+            superclass: None,
+            ancestors: Vec::new(),
+            fields: fields
+                .iter()
+                .enumerate()
+                .map(|(i, ty)| quarz_ir::RtField {
+                    name: format!("f{i}"),
+                    default: None,
+                    ty: Some(ty.to_string()),
+                })
+                .collect(),
+            ivars: Vec::new(),
+            module_init: false,
+            inherited_inits: Vec::new(),
+            methods: Default::default(),
+            singleton_methods: Default::default(),
+            class_modules: Vec::new(),
+            members: Default::default(),
+            variants: Vec::new(),
+            variant_of: None,
+            structural: false,
+            declares_eq_hash: false,
+            is_exception: false,
+            is_abstract: false,
+            objects: true,
+            file: 1,
+            cog: None,
+        }
+    }
+
+    /// A program running on one thread makes its objects with its own
+    /// classes' layouts, whatever another program publishes on another
+    /// thread meanwhile (#502: one process-wide table let a program's
+    /// class id name another program's class).
+    #[test]
+    fn each_thread_makes_objects_with_its_programs_layouts() {
+        // Class 0 of this program: a word field (not a cycle candidate;
+        // the layout of an unregistered class would be a value slot and a
+        // candidate).
+        super::register_layouts(&[class("Counter", &["Int"])]);
+        let mine = super::layout_for(0, 1);
+        assert!(!mine.cyclic);
+        assert_ne!(mine.kinds, super::FieldLayout::values(1).kinds);
+        // Another program on another thread: class 0 has a field that may
+        // lead back, a value slot.
+        std::thread::spawn(|| {
+            super::register_layouts(&[class("Node", &["Node?"])]);
+            assert!(super::layout_for(0, 1).cyclic);
+        })
+        .join()
+        .unwrap();
+        // This thread's objects keep this program's layout.
+        let after = super::layout_for(0, 1);
+        assert!(std::ptr::eq(mine, after));
+        assert!(!after.cyclic);
+    }
 
     #[test]
     fn field_types_that_cannot_lead_back() {
