@@ -3958,6 +3958,7 @@ mod tests {
             kind: quarz_ir::RtClassKind::Class,
             superclass: None,
             ancestors: Vec::new(),
+            lookup: Vec::new(),
             fields: fields
                 .iter()
                 .enumerate()

@@ -672,6 +672,75 @@ fn top_level_extensions_stay_in_their_cog() {
     assert_eq!(w.ok("app", &["run"]), "3\n42\n");
 }
 
+/// An extension's include at the top level of a library cog overrides the
+/// class's ancestors' methods as one at the application's top level does;
+/// one in a module body does not (docs/01 §7, #536).
+#[test]
+fn a_librarys_top_level_extension_include_overrides() {
+    let w = World::new();
+    w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
+    w.write(
+        "lib/src/a.qz",
+        "class EB\n  def initialize; end\n  def m(x: Int) -> String = \"base\"\nend\n\
+         module EM\n  def m(x: Int) -> String = \"sub\"\nend\n\
+         class EC < EB\n  def initialize; end\nend\n\
+         extension EC\n  include EM\nend\n\
+         class XC < EB\n  def initialize; end\nend\n\
+         module Scope\n  extension XC\n    include EM\n  end\nend\n\
+         module Calc\n  def self.via(b: EB) -> String = b.m(1)\nend\n",
+    );
+    w.commit("lib", Some("v0.1.0"));
+    let dep = format!("Lib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("lib"));
+    w.app(
+        &dep,
+        "puts Lib::Calc.via(Lib::EC.new), Lib::Calc.via(Lib::XC.new)\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "sub\nbase\n");
+    // Not on a class from outside the cog (std's here): a cog cannot
+    // monkey-patch its users (docs/10).
+    w.write(
+        "lib/src/b.qz",
+        "module PM\n  def message -> String = \"patched by lib\"\nend\n\
+         extension ArgumentError\n  include PM\nend\n\
+         public def touch -> Int = 0\n",
+    );
+    w.commit("lib", Some("v0.2.0"));
+    let dep = format!("Lib = {{ git = \"{}\", tag = \"v0.2.0\" }}\n", w.url("lib"));
+    w.app(
+        &dep,
+        "Lib.touch\nbegin\n  raise ArgumentError.new(\"app's message\")\nrescue ArgumentError => e\n  puts e.message\nend\n\
+         e2: Exception = ArgumentError.new(\"x\")\nputs e2.message\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "app's message\nx\n");
+    // The application's top-level extension overrides on a library's
+    // class; one in a module body does not.
+    w.app(
+        &dep,
+        "module EM2\n  def m(x: Int) -> String = \"app sub\"\nend\n\
+         class AC < Lib::EB\n  def initialize; end\nend\n\
+         class BC < Lib::EB\n  def initialize; end\nend\n\
+         extension AC\n  include EM2\nend\n\
+         module App\n  extension BC\n    include EM2\n  end\nend\n\
+         puts Lib::Calc.via(AC.new), Lib::Calc.via(BC.new)\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "app sub\nbase\n");
+    // A std class's own method overrides a library extension's module
+    // method of its name, checked at the library's extension (#536).
+    w.write(
+        "lib/src/c.qz",
+        "module OM\n  def hash -> String = \"om-hash\"\nend\nextension Object\n  include OM\nend\n",
+    );
+    w.commit("lib", Some("v0.3.0"));
+    let dep = format!("Lib = {{ git = \"{}\", tag = \"v0.3.0\" }}\n", w.url("lib"));
+    w.app(&dep, "puts Lib.touch\n");
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("`hash` returns Int but `Lib::OM#hash`, which it overrides as `Object#hash`, returns String")
+            && err.contains("src/c.qz"),
+        "{err}"
+    );
+}
+
 #[test]
 fn top_level_defs_are_cog_wide() {
     let w = World::new();

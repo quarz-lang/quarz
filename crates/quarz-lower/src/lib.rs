@@ -1455,6 +1455,10 @@ fn may_receive(world: &World, o: MethodId, classes: &[ClassId]) -> bool {
 /// it includes (for a module's, one beside it in an includer); for
 /// another class's instance method, one of a class below it, or of a
 /// module a class below it includes.
+///
+/// A reachability superset for static rounds only (by name and hierarchy,
+/// wider than the override table `World::overrides`): never consulted for
+/// which method runs (#536).
 fn is_override(world: &World, o: MethodId, m: MethodId) -> bool {
     let (om, mm) = (&world.methods[o as usize], &world.methods[m as usize]);
     if om.name != mm.name {
@@ -1519,12 +1523,16 @@ fn overridden_methods(world: &World) -> HashSet<(ClassId, String)> {
             .or_default()
             .extend(e.methods.keys().cloned());
     }
+    let conf = world.all_conformance_extensions();
     let ancestors: Vec<Vec<ClassId>> = world
         .classes
         .iter()
+        // (Every extension's include, a conditional one's too, whichever
+        // are active where the lowering runs: the same on a warm cache as
+        // on a cold one, #536.)
         .map(|c| {
             world
-                .ancestors(c.id, &[])
+                .own_ancestors_under(c.id, &conf)
                 .into_iter()
                 .map(|(a, _)| a)
                 .collect()

@@ -505,7 +505,7 @@ fn a_statement_reaches_what_dispatch_may_find() {
         ("module Named\n  def self.label -> String = \"base\"\nend\nclass A\n  include Named\nend\nclass B < A\n  def self.label -> String = \"B\"\nend\nclass Model\n  static def self.show(k: Type[A]) -> Void\n    puts k.label\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show B\nend\n", "B\n"),
         ("class A\n  def self.name -> String = \"customA\"\nend\nclass Model\n  static def self.show(k: Type[Object]) -> Void\n    puts k.name\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show A\nend\n", "customA\n"),
         ("class Model\n  static def self.show -> Void\n    puts type.name\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  def self.type -> Type[Post]\n    puts \"own type\"\n    Post\n  end\n  show\nend\n", "own type\nPost\n"),
-        ("module Typed\n  def self.type -> Type[Object]\n    puts \"typed\"\n    Object\n  end\nend\nclass Model\n  static def self.show -> Void\n    puts type.name\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  include Typed\n  show\nend\n", "typed\nObject\n"),
+        ("module Typed\n  def self.doc(text: String) -> Void\n    puts \"typed #{text}\"\n  end\nend\nclass Model\n  static def self.show -> Void\n    doc(\"x\")\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  include Typed\n  show\nend\n", "typed x\n"),
         ("class Base\n  def label -> String = \"base\"\nend\nabstract class A < Base\n  abstract def label -> String\nend\nclass B < A\nend\nclass Model\n  static def self.show(k: A) -> Void\n    puts k.label\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show B.new\nend\n", "base\n"),
     ] {
         let d = dir();
@@ -1636,7 +1636,7 @@ fn a_union_of_a_class_def_and_a_related_class_object_is_narrowed_first() {
     // answer alike (`name`), `is_a?` to narrow, and an unrelated class
     // object (#490) are accepted.
     let d = dir();
-    let lib = "class Sub < Base\n  def self.def_method[R](name: Symbol, &body: () -> R) -> R\n    puts \"Sub.def_method\"\n    body.call\n  end\n  def self.type -> Int = 1\nend\nmodule M\n  def m -> Int = 1\n  def self.def_method[R](name: Symbol, &body: () -> R) -> R = body.call\nend\nclass Runner\n  include M\n  def self.def_method[R](name: Symbol, &body: () -> R) -> R\n    puts \"Runner.def_method\"\n    body.call\n  end\nend\n";
+    let lib = "class Sub < Base\n  def self.def_method[R](name: Symbol, &body: () -> R) -> R\n    puts \"Sub.def_method\"\n    body.call\n  end\n  def self.type -> Type[Sub] = Sub\nend\nmodule M\n  def m -> Int = 1\n  def self.def_method[R](name: Symbol, &body: () -> R) -> R = body.call\nend\nclass Runner\n  include M\n  def self.def_method[R](name: Symbol, &body: () -> R) -> R\n    puts \"Runner.def_method\"\n    body.call\n  end\nend\n";
     let refused = [
         (
             "r = flag ? Sub : self\n    r.def_method(:a) { 1 }",

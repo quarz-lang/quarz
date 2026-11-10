@@ -1,0 +1,88 @@
+# #536 (docs/01 §7): a lookup by name (`RtClass::lookup`) leaves out the
+# modules of scoped and conditional extensions, except where their
+# conformance holds: an abstract method of such a module, which natives
+# call by name (`each`, `<=>`), resolves through the witness the extension
+# gives; and an interpolation calls the `to_s` found for the value's type
+# where the extension is active, a module's that it includes too.
+
+# `Enumerable` through a scoped extension: `sort` and `each_with_index`
+# call `each` by name.
+class Coll
+end
+module ScopeE
+  extension Coll
+    include Enumerable[Int]
+    def each(&blk: (Int) -> Void) -> Void
+      yield 3
+      yield 1
+      yield 2
+    end
+  end
+end
+using ScopeE
+c = Coll.new
+puts c.map { |x| x * 10 }.to_s
+puts c.sort { |a, b| a - b }.to_s
+c.each_with_index { |x, i| puts "#{i}:#{x}" }
+
+# `Comparable` through a scoped extension with its own `<=>`.
+class Box2
+  @v: Int
+  def initialize(@v: Int)
+  end
+  def v -> Int = @v
+  def to_s -> String = "C#{@v}"
+end
+module ScopeC
+  extension Box2
+    include Comparable[Box2]
+    def <=>(o: Box2) -> Int = o.v - v
+  end
+end
+using ScopeC
+puts [Box2.new(1), Box2.new(3), Box2.new(2)].sort.join(",")
+
+# A conditional extension: `Enumerable`'s `each` and a module's `to_s`.
+module EMG
+  def to_s -> String = "EMG to_s"
+end
+class G[T]
+  @v: T
+  def initialize(@v: T)
+  end
+end
+extension G[T <: Int]
+  include EMG
+  include Enumerable[T]
+  def each(&blk: (T) -> Void) -> Void
+    yield @v
+    yield @v
+  end
+end
+g = G.new(1)
+puts g.to_s
+puts "#{g}"
+puts g.sort { |a, b| a - b }.to_s
+
+# A scoped extension's module's `to_s` in an interpolation where it is
+# active, beside an extension's own.
+module EMS
+  def to_s -> String = "EMS to_s"
+end
+class Box3
+end
+class Box4
+end
+module ScopeS
+  extension Box3
+    include EMS
+  end
+  extension Box4
+    def to_s -> String = "ext own to_s"
+  end
+end
+using ScopeS
+b = Box3.new
+puts "#{b}"
+puts "#{Box4.new}"
+puts b.to_s

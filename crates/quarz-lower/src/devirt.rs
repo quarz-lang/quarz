@@ -100,12 +100,15 @@ fn resolve(world: &RtWorld, cid: ClassId, mid: MethodId) -> Option<Option<Method
                     && c.params
                         .iter()
                         .all(|p| p.kind == RtParamKind::Positional && !p.has_default)
-                    // The method itself or an override of it: a method of
-                    // the same name that accepts less is an overload.
+                    // The method itself, or what the override table says
+                    // replaces it (`RtMethod::overrides`, and for this
+                    // class the module-over-ancestor pairs,
+                    // `RtWorld::include_overrides`, #536): any other of the
+                    // name is an overload.
                     && (*id == mid
                         || c.overrides.contains(&mid)
-                        || c.params.iter().zip(&m.params).all(|(p, q)| {
-                            p.ty == q.ty || p.ty.is_none() || q.ty.is_none()
+                        || world.include_overrides.iter().any(|(k, o, by)| {
+                            *o == mid && *by == *id && (*k == cid || class.ancestors.contains(k))
                         }))
             })
             .collect();

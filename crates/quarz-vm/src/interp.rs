@@ -78,9 +78,10 @@ pub type FastNativeFn = fn(&Interp, &Value, &[&Value]) -> Option<EvalResult>;
 /// back so the caller can restore it.
 pub type OwnedNativeFn = fn(&Interp, Value, Args) -> Result<Value, (Flow, Value)>;
 
-/// Key of the by-name method cache: class, arity, block given (the name
-/// is the inner key, so lookups do not allocate).
-type NameKey = (ClassId, usize, bool);
+/// Key of the by-name method cache: class, arity, block given, and whether
+/// the witness fallback applies (`Interp::find_method`); the name is the
+/// inner key, so lookups do not allocate.
+type NameKey = (ClassId, usize, bool, bool);
 
 /// `fast_binop` on two Ints: inlined where the interpreter runs a block,
 /// the commonest case (None: overflow or a division by zero, for the
@@ -1130,7 +1131,7 @@ impl Interp {
         // The class's own: neither a native nor an extension's (which
         // takes no part in dynamic dispatch, docs/01-syntax.md §7).
         let own = |c: ClassId, name: &str, argc: usize| {
-            interp.find_method(c, name, argc, false).filter(|m| {
+            interp.find_method(c, name, argc, false, false).filter(|m| {
                 let m = interp.program.method(*m);
                 m.native_key.is_none() && !m.is_extension
             })
@@ -1158,7 +1159,8 @@ impl Interp {
     /// The `deinitialize` instances of class `cid` run when released.
     fn deinitializer(&self, cid: ClassId) -> Option<MethodId> {
         let world = &self.program.world;
-        world.class(cid).ancestors.iter().find_map(|a| {
+        // (By name: `lookup`, not the membership `ancestors`.)
+        world.class(cid).lookup.iter().find_map(|a| {
             world
                 .class(*a)
                 .methods
@@ -2688,18 +2690,11 @@ impl Interp {
             return *found;
         }
         let m = self.program.method(mid);
-        let (min, max) = m.positional_arity();
-        // A class method of the same name that accepts less is an
-        // overload, not an override.
+        // (Whether a class method replaces it: the override table alone,
+        // `World::overrides`, #536; any other of the name is an overload.)
         let accepts = |c: MethodId| {
             let cm = self.program.method(c);
-            let (cmin, cmax) = cm.positional_arity();
-            !cm.is_abstract
-                && cm.has_block == m.has_block
-                && cmin <= max
-                && cmax >= min
-                && (c == mid || self.same_signature(c, mid) || cm.overrides.contains(&mid))
-                && (c == mid || cm.keywords_accept(m))
+            !cm.is_abstract && (c == mid || cm.overrides.contains(&mid))
         };
         let mut found = None;
         // Class methods of the name below the one found that it does not
@@ -2763,9 +2758,10 @@ impl Interp {
         let m = self.program.method(mid);
         // (An abstract one is passed over: an implementation after it in
         // the lookup order, a superclass's or another module's, runs.)
+        // (Whether one replaces it: the override table alone, #536.)
         let replaces = |id: MethodId| {
             let im = self.program.method(id);
-            !im.is_abstract && (self.same_signature(id, mid) || im.overrides.contains(&mid))
+            !im.is_abstract && im.overrides.contains(&mid)
         };
         let mut found = None;
         // (A module's class method reaches only the classes that include the
@@ -2799,6 +2795,20 @@ impl Interp {
                     break;
                 }
             }
+            // A module's class method the class's includes put in its place
+            // (over a superclass's or an earlier-included module's, docs/01
+            // §6, `World::class_include_overrides`): before the walk below,
+            // which stops at the module that declares `mid`.
+            if let Some(&(_, _, by)) = self
+                .program
+                .world
+                .class_include_overrides
+                .iter()
+                .find(|(k, o, _)| *k == c && *o == mid)
+            {
+                found = Some(by);
+                break;
+            }
             // A module's class method (`include`, docs/01 §6): the
             // modules the class includes, the last first, up to the one
             // that declares it.
@@ -2820,18 +2830,6 @@ impl Interp {
                         break 'chain;
                     }
                 }
-            }
-            // Then a module's class method overriding a superclass's
-            // (docs/01 §6, `World::class_include_overrides`).
-            if let Some(&(_, _, by)) = self
-                .program
-                .world
-                .class_include_overrides
-                .iter()
-                .find(|(k, o, _)| *k == c && *o == mid)
-            {
-                found = Some(by);
-                break;
             }
             cur = class.superclass;
         }
@@ -2920,7 +2918,6 @@ impl Interp {
     /// name is overloaded.
     fn find_override(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
         let m = self.program.method(mid);
-        let (min, max) = m.positional_arity();
         for anc in &self.program.world.class(cid).ancestors {
             let anc = *anc;
             // (An abstract method stands in for none: what implements it
@@ -2966,18 +2963,10 @@ impl Interp {
             if let Some(ids) = self.program.world.class(anc).methods.get(&m.name) {
                 candidates.extend(ids);
             }
-            // (One with other required keywords is an overload, not an
-            // override: docs/01 §3.)
-            candidates.retain(|c| {
-                let cm = self.program.method(*c);
-                let (cmin, cmax) = cm.positional_arity();
-                // (An abstract one stands in for none, the method's own too.)
-                !cm.is_abstract
-                    && cm.has_block == m.has_block
-                    && cmin <= max
-                    && cmax >= min
-                    && cm.keywords_accept(m)
-            });
+            // (An abstract one stands in for none, the method's own too;
+            // whether one replaces `mid` is the override table's answer
+            // alone, #536.)
+            candidates.retain(|c| !self.program.method(*c).is_abstract);
             if candidates.is_empty() {
                 continue;
             }
@@ -2993,27 +2982,21 @@ impl Interp {
             }) {
                 return Some(*o);
             }
-            // What overrides it with the types substituted (instantiated
-            // generics, wider types) first, then the same signature as
-            // written (a method's own type parameters match any): one that
-            // is neither is an overload, so keep looking.
+            // What the override table says replaces it (`RtMethod::overrides`,
+            // `World::overrides`): any other is an overload, so keep looking.
             if let Some(o) = candidates
                 .iter()
                 .find(|c| self.program.method(**c).overrides.contains(&mid))
             {
                 return Some(*o);
             }
-            if let Some(exact) = candidates.iter().find(|c| self.same_signature(**c, mid)) {
-                return Some(*exact);
-            }
         }
         None
     }
 
-    /// Whether `a` stands in for `b`: the same parameters by position, of
-    /// the same types (where neither is a type parameter), and every
-    /// keyword call `b` takes (`RtMethod::keywords_accept`), each keyword
-    /// they share of the same type.
+    /// Whether `a` stands in for `b` by signature, for `ext_impl`'s
+    /// run-time choice among an extension's methods only (the extension
+    /// witnesses, #536 step 3; overrides read `RtMethod::overrides`).
     fn same_signature(&self, a: MethodId, b: MethodId) -> bool {
         let (a, b) = (self.program.method(a), self.program.method(b));
         let same_ty = |p: &quarz_ir::RtParam, q: &quarz_ir::RtParam| {
@@ -3044,21 +3027,70 @@ impl Interp {
     }
 
     /// Find a method by name on a class (first match in resolution order
-    /// that accepts `argc` positional arguments).
+    /// that accepts `argc` positional arguments), in `RtClass::lookup`: the
+    /// modules of scoped and conditional extensions are not searched, so
+    /// none of their methods is found by name (docs/01 §7) — except an
+    /// abstract method of such a module, which resolves through the
+    /// witness its conformance recorded (`ext_impl`), conformance holding
+    /// wherever the value goes (natives calling `each` or `<=>` by name on
+    /// a class conforming to `Enumerable` or `Comparable` through a scoped
+    /// extension).
+    ///
+    /// `witness`: whether that fallback to a witness applies: only where
+    /// the call is gated by the receiver's conformance (a bound, or a call
+    /// the checker typed on that receiver), since a scoped or conditional
+    /// extension's witness must not run outside it. Every caller, with its
+    /// gate (keep this list complete when adding one):
+    ///
+    /// `true`, through `send`/`send_kw` (`send_with(.., true)`):
+    /// - `ops.rs` `CallOp::Send` and compound-assignment operators: a call
+    ///   the checker typed on the receiver (and the lowering's own by-name
+    ///   calls: `__snapshot`/`__copy_captures`, attribute writers in a
+    ///   multiple assignment, found by name on the receiver's own class);
+    /// - `vm.rs` `BoundMethod` (`.:name`, the checker's method reference),
+    ///   the block fast path's fallback (`&:name`, typed for the block's
+    ///   parameter), interpolation's `<<` on a non-builder (typed);
+    /// - `natives::collect`, `Enumerable#each_with_index_pairs`: `each`
+    ///   on an `Enumerable` receiver (the module's own natives; `collect`
+    ///   also on `Array`/`Set` arguments, which take its fast paths, and
+    ///   on `Enumerator`s, which include `Enumerable`);
+    /// - `Enumerator#each` (`enumerator_each`): the source method of an
+    ///   enumerator, a built-in's or an `Enumerable` native's (`times`,
+    ///   `Range#each`, `Array#each`, `map`, `each_slice`, `to_enum`, ...);
+    /// - `steps.rs` `next`: on an `Enumerator` subclass (typed);
+    ///   `rewind`: only after `has_user_method` (`false`) found it;
+    /// - `Process::Output#success?`: `status` of a `Process::Output`.
+    ///
+    /// `true`, through `compare` (`compare_with(.., true)`), the element
+    /// type bounded by `Comparable`: `Enumerable#sort`/`min`/`max`/`minmax`
+    /// (`extension Enumerable[T <: Comparable[T]]`), `Array#<=>`
+    /// (`extension Array[T <: Comparable[T]]`), `Array::Builder#sort_by!`
+    /// (`U <: Comparable[U]`), `Comparable#clamp` (`self` conforms);
+    /// `Symbol#<=>` and numbers' `<=>` reach only symbols and numbers.
+    ///
+    /// `false`: `has_user_method`, natives' optional hooks on any value
+    /// (`to_s`, `inspect`, `==` in `values_equal`, `JSON.generate`'s
+    /// `to_json`, `Enumerator#rewind`'s `rewind`); `range_covers`
+    /// (`Range[T]` takes any `T`, #559); `Array::Builder#sort!` and
+    /// `Enumerable#sort_pairs` (unbounded, #560); the hash-key probe of
+    /// `==`/`hash`; the block fast path's first lookup.
     pub fn find_method(
         &self,
         cid: ClassId,
         name: &str,
         argc: usize,
         with_block: bool,
+        witness: bool,
     ) -> Option<MethodId> {
-        let key = (cid, argc, with_block);
+        let key = (cid, argc, with_block, witness);
         if let Some(found) = self.name_cache.borrow().get(&key).and_then(|m| m.get(name)) {
             return *found;
         }
         let mut found = None;
         let mut fallback = None;
-        'outer: for anc in &self.program.world.class(cid).ancestors {
+        // (By name: `lookup`, which leaves out the modules of scoped and
+        // conditional extensions; `ancestors` is membership, docs/01 §7.)
+        'outer: for anc in &self.program.world.class(cid).lookup {
             let anc = *anc;
             // A file's top-level `def`s are functions, which nothing finds
             // by name on its top-level object (docs/01 §1).
@@ -3088,6 +3120,37 @@ impl Interp {
                         break 'outer;
                     }
                     fallback.get_or_insert(*id);
+                }
+            }
+        }
+        // Not found by name: an abstract method of a module only an
+        // extension's include brings (in `ancestors`, not in `lookup`),
+        // when a witness implements it for the class; nothing else.
+        if found.is_none() && witness {
+            let rc = self.program.world.class(cid);
+            'mods: for anc in &rc.ancestors {
+                if rc.lookup.contains(anc) {
+                    continue;
+                }
+                let Some(ids) = self.program.world.class(*anc).methods.get(name) else {
+                    continue;
+                };
+                for id in ids {
+                    let m = self.program.method(*id);
+                    let (min, max) = m.positional_arity();
+                    if m.is_abstract
+                        && min <= argc
+                        && argc <= max
+                        && m.has_block == with_block
+                        && rc
+                            .ancestors
+                            .iter()
+                            .take_while(|a| **a != m.owner)
+                            .any(|a| self.ext_impl(*a, *id).is_some())
+                    {
+                        found = Some(*id);
+                        break 'mods;
+                    }
                 }
             }
         }
@@ -3129,8 +3192,22 @@ impl Interp {
         kw: Vec<(Symbol, Value)>,
         block: Option<Value>,
     ) -> EvalResult {
+        self.send_with(recv, name, args, kw, block, true)
+    }
+
+    /// `send_kw`, saying whether the witness fallback applies
+    /// (`find_method`).
+    fn send_with(
+        &self,
+        recv: &Value,
+        name: &str,
+        args: ArgVec,
+        kw: Vec<(Symbol, Value)>,
+        block: Option<Value>,
+        witness: bool,
+    ) -> EvalResult {
         let cid = self.class_of(recv);
-        let Some(mid) = self.find_method(cid, name, args.len(), block.is_some()) else {
+        let Some(mid) = self.find_method(cid, name, args.len(), block.is_some(), witness) else {
             return Err(self.raise(
                 self.program.exc.runtime_error,
                 &format!(
@@ -3146,7 +3223,7 @@ impl Interp {
     /// native default).
     pub fn has_user_method(&self, recv: &Value, name: &str, argc: usize) -> Option<MethodId> {
         let cid = self.class_of(recv);
-        let mid = self.find_method(cid, name, argc, false)?;
+        let mid = self.find_method(cid, name, argc, false, false)?;
         let m = self.program.method(mid);
         if m.owner == self.program.world.builtin.object && m.native_key.is_some() {
             return None;
@@ -3638,10 +3715,12 @@ impl Interp {
             if let Some(ids) = self.program.world.class(*anc).methods.get("initialize") {
                 let pick = init
                     .and_then(|i| {
-                        ids.iter().copied().find(|id| {
-                            self.same_signature(*id, i)
-                                || self.program.method(*id).overrides.contains(&i)
-                        })
+                        // (`initialize` pairs are in the override table
+                        // too, #536; the rest of this fallback is #536's
+                        // step 6.)
+                        ids.iter()
+                            .copied()
+                            .find(|id| *id == i || self.program.method(*id).overrides.contains(&i))
                     })
                     .or_else(|| ids.first().copied());
                 return (cid, pick);
@@ -3769,14 +3848,14 @@ impl Interp {
     pub fn range_covers(&self, r: &RangeVal, v: &Value) -> Result<bool, Flow> {
         use std::cmp::Ordering;
         if !r.lo.is_nil() {
-            match self.compare(&r.lo, v) {
+            match self.compare_with(&r.lo, v, false) {
                 Ok(Ordering::Greater) => return Ok(false),
                 Ok(_) => {}
                 Err(_) => return Ok(false),
             }
         }
         if !r.hi.is_nil() {
-            match self.compare(v, &r.hi) {
+            match self.compare_with(v, &r.hi, false) {
                 Ok(Ordering::Greater) => return Ok(false),
                 Ok(Ordering::Equal) if r.exclusive => return Ok(false),
                 Ok(_) => {}
@@ -4127,6 +4206,20 @@ impl Interp {
 
     /// `a <=> b` as an ordering, raising when incomparable.
     pub fn compare(&self, a: &Value, b: &Value) -> Result<std::cmp::Ordering, Flow> {
+        self.compare_with(a, b, true)
+    }
+
+    /// `compare`, saying whether a `<=>` found by name may be a witness
+    /// (`find_method`): `true` for the sorting natives, whose element type
+    /// is bounded by `Comparable` (the checker allows them only on
+    /// conforming values); `false` for `range_covers`, `Range[T]` taking
+    /// any `T` (#559).
+    pub(crate) fn compare_with(
+        &self,
+        a: &Value,
+        b: &Value,
+        witness: bool,
+    ) -> Result<std::cmp::Ordering, Flow> {
         use std::cmp::Ordering;
         if crate::sched::stack_exhausted() {
             return Err(self.too_deep("compare"));
@@ -4147,7 +4240,7 @@ impl Interp {
             (Value::Time(x), Value::Time(y)) => return Ok(x.ns.cmp(&y.ns)),
             (Value::Array(x), Value::Array(y)) => {
                 for (p, q) in x.iter().zip(y.iter()) {
-                    let o = self.compare(&p, &q)?;
+                    let o = self.compare_with(&p, &q, witness)?;
                     if o != Ordering::Equal {
                         return Ok(o);
                     }
@@ -4156,7 +4249,7 @@ impl Interp {
             }
             _ => {}
         }
-        let r = self.send(a, "<=>", smallvec![b.clone()], None)?;
+        let r = self.send_with(a, "<=>", smallvec![b.clone()], Vec::new(), None, witness)?;
         match r {
             Value::Int(i) => Ok(i.cmp(&0)),
             _ => Err(self.err_arg(&format!(

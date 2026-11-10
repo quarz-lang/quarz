@@ -1,0 +1,12 @@
+[30, 10, 20]
+[1, 2, 3]
+0:3
+1:1
+2:2
+C3,C2,C1
+EMG to_s
+EMG to_s
+[1, 1]
+EMS to_s
+ext own to_s
+EMS to_s

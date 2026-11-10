@@ -1,0 +1,349 @@
+# The #536 step-1 override matrix (generated): each cell a base method
+# and a candidate differing in one input of the pairing rule (docs/01
+# §3), called through the base's type; `sub` where the rule says the
+# candidate replaces the base, `base` where it is an overload. The
+# expected output comes from the rule, not from a run. An extension's
+# include (docs/01 §7): the class's own methods and includes override
+# its module; the module overrides the class's or its ancestors'
+# methods only from an unconditional extension at the top level.
+class B0
+  def initialize; end
+  def m(x: Int) -> String = "base"
+end
+class S0 < B0
+  def initialize; end
+  def m(x: Int) -> String = "sub"
+end
+def f0(x: B0) -> String = x.m(1)
+puts "same signature: #{f0(S0.new)}"
+class B1
+  def initialize; end
+  def m(x: Int) -> String = "base"
+end
+class S1 < B1
+  def initialize; end
+  def n(x: Int) -> String = "sub"
+end
+def f1(x: B1) -> String = x.m(1)
+puts "other name: #{f1(S1.new)}"
+class B2
+  def initialize; end
+  def m(x: Int) -> String = "base"
+end
+class S2 < B2
+  def initialize; end
+  def m(x: Object) -> String = "sub"
+end
+def f2(x: B2) -> String = x.m(1)
+puts "param wider: #{f2(S2.new)}"
+class B3
+  def initialize; end
+  def m(x: Object) -> String = "base"
+end
+class S3 < B3
+  def initialize; end
+  def m(x: Int) -> String = "sub"
+end
+def f3(x: B3) -> String = x.m(1)
+puts "param narrower: #{f3(S3.new)}"
+class B4
+  def initialize; end
+  def m(x: Int) -> String = "base"
+end
+class S4 < B4
+  def initialize; end
+  def m(x: Int, y: Int = 0) -> String = "sub"
+end
+def f4(x: B4) -> String = x.m(1)
+puts "added optional: #{f4(S4.new)}"
+class B5
+  def initialize; end
+  def m(x: Int) -> String = "base"
+end
+class S5 < B5
+  def initialize; end
+  def m(x: Int, y: Int) -> String = "sub"
+end
+def f5(x: B5) -> String = x.m(1)
+puts "added required: #{f5(S5.new)}"
+class B6
+  def initialize; end
+  def m(x: Int) -> String = "base"
+end
+class S6 < B6
+  def initialize; end
+  def m(x: Int, *ys: Int) -> String = "sub"
+end
+def f6(x: B6) -> String = x.m(1)
+puts "added rest: #{f6(S6.new)}"
+class B7
+  def initialize; end
+  def m(x: Int, y: Int) -> String = "base"
+end
+class S7 < B7
+  def initialize; end
+  def m(x: Int) -> String = "sub"
+end
+def f7(x: B7) -> String = x.m(1, 2)
+puts "fewer params: #{f7(S7.new)}"
+class B8
+  def initialize; end
+  def m(*, k: Int) -> String = "base"
+end
+class S8 < B8
+  def initialize; end
+  def m(*, k: Int) -> String = "sub"
+end
+def f8(x: B8) -> String = x.m(k: 1)
+puts "keyword same: #{f8(S8.new)}"
+class B9
+  def initialize; end
+  def m(*, k: Int) -> String = "base"
+end
+class S9 < B9
+  def initialize; end
+  def m(*, k: Object) -> String = "sub"
+end
+def f9(x: B9) -> String = x.m(k: 1)
+puts "keyword wider: #{f9(S9.new)}"
+class B10
+  def initialize; end
+  def m(*, k: Object) -> String = "base"
+end
+class S10 < B10
+  def initialize; end
+  def m(*, k: Int) -> String = "sub"
+end
+def f10(x: B10) -> String = x.m(k: 1)
+puts "keyword narrower: #{f10(S10.new)}"
+class B11
+  def initialize; end
+  def m(x: Int) -> String = "base"
+end
+class S11 < B11
+  def initialize; end
+  def m(x: Int, *, k: Int = 0) -> String = "sub"
+end
+def f11(x: B11) -> String = x.m(1)
+puts "keyword added optional: #{f11(S11.new)}"
+class B12
+  def initialize; end
+  def m(x: Int) -> String = "base"
+end
+class S12 < B12
+  def initialize; end
+  def m(x: Int, *, k: Int) -> String = "sub"
+end
+def f12(x: B12) -> String = x.m(1)
+puts "keyword added required: #{f12(S12.new)}"
+class B13
+  def initialize; end
+  def m(&b: (Int) -> Int) -> String = "base"
+end
+class S13 < B13
+  def initialize; end
+  def m(&b: (Int) -> Int) -> String = "sub"
+end
+def f13(x: B13) -> String = x.m { |x| x }
+puts "block both: #{f13(S13.new)}"
+class B14
+  def initialize; end
+  def m -> String = "base"
+end
+class S14 < B14
+  def initialize; end
+  def m(&b: (Int) -> Int) -> String = "sub"
+end
+def f14(x: B14) -> String = x.m
+puts "block added: #{f14(S14.new)}"
+class B15
+  def initialize; end
+  def m(&b: (Int) -> Int) -> String = "base"
+end
+class S15 < B15
+  def initialize; end
+  def m -> String = "sub"
+end
+def f15(x: B15) -> String = x.m { |x| x }
+puts "block dropped: #{f15(S15.new)}"
+class B16
+  def initialize; end
+  def m[T](x: T) -> String = "base"
+end
+class S16 < B16
+  def initialize; end
+  def m[U](x: U) -> String = "sub"
+end
+def f16(x: B16) -> String = x.m(1)
+puts "method type param: #{f16(S16.new)}"
+class B17
+  def initialize; end
+  def name -> String = "base"
+end
+class S17 < B17
+  @name: String
+  attr_reader :name
+  def initialize; @name = "sub"; end
+end
+def f17(x: B17) -> String = x.name
+puts "synthesized reader: #{f17(S17.new)}"
+abstract class B18
+  abstract def m(x: Int) -> String
+end
+class S18 < B18
+  def initialize; end
+  def m(x: Int) -> String = "sub"
+end
+def f18(x: B18) -> String = x.m(1)
+puts "abstract base: #{f18(S18.new)}"
+class GB19[T]
+  def initialize; end
+  def put(x: T) -> String = "base"
+end
+class GS19 < GB19[Int]
+  def initialize; end
+  def put(x: Int) -> String = "sub"
+end
+def g19(g: GB19[Int]) -> String = g.put(1)
+puts "class args substituted: #{g19(GS19.new)}"
+class GB20[T]
+  def initialize; end
+  def put(x: Object) -> String = "base"
+end
+class GS20 < GB20[Int]
+  def initialize; end
+  def put(x: Int) -> String = "sub"
+end
+def g20(g: GB20[Int]) -> String = g.put(1)
+puts "class args narrower: #{g20(GS20.new)}"
+class MB21
+  def initialize; end
+  def m -> String = "base"
+end
+module MM21
+  def m -> String = "sub"
+end
+class MS21 < MB21
+  include MM21
+end
+def z21(z: MB21) -> String = z.m
+puts "module over superclass: #{z21(MS21.new)}"
+module M1x22
+  def m -> String = "base"
+end
+module M2x22
+  def m -> String = "sub"
+end
+class MC22
+  include M1x22
+  include M2x22
+  def initialize; end
+end
+def w22(w: M1x22) -> String = w.m
+puts "later module over earlier: #{w22(MC22.new)}"
+module AK23
+  abstract def m -> String
+  def show -> String = m
+end
+class AB23
+  def initialize; end
+  def m -> String = "sub"
+end
+class AS23 < AB23
+  include AK23
+end
+puts "abstract module method, superclass implements: #{AS23.new.show}"
+class EB24
+  def initialize; end
+  def m(x: Int) -> String = "base"
+end
+module EM24
+  def m(x: Int) -> String = "sub"
+end
+class EC24 < EB24
+  def initialize; end
+end
+extension EC24
+  include EM24
+end
+def e24(e: EB24) -> String = e.m(1)
+puts "extension's module over superclass: #{e24(EC24.new)}"
+class XB25
+  def initialize; end
+  def m(x: Int) -> String = "base"
+end
+module XM25
+  def m(x: Int) -> String = "sub"
+end
+class XC25 < XB25
+  def initialize; end
+end
+module XS25
+  extension XC25
+    include XM25
+  end
+end
+def x25(x: XB25) -> String = x.m(1)
+puts "scoped extension's module over superclass: #{x25(XC25.new)}"
+class YB26
+  def initialize; end
+  def m(x: Int) -> String = "base"
+end
+module YM26
+  def m(x: Int) -> String = "sub"
+end
+class YC26[T] < YB26
+  def initialize; end
+end
+extension YC26[T <: Int]
+  include YM26
+end
+def y26(y: YB26) -> String = y.m(1)
+puts "conditional extension's module over superclass: #{y26(YC26[Int].new)}"
+class CB27
+  def self.c(x: Int) -> String = "base"
+end
+class CS27 < CB27
+  def self.c(x: Int) -> String = "sub"
+end
+def t27(t: Type[CB27]) -> String = t.c(1)
+puts "class method same signature: #{t27(CS27)}"
+class CB28
+  def self.c(x: Object) -> String = "base"
+end
+class CS28 < CB28
+  def self.c(x: Int) -> String = "sub"
+end
+def t28(t: Type[CB28]) -> String = t.c(1)
+puts "class method narrower: #{t28(CS28)}"
+class CB29
+  def self.c(x: Int) -> String = "base"
+end
+class CS29 < CB29
+  def self.c(x: Int, y: Int = 0) -> String = "sub"
+end
+def t29(t: Type[CB29]) -> String = t.c(1)
+puts "class method added optional: #{t29(CS29)}"
+module K1x30
+  def self.label -> String = "base"
+  def self.show -> String = label
+end
+module K2x30
+  def self.label -> String = "sub"
+end
+class KC30
+  include K1x30
+  include K2x30
+end
+puts "later module class method over earlier: #{KC30.show}"
+module KA31
+  abstract def self.kind -> String
+  def self.show -> String = kind
+end
+class KB31
+  def self.kind -> String = "sub"
+end
+class KS31 < KB31
+  include KA31
+end
+puts "abstract module class method, superclass implements: #{KS31.show}"

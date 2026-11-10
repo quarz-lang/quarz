@@ -345,7 +345,7 @@ impl Interp {
         let mid = match (method, cache.and_then(Cell::get)) {
             (Some(m), _) => self.resolve_dynamic(recv, m)?,
             (None, Some((c, n, mid))) if c == cid && n == argc => mid,
-            _ => match self.find_method(cid, name, argc, false) {
+            _ => match self.find_method(cid, name, argc, false, false) {
                 Some(mid) => {
                     if let Some(cache) = cache {
                         cache.set(Some((cid, argc, mid)));

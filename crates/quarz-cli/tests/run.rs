@@ -337,3 +337,72 @@ fn version_prints_the_cargo_version() {
         "{text}"
     );
 }
+
+/// What runs does not depend on the checker's cache (#554): the lowering
+/// takes every extension's include, not the ones active where it ran, so a
+/// warm cache lowers a program as a cold one does. Each program runs with
+/// the cache off, cold, then warm.
+#[test]
+fn an_extensions_include_dispatches_alike_with_a_warm_cache() {
+    let dir = std::env::temp_dir().join(format!("quarz-warm-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+    let programs: Vec<(String, std::path::PathBuf)> = vec![
+        // A non-generic class, an extension's module over its superclass.
+        (
+            "over_superclass".into(),
+            "module EM\n  def m(x: Int) -> String = \"sub\"\nend\nclass EB\n  def initialize; end\n  def m(x: Int) -> String = \"base\"\nend\nclass EC < EB\n  def initialize; end\nend\nextension EC\n  include EM\nend\ndef e(x: EB) -> String = x.m(1)\nputs e(EC.new)\n".into(),
+        ),
+        // An abstract method only an extension's module implements.
+        (
+            "abstract".into(),
+            "abstract class EB\n  def initialize; end\n  abstract def m(x: Int) -> String\nend\nmodule EM\n  def m(x: Int) -> String = \"em\"\nend\nclass EC < EB\n  def initialize; end\nend\nextension EC\n  include EM\nend\ndef e(x: EB) -> String = x.m(1)\nputs e(EC.new)\n".into(),
+        ),
+    ]
+    .into_iter()
+    .map(|(name, src): (String, String)| {
+        let path = dir.join(format!("{name}.qz"));
+        std::fs::write(&path, src).unwrap();
+        (name, path)
+    })
+    .chain(
+        [
+            "override_matrix",
+            "conditional_extension_own_override",
+            "conditional_extension_include_dispatch",
+            "scoped_extension_include_dispatch",
+            "scoped_extension_by_name",
+            "extension_witness_by_name",
+            "extension_optional_hook",
+        ]
+        .iter()
+        .map(|n| (n.to_string(), std::path::Path::new(fixtures).join(format!("{n}.qz")))),
+    )
+    .collect();
+    let cache = dir.join("cache");
+    for (name, path) in &programs {
+        let run = |env: (&str, &str)| {
+            let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+                .arg("run")
+                .arg(path)
+                .env_remove("QUARZ_NO_CACHE")
+                .env_remove("QUARZ_CACHE_DIR")
+                .env(env.0, env.1)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{name}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        let off = run(("QUARZ_NO_CACHE", "1"));
+        let cold = run(("QUARZ_CACHE_DIR", cache.to_str().unwrap()));
+        let warm = run(("QUARZ_CACHE_DIR", cache.to_str().unwrap()));
+        assert_eq!(off, cold, "{name}: cold");
+        assert_eq!(off, warm, "{name}: warm");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

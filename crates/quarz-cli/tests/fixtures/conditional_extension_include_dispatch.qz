@@ -1,0 +1,32 @@
+# #536: the include of a conditional extension takes no part in dynamic
+# dispatch (docs/01 §7): a class value carries no type arguments at run
+# time, so through a supertype the class's or superclass's method runs,
+# for a `Box[Int]` and a `Box[String]` alike; where the static type meets
+# the bound (`Box[Int]`), the module's is chosen.
+class EA
+  def initialize; end
+  def m(x: Int) -> String = "base"
+  def call_m -> String = m(1)
+end
+
+module EM
+  def m(x: Int) -> String = "module"
+end
+
+class Box[T] < EA
+  def initialize; end
+end
+
+extension Box[T <: Int]
+  include EM
+end
+
+def through_ea(e: EA) -> String = e.m(1)
+
+i = Box[Int].new
+s = Box[String].new
+puts "Box[Int] direct: #{i.m(1)}"
+puts "Box[Int] through EA: #{through_ea(i)}"
+puts "Box[Int] self call in EA: #{i.call_m}"
+puts "Box[String] through EA: #{through_ea(s)}"
+puts "Box[String] self call in EA: #{s.call_m}"

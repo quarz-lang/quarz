@@ -579,7 +579,7 @@ impl<'a> FnBuilder<'a> {
     /// For node `id`'s methods `ms`, when there are several: the method
     /// they all are or override, which a call dispatches on (a class
     /// method on class objects, `World::overridden_class_method`; an
-    /// instance method by the runtime's rule, `overridden_methods_in`),
+    /// instance method by the override table, `World::overrides`),
     /// the most derived such one, if any.
     fn base_method(&self, id: u32, ms: &[MethodId]) -> Option<MethodId> {
         if ms.len() < 2 {
@@ -600,17 +600,15 @@ impl<'a> FnBuilder<'a> {
         let sets: Vec<Vec<MethodId>> = ms
             .iter()
             .map(|&k| {
-                let m = self.world.method(k);
-                let own: Vec<quarz_types::Type> = self
-                    .world
-                    .class(m.owner)
-                    .type_params
-                    .iter()
-                    .map(|tp| quarz_types::Type::Param(tp.id))
-                    .collect();
-                let ancs = self.world.ancestors(m.owner, &own);
+                // (Not an extension's method, which takes no part in
+                // dispatch: the table pairs a class's method with one.)
                 let mut set = vec![k];
-                set.extend(self.world.overridden_methods_in(m, &ancs));
+                set.extend(
+                    self.world
+                        .overrides(k)
+                        .into_iter()
+                        .filter(|o| self.world.method(*o).extension.is_none()),
+                );
                 set
             })
             .collect();

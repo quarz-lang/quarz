@@ -1,0 +1,166 @@
+# #536: a class's own method, or a subclass's, overrides the method of a
+# module a conditional extension includes, where the bound holds (docs/01
+# §7): the only values a call through the module reaches. Every call on a
+# value runs the same method, whatever static type it is called through.
+
+# The class's own method.
+module EM1
+  def m(x: Int) -> String = "module"
+  def call_m -> String = m(1)
+end
+class Box1[T]
+  def initialize; end
+  def m(x: Int) -> String = "box"
+end
+extension Box1[T <: Int]
+  include EM1
+end
+def via_em1(e: EM1) -> String = e.m(1)
+b = Box1[Int].new
+puts "Box1[Int] direct: #{b.m(1)}"
+puts "Box1[Int] via EM1: #{via_em1(b)}"
+puts "Box1[Int] EM1's self call: #{b.call_m}"
+
+# A generic subclass's, and a concrete one's.
+class EA2
+  def initialize; end
+  def m(x: Int) -> String = "base"
+end
+module EM2
+  def m(x: Int) -> String = "module"
+end
+class Box2[T] < EA2
+  def initialize; end
+end
+extension Box2[T <: Int]
+  include EM2
+end
+class Sub2[T] < Box2[T]
+  def initialize; end
+  def m(x: Int) -> String = "sub"
+end
+class ISub2 < Box2[Int]
+  def initialize; end
+  def m(x: Int) -> String = "isub"
+end
+def via_box2(b: Box2[Int]) -> String = b.m(1)
+def via_ea2(b: EA2) -> String = b.m(1)
+def via_em2(b: EM2) -> String = b.m(1)
+puts "Sub2[Int] via Box2[Int]: #{via_box2(Sub2[Int].new)}"
+puts "Sub2[Int] via EA2: #{via_ea2(Sub2[Int].new)}"
+puts "Sub2[Int] via EM2: #{via_em2(Sub2[Int].new)}"
+puts "Sub2[Int] direct: #{Sub2[Int].new.m(1)}"
+puts "ISub2 via Box2[Int]: #{via_box2(ISub2.new)}"
+puts "ISub2 via EA2: #{via_ea2(ISub2.new)}"
+puts "ISub2 via EM2: #{via_em2(ISub2.new)}"
+
+# The module's abstract method, implemented by the superclass and
+# overridden by the subclass.
+class EA3
+  def initialize; end
+  def m(x: Int) -> String = "base"
+end
+module EM3
+  abstract def m(x: Int) -> String
+  def go -> String = m(1)
+end
+class Box3[T] < EA3
+  def initialize; end
+end
+extension Box3[T <: Int]
+  include EM3
+end
+class Sub3[T] < Box3[T]
+  def initialize; end
+  def m(x: Int) -> String = "sub"
+end
+def via_em3(e: EM3) -> String = e.m(1)
+def via_ea3(e: EA3) -> String = e.m(1)
+s = Sub3[Int].new
+puts "Sub3[Int] direct: #{s.m(1)}"
+puts "Sub3[Int] via EA3: #{via_ea3(s)}"
+puts "Sub3[Int] via EM3: #{via_em3(s)}"
+puts "Sub3[Int] go: #{s.go}"
+
+# A conditional extension of a module the class includes.
+module EM4
+  def m(x: Int) -> String = "module"
+  def call_m -> String = m(1)
+end
+module N4[T]
+end
+extension N4[T <: Int]
+  include EM4
+end
+class Box4[T]
+  include N4[T]
+  def initialize; end
+  def m(x: Int) -> String = "box"
+end
+def via_em4(e: EM4) -> String = e.m(1)
+b4 = Box4[Int].new
+puts "Box4[Int] via EM4: #{via_em4(b4)}"
+puts "Box4[Int] EM4's self call: #{b4.call_m}"
+
+# A bound that fails for the superclass's concrete arguments: no pair (a
+# `CSub5` is never an `EM5`), so its `m` is its own, of any result.
+module EM5
+  def m(x: Int) -> String = "module"
+end
+class Box5[T]
+  def initialize; end
+end
+extension Box5[T <: Int]
+  include EM5
+end
+class CSub5 < Box5[String]
+  def initialize; end
+  def m(x: Int) -> Int = 5
+end
+puts "CSub5: #{CSub5.new.m(1)}"
+
+# A module the class includes overrides a conditional extension's module
+# method where the bound holds, as an own include over an unconditional
+# extension's does.
+module EM6
+  def m(x: Int) -> String = "module"
+end
+module MM6
+  def m(x: Int) -> String = "mm"
+end
+class Box6[T]
+  include MM6
+  def initialize; end
+end
+extension Box6[T <: Int]
+  include EM6
+end
+class Sub6 < Box6[Int]
+  def initialize; end
+end
+def via_em6(e: EM6) -> String = e.m(1)
+puts "Sub6 via EM6: #{via_em6(Sub6.new)}"
+puts "Sub6 direct: #{Sub6.new.m(1)}"
+
+# A conditional extension including a module another conditional extension
+# targets: the class's own method overrides the module that one includes.
+module EM7
+  def m(x: Int) -> String = "module"
+end
+module Boxy7[T]
+end
+extension Boxy7[T <: Int]
+  include EM7
+end
+class Box7[T]
+  def initialize; end
+end
+extension Box7[T <: Int]
+  include Boxy7[T]
+end
+class Sub7[U] < Box7[U]
+  def initialize; end
+  def m(x: Int) -> String = "sub"
+end
+def via_em7(e: EM7) -> String = e.m(1)
+puts "Sub7[Int] via EM7: #{via_em7(Sub7[Int].new)}"
