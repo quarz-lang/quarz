@@ -1,0 +1,24 @@
+# A generic exception class is rescued through a non-generic superclass
+# (#533): a `rescue` sees the class only, so `rescue MyErr[Int]` is refused
+# (its type arguments are not known at run time); `rescue AppError => e`
+# catches every `MyErr[T]`, and what the handler knows of `e` is
+# `AppError`'s.
+class AppError < StandardError
+  def initialize(message: String); super(message); end
+  def describe -> String = "app: #{message}"
+end
+class MyErr[T <: Shareable] < AppError
+  @payload: T
+  def initialize(@payload: T); super("payload"); end
+  def payload -> T = @payload
+end
+begin
+  raise MyErr[String].new("s")
+rescue AppError => e
+  puts e.describe
+end
+begin
+  raise MyErr[Int].new(4)
+rescue ArgumentError, AppError => e
+  puts e.message
+end
