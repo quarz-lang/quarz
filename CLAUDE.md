@@ -88,12 +88,20 @@ never use `pgrep -f` with a plain pattern).
   descriptions (leave the ones already there as they are).
 - Review the work with an agent before the pull request leaves draft
   (commits on a draft are fine without it): give a fresh subagent the
-  branch's diff (not your own conclusions) and ask it for correctness
-  bugs. Fix the findings that need no decision from the user (amend,
-  rebase or add commits while the PR is a draft). Keep the ones that do
-  (a change of the language or its specification, a trade-off, more
-  scope) and go on with the work; when all of it is done, ask the user
-  about them together.
+  branch's diff (not your own conclusions), point it at
+  `.claude/review-checklist.md` and ask it for correctness bugs. Fix the
+  findings that need no decision from the user (amend, rebase or add
+  commits while the PR is a draft). Keep the ones that do (a change of
+  the language or its specification, a trade-off, more scope) and go on
+  with the work; when all of it is done, ask the user about them
+  together. When two review rounds of one pull request have each found a
+  soundness hole, stop patching: report the holes and the options
+  (narrow the scope, refuse the form with a compile error, split the
+  pull request) to the user before the next change.
+- A change to one of the relations of "One computation per relation"
+  below starts with a short note agreed with the user before coding:
+  which function decides the relation, which table the lowering ships,
+  which readers switch to it, and what is deleted.
 
 ## Pull requests
 
@@ -139,6 +147,19 @@ never use `pgrep -f` with a plain pattern).
   output must match, and the build tests compile every fixture and
   example with both backends and compare against the VM. Regenerate an
   `.out` only after checking the new output by hand.
+- A change to one of the relations of "One computation per relation"
+  below adds or extends a matrix fixture over the axes it touches
+  (target: class, generic class, abstract class, module; path: own
+  include, a superclass's include, an extension of the class, of a
+  superclass, of an included module, a subclass of each; arguments:
+  none, concrete, a parameter, an inference variable; scope: where the
+  extension is active, elsewhere, another cog; backend: VM and
+  compiled), whose expected output is derived from the rules, not from
+  running the code; the fixture's header lists the cells it skips. The
+  pull request names the axes.
+- A checker change runs `quarz check` over every tracked `.qz` file and
+  the cogs with the branch's binary and with main's, and the pull request
+  lists the programs newly refused or newly accepted.
 - `.cargo/config.toml` sets `QUARZ_THREADS=1` for `cargo test` (and
   `cargo run`), so tasks' output order is deterministic; the default is
   one worker per CPU. `tests/threads.rs` runs `tests/threads/*.qz` with
@@ -168,6 +189,35 @@ never use `pgrep -f` with a plain pattern).
   copy nothing (`QUARZ_COUNT_COPIES=1` prints the count at exit, on the
   VM and in compiled programs). A regression there makes a loop
   quadratic with unchanged output, which no other test sees.
+
+## One computation per relation
+
+- A semantic relation is computed by one function: subtyping
+  (`World::is_subtype`), the ancestors and the method resolution order on
+  both sides (`World::ancestors`, `class_side`), the override relation,
+  conformance and its witnesses, signature equality, what a run-time
+  type test can see (`check_testable`), block parameter binding, object
+  layout (`quarz_ir::field_slots`). New code calls that function; it
+  never re-derives the relation from the declarations, nor mirrors
+  another crate's version by hand. A new variant of an existing
+  predicate (`may_...`, `..._at_run_time`, a second `same_signature`)
+  needs the user's approval, with the reason the existing one cannot be
+  called.
+- The runtime reads what the lowering ships in `RtWorld`; it never
+  recomputes a relation from the declarations. A missing entry is an
+  internal error, not a fallback rule.
+- A compile-time check guards a run-time behaviour of the same scope: a
+  behaviour that is global at run time (dynamic dispatch, conformance
+  witnesses, constructors) is checked wherever the program can reach it
+  (subclasses, module targets, other cogs), not only where an extension
+  is active; a lexically scoped check guards only lexically scoped
+  behaviour (extension methods under `using`).
+- An approximation says so in its doc comment, with the direction of its
+  error and the issue that makes it exact. One that accepts more than
+  the exact rule is a soundness hole: it is not written without the
+  user's decision.
+- A fix that replaces a computation deletes the replaced one in the same
+  pull request.
 
 ## Invariants that are easy to break
 
