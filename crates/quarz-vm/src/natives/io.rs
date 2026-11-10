@@ -783,28 +783,171 @@ fn glob_walk(base: Option<&str>, pattern: &str, out: &mut Vec<String>) -> Result
 enum GlobSeg {
     /// `**`.
     Any,
-    /// Without a wildcard: a name taken as written.
+    /// Without a wildcard: a name taken as written (escapes removed).
     Name(String),
-    /// With one, and whether it starts with a dot.
-    Pattern(glob::Pattern, bool),
+    /// With one, and whether it starts with a dot (written, or escaped).
+    Pattern(Vec<GlobTok>, bool),
+}
+
+/// A piece of a segment with a wildcard, matched as Ruby's `fnmatch`.
+enum GlobTok {
+    /// A character, written or escaped.
+    Char(char),
+    /// `?`.
+    One,
+    /// `*`.
+    Star,
+    /// `[...]`: whether it negates (`[!...]`), and its ranges (a single
+    /// character is a range of one).
+    Class(bool, Vec<(char, char)>),
 }
 
 impl GlobSeg {
+    /// A `\` makes the character after it literal (one ending the
+    /// segment is dropped), in a `[...]` class too, as Ruby's.
     fn of(seg: &str) -> Result<GlobSeg, String> {
         if seg == "**" {
             return Ok(GlobSeg::Any);
         }
-        if seg.contains("**") {
-            return Err(format!(
-                "invalid glob pattern: `**` must be a whole segment: {seg}"
-            ));
+        let chars: Vec<char> = seg.chars().collect();
+        let mut toks = Vec::new();
+        let mut magic = false;
+        let mut k = 0;
+        while k < chars.len() {
+            match chars[k] {
+                '\\' => {
+                    if let Some(&c) = chars.get(k + 1) {
+                        toks.push(GlobTok::Char(c));
+                    }
+                    k += 2;
+                }
+                '*' if chars.get(k + 1) == Some(&'*') => {
+                    return Err(format!(
+                        "invalid glob pattern: `**` must be a whole segment: {seg}"
+                    ));
+                }
+                '*' => {
+                    magic = true;
+                    toks.push(GlobTok::Star);
+                    k += 1;
+                }
+                '?' => {
+                    magic = true;
+                    toks.push(GlobTok::One);
+                    k += 1;
+                }
+                '[' => {
+                    magic = true;
+                    let Some((class, len)) = glob_class(&chars[k..]) else {
+                        return Err(format!("invalid glob pattern: `[` not closed: {seg}"));
+                    };
+                    toks.push(class);
+                    k += len;
+                }
+                c => {
+                    toks.push(GlobTok::Char(c));
+                    k += 1;
+                }
+            }
         }
-        if !seg.contains(['*', '?', '[']) {
-            return Ok(GlobSeg::Name(seg.to_string()));
+        let dotted = matches!(toks.first(), Some(GlobTok::Char('.')));
+        if !magic {
+            let name = toks
+                .iter()
+                .map(|t| match t {
+                    GlobTok::Char(c) => *c,
+                    _ => unreachable!(),
+                })
+                .collect();
+            return Ok(GlobSeg::Name(name));
         }
-        let p = glob::Pattern::new(seg).map_err(|e| format!("invalid glob pattern: {e}"))?;
-        Ok(GlobSeg::Pattern(p, seg.starts_with('.')))
+        Ok(GlobSeg::Pattern(toks, dotted))
     }
+}
+
+/// The `[...]` class starting `chars`, as Ruby's: a `!` first negates, a
+/// `]` closes it even first (`[]` matches nothing, `[!]` any character),
+/// a `\` makes the character after it a member, `a-z` is a range (a `-`
+/// first or last is a member). The class and the number of characters
+/// it took; none when it is not closed.
+fn glob_class(chars: &[char]) -> Option<(GlobTok, usize)> {
+    let mut k = 1;
+    let negated = chars.get(k) == Some(&'!');
+    if negated {
+        k += 1;
+    }
+    let mut ranges = Vec::new();
+    let take = |k: &mut usize| -> Option<char> {
+        let c = *chars.get(*k)?;
+        if c == '\\' {
+            let e = *chars.get(*k + 1)?;
+            *k += 2;
+            Some(e)
+        } else {
+            *k += 1;
+            Some(c)
+        }
+    };
+    loop {
+        if *chars.get(k)? == ']' {
+            return Some((GlobTok::Class(negated, ranges), k + 1));
+        }
+        let first = take(&mut k)?;
+        if chars.get(k) == Some(&'-') && chars.get(k + 1).is_some_and(|&n| n != ']') {
+            k += 1;
+            let last = take(&mut k)?;
+            ranges.push((first, last));
+        } else {
+            ranges.push((first, first));
+        }
+    }
+}
+
+/// Whether `name` matches `toks`: a wildcard or a class never matches a
+/// dot starting the name (only a `.` written, or escaped, does).
+fn glob_match(toks: &[GlobTok], name: &[char]) -> bool {
+    let one = |t: &GlobTok, k: usize, c: char| -> bool {
+        match t {
+            GlobTok::Char(x) => *x == c,
+            _ if k == 0 && c == '.' => false,
+            GlobTok::One => true,
+            GlobTok::Class(negated, ranges) => {
+                // (As Ruby's: a reversed range still matches its ends.)
+                ranges
+                    .iter()
+                    .any(|&(a, b)| c == a || c == b || a <= c && c <= b)
+                    != *negated
+            }
+            GlobTok::Star => unreachable!(),
+        }
+    };
+    // (Backtracking to the last `*` only: linear in the name per star.)
+    let (mut t, mut n) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while n < name.len() {
+        match toks.get(t) {
+            Some(GlobTok::Star) if !(n == 0 && name[0] == '.') => {
+                star = Some((t, n));
+                t += 1;
+                continue;
+            }
+            Some(tok) if !matches!(tok, GlobTok::Star) && one(tok, n, name[n]) => {
+                t += 1;
+                n += 1;
+                continue;
+            }
+            _ => {}
+        }
+        match star {
+            Some((st, sn)) => {
+                t = st + 1;
+                n = sn + 1;
+                star = Some((st, sn + 1));
+            }
+            None => return false,
+        }
+    }
+    toks[t..].iter().all(|t| matches!(t, GlobTok::Star))
 }
 
 /// `dir/name`, shown as `shown` joined with `name`.
@@ -887,12 +1030,7 @@ fn glob_segments(
                 );
             }
         }
-        GlobSeg::Pattern(p, dotted) => {
-            let opts = glob::MatchOptions {
-                case_sensitive: true,
-                require_literal_separator: true,
-                require_literal_leading_dot: !dotted,
-            };
+        GlobSeg::Pattern(toks, dotted) => {
             let mut names = glob_names(dir);
             // (`.` too, as Ruby's since 3.1, for a segment starting with a
             // dot; never `..`.)
@@ -901,7 +1039,7 @@ fn glob_segments(
             }
             names.sort();
             for name in names {
-                if !p.matches_with(&name, opts) {
+                if !glob_match(toks, &name.chars().collect::<Vec<_>>()) {
                     continue;
                 }
                 let path = dir.join(&name);
@@ -938,22 +1076,29 @@ fn glob_dirs_below(dir: &Path, shown: &str, out: &mut Vec<String>) {
 
 /// `{a,b}` alternatives in a glob pattern, expanded (braces nested in an
 /// alternative too), from a work list: a pattern with thousands of braces
-/// must not overflow the helper thread's stack.
+/// must not overflow the helper thread's stack. A `\` makes the
+/// character after it literal (kept, for matching); a pattern with a `{`
+/// that is not closed gives nothing, as Ruby's.
 fn expand_braces(pattern: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut work = vec![pattern.to_string()];
     while let Some(pattern) = work.pop() {
         match first_braces(&pattern) {
-            None => out.push(pattern),
-            Some((open, close)) => {
+            Braces::None => out.push(pattern),
+            Braces::Unclosed => {}
+            Braces::At(open, close) => {
                 let (head, rest) = (&pattern[..open], &pattern[close + 1..]);
                 let inner = &pattern[open + 1..close];
                 // Split on top-level commas.
                 let mut alternatives = Vec::new();
                 let mut depth = 0;
                 let mut start = 0;
-                for (k, c) in inner.char_indices() {
+                let mut chars = inner.char_indices();
+                while let Some((k, c)) = chars.next() {
                     match c {
+                        '\\' => {
+                            chars.next();
+                        }
                         '{' => depth += 1,
                         '}' => depth -= 1,
                         ',' if depth == 0 => {
@@ -974,23 +1119,45 @@ fn expand_braces(pattern: &str) -> Vec<String> {
     out
 }
 
-/// The first `{` of a pattern and its matching `}`, by nesting depth.
-fn first_braces(pattern: &str) -> Option<(usize, usize)> {
-    let open = pattern.find('{')?;
+/// Where a pattern's first braces are.
+enum Braces {
+    /// No `{` (but escaped ones).
+    None,
+    /// The first `{` and its matching `}`, by nesting depth.
+    At(usize, usize),
+    /// The first `{` is not closed.
+    Unclosed,
+}
+
+fn first_braces(pattern: &str) -> Braces {
+    let mut open = None;
     let mut depth = 0;
-    for (k, c) in pattern[open..].char_indices() {
+    let mut chars = pattern.char_indices();
+    while let Some((k, c)) = chars.next() {
         match c {
-            '{' => depth += 1,
-            '}' => {
+            '\\' => {
+                chars.next();
+            }
+            '{' => {
+                if open.is_none() {
+                    open = Some(k);
+                }
+                depth += 1;
+            }
+            '}' if open.is_some() => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some((open, open + k));
+                    return Braces::At(open.unwrap(), k);
                 }
             }
             _ => {}
         }
     }
-    None
+    if open.is_some() {
+        Braces::Unclosed
+    } else {
+        Braces::None
+    }
 }
 
 fn run_command(interp: &Interp, mut command: std::process::Command, name: &str) -> EvalResult {

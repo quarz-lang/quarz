@@ -6729,7 +6729,14 @@ module Dir
   # and `[...]` match a name starting with a dot only when the pattern's
   # segment starts with one (`src/.*`, which matches `src/.` too, not
   # `src/..`), and `**/` does not enter one. A path is shown as the
-  # pattern starts it: `Dir.glob("./*")` gives `"./a"`.
+  # pattern starts it: `Dir.glob("./*")` gives `"./a"`. A `\` makes the
+  # character after it literal, in braces and in `[...]` too
+  # (`"a\\*"` matches only `a*`); a pattern with a `{` that is not
+  # closed matches nothing.
+  #
+  # Unlike Ruby's, an alternative that leaves the pattern empty matches
+  # nothing: `Dir.glob("{,a}", base)` gives at most `["a"]`, where Ruby's
+  # gives `["", "a"]`.
   #
   # ## Raises
   #
