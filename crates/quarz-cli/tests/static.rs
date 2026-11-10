@@ -1627,3 +1627,92 @@ fn class_def_calls_through_a_union_receiver() {
         "{err}"
     );
 }
+
+#[test]
+fn a_union_of_a_class_def_and_a_related_class_object_is_narrowed_first() {
+    // #491: `Meta::ClassDef[Base] | Type[Sub]` with `Sub < Base`: the class
+    // value `Sub` (or a subclass the statement runs in) is both, so a call
+    // the two members answer with different methods is refused; one they
+    // answer alike (`name`), `is_a?` to narrow, and an unrelated class
+    // object (#490) are accepted.
+    let d = dir();
+    let lib = "class Sub < Base\n  def self.def_method[R](name: Symbol, &body: () -> R) -> R\n    puts \"Sub.def_method\"\n    body.call\n  end\n  def self.type -> Int = 1\nend\nmodule M\n  def m -> Int = 1\n  def self.def_method[R](name: Symbol, &body: () -> R) -> R = body.call\nend\nclass Runner\n  include M\n  def self.def_method[R](name: Symbol, &body: () -> R) -> R\n    puts \"Runner.def_method\"\n    body.call\n  end\nend\n";
+    let refused = [
+        (
+            "r = flag ? Sub : self\n    r.def_method(:a) { 1 }",
+            "`def_method` on Type[Sub] | Meta::ClassDef[Base]: a class value may be both the Meta::ClassDef[Base] and a Type[Sub], which find different `def_method` methods, and no run-time test tells which one the value stands for; narrow the receiver first (`if r.is_a?(Type[Sub])` or a `case`)",
+        ),
+        (
+            // (A module: a subclass of `Base` may include it.)
+            "t = Base.pick(Runner)\n    r: Meta::ClassDef[Base] | Type[M] = flag ? t : self\n    r.def_method(:a) { 1 }",
+            "`def_method` on Type[M] | Meta::ClassDef[Base]: a class value may be both",
+        ),
+        (
+            // (An implicit call on a block's `self` that is such a union.)
+            "r = flag ? Sub : self\n    r.instance_exec { def_method(:a) { 1 } }",
+            "error: `def_method` on Type[Sub] | Meta::ClassDef[Base]: a class value may be both",
+        ),
+        (
+            "r = flag ? Sub : self\n    [r].each(&:type)",
+            "`&:type` on Type[Sub] | Meta::ClassDef[Base]: a class value may be both",
+        ),
+    ];
+    for (body, want) in refused {
+        write(
+            &d.0,
+            "lib.qz",
+            &format!("class Base\n  static def self.gen(flag: Bool) -> Void\n    {body}\n  end\n  def self.pick(t: Type[M]) -> Type[M] = t\nend\n{lib}"),
+        );
+        let app = write(
+            &d.0,
+            "main.qz",
+            "require_relative \"lib\"\nclass A < Base\n  gen(true)\nend\n",
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        assert!(!ok, "{body}");
+        assert!(err.contains(want), "{body}: {err}");
+    }
+    // A class object of `Base` or any class holds the `ClassDef`'s value
+    // too: the union is that class object, whose methods are called.
+    for member in ["Type[Base]", "Type"] {
+        write(
+            &d.0,
+            "lib.qz",
+            &format!("class Base\n  static def self.gen(t: {member}, flag: Bool) -> Void\n    r: Meta::ClassDef[Base] | {member} = flag ? t : self\n    r.def_method(:a) {{ 1 }}\n  end\nend\n{lib}"),
+        );
+        let app = write(&d.0, "main.qz", "require_relative \"lib\"\n");
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        assert!(!ok, "{member}");
+        assert!(
+            err.contains("error: undefined method `def_method` for Type["),
+            "{member}: {err}"
+        );
+    }
+    write(
+        &d.0,
+        "lib.qz",
+        &format!("class Base\n  static def self.gen(flag: Bool) -> Void\n    r = flag ? Sub : self\n    puts r.name\n    if r.is_a?(Type[Sub])\n      r.def_method(:a) {{ \"sub\" }}\n    else\n      r.def_method(:a) {{ \"gen\" }}\n    end\n    s = flag ? Runner : self\n    s.def_method(:b) {{ \"gen\" }}\n  end\nend\n{lib}"),
+    );
+    let app = write(
+        &d.0,
+        "main.qz",
+        "require_relative \"lib\"\nclass A < Base\n  gen(true)\n  gen(false)\nend\nclass B < Sub\n  gen(false)\nend\np A.new.a, A.new.b\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "\"gen\"\n\"gen\"\n");
+    // (`B`'s value is a `Type[Sub]`: narrowed as one.)
+    assert!(
+        err.starts_with("Sub\nSub.def_method\nRunner.def_method\nA\nB\nSub.def_method\n"),
+        "{err}"
+    );
+    let exe = d.0.join("app-bin");
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", exe.to_str().unwrap()],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "\"gen\"\n\"gen\"\n");
+}

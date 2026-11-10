@@ -4151,6 +4151,120 @@ impl Checker {
         })
     }
 
+    /// A `Meta::ClassDef[T]` member of a union receiver and a class-object
+    /// member that can hold the same class value (a class related to `T`,
+    /// any class for `Type`, a module, a type parameter's; any for a `T`
+    /// that is not a concrete class) whose methods differ (`targets`, per
+    /// member; a class object never finds a `Meta::ClassDef` method, so
+    /// one found by both is not one): their indices (#491).
+    fn classdef_ambiguity(
+        &self,
+        members: &[Type],
+        targets: &[Option<MethodId>],
+    ) -> Option<(usize, usize)> {
+        self.classdef_overlaps(members)
+            .into_iter()
+            .find(|&(a, k)| targets.get(a) != targets.get(k))
+    }
+
+    /// The pairs of a `Meta::ClassDef[T]` member of a union receiver and a
+    /// class-object member that can hold the same class value, as
+    /// `classdef_ambiguity` takes them.
+    fn classdef_overlaps(&self, members: &[Type]) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let b = &self.world.builtin;
+        // The class a class value of the member is of (or below), `None`
+        // for any class value; not a class value at all: not listed.
+        let held = |t: &Type| -> Option<Option<ClassId>> {
+            let of = |c: ClassId| {
+                (c != b.object && self.world.class(c).kind != ClassKind::Module).then_some(c)
+            };
+            match self.resolve(t) {
+                Type::ClassObject(c, _) => Some(of(c)),
+                Type::Class(c, args) if c == b.class_ => match args.first() {
+                    Some(Type::Class(a, _)) => Some(of(*a)),
+                    _ => Some(None),
+                },
+                Type::TypeOf(_) => Some(None),
+                _ => None,
+            }
+        };
+        for (a, ma) in members.iter().enumerate() {
+            let Type::Class(c, args) = self.resolve(ma) else {
+                continue;
+            };
+            if c != b.meta_classdef {
+                continue;
+            }
+            let t = match args.first() {
+                Some(Type::Class(t, _)) if *t != b.object => Some(*t),
+                _ => None,
+            };
+            for (k, mb) in members.iter().enumerate() {
+                let Some(x) = held(mb) else {
+                    continue;
+                };
+                let overlap = match (t, x) {
+                    (Some(t), Some(x)) => {
+                        self.world.class_is_a(t, x) || self.world.class_is_a(x, t)
+                    }
+                    _ => true,
+                };
+                if overlap {
+                    out.push((a, k));
+                }
+            }
+        }
+        out
+    }
+
+    /// In a block given to a call on a union receiver with a
+    /// `Meta::ClassDef` member and a class object that can hold the same
+    /// value (`r.instance_exec { def_method(...) }`): an implicit call on
+    /// the block's own `self` that the two members' checks answer with
+    /// different methods is refused, as the call itself would be (#491).
+    fn check_classdef_block(&mut self, members: &[Type], recv: &Type, uses: &[(usize, usize)]) {
+        for (a, k) in self.classdef_overlaps(members) {
+            let (Some(&ra), Some(&rk)) = (uses.get(a), uses.get(k)) else {
+                continue;
+            };
+            let own = |r: (usize, usize)| r.0..r.1.min(self.self_uses.len());
+            let found = own(ra).find_map(|i| {
+                let u = &self.self_uses[i];
+                if u.fell || u.method.is_none() {
+                    return None;
+                }
+                own(rk)
+                    .map(|j| &self.self_uses[j])
+                    .find(|v| v.id == u.id && !v.fell && v.method.is_some())
+                    .filter(|v| v.method != u.method)
+                    .map(|_| (u.name.clone(), u.span))
+            });
+            if let Some((name, span)) = found {
+                let msg = self.classdef_ambiguity_msg(&name, &name, recv, &members[a], &members[k]);
+                self.error(msg, span);
+                return;
+            }
+        }
+    }
+
+    /// The error for a call `what` (of method `name`) that
+    /// `classdef_ambiguity` refuses.
+    fn classdef_ambiguity_msg(
+        &self,
+        what: &str,
+        name: &str,
+        recv: &Type,
+        classdef: &Type,
+        other: &Type,
+    ) -> String {
+        let (c, o) = (self.world.type_name(classdef), self.world.type_name(other));
+        format!(
+            "`{what}` on {}: a class value may be both the {c} and a {o}, which find different `{name}` methods, and no run-time test tells which one the value stands for; narrow the receiver first (`if r.is_a?({o})` or a `case`)",
+            self.name(recv)
+        )
+    }
+
     /// The class a run-time class test sees for a value of type `t`.
     /// Whether a check of a block (once per type) records its method for
     /// receiver type `t` (`note_union_table`): a class a run-time test
@@ -9687,6 +9801,7 @@ impl Checker {
                 }
                 if with_block {
                     self.union_block_calls -= 1;
+                    self.check_classdef_block(&members, recv_ty, &uses);
                     self.compare_self_uses(call, &members, &uses, block_frame);
                     if self.union_block_calls == 0 {
                         self.self_uses.clear();
@@ -9697,6 +9812,15 @@ impl Checker {
                         let t = self.resolve(&result);
                         self.set_narrowed(k, Some(t));
                     }
+                }
+                // A `Meta::ClassDef[T]` member and a class object that can
+                // hold the same class value: no run-time test tells which
+                // one the value stands for, so a call they answer with
+                // different methods is refused (#491).
+                if let Some((a, b)) = self.classdef_ambiguity(&members, &targets) {
+                    let msg =
+                        self.classdef_ambiguity_msg(name, name, recv_ty, &members[a], &members[b]);
+                    self.error(msg, expr.span);
                 }
                 // The recorded target is the last member's; when the
                 // members resolve to different methods, record one that
@@ -13083,6 +13207,26 @@ impl Checker {
                         }
                         let recv = self.infer.resolve(&params[0]);
                         let union = self.union_symbol(&recv, name);
+                        // (As a call: a `Meta::ClassDef` member and a class
+                        // object holding the same value, #491.)
+                        if let Some((_, each, _)) = &union {
+                            let members: Vec<Type> = each.iter().map(|(t, ..)| t.clone()).collect();
+                            let targets: Vec<Option<MethodId>> =
+                                each.iter().map(|(_, k, _)| Some(*k)).collect();
+                            if let Some((a, b)) = self.classdef_ambiguity(&members, &targets) {
+                                let msg = self.classdef_ambiguity_msg(
+                                    &format!("&:{name}"),
+                                    name,
+                                    &recv,
+                                    &members[a],
+                                    &members[b],
+                                );
+                                if report {
+                                    self.error(msg.clone(), e.span);
+                                }
+                                return Err(msg);
+                            }
+                        }
                         let cands = match &union {
                             Some((_, each, _)) => vec![(each[0].1, each[0].2.clone())],
                             None => self.world.lookup_methods(&recv, name),
