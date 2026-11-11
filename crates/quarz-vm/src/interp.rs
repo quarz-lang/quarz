@@ -2728,7 +2728,7 @@ impl Interp {
             }
             // Then the class methods of the modules it includes, the last
             // first (docs/01 §6).
-            for module in &class.class_modules {
+            for module in &self.class_side_modules(cid, c) {
                 let mc = self.program.world.class(*module);
                 if let Some(ids) = mc.singleton_methods.get(&m.name) {
                     if let Some(id) = ids
@@ -2812,7 +2812,7 @@ impl Interp {
             // A module's class method (`include`, docs/01 §6): the
             // modules the class includes, the last first, up to the one
             // that declares it.
-            for module in &class.class_modules {
+            for module in &self.class_side_modules(cid, c) {
                 if *module == m.owner {
                     if m.is_abstract {
                         continue;
@@ -2851,8 +2851,9 @@ impl Interp {
     /// Mid; include M`), as the instance side's `ext_impls` reach it.
     fn class_witness(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
         let w = &self.program.world;
-        // (`RtClass::witness_sources`: the checker's order.)
-        w.class(cid).witness_sources.iter().find_map(|k| {
+        // (`RtClass::class_side`, `World::class_side_order`: the checker's
+        // order.)
+        w.class(cid).class_side.iter().find_map(|k| {
             w.class_ext_impls
                 .iter()
                 .find(|(x, o, _)| x == k && *o == mid)
@@ -2861,17 +2862,31 @@ impl Interp {
     }
 
     /// Whether class `cid` or a superclass includes `module` itself (its
-    /// class methods are on `cid`'s class side, `RtClass::class_modules`).
+    /// class methods are on `cid`'s class side, `RtClass::class_side`).
     fn includes_on_class_side(&self, cid: ClassId, module: ClassId) -> bool {
-        let mut cur = Some(cid);
-        while let Some(c) = cur {
-            let class = self.program.world.class(c);
-            if class.class_modules.contains(&module) {
-                return true;
-            }
-            cur = class.superclass;
-        }
-        false
+        self.program.world.class(cid).class_side.contains(&module)
+    }
+
+    /// The modules class `c` (`cid` or a superclass of it) brings to `cid`'s
+    /// class side, in lookup order: the entries after `c` in
+    /// `RtClass::class_side` up to the next class (#536 step 2).
+    fn class_side_modules(&self, cid: ClassId, c: ClassId) -> Vec<ClassId> {
+        let world = &self.program.world;
+        let side = &world.class(cid).class_side;
+        // (`c` is `cid` or a class up its chain, always in it: a missing
+        // entry is an internal error, never an empty part.)
+        let at = side.iter().position(|k| *k == c).unwrap_or_else(|| {
+            panic!(
+                "internal error: `{}` is not on `{}`'s class side",
+                world.class(c).name,
+                world.class(cid).name
+            )
+        });
+        side[at + 1..]
+            .iter()
+            .copied()
+            .take_while(|k| world.class(*k).kind == quarz_ir::RtClassKind::Module)
+            .collect()
     }
 
     /// The extension's method that implements abstract method `abs` for

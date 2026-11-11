@@ -173,14 +173,13 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                // (A class's own includes': an extension's conformance
-                // brings witnesses, `class_ext_impls`, not dispatch, #504.)
-                class_modules: world
-                    .class_modules_included(c.id, &[])
+                // (The declared view: an extension's conformance brings
+                // witnesses, `class_ext_impls`, not dispatch, #504.)
+                class_side: world
+                    .resolution(c.id, &[], quarz_types::world::View::Declared)
                     .into_iter()
                     .map(|(m, _)| m)
                     .collect(),
-                witness_sources: world.conformance_sources(c.id),
                 built_by_runtime: world.built_by_runtime(c.id),
                 members,
                 variants: c.variants.clone(),

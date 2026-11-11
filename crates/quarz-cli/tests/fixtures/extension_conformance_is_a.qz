@@ -1,0 +1,27 @@
+# #515: membership at run time holds for every extension's conformance,
+# whichever extensions are active where the program was compiled (the VM
+# and compiled code agree); a conditional extension's where the class fixes
+# the arguments. (Values of another instantiation: #515, open.)
+module Parsable
+  def pz -> Int = 1
+end
+class Num
+end
+extension Num
+  include Parsable
+end
+x: Object = Num.new
+p x.is_a?(Parsable)
+module Marker
+end
+class Box[T]
+  def initialize; end
+end
+extension Box[T <: Int]
+  include Marker
+end
+class SI < Box[Int]
+  def initialize; end
+end
+p SI.new.is_a?(Marker)
+p Box[Int].new.is_a?(Marker)

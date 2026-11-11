@@ -1,0 +1,361 @@
+# The #536 step-2 resolution-order matrix (generated): what a call
+# through the superclass's type runs, and `is_a?` of the module, for
+# each way a class gets a module. Expected from docs/01 §6–§7: an own
+# include's module comes before the superclass; an extension's module
+# replaces the class's or its ancestors' methods only from an
+# unconditional top-level extension (a scoped or conditional one's
+# never); the class's own method always first; `is_a?` holds for
+# every conformance. Skipped: another cog (tests/cogs.rs), the class
+# side (step 2b).
+class B1
+  def initialize; end
+  def m -> String = "base"
+end
+module M1
+  def m -> String = "mod"
+end
+class C1 < B1
+  include M1
+  def initialize; end
+end
+def f1(x: B1) -> String = x.m
+puts "own include: #{f1(C1.new)} #{C1.new.is_a?(M1)}"
+class B2
+  def initialize; end
+  def m -> String = "base"
+end
+module M2
+  def m -> String = "mod"
+end
+class P2 < B2
+  include M2
+  def initialize; end
+end
+class C2 < P2
+  def initialize; end
+end
+def f2(x: B2) -> String = x.m
+puts "superclass's include: #{f2(C2.new)} #{C2.new.is_a?(M2)}"
+class B3
+  def initialize; end
+  def m -> String = "base"
+end
+module M3
+  def m -> String = "mod"
+end
+class C3 < B3
+  def initialize; end
+end
+extension C3
+  include M3
+end
+def f3(x: B3) -> String = x.m
+puts "top-level extension of the class: #{f3(C3.new)} #{C3.new.is_a?(M3)}"
+class B4
+  def initialize; end
+  def m -> String = "base"
+end
+module M4
+  def m -> String = "mod"
+end
+class P4 < B4
+  def initialize; end
+end
+extension P4
+  include M4
+end
+class C4 < P4
+  def initialize; end
+end
+def f4(x: B4) -> String = x.m
+puts "top-level extension of the superclass: #{f4(C4.new)} #{C4.new.is_a?(M4)}"
+class B5
+  def initialize; end
+  def m -> String = "base"
+end
+module M5
+  def m -> String = "mod"
+end
+class C5 < B5
+  def initialize; end
+end
+module Sc5
+  extension C5
+    include M5
+  end
+end
+def f5(x: B5) -> String = x.m
+puts "scoped extension of the class: #{f5(C5.new)} #{C5.new.is_a?(M5)}"
+class B6
+  def initialize; end
+  def m -> String = "base"
+end
+module M6
+  def m -> String = "mod"
+end
+class C6[T] < B6
+  def initialize; end
+end
+extension C6[T <: Int]
+  include M6
+end
+def f6(x: B6) -> String = x.m
+puts "conditional extension of a generic class: #{f6(C6[Int].new)} #{C6[Int].new.is_a?(M6)}"
+class B7
+  def initialize; end
+  def m -> String = "base"
+end
+module M7
+  def m -> String = "mod"
+end
+module N7
+end
+extension N7
+  include M7
+end
+class C7 < B7
+  include N7
+  def initialize; end
+end
+def f7(x: B7) -> String = x.m
+puts "top-level extension of an included module: #{f7(C7.new)} #{C7.new.is_a?(M7)}"
+class B8
+  def initialize; end
+  def m -> String = "base"
+end
+module M8
+  def m -> String = "mod"
+end
+class C8 < B8
+  def initialize; end
+  def m -> String = "own"
+end
+extension C8
+  include M8
+end
+def f8(x: B8) -> String = x.m
+puts "own method over a top-level extension's: #{f8(C8.new)} #{C8.new.is_a?(M8)}"
+class B9
+  def initialize; end
+  def m -> String = "base"
+end
+module M9
+  def m -> String = "mod"
+end
+class C9 < B9
+  def initialize; end
+  def m -> String = "own"
+end
+module Sc9
+  extension C9
+    include M9
+  end
+end
+def f9(x: B9) -> String = x.m
+puts "own method over a scoped extension's: #{f9(C9.new)} #{C9.new.is_a?(M9)}"
+abstract class B10
+  def initialize; end
+  abstract def m -> String
+end
+module M10
+  def m -> String = "mod"
+end
+class C10 < B10
+  def initialize; end
+end
+extension C10
+  include M10
+end
+def f10(x: B10) -> String = x.m
+puts "abstract superclass method, top-level extension's module: #{f10(C10.new)} #{C10.new.is_a?(M10)}"
+class B11
+  def initialize; end
+  def m -> String = "base"
+end
+module M11
+  def m -> String = "mod"
+end
+class C11 < B11
+  include M11
+  def initialize; end
+end
+class S11 < C11
+  def initialize; end
+end
+def f11(x: B11) -> String = x.m
+puts "own include (subclass): #{f11(S11.new)} #{S11.new.is_a?(M11)}"
+class B12
+  def initialize; end
+  def m -> String = "base"
+end
+module M12
+  def m -> String = "mod"
+end
+class P12 < B12
+  include M12
+  def initialize; end
+end
+class C12 < P12
+  def initialize; end
+end
+class S12 < C12
+  def initialize; end
+end
+def f12(x: B12) -> String = x.m
+puts "superclass's include (subclass): #{f12(S12.new)} #{S12.new.is_a?(M12)}"
+class B13
+  def initialize; end
+  def m -> String = "base"
+end
+module M13
+  def m -> String = "mod"
+end
+class C13 < B13
+  def initialize; end
+end
+extension C13
+  include M13
+end
+class S13 < C13
+  def initialize; end
+end
+def f13(x: B13) -> String = x.m
+puts "top-level extension of the class (subclass): #{f13(S13.new)} #{S13.new.is_a?(M13)}"
+class B14
+  def initialize; end
+  def m -> String = "base"
+end
+module M14
+  def m -> String = "mod"
+end
+class P14 < B14
+  def initialize; end
+end
+extension P14
+  include M14
+end
+class C14 < P14
+  def initialize; end
+end
+class S14 < C14
+  def initialize; end
+end
+def f14(x: B14) -> String = x.m
+puts "top-level extension of the superclass (subclass): #{f14(S14.new)} #{S14.new.is_a?(M14)}"
+class B15
+  def initialize; end
+  def m -> String = "base"
+end
+module M15
+  def m -> String = "mod"
+end
+class C15 < B15
+  def initialize; end
+end
+module Sc15
+  extension C15
+    include M15
+  end
+end
+class S15 < C15
+  def initialize; end
+end
+def f15(x: B15) -> String = x.m
+puts "scoped extension of the class (subclass): #{f15(S15.new)} #{S15.new.is_a?(M15)}"
+class B16
+  def initialize; end
+  def m -> String = "base"
+end
+module M16
+  def m -> String = "mod"
+end
+class C16[T] < B16
+  def initialize; end
+end
+extension C16[T <: Int]
+  include M16
+end
+class S16 < C16[Int]
+  def initialize; end
+end
+def f16(x: B16) -> String = x.m
+puts "conditional extension of a generic class (subclass): #{f16(S16.new)} #{S16.new.is_a?(M16)}"
+class B17
+  def initialize; end
+  def m -> String = "base"
+end
+module M17
+  def m -> String = "mod"
+end
+module N17
+end
+extension N17
+  include M17
+end
+class C17 < B17
+  include N17
+  def initialize; end
+end
+class S17 < C17
+  def initialize; end
+end
+def f17(x: B17) -> String = x.m
+puts "top-level extension of an included module (subclass): #{f17(S17.new)} #{S17.new.is_a?(M17)}"
+class B18
+  def initialize; end
+  def m -> String = "base"
+end
+module M18
+  def m -> String = "mod"
+end
+class C18 < B18
+  def initialize; end
+  def m -> String = "own"
+end
+extension C18
+  include M18
+end
+class S18 < C18
+  def initialize; end
+end
+def f18(x: B18) -> String = x.m
+puts "own method over a top-level extension's (subclass): #{f18(S18.new)} #{S18.new.is_a?(M18)}"
+class B19
+  def initialize; end
+  def m -> String = "base"
+end
+module M19
+  def m -> String = "mod"
+end
+class C19 < B19
+  def initialize; end
+  def m -> String = "own"
+end
+module Sc19
+  extension C19
+    include M19
+  end
+end
+class S19 < C19
+  def initialize; end
+end
+def f19(x: B19) -> String = x.m
+puts "own method over a scoped extension's (subclass): #{f19(S19.new)} #{S19.new.is_a?(M19)}"
+abstract class B20
+  def initialize; end
+  abstract def m -> String
+end
+module M20
+  def m -> String = "mod"
+end
+class C20 < B20
+  def initialize; end
+end
+extension C20
+  include M20
+end
+class S20 < C20
+  def initialize; end
+end
+def f20(x: B20) -> String = x.m
+puts "abstract superclass method, top-level extension's module (subclass): #{f20(S20.new)} #{S20.new.is_a?(M20)}"

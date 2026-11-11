@@ -1,0 +1,83 @@
+# An active scoped extension's module comes after the class's own
+# includes and its top-level extensions' modules (docs/01 §7: they override
+# any extension's modules), before the superclass: under `using` the
+# checker picks B, which runs, on both sides (#570 review). Method-level
+# `using`; scoped_extension_after_own_file has it at file level.
+module B
+  def it -> String = "B"
+  def self.tag -> String = "B"
+end
+module M3
+  def it -> Object = 42
+  def self.tag -> Object = 42
+end
+class C
+  def initialize; end
+  include B
+end
+class D
+  def initialize; end
+end
+extension D
+  include B
+end
+module Sc
+  extension C
+    include M3
+  end
+  extension D
+    include M3
+  end
+end
+def inst -> String
+  using Sc
+  s: String = C.new.it
+  t: String = D.new.it
+  s + t
+end
+def cls -> String
+  using Sc
+  s: String = C.tag
+  t: String = D.tag
+  s + t
+end
+puts inst, cls
+
+# The target a module the class includes: the scoped extension's module
+# comes after all the class's own modules (X, an own include; Y, a
+# top-level extension's module), as at run time.
+module MT
+end
+module ST
+  def it -> Object = "ST"
+end
+module XT
+  def it -> String = "X"
+end
+module YT
+  def it -> String = "Y"
+end
+class E
+  def initialize; end
+  include XT
+  include MT
+end
+class F
+  def initialize; end
+  include MT
+end
+extension F
+  include YT
+end
+module ScT
+  extension MT
+    include ST
+  end
+end
+def module_target -> String
+  using ScT
+  s: String = E.new.it
+  t: String = F.new.it
+  s + t
+end
+puts module_target

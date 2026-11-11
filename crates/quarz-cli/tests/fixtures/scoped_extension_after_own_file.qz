@@ -1,0 +1,33 @@
+# scoped_extension_after_own with the extension active at file level.
+module B
+  def it -> String = "B"
+  def self.tag -> String = "B"
+end
+module M3
+  def it -> Object = 42
+  def self.tag -> Object = 42
+end
+class C
+  def initialize; end
+  include B
+end
+class D
+  def initialize; end
+end
+extension D
+  include B
+end
+module Sc
+  extension C
+    include M3
+  end
+  extension D
+    include M3
+  end
+end
+using Sc
+s: String = C.new.it
+t: String = D.new.it
+u: String = C.tag
+v: String = D.tag
+puts s, t, u, v

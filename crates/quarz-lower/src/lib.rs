@@ -814,7 +814,7 @@ impl Lowerer {
         let mut inits = Vec::new();
         let mut defaults = Vec::new();
         for c in &world.classes {
-            if c.id != class && !(recv && world.class_is_a(c.id, class)) {
+            if c.id != class && !(recv && world.class_is_a_at_run_time(c.id, class)) {
                 continue;
             }
             if recv {
@@ -822,7 +822,7 @@ impl Lowerer {
                     inits.extend(ids.iter().copied());
                 }
             }
-            for a in world.ancestor_ids(c.id) {
+            for a in world.ancestor_ids_at_run_time(c.id) {
                 if let Some(ids) = world.class(a).methods.get("deinitialize") {
                     inits.extend(ids.iter().copied());
                 }
@@ -1432,17 +1432,16 @@ fn may_receive(world: &World, o: MethodId, classes: &[ClassId]) -> bool {
         && world.extensions.iter().any(|e| {
             e.includes
                 .iter()
-                .any(|t| matches!(t, quarz_types::Type::Class(m, _) if world.class_is_a(*m, owner)))
+                .any(|t| matches!(t, quarz_types::Type::Class(m, _) if world.class_is_a_at_run_time(*m, owner)))
         })
     {
         return true;
     }
     classes.iter().any(|&c| {
-        world.class_is_a(c, owner)
-            || world
-                .classes
-                .iter()
-                .any(|d| world.class_is_a(d.id, c) && world.class_is_a(d.id, owner))
+        world.class_is_a_at_run_time(c, owner)
+            || world.classes.iter().any(|d| {
+                world.class_is_a_at_run_time(d.id, c) && world.class_is_a_at_run_time(d.id, owner)
+            })
     })
 }
 
@@ -1471,23 +1470,23 @@ fn is_override(world: &World, o: MethodId, m: MethodId) -> bool {
             return false;
         }
         if !module(om.owner) && !module(owner) {
-            return world.class_is_a(om.owner, owner);
+            return world.class_is_a_at_run_time(om.owner, owner);
         }
         // (A module's class method: on a class that has both.)
-        return world
-            .classes
-            .iter()
-            .any(|c| world.class_is_a(c.id, owner) && world.class_is_a(c.id, om.owner));
+        return world.classes.iter().any(|c| {
+            world.class_is_a_at_run_time(c.id, owner)
+                && world.class_is_a_at_run_time(c.id, om.owner)
+        });
     }
     // An abstract method's implementation may come from above its owner
     // (a superclass's method of the name).
-    if mm.is_abstract && !om.singleton && world.class_is_a(owner, om.owner) {
+    if mm.is_abstract && !om.singleton && world.class_is_a_at_run_time(owner, om.owner) {
         return true;
     }
     // `Type`'s (or a subclass's, `Meta::ClassDef`'s), on class objects: a
     // class method (a module's included too).
-    if world.class_is_a(owner, world.builtin.class_) {
-        return om.singleton || world.class_is_a(om.owner, owner);
+    if world.class_is_a_at_run_time(owner, world.builtin.class_) {
+        return om.singleton || world.class_is_a_at_run_time(om.owner, owner);
     }
     if module(owner) || owner == world.builtin.object {
         return true;
@@ -1495,12 +1494,12 @@ fn is_override(world: &World, o: MethodId, m: MethodId) -> bool {
     if om.singleton {
         return false;
     }
-    world.class_is_a(om.owner, owner)
+    world.class_is_a_at_run_time(om.owner, owner)
         || (world.class(om.owner).kind == quarz_types::ClassKind::Module
-            && world
-                .classes
-                .iter()
-                .any(|c| world.class_is_a(c.id, owner) && world.class_is_a(c.id, om.owner)))
+            && world.classes.iter().any(|c| {
+                world.class_is_a_at_run_time(c.id, owner)
+                    && world.class_is_a_at_run_time(c.id, om.owner)
+            }))
 }
 
 /// Class hierarchy analysis: for every class, the names its descendants

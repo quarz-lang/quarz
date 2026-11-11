@@ -1430,15 +1430,13 @@ pub struct RtClass {
     /// `def self.` methods, by name.
     #[serde(serialize_with = "sorted")]
     pub singleton_methods: HashMap<String, Vec<MethodId>>,
-    /// The modules whose `def self.` methods are this class's class
-    /// methods, in lookup order after its own, those its superclass
-    /// brings left out (`World::class_modules`).
-    pub class_modules: Vec<ClassId>,
-    /// Where the witnesses of this class's conformances through
-    /// extensions are looked up, in order (`World::conformance_sources`,
-    /// shared with the checker, #504).
-    #[serde(default)]
-    pub witness_sources: Vec<ClassId>,
+    /// Class-side dispatch: the classes and modules whose `def self.`
+    /// methods are this class's class methods, in lookup order (the class,
+    /// the modules it brings itself, its superclass, the modules that one
+    /// brings, ...): `World::resolution` in the declared view (an
+    /// extension's include brings witnesses, `class_ext_impls`, not class
+    /// methods, #504). The VM's class-side walks read it (#536 step 2).
+    pub class_side: Vec<ClassId>,
     /// Whether this class's values are made by the runtime, not by `new`
     /// (`World::built_by_runtime`, #535).
     #[serde(default)]
@@ -1740,6 +1738,12 @@ impl RtWorld {
                 .any(|m| *m == owner || self.classes[*m as usize].ancestors.contains(&owner))
     }
 
+    /// Membership at run time: whether a value of class `sub` is a `sup`
+    /// (`RtClass::ancestors`, every conformance, an extension's too, #515,
+    /// and nothing else). `is_a?`, `as`/`as?`, `case`/`in` class patterns,
+    /// `rescue` and the typed checks (`QUARZ_VERIFY`, compiled code's "a
+    /// value not of its static type") read it; never method lookup, which
+    /// reads `RtClass::lookup` (#536 step 2).
     pub fn class_is_a(&self, sub: ClassId, sup: ClassId) -> bool {
         sub == sup
             || sup == self.builtin.object

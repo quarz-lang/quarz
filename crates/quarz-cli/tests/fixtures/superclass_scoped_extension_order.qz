@@ -1,0 +1,83 @@
+# A scoped extension of the superclass including a module does not move a
+# subclass's own (or its extension's) include of that module: the order is
+# dispatch's, the other extensions' modules after it (docs/01 §6-§7): B
+# runs everywhere, as without the scoped extension.
+module A
+  def it -> String = "A"
+  def self.tag -> String = "A"
+end
+module B
+  def it -> String = "B"
+  def self.tag -> String = "B"
+end
+class P
+  def it -> String = "P"
+end
+class G < P
+end
+extension G
+  include A
+  include B
+end
+class C < P
+  include A
+  include B
+end
+module Sc
+  extension P
+    include B
+  end
+end
+def ga(x: A) -> String = x.it
+def gb(x: B) -> String = x.it
+def gp(x: P) -> String = x.it
+def ta(k: Type[A]) -> String = k.tag
+def tb(k: Type[B]) -> String = k.tag
+puts C.new.it, ga(C.new), gb(C.new), gp(C.new), C.tag, ta(C), tb(C)
+puts "--"
+puts G.new.it, ga(G.new), gb(G.new), gp(G.new), G.tag, ta(G), tb(G)
+
+# The superclass conforming through a top-level extension: the module is
+# there already, so the own include does nothing (docs/01 §6, as Ruby):
+# A, and P's own method over its extension's module.
+module A2
+  def it -> String = "A"
+end
+module B2
+  def it -> String = "B"
+end
+class P2
+  def initialize; end
+  def it -> String = "P"
+end
+extension P2
+  include B2
+end
+class C2 < P2
+  include A2
+  include B2
+end
+def gb2(x: B2) -> String = x.it
+puts C2.new.it, gb2(C2.new), P2.new.it
+
+# Through a conditional extension whose bound the subclass meets: the
+# same (the module is there at the superclass).
+module A3
+  def it -> String = "A"
+end
+module B3
+  def it -> String = "B"
+end
+class P3[T]
+  def initialize; end
+  def it -> String = "P"
+end
+extension P3[T <: Int]
+  include B3
+end
+class C3 < P3[Int]
+  include A3
+  include B3
+end
+def gb3(x: B3) -> String = x.it
+puts C3.new.it, gb3(C3.new)
