@@ -3199,7 +3199,7 @@ impl<'ast> Declarer<'ast> {
             if named && p.kind == ParamKind::Positional && p.name != q.name {
                 self.error(
                     format!(
-                        "`{mname}` renames parameter `{}` to `{}`; callers of `{owner}{}{mname}` may pass it as `{}:`",
+                        "`{mname}` renames parameter `{}` to `{}`; callers of `{owner}{}{mname}`, which it overrides{context}, may pass it as `{}:`",
                         p.name, q.name, if om.singleton { "." } else { "#" }, p.name
                     ),
                     span,
