@@ -2486,3 +2486,128 @@ fn cycles_hide_nothing_and_ties_with_them_are_errors() {
         "{out:?}"
     );
 }
+
+/// #515: a run-time test of a module an extension with bounds brings is
+/// refused wherever the value may be of a class whose answer depends on
+/// type arguments the run time does not see: each written form, a call
+/// on a union, `!` on a union; a test that holds statically (`D[Int]`, a
+/// `B` through `C[T <: Int]`) but which the run time, seeing only the
+/// class, would answer otherwise; a subclass seen through its superclass.
+#[test]
+fn runtime_tests_the_class_does_not_answer_are_refused() {
+    let base = "module Num\n  def n -> Int = 1\n  def ! -> Bool = true\nend\nmodule N2\n  def n -> Int = 2\n  def ! -> Bool = false\nend\nclass Box[T]\n  include N2\n  @v: T\n  def initialize(@v: T); end\nend\nextension Box[T <: Int]\n  include Num\nend\n";
+    let cases = [
+        (
+            "def f(x: Object) -> Bool = x.is_a?(Num)\n",
+            "`is_a?` cannot check at run time",
+        ),
+        (
+            "def f(x: Object) -> Num = x.as(Num)\n",
+            "`as` cannot check at run time",
+        ),
+        (
+            "def f(x: Object) -> Num? = x.as?(Num)\n",
+            "`as?` cannot check at run time",
+        ),
+        (
+            "def f(x: Object) -> Int\n  case x\n  when Num then 1\n  else 0\n  end\nend\n",
+            "`when` cannot check at run time",
+        ),
+        (
+            "def f(x: Object) -> Int\n  case x\n  in Num then 1\n  else 0\n  end\nend\n",
+            "`in` cannot check at run time",
+        ),
+        (
+            "def f(x: Num | N2) -> Int = x.n\n",
+            "a call on a union cannot check at run time",
+        ),
+        (
+            "def f(x: Num | N2) -> Bool = !x\n",
+            "cannot check at run time",
+        ),
+    ];
+    for (body, want) in cases {
+        let src = format!("{base}{body}");
+        let out = common::diagnostics(&src);
+        assert!(
+            out.iter()
+                .any(|d| d.contains(want) && d.contains("the run time sees only the class `Box`")),
+            "{src}\n{out:?}"
+        );
+    }
+    // Statically true, which the run time would answer `false`.
+    let d = "module B\n  def it -> String = \"B\"\nend\nclass C[T]\n  def initialize; end\nend\nextension C[T <: Int]\n  include B\nend\nclass D[T] < C[T]\n  def initialize; end\nend\ndef f(x: D[Int]) -> Bool = x.is_a?(B)\n";
+    let out = common::diagnostics(d);
+    assert!(
+        out.iter()
+            .any(|m| m
+                .contains("a value of type D[Int] is a B: the run time sees only the class `D`")),
+        "{out:?}"
+    );
+    // A module type whose arguments fix the answer, which the table, by
+    // the class alone (`Holder`'s walk sees `Seq[T]`), answers otherwise.
+    let seq = "module Num\n  def n -> Int = 1\nend\nmodule Seq[T]\nend\nextension Seq[T <: Int]\n  include Num\nend\nclass Holder[T]\n  include Seq[T]\n  @v: T\n  def initialize(@v: T); end\nend\ndef through_module(x: Seq[Int]) -> Bool = x.is_a?(Num)\n";
+    let out = common::diagnostics(seq);
+    assert!(
+        out.iter()
+            .any(|m| m.contains("a value of type Holder[Int] is a Num")),
+        "{out:?}"
+    );
+    // A subclass whose arguments the static type does not fix.
+    let sub = "module Num\n  def n -> Int = 1\nend\nclass Base\nend\nclass Sub[T] < Base\n  @v: T\n  def initialize(@v: T); end\nend\nextension Sub[T <: Int]\n  include Num\nend\ndef f(x: Base) -> Bool = x.is_a?(Num)\n";
+    let out = common::diagnostics(sub);
+    assert!(
+        out.iter()
+            .any(|m| m.contains("a value of type Sub[T] is a Num")),
+        "{out:?}"
+    );
+}
+
+/// #515, from the review: a module an extension with bounds brings through
+/// an extension of a module it includes; a module type only an extension
+/// with bounds brings (its classes are values of it); the elements a test
+/// checks (`as?(Array[Num])`); a class value's test (`Type[Num]`): each
+/// refused, as each would answer wrongly at run time.
+#[test]
+fn runtime_tests_through_extensions_elements_and_class_values_are_refused() {
+    for src in ["module M\n  abstract def m -> Int\nend\nmodule X\nend\nextension X\n  include M\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension Box[T <: Int]\n  include X\n  def m -> Int = v + 1\nend\ndef f(o: Object) -> Int\n  if o.is_a?(M)\n    o.m\n  else\n    0\n  end\nend\nputs f(Box.new(41))\nputs f(Box.new(\"s\"))\n", "# a module type K a conditional extension brings: classes_a_value_may_hold misses Box\nmodule K\nend\nmodule Num\n  abstract def n -> Int\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension Box[T <: Int]\n  include K\nend\nextension Box[T <: String]\n  include Num\n  def n -> Int = v.size\nend\ndef f(x: K) -> Int\n  if x.is_a?(Num)\n    x.n\n  else\n    -1\n  end\nend\nputs f(Box.new(5))\n", "# element tests: Array[Num], tuple, against a module a conditional extension brings\nmodule Num\n  abstract def n -> Int\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension Box[T <: Int]\n  include Num\n  def n -> Int = v + 1\nend\no: Object = [Box.new(\"s\")]\na = o.as?(Array[Num])\nputs a ? a[0].n : -1\n", "# class objects against a module a conditional extension brings\nmodule Num\n  def self.tag -> String = \"num\"\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\nend\nextension Box[T <: Int]\n  include Num\nend\nclass Other\nend\no: Object = Box\nputs o.is_a?(Type[Num])\nk = o.as?(Type[Num])\nputs k ? k.tag : \"nil\"\no2: Object = Other\nputs o2.is_a?(Type[Num])\n"] {
+        let out = common::diagnostics(src);
+        assert!(
+            out.iter().any(|d| d.contains("cannot check at run time that a value of type")),
+            "{src}\n{out:?}"
+        );
+    }
+}
+
+/// #515, from #596's second review: a covariant static type holding a
+/// subclass with other arguments (`Box[Object]` holding a `D[Int]`), a
+/// union argument (`Box[Int | String]`), and a generic module type whose
+/// arguments fail the bound (`K[String]`): each would answer wrongly at
+/// run time, and is refused.
+#[test]
+fn runtime_tests_through_variance_unions_and_generic_modules_are_refused() {
+    for src in ["# skip of a concrete-argument class under covariance: D[U] < Box[Int], D[U <: String] brings Num\nmodule Num\n  abstract def n -> Int\nend\nclass Box[out T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nclass D[U] < Box[Int]\n  @u: U\n  def initialize(@u: U); super(1); end\n  def u -> U = @u\nend\nextension D[U <: String]\n  include Num\n  def n -> Int = u.size\nend\ndef f(x: Box[Object]) -> Int\n  y = x.as?(Num)\n  y ? y.n : -1\nend\nputs f(D.new(\"abc\"))\nputs f(D.new(7))\n", "module Num\n  abstract def n -> Int\nend\nclass Box[out T]\n  def initialize; end\nend\nclass D[U] < Box[Int]\n  @u: U\n  def initialize(@u: U); end\n  def u -> U = @u\nend\nextension D[U <: String]\n  include Num\n  def n -> Int = u.size\nend\ndef f(x: Box[Int | String]) -> Bool = x.is_a?(Num)\nputs f(D.new(7))\n", "# always shortcut through a generic module whose bounded extension brings Num\nmodule Num\n  abstract def n -> Int\nend\nmodule K[T]\nend\nextension K[T <: Int]\n  include Num\nend\nclass G[T]\n  include K[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension G[T <: Int]\n  include Num\n  def n -> Int = v + 1\nend\ndef f(x: K[String]) -> Int\n  y = x.as?(Num)\n  y ? y.n : -1\nend\nputs f(G.new(\"s\"))\n"] {
+        let out = common::diagnostics(src);
+        assert!(
+            out.iter().any(|d| d.contains("cannot check at run time that a value of type")),
+            "{src}\n{out:?}"
+        );
+    }
+}
+
+/// #515, from quarz-manager's review of #596: the elements' static type is
+/// the static type's only when every member of it is that collection (a
+/// tuple of that arity); a union with another member (`Array[Int] |
+/// Enumerable[Box[String]]`, a tuple beside an `Array`) tests elements of
+/// any type, so a test of a module an extension with bounds brings is
+/// refused.
+#[test]
+fn element_tests_through_another_member_are_refused() {
+    for src in ["module Num\n  def n -> Int = 1\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension Box[T <: Int]\n  include Num\n  def n -> Int = v + 1\nend\nclass SI < Box[Int]\n  def initialize; super(1); end\nend\n# element test through a non-Array member of the static type\ndef f(x: Array[Int] | Enumerable[Box[String]]) -> Int\n  a = x.as?(Array[Num])\n  a ? a.map { |e| e.n }.sum : -1\nend\np f([Box.new(\"s\")])\n", "module Num\n  abstract def n -> Int\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension Box[T <: Int]\n  include Num\n  def n -> Int = v + 1\nend\ndef g(x: [Int, Int] | Array[Box[String] | Int]) -> Int\n  case x\n  in [Num => a, Int] then a.n\n  else -1\n  end\nend\np g([Box.new(\"s\"), 1])\n"] {
+        let out = common::diagnostics(src);
+        assert!(
+            out.iter().any(|d| d.contains("cannot check at run time that a value of type")),
+            "{src}\n{out:?}"
+        );
+    }
+}

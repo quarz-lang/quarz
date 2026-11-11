@@ -1019,3 +1019,43 @@ fn a_declarations_only_input_checks_new_through_an_extension() {
         "{out:?}"
     );
 }
+
+#[test]
+fn a_later_input_that_breaks_an_accepted_runtime_test_is_refused() {
+    // #515 (A): an earlier input's `is_a?` against a module is accepted;
+    // a later input's extension with bounds bringing that module would
+    // make it unanswerable at run time, so that input is refused (and
+    // discarded: the next one may use the earlier test).
+    let (out, _) = values(&[
+        "module Marker; def m -> Int = 1; end",
+        "def marked(x: Object) -> Bool = x.is_a?(Marker)",
+        "class Box[T]; def initialize; end; end",
+        "extension Box[T <: Int]; include Marker; end",
+        "marked(1)",
+    ]);
+    assert!(
+        out[3].starts_with("error: ")
+            && out[3].contains("makes a run-time test of the function `marked` unanswerable"),
+        "{out:?}"
+    );
+    assert_eq!(out[4], "=> false", "{out:?}");
+}
+
+#[test]
+fn a_later_unconditional_extension_that_breaks_a_test_is_refused() {
+    // #515 (A), from the review: an unconditional extension including a
+    // module an extension with bounds makes conform; the earlier test
+    // `x: Bx[Int]` would be answered wrongly, so the input is refused.
+    let (out, _) = values(&[
+        "module Num; def n -> Int = 1; end",
+        "module Seq[T]; end",
+        "extension Seq[T <: Int]; include Num; end",
+        "class Bx[T]; def initialize; end; end",
+        "def t(x: Bx[Int]) -> Bool = x.is_a?(Num)",
+        "extension Bx[T]; include Seq[T]; end",
+    ]);
+    assert!(
+        out[5].starts_with("error: ") && out[5].contains("unanswerable"),
+        "{out:?}"
+    );
+}

@@ -2537,3 +2537,50 @@ fn an_applications_extension_conflict_stays_in_the_application() {
     assert!(err.contains("main.qz:1:"), "{err}");
     assert!(!err.contains("mid.qz"), "{err}");
 }
+
+/// #515 (A): a library's run-time test made unanswerable by an
+/// application's declaration is reported at that declaration, naming the
+/// test, never inside the library: an extension with bounds bringing the
+/// tested module, and a class getting it through the library's own
+/// extension with bounds.
+#[test]
+fn a_librarys_runtime_test_broken_by_the_application_is_reported_there() {
+    let w = World::new();
+    w.write(
+        "marklib/Cog.toml",
+        "[cog]\nname = \"marklib\"\nversion = \"0.1.0\"\n",
+    );
+    w.write(
+        "marklib/src/mark.qz",
+        "module Marker\n  def m -> Int = 1\nend\nmodule Num\n  def n -> Int = 1\nend\nmodule Seq[T]\nend\nextension Seq[T <: Int]\n  include Num\nend\nclass LibBase\nend\npublic def marked(x: Object) -> Bool = x.is_a?(Marker)\npublic def numeric(x: LibBase) -> Bool = x.is_a?(Num)\n",
+    );
+    w.commit("marklib", Some("v0.1.0"));
+    // On its own, the library checks.
+    w.ok("marklib", &["check"]);
+    let dep = format!(
+        "Marklib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n",
+        w.url("marklib")
+    );
+    w.app(
+        &dep,
+        "class AppBox[T]\n  def initialize; end\nend\nextension AppBox[T <: Int]\n  include Marklib::Marker\nend\nputs 1\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("main.qz:1:")
+            && err.contains("class `AppBox` makes a run-time test of the function `marked` of the cog `marklib` unanswerable"),
+        "{err}"
+    );
+    assert!(!err.contains("mark.qz"), "{err}");
+    w.app(
+        &dep,
+        "class AppSub[T] < Marklib::LibBase\n  include Marklib::Seq[T]\n  def initialize; end\nend\nputs 1\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("main.qz:1:")
+            && err.contains("class `AppSub` makes a run-time test of the function `numeric` of the cog `marklib` unanswerable"),
+        "{err}"
+    );
+    assert!(!err.contains("mark.qz"), "{err}");
+}
