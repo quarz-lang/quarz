@@ -1736,9 +1736,11 @@ fn may_dispatch_to(world: &RtWorld, o: MethodId, m: MethodId) -> bool {
         return true;
     }
     // `Type`'s (or a subclass's, `Meta::ClassDef`'s), on class objects: a
-    // class method (a module's included too).
+    // class method (a module's included too) the override table pairs
+    // with it (`RtMethod::overrides`: never with `Meta::ClassDef#type`,
+    // always the reflection's, #553).
     if world.class_is_a(owner, world.builtin.class_) {
-        return om.singleton || world.class_is_a(om.owner, owner);
+        return (om.singleton && om.overrides.contains(&m)) || world.class_is_a(om.owner, owner);
     }
     if module(owner) || owner == world.builtin.object {
         return true;

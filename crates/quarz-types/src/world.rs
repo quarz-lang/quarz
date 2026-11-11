@@ -2798,6 +2798,13 @@ impl World {
                     };
                     let aargs: Vec<Type> = aargs.iter().map(|t| t.subst(&subst)).collect();
                     for &o in ids {
+                        // (`Meta::ClassDef#type` is never replaced: in
+                        // static code `type` is always the reflection's,
+                        // the class as a `Type[Self]`, which no class
+                        // method can be for every subclass, #553.)
+                        if *anc == self.builtin.meta_classdef && mi.name == "type" {
+                            continue;
+                        }
                         if !out.contains(&o) && self.replaces(m, o, *anc, &aargs) {
                             out.push(o);
                         }
@@ -3271,8 +3278,11 @@ impl World {
         match recv {
             Type::Class(id, args) => {
                 // `Meta::ClassDef[X]`: the class methods of `X` first, as
-                // on a `Type[X]`.
-                if let Some(instance) = self.class_object_instance(recv) {
+                // on a `Type[X]`; but not for `type`, always the
+                // reflection's in static code, whatever class methods of
+                // the name `X` has (#553).
+                let reflection = *id == self.builtin.meta_classdef && name == "type";
+                if let Some(instance) = self.class_object_instance(recv).filter(|_| !reflection) {
                     for found in self.lookup_methods(&Type::type_of(instance), name) {
                         if !out.iter().any(|(m, _)| *m == found.0) {
                             out.push(found);
