@@ -632,6 +632,10 @@ pub struct World {
     pub std_files: rustc_hash::FxHashSet<u32>,
     /// Each user file's group (`UnitGroup`); the prelude has none.
     pub file_groups: HashMap<u32, UnitGroup>,
+    /// The pseudo-class of each file's top-level methods, by file index
+    /// (set by the checker for the files of a run).
+    #[serde(skip)]
+    pub file_mains: Vec<Option<ClassId>>,
     /// The files whose top-level `def`s each file sees, its own first
     /// (docs/01 §1): every file of its cog, or a script's and those it
     /// requires (transitively). A file without an entry sees its own.
@@ -2096,6 +2100,179 @@ impl World {
         let m = self.method(mid);
         (m.is_native && m.owner == self.builtin.kernel)
             || self.class(m.owner).kind == ClassKind::Main
+    }
+
+    /// The pseudo-class of `file`'s top-level methods.
+    pub fn file_main(&self, file: u32) -> Option<ClassId> {
+        self.file_mains.get(file as usize).copied().flatten()
+    }
+
+    /// The extensions of `class`'s `using`s (in its body; for a file's
+    /// main pseudo-class, at the top level) in effect at `pos` in `file`:
+    /// those written before it, a `using` being in effect from its
+    /// statement to the end of the body (docs/01 §7). (Code of another
+    /// file, a generated method's body, has them all.)
+    fn usings_at(&self, class: ClassId, file: u32, pos: u32) -> Vec<ExtensionId> {
+        let c = self.class(class);
+        c.usings
+            .iter()
+            .filter(|(at, _)| c.file != file || *at < pos)
+            .map(|(_, e)| *e)
+            .collect()
+    }
+
+    /// The extensions active in code written at `pos` in `file`, in the
+    /// body of `lexical` (a class or module; `None`: the top level): the
+    /// `using`s before `pos` there, in the namespaces it is nested in and
+    /// at the file's top level, its group's top-level extensions, and the
+    /// extensions the modules it is in declare (`own_extensions`).
+    pub fn extensions_active_at(
+        &self,
+        lexical: Option<ClassId>,
+        file: u32,
+        pos: u32,
+    ) -> Vec<ExtensionId> {
+        let mut active = Vec::new();
+        let mut ns = lexical;
+        while let Some(n) = ns {
+            active.extend(self.usings_at(n, file, pos));
+            ns = self.class(n).lexical;
+        }
+        active.extend(self.file_extensions(file, pos));
+        active.extend(self.own_extensions(lexical));
+        let mut seen = rustc_hash::FxHashSet::default();
+        active.retain(|e| seen.insert(*e));
+        active
+    }
+
+    /// The extensions a module declares are in effect inside its body
+    /// (so they see each other for calls; two of one class reach each
+    /// other, so a `super` in one taking the other's method is an error,
+    /// #585): those of `class` and of the modules it is nested in.
+    fn own_extensions(&self, class: Option<ClassId>) -> Vec<ExtensionId> {
+        let mut out = Vec::new();
+        let mut ns = class;
+        while let Some(n) = ns {
+            let c = self.class(n);
+            out.extend(c.extensions.iter().copied());
+            ns = c.lexical;
+        }
+        out
+    }
+
+    /// The extensions active at `pos` in `file` from its top level: its
+    /// `using`s before `pos`, and its group's top-level extensions.
+    pub fn file_extensions(&self, file: u32, pos: u32) -> Vec<ExtensionId> {
+        let mut active = self
+            .file_main(file)
+            .map(|fm| self.usings_at(fm, file, pos))
+            .unwrap_or_default();
+        for e in self.group_extensions(file) {
+            if !active.contains(&e) {
+                active.push(e);
+            }
+        }
+        active
+    }
+
+    /// The relation "extension `a` reaches `b`" over the extensions of
+    /// `target` (#585): `b` is active where `a` is declared
+    /// (`extensions_active_at`, a method-level `using` taking no part), so
+    /// a `super` in `a`'s methods may take one of `b`'s. Each extension with
+    /// those it reaches; one `extensions_active_at` per extension.
+    pub fn reach_graph(&self, target: ClassId) -> Vec<(ExtensionId, Vec<ExtensionId>)> {
+        let exts: Vec<ExtensionId> = self
+            .extensions
+            .iter()
+            .filter(|e| e.target == target)
+            .map(|e| e.id)
+            .collect();
+        exts.iter()
+            .map(|&a| {
+                let ea = &self.extensions[a as usize];
+                let active: rustc_hash::FxHashSet<ExtensionId> = self
+                    .extensions_active_at(ea.module, ea.file, ea.span.start)
+                    .into_iter()
+                    .collect();
+                let reached = exts
+                    .iter()
+                    .copied()
+                    .filter(|b| *b != a && active.contains(b))
+                    .collect();
+                (a, reached)
+            })
+            .collect()
+    }
+
+    /// The cycles of `graph` (`reach_graph`): each extension with its
+    /// component, the extensions it reaches and that reach it back, directly
+    /// or through others, itself included: no order between them (#585).
+    /// Kosaraju's two passes, linear in the graph.
+    pub fn reach_components(
+        graph: &[(ExtensionId, Vec<ExtensionId>)],
+    ) -> HashMap<ExtensionId, usize> {
+        let index: HashMap<ExtensionId, usize> = graph
+            .iter()
+            .enumerate()
+            .map(|(i, (k, _))| (*k, i))
+            .collect();
+        let n = graph.len();
+        let fwd: Vec<Vec<usize>> = graph
+            .iter()
+            .map(|(_, next)| next.iter().filter_map(|y| index.get(y).copied()).collect())
+            .collect();
+        let mut rev: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (i, next) in fwd.iter().enumerate() {
+            for &j in next {
+                rev[j].push(i);
+            }
+        }
+        // (Finish order of a depth-first walk, iterative.)
+        let mut done = vec![false; n];
+        let mut order = Vec::with_capacity(n);
+        for start in 0..n {
+            if done[start] {
+                continue;
+            }
+            done[start] = true;
+            let mut stack = vec![(start, 0)];
+            while let Some((v, i)) = stack.pop() {
+                if i < fwd[v].len() {
+                    stack.push((v, i + 1));
+                    let w = fwd[v][i];
+                    if !done[w] {
+                        done[w] = true;
+                        stack.push((w, 0));
+                    }
+                } else {
+                    order.push(v);
+                }
+            }
+        }
+        // (The reversed graph, in reverse finish order: one component each.)
+        let mut comp = vec![usize::MAX; n];
+        let mut count = 0;
+        for &start in order.iter().rev() {
+            if comp[start] != usize::MAX {
+                continue;
+            }
+            comp[start] = count;
+            let mut stack = vec![start];
+            while let Some(v) = stack.pop() {
+                for &w in &rev[v] {
+                    if comp[w] == usize::MAX {
+                        comp[w] = count;
+                        stack.push(w);
+                    }
+                }
+            }
+            count += 1;
+        }
+        graph
+            .iter()
+            .enumerate()
+            .map(|(i, (k, _))| (*k, comp[i]))
+            .collect()
     }
 
     /// The extensions active throughout `file`: those declared at the top

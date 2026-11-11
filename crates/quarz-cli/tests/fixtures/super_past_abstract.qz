@@ -146,8 +146,8 @@ a9: A9 = C9.new
 puts a9.f(1)
 
 # Another extension of the target active where this one is declared
-# (`using Y` in `X`): its method comes before this one in the lookup and
-# is no body above it; A10 is passed over to Base10.
+# (`using Y` in `X`): `X`'s `super` reaches its method (#585), whose own
+# `super` passes A10 over to Base10.
 class Base10
   def f(x: Int) -> String = "Base10:#{x}"
 end
