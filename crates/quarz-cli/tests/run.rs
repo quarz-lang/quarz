@@ -386,6 +386,8 @@ fn an_extensions_include_dispatches_alike_with_a_warm_cache() {
             "scoped_extensions_not_ambiguous",
             "scoped_extensions_super_order",
             "scoped_extensions_symbol_union",
+            "class_call_scoped_extension",
+            "class_call_scoped_extension_file",
             "scoped_extension_after_own",
             "scoped_extension_after_own_file",
             "super_past_abstract",

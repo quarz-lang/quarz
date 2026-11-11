@@ -181,6 +181,13 @@ pub struct Output {
     /// body, the top level): each is an error after lowering when the
     /// callee turns out to be compile-time only (docs/14 §3).
     pub static_calls: Vec<(u32, Span, MethodId)>,
+    /// Calls on a class written by name (`C.tag`) resolved, where `using`
+    /// is in effect, to a class method of a module an active scoped or
+    /// conditional extension brought to that class: run as that method
+    /// (`CallKind::Function`), not dispatched on the class object, where
+    /// the class side's order (the extension's module after the chain)
+    /// would find another (#580, docs/01 §7).
+    pub lexical_class_calls: rustc_hash::FxHashSet<NodeId>,
     /// The `static(...)` expressions (docs/14 §8), by their node: the file,
     /// the class whose class methods an implicit receiver names, and the
     /// call, evaluated at compile time once every file is checked.
@@ -679,6 +686,8 @@ enum TableUndo {
     /// One more `Checker::extension_ambiguities` (#577): a discarded
     /// trial's does not count.
     ExtensionAmbiguity,
+    /// A call marked in `Output::lexical_class_calls` (#580).
+    LexicalClassCall(NodeId),
     /// A node's type before a check in a block recorded another.
     NodeType(NodeId, Option<Type>),
     /// An `!=`'s `Output::ne_negated` entry before a check changed it.
@@ -2604,6 +2613,9 @@ impl Checker {
                 TableUndo::ExtensionAmbiguity => {
                     self.extension_ambiguities -= 1;
                 }
+                TableUndo::LexicalClassCall(id) => {
+                    self.out.lexical_class_calls.remove(&id);
+                }
                 TableUndo::StaticCall(entry) => {
                     if let Some(i) = self.out.static_calls.iter().rposition(|e| *e == entry) {
                         self.out.static_calls.remove(i);
@@ -2760,6 +2772,43 @@ impl Checker {
         match &self.repl_env {
             Some(env) => env.frames[0].vars.iter().map(|v| v.name.clone()).collect(),
             None => Vec::new(),
+        }
+    }
+
+    /// A call on a class written by name (`C`, `Mod::C`, `Box[Int]`) whose
+    /// winner is a class method of a module an active scoped or
+    /// conditional extension brought to the class
+    /// (`World::resolution_sources`): run as that method, #580.
+    fn note_lexical_class_call(
+        &mut self,
+        expr: &Expr,
+        call: &Call,
+        recv_ty: &Type,
+        winner: MethodId,
+    ) {
+        let by_name = call
+            .recv
+            .as_ref()
+            .is_some_and(|r| matches!(r.kind, ExprKind::Const(_) | ExprKind::TypeApp(_)));
+        let Type::ClassObject(id, args) = self.infer.resolve(recv_ty) else {
+            return;
+        };
+        let m = self.world.method(winner);
+        // (An abstract one is a requirement: dispatch finds its witness.)
+        if !by_name || !m.singleton || m.extension.is_some() || m.is_abstract {
+            return;
+        }
+        // (A module an active scoped or conditional extension brought,
+        // `World::resolution_sources`; a top-level extension's keeps the
+        // witness rule, decided in `witness_matrix_abstract`.)
+        let brought = self
+            .world
+            .resolution_sources(id, &args)
+            .into_iter()
+            .any(|(k, _, e)| k == m.owner && e.is_some());
+        if brought && self.out.lexical_class_calls.insert(expr.id) {
+            self.table_journal
+                .push(TableUndo::LexicalClassCall(expr.id));
         }
     }
 
@@ -12506,6 +12555,7 @@ impl Checker {
                 }
             };
             self.last_winner = Some((expr.id, winner));
+            self.note_lexical_class_call(expr, call, recv_ty, winner);
             // (The pair named: among the tied methods, those no other of
             // them overrides.)
             let tied: Vec<MethodId> = std::iter::once(winner)

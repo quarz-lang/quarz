@@ -1,0 +1,19 @@
+# class_call_scoped_extension with `using` at file level: `C.tag` runs
+# the extension's module's class method (#580); through `Type[C]` the
+# class's own (here inherited) one, the witness.
+module A
+  def self.tag -> Object = "A"
+end
+class P
+  def self.tag -> String = "P"
+end
+class C < P
+end
+module Sa
+  extension C
+    include A
+  end
+end
+using Sa
+def through_type_c(k: Type[C]) -> Object = k.tag
+puts C.tag, through_type_c(C)

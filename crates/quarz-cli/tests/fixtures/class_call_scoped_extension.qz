@@ -1,0 +1,105 @@
+# #580: under `using`, a class method called on a class written by name
+# (`C.tag`) resolves lexically, in the instance side's order (the class's
+# own class methods, its own includes' and its top-level extensions'
+# modules, then the active scoped extensions' modules, then the
+# superclass), and runs the method found: `A.tag` (typed Object, as A's).
+# The other forms are not lexical: through a `Type[C]` or `Type[A]` value,
+# `self` in a class method, or a `T <: A`, the checker types the call as
+# the module's (`A.tag`, Object) and the witness runs: the class's own or
+# inherited class method, here `P.tag` (a String, within Object: the
+# witness was checked as an override of `A.tag` at the extension).
+module A
+  def self.tag -> Object = "A"
+end
+class P
+  def self.tag -> String = "P"
+end
+class C < P
+  def self.via_self -> Object = tag
+end
+class D < C
+  def self.tag -> String = "D"
+end
+module Sa
+  extension C
+    include A
+  end
+end
+
+def lexical -> Object
+  using Sa
+  C.tag
+end
+def through_type_c(k: Type[C]) -> Object = k.tag
+def through_type_a(k: Type[A]) -> Object = k.tag
+def through_param[T <: A](k: Type[T]) -> Object = k.tag
+def all_forms -> String
+  using Sa
+  x: Object = C.tag
+  [x, through_type_c(C), through_type_a(C), through_param(C), C.via_self, D.tag].map { |v| v.to_s }.join(",")
+end
+def no_using -> String = C.tag
+
+# The class's own class method, or its own include's, in front of the
+# extension's module: that one, statically as at run time.
+module OwnInc
+  def self.tag -> String = "OwnInc"
+end
+class E < P
+  def self.tag -> String = "E"
+end
+class F < P
+  include OwnInc
+end
+module Se
+  extension E
+    include A
+  end
+  extension F
+    include A
+  end
+end
+def own_in_front -> String
+  using Se
+  E.tag + "," + F.tag
+end
+
+# A conditional extension's include where its bound holds (over the
+# superclass's class method), and where it fails (`Box[String]`: the
+# superclass's).
+class BoxBase
+  def self.tag -> String = "BoxBase"
+end
+class Box[T] < BoxBase
+end
+module Sb
+  extension Box[T <: Int]
+    include A
+  end
+end
+def conditional -> String
+  using Sb
+  Box[Int].tag.to_s + "," + Box[String].tag.to_s
+end
+
+# A top-level conditional extension (its module lexical only, as a scoped
+# one's, #577): a direct call is lexical too, decided on #580 (option a):
+# the module's class method where the bound holds, the superclass's where
+# it does not; through a `Type[...]` value, the witness.
+module TA
+  def self.tag -> Object = "TA"
+end
+class TBase
+  def self.tag -> String = "TBase"
+end
+class TBox[T] < TBase
+end
+extension TBox[T <: Int]
+  include TA
+end
+def through_tbox(k: Type[TBox[Int]]) -> Object = k.tag
+def toplevel_conditional -> String
+  [TBox[Int].tag, TBox[String].tag, through_tbox(TBox[Int])].map { |v| v.to_s }.join(",")
+end
+
+puts lexical, all_forms, no_using, own_in_front, conditional, toplevel_conditional
