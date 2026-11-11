@@ -497,14 +497,15 @@ fn a_statement_reaches_what_dispatch_may_find() {
     // includes (docs/14 §7): an implementation inherited from a
     // superclass, a module included in a subclass, a class's own
     // `def self.` over an included module's or `Type`'s (a
-    // `Meta::ClassDef`'s in a static def, whose `self` is the class), an
-    // abstract method's implementation above it.
+    // `Meta::ClassDef`'s in a static def, whose `self` is the class; not
+    // `type`, always the reflection's there, #553), an abstract method's
+    // implementation above it.
     for (lib, app, want) in [
         ("module Shape\n  abstract def area -> Int\n  def describe -> String = \"area #{area}\"\nend\nclass Base\n  def area -> Int = 7\nend\nclass Sq < Base\n  include Shape\nend\nclass Model\n  static def self.show(s: Shape) -> Void\n    puts s.describe\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show Sq.new\nend\n", "area 7\n"),
         ("module Loud\n  def label -> String = \"loud\"\nend\nclass A\n  def label -> String = \"a\"\nend\nclass B < A\n  include Loud\nend\nclass Model\n  static def self.show(k: A) -> Void\n    puts k.label\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show B.new\nend\n", "loud\n"),
         ("module Named\n  def self.label -> String = \"base\"\nend\nclass A\n  include Named\nend\nclass B < A\n  def self.label -> String = \"B\"\nend\nclass Model\n  static def self.show(k: Type[A]) -> Void\n    puts k.label\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show B\nend\n", "B\n"),
         ("class A\n  def self.name -> String = \"customA\"\nend\nclass Model\n  static def self.show(k: Type[Object]) -> Void\n    puts k.name\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show A\nend\n", "customA\n"),
-        ("class Model\n  static def self.show -> Void\n    puts type.name\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  def self.type -> Type[Post]\n    puts \"own type\"\n    Post\n  end\n  show\nend\n", "own type\nPost\n"),
+        ("class Model\n  static def self.show -> Void\n    puts type.name\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  def self.type -> Type[Post]\n    puts \"own type\"\n    Post\n  end\n  show\nend\n", "Post\n"),
         ("module Typed\n  def self.doc(text: String) -> Void\n    puts \"typed #{text}\"\n  end\nend\nclass Model\n  static def self.show -> Void\n    doc(\"x\")\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  include Typed\n  show\nend\n", "typed x\n"),
         ("class Base\n  def label -> String = \"base\"\nend\nabstract class A < Base\n  abstract def label -> String\nend\nclass B < A\nend\nclass Model\n  static def self.show(k: A) -> Void\n    puts k.label\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show B.new\nend\n", "base\n"),
     ] {
@@ -1715,4 +1716,116 @@ fn a_union_of_a_class_def_and_a_related_class_object_is_narrowed_first() {
     assert!(ok, "{err}");
     let run = Command::new(&exe).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&run.stdout), "\"gen\"\n\"gen\"\n");
+}
+
+/// #553: `Meta::ClassDef#type` is never replaced: in a subclass's static
+/// def, `type` is the subclass (the reflection's), not a superclass's
+/// `def self.type`, so a generated method builds the subclass; both
+/// backends.
+#[test]
+fn a_class_method_named_type_does_not_replace_the_reflections() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Base\n  def initialize; end\n  def self.make -> Self = new\n  static def self.gen -> Void\n    cls = type\n    def_method(:sibling) { cls.make }\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass A < Base\n  def self.type -> Type[A] = A\nend\nclass B < A\n  gen\n  @names: Array[String] = [\"x\", \"y\"]\n  def first -> String = @names[1]\nend\nx: B = B.new.sibling\nputs x.class.name\nputs x.first.upcase\nputs A.type.name\n",
+    );
+    let want = "B\nY\nA\n";
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, want);
+    let bin = d.0.join("app_bin");
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", bin.to_str().unwrap()],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let out = std::process::Command::new(&bin).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), want);
+}
+
+/// #553: a `def self.type` the static def's own class declares does not
+/// shadow the reflection either; using `type` as such a method's result
+/// is refused; and a static round does not reach a class method named
+/// `type` through it.
+#[test]
+fn a_static_defs_type_is_the_reflections_beside_an_own_type() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Base
+  def initialize; end
+  def self.type -> Type[Base]
+    puts \"own type\"
+    Base
+  end
+  def self.make -> Self = new
+  static def self.gen -> Void
+    cls = type
+    puts cls.name
+    def_method(:sibling) { cls.make }
+  end
+end
+",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass B < Base\n  gen\nend\nputs B.new.sibling.class.name\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(err, "B\n");
+    assert_eq!(out, "B\n");
+    // `type` as an `Int` class method's result, in static code: refused.
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Base
+  def initialize; end
+  def self.type -> Int = 42
+  static def self.gen -> Void
+    x = type
+    puts x + 1
+  end
+end
+",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass B < Base\n  gen\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(err.contains("undefined method `+` for Type[Self]"), "{err}");
+    // An unrelated class's `def self.type` is not reached by a static
+    // def's `type`.
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Model
+  static def self.gen -> Void
+    puts type.name
+  end
+end
+",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass Other\n  def self.type -> Int\n    File.read(\"/etc/hostname\").size\n  end\nend\nclass B < Model\n  gen\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(err, "B\n");
 }

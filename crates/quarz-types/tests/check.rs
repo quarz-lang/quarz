@@ -5751,12 +5751,15 @@ fn a_class_method_replacing_a_class_def_method_is_checked_as_its_override() {
     // signature of a `Meta::ClassDef` method (a static def's `self`)
     // overrides it, as one of `Type`'s does.
     err(
-        "class Post\n  def self.type(x: Int = 0) -> Int = 42\nend",
-        "`type` returns Int but `Meta::ClassDef#type`, which it overrides, returns Type[Post]",
+        "class Post\n  def self.doc(text: String, n: Int = 0) -> Int = 42\nend",
+        "`doc` returns Int but `Meta::ClassDef#doc`, which it overrides, returns Void",
     );
-    ok("class Endpoint\n  def self.type -> Type[Endpoint] = self\nend");
     // Another signature is an overload.
-    ok("class Post\n  def self.type(x: Int) -> Int = x\nend");
+    ok("class Post\n  def self.doc(text: Int) -> Int = text\nend");
+    // But `type` (#553): never replaced, a class method of the name is an
+    // ordinary one, whatever its signature.
+    ok("class Post\n  def self.type(x: Int = 0) -> Int = 42\nend");
+    ok("class Post\n  def self.type -> Int = 42\nend");
 }
 
 #[test]
@@ -5771,17 +5774,17 @@ fn an_extensions_include_over_a_superclass_method_is_checked() {
 
 #[test]
 fn a_modules_class_method_is_checked_for_every_includer() {
-    // #536: `Meta::ClassDef#type` returns the includer's `Type[T]`, so a
-    // module's `def self.type` is checked for each class including it,
-    // whichever comes first.
-    let m = "module M\n  def self.type -> Type[C1] = C1\nend\n";
+    // #536: `Meta::ClassDef#method_ref` returns a method of the includer
+    // (`Meta::Method[T, P]`), so a module's `def self.method_ref` is
+    // checked for each class including it, whichever comes first.
+    let m = "module M\n  def self.method_ref[P](name: Symbol) -> Meta::Method[C1, P] = raise ArgumentError.new(\"no\")\nend\n";
     for classes in [
         "class C1\n  include M\nend\nclass C2\n  include M\nend",
         "class C2\n  include M\nend\nclass C1\n  include M\nend",
     ] {
         err(
             &format!("{m}{classes}"),
-            "`type` returns Type[C1] but `Meta::ClassDef#type`, which it overrides in `C2`, which includes `M`, returns Type[C2]",
+            "`method_ref` returns Meta::Method[C1, P] but `Meta::ClassDef#method_ref`, which it overrides in `C2`, which includes `M`, returns Meta::Method[C2, P]",
         );
     }
 }
