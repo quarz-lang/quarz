@@ -1123,6 +1123,11 @@ pub struct Checker {
     /// Class methods called with an abstract class written as the
     /// receiver: (method, class, span, file) (`check_call`).
     abstract_receivers: Vec<(MethodId, ClassId, Span, u32)>,
+    /// A module or abstract class written as the argument of a `Type[T]`
+    /// parameter: (the class, `T`'s bound, the argument's span, the file),
+    /// refused at the end of the check if a class method of the bound runs
+    /// on it what needs an includer or a concrete class (#509).
+    abstract_type_args: Vec<(ClassId, ClassId, String, Span, u32)>,
     /// Set by `check_body` for the statement it checks next: its value is
     /// not used (a statement before the last, or the last of a body that
     /// discards it). `check_expr` takes it, so only that statement itself
@@ -1242,6 +1247,7 @@ impl Checker {
             repl_ctor_marks: (0, 0, 0),
             constructing_self: false,
             abstract_receivers: Vec::new(),
+            abstract_type_args: Vec::new(),
             stmt_unused: false,
             next_body_void: false,
         }
@@ -1360,6 +1366,7 @@ impl Checker {
         }
         self.check_inherited_constructors();
         self.check_abstract_receivers();
+        self.check_abstract_type_args();
     }
 
     /// `J.run` where `run` calls `new` on its receiver and `J` is abstract:
@@ -1379,6 +1386,103 @@ impl Checker {
             self.error(
                 format!(
                     "cannot call `{class}.{name}`: `{name}` calls `new` on its receiver, and `{class}` is abstract; call it on a concrete subclass"
+                ),
+                span,
+            );
+        }
+        self.env.file = saved;
+    }
+
+    /// A module or an abstract class written as the argument of a
+    /// `Type[T]` parameter, `T`'s bound having a class method that on it
+    /// needs a class including the module (`MethodInfo::needs_includer`)
+    /// or a concrete class (abstract, or calling `new`,
+    /// `MethodInfo::builds_self`): refused as the call written on it is
+    /// (#494, #423). A value reaching the parameter through a `Type[M]`
+    /// variable keeps the run-time errors (#509; #510 is the principled
+    /// fix).
+    fn check_abstract_type_args(&mut self) {
+        let saved = self.env.file;
+        for (cid, bound, param, span, file) in std::mem::take(&mut self.abstract_type_args) {
+            // What `t.m` runs on the class written, for each class method
+            // `m` of the bound (`Interp::class_side_override`): the witness
+            // its conformance recorded (`witness_for`), else the first of
+            // its class side's own class methods that is `m` or overrides
+            // it (the override table: by signature, not name), else `m`.
+            let mut bound_methods: Vec<MethodId> = Vec::new();
+            for (a, _) in self.world.class_side(bound, &[]) {
+                let mut ids: Vec<MethodId> = self
+                    .world
+                    .class(a)
+                    .singleton_methods
+                    .values()
+                    .flatten()
+                    .copied()
+                    .filter(|m| self.world.method(*m).owner == a)
+                    .collect();
+                ids.sort();
+                bound_methods.extend(ids);
+            }
+            let module = self.world.class(cid).kind == ClassKind::Module;
+            let side = self.world.class_side(cid, &[]);
+            let found = bound_methods.iter().find_map(|&bm| {
+                // (As the run time passes over an abstract class method to
+                // what implements it, `Interp::class_side_override`: the
+                // first non-abstract one that is it or overrides it, else
+                // the implementation the class-relative table records for
+                // the class or one above it, else the abstract one; #536
+                // step 2's class-side resolution replaces this walk.)
+                let concrete = |x: MethodId| !self.world.method(x).is_abstract;
+                let runs = self
+                    .witness_for(cid, bm)
+                    .or_else(|| {
+                        side.iter().find_map(|(a, _)| {
+                            self.world
+                                .class(*a)
+                                .singleton_methods
+                                .values()
+                                .flatten()
+                                .copied()
+                                .find(|&x| {
+                                    self.world.method(x).owner == *a
+                                        && concrete(x)
+                                        && (x == bm || self.replaces_at_run_time(x, bm))
+                                })
+                        })
+                    })
+                    .or_else(|| {
+                        self.world.superclass_chain(cid).into_iter().find_map(|k| {
+                            self.world
+                                .class_include_overrides_of(k)
+                                .into_iter()
+                                .find(|e| e.overridden == bm && concrete(e.by))
+                                .map(|e| e.by)
+                        })
+                    })
+                    .or(Some(bm))?;
+                let mi = self.world.method(runs);
+                let why = if module {
+                    mi.needs_includer.clone()?
+                } else if mi.is_abstract {
+                    "is abstract".to_string()
+                } else if mi.builds_self {
+                    "calls `new` on its receiver".to_string()
+                } else {
+                    return None;
+                };
+                Some((mi.name.clone(), why))
+            });
+            let Some((name, why)) = found else { continue };
+            self.env.file = file;
+            let class = self.world.class(cid).name.clone();
+            let (what, fix) = if module {
+                ("the module", format!("a class that includes `{class}`"))
+            } else {
+                ("the abstract class", "a concrete subclass".to_string())
+            };
+            self.error(
+                format!(
+                    "cannot pass {what} `{class}` itself as `Type[{param}]`: `{param}`'s class method `{name}` {why}, and through it would run as `{class}.{name}`; pass {fix}"
                 ),
                 span,
             );
@@ -2370,6 +2474,7 @@ impl Checker {
         };
         self.check_inherited_constructors_from(marks);
         self.check_abstract_receivers();
+        self.check_abstract_type_args();
         self.repl_ctor_marks = (
             self.self_news.len(),
             self.world.classes.len(),
@@ -9260,7 +9365,115 @@ impl Checker {
                 }
             }
         }
+        // A module or abstract class written as the argument of a
+        // `Type[T]` parameter whose `T` is bounded (#509).
+        match self.out.calls.get(&expr.id).cloned() {
+            Some(CallTarget::Method { method })
+            | Some(CallTarget::Constructor {
+                init: Some(method), ..
+            }) => self.note_abstract_type_args(method, &call.args),
+            _ => {}
+        }
         t
+    }
+
+    /// Record, for `check_abstract_type_args`, the arguments of a call of
+    /// `method` (a method, a constructor's `initialize`, a `super` target)
+    /// written as a module or an abstract class for a `Type[T]` parameter
+    /// (`Type[T]?` too), positional or by keyword, whose `T` (the method's
+    /// or its class's) has class bounds: one record per bound.
+    fn note_abstract_type_args(&mut self, method: MethodId, args: &[Arg]) {
+        let m = self.world.method(method).clone();
+        let owner_params = self.world.class(m.owner).type_params.clone();
+        let mut pairs: Vec<(&ParamInfo, &Expr)> = Vec::new();
+        let mut positional = m
+            .params
+            .iter()
+            .filter(|p| !matches!(p.kind, ParamKind::KeywordOnly | ParamKind::Block))
+            .peekable();
+        for a in args {
+            match a {
+                Arg::Positional(e) => {
+                    // (A `*rest` takes every later positional argument.)
+                    let p = match positional.peek() {
+                        Some(p) if p.kind == ParamKind::Rest => Some(*p),
+                        _ => positional.next(),
+                    };
+                    if let Some(p) = p {
+                        pairs.push((p, e));
+                    }
+                }
+                Arg::Keyword { name, value, .. } => {
+                    if let Some(p) = m.params.iter().find(|p| &p.name == name) {
+                        pairs.push((p, value));
+                    }
+                }
+                _ => break,
+            }
+        }
+        for (p, e) in pairs {
+            // (`Type[T]`, or with `Nil` beside it; a `*rest`'s element.)
+            let ty = match (&p.kind, &p.ty) {
+                (ParamKind::Rest, Type::Class(a, args))
+                    if *a == self.world.builtin.array && args.len() == 1 =>
+                {
+                    args[0].clone()
+                }
+                _ => p.ty.clone(),
+            };
+            let tp = ty.members().into_iter().find_map(|t| match t {
+                Type::TypeOf(inner) => match *inner {
+                    Type::Param(tp) => Some(tp),
+                    _ => None,
+                },
+                _ => None,
+            });
+            let Some(tp) = tp else { continue };
+            let Some(info) = m
+                .type_params
+                .iter()
+                .chain(&owner_params)
+                .find(|i| i.id == tp)
+            else {
+                continue;
+            };
+            let written = match self.out.const_targets.get(&e.id) {
+                Some(ConstTarget::Class(c)) => Some(*c),
+                Some(ConstTarget::Const(c)) => match self.world.through_alias(Member::Const(*c)) {
+                    Member::Class(c) => Some(c),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let Some(cid) = written else { continue };
+            let c = self.world.class(cid);
+            if c.kind != ClassKind::Module && !c.is_abstract {
+                continue;
+            }
+            // (Its class bounds, and those of a type parameter it is bounded
+            // by: `T <: U`, `U <: Named`.)
+            let params: Vec<&TypeParamInfo> = m.type_params.iter().chain(&owner_params).collect();
+            let mut todo: Vec<&Type> = info.bounds.iter().collect();
+            let mut seen: Vec<TypeParamId> = vec![tp];
+            while let Some(b) = todo.pop() {
+                match b {
+                    Type::Class(bound, _) => self.abstract_type_args.push((
+                        cid,
+                        *bound,
+                        info.name.clone(),
+                        e.span,
+                        self.env.file,
+                    )),
+                    Type::Param(u) if !seen.contains(u) => {
+                        seen.push(*u);
+                        if let Some(ui) = params.iter().find(|i| i.id == *u) {
+                            todo.extend(ui.bounds.iter());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     /// `quiet`: used when re-typing a getter for compound assignment (the
@@ -15753,6 +15966,9 @@ impl Checker {
         self.zsuper_forwards = saved;
         if let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id).cloned() {
             self.out.calls.insert(expr.id, CallTarget::Super { method });
+            if let Some(args) = args {
+                self.note_abstract_type_args(method, args);
+            }
         }
         // (The lowering passes that `self` as the receiver, read from the
         // hidden slot, as an implicit call falling through to it.)
@@ -15830,6 +16046,9 @@ impl Checker {
         let t = self.resolve_overloads_as(expr, &call, &self_ty, cands, true, None, true);
         if let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id).cloned() {
             self.out.calls.insert(expr.id, CallTarget::Super { method });
+            if let Some(args) = args {
+                self.note_abstract_type_args(method, args);
+            }
             // It assigned its class's fields, perhaps other values than
             // the ones narrowed before.
             let owner = self.world.method(method).owner;
