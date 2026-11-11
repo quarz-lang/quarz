@@ -18,7 +18,7 @@ use rsa::pkcs8::{
 };
 use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
 use rsa::traits::PublicKeyParts;
-use rsa::{RsaPrivateKey, RsaPublicKey};
+use rsa::{PrivateKey, PublicKey};
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use zeroize::Zeroizing;
 
@@ -111,7 +111,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         // Hundreds of milliseconds for 4096 bits: on a helper thread.
         let der = i
             .block_on(move || {
-                let key = RsaPrivateKey::new(&mut rand::rng(), bits as usize)
+                let key = PrivateKey::new(&mut rand::rng(), bits as usize)
                     .map_err(|e| e.to_string())?;
                 key.to_pkcs8_der()
                     .map(|d| d.as_bytes().to_vec())
@@ -580,12 +580,12 @@ fn hash(interp: &Interp, v: &Value) -> Result<Hash, Flow> {
 }
 
 /// The modulus's size in bits.
-fn bits(key: &RsaPublicKey) -> i64 {
+fn bits(key: &PublicKey) -> i64 {
     key.n().bits() as i64
 }
 
 /// A key of at least 1024 bits signs and verifies.
-fn usable(interp: &Interp, key: &RsaPublicKey) -> Result<(), Flow> {
+fn usable(interp: &Interp, key: &PublicKey) -> Result<(), Flow> {
     let n = bits(key);
     if n < 1024 {
         return Err(error(
@@ -640,7 +640,7 @@ fn algorithm_name(oid: &str) -> String {
 const RSA_OID: &str = "1.2.840.113549.1.1.1";
 
 /// The sizes of the keys read: what `rsa` takes for a public key
-/// (`RsaPublicKey::MIN_SIZE..=MAX_SIZE`), for private ones too.
+/// (`PublicKey::MIN_SIZE..=MAX_SIZE`), for private ones too.
 const MIN_BITS: usize = 1024;
 const MAX_BITS: usize = 8192;
 
@@ -663,7 +663,7 @@ fn public_size_error(pkcs1: &[u8]) -> Option<String> {
     (!(MIN_BITS..=MAX_BITS).contains(&bits)).then(|| size_error(bits))
 }
 
-fn checked_private(key: RsaPrivateKey) -> Result<RsaPrivateKey, String> {
+fn checked_private(key: PrivateKey) -> Result<PrivateKey, String> {
     let n = key.n().bits() as usize;
     if !(MIN_BITS..=MAX_BITS).contains(&n) {
         return Err(size_error(n));
@@ -677,7 +677,7 @@ fn decisive(e: &str) -> bool {
     !e.starts_with("not an RSA private key") && !e.starts_with("not an RSA public key")
 }
 
-fn private_from_pkcs8(der: &[u8]) -> Result<RsaPrivateKey, String> {
+fn private_from_pkcs8(der: &[u8]) -> Result<PrivateKey, String> {
     if let Ok(info) = rsa::pkcs8::PrivateKeyInfoRef::try_from(der) {
         let oid = info.algorithm.oid.to_string();
         if oid != RSA_OID {
@@ -685,17 +685,17 @@ fn private_from_pkcs8(der: &[u8]) -> Result<RsaPrivateKey, String> {
         }
     }
     checked_private(
-        RsaPrivateKey::from_pkcs8_der(der).map_err(|e| format!("not an RSA private key: {e}"))?,
+        PrivateKey::from_pkcs8_der(der).map_err(|e| format!("not an RSA private key: {e}"))?,
     )
 }
 
-fn private_from_pkcs1(der: &[u8]) -> Result<RsaPrivateKey, String> {
+fn private_from_pkcs1(der: &[u8]) -> Result<PrivateKey, String> {
     checked_private(
-        RsaPrivateKey::from_pkcs1_der(der).map_err(|e| format!("not an RSA private key: {e}"))?,
+        PrivateKey::from_pkcs1_der(der).map_err(|e| format!("not an RSA private key: {e}"))?,
     )
 }
 
-fn public_from_spki(der: &[u8]) -> Result<RsaPublicKey, String> {
+fn public_from_spki(der: &[u8]) -> Result<PublicKey, String> {
     if let Ok(info) = rsa::pkcs8::spki::SubjectPublicKeyInfoRef::try_from(der) {
         let oid = info.algorithm.oid.to_string();
         if oid != RSA_OID {
@@ -709,18 +709,18 @@ fn public_from_spki(der: &[u8]) -> Result<RsaPublicKey, String> {
             return Err(e);
         }
     }
-    RsaPublicKey::from_public_key_der(der).map_err(|e| format!("not an RSA public key: {e}"))
+    PublicKey::from_public_key_der(der).map_err(|e| format!("not an RSA public key: {e}"))
 }
 
-fn public_from_pkcs1(der: &[u8]) -> Result<RsaPublicKey, String> {
+fn public_from_pkcs1(der: &[u8]) -> Result<PublicKey, String> {
     if let Some(e) = public_size_error(der) {
         return Err(e);
     }
-    RsaPublicKey::from_pkcs1_der(der).map_err(|e| format!("not an RSA public key: {e}"))
+    PublicKey::from_pkcs1_der(der).map_err(|e| format!("not an RSA public key: {e}"))
 }
 
 /// A private key from PKCS#8 or PKCS#1 DER.
-fn private_from_der(der: &[u8]) -> Result<RsaPrivateKey, String> {
+fn private_from_der(der: &[u8]) -> Result<PrivateKey, String> {
     match private_from_pkcs8(der) {
         Ok(k) => Ok(k),
         Err(e) if decisive(&e) => Err(e),
@@ -732,7 +732,7 @@ fn private_from_der(der: &[u8]) -> Result<RsaPrivateKey, String> {
 }
 
 /// A public key from SPKI or PKCS#1 DER.
-fn public_from_der(der: &[u8]) -> Result<RsaPublicKey, String> {
+fn public_from_der(der: &[u8]) -> Result<PublicKey, String> {
     match public_from_spki(der) {
         Ok(k) => Ok(k),
         Err(e) if decisive(&e) => Err(e),
@@ -743,13 +743,13 @@ fn public_from_der(der: &[u8]) -> Result<RsaPublicKey, String> {
     }
 }
 
-fn private_pkcs8(interp: &Interp, key: &RsaPrivateKey) -> Result<Vec<u8>, Flow> {
+fn private_pkcs8(interp: &Interp, key: &PrivateKey) -> Result<Vec<u8>, Flow> {
     key.to_pkcs8_der()
         .map(|d| d.as_bytes().to_vec())
         .map_err(|e| error(interp, format!("encoding the key failed: {e}")))
 }
 
-fn public_spki(interp: &Interp, key: &RsaPublicKey) -> Result<Vec<u8>, Flow> {
+fn public_spki(interp: &Interp, key: &PublicKey) -> Result<Vec<u8>, Flow> {
     key.to_public_key_der()
         .map(|d| d.as_bytes().to_vec())
         .map_err(|e| error(interp, format!("encoding the key failed: {e}")))
@@ -791,13 +791,13 @@ fn cached<K>(
     Ok(key)
 }
 
-static PRIVATE: Cache<RsaPrivateKey> = OnceLock::new();
+static PRIVATE: Cache<PrivateKey> = OnceLock::new();
 
-fn private_key(interp: &Interp, v: &Value) -> Result<Arc<RsaPrivateKey>, Flow> {
+fn private_key(interp: &Interp, v: &Value) -> Result<Arc<PrivateKey>, Flow> {
     cached(interp, &PRIVATE, der_field(interp, v)?, private_from_pkcs8)
 }
 
-fn public_key(interp: &Interp, v: &Value) -> Result<Arc<RsaPublicKey>, Flow> {
-    static CACHE: Cache<RsaPublicKey> = OnceLock::new();
+fn public_key(interp: &Interp, v: &Value) -> Result<Arc<PublicKey>, Flow> {
+    static CACHE: Cache<PublicKey> = OnceLock::new();
     cached(interp, &CACHE, der_field(interp, v)?, public_from_spki)
 }
