@@ -386,6 +386,7 @@ fn an_extensions_include_dispatches_alike_with_a_warm_cache() {
             "scoped_extensions_first_active",
             "scoped_extension_after_own",
             "scoped_extension_after_own_file",
+            "super_past_abstract",
         ]
         .iter()
         .map(|n| (n.to_string(), std::path::Path::new(fixtures).join(format!("{n}.qz")))),

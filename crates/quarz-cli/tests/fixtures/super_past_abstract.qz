@@ -1,0 +1,179 @@
+# #522 (docs/01 §4): `super` passes over an abstract declaration (a
+# module's requirement, not an implementation) to the next method of the
+# signature with a body: through an extension's include, an own include,
+# and on the class side.
+module P
+  abstract def parse(s: String) -> String
+end
+class Base
+  def parse(s: String) -> String = "Base:" + s
+end
+class Num < Base
+  def initialize; end
+  def parse(s: String) -> String = super(s + "!")
+end
+extension Num
+  include P
+end
+puts Num.new.parse("ext")
+
+module Q
+  abstract def parse(s: String) -> String
+end
+class Base2
+  def parse(s: String) -> String = "Base2:" + s
+end
+class Num2 < Base2
+  include Q
+  def initialize; end
+  def parse(s: String) -> String = super(s + "?")
+end
+puts Num2.new.parse("own")
+
+module R
+  abstract def self.label -> String
+end
+class Base3
+  def self.label -> String = "Base3"
+end
+class Num3 < Base3
+  include R
+  def self.label -> String = super + "!"
+end
+puts Num3.label
+
+# Per signature: P's `f(Int)` is abstract, so `super` from `C#f(Int)`
+# passes over P (its concrete `f(String)` is another signature) to
+# `Base#f(Int)`.
+module P4
+  abstract def f(x: Int) -> Int
+  def f(x: String) -> String = "P:" + x
+end
+class Base4
+  def f(x: Int) -> Int = x + 100
+end
+class C4 < Base4
+  include P4
+  def initialize; end
+  def f(x: Int) -> Int = super(x)
+end
+puts C4.new.f(1)
+
+# The mirror: the owner's concrete overload is of the signature (its
+# abstract one is another), so `super` stops there.
+module P5
+  abstract def f(x: String) -> String
+  def f(x: Int) -> Int = x + 1
+end
+class Base5
+  def f(x: Int) -> Int = x + 100
+end
+class C5 < Base5
+  include P5
+  def initialize; end
+  def f(x: Int) -> Int = super(x)
+  def f(x: String) -> String = "C5:" + x
+end
+puts C5.new.f(1), C5.new.f("s")
+
+# An extension's body for the abstract's signature is a body: `super`
+# reaches it.
+module P6
+  abstract def f(x: Int) -> String
+end
+extension P6
+  def f(x: Int) -> String = "extP6:#{x}"
+end
+class Base6
+  def f(x: Int) -> String = "Base6:#{x}"
+end
+class C6 < Base6
+  include P6
+  def initialize; end
+  def f(x: Int) -> String = super(x)
+end
+puts C6.new.f(1)
+
+# A method replacing an owner's concrete overload too (by widening) stops
+# there, its overloads chosen among as a call's.
+module P7
+  abstract def f(x: Int) -> String
+  def f(x: String) -> String = "P7:" + x
+end
+class Base7
+  def f(x: String) -> String = "Base7:" + x
+end
+class C7 < Base7
+  include P7
+  def initialize; end
+  def f(x: Object) -> String = super("s")
+end
+puts C7.new.f(1)
+
+# An owner with an abstract of the name and no body this method replaces
+# is passed over, even when its abstract takes other calls: `C8#f`'s
+# `super(x)` passes P8 (its body `f(Int)` takes no String) to `Base8`.
+module P8
+  abstract def f(x: String, y: Int = 0) -> String
+  def f(x: Int) -> String = "P8:#{x}"
+end
+class Base8
+  def f(x: String, y: Int = 0) -> String = "Base8:" + x
+end
+class C8 < Base8
+  include P8
+  def initialize; end
+  def f(x: String, z: Bool) -> String = "C8>" + super(x)
+end
+puts C8.new.f("s", true)
+
+# An extension's method over its target's own abstract: the target is
+# passed over to the superclass's body.
+class Base9
+  def f(x: Int) -> String = "Base9:#{x}"
+end
+abstract class A9 < Base9
+  abstract def f(x: Int) -> String
+  def f(x: String) -> String = "A9:" + x
+end
+class C9 < A9
+  def initialize; end
+end
+extension A9
+  def f(x: Int) -> String = "ext/" + super(x)
+end
+a9: A9 = C9.new
+puts a9.f(1)
+
+# Another extension of the target active where this one is declared
+# (`using Y` in `X`): its method comes before this one in the lookup and
+# is no body above it; A10 is passed over to Base10.
+class Base10
+  def f(x: Int) -> String = "Base10:#{x}"
+end
+abstract class A10 < Base10
+  abstract def f(x: Int) -> String
+  def f(x: String) -> String = "A10str"
+end
+class C10 < A10
+  def initialize; end
+end
+module Y10
+  extension A10
+    def f(x: Int) -> String = "Y10/" + super(x)
+  end
+end
+module X10
+  using Y10
+  extension A10
+    def f(x: Int) -> String = "X10/" + super(x)
+  end
+end
+module Z10
+  using X10
+  def self.go
+    a10: A10 = C10.new
+    puts a10.f(1)
+  end
+end
+Z10.go

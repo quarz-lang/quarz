@@ -2260,3 +2260,17 @@ fn a_witness_of_another_type_is_reported_once() {
         .count();
     assert_eq!(n, 2, "{out:?}");
 }
+
+/// #522: `super` passes over an abstract declaration; with no method with
+/// a body after it, the call is an error as an undefined `super` is.
+#[test]
+fn super_past_an_abstract_declaration_with_nothing_after() {
+    let out = common::diagnostics(
+        "module P\n  abstract def parse(s: String) -> String\nend\nclass Num\n  include P\n  def initialize; end\n  def parse(s: String) -> String = super(s)\nend\n",
+    );
+    assert!(
+        out.iter()
+            .any(|d| d.contains("no superclass method `parse`")),
+        "{out:?}"
+    );
+}
