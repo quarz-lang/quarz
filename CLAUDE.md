@@ -118,6 +118,14 @@ never use `pgrep -f` with a plain pattern).
   diff and the local checks above that apply have passed; from then on
   review every change, added or rewritten, before pushing it.
 - The description says what was verified.
+- When a pull request is merged or closed, remove what it left behind
+  at once: its `git worktree` (`git worktree remove`, then `git worktree
+  prune`), that worktree's target directory, its local branch, and the
+  scratch directories of its reviews and probes; a remote branch whose
+  pull request merged is deleted too (GitHub does it when the
+  repository's "Automatically delete head branches" is on). A target
+  directory is several gigabytes: do not keep one per finished branch.
+  Leave other sessions' worktrees and directories alone.
 
 ## Issues
 
