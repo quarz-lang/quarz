@@ -1,0 +1,63 @@
+# #577: `super` from an extension method, and calls, over two active
+# extensions' modules of the same target (M2 including M1): the same
+# answers in either `using` order, the overload choice deciding among
+# both modules' methods (the overriding one first).
+module M1
+  def it -> String = "M1"
+  def it(x: Int) -> String = "M1i"
+end
+module M2
+  include M1
+  def it -> String = "M2>" + super
+  def it(x: Float) -> String = "M2f"
+end
+class Q
+  def initialize; end
+end
+class D < Q
+  def initialize; end
+end
+module T1
+  extension Q
+    include M1
+  end
+end
+module T2
+  extension Q
+    include M2
+  end
+end
+module XA
+  using T1
+  using T2
+  extension D
+    def it(x: Int) -> String = "XA>" + super
+  end
+end
+def f -> String
+  using T1
+  using T2
+  D.new.it(1.5) + " " + D.new.it(1) + " " + D.new.it
+end
+def f2 -> String
+  using T2
+  using T1
+  D.new.it(1.5) + " " + D.new.it(1) + " " + D.new.it
+end
+def a -> String
+  using XA
+  D.new.it(1)
+end
+
+module XB
+  using T2
+  using T1
+  extension D
+    def it(x: Int) -> String = "XB>" + super
+  end
+end
+def b -> String
+  using XB
+  D.new.it(1)
+end
+puts f, f2, a, b

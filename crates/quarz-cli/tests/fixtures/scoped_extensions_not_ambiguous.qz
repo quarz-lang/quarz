@@ -1,0 +1,197 @@
+# Two active scoped extensions whose includes give a class a method of the
+# same name are ambiguous unless one module's method overrides the other's
+# (#577; the ambiguous calls are diagnostics tests). Not ambiguous: one
+# overriding the other (M2 includes M1), on both sides; the class's own
+# method in front; extensions of a class and of its superclass (the
+# class's comes first); one extension's includes (the last first).
+module M1
+  def it -> String = "M1"
+  def self.tag -> String = "M1"
+end
+module M2
+  include M1
+  def it -> String = "M2"
+  def self.tag -> String = "M2"
+end
+module M1s
+  def to_s -> String = "M1s"
+  def +(o: Int) -> String = "M1+"
+end
+module M2s
+  include M1s
+  def to_s -> String = "M2s"
+  def +(o: Int) -> String = "M2+"
+end
+class C
+  def initialize; end
+end
+module S1
+  extension C
+    include M1
+  end
+end
+module S2
+  extension C
+    include M2
+  end
+end
+
+def overriding -> String
+  using S1
+  using S2
+  C.new.it + C.tag
+end
+
+# The forms found by name take the overriding one too: a method
+# reference, `&:name`, an interpolation's `to_s`, an operator, `super`.
+class CS
+  def initialize; end
+end
+module SS1
+  extension CS
+    include M1
+    include M1s
+  end
+end
+module SS2
+  extension CS
+    include M2
+    include M2s
+  end
+end
+module SS3
+  using SS1
+  using SS2
+  extension CS
+    def it -> String = "SS3>" + super
+  end
+end
+def by_name -> String
+  using SS1
+  using SS2
+  c = CS.new
+  m = c.:it
+  [m.call, [c].map(&:it)[0], "#{c}", c + 1].join(",")
+end
+def via_super -> String
+  using SS3
+  CS.new.it
+end
+
+module N1
+  def it -> String = "N1"
+end
+module N2
+  def it -> String = "N2"
+end
+class Own
+  def initialize; end
+  def it -> String = "own"
+end
+module SO1
+  extension Own
+    include N1
+  end
+end
+module SO2
+  extension Own
+    include N2
+  end
+end
+def own_in_front -> String
+  using SO1
+  using SO2
+  Own.new.it
+end
+
+class P
+  def initialize; end
+end
+class D < P
+  def initialize; end
+end
+module SP
+  extension P
+    include N1
+  end
+end
+module SD
+  extension D
+    include N2
+  end
+end
+def class_and_superclass -> String
+  using SP
+  using SD
+  D.new.it
+end
+
+class E
+  def initialize; end
+end
+module SE
+  extension E
+    include N1
+    include N2
+  end
+end
+def last_include -> String
+  using SE
+  E.new.it
+end
+
+# An abstract declaration gives no method (#522): beside another active
+# extension's body, the body, in either `using` order, by every form.
+module Named
+  abstract def name -> String
+  def hello -> String = "hello " + name
+end
+module Giver
+  def name -> String = "giver"
+end
+class CN
+  def initialize; end
+end
+module SN1
+  extension CN
+    include Named
+  end
+end
+module SN2
+  extension CN
+    include Giver
+  end
+end
+def abstract_beside -> String
+  using SN1
+  using SN2
+  c = CN.new
+  [c.name, c.:name.call, [c].map(&:name)[0], c.hello].join(",")
+end
+def abstract_beside_b -> String
+  using SN2
+  using SN1
+  CN.new.name
+end
+
+# Two top-level conditional extensions, one applying (its includes, the
+# last first) and one not: no rival.
+module CA
+  def foo -> String = "CA"
+end
+module CC
+  def foo -> String = "CC"
+end
+class CBox[T]
+  def initialize(v: T); end
+end
+extension CBox[T <: String]
+  include CA
+end
+extension CBox[T <: Int]
+  include CA
+  include CC
+end
+def one_applies -> String = CBox.new(1).foo
+
+puts overriding, by_name, via_super, own_in_front, class_and_superclass, last_include, abstract_beside, abstract_beside_b, one_applies

@@ -1,0 +1,39 @@
+# #577: `&:name` on a union whose member has two active extensions'
+# modules giving the name: only the callable methods count (M1 and M2
+# both give `it(Int)`, which `&:it` cannot call; M1's `it` alone fits).
+module M1
+  def it(x: Int) -> String = "M1x"
+  def it -> String = "M1"
+end
+module M2
+  def it(x: Int) -> String = "M2x"
+end
+class C
+  def initialize; end
+end
+class Z
+  def initialize; end
+  def it -> String = "Z"
+end
+module S1
+  extension C
+    include M1
+  end
+end
+module S2
+  extension C
+    include M2
+  end
+end
+def single -> String
+  using S1
+  using S2
+  [C.new].map(&:it)[0] + C.new.it
+end
+def union(v: C | Z) -> String
+  using S1
+  using S2
+  [v].map(&:it)[0]
+end
+puts single
+puts union(C.new), union(Z.new)
