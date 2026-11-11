@@ -5987,3 +5987,14 @@ fn a_rename_names_the_method_it_overrides() {
         "`at` renames parameter `x` to `seconds`; callers of `OM#at`, which it overrides as `Time.at`, may pass it as `x:`",
     );
 }
+
+#[test]
+fn sort_pairs_takes_comparable_keys_only() {
+    // #579 (and #560's `sort_pairs` half): its keys are bounded as
+    // `sort_by`'s, so an unbounded key, which could reach a scoped
+    // extension's `<=>` by name outside it, is refused.
+    err(
+        "class S\n  def initialize; end\nend\nclass Bag\n  include Enumerable[Int]\n  def each(&: (Int) -> Nil) -> Nil\n    yield 1\n    nil\n  end\n  def go -> Array[[S, Int]] = sort_pairs([[S.new, 1]])\nend",
+        "does not satisfy the bound Comparable[S]",
+    );
+}
