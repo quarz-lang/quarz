@@ -40,7 +40,7 @@ rustls-native-certs = { version = "0.8", optional = true }
 # line is the one on `sha2` 0.11 (0.9 is on 0.10) and constant-time
 # (RUSTSEC-2023-0071): pinned while it is a release candidate (#357: move
 # to 0.10.0 when it is released).
-rsa = { version = "=0.10.0-rc.21", default-features = false, features = ["std", "encoding"], optional = true }
+rsa = { version = "=0.10.0-rc.22", default-features = false, features = ["std", "encoding", "pkcs1v15"], optional = true }
 rand = { version = "0.10", optional = true }
 pem-rfc7468 = { version = "1", features = ["alloc"], optional = true }
 # AES-GCM (`Crypto::AES::GCM`), on the same crypto-common/rand_core line
