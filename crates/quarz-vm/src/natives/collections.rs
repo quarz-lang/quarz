@@ -1579,8 +1579,8 @@ pub(super) fn enum_sort_pairs(interp: &Interp, _: &Value, args: Args) -> EvalRes
             Value::Array(p) => p.get(0).unwrap_or(Value::Nil),
             _ => Value::Nil,
         };
-        // (Unbounded `K`: no witness, `Interp::find_method`, #560.)
-        interp.compare_with(&ka, &kb, false)
+        // (`K <: Comparable[K]`: a witness, `Interp::find_method`, #579.)
+        interp.compare(&ka, &kb)
     })?;
     Ok(Value::array(items))
 }

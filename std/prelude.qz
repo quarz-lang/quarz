@@ -3854,7 +3854,7 @@ module Enumerable[out T]
   native def each_with_index -> Enumerator[[T, Int]]
   private native def each_with_index_pairs(&: ([T, Int]) -> Void) -> Void
   # `[key, value]` pairs sorted by key (for `sort_by`).
-  private native def sort_pairs[K, V](pairs: Array[[K, V]]) -> Array[[K, V]]
+  private native def sort_pairs[K <: Comparable[K], V](pairs: Array[[K, V]]) -> Array[[K, V]]
   # An enumerator of the slices `each_slice(n) { }` would yield.
   #
   # ## Raises

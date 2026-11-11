@@ -1,0 +1,23 @@
+# Keys `Comparable` only through a scoped extension: `sort_by` compares
+# them through the conformance's witness (its `<=>`), as `sort`, `min_by`
+# and `max_by` do (#579).
+class SA
+  @v: Int
+  def initialize(@v: Int); end
+  def v -> Int = @v
+  def to_s -> String = "SA#{@v}"
+end
+module Sc
+  extension SA
+    include Comparable[SA]
+    def <=>(o: SA) -> Int = o.v - v
+  end
+end
+using Sc
+sa = [SA.new(1), SA.new(3), SA.new(2)]
+puts sa.sort.join(",")
+puts sa.sort_by { |x| x }.join(",")
+puts [3, 1, 2].sort_by { |n| SA.new(n) }.join(",")
+puts sa.min_by { |x| x }.to_s, sa.max_by { |x| x }.to_s
+h = {"a" => SA.new(1), "b" => SA.new(3)}
+puts h.sort_by { |pair| pair[1] }.map { |pair| pair[0] }.join(",")

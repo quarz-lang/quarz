@@ -57,9 +57,10 @@ when R.new(1)..R.new(3) then puts "in"
 else puts "out"
 end
 
-# `Array::Builder#sort!` and `sort_pairs` (an unbounded element type, #560)
-# compare by name without a witness: a scoped extension's `<=>`, inactive
-# here, is not run (`undefined method`, as for a class with no `<=>`).
+# `Array::Builder#sort!` (an unbounded element type, #560) compares by
+# name without a witness: a scoped extension's `<=>`, inactive here, is
+# not run (`undefined method`, as for a class with no `<=>`). (`sort_pairs`
+# is bounded by `Comparable` since #579: such a call is refused.)
 class S
   @v: Int
   def initialize(@v: Int)
@@ -81,19 +82,6 @@ begin
   sb << S.new(1)
   sb.sort!
   p sb.to_a.map { |s| s.v }
-rescue RuntimeError => e
-  puts e.message
-end
-class Bag
-  include Enumerable[Int]
-  def each(&: (Int) -> Nil) -> Nil
-    yield 1
-    nil
-  end
-  def go -> Array[[S, Int]] = sort_pairs([[S.new(2), 1], [S.new(1), 2]])
-end
-begin
-  p Bag.new.go.map { |t| t[1] }
 rescue RuntimeError => e
   puts e.message
 end
