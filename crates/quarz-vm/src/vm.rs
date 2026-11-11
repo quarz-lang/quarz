@@ -1446,7 +1446,17 @@ impl Interp {
                     if args.len() == 1 {
                         if let Value::Array(a) = &args[0] {
                             let mut items: ArgVec = a.iter().collect();
-                            items.resize(n.max(items.len()), Value::Nil);
+                            // (A shorter element pads the positional
+                            // parameters with `nil`, which the checker typed
+                            // to admit it, #531; a `*rest` takes what is
+                            // left, nothing when nothing is.)
+                            let fixed = f
+                                .param_kinds
+                                .iter()
+                                .filter(|k| matches!(k, RtParamKind::Positional))
+                                .count()
+                                .min(n);
+                            items.resize(fixed.max(items.len()), Value::Nil);
                             args = items;
                         }
                     }

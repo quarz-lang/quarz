@@ -14479,15 +14479,54 @@ impl Checker {
             .filter(|p| !matches!(p.kind, ParamKind::Block | ParamKind::KeywordOnly))
             .collect();
         let mut param_types: Vec<Type> = params.clone();
+        // (Destructuring an array: the binder pads a shorter element with
+        // `nil`, so each parameter's type must admit it, #531.)
+        let mut padded: Option<Type> = None;
         if declared.len() > 1 && params.len() == 1 {
             match self.infer.resolve(&params[0]) {
                 Type::Tuple(ts) => {
-                    param_types = ts;
+                    // (A tuple only into its arity: a parameter past it
+                    // would get `nil`; a `*rest` takes what is left.)
+                    let rest = declared.iter().any(|p| p.kind == ParamKind::Rest);
+                    let fixed = declared.len() - usize::from(rest);
+                    if !rest && fixed < ts.len() {
+                        self.error(
+                            format!(
+                                "block destructures a {}-element tuple into {} parameters: name each element (`|{}|`), or take the tuple as one parameter",
+                                ts.len(),
+                                fixed,
+                                (0..ts.len())
+                                    .map(|i| ((b'a' + (i % 26) as u8) as char).to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                            block.span,
+                        );
+                    }
+                    // (A `*rest` takes the elements past the parameters
+                    // before it, as an array of them: `tuple_element`, the
+                    // one rule for a tuple's elements as an array's.)
+                    if let Some(at) = declared.iter().position(|p| p.kind == ParamKind::Rest) {
+                        if at < ts.len() {
+                            let left = self.world.tuple_element(&ts[at..]);
+                            let mut ts = ts;
+                            ts.truncate(at);
+                            ts.push(left);
+                            param_types = ts;
+                        } else {
+                            param_types = ts;
+                        }
+                    } else {
+                        param_types = ts;
+                    }
                     self.out.block_destructure.insert(call_id, declared.len());
                 }
-                // An array is spread over the parameters, as in Ruby.
+                // An array is spread over the parameters, as in Ruby: each
+                // may get `nil` where the element is shorter.
                 Type::Class(id, args) if id == self.world.builtin.array && args.len() == 1 => {
-                    param_types = vec![args[0].clone(); declared.len()];
+                    let t = self.world.nilable(args[0].clone());
+                    padded = Some(args[0].clone());
+                    param_types = vec![t; declared.len()];
                     self.out.block_destructure.insert(call_id, declared.len());
                 }
                 _ => {}
@@ -14525,9 +14564,31 @@ impl Checker {
                 .get(i)
                 .cloned()
                 .unwrap_or_else(|| self.world.nil());
+            // (A `*rest` takes the elements there are: no `nil` padding.)
+            if let Some(elem) = padded.as_ref().filter(|_| p.kind == ParamKind::Rest) {
+                t = elem.clone();
+            }
             if let Some(te) = &p.ty {
                 let scope = self.env.scope.clone();
                 if let Some(annotated) = self.resolve_type_expr(te, &scope) {
+                    // (An array element destructured: the parameter may get
+                    // `nil`, #531; the error names the fix.)
+                    if let Some(elem) = padded.as_ref().filter(|_| p.kind != ParamKind::Rest) {
+                        if !self.world.is_subtype(&self.world.nil(), &annotated) {
+                            let elem = self.name(elem);
+                            self.error(
+                                format!(
+                                    "block destructures an Array[{elem}] element into {} parameters: an element may be shorter, so each gets `nil` where it has no value; type them to admit it (`|{}: {}?, ...|`), or take the element as one parameter",
+                                    declared.len(),
+                                    p.name,
+                                    self.name(&annotated)
+                                ),
+                                te.span,
+                            );
+                            self.declare_var(&p.name, annotated, p.span);
+                            continue;
+                        }
+                    }
                     if !self.coerce(&t, &annotated) {
                         self.error(
                             format!(

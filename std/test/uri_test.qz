@@ -6,7 +6,7 @@ class URIResolveTest < Test::Case
   BASE = "http://a/b/c/d;p?q"
 
   # §5.4.1.
-  NORMAL = [
+  def normal -> Array[[String, String]] = [
     ["g:h", "g:h"],
     ["g", "http://a/b/c/g"],
     ["./g", "http://a/b/c/g"],
@@ -33,7 +33,7 @@ class URIResolveTest < Test::Case
   ]
 
   # §5.4.2.
-  ABNORMAL = [
+  def abnormal -> Array[[String, String]] = [
     ["../../../g", "http://a/g"],
     ["../../../../g", "http://a/g"],
     ["/./g", "http://a/g"],
@@ -58,12 +58,12 @@ class URIResolveTest < Test::Case
 
   def test_normal_examples
     base = URI.parse(BASE)
-    NORMAL.each { |ref, want| assert_equal(want, base.resolve(ref).to_s, ref) }
+    normal.each { |ref, want| assert_equal(want, base.resolve(ref).to_s, ref) }
   end
 
   def test_abnormal_examples
     base = URI.parse(BASE)
-    ABNORMAL.each { |ref, want| assert_equal(want, base.resolve(ref).to_s, ref) }
+    abnormal.each { |ref, want| assert_equal(want, base.resolve(ref).to_s, ref) }
   end
 
   def test_a_base_without_a_path

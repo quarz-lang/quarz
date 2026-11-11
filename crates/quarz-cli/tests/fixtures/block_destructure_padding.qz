@@ -1,0 +1,13 @@
+# #531 (docs/01 §9): an `Array[T]` element spread over several block
+# parameters pads a shorter one with `nil`, each parameter typed `T?`; a
+# `*rest` takes the elements left (none for a short one); a tuple is spread
+# only into its arity.
+xs: Array[Array[Int]] = [[1], [2, 3], [4, 5, 6]]
+xs.each { |a: Int?, b: Int?| puts "#{a.inspect} #{b.inspect}" }
+xs.each { |a, *rest| puts "#{a.inspect} #{rest.inspect}" }
+ts: Array[[Int, String]] = [[1, "x"], [2, "y"]]
+ts.each { |n, s| puts "#{n + 1} #{s.upcase}" }
+h = {"k" => 1}
+h.each { |k, v| puts "#{k}=#{v + 1}" }
+mixed: Array[[Int, Int, String]] = [[1, 2, "x"]]
+mixed.each { |a, *rest| puts "#{a + 1} #{rest.inspect}" }
