@@ -1,0 +1,52 @@
+# superclass_scoped_extension_order with the scoped extension active at
+# file level (`using`): the class's own include of B still comes before
+# the superclass, so B runs everywhere, the checker choosing what runs,
+# with a cold cache and a warm one alike (#570 review); P's own method
+# over the module the extension brings it.
+module A
+  def it -> String = "A"
+end
+module B
+  def it -> String = "B"
+end
+class P
+  def it -> String = "P"
+end
+class C < P
+  include A
+  include B
+end
+module Sc
+  extension P
+    include B
+  end
+end
+using Sc
+def ga(x: A) -> String = x.it
+def gb(x: B) -> String = x.it
+def gp(x: P) -> String = x.it
+puts C.new.it, ga(C.new), gb(C.new), gp(C.new), P.new.it, gb(P.new)
+
+# The checker resolves `C2.new.it` to B's, which runs: a String.
+module A2
+  def it -> Object = "A2"
+end
+module B2
+  def it -> String = "B2"
+end
+class P2
+  def initialize; end
+  def it -> String = "P2"
+end
+class C2 < P2
+  include A2
+  include B2
+end
+module Sc2
+  extension P2
+    include B2
+  end
+end
+using Sc2
+s: String = C2.new.it
+puts s

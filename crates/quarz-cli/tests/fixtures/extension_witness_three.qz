@@ -1,0 +1,35 @@
+# #523 with three includes: an extension's includes, as a class's own,
+# the last written first, so the last include's class method is the
+# witness through Type[A] (the class C and the extension's G alike).
+module A
+  abstract def it -> String
+  def show -> String = "<" + it + ">"
+  abstract def self.tag -> String
+  def self.both -> String = "<" + tag + ">"
+end
+module B
+  def it -> String = "B"
+  def self.tag -> String = "B"
+end
+module K
+  def it -> String = "K"
+  def self.tag -> String = "K"
+end
+class C
+  include A
+  include B
+  include K
+end
+class G
+end
+extension G
+  include A
+  include B
+  include K
+end
+def ga(x: A) -> String = x.show
+def ta(k: Type[A]) -> String = k.both
+def sa[T <: A](k: Type[T]) -> String = k.both + k.tag
+puts C.new.show, ga(C.new), C.both, ta(C), sa(C)
+puts "--"
+puts G.new.show, ga(G.new), G.both, ta(G), sa(G)

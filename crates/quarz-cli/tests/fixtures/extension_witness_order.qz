@@ -1,0 +1,29 @@
+# #523 carried to the witnesses (decided): an extension's later include's
+# class method of the signature takes an earlier module's place, as a
+# class's own later include's does: the same answers for the extension's G
+# as for the class C, directly and through Type[A] and Type[B].
+module A
+  def it -> String = "A"
+  def self.tag -> String = "A"
+end
+module B
+  def it -> String = "B"
+  def self.tag -> String = "B"
+end
+class C
+  include A
+  include B
+  def initialize; end
+end
+class G
+  def initialize; end
+end
+extension G
+  include A
+  include B
+end
+def ga(x: A) -> String = x.it
+def ta(k: Type[A]) -> String = k.tag
+def tb(k: Type[B]) -> String = k.tag
+puts C.new.it, ga(C.new), C.tag, ta(C), tb(C)
+puts G.new.it, ga(G.new), G.tag, ta(G), tb(G)

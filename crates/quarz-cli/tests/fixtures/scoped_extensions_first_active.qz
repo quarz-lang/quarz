@@ -1,0 +1,73 @@
+# Two active scoped extensions whose includes give the target a method of
+# the same name: the first active extension's module comes first (docs/01
+# §7, for now; #577 makes it an ambiguity error), as on main, whatever the `using`
+# order makes first; within one extension the last include first.
+module M1
+  def it -> String = "M1"
+  def n -> Int = 1
+end
+module M2
+  def it -> String = "M2"
+  def n -> String = "two"
+end
+class C
+  def initialize; end
+end
+module S1
+  extension C
+    include M1
+  end
+end
+module S2
+  extension C
+    include M2
+  end
+end
+module Both
+  extension C
+    include M1
+  end
+  extension C
+    include M2
+  end
+end
+class D
+  def initialize; end
+end
+module S3
+  extension D
+    include M1
+    include M2
+  end
+end
+
+def first_s1 -> String
+  using S1
+  using S2
+  C.new.it
+end
+
+def first_s2 -> String
+  using S2
+  using S1
+  C.new.it
+end
+
+def one_module -> String
+  using Both
+  C.new.it
+end
+
+def typed -> Int
+  using S1
+  using S2
+  x: Int = C.new.n
+  x
+end
+
+def last_include -> String
+  using S3
+  D.new.it
+end
+
+puts first_s1, first_s2, one_module, typed, last_include

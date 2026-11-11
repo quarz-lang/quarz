@@ -1316,7 +1316,24 @@ impl<'ast> Declarer<'ast> {
             }
         }
         let includes = self.world.extensions[e.id as usize].includes.clone();
-        for t in includes {
+        // (The last written first, as the resolution order has them, so a
+        // later include's witness comes first, #523.)
+        for (i, t) in includes.iter().cloned().enumerate().rev() {
+            // (The modules included after it, with what they include: their
+            // class methods take an earlier module's place, as an own
+            // include's do, `class_include_overrides`.)
+            // (The last written first, as the resolution order has them:
+            // the nearest later include is not the one that runs.)
+            let later: Vec<ClassId> = includes[i + 1..]
+                .iter()
+                .rev()
+                .filter_map(|t| match t {
+                    Type::Class(m, _) => Some(*m),
+                    _ => None,
+                })
+                .flat_map(|m| self.world.ancestor_ids(m))
+                .filter(|m| self.world.class(*m).kind == ClassKind::Module)
+                .collect();
             if let Type::Class(mid, margs) = t {
                 if self.has_static_defs(mid) {
                     let mname = self.world.class(mid).name.clone();
@@ -1328,7 +1345,7 @@ impl<'ast> Declarer<'ast> {
                     );
                     continue;
                 }
-                self.check_extension_class_side(e.id, mid, margs, e.def.target.span);
+                self.check_extension_class_side(e.id, mid, margs, &later, e.def.target.span);
             }
         }
     }
@@ -1349,6 +1366,7 @@ impl<'ast> Declarer<'ast> {
         ext: ExtensionId,
         module: ClassId,
         margs: Vec<Type>,
+        later: &[ClassId],
         span: Span,
     ) {
         let target = self.world.extensions[ext as usize].target;
@@ -1493,6 +1511,27 @@ impl<'ast> Declarer<'ast> {
                                         .find(|&i| self.world.method(i).owner == c && fits(self, i))
                                 })
                         })
+                });
+                // Else a module the extension includes after it (the last
+                // written first, #523): its class method of the signature
+                // takes the earlier one's place, checked below as an
+                // override, as an own include's does.
+                let by = by.or_else(|| {
+                    later.iter().find_map(|&x| {
+                        if x == module || self.world.ancestor_ids(module).contains(&x) {
+                            return None;
+                        }
+                        self.world
+                            .class(x)
+                            .singleton_methods
+                            .get(&info.name)
+                            .and_then(|ids| {
+                                ids.iter().copied().find(|&i| {
+                                    let im = self.world.method(i);
+                                    im.owner == x && !im.is_abstract && fits(self, i)
+                                })
+                            })
+                    })
                 });
                 // Else the nearest in the included module's own ancestry
                 // (`N`'s `def self.d` over the `M` it includes), as an own
@@ -1692,7 +1731,7 @@ impl<'ast> Declarer<'ast> {
             .iter()
             .position(|t| matches!(t, Type::Class(m, a) if *m == module && a.as_slice() == margs))
             .unwrap_or(0);
-        // Every class the conformance reaches (`World::conformance_sources`:
+        // Every class the conformance reaches (`World::class_side_order`:
         // the target, its subclasses, the classes including a module
         // target), the target first: in each, the generic modules this
         // include brings must have the arguments of every other
@@ -1703,7 +1742,7 @@ impl<'ast> Declarer<'ast> {
             .filter(|&c| {
                 c != target
                     && self.world.class(c).kind != ClassKind::Module
-                    && self.world.conformance_sources(c).contains(&target)
+                    && self.world.class_side_order(c).contains(&target)
             })
             .collect();
         if self.world.class(target).kind != ClassKind::Module {
@@ -2517,7 +2556,7 @@ impl<'ast> Declarer<'ast> {
         let ancestors: Vec<(ClassId, Vec<Type>)> = self.world.own_ancestors(id);
         let class_side: Vec<ClassId> = self
             .world
-            .class_side(id, &args)
+            .ancestors(id, &args)
             .into_iter()
             .map(|(c, _)| c)
             .collect();
@@ -4188,15 +4227,17 @@ impl<'ast> Declarer<'ast> {
             // (`Interp::class_method_override`), in order: each class's own
             // class methods, then the modules it includes (the last first,
             // each with what it includes), then its superclass's.
-            let mut order: Vec<(ClassId, Option<Vec<Type>>)> = Vec::new();
-            for cid in &chain {
-                order.push((*cid, None));
-                for (anc, aargs) in self.world.class_modules_included(*cid, &[]) {
-                    if !order.iter().any(|(c, a)| *c == anc && a.is_some()) {
-                        order.push((anc, Some(aargs)));
-                    }
-                }
-            }
+            // (`World::class_side_order` with the modules' arguments: the
+            // declared resolution order, which `RtClass::class_side` ships.)
+            let order: Vec<(ClassId, Option<Vec<Type>>)> = self
+                .world
+                .resolution(id, &[], View::Declared)
+                .into_iter()
+                .map(|(c, a)| {
+                    let module = self.world.class(c).kind == ClassKind::Module;
+                    (c, module.then_some(a))
+                })
+                .collect();
             let extended: Vec<ClassId> = order
                 .iter()
                 .filter(|(_, a)| a.is_some())

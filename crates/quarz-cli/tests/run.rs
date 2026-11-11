@@ -375,6 +375,17 @@ fn an_extensions_include_dispatches_alike_with_a_warm_cache() {
             "scoped_extension_by_name",
             "extension_witness_by_name",
             "extension_optional_hook",
+            "resolution_matrix",
+            "extension_include_order",
+            "extension_conformance_is_a",
+            "extension_witness_order",
+            "module_class_side",
+            "extension_witness_three",
+            "superclass_scoped_extension_order",
+            "superclass_scoped_extension_using",
+            "scoped_extensions_first_active",
+            "scoped_extension_after_own",
+            "scoped_extension_after_own_file",
         ]
         .iter()
         .map(|n| (n.to_string(), std::path::Path::new(fixtures).join(format!("{n}.qz")))),

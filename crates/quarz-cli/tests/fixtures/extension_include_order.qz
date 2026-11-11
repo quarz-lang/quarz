@@ -1,0 +1,27 @@
+# #523 (docs/01 §6–§7): an extension's includes are ordered as a class's own,
+# the last written first, on the instance side and the class side.
+module Gen[T]
+  def it -> String = "gen"
+  def self.tag -> String = "gen"
+end
+module Wrap[U]
+  include Gen[U]
+  def it -> String = "wrap"
+  def self.tag -> String = "wrap"
+end
+class C
+  include Gen[Int]
+  include Wrap[Int]
+  def initialize; end
+end
+class E
+  def initialize; end
+end
+extension E
+  include Gen[Int]
+  include Wrap[Int]
+end
+def g(x: Gen[Int]) -> String = x.it
+def t(k: Type[Gen[Int]]) -> String = k.tag
+puts C.new.it, g(C.new), E.new.it, g(E.new)
+puts C.tag, t(C), t(E)

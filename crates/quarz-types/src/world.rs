@@ -508,6 +508,28 @@ pub struct IncludeOverride {
     pub module: ClassId,
 }
 
+/// Which extensions' conformances a resolution order takes
+/// (`World::resolution`, #536 step 2): one relation, these views of it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum View {
+    /// The extensions active where the checker asks (docs/01 §7: static
+    /// conformance is lexical): static subtyping, static lookup on a
+    /// value's type. The one view that reads the active set.
+    Static,
+    /// Every extension's include, whichever are active: membership at run
+    /// time (`RtClass::ancestors`, `is_a?`, `as`, patterns, typed checks).
+    Runtime,
+    /// Own includes and the modules of top-level unconditional extensions
+    /// (on the classes their cog declares): dispatch by name
+    /// (`RtClass::lookup`, decision (h)).
+    Lookup,
+    /// `Runtime`, then the conditional extensions' modules with their bound
+    /// assumed: what a class's methods may override (the override table).
+    Override,
+    /// The class's own declarations only: what it must implement itself.
+    Declared,
+}
+
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct World {
     /// A type not yet known passes the Shareable checks: set only while
@@ -1093,12 +1115,50 @@ impl World {
             .any(|(id, _)| *id == sup_id)
     }
 
-    /// The method resolution order: the class itself, its included modules
-    /// (last included first), then the superclass chain, each with the type
-    /// arguments expressed in terms of the given `args`. Retroactive
-    /// conformance from active extensions is included.
+    /// The method resolution order of class `id` with `args` (#536 step
+    /// 2): the one computation of the relation. The class itself, the
+    /// modules it includes (the last included first, each with what it
+    /// includes), the modules extensions make it conform to (each
+    /// extension's includes ordered alike, after the class's own, #523),
+    /// then its superclass's; each with its type arguments in terms of
+    /// `args`. A class's class side is the same order (its class methods
+    /// and its modules'). `view` names which extensions' conformances are
+    /// in it; every other ancestry question is a view of this.
+    pub fn resolution(&self, id: ClassId, args: &[Type], view: View) -> Vec<(ClassId, Vec<Type>)> {
+        if view == View::Override {
+            return self.override_resolution(id, args);
+        }
+        // (Membership's order: the top-level extensions' modules in the walk,
+        // the scoped ones' after it: `find_override` walks it.)
+        if view == View::Runtime {
+            return self.ordered_under(id, args, &self.all_conformance_extensions(), false, false);
+        }
+        // (The checker's order is the same with the extensions active where
+        // it asks: a call resolves to what runs, `using` or not.)
+        if view == View::Static {
+            return self.ordered_under(id, args, &self.conformance_extensions(), false, true);
+        }
+
+        self.ancestors_under(id, args, self.view_extensions(view))
+    }
+
+    /// The extensions whose conformances `view` takes. `View::Static`'s is
+    /// the one read of the active set for conformance (`active_extension_ids`).
+    pub fn view_extensions(&self, view: View) -> Vec<ExtensionId> {
+        match view {
+            View::Static => self.conformance_extensions(),
+            View::Runtime | View::Override => self.all_conformance_extensions(),
+            View::Lookup => self.top_level_conformance_extensions(),
+            View::Declared => Vec::new(),
+        }
+    }
+
+    /// The static view (`View::Static`): the resolution order as the checker
+    /// sees it where it asks, the extensions active there making the class
+    /// conform (docs/01 §7, lexical): static subtyping and lookup on a
+    /// value's static type.
     pub fn ancestors(&self, id: ClassId, args: &[Type]) -> Vec<(ClassId, Vec<Type>)> {
-        self.ancestors_under(id, args, self.conformance_extensions())
+        self.resolution(id, args, View::Static)
     }
 
     /// `ancestors` with the conformances of extensions `exts`, remembered
@@ -1131,47 +1191,28 @@ impl World {
         self.ancestors_memo.map.get_mut().clear();
     }
 
-    /// The classes and modules whose class methods class `id` (with
-    /// `args`) has, in lookup order (docs/01 §6): as `ancestors`, the
-    /// class, the modules it includes from the last to the first (each
-    /// with what it includes), the modules the active extensions make it
-    /// conform to (an own include of the same module wins), then its
-    /// superclass's (#504). An extension's own `def self.` methods are the
-    /// extension's (`lookup_methods`).
-    pub fn class_side(&self, id: ClassId, args: &[Type]) -> Vec<(ClassId, Vec<Type>)> {
-        // (A conditional extension only where its bounds hold:
-        // `ancestors`' walk, `modules_of`.)
-        let exts = self.conformance_extensions();
-        self.ancestors_with(id, args, &exts)
-    }
-
-    /// The modules class `id` itself brings to its class side, in lookup
-    /// order (`class_side` between the class and its superclass's): those
-    /// it includes, with what they include, and those the active
-    /// extensions make it conform to, but not those its superclass brings
-    /// already.
-    pub fn class_modules(&self, id: ClassId, args: &[Type]) -> Vec<(ClassId, Vec<Type>)> {
-        Self::own_modules(self, id, self.class_side(id, args))
-    }
-
-    /// `class_modules` without any extension's conformances: the modules
-    /// the class's own `include`s bring, whose abstract class methods the
-    /// class must implement (an extension's are required at the
-    /// extension, #504).
+    /// The modules class `id` itself brings to its resolution order (not
+    /// those its superclass brings already), in the declared view
+    /// (`View::Declared`): those its own `include`s bring, whose abstract
+    /// class methods the class must implement (an extension's are
+    /// required at the extension, #504).
     pub fn class_modules_included(&self, id: ClassId, args: &[Type]) -> Vec<(ClassId, Vec<Type>)> {
-        Self::own_modules(self, id, self.ancestors_with(id, args, &[]))
+        Self::own_modules(self, id, self.resolution(id, args, View::Declared))
     }
 
-    /// `ancestors` of class `id` (with its own parameters) without any
-    /// extension's conformances: what its own declarations give it.
-    pub fn ancestors_with_no_extensions(&self, id: ClassId) -> Vec<(ClassId, Vec<Type>)> {
-        let own: Vec<Type> = self
-            .class(id)
+    /// Class `id`'s own type parameters, as arguments.
+    pub fn own_args(&self, id: ClassId) -> Vec<Type> {
+        self.class(id)
             .type_params
             .iter()
             .map(|p| Type::Param(p.id))
-            .collect();
-        self.ancestors_with(id, &own, &[])
+            .collect()
+    }
+
+    /// The declared view (`View::Declared`) of class `id` with its own
+    /// parameters: what its own declarations give it.
+    pub fn ancestors_with_no_extensions(&self, id: ClassId) -> Vec<(ClassId, Vec<Type>)> {
+        self.resolution(id, &self.own_args(id), View::Declared)
     }
 
     /// The arguments `margs` (written in extension `ext`'s parameters) of a
@@ -1205,23 +1246,51 @@ impl World {
         Some(in_target.iter().map(|t| t.subst(&tsubst)).collect())
     }
 
-    /// Where the conformances of class `c` through extensions are found,
-    /// in the order the witnesses are looked up (#504): each class up the
-    /// superclass chain, then the modules it includes itself (last first).
-    /// The checker (`witness_for`, the one-arguments rule) and the runtime
-    /// (`RtClass::witness_sources`, `Interp::class_witness`) all go
-    /// through it.
-    pub fn conformance_sources(&self, c: ClassId) -> Vec<ClassId> {
-        let mut out = Vec::new();
-        for x in self.superclass_chain(c) {
-            out.push(x);
-            for (m, _) in self.class_modules_included(x, &[]) {
-                if !out.contains(&m) {
-                    out.push(m);
-                }
-            }
-        }
-        out
+    /// The class side of class `c` in lookup order: the class, the modules
+    /// it brings itself (the last included first), its superclass, the
+    /// modules that one brings, ... (`resolution` in the declared view: an
+    /// extension's include brings witnesses, not class methods, #504). The
+    /// one order class-side dispatch, the witnesses' lookup (#504) and the
+    /// checker's questions about it go by; `RtClass::class_side` ships it.
+    pub fn class_side_order(&self, c: ClassId) -> Vec<ClassId> {
+        self.resolution(c, &[], View::Declared)
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect()
+    }
+
+    /// The modules class `cur` (`c` or a superclass of it) brings to `c`'s
+    /// class side, in lookup order: the entries after `cur` in
+    /// `class_side_order(c)` up to the next class (`Interp`'s twin).
+    pub fn class_side_modules(&self, c: ClassId, cur: ClassId) -> Vec<ClassId> {
+        let side = self.class_side_order(c);
+        // (`cur` is `c` or a class up its chain, always in it: a missing
+        // entry is an internal error, never an empty part.)
+        let at = side.iter().position(|k| *k == cur).unwrap_or_else(|| {
+            panic!(
+                "internal error: `{}` is not on `{}`'s class side",
+                self.class(cur).name,
+                self.class(c).name
+            )
+        });
+        side[at + 1..]
+            .iter()
+            .copied()
+            .take_while(|k| self.class(*k).kind == ClassKind::Module)
+            .collect()
+    }
+
+    /// The class of `c`'s superclass chain whose part of
+    /// `class_side_order(c)` holds `k`: `k` itself, or the class that
+    /// brings module `k` (an own include, or one an include brings).
+    pub fn class_side_owner(&self, c: ClassId, k: ClassId) -> Option<ClassId> {
+        let side = self.class_side_order(c);
+        let at = side.iter().position(|x| *x == k)?;
+        side[..=at]
+            .iter()
+            .rev()
+            .copied()
+            .find(|x| self.class(*x).kind != ClassKind::Module)
     }
 
     /// Every conformance of class `c` to a module, with the module's
@@ -1236,7 +1305,7 @@ impl World {
             .filter(|(m, _)| self.class(*m).kind == ClassKind::Module)
             .map(|(m, a)| (None, m, a))
             .collect();
-        let sources = self.conformance_sources(c);
+        let sources = self.class_side_order(c);
         for (k, e) in self.extensions.iter().enumerate() {
             if !sources.contains(&e.target) {
                 continue;
@@ -1388,19 +1457,22 @@ impl World {
                 continue;
             }
             let esubst = self.extension_subst(ext, args);
+            // (Its includes as a class's own: the last written first, each
+            // with what it brings, after the class's own, #523.)
+            let mut mine: Vec<(ClassId, Vec<Type>)> = Vec::new();
             for inc in &ext.includes {
                 if let Type::Class(mid, margs) = inc.subst(&esubst) {
-                    if has(&out, mid) {
+                    if has(&out, mid) || mine.iter().any(|(c, _)| *c == mid) {
                         continue;
                     }
-                    out.push((mid, margs.clone()));
-                    for m in self.modules_of(mid, &margs, exts, cache) {
-                        if !has(&out, m.0) {
-                            out.push(m);
-                        }
-                    }
+                    let mut brought = vec![(mid, margs.clone())];
+                    brought.extend(self.modules_of(mid, &margs, exts, cache));
+                    brought.retain(|(c, _)| !has(&out, *c) && !mine.iter().any(|(k, _)| k == c));
+                    brought.extend(mine);
+                    mine = brought;
                 }
             }
+            out.extend(mine);
         }
         cache.insert(key, out.clone());
         out
@@ -1534,7 +1606,7 @@ impl World {
         // (A module too: its own includes' pairs hold in every class
         // including it, #536; it has no superclass.)
         let inherited = match &c.superclass {
-            Some(Type::Class(sup, _)) => self.ancestor_ids(*sup),
+            Some(Type::Class(sup, _)) => self.walked_ids(*sup),
             _ if c.kind == ClassKind::Module => Vec::new(),
             _ => return out,
         };
@@ -1598,7 +1670,7 @@ impl World {
             if mine.is_empty() {
                 continue;
             }
-            let x_own = self.ancestor_ids(*x);
+            let x_own = self.walked_ids(*x);
             for (mm, at) in mine {
                 let msubst = &substs[at];
                 let m = self.method(mm);
@@ -1657,7 +1729,7 @@ impl World {
             if self.class(*x).kind != ClassKind::Module || inherited.contains(x) {
                 continue;
             }
-            let x_own = self.ancestor_ids(*x);
+            let x_own = self.walked_ids(*x);
             let asubst = self.class_subst(*x, xargs);
             for ids in self.class(*x).methods.values() {
                 for &am in ids {
@@ -1761,7 +1833,7 @@ impl World {
             let (x, xargs) = (*x, xargs.clone());
             // (Over a superclass's, or a module included before it, outside
             // its own ancestry, #536.)
-            let x_own = self.ancestor_ids(x);
+            let x_own = self.walked_ids(x);
             let later: Vec<(ClassId, Vec<Type>)> = modules[xpos + 1..]
                 .iter()
                 .filter(|(k, _)| !x_own.contains(k))
@@ -1820,7 +1892,7 @@ impl World {
         // superclass's class method, or one of a module included before
         // it): the first that takes its calls (#536).
         for (xpos, (x, xargs)) in modules.iter().enumerate() {
-            let x_own = self.ancestor_ids(*x);
+            let x_own = self.walked_ids(*x);
             let asubst = self.class_subst(*x, xargs);
             let later: Vec<(ClassId, Vec<Type>)> = modules[xpos + 1..]
                 .iter()
@@ -1867,6 +1939,26 @@ impl World {
             }
         }
         out
+    }
+
+    /// `class_is_a` in the run-time view (`View::Runtime`: every
+    /// extension's conformance, whichever are active): for the lowering,
+    /// which must not depend on where it runs (#554, #536 step 2).
+    pub fn class_is_a_at_run_time(&self, sub_id: ClassId, sup_id: ClassId) -> bool {
+        sub_id == sup_id
+            || sup_id == self.builtin.object
+            || self
+                .resolution(sub_id, &[], View::Runtime)
+                .iter()
+                .any(|(id, _)| *id == sup_id)
+    }
+
+    /// `ancestor_ids` in the run-time view (`class_is_a_at_run_time`).
+    pub fn ancestor_ids_at_run_time(&self, id: ClassId) -> Vec<ClassId> {
+        self.resolution(id, &[], View::Runtime)
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect()
     }
 
     pub fn ancestor_ids(&self, id: ClassId) -> Vec<ClassId> {
@@ -2558,7 +2650,12 @@ impl World {
     /// assumed: what its methods may override (the override table and its
     /// check, `check_override_returns`).
     pub fn own_ancestors(&self, c: ClassId) -> Vec<(ClassId, Vec<Type>)> {
-        self.own_ancestors_under(c, &self.all_conformance_extensions())
+        self.resolution(c, &self.own_args(c), View::Override)
+    }
+
+    /// `View::Override` of class `id` with `args`.
+    fn override_resolution(&self, id: ClassId, args: &[Type]) -> Vec<(ClassId, Vec<Type>)> {
+        self.override_under(id, args, &self.all_conformance_extensions())
     }
 
     /// The ancestors of class `id` the runtime looks methods up in
@@ -2566,7 +2663,7 @@ impl World {
     /// extension's include (`all_conformance_extensions`), the same set the
     /// override table takes, so the two cannot disagree (#554).
     pub fn runtime_ancestors(&self, id: ClassId) -> Vec<(ClassId, Vec<Type>)> {
-        self.ancestors_under(id, &[], self.all_conformance_extensions())
+        self.resolution(id, &[], View::Runtime)
     }
 
     /// The modules of class `c`'s ancestry whose methods may override the
@@ -2638,7 +2735,7 @@ impl World {
     /// `runtime_ancestors` (membership) but override nothing of the
     /// class's (docs/01 §7, `overriding_modules`).
     pub fn lookup_ancestors(&self, id: ClassId) -> Vec<ClassId> {
-        self.ancestors_under(id, &[], self.top_level_conformance_extensions())
+        self.resolution(id, &[], View::Lookup)
             .into_iter()
             .map(|(a, _)| a)
             .collect()
@@ -2661,45 +2758,117 @@ impl World {
         c: ClassId,
         exts: &[ExtensionId],
     ) -> Vec<(ClassId, Vec<Type>)> {
-        let own: Vec<Type> = self
-            .class(c)
-            .type_params
-            .iter()
-            .map(|tp| Type::Param(tp.id))
-            .collect();
-        let mut out = self.ancestors_under(c, &own, exts.to_vec());
-        // (A conditional extension's include with its bound assumed: a
-        // class's own method, or a subclass's, overrides the module's where
-        // the bound holds, the only values a call through the module
-        // reaches (docs/01 §7); the include itself overrides nothing.)
-        if !exts.iter().any(|e| {
-            let ext = &self.extensions[*e as usize];
-            out.iter().any(|(a, _)| *a == ext.target)
-        }) {
-            return out;
-        }
-        // (Each ancestor, a module too, `extension N[T <: Int]` of a module
-        // `Box[T]` includes; the bound assumed wherever the arguments
-        // mention the class's own parameters, not for concrete ones that
-        // fail it, `Box[String]`'s. An approximation of "the bound holds
-        // for some instantiation": it errs toward pairing, so toward
-        // refusing an override no value can reach (`Box[Array[U]]`), never
-        // toward accepting an unchecked one; #556 makes it exact.)
-        // (Until no module is added: a conditional extension may include
-        // a module another conditional extension targets.)
+        self.override_under(c, &self.own_args(c), exts)
+    }
+
+    /// `View::Override`'s walk with `exts` found once: the runtime view, then
+    /// the conditional extensions' modules with their bound assumed.
+    fn override_under(
+        &self,
+        c: ClassId,
+        own: &[Type],
+        exts: &[ExtensionId],
+    ) -> Vec<(ClassId, Vec<Type>)> {
+        self.ordered_under(c, own, exts, true, false)
+    }
+
+    /// The order of `View::Runtime` and `View::Override`: dispatch's
+    /// (`View::Lookup`'s), then every other extension's modules appended;
+    /// `assume`: a conditional extension's bound taken as met where the
+    /// arguments mention a parameter (the override table), else only where
+    /// it holds (membership).
+    /// Of `exts`, the top-level ones (conditional ones too), whose modules
+    /// keep their place in `ordered_under`'s walk.
+    fn walked_extensions(&self, exts: &[ExtensionId]) -> Vec<ExtensionId> {
+        exts.iter()
+            .copied()
+            .filter(|e| {
+                let ext = &self.extensions[*e as usize];
+                ext.module.is_none_or(|ns| {
+                    self.cogs.iter().any(|c| c.root == Some(ns)) && self.encloses(ns, ext.target)
+                })
+            })
+            .collect()
+    }
+
+    /// The classes and modules in the walked part of `id`'s run-time and
+    /// override order (`ordered_under` before the appended modules): what
+    /// is already there at a superclass, or in a module's own ancestry,
+    /// for the include tables. Independent of the extensions active where
+    /// the checker is (a table built in the checker's process and one
+    /// decoded from the cache are the same).
+    fn walked_ids(&self, id: ClassId) -> Vec<ClassId> {
+        let top = self.walked_extensions(&self.all_conformance_extensions());
+        self.ancestors_under(id, &self.own_args(id), top)
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect()
+    }
+
+    fn ordered_under(
+        &self,
+        c: ClassId,
+        own: &[Type],
+        exts: &[ExtensionId],
+        assume: bool,
+        lexical: bool,
+    ) -> Vec<(ClassId, Vec<Type>)> {
+        // (The order is dispatch's, `View::Lookup`'s: the class's own
+        // includes and the top-level unconditional extensions' modules; a
+        // module another extension brings at a superclass does not count
+        // as already there, so it does not move an own include down.)
+        // (The top-level extensions, conditional ones too, whose bounds the
+        // walk checks as the static view does: their modules keep their
+        // place, so a call resolves statically as it runs, (e); the scoped
+        // ones' modules are appended. The appending loop goes over every
+        // extension, for the conditional modules `assume` adds.)
+        let top = self.walked_extensions(exts);
+        let rest: Vec<ExtensionId> = exts.to_vec();
+        let mut out = self.ancestors_under(c, own, top);
+        // (Then the modules of the other extensions, scoped or conditional,
+        // which a class's own methods and includes override and which
+        // override nothing of theirs (docs/01 §7): after everything else.
+        // A conditional extension's where its bound holds, or with its
+        // bound assumed wherever the arguments mention the class's own
+        // parameters, not for concrete ones that fail it, `Box[String]`'s
+        // (an approximation of "the bound holds for some instantiation"
+        // that errs toward pairing, #556). Until no module is added: one
+        // may include a module another extension targets.)
         let mut seen = 0;
         while seen < out.len() {
             let (a, args) = out[seen].clone();
             seen += 1;
-            if !args.iter().any(|t| t.mentions_any_param()) {
-                continue;
+            // (`lexical`: where the next active extension's modules go: after
+            // the modules of the class part the target is in (the class's own
+            // includes and its top-level extensions' modules, which override
+            // any extension's, docs/01 §7; for a module target, those of the
+            // class including it), before the next class up the chain; after
+            // the earlier active extensions' (the first active extension's
+            // in front).)
+            let mut ext_end = seen;
+            if lexical
+                && rest
+                    .iter()
+                    .any(|e| self.extensions[*e as usize].target == a)
+            {
+                while ext_end < out.len() && self.class(out[ext_end].0).kind == ClassKind::Module {
+                    ext_end += 1;
+                }
             }
-            for e in exts {
+            for e in &rest {
                 let ext = &self.extensions[*e as usize];
-                if ext.target != a || self.extension_bounds_hold(ext, &args) {
+                if ext.target != a {
+                    continue;
+                }
+                let conditional = ext.type_params.iter().any(|tp| !tp.bounds.is_empty());
+                if conditional
+                    && !self.extension_bounds_hold(ext, &args)
+                    && !(assume && args.iter().any(|t| t.mentions_any_param()))
+                {
                     continue;
                 }
                 let esubst = self.extension_subst(ext, &args);
+                let ext_start = ext_end;
                 for inc in &ext.includes {
                     if let Type::Class(mid, margs) = inc.subst(&esubst) {
                         let mut brought = vec![(mid, margs.clone())];
@@ -2708,9 +2877,23 @@ impl World {
                                 .into_iter()
                                 .skip(1),
                         );
+                        // (`lexical`, the checker's view where a scoped
+                        // extension is active: its modules right after its
+                        // target (after earlier active extensions' ones),
+                        // the last include first, as an own include's
+                        // (docs/01 §7: they hide the superclass's methods
+                        // there); still never moving a module already in
+                        // the order.)
+                        let mut at = ext_start;
                         for b in brought {
                             if !out.iter().any(|(x, _)| *x == b.0) {
-                                out.push(b);
+                                if lexical {
+                                    out.insert(at, b);
+                                    at += 1;
+                                    ext_end += 1;
+                                } else {
+                                    out.push(b);
+                                }
                             }
                         }
                     }
@@ -2983,7 +3166,7 @@ impl World {
     /// class method of `b`'s signature, then one of a module it includes
     /// (the last first), then the superclass's; `None` where `b` is not
     /// on `c`'s class side.
-    fn class_side_dispatch(&self, c: ClassId, b: MethodId) -> Option<MethodId> {
+    pub fn class_side_dispatch(&self, c: ClassId, b: MethodId) -> Option<MethodId> {
         let bi = self.method(b);
         // (Whether one replaces `b`: the override table, #536.)
         let hit = |m: MethodId| m == b || self.overrides(m).contains(&b);
@@ -2992,7 +3175,7 @@ impl World {
         // (A class's class method is looked for below its owner only, a
         // module's in a class including the module.)
         if !in_module && !chain.contains(&bi.owner)
-            || in_module && !self.class_side(c, &[]).iter().any(|(m, _)| *m == bi.owner)
+            || in_module && !self.class_side_order(c).contains(&bi.owner)
         {
             return None;
         }
@@ -3020,8 +3203,9 @@ impl World {
             {
                 return Some(e.by);
             }
-            // (As the runtime: the class's own includes, #504.)
-            for (module, _) in self.class_modules_included(cur, &[]) {
+            // (As the runtime: the class's own includes, #504; its part of
+            // `class_side_order`, `RtClass::class_side`.)
+            for module in self.class_side_modules(c, cur) {
                 if module == bi.owner {
                     if bi.is_abstract {
                         continue;
@@ -3318,7 +3502,7 @@ impl World {
                 // methods, then those of the modules it includes, the last
                 // first (each with what it includes), then the
                 // superclass's.
-                for (cid, cargs) in self.class_side(*id, args) {
+                for (cid, cargs) in self.ancestors(*id, args) {
                     let class = self.class(cid);
                     // (An included module's, or the module's own when the
                     // receiver is one; an extension's class methods of a

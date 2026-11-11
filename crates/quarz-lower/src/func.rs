@@ -513,7 +513,7 @@ impl<'a> FnBuilder<'a> {
         let world = self.world;
         let may = *self.lw.may_deinitialize.entry(class).or_insert_with(|| {
             (0..world.classes.len() as ClassId)
-                .any(|c| world.class_is_a(c, class) && world.deinitializer(c).is_some())
+                .any(|c| world.class_is_a_at_run_time(c, class) && world.deinitializer(c).is_some())
         });
         if may {
             let obj = self.self_reg();

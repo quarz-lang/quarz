@@ -1405,12 +1405,13 @@ impl Checker {
         let saved = self.env.file;
         for (cid, bound, param, span, file) in std::mem::take(&mut self.abstract_type_args) {
             // What `t.m` runs on the class written, for each class method
-            // `m` of the bound (`Interp::class_side_override`): the witness
-            // its conformance recorded (`witness_for`), else the first of
-            // its class side's own class methods that is `m` or overrides
-            // it (the override table: by signature, not name), else `m`.
+            // `m` of the bound: the witness its conformance recorded
+            // (`witness_for`), else the class-side dispatch
+            // (`World::class_side_dispatch`, over `class_side_order`, what
+            // `Interp::class_side_override` walks: an abstract method passed
+            // over to what implements it), else `m` (#536 step 2).
             let mut bound_methods: Vec<MethodId> = Vec::new();
-            for (a, _) in self.world.class_side(bound, &[]) {
+            for a in self.world.class_side_order(bound) {
                 let mut ids: Vec<MethodId> = self
                     .world
                     .class(a)
@@ -1424,42 +1425,11 @@ impl Checker {
                 bound_methods.extend(ids);
             }
             let module = self.world.class(cid).kind == ClassKind::Module;
-            let side = self.world.class_side(cid, &[]);
             let found = bound_methods.iter().find_map(|&bm| {
-                // (As the run time passes over an abstract class method to
-                // what implements it, `Interp::class_side_override`: the
-                // first non-abstract one that is it or overrides it, else
-                // the implementation the class-relative table records for
-                // the class or one above it, else the abstract one; #536
-                // step 2's class-side resolution replaces this walk.)
-                let concrete = |x: MethodId| !self.world.method(x).is_abstract;
                 let runs = self
                     .witness_for(cid, bm)
-                    .or_else(|| {
-                        side.iter().find_map(|(a, _)| {
-                            self.world
-                                .class(*a)
-                                .singleton_methods
-                                .values()
-                                .flatten()
-                                .copied()
-                                .find(|&x| {
-                                    self.world.method(x).owner == *a
-                                        && concrete(x)
-                                        && (x == bm || self.replaces_at_run_time(x, bm))
-                                })
-                        })
-                    })
-                    .or_else(|| {
-                        self.world.superclass_chain(cid).into_iter().find_map(|k| {
-                            self.world
-                                .class_include_overrides_of(k)
-                                .into_iter()
-                                .find(|e| e.overridden == bm && concrete(e.by))
-                                .map(|e| e.by)
-                        })
-                    })
-                    .or(Some(bm))?;
+                    .or_else(|| self.world.class_side_dispatch(cid, bm))
+                    .unwrap_or(bm);
                 let mi = self.world.method(runs);
                 let why = if module {
                     mi.needs_includer.clone()?
@@ -1717,12 +1687,9 @@ impl Checker {
     /// (its own includes, through what they include): the module's class
     /// methods then go by ordinary dispatch, not by witnesses (#504).
     fn includes_itself(&self, sid: ClassId, m: ClassId) -> bool {
-        self.world.superclass_chain(sid).into_iter().any(|c| {
-            self.world
-                .class_modules_included(c, &[])
-                .iter()
-                .any(|(x, _)| *x == m)
-        })
+        // (`World::class_side_order`: the class side dispatch walks.)
+        self.world.class(m).kind == ClassKind::Module
+            && self.world.class_side_order(sid).contains(&m)
     }
 
     /// Whether class `sid` conforms to module `m` through an extension's
@@ -1732,14 +1699,7 @@ impl Checker {
         self.world.class_ext_impls.iter().any(|w| {
             self.extension_may_reach(w.ext, sid)
                 && self.world.ancestor_ids(w.module).contains(&m)
-                && self.world.superclass_chain(sid).into_iter().any(|x| {
-                    x == w.class
-                        || self
-                            .world
-                            .class_modules_included(x, &[])
-                            .iter()
-                            .any(|(k, _)| *k == w.class)
-                })
+                && self.world.class_side_owner(sid, w.class).is_some()
         })
     }
 
@@ -1766,14 +1726,7 @@ impl Checker {
                 {
                     return None;
                 }
-                self.world.superclass_chain(sid).into_iter().find(|&x| {
-                    x == w.class
-                        || self
-                            .world
-                            .class_modules_included(x, &[])
-                            .iter()
-                            .any(|(k, _)| *k == w.class)
-                })
+                self.world.class_side_owner(sid, w.class)
             })
             .collect();
         floors
@@ -1832,8 +1785,8 @@ impl Checker {
                 .find(|w| w.class == k && w.method == mid)
                 .map(|w| w.by)
         };
-        // (`World::conformance_sources`, the runtime's order too.)
-        self.world.conformance_sources(sid).into_iter().find_map(at)
+        // (`World::class_side_order`, the runtime's order too.)
+        self.world.class_side_order(sid).into_iter().find_map(at)
     }
 
     fn check_inherited_constructors_from(&mut self, marks: (usize, usize)) {
@@ -1963,13 +1916,7 @@ impl Checker {
                     }
                     // (Above the class that includes the module, the module's
                     // class method comes first.)
-                    if module_site
-                        && self
-                            .world
-                            .class_modules_included(c, &[])
-                            .iter()
-                            .any(|(m, _)| *m == cid)
-                    {
+                    if module_site && self.world.class_side_owner(sid, cid) == Some(c) {
                         past_module = true;
                     }
                     cur = class.superclass.as_ref().and_then(|t| match t {

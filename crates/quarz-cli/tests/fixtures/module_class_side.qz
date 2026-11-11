@@ -1,0 +1,34 @@
+# #536 step 2 (docs/01 §6): a module's class side includes what it
+# includes, as a class's does: a module value runs the class method a
+# module it includes brings (as the static call M.to_s does), and a
+# module's own class method implements an abstract one of a module it
+# includes when the module is passed as Type[T].
+module N
+  def self.to_s -> String = "N-to_s"
+  def self.name -> String = "N-name"
+end
+module M
+  include N
+end
+class C
+  include M
+  def initialize; end
+end
+class D < C
+end
+xs: Array[Type] = [M, N, C, D]
+xs.each do |x|
+  puts x.to_s
+  puts x.name
+end
+o: Object = M
+puts o.to_s
+module N2
+  abstract def self.label -> String
+end
+module M2
+  include N2
+  def self.label -> String = "M2"
+end
+def show[T <: N2](t: Type[T]) -> String = t.label
+puts show(M2)
