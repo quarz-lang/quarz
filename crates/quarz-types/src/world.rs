@@ -1293,6 +1293,47 @@ impl World {
         Self::own_modules(self, id, self.resolution(id, args, View::Declared))
     }
 
+    /// Whether a run-time test "a value of class `c` is an `m`" is answered
+    /// exactly by the membership table the run time reads
+    /// (`RtClass::ancestors`, `resolution(c, [], View::Runtime)`, by the
+    /// class alone) for every value of `c` whose type arguments are
+    /// `args` (those its static type fixes; unfixed ones as `c`'s own
+    /// parameters) (#515): the table's answer, the answer for every such
+    /// instantiation (`View::Runtime` with `args`, bounds checked) and for
+    /// some (`View::Override` with `args`, bounds assumed where an
+    /// argument mentions a parameter) all agree. An approximation that
+    /// errs toward refusing (the assumed bounds err toward pairing, #556
+    /// makes them exact), never toward accepting.
+    pub fn runtime_test_exact(&self, c: ClassId, args: &[Type], m: ClassId) -> bool {
+        let has = |v: View, a: &[Type]| self.resolution(c, a, v).iter().any(|(k, _)| *k == m);
+        let run = has(View::Runtime, &[]);
+        let all = has(View::Runtime, args);
+        let some = has(View::Override, args);
+        run == all && all == some
+    }
+
+    /// Whether a conditional extension brings module `m`, directly or
+    /// through what it includes: only then may a run-time test against `m`
+    /// depend on type arguments (`runtime_test_exact`).
+    pub fn conditionally_included(&self, m: ClassId) -> bool {
+        // (What an include brings, with every extension's, conditional
+        // ones' bounds assumed: an extension of a module it includes too.)
+        let brings = |k: ClassId, ka: &[Type]| {
+            k == m
+                || self
+                    .resolution(k, ka, View::Override)
+                    .iter()
+                    .any(|(a, _)| *a == m)
+        };
+        self.extensions.iter().any(|e| {
+            e.type_params.iter().any(|tp| !tp.bounds.is_empty())
+                && e.includes.iter().any(|inc| match inc {
+                    Type::Class(k, ka) => brings(*k, ka),
+                    _ => false,
+                })
+        })
+    }
+
     /// Class `id`'s own type parameters, as arguments.
     pub fn own_args(&self, id: ClassId) -> Vec<Type> {
         self.class(id)

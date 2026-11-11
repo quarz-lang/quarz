@@ -1,0 +1,60 @@
+# #515: a run-time test of a module an extension with bounds brings is
+# accepted where the membership table (by the class alone) answers it
+# exactly for every value of the static type, its arguments fixing the
+# answer: the cells below. The refused cells (a class whose arguments the
+# static type does not fix: `Object`, a superclass, `Box[String]`, a
+# statically true `D[Int]`; the written forms, a call or `!` on a union)
+# are diagnostics tests (`runtime_tests_the_class_does_not_answer_are_refused`),
+# a library's test broken by an application a cogs test, the REPL a repl
+# test. Axes: target a class, a generic class, an abstract class, a
+# module; path an extension of the class, of a superclass, of an included
+# module, a subclass of each; arguments concrete, by inference; the
+# static type the class, a superclass, a module, a union; interpreted and
+# compiled (the build tests).
+module Num
+  def n -> Int = 1
+end
+module Plain
+  def p -> Int = 2
+end
+class Box[T]
+  include Plain
+  @v: T
+  def initialize(@v: T); end
+end
+extension Box[T <: Int]
+  include Num
+end
+class SI < Box[Int]
+  def initialize; super(1); end
+end
+abstract class AB[T]
+end
+extension AB[T <: Int]
+  include Num
+end
+class AC < AB[Int]
+  def initialize; end
+end
+
+def box_int(x: Box[Int]) -> Bool = x.is_a?(Num)
+def si(x: SI) -> Bool = x.is_a?(Num)
+def abstract_sub(x: AB[Int]) -> Bool = x.is_a?(Num)
+def union(x: Box[Int] | SI) -> Bool = x.is_a?(Num)
+def unconditional(x: Object) -> Bool = x.is_a?(Plain)
+# (An abstract class holds no value of its own: only its subclass, whose
+# arguments fix the answer.)
+class AS < AB[String]
+  def initialize; end
+end
+def abstract_string(x: AB[String]) -> Bool = x.is_a?(Num)
+def pattern(x: Box[Int]) -> String
+  case x
+  in Num then "num"
+  else "other"
+  end
+end
+inferred = Box.new(5)
+puts box_int(Box.new(1)), box_int(SI.new), si(SI.new), abstract_sub(AC.new)
+puts union(SI.new), unconditional(Box.new("s"))
+puts pattern(Box.new(2)), inferred.is_a?(Num), abstract_string(AS.new)

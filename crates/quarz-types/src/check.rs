@@ -982,6 +982,32 @@ pub struct ReplSnapshot {
     self_news: Vec<SelfNew>,
     generated_news: Vec<(ClassId, ClassId, MethodId, Option<MethodId>)>,
     repl_ctor_marks: (usize, usize, usize),
+    runtime_tests: Vec<RuntimeTest>,
+    repl_test_marks: (usize, usize, usize),
+}
+
+/// Where a declaration that makes a run-time test unanswerable is reported
+/// instead of the test (#515, (A)): one of the program using the test's
+/// cog (another group than the test's), or of a later REPL input (the
+/// classes and extensions from these indices on).
+#[derive(Clone, Copy)]
+enum DeclaredIn {
+    OtherGroup(Option<UnitGroup>),
+    ReplInput(u32, u32),
+}
+
+/// `Checker::untestable_against`'s answer: a class a value may be of whose
+/// membership the table does not answer exactly, with its arguments.
+type Untestable = Option<(ClassId, Vec<Type>)>;
+
+/// A run-time test against a module the checker accepted (#515), for the
+/// REPL to check again when a later input declares classes or extensions.
+#[derive(Clone, Debug)]
+struct RuntimeTest {
+    rt: Type,
+    target: Type,
+    op: String,
+    place: String,
 }
 
 /// Why a call of `deinitialize` is refused (docs/03 §4).
@@ -1029,6 +1055,11 @@ pub struct Checker {
     /// spans start at): a `static` statement may call a `static def` of
     /// an earlier input or of a required file, not of its own unit.
     pub repl_unit: Option<(u32, u32)>,
+    /// The span of the expression `check_expr` records, for a refusal in
+    /// `record` (#515).
+    recording_span: Span,
+    /// `untestable_against`'s answers, per static type and module.
+    untestable_memo: std::cell::RefCell<HashMap<(String, ClassId, bool), Untestable>>,
     op_given_up: rustc_hash::FxHashSet<(NodeId, bool)>,
     /// `&:name` nodes some check of which had a class object for the
     /// receiver: found differently by another check, they cannot be called
@@ -1130,6 +1161,11 @@ pub struct Checker {
     /// (`World::class_ext_impls`): a new one may pin an old site for an
     /// old class, so every pair is checked again (#504).
     repl_ctor_marks: (usize, usize, usize),
+    /// The run-time tests against a module accepted so far, for the REPL:
+    /// a later input that makes one unanswerable is refused there (#515).
+    runtime_tests: Vec<RuntimeTest>,
+    /// The REPL's tests, classes and extensions before the current input.
+    repl_test_marks: (usize, usize, usize),
     /// `check_constructor` for `Self.new` (`check_self_new`): an abstract
     /// class may be built, the receiver's class being concrete.
     constructing_self: bool,
@@ -1223,6 +1259,8 @@ impl Checker {
             block_callee: None,
             quoted_conflicts: HashMap::default(),
             repl_unit: None,
+            recording_span: Span::empty(0),
+            untestable_memo: Default::default(),
             op_given_up: Default::default(),
             symbol_on_class_object: Default::default(),
             world,
@@ -1259,6 +1297,8 @@ impl Checker {
             self_news: Vec::new(),
             generated_news: Vec::new(),
             repl_ctor_marks: (0, 0, 0),
+            runtime_tests: Vec::new(),
+            repl_test_marks: (0, 0, 0),
             constructing_self: false,
             abstract_receivers: Vec::new(),
             abstract_type_args: Vec::new(),
@@ -2437,6 +2477,7 @@ impl Checker {
         self.check_inherited_constructors_from(marks);
         self.check_abstract_receivers();
         self.check_abstract_type_args();
+        self.recheck_runtime_tests();
         self.repl_ctor_marks = (
             self.self_news.len(),
             self.world.classes.len(),
@@ -2459,6 +2500,8 @@ impl Checker {
             self_news: self.self_news.clone(),
             generated_news: self.generated_news.clone(),
             repl_ctor_marks: self.repl_ctor_marks,
+            runtime_tests: self.runtime_tests.clone(),
+            repl_test_marks: self.repl_test_marks,
         }
     }
 
@@ -2476,6 +2519,8 @@ impl Checker {
         self.self_news = s.self_news;
         self.generated_news = s.generated_news;
         self.repl_ctor_marks = s.repl_ctor_marks;
+        self.runtime_tests = s.runtime_tests;
+        self.repl_test_marks = s.repl_test_marks;
         self.quoted_seen.clear();
         self.quoted_conflicts.clear();
         self.table_journal.clear();
@@ -3447,6 +3492,10 @@ impl Checker {
                 if self.infer.resolve(b) != self.infer.resolve(t) {
                     self.out.varied_types.insert(id);
                     self.table_journal.push(TableUndo::Varied(id));
+                    // (Told apart at run time by a class test, #515.)
+                    let types = vec![self.infer.resolve(b), self.infer.resolve(t)];
+                    let span = self.recording_span;
+                    self.implicit_types_check(&types, "a block checked once per type", span);
                 }
             }
             self.table_journal.push(TableUndo::NodeType(id, before));
@@ -4243,6 +4292,7 @@ impl Checker {
     /// instances of one generic class, not a class and its subclass) and
     /// every check agrees on each member's method.
     fn note_union_table(&mut self, id: NodeId, table: Vec<(Type, MethodId)>, span: Span) {
+        self.implicit_test_check(&table, "a call on a union", span);
         // (What this and the earlier checks found, kept for a call that
         // goes by name: `union_methods`.)
         let found: Vec<MethodId> = self
@@ -6437,6 +6487,7 @@ impl Checker {
             }
             _ => self.check_expr_inner(expr, expected),
         };
+        self.recording_span = expr.span;
         self.record(expr.id, &t);
         if unused {
             self.warn_discarded_pure(expr);
@@ -11226,6 +11277,7 @@ impl Checker {
                     result = self.join(&result, &rt);
                 }
                 self.out.calls.remove(&expr.id);
+                self.implicit_test_check(&targets, "`!` on a union", expr.span);
                 self.note_not_dispatch(expr.id, targets);
                 return Some(result);
             }
@@ -11254,6 +11306,7 @@ impl Checker {
                     targets.push((m, id));
                 }
             }
+            self.implicit_test_check(&targets, "`!` on a union", expr.span);
             self.note_not_dispatch(expr.id, targets);
         }
         Some(rt)
@@ -11316,6 +11369,204 @@ impl Checker {
         if self.out.not_builtin.insert(id) {
             self.table_journal.push(TableUndo::NotBuiltin(id));
         }
+    }
+
+    /// A per-type table the run time chooses from by class tests (a union
+    /// call, `!` on a union): each module member a conditional extension
+    /// brings must be answered exactly for every class the receiver may
+    /// hold (#515), as a written test must.
+    fn implicit_test_check(&mut self, table: &[(Type, MethodId)], what: &str, span: Span) {
+        let types: Vec<Type> = table.iter().map(|(t, _)| t.clone()).collect();
+        self.implicit_types_check(&types, what, span);
+    }
+
+    /// `implicit_test_check` for the types a run-time choice tests.
+    fn implicit_types_check(&mut self, types: &[Type], what: &str, span: Span) {
+        let recv = Type::union_of(types.to_vec());
+        for t in types {
+            if let Some((m, c, cargs)) = self.runtime_untestable(&recv, t) {
+                self.report_untestable(what, &m, c, &cargs, span, None);
+                return;
+            }
+        }
+        for t in types {
+            self.record_runtime_test(&recv, t, what);
+        }
+    }
+
+    /// The refusal of a run-time test the membership table does not answer
+    /// exactly (#515): at the test; or, for a test in a dependency (a
+    /// library cog, a std module, the prelude) made unanswerable by a class
+    /// or extension of the program using it, at that declaration, naming
+    /// the test (decided on #515, (A)); `place`: an earlier REPL input's
+    /// test, whose declaration is this input's.
+    fn report_untestable(
+        &mut self,
+        what: &str,
+        m: &Type,
+        c: ClassId,
+        cargs: &[Type],
+        span: Span,
+        place: Option<(&str, (u32, u32))>,
+    ) {
+        let cname = self.world.class(c).name.clone();
+        let ty = self.name(&Type::Class(c, cargs.to_vec()));
+        let mname = self.name(m);
+        let reason = format!(
+            "{what} cannot check at run time that a value of type {ty} is a {mname}: the run time sees only the class `{cname}`, and whether a `{cname}` is a `{mname}` depends on its type arguments (an `extension` with bounds brings `{mname}`)"
+        );
+        let Type::Class(mid, _) = m else {
+            self.error(reason, span);
+            return;
+        };
+        // (The test's place, and where the breaking declaration must be: a
+        // dependency's test, the program using it; an earlier REPL input's,
+        // this input.)
+        let (test_place, there) = match place {
+            Some((p, (classes, exts))) => (p.to_string(), DeclaredIn::ReplInput(classes, exts)),
+            None => {
+                let tg = self.world.file_groups.get(&self.env.file).copied();
+                if matches!(tg, Some(UnitGroup::App)) {
+                    self.error(reason, span);
+                    return;
+                }
+                (self.test_place(), DeclaredIn::OtherGroup(tg))
+            }
+        };
+        let decl_from = |c: &Self, f: u32, i: usize, is_class: bool| match there {
+            DeclaredIn::ReplInput(classes, exts) => {
+                i >= if is_class { classes } else { exts } as usize
+            }
+            DeclaredIn::OtherGroup(tg) => {
+                let g = c.world.file_groups.get(&f).copied();
+                g.is_some() && g != tg
+            }
+        };
+        let mid = *mid;
+        // The class, when declared there; else the extension with bounds
+        // that brings the module to its chain, declared there.
+        let class = self.world.class(c);
+        let culprit = if decl_from(self, class.file, c as usize, true) {
+            Some((class.file, class.span, format!("class `{cname}`")))
+        } else {
+            let chain: Vec<ClassId> = self
+                .world
+                .resolution(c, &[], View::Declared)
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+            self.world
+                .extensions
+                .iter()
+                .find(|e| {
+                    chain.contains(&e.target)
+                        && e.includes.iter().any(|inc| match inc {
+                            Type::Class(k, ka) => {
+                                *k == mid
+                                    || self
+                                        .world
+                                        .resolution(*k, ka, View::Override)
+                                        .iter()
+                                        .any(|(a, _)| *a == mid)
+                            }
+                            _ => false,
+                        })
+                        && decl_from(self, e.file, e.id as usize, false)
+                })
+                .map(|e| (e.file, e.span, self.world.extension_label(e.id)))
+        };
+        match culprit {
+            Some((file, dspan, what_decl)) => {
+                self.diagnostics.push((
+                    file,
+                    Diagnostic::error(
+                        format!("{what_decl} makes a run-time test of {test_place} unanswerable: {reason}"),
+                        dspan,
+                    ),
+                ));
+            }
+            None if place.is_none() => self.error(reason, span),
+            // (An earlier input's test, with no declaration of this input to
+            // name: refused here all the same.)
+            None => self.error(
+                format!("this input makes a run-time test of {test_place} unanswerable: {reason}"),
+                span,
+            ),
+        }
+    }
+
+    /// Where the test being checked is, for a report at another
+    /// declaration: its method, or its file's top level.
+    fn test_place(&self) -> String {
+        match self.env.method {
+            Some(mid) => {
+                let m = self.world.method(mid);
+                let owner = self.world.class(m.owner);
+                // (A file's top-level `def` is a function: named with the
+                // cog it is in.)
+                if owner.kind == ClassKind::Main {
+                    let cog = match self.world.file_groups.get(&self.env.file) {
+                        Some(UnitGroup::Cog(i)) => self
+                            .world
+                            .cogs
+                            .get(*i as usize)
+                            .map(|c| format!(" of the cog `{}`", c.name))
+                            .unwrap_or_default(),
+                        _ => String::new(),
+                    };
+                    format!("the function `{}`{cog}", m.name)
+                } else {
+                    let sep = if m.singleton { "." } else { "#" };
+                    format!("`{}{sep}{}`", owner.name, m.name)
+                }
+            }
+            None => "code outside a method (a top-level statement, a field default)".to_string(),
+        }
+    }
+
+    /// Remember an accepted test against a module (#515), for the REPL.
+    fn record_runtime_test(&mut self, rt: &Type, target: &Type, op: &str) {
+        if self.repl_env.is_none() && self.repl_unit.is_none() {
+            return;
+        }
+        if !target.members().iter().any(
+            |t| matches!(t, Type::Class(k, _) if self.world.class(*k).kind == ClassKind::Module),
+        ) {
+            return;
+        }
+        let place = self.test_place();
+        self.runtime_tests.push(RuntimeTest {
+            rt: rt.clone(),
+            target: target.clone(),
+            op: op.to_string(),
+            place,
+        });
+    }
+
+    /// In the REPL, after an input: the earlier inputs' accepted tests that
+    /// its classes or extensions make unanswerable are refused at those
+    /// declarations (#515, (A)).
+    fn recheck_runtime_tests(&mut self) {
+        let (tests, classes, exts) = self.repl_test_marks;
+        let earlier: Vec<RuntimeTest> =
+            self.runtime_tests[..tests.min(self.runtime_tests.len())].to_vec();
+        for t in &earlier {
+            if let Some((m, c, cargs)) = self.runtime_untestable(&t.rt, &t.target) {
+                self.report_untestable(
+                    &t.op,
+                    &m,
+                    c,
+                    &cargs,
+                    Span::empty(0),
+                    Some((&t.place, (classes as u32, exts as u32))),
+                );
+            }
+        }
+        self.repl_test_marks = (
+            self.runtime_tests.len(),
+            self.world.classes.len(),
+            self.world.extensions.len(),
+        );
     }
 
     fn note_not_dispatch(&mut self, id: NodeId, targets: Vec<(Type, MethodId)>) {
@@ -16969,6 +17220,15 @@ impl Checker {
                 return;
             }
         }
+        // A module a conditional extension brings: whether a value is one
+        // may depend on its type arguments, which the run time does not
+        // see; refused wherever the value may be of a class whose answer
+        // the table does not give exactly (#515).
+        if let Some((m, c, cargs)) = self.runtime_untestable(&rt, target) {
+            self.report_untestable(&format!("`{op}`"), &m, c, &cargs, span, None);
+            return;
+        }
+        self.record_runtime_test(&rt, target, &format!("`{op}`"));
         for tm in target.members() {
             if !self.unverifiable(&tm) {
                 continue;
@@ -16987,6 +17247,250 @@ impl Checker {
                 );
                 return;
             }
+        }
+    }
+
+    /// For a run-time test of a value of type `rt` against `target`: a
+    /// module of `target` an extension with bounds brings and a class (with
+    /// the arguments `rt` fixes) a value of `rt` may be of, for which the
+    /// membership table does not answer exactly
+    /// (`World::runtime_test_exact`), #515. The elements of the
+    /// collections and tuples the test checks too, and a class value's
+    /// test (`Type[M]`).
+    fn runtime_untestable(&self, rt: &Type, target: &Type) -> Option<(Type, ClassId, Vec<Type>)> {
+        let b = self.world.builtin.clone();
+        for tm in target.members() {
+            match &tm {
+                // (The elements a test checks: of the static type's when every
+                // member of it is that collection, else of anything, #596.)
+                Type::Class(k, targs) if [b.array, b.set, b.hash, b.range].contains(k) => {
+                    let members = rt.members();
+                    let all_same = members
+                        .iter()
+                        .all(|m| matches!(m, Type::Class(mk, _) if mk == k));
+                    for (i, ta) in targs.iter().enumerate() {
+                        let elems: Vec<Type> = members
+                            .iter()
+                            .filter_map(|m| match m {
+                                Type::Class(_, ma) => ma.get(i).cloned(),
+                                _ => None,
+                            })
+                            .collect();
+                        let elem = if !all_same || elems.is_empty() {
+                            self.world.object()
+                        } else {
+                            Type::union_of(elems)
+                        };
+                        if let Some(found) = self.runtime_untestable(&elem, ta) {
+                            return Some(found);
+                        }
+                    }
+                }
+                Type::Tuple(ts) => {
+                    let members = rt.members();
+                    let all_same = members
+                        .iter()
+                        .all(|m| matches!(m, Type::Tuple(ms) if ms.len() == ts.len()));
+                    for (i, ta) in ts.iter().enumerate() {
+                        let elems: Vec<Type> = members
+                            .iter()
+                            .filter_map(|m| match m {
+                                Type::Tuple(ms) => ms.get(i).cloned(),
+                                _ => None,
+                            })
+                            .collect();
+                        let elem = if !all_same || elems.is_empty() {
+                            self.world.object()
+                        } else {
+                            Type::union_of(elems)
+                        };
+                        if let Some(found) = self.runtime_untestable(&elem, ta) {
+                            return Some(found);
+                        }
+                    }
+                }
+                Type::Class(mid, _) => {
+                    if let Some(found) = self.untestable_against(rt, *mid, false) {
+                        return Some((tm.clone(), found.0, found.1));
+                    }
+                }
+                Type::ClassObject(mid, _) => {
+                    if let Some(found) = self.untestable_against(rt, *mid, true) {
+                        return Some((Type::Class(*mid, vec![]), found.0, found.1));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// `runtime_untestable` for module `mid`: a class a value of `rt` may
+    /// be of (`class_values`: a class value of `rt`, `Type[M]`'s test),
+    /// whose membership the table does not answer exactly. Remembered per
+    /// static type and module.
+    fn untestable_against(
+        &self,
+        rt: &Type,
+        mid: ClassId,
+        class_values: bool,
+    ) -> Option<(ClassId, Vec<Type>)> {
+        if self.world.class(mid).kind != ClassKind::Module
+            || !self.world.conditionally_included(mid)
+        {
+            return None;
+        }
+        // (With the declarations' count: the REPL adds classes and
+        // extensions, which change the answer.)
+        let key = (
+            format!(
+                "{rt:?}/{}/{}",
+                self.world.classes.len(),
+                self.world.extensions.len()
+            ),
+            mid,
+            class_values,
+        );
+        if let Some(found) = self.untestable_memo.borrow().get(&key) {
+            return found.clone();
+        }
+        let mut found = None;
+        'members: for m in rt.members() {
+            let held = if class_values {
+                match &m {
+                    Type::ClassObject(k, _) => {
+                        let own: Vec<Type> = self
+                            .world
+                            .class(*k)
+                            .type_params
+                            .iter()
+                            .map(|tp| Type::Param(tp.id))
+                            .collect();
+                        self.classes_a_value_may_hold(&Type::Class(*k, own))
+                    }
+                    Type::TypeOf(t) => self.classes_a_value_may_hold(t),
+                    Type::Class(k, _) if *k == self.world.builtin.object => {
+                        self.classes_a_value_may_hold(&m)
+                    }
+                    Type::Param(_) | Type::Var(_) => self.classes_a_value_may_hold(&m),
+                    _ => Vec::new(),
+                }
+            } else {
+                self.classes_a_value_may_hold(&m)
+            };
+            // (Where the static member is the target module itself, every
+            // value is one: the test is exact where the table says yes too.
+            // No other shortcut, #596.)
+            let always = !class_values && matches!(&m, Type::Class(k, _) if *k == mid);
+            for (c, cargs) in held {
+                if always {
+                    let run = self
+                        .world
+                        .resolution(c, &[], View::Runtime)
+                        .iter()
+                        .any(|(a, _)| *a == mid);
+                    if !run {
+                        found = Some((c, cargs));
+                        break 'members;
+                    }
+                    continue;
+                }
+                // (A class value carries no arguments: its own parameters.)
+                let cargs = if class_values {
+                    self.world
+                        .class(c)
+                        .type_params
+                        .iter()
+                        .map(|tp| Type::Param(tp.id))
+                        .collect()
+                } else {
+                    cargs
+                };
+                if !self.world.runtime_test_exact(c, &cargs, mid) {
+                    found = Some((c, cargs));
+                    break 'members;
+                }
+            }
+        }
+        self.untestable_memo.borrow_mut().insert(key, found.clone());
+        found
+    }
+
+    /// The classes a value of type `t` may be of, each with the type
+    /// arguments `t` fixes (the others as the class's own parameters): the
+    /// class itself, its subclasses, the classes including a module type
+    /// (any extension's include, one with bounds included, their bounds
+    /// assumed); every class for `Object`, a type parameter or an
+    /// inference variable (#515). Not an abstract class, of which no value
+    /// is. Complete for the program checked: its classes, every cog's, are
+    /// declared before any body is checked. An approximation that
+    /// over-refuses: a class counts whatever its arguments (`AS <
+    /// AB[String]` for an `AB[Int]`), and an argument is fixed only for an
+    /// invariant parameter given a plain type (not through variance or a
+    /// union), #597 makes it exact; it never accepts more (#596).
+    fn classes_a_value_may_hold(&self, t: &Type) -> Vec<(ClassId, Vec<Type>)> {
+        let concrete = |c: &ClassInfo| {
+            !matches!(c.kind, ClassKind::Module | ClassKind::Main) && !c.is_abstract
+        };
+        let params = |c: &ClassInfo| -> Vec<Type> {
+            c.type_params.iter().map(|tp| Type::Param(tp.id)).collect()
+        };
+        let all = || {
+            self.world
+                .classes
+                .iter()
+                .filter(|c| concrete(c))
+                .map(|c| (c.id, params(c)))
+                .collect::<Vec<_>>()
+        };
+        match t {
+            Type::Union(ms) => ms
+                .iter()
+                .flat_map(|m| self.classes_a_value_may_hold(m))
+                .collect(),
+            Type::Param(_) | Type::Var(_) => all(),
+            Type::Class(k, _) if *k == self.world.builtin.object => all(),
+            Type::Class(k, ka) => {
+                let (k, ka) = (*k, ka.clone());
+                self.world
+                    .classes
+                    .iter()
+                    .filter(|c| concrete(c))
+                    .filter_map(|c| {
+                        let own = params(c);
+                        // (With bounds assumed: a class a module type comes
+                        // to only through an extension with bounds holds
+                        // values of that type too.)
+                        let anc = self.world.resolution(c.id, &own, View::Override);
+                        let (_, kargs) = anc.iter().find(|(a, _)| *a == k)?;
+                        // (The arguments `t` fixes: a parameter of `c`
+                        // standing where `t` has a type.)
+                        // (An argument fixed from the static type only for an
+                        // invariant parameter of `k` given a plain type there,
+                        // a parameter of `c` standing in it: then every value
+                        // of `c` that is of `t` has it. Else left as `c`'s own
+                        // parameter, which can only refuse more.)
+                        let kinfo = self.world.class(k);
+                        let mut fixed: HashMap<TypeParamId, Type> = HashMap::default();
+                        for (i, (x, y)) in kargs.iter().zip(&ka).enumerate() {
+                            let invariant = kinfo.type_params.get(i).is_some_and(|tp| {
+                                tp.variance == quarz_syntax::ast::Variance::Invariant
+                            });
+                            let plain = !matches!(y, Type::Union(_))
+                                && !y.mentions_any_param()
+                                && !y.has_vars();
+                            if let Type::Param(p) = x {
+                                if invariant && plain && c.type_params.iter().any(|tp| tp.id == *p)
+                                {
+                                    fixed.insert(*p, y.clone());
+                                }
+                            }
+                        }
+                        Some((c.id, own.iter().map(|a| a.subst(&fixed)).collect()))
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
         }
     }
 
