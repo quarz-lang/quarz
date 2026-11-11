@@ -852,8 +852,9 @@ fn witness_matrix_refusals() {
     // generic class, module): an extension including what the class
     // includes itself, an abstract class method without a witness, a
     // witness of another type and `new` arguments per witness source, two
-    // argument sets. (A witness of another type is said twice, by the
-    // class side's override check and at the extension: a follow-up.)
+    // argument sets. (A witness of another type is said once: at the
+    // method where the class side's override check said it, else at the
+    // extension, #525.)
     let cells: &[(&str, &str, &str)] = &[
         (
             "refused include (class)",
@@ -2234,4 +2235,28 @@ fn a_std_include_over_an_extensions_module_is_checked() {
             .any(|d| d.contains("`hash` returns Int but `OM#hash`, which it overrides")),
         "{out:?}"
     );
+}
+
+/// #525: a witness of another type is reported once, at the method where
+/// the class side's own check reported it (for some extension active
+/// there); a class whose method no such report names gets its report at
+/// the extension.
+#[test]
+fn a_witness_of_another_type_is_reported_once() {
+    let out = common::diagnostics(
+        "module M\n  def self.d -> String = \"M\"\nend\nclass X\n  def initialize; end\n  def self.d -> Int = 1\nend\nextension X\n  include M\nend\n",
+    );
+    let n = out
+        .iter()
+        .filter(|d| d.contains("`d` returns Int but `M.d`"))
+        .count();
+    assert_eq!(n, 1, "{out:?}");
+    let out = common::diagnostics(
+        "module M\n  def self.d -> String = \"M\"\nend\nclass X\n  def initialize; end\n  def self.d -> Int = 1\nend\nclass Y\n  def initialize; end\n  def self.d -> Int = 2\nend\nextension X\n  include M\nend\nmodule Sc\n  extension Y\n    include M\n  end\nend\n",
+    );
+    let n = out
+        .iter()
+        .filter(|d| d.contains("`d` returns Int but `M.d`"))
+        .count();
+    assert_eq!(n, 2, "{out:?}");
 }

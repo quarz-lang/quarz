@@ -1584,6 +1584,7 @@ impl<'ast> Declarer<'ast> {
                                 .unwrap_or_else(|| aargs.clone())
                         };
                         self.override_pairs.remove(&(i, m));
+                        let before = self.diagnostics.len();
                         self.check_implementation_seen(
                             i,
                             m,
@@ -1593,6 +1594,27 @@ impl<'ast> Declarer<'ast> {
                             owner,
                             oargs,
                         );
+                        // (Once: a refusal already reported at the witness
+                        // method itself, by the class side's own override
+                        // check for an extension active there, is not said
+                        // again at this extension, #525; the program is
+                        // refused either way, the method being the fix.)
+                        let (wfile, wspan) = (self.world.method(i).file, self.world.method(i).span);
+                        let (seen, new) = self.diagnostics.split_at(before);
+                        let repeated: Vec<bool> = new
+                            .iter()
+                            .map(|(_, d)| {
+                                seen.iter().any(|(f, e)| {
+                                    *f == wfile && e.span == wspan && e.message == d.message
+                                })
+                            })
+                            .collect();
+                        let mut k = 0;
+                        self.diagnostics.retain(|_| {
+                            let keep = k < before || !repeated[k - before];
+                            k += 1;
+                            keep
+                        });
                         self.override_span = None;
                         self.override_span_always = false;
                     }
