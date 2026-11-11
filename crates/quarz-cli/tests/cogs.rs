@@ -2478,3 +2478,62 @@ fn witness_matrix_across_cogs() {
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
 }
+
+/// #537: a library's extension of its module making it conform to a
+/// generic module with one set of arguments, and an application's class
+/// including the module and the generic module with another: the conflict
+/// is reported at the application's class, naming the extension, not
+/// inside the library (which checks without error).
+#[test]
+fn a_cross_cog_conformance_conflict_is_reported_in_the_application() {
+    let w = World::new();
+    w.write(
+        "midlib/Cog.toml",
+        "[cog]\nname = \"midlib\"\nversion = \"0.1.0\"\n",
+    );
+    w.write(
+        "midlib/src/mid.qz",
+        "module P[T]\n  def it -> Int = 1\nend\nmodule Mid\nend\nextension Mid\n  include P[String]\nend\n",
+    );
+    w.commit("midlib", Some("v0.1.0"));
+    w.app(
+        &format!(
+            "Midlib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n",
+            w.url("midlib")
+        ),
+        "class K\n  include Midlib::Mid\n  include Midlib::P[Int]\nend\nputs 1\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("main.qz") && err.contains("`K` conforms to `Midlib::P[Int]`"),
+        "{err}"
+    );
+    assert!(!err.contains("mid.qz"), "{err}");
+}
+
+/// #537, the other direction: an application's own extension of a
+/// library's module conflicting with a library class is reported at the
+/// application's extension, never inside the library's (cached) source.
+#[test]
+fn an_applications_extension_conflict_stays_in_the_application() {
+    let w = World::new();
+    w.write(
+        "midlib/Cog.toml",
+        "[cog]\nname = \"midlib\"\nversion = \"0.1.0\"\n",
+    );
+    w.write(
+        "midlib/src/mid.qz",
+        "module P[T]\n  def it -> Int = 1\nend\nmodule Mid\nend\nclass K\n  include Mid\n  include P[Int]\nend\n",
+    );
+    w.commit("midlib", Some("v0.1.0"));
+    w.app(
+        &format!(
+            "Midlib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n",
+            w.url("midlib")
+        ),
+        "extension Midlib::Mid\n  include Midlib::P[String]\nend\nputs 1\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(err.contains("main.qz:1:"), "{err}");
+    assert!(!err.contains("mid.qz"), "{err}");
+}
