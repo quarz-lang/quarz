@@ -2869,7 +2869,8 @@ impl World {
     /// Of `exts`, the top-level ones (conditional ones too), whose modules
     /// keep their place in `ordered_under`'s walk.
     fn walked_extensions(&self, exts: &[ExtensionId]) -> Vec<ExtensionId> {
-        exts.iter()
+        let mut top: Vec<ExtensionId> = exts
+            .iter()
             .copied()
             .filter(|e| {
                 let ext = &self.extensions[*e as usize];
@@ -2877,7 +2878,17 @@ impl World {
                     self.cogs.iter().any(|c| c.root == Some(ns)) && self.encloses(ns, ext.target)
                 })
             })
-            .collect()
+            .collect();
+        // (The unconditional ones first, their modules with the class's own
+        // includes, in front of a conditional one's, whatever the order of
+        // declaration; each kind in its own order, #523; #588.)
+        top.sort_by_key(|e| {
+            self.extensions[*e as usize]
+                .type_params
+                .iter()
+                .any(|tp| !tp.bounds.is_empty())
+        });
+        top
     }
 
     /// The classes and modules in the walked part of `id`'s run-time and

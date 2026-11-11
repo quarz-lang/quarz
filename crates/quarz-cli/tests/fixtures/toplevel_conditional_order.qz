@@ -1,0 +1,54 @@
+# #588: a top-level unconditional extension's module comes with the
+# class's own includes, in front of a top-level conditional one's, whatever
+# the order of declaration, for the class and its subclasses alike.
+# Cells: a generic class target, a subclass and a subclass's value typed
+# as the class, both orders of declaration, interpreted and compiled.
+# Skipped: a module target, a superclass's include, the scope axis (a
+# scoped extension active, elsewhere, another cog): the change is the
+# order of the walk's top-level extensions, the same for each.
+
+# The conditional one declared first.
+module A
+  def foo -> String = "A"
+end
+module B
+  def foo -> String = "B"
+end
+class Box[T]
+  @v: T
+  def initialize(@v: T); end
+end
+extension Box[T <: Int]
+  include A
+end
+extension Box[T]
+  include B
+end
+class Sub[T] < Box[T]
+end
+puts Box.new(1).foo, Sub.new(1).foo
+x: Box[Int] = Sub.new(4)
+puts x.foo
+
+# The unconditional one declared first.
+module A2
+  def foo -> String = "A2"
+end
+module B2
+  def foo -> String = "B2"
+end
+class Box2[T]
+  @v: T
+  def initialize(@v: T); end
+end
+extension Box2[T]
+  include B2
+end
+extension Box2[T <: Int]
+  include A2
+end
+class Sub2[T] < Box2[T]
+end
+puts Box2.new(1).foo, Sub2.new(1).foo
+y: Box2[Int] = Sub2.new(4)
+puts y.foo
