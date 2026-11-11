@@ -41,7 +41,8 @@ class ProcTest < Test::Case
     sums: Array[Int] = []
     each_pair_sum { |a, b| sums = sums.push(a + b); nil }
     assert_equal([3, 7], sums)
-    assert_equal([2, 12], [[1, 2], [3, 4]].map { |a, b| a * b })
+    pairs: Array[[Int, Int]] = [[1, 2], [3, 4]]
+    assert_equal([2, 12], pairs.map { |a, b| a * b })
   end
 
   def test_symbol_procs_and_method_reference

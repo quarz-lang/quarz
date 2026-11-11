@@ -5880,3 +5880,35 @@ fn the_std_side_of_an_extensions_module_is_checked_in_every_direction() {
     // superclass's of another result: the class's runs.
     ok("module OM\n  abstract def m -> String\nend\nclass Base\n  def m -> Object = 1\nend\nclass Foo < Base\n  include OM\n  def m -> String = \"foo\"\nend\ndef g(p: OM) -> String = p.m\nputs g(Foo.new) + \"!\"");
 }
+
+#[test]
+fn a_destructured_array_element_may_be_shorter() {
+    // #531: the binder pads a shorter element with `nil`, so each
+    // parameter it spreads an `Array[T]` element over is typed `T?`.
+    err(
+        "xs: Array[Array[Int]] = [[1]]\nxs.each { |a: Int, b: Int| p a + b }",
+        "block destructures an Array[Int] element into 2 parameters: an element may be shorter, so each gets `nil` where it has no value; type them to admit it (`|a: Int?, ...|`), or take the element as one parameter",
+    );
+    // Unannotated, they are `Int?`: `+` on one is an error at the use.
+    err(
+        "xs: Array[Array[Int]] = [[1]]\nxs.each { |a, b| p a + b }",
+        "Int?",
+    );
+    ok("xs: Array[Array[Int]] = [[1]]\nxs.each { |a: Int?, b: Int?| p a, b }");
+    // A `*rest` takes the elements there are.
+    ok("xs: Array[Array[Int]] = [[1]]\nxs.each { |a, *r| r.each { |x| p x + 1 } }");
+    // A tuple only into its arity.
+    err(
+        "ts: Array[[Int, String, Bool]] = [[1, \"x\", true]]\nts.each { |a, b| p a }",
+        "block destructures a 3-element tuple into 2 parameters: name each element (`|a, b, c|`), or take the tuple as one parameter",
+    );
+    ok("ts: Array[[Int, String, Bool]] = [[1, \"x\", true]]\nts.each { |a, b, c| p a, b, c }");
+    ok("h = {1 => \"a\"}\nh.each { |k, v| p k + 1, v }");
+    // A `*rest` after a tuple's first elements takes the others: of any
+    // of their types, not the first one's.
+    err(
+        "ts: Array[[Int, Int, String]] = [[1, 2, \"x\"]]\nts.each { |a, *r| r.each { |x| puts x + 1 } }",
+        "Array[Int | String]",
+    );
+    ok("ts: Array[[Int, Int, String]] = [[1, 2, \"x\"]]\nts.each { |a, *r| p r }");
+}

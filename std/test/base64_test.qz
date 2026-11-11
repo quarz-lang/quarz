@@ -3,18 +3,18 @@ require "test"
 
 # RFC 4648 §10.
 class Base64RFCTest < Test::Case
-  PAIRS = [["", ""], ["f", "Zg=="], ["fo", "Zm8="], ["foo", "Zm9v"], ["foob", "Zm9vYg=="], ["fooba", "Zm9vYmE="], ["foobar", "Zm9vYmFy"]]
+  def pairs -> Array[[String, String]] = [["", ""], ["f", "Zg=="], ["fo", "Zm8="], ["foo", "Zm9v"], ["foob", "Zm9vYg=="], ["fooba", "Zm9vYmE="], ["foobar", "Zm9vYmFy"]]
 
   def test_encode
-    PAIRS.each { |plain, coded| assert_equal(coded, Base64.encode(plain)) }
+    pairs.each { |plain, coded| assert_equal(coded, Base64.encode(plain)) }
   end
 
   def test_decode
-    PAIRS.each { |plain, coded| assert_equal(plain.to_bytes, Base64.decode(coded)) }
+    pairs.each { |plain, coded| assert_equal(plain.to_bytes, Base64.decode(coded)) }
   end
 
   def test_decode_without_padding
-    PAIRS.each { |plain, coded| assert_equal(plain.to_bytes, Base64.decode(coded.delete("="))) }
+    pairs.each { |plain, coded| assert_equal(plain.to_bytes, Base64.decode(coded.delete("="))) }
   end
 
   def test_all_bytes_round_trip
