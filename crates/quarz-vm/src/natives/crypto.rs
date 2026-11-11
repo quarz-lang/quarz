@@ -111,8 +111,8 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         // Hundreds of milliseconds for 4096 bits: on a helper thread.
         let der = i
             .block_on(move || {
-                let key = PrivateKey::new(&mut rand::rng(), bits as usize)
-                    .map_err(|e| e.to_string())?;
+                let key =
+                    PrivateKey::new(&mut rand::rng(), bits as usize).map_err(|e| e.to_string())?;
                 key.to_pkcs8_der()
                     .map(|d| d.as_bytes().to_vec())
                     .map_err(|e| e.to_string())
