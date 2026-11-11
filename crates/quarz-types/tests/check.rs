@@ -3959,7 +3959,7 @@ fn kernel_functions_are_no_methods() {
 fn an_override_keeps_the_names_callers_may_pass_by_keyword() {
     // tmp/repro/override-renames-positional.qz (docs/01 §3): a parameter
     // before `*` may be passed by keyword through the overridden method.
-    err("class A\n  def f(x: Int, *, k: Int = 0) -> String = \"A#f #{x}\"\nend\nclass B < A\n  def f(y: Int, *, k: Int = 0) -> String = \"B#f #{y}\"\nend\ndef call(a: A) -> String = a.f(x: 3)\nputs call(B.new)", "`f` renames parameter `x` to `y`; callers of `A#f` may pass it as `x:`");
+    err("class A\n  def f(x: Int, *, k: Int = 0) -> String = \"A#f #{x}\"\nend\nclass B < A\n  def f(y: Int, *, k: Int = 0) -> String = \"B#f #{y}\"\nend\ndef call(a: A) -> String = a.f(x: 3)\nputs call(B.new)", "`f` renames parameter `x` to `y`; callers of `A#f`, which it overrides, may pass it as `x:`");
     // An implementation too.
     err(
         "module M\n  abstract def size_of(item: Int) -> Int\nend\nclass C\n  include M\n  def size_of(x: Int) -> Int = x\nend",
@@ -3976,7 +3976,7 @@ fn an_override_keeps_the_names_callers_may_pass_by_keyword() {
     // A class method is named as one.
     err(
         "class A\n  def self.f(x: Int) -> Int = x\nend\nclass B < A\n  def self.f(y: Int) -> Int = y\nend",
-        "callers of `A.f` may pass it as `x:`",
+        "callers of `A.f`, which it overrides, may pass it as `x:`",
     );
 }
 
@@ -5976,4 +5976,14 @@ fn a_module_or_abstract_class_written_as_a_type_argument_is_checked() {
     // module, and a value through a `Type[M]` variable are accepted.
     ok("module Plain\n  def self.hello -> String = \"hi\"\nend\ndef h[T <: Plain](t: Type[T]) -> String = t.hello\nputs h(Plain)");
     ok(&format!("{named}class A\n  include Named\n  def initialize; end\n  def self.kind -> String = \"a\"\nend\ndef k[T <: Named](t: Type[T]) -> String = t.kind\nputs k(A)\nx: Type[Named] = Named\nputs k(x)"));
+}
+
+#[test]
+fn a_rename_names_the_method_it_overrides() {
+    // #565: checked at an extension, the rename error says which method
+    // overrides the module's (a std class's), as the other override errors do.
+    err(
+        "module OM\n  def at(x: Int) -> String = \"om\"\nend\nextension Object\n  include OM\nend",
+        "`at` renames parameter `x` to `seconds`; callers of `OM#at`, which it overrides as `Time.at`, may pass it as `x:`",
+    );
 }
