@@ -2431,3 +2431,58 @@ fn a_class_call_under_using_is_typed_as_the_extensions_module() {
         "{out:?}"
     );
 }
+
+/// #585: `super` in an extension's method, with two other extensions of
+/// the target active where it is declared that define the method with the
+/// same parameters, neither overriding the other: ambiguous, naming both.
+#[test]
+fn super_between_two_other_extensions_is_ambiguous() {
+    let src = "class Base\n  def f(x: Int) -> String = \"Base\"\nend\nclass A < Base\n  def initialize; end\nend\nmodule Y\n  extension A\n    def f(x: Int) -> String = \"Y/\" + super(x)\n  end\nend\nmodule W\n  extension A\n    def f(x: Int) -> String = \"W/\" + super(x)\n  end\nend\nmodule X\n  using Y\n  using W\n  extension A\n    def f(x: Int) -> String = \"X/\" + super(x)\n  end\nend\n";
+    let out = common::diagnostics(src);
+    assert!(
+        out.iter().any(|d| d.contains("the call of `f` is ambiguous: the extension of `A` in `Y` and the extension of `A` in `W`")),
+        "{out:?}"
+    );
+}
+
+/// #585: a `super` that would take a method of an extension reaching its
+/// own back (no order between them) is an error at the `super`: two
+/// top-level extensions, two scoped ones whose modules `using` each other,
+/// and two extensions of one class in the same module (siblings).
+#[test]
+fn super_between_extensions_reaching_each_other_is_refused() {
+    for src in ["class A\n  def initialize; end\nend\nextension A\n  def f(x: Int) -> String = \"T1/\" + super(x, x)\nend\nextension A\n  def f(x: Int, y: Int) -> String = \"T2/\" + super(x)\nend\nputs A.new.f(1, 2).size\n", "class A\n  def initialize; end\n  def f(x: Int) -> String = \"A\"\nend\nmodule Y\n  using X\n  extension A\n    def f(x: Int) -> String = \"Y/\" + super(x)\n  end\nend\nmodule X\n  using Y\n  extension A\n    def f(x: Int) -> String = \"X/\" + super(x)\n  end\nend\nmodule Z\n  using X\n  def self.go -> String = A.new.f(1)\nend\nputs Z.go.size\n"] {
+        let out = common::diagnostics(src);
+        assert!(
+            out.iter().any(|d| d.contains("which reaches this one back: there is no order between them")),
+            "{src}\n{out:?}"
+        );
+    }
+    let sib = "class A\n  def initialize; end\n  def f(x: Int) -> String = \"A\"\nend\nmodule Both\n  extension A\n    def f(x: Int) -> String = \"E1/\" + super(x)\n  end\n  extension A\n    def f(x: Int) -> String = \"E2\"\n  end\nend\nmodule Z\n  using Both\n  def self.go -> String = A.new.f(1)\nend\n";
+    let out = common::diagnostics(sib);
+    assert!(
+        out.iter()
+            .any(|d| d.contains("which reaches this one back")),
+        "{out:?}"
+    );
+}
+
+/// #585: extensions in one cycle hide none of each other (three in a
+/// cycle, all reached by a fourth: no order, the ambiguity), and a cycle's
+/// candidate tied with another (a sibling and an unordered other) makes
+/// the `super` an error rather than being left out.
+#[test]
+fn cycles_hide_nothing_and_ties_with_them_are_errors() {
+    let out = common::diagnostics("# Y -> W -> V -> Y (a cycle, each reaching the next directly only);\n# X reaches all three and is outside the cycle.\nclass A\n  def initialize; end\n  def f(x: Int) -> String = \"A\"\nend\nmodule Y\n  using W\n  extension A\n    def f(x: Int) -> String = \"Y\"\n  end\nend\nmodule W\n  using V\n  extension A\n    def f(x: Int) -> String = \"W\"\n  end\nend\nmodule V\n  using Y\n  extension A\n    def f(x: Int) -> String = \"V\"\n  end\nend\nmodule X\n  using Y\n  using W\n  using V\n  extension A\n    def f(x: Int) -> String = \"X/\" + super(x)\n  end\nend\nmodule Z\n  using X\n  def self.go -> String = A.new.f(1)\nend\nputs Z.go\n");
+    assert!(
+        out.iter()
+            .any(|d| d.contains("the call of `f` is ambiguous")),
+        "{out:?}"
+    );
+    let out = common::diagnostics("class A\n  def initialize; end\n  def f(x: Int) -> String = \"A\"\nend\nmodule V\n  extension A\n    def f(x: Int) -> String = \"V\"\n  end\nend\nmodule N\n  extension A\n    def f(x: Int) -> String = \"Y\"\n  end\n  using V\n  extension A\n    def f(x: Int) -> String = \"X/\" + super(x)\n  end\nend\nmodule Z\n  using N\n  def self.go -> String = \"ok\"\nend\nputs Z.go\n");
+    assert!(
+        out.iter()
+            .any(|d| d.contains("which reaches this one back")),
+        "{out:?}"
+    );
+}

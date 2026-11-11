@@ -1074,8 +1074,6 @@ pub struct Checker {
     /// `finish_frame_types`: those whose release may be observed go to
     /// `Output::released_stmts`.
     temp_stmts: Vec<NodeId>,
-    /// The pseudo-class of each file's top-level methods, by file index.
-    file_mains: Vec<Option<ClassId>>,
     /// The REPL's top-level environment, kept across inputs.
     repl_env: Option<Env>,
     /// Methods currently being checked (to detect inference cycles).
@@ -1163,7 +1161,8 @@ struct MatchedArg<'a> {
 }
 
 impl Checker {
-    pub fn new(world: World, file_mains: Vec<Option<ClassId>>) -> Checker {
+    pub fn new(mut world: World, file_mains: Vec<Option<ClassId>>) -> Checker {
+        world.file_mains = file_mains.clone();
         let mut world = world;
         world.freeze_ancestors(true);
         let env = Env {
@@ -1242,7 +1241,6 @@ impl Checker {
             frame_vars: Vec::new(),
             breaking_blocks: HashMap::default(),
             temp_stmts: Vec::new(),
-            file_mains,
             repl_env: None,
             in_progress: Vec::new(),
             in_outer_self: None,
@@ -1316,17 +1314,17 @@ impl Checker {
 
     /// The pseudo-class holding the top-level methods of file `file`.
     fn file_main(&self, file: u32) -> Option<ClassId> {
-        self.file_mains.get(file as usize).copied().flatten()
+        self.world.file_main(file)
     }
 
     /// Register the pseudo-class of a file loaded after construction (a
     /// `require` in the REPL).
     pub fn add_file_main(&mut self, file: u32, main: ClassId) {
         let index = file as usize;
-        if self.file_mains.len() <= index {
-            self.file_mains.resize(index + 1, None);
+        if self.world.file_mains.len() <= index {
+            self.world.file_mains.resize(index + 1, None);
         }
-        self.file_mains[index] = Some(main);
+        self.world.file_mains[index] = Some(main);
     }
 
     /// Check every method body, constant initializer and each file's
@@ -2321,7 +2319,8 @@ impl Checker {
                     continue;
                 };
                 self.world.active_extensions =
-                    self.extensions_at(Some(cid), class.file, d.span.start);
+                    self.world
+                        .extensions_active_at(Some(cid), class.file, d.span.start);
                 self.scan_closures([&**d], std::iter::empty());
                 let t = self.check_expr(d, Some(&f.ty));
                 if !self.coerce(&t, &f.ty) {
@@ -2374,7 +2373,7 @@ impl Checker {
         }
         for (i, expr) in body.iter().enumerate() {
             // (A `using` is in effect from its statement on.)
-            self.world.active_extensions = self.file_extensions(file, expr.span.start);
+            self.world.active_extensions = self.world.file_extensions(file, expr.span.start);
             self.stmt_unused = !(last_used && i + 1 == body.len());
             let t = self.check_expr(expr, None);
             if i + 1 < body.len() {
@@ -2456,7 +2455,7 @@ impl Checker {
             static_done: self.static_done.clone(),
             defaults_checked: self.defaults_checked.clone(),
             init_checked: self.init_checked.clone(),
-            file_mains: self.file_mains.clone(),
+            file_mains: self.world.file_mains.clone(),
             self_news: self.self_news.clone(),
             generated_news: self.generated_news.clone(),
             repl_ctor_marks: self.repl_ctor_marks,
@@ -2473,7 +2472,7 @@ impl Checker {
         self.static_done = s.static_done;
         self.defaults_checked = s.defaults_checked;
         self.init_checked = s.init_checked;
-        self.file_mains = s.file_mains;
+        self.world.file_mains = s.file_mains;
         self.self_news = s.self_news;
         self.generated_news = s.generated_news;
         self.repl_ctor_marks = s.repl_ctor_marks;
@@ -3160,7 +3159,9 @@ impl Checker {
         let saved_frame_vars = std::mem::take(&mut self.frame_vars);
         let saved_temp_stmts = std::mem::take(&mut self.temp_stmts);
         self.scan_closures([&*stmt.expr], std::iter::empty());
-        let active = self.extensions_at(Some(stmt.class), stmt.file, stmt.expr.span.start);
+        let active =
+            self.world
+                .extensions_active_at(Some(stmt.class), stmt.file, stmt.expr.span.start);
         let saved_active = std::mem::replace(&mut self.world.active_extensions, active);
         let t = self.check_expr(&stmt.expr, None);
         let _ = self.settle_vars(&t);
@@ -3641,7 +3642,9 @@ impl Checker {
             Some(e) => self.world.extensions[e as usize].module,
             None => Some(owner),
         };
-        let active = self.extensions_at(lexical, info.file, info.span.start);
+        let active = self
+            .world
+            .extensions_active_at(lexical, info.file, info.span.start);
 
         let saved_env = std::mem::replace(&mut self.env, env);
         let saved_infer = std::mem::take(&mut self.infer);
@@ -3835,7 +3838,9 @@ impl Checker {
         let saved_frame_vars = std::mem::take(&mut self.frame_vars);
         let saved_temp_stmts = std::mem::take(&mut self.temp_stmts);
         self.scan_closures([&*value], std::iter::empty());
-        let active = self.extensions_at(info.owner, info.file, value.span.start);
+        let active = self
+            .world
+            .extensions_active_at(info.owner, info.file, value.span.start);
         let saved_active = std::mem::replace(&mut self.world.active_extensions, active);
         let t = self.check_expr(&value, None);
         self.world.active_extensions = saved_active;
@@ -4818,70 +4823,6 @@ impl Checker {
         } else if let Some(m) = found {
             map.insert(id, m);
         }
-    }
-
-    /// The extensions active throughout a file: its top level's `using`s
-    /// and the top-level extensions of its group (`World::group_extensions`).
-    /// The extensions of `class`'s `using`s (in its body; for a file's
-    /// main pseudo-class, at the top level) in effect at `pos` in `file`:
-    /// those written before it, a `using` being in effect from its
-    /// statement to the end of the body (docs/01 §7). (Code of another
-    /// file, a generated method's body, has them all.)
-    fn usings_at(&self, class: ClassId, file: u32, pos: u32) -> Vec<ExtensionId> {
-        let c = self.world.class(class);
-        c.usings
-            .iter()
-            .filter(|(at, _)| c.file != file || *at < pos)
-            .map(|(_, e)| *e)
-            .collect()
-    }
-
-    /// The extensions active in code written at `pos` in `file`, in the
-    /// body of `lexical` (a class or module; `None`: the top level): the
-    /// `using`s before `pos` there, in the namespaces it is nested in and
-    /// at the file's top level, its group's top-level extensions, and the
-    /// extensions the modules it is in declare (`own_extensions`).
-    fn extensions_at(&self, lexical: Option<ClassId>, file: u32, pos: u32) -> Vec<ExtensionId> {
-        let mut active = Vec::new();
-        let mut ns = lexical;
-        while let Some(n) = ns {
-            active.extend(self.usings_at(n, file, pos));
-            ns = self.world.class(n).lexical;
-        }
-        active.extend(self.file_extensions(file, pos));
-        active.extend(self.own_extensions(lexical));
-        let mut seen = HashSet::default();
-        active.retain(|e| seen.insert(*e));
-        active
-    }
-
-    /// The extensions a module declares are in effect inside its body
-    /// (so they see each other, as a `super` in one reaching another):
-    /// those of `class` and of the modules it is nested in.
-    fn own_extensions(&self, class: Option<ClassId>) -> Vec<ExtensionId> {
-        let mut out = Vec::new();
-        let mut ns = class;
-        while let Some(n) = ns {
-            let c = self.world.class(n);
-            out.extend(c.extensions.iter().copied());
-            ns = c.lexical;
-        }
-        out
-    }
-
-    /// The extensions active at `pos` in `file` from its top level: its
-    /// `using`s before `pos`, and its group's top-level extensions.
-    fn file_extensions(&self, file: u32, pos: u32) -> Vec<ExtensionId> {
-        let mut active = self
-            .file_main(file)
-            .map(|fm| self.usings_at(fm, file, pos))
-            .unwrap_or_default();
-        for e in self.world.group_extensions(file) {
-            if !active.contains(&e) {
-                active.push(e);
-            }
-        }
-        active
     }
 
     /// A variable a bare `super` forwards: the method's parameter (or
@@ -12575,8 +12516,58 @@ impl Checker {
                     .iter()
                     .find_map(|y| self.extension_rivals(*x, *y, &ext_src).map(|p| (*x, *y, p)))
             });
+            // (Two extensions' own methods with the same parameters, #585;
+            // others tie by fitting equally, listed below.)
+            let subst_of = |m: MethodId| {
+                cands
+                    .iter()
+                    .find(|(k, _)| *k == m)
+                    .map(|(_, s)| s.clone())
+                    .unwrap_or_default()
+            };
+            let own_pair = open.iter().enumerate().find_map(|(i, x)| {
+                let ex = self.world.method(*x).extension?;
+                open[i + 1..].iter().find_map(|y| {
+                    let ey = self.world.method(*y).extension?;
+                    let (a, b) = (self.world.method(*x), self.world.method(*y));
+                    let (sa, sb) = (subst_of(*x), subst_of(*y));
+                    (ex != ey
+                        && self.as_specific(a, &sa, b, &sb)
+                        && self.as_specific(b, &sb, a, &sa))
+                    .then_some((ex, ey))
+                })
+            });
             if let Some((x, y, (ea, eb))) = ext_pair {
                 self.extension_ambiguity(&call.name, x, y, ea, eb, expr.span);
+            } else if let Some((ea, eb)) = own_pair {
+                let (na, nb) = (self.extension_name(ea), self.extension_name(eb));
+                // (Two in one place have the same name; the `using` hint
+                // only where both are scoped.)
+                let who = if na == nb {
+                    format!(
+                        "two {}",
+                        na.replacen("the extension", "extensions", 1).replacen(
+                            "the top-level extension",
+                            "top-level extensions",
+                            1
+                        )
+                    )
+                } else {
+                    format!("{na} and {nb}")
+                };
+                let scoped = |e: ExtensionId| self.world.extensions[e as usize].module.is_some();
+                let hint = if scoped(ea) && scoped(eb) {
+                    "; leave out one `using`"
+                } else {
+                    ""
+                };
+                self.error(
+                    format!(
+                        "the call of `{}` is ambiguous: {who}, both active here, each define it with the same parameters{hint}",
+                        call.name
+                    ),
+                    expr.span,
+                );
             } else if !rivals.is_empty() {
                 let mut names: Vec<String> = std::iter::once(winner)
                     .chain(rivals)
@@ -16255,6 +16246,7 @@ impl Checker {
         // (Every method after the own group on its side: two active
         // extensions' modules there give `super` no order, #577.)
         let mut after = Vec::new();
+        let found_all = found.clone();
         for (c, subst) in found {
             let cm = self.world.method(c);
             if in_own_group(cm) {
@@ -16292,6 +16284,94 @@ impl Checker {
                 if !cands.iter().any(|(k, _)| k == c) && target_of(*c) == Some(target) {
                     cands.push((*c, cs.clone()));
                 }
+            }
+        }
+        let mut cycle_exts: Vec<ExtensionId> = Vec::new();
+        // (In an extension's method: the methods of the other extensions of
+        // its target active where it is declared, in front, chosen among
+        // with the rest as a call's overloads are; two of the same
+        // signature, neither overriding the other, are ambiguous, #585,
+        // docs/01 §7.)
+        if let Some(e) = m.extension {
+            let target = self.world.extensions[e as usize].target;
+            let others: Vec<_> = found_all
+                .iter()
+                .filter(|(c, _)| {
+                    let cm = self.world.method(*c);
+                    cm.singleton == m.singleton
+                        && !cm.is_abstract
+                        && cm.extension.is_some_and(|x| {
+                            x != e && self.world.extensions[x as usize].target == target
+                        })
+                        && !cands.iter().any(|(k, _)| k == c)
+                })
+                .cloned()
+                .collect();
+            // (An extension that reaches this one back, directly or
+            // through others, is in its cycle: no order between them; the
+            // `super` taking one of its methods is an error, #585, below.)
+            // (Only when another extension's method is a candidate: the
+            // relation, once for this `super`.)
+            let other_ext = |c: &MethodId| {
+                self.world
+                    .method(*c)
+                    .extension
+                    .is_some_and(|x| x != e && self.world.extensions[x as usize].target == target)
+            };
+            let graph = if others.iter().chain(cands.iter()).any(|(c, _)| other_ext(c)) {
+                self.world.reach_graph(target)
+            } else {
+                Vec::new()
+            };
+            // (Every extension's cycle, once.)
+            let comps = World::reach_components(&graph);
+            let same_cycle = |a: ExtensionId, b: ExtensionId| {
+                comps.get(&a).is_some_and(|c| comps.get(&b) == Some(c))
+            };
+            if !graph.is_empty() {
+                cycle_exts = graph
+                    .iter()
+                    .map(|(k, _)| *k)
+                    .filter(|x| *x != e && same_cycle(e, *x))
+                    .collect();
+            }
+            let reaches = |a: ExtensionId, b: ExtensionId| {
+                graph.iter().any(|(k, next)| *k == a && next.contains(&b))
+            };
+            // (One extension reaching another orders them: the reached
+            // one's method of the same parameters is hidden, X -> Y -> W.)
+            let ext_of = |c: &MethodId| self.world.method(*c).extension.unwrap();
+            let hidden: Vec<MethodId> = others
+                .iter()
+                .filter(|(w, ws)| {
+                    others.iter().any(|(y, ys)| {
+                        let (ey, ew) = (ext_of(y), ext_of(w));
+                        // (Not within one cycle: no order there.)
+                        ey != ew
+                            && reaches(ey, ew)
+                            && !same_cycle(ey, ew)
+                            && self.as_specific(
+                                self.world.method(*y),
+                                ys,
+                                self.world.method(*w),
+                                ws,
+                            )
+                            && self.as_specific(
+                                self.world.method(*w),
+                                ws,
+                                self.world.method(*y),
+                                ys,
+                            )
+                    })
+                })
+                .map(|(w, _)| *w)
+                .collect();
+            let others: Vec<_> = others
+                .into_iter()
+                .filter(|(c, _)| !hidden.contains(c))
+                .collect();
+            if !others.is_empty() {
+                cands.splice(0..0, others);
             }
         }
         if cands.is_empty() {
@@ -16372,6 +16452,74 @@ impl Checker {
             .is_none()
             .then(|| m.params.len() + usize::from(m.block.is_some()));
         let saved = std::mem::replace(&mut self.zsuper_forwards, zsuper);
+        // (A candidate of an extension in this one's cycle: tried, undone;
+        // the `super` taking it is an error, else it is left out, #585.)
+        let in_cycle = |c: &Self, k: MethodId| {
+            c.world
+                .method(k)
+                .extension
+                .is_some_and(|x| cycle_exts.contains(&x))
+        };
+        let cands = if cands.iter().any(|(k, _)| in_cycle(self, *k)) {
+            let infer = self.infer.save();
+            let env = self.env.clone();
+            let reported = self.diagnostics.len();
+            let tables = self.table_mark();
+            let last = self.last_winner;
+            let initish = m.name == "initialize" || (m.name == "deinitialize" && !m.singleton);
+            self.resolve_overloads_as(expr, &call, &self_ty, cands.clone(), true, None, initish);
+            // (One candidate is the winner when the call fits it.)
+            let fits = !self.diagnostics[reported..]
+                .iter()
+                .any(|(_, d)| d.is_error());
+            let trial_errors: Vec<String> = self.diagnostics[reported..]
+                .iter()
+                .filter(|(_, d)| d.is_error())
+                .map(|(_, d)| d.message.clone())
+                .collect();
+            let winner = self
+                .last_winner
+                .filter(|(id, _)| *id == expr.id)
+                .map(|(_, w)| w)
+                .or_else(|| (cands.len() == 1 && fits).then(|| cands[0].0));
+            self.truncate_diagnostics(reported);
+            self.discard_tables(tables);
+            self.infer.restore(infer);
+            self.env = env;
+            self.last_winner = last;
+            // (An ambiguity among them, a cycle's candidate in it: no
+            // order, the cycle's error too.)
+            let ambiguous = trial_errors.iter().any(|m| m.contains("is ambiguous"));
+            let winner =
+                if ambiguous && winner.is_some() && !winner.is_some_and(|w| in_cycle(self, w)) {
+                    cands.iter().map(|(k, _)| *k).find(|k| in_cycle(self, *k))
+                } else {
+                    winner
+                };
+            if let Some(w) = winner.filter(|w| in_cycle(self, *w)) {
+                let x = self.world.method(w).extension.unwrap();
+                let e = m.extension.unwrap();
+                let (na, mut nb) = (self.extension_name(e), self.extension_name(x));
+                if na == nb {
+                    nb = nb.replacen("the ", "another ", 1);
+                }
+                self.zsuper_forwards = saved;
+                self.error(
+                    format!(
+                        "`super` in {na} would reach `{}` of {nb}, which reaches this one back: there is no order between them; put one in a module and `using` it from the other's",
+                        m.name
+                    ),
+                    expr.span,
+                );
+                return Type::Nothing;
+            }
+            cands
+                .into_iter()
+                .filter(|(k, _)| !in_cycle(self, *k))
+                .collect()
+        } else {
+            cands
+        };
         let t = self.resolve_overloads_as(
             expr,
             &call,

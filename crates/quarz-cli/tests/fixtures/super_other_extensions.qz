@@ -1,0 +1,118 @@
+# #585: `super` in an extension's method reaches the other extensions of
+# its target active where it is declared (docs/01 §7), in front of the
+# target's own methods, chosen among as a call's overloads.
+
+# The class's own method after them.
+class Base
+  def f(x: Int) -> String = "Base"
+end
+class A < Base
+  def initialize; end
+  def f(x: Int) -> String = "A/" + super(x)
+end
+module Y
+  extension A
+    def f(x: Int) -> String = "Y/" + super(x)
+  end
+end
+module X
+  using Y
+  extension A
+    def f(x: Int) -> String = "X/" + super(x)
+  end
+end
+module Z
+  using X
+  def self.go -> String = A.new.f(1)
+end
+puts Z.go
+
+# The issue's reproducer, with A9's abstract `f(Int)` (passed over to
+# Base9, #522) and without it (A7's `f(Object)` takes the call).
+class Base9
+  def f(x: Int) -> String = "Base9:#{x}"
+end
+abstract class A9 < Base9
+  abstract def f(x: Int) -> String
+  def f(x: Object) -> String = "A9obj"
+end
+class C9 < A9
+  def initialize; end
+end
+module Y9
+  extension A9
+    def f(x: Int) -> String = "Y9/" + super(x)
+  end
+end
+module X9
+  using Y9
+  extension A9
+    def f(x: Int) -> String = "X9/" + super(x)
+  end
+end
+module Z9
+  using X9
+  def self.go
+    a9: A9 = C9.new
+    puts a9.f(1)
+  end
+end
+Z9.go
+class Base7
+  def f(x: Int) -> String = "Base7:#{x}"
+end
+abstract class A7 < Base7
+  def f(x: Object) -> String = "A7obj"
+end
+class C7 < A7
+  def initialize; end
+end
+module Y7
+  extension A7
+    def f(x: Int) -> String = "Y7/" + super(x)
+  end
+end
+module X7
+  using Y7
+  extension A7
+    def f(x: Int) -> String = "X7/" + super(x)
+  end
+end
+module Z7
+  using X7
+  def self.go
+    a7: A7 = C7.new
+    puts a7.f(1)
+  end
+end
+Z7.go
+
+# One extension reaching another orders them (#585): Y, which `using`s W,
+# comes before W for X's `super`, and hides its method: X -> Y -> W -> A.
+class A5
+  def initialize; end
+  def f(x: Int) -> String = "A5"
+end
+module W5
+  extension A5
+    def f(x: Int) -> String = "W5/" + super(x)
+  end
+end
+module Y5
+  using W5
+  extension A5
+    def f(x: Int) -> String = "Y5/" + super(x)
+  end
+end
+module X5
+  using W5
+  using Y5
+  extension A5
+    def f(x: Int) -> String = "X5/" + super(x)
+  end
+end
+module Z5
+  using X5
+  def self.go -> String = A5.new.f(1)
+end
+puts Z5.go
