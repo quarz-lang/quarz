@@ -5912,3 +5912,65 @@ fn a_destructured_array_element_may_be_shorter() {
     );
     ok("ts: Array[[Int, Int, String]] = [[1, 2, \"x\"]]\nts.each { |a, *r| p r }");
 }
+
+#[test]
+fn a_module_or_abstract_class_written_as_a_type_argument_is_checked() {
+    // #509: written as the argument of a `Type[T]` parameter, a module or
+    // an abstract class is refused when a class method of `T`'s bound
+    // needs on it an includer or a concrete class, as the call written on
+    // it is.
+    let named =
+        "module Named\n  abstract def self.kind -> String\n  def self.make -> Self = new\nend\n";
+    err(
+        &format!("{named}def k[T <: Named](t: Type[T]) -> String = t.kind\nk(Named)"),
+        "cannot pass the module `Named` itself as `Type[T]`: `T`'s class method `kind` is abstract",
+    );
+    err(
+        "abstract class Base\n  abstract def self.kind -> String\nend\ndef kb[T <: Base](t: Type[T]) -> String = t.kind\nkb(Base)",
+        "cannot pass the abstract class `Base` itself as `Type[T]`: `T`'s class method `kind` is abstract",
+    );
+    err(
+        "abstract class Base\n  def self.make -> Self = new\nend\ndef mb[T <: Base](t: Type[T]) -> T = t.make\nmb(Base)",
+        "`T`'s class method `make` calls `new` on its receiver",
+    );
+    // By keyword, through `Type[T]?`, to a constructor, through `super`,
+    // and for a second bound.
+    let want =
+        "cannot pass the module `Named` itself as `Type[T]`: `T`'s class method `kind` is abstract";
+    err(
+        &format!(
+            "{named}def kw[T <: Named](x: Int, t: Type[T]) -> String = t.kind\nkw(t: Named, x: 1)"
+        ),
+        want,
+    );
+    err(&format!("{named}def k[T <: Named](t: Type[T]?) -> String\n  if u = t\n    u.kind\n  else\n    \"\"\n  end\nend\nk(Named)"), want);
+    err(&format!("{named}class Holder[T <: Named]\n  @t: Type[T]\n  def initialize(@t: Type[T])\n  end\nend\nHolder.new(Named)"), want);
+    err(&format!("{named}class P\n  def initialize; end\n  def k[T <: Named](t: Type[T], n: Int) -> String = t.kind\nend\nclass Q < P\n  def k(s: String) -> String = super(Named, 1)\nend"), want);
+    err(&format!("{named}module Plain2\nend\ndef k[T <: Plain2 & Named](t: Type[T]) -> String = t.kind\nk(Named)"), want);
+    // A `*rest` of `Type[T]`, and a bound reached through another type
+    // parameter.
+    err(
+        &format!("{named}def k[T <: Named](*ts: Type[T]) -> String = ts[0].kind\nk(Named)"),
+        want,
+    );
+    err(
+        &format!("{named}def k[U <: Named, T <: U](t: Type[T]) -> String = t.kind\nk(Named)"),
+        want,
+    );
+    // What runs on it decides: an extension's witness, or the override
+    // of the bound's method by signature (not another overload).
+    ok("module Named2\n  abstract def self.kind -> String\nend\nabstract class Base\nend\nextension Base\n  include Named2\n  def self.kind -> String = \"ext\"\nend\ndef k[T <: Named2](t: Type[T]) -> String = t.kind\nputs k(Base)");
+    err(
+        "module Named3\n  abstract def self.kind -> String\nend\nabstract class Base\n  include Named3\n  def self.kind(x: Int) -> String = \"int\"\nend\ndef k[T <: Named3](t: Type[T]) -> String = t.kind\nk(Base)",
+        "cannot pass the abstract class `Base` itself as `Type[T]`: `T`'s class method `kind` is abstract",
+    );
+    ok("module Named4\n  def self.kind -> String = \"named\"\nend\nmodule Sub\n  include Named4\n  def self.kind(x: Int) -> Self = new\nend\ndef k[T <: Named4](t: Type[T]) -> String = t.kind\nputs k(Sub)");
+    // What runs passes over an abstract class method to what implements
+    // it: a superclass's, or a module included after it.
+    ok("module NamedA\n  abstract def self.kind -> String\nend\nabstract class Top\n  def self.kind -> String = \"top\"\nend\nabstract class Mid < Top\n  include NamedA\nend\ndef k[T <: NamedA](t: Type[T]) -> String = t.kind\nputs k(Mid)");
+    ok("module NamedB\n  abstract def self.kind -> String\nend\nmodule Impl\n  def self.kind -> String = \"impl\"\nend\nabstract class Mid\n  include NamedB\n  include Impl\nend\ndef k[T <: NamedB](t: Type[T]) -> String = t.kind\nputs k(Mid)");
+    // A bound whose class methods run on it, a class that includes the
+    // module, and a value through a `Type[M]` variable are accepted.
+    ok("module Plain\n  def self.hello -> String = \"hi\"\nend\ndef h[T <: Plain](t: Type[T]) -> String = t.hello\nputs h(Plain)");
+    ok(&format!("{named}class A\n  include Named\n  def initialize; end\n  def self.kind -> String = \"a\"\nend\ndef k[T <: Named](t: Type[T]) -> String = t.kind\nputs k(A)\nx: Type[Named] = Named\nputs k(x)"));
+}
