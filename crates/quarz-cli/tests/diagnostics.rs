@@ -2417,3 +2417,17 @@ fn an_inapplicable_conditional_extension_hides_no_rivalry() {
         "{out:?}"
     );
 }
+
+/// #580: under `using`, `C.tag` on a class written by name is typed as the
+/// extension's module's class method, which runs: its Object result is not
+/// a String.
+#[test]
+fn a_class_call_under_using_is_typed_as_the_extensions_module() {
+    let src = "module A\n  def self.tag -> Object = \"A\"\nend\nclass P\n  def self.tag -> String = \"P\"\nend\nclass C < P\nend\nmodule Sa\n  extension C\n    include A\n  end\nend\ndef f -> String\n  using Sa\n  s: String = C.tag\n  s\nend\n";
+    let out = common::diagnostics(src);
+    assert!(
+        out.iter()
+            .any(|d| d.contains("cannot assign Object to `s`")),
+        "{out:?}"
+    );
+}

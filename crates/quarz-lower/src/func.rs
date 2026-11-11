@@ -4116,6 +4116,12 @@ impl<'a> FnBuilder<'a> {
                 CallKind::Send(call.name.clone())
             }
             Some(CallTarget::Method { method }) if varies => CallKind::Method(*method),
+            // A class written by name whose class method the checker found
+            // in a module an active extension brought (#580): that method,
+            // with the class object as `self`, not looked up again on it.
+            Some(CallTarget::Method { method }) if self.out.lexical_class_calls.contains(&e.id) => {
+                CallKind::Function(*method)
+            }
             // A built-in `Kernel` function called on the implicit receiver:
             // this one, which a method of the receiver's class of the same
             // signature does not take over (docs/01 §3).
