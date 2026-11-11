@@ -15800,20 +15800,78 @@ impl Checker {
         if own_ext.is_some() {
             self.world.active_extensions.pop();
         }
+        // (An abstract declaration is a requirement, not an
+        // implementation: `super` passes over it to the next method with a
+        // body, on both sides, #522. Per signature: an owner with an
+        // abstract method of the name and no method with a body this one
+        // replaces (`World::replaces_seen`, an extension's body on it too)
+        // is passed over whole, even with concrete overloads of other
+        // signatures; one with a body this method replaces stops the walk
+        // there, its overloads chosen among as a call's.)
+        // (From each owner's own table: an extension's method of the
+        // signature hides the target's own abstract in the lookup.)
+        let has_abstract: Vec<ClassId> = found
+            .iter()
+            .map(|(c, _)| self.world.method(*c).owner)
+            .filter(|o| {
+                let k = self.world.class(*o);
+                let table = if m.singleton {
+                    &k.singleton_methods
+                } else {
+                    &k.methods
+                };
+                table.get(&m.name).is_some_and(|ids| {
+                    ids.iter().any(|i| {
+                        let im = self.world.method(*i);
+                        im.owner == *o && im.is_abstract
+                    })
+                })
+            })
+            .collect();
+        // (The method's own group, as the walk below takes it, is not a
+        // body above it.)
+        let in_own_group = |cm: &MethodInfo| match m.extension {
+            Some(e) => cm.extension == Some(e),
+            None => cm.owner == owner && cm.extension.is_none(),
+        };
+        // (Only what the walk reaches: the methods after the own group's
+        // first, an earlier extension's never a body above it.)
+        let own_at = found
+            .iter()
+            .position(|(c, _)| in_own_group(self.world.method(*c)))
+            .unwrap_or(found.len());
+        let replaced_body: Vec<ClassId> = found[own_at..]
+            .iter()
+            .filter(|(c, subst)| {
+                let cm = self.world.method(*c);
+                !cm.is_abstract
+                    && !in_own_group(cm)
+                    && cm.singleton == m.singleton
+                    && has_abstract.contains(&cm.owner)
+                    && self
+                        .world
+                        .replaces_seen(mid, &HashMap::default(), *c, subst)
+            })
+            .map(|(c, _)| self.world.method(*c).owner)
+            .collect();
+        let passed: Vec<ClassId> = has_abstract
+            .into_iter()
+            .filter(|o| !replaced_body.contains(o))
+            .collect();
         let mut after_own = false;
         let mut next_owner = None;
         let mut cands = Vec::new();
         for (c, subst) in found {
             let cm = self.world.method(c);
-            let own_group = match m.extension {
-                Some(e) => cm.extension == Some(e),
-                None => cm.owner == owner && cm.extension.is_none(),
-            };
-            if own_group {
+            if in_own_group(cm) {
                 after_own = true;
                 continue;
             }
-            if !after_own || cm.singleton != m.singleton {
+            if !after_own
+                || cm.singleton != m.singleton
+                || cm.is_abstract
+                || passed.contains(&cm.owner)
+            {
                 continue;
             }
             if *next_owner.get_or_insert(cm.owner) != cm.owner {
