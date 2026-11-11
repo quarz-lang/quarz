@@ -159,7 +159,10 @@ never use `pgrep -f` with a plain pattern).
   pull request names the axes.
 - A checker change runs `quarz check` over every tracked `.qz` file and
   the cogs with the branch's binary and with main's, and the pull request
-  lists the programs newly refused or newly accepted.
+  lists the programs newly refused or newly accepted:
+  `tools/check-diff.sh target/debug/quarz-main target/debug/quarz
+  [COG_DIR...]` prints them, with main's binary built in a second clone
+  or `git worktree` with its own `CARGO_TARGET_DIR` and copied there.
 - `.cargo/config.toml` sets `QUARZ_THREADS=1` for `cargo test` (and
   `cargo run`), so tasks' output order is deterministic; the default is
   one worker per CPU. `tests/threads.rs` runs `tests/threads/*.qz` with
