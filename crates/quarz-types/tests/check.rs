@@ -5998,3 +5998,14 @@ fn sort_pairs_takes_comparable_keys_only() {
         "does not satisfy the bound Comparable[S]",
     );
 }
+
+#[test]
+fn two_argument_sets_on_a_module_with_no_includer() {
+    // #538: the one-arguments rule compares a module target's own includes
+    // too, so the conflict is reported where it is written, with no class
+    // including the module.
+    err(
+        "module P[T]\n  def it -> Int = 1\nend\nmodule Wrap[U]\n  include P[U]\nend\nmodule Mid\n  include P[Int]\nend\nextension Mid\n  include Wrap[String]\nend",
+        "`Mid` already conforms to `P[Int]` (its own include): this extension cannot include `P[String]` (through `Wrap[String]`)",
+    );
+}

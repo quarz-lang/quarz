@@ -1745,9 +1745,10 @@ impl<'ast> Declarer<'ast> {
                     && self.world.class_side_order(c).contains(&target)
             })
             .collect();
-        if self.world.class(target).kind != ClassKind::Module {
-            reached.insert(0, target);
-        }
+        // (A module target too, compared with its own includes: the
+        // conflict is reported where it is written, with no class including
+        // the module as with one, #538.)
+        reached.insert(0, target);
         for c in reached {
             let Some(mine) = self.brought_in(ext, module, margs, c) else {
                 continue;
@@ -1778,7 +1779,37 @@ impl<'ast> Declarer<'ast> {
                 } else {
                     format!(" (through `{include}`)")
                 };
+                // (A class of another cog, an application including a
+                // library's target, where the library's top-level extension
+                // is not active, brings the conflict: reported where that
+                // class is declared, naming the extension, #537.)
+                let (cfile, cspan) = (self.world.class(c).file, self.world.class(c).span);
+                let efile = self.world.extensions[ext as usize].file;
+                let group = |f: u32| self.world.file_groups.get(&f).cloned();
+                // (Only from a dependency to the program using it: the
+                // extension in a library cog or a std module, the class in
+                // another group, which names the extension's module and so
+                // depends on it; never an application's extension, nor a
+                // prelude class.)
+                let (cg, eg) = (group(cfile), group(efile));
+                let elsewhere = c != target
+                    && cg.is_some()
+                    && cg != eg
+                    && matches!(eg, Some(UnitGroup::Cog(_) | UnitGroup::Std(_)));
                 match src {
+                    None if elsewhere => {
+                        let tname = self.world.class(target).name.clone();
+                        let label = self.world.extension_label(ext);
+                        self.diagnostics.push((
+                            cfile,
+                            Diagnostic::error(
+                                format!(
+                                    "`{cname}` conforms to `{other}` (its own include) and, through `{tname}`, to `{written}`{through} by an extension ({label}): a generic module `{mname}` is included with one set of arguments"
+                                ),
+                                cspan,
+                            ),
+                        ));
+                    }
                     None => self.error(
                         format!(
                             "`{cname}` already conforms to `{other}` (its own include): this extension cannot include `{written}`{through}, a generic module `{mname}` is included with one set of arguments"
