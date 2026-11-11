@@ -676,6 +676,9 @@ enum TableUndo {
     /// A call noted in `Output::static_calls` (a discarded trial's must
     /// not be reported).
     StaticCall((u32, Span, MethodId)),
+    /// One more `Checker::extension_ambiguities` (#577): a discarded
+    /// trial's does not count.
+    ExtensionAmbiguity,
     /// A node's type before a check in a block recorded another.
     NodeType(NodeId, Option<Type>),
     /// An `!=`'s `Output::ne_negated` entry before a check changed it.
@@ -1103,6 +1106,9 @@ pub struct Checker {
     /// The method an overloaded call chose, by the call's node
     /// (`resolve_pretyped`).
     last_winner: Option<(NodeId, MethodId)>,
+    /// How many calls `extension_ambiguity` reported (#577): a `for` whose
+    /// `each` form is ambiguous keeps that error rather than its fallback.
+    extension_ambiguities: usize,
     self_news: Vec<SelfNew>,
     /// The generated methods building their receiver's class
     /// (`StaticHost::generated_new`): class generated into, the class
@@ -1242,6 +1248,7 @@ impl Checker {
             literal_vars: HashSet::default(),
             checking_bound: false,
             last_winner: None,
+            extension_ambiguities: 0,
             self_news: Vec::new(),
             generated_news: Vec::new(),
             repl_ctor_marks: (0, 0, 0),
@@ -2593,6 +2600,9 @@ impl Checker {
                         Some(b) => self.out.block_pass.insert(id, b),
                         None => self.out.block_pass.remove(&id),
                     };
+                }
+                TableUndo::ExtensionAmbiguity => {
+                    self.extension_ambiguities -= 1;
                 }
                 TableUndo::StaticCall(entry) => {
                     if let Some(i) = self.out.static_calls.iter().rposition(|e| *e == entry) {
@@ -6523,11 +6533,13 @@ impl Checker {
             let env = self.env.clone();
             let reported = self.diagnostics.len();
             let reported_tables = self.table_mark();
+            let ambiguities = self.extension_ambiguities;
             self.check_expr(&f.each, None);
             let failed = self.diagnostics[reported..]
                 .iter()
                 .any(|(_, d)| d.is_error());
-            if !failed {
+            // (An ambiguous `each`, #577: its error, not the fallback's.)
+            if !failed || self.extension_ambiguities > ambiguities {
                 self.out.for_loops.insert(expr.id);
                 return self.world.nil();
             }
@@ -6743,6 +6755,17 @@ impl Checker {
                         expr.span,
                     );
                     return Type::Nothing;
+                };
+                let (mid, subst) = match self.by_name_choice(&rt, mid, &cands) {
+                    Ok(m) => cands
+                        .iter()
+                        .find(|(k, _)| *k == m)
+                        .cloned()
+                        .unwrap_or((mid, subst)),
+                    Err((a, b, ea, eb)) => {
+                        self.extension_ambiguity(name, a, b, ea, eb, expr.span);
+                        return Type::Nothing;
+                    }
                 };
                 let m = self.world.method(mid).clone();
                 // `initialize` runs only from `new` and `super` (docs/01
@@ -7232,17 +7255,28 @@ impl Checker {
                 // Each class the value may be of (`Foo?`, a union).
                 for m in t.members() {
                     let Type::Class(cid, _) = m else { continue };
-                    let to_s = self
+                    // (Those an interpolation can call: no argument nor block.)
+                    let cands: Vec<_> = self
                         .world
                         .lookup_methods(&m, "to_s")
                         .into_iter()
-                        .find(|(id, subst)| {
+                        .filter(|(id, subst)| {
                             let m = self.world.method(*id);
                             m.params.is_empty()
                                 && m.block.is_none()
                                 && self.extension_bounds_hold(*id, subst)
                         })
-                        .map(|(m, _)| m);
+                        .collect();
+                    let to_s = cands.first().map(|(m, _)| *m);
+                    // (Two active extensions' modules both giving it, #577.)
+                    let to_s = match to_s.map(|t| self.by_name_choice(&m, t, &cands)) {
+                        Some(Err((a, b, ea, eb))) => {
+                            self.extension_ambiguity("to_s", a, b, ea, eb, e.span);
+                            continue;
+                        }
+                        Some(Ok(t)) => Some(t),
+                        None => None,
+                    };
                     // (Called directly when the run time's lookup by name
                     // would not find it: an extension's own `to_s`, or a
                     // module's that only an active scoped or conditional
@@ -9012,6 +9046,40 @@ impl Checker {
             let pt = positional[0].ty.subst(&subst);
             let saved = self.infer.save();
             if self.coerce(rhs, &pt) {
+                // (Two active extensions' modules both giving one whose
+                // parameter takes the right-hand side, #577.)
+                let rhs_now = self.infer.resolve(rhs);
+                let all: Vec<_> = self
+                    .world
+                    .lookup_methods(&lhs, name)
+                    .into_iter()
+                    .filter(|(k, ks)| {
+                        let km = self.world.method(*k);
+                        let ps: Vec<&ParamInfo> = km
+                            .params
+                            .iter()
+                            .filter(|p| p.kind == ParamKind::Positional)
+                            .collect();
+                        let mut ks = ks.clone();
+                        ks.insert(SELF_PARAM, lhs.clone());
+                        ps.len() == 1
+                            && km.block.is_none()
+                            && self.world.is_subtype(&rhs_now, &ps[0].ty.subst(&ks))
+                    })
+                    .collect();
+                let (mid, mut subst) = match self.by_name_choice(&lhs, mid, &all) {
+                    Ok(k) if k == mid => (mid, subst),
+                    Ok(k) => all
+                        .iter()
+                        .find(|(x, _)| *x == k)
+                        .cloned()
+                        .unwrap_or((mid, subst)),
+                    Err((a, b, ea, eb)) => {
+                        self.extension_ambiguity(name, a, b, ea, eb, expr.span);
+                        return Type::Nothing;
+                    }
+                };
+                subst.insert(SELF_PARAM, lhs.clone());
                 self.out
                     .calls
                     .insert(expr.id, CallTarget::Method { method: mid });
@@ -12153,6 +12221,13 @@ impl Checker {
         // again. One that a fit at the literals' defaults beats is not
         // tried.
         let block_arity = Self::block_arity(call);
+        // (Which active extension brought each module of the receiver's
+        // order: two of them on the same target give no order, #577.)
+        let ext_src = if single {
+            Vec::new()
+        } else {
+            self.extension_sources(recv_ty)
+        };
         let inferring = pre.values().any(|t| self.infer.resolve(t).has_vars());
         let mut fits: Vec<(usize, MethodId, bool)> = Vec::new();
         let mut kept: Option<KeptFirst> = None;
@@ -12161,9 +12236,9 @@ impl Checker {
         for (index, (mid, class_subst)) in cands.iter().enumerate().rev() {
             if !single
                 && !inferring
-                && fits
-                    .iter()
-                    .any(|f| !f.2 && self.beats((f.0, f.1), (index, *mid), &cands, block_arity))
+                && fits.iter().any(|f| {
+                    !f.2 && self.beats((f.0, f.1), (index, *mid), &cands, block_arity, &ext_src)
+                })
             {
                 continue;
             }
@@ -12394,7 +12469,7 @@ impl Checker {
         }
         if !fits.is_empty() {
             fits.reverse();
-            let (mut winner, mut rivals) = self.pick_overload(&fits, &cands, block_arity);
+            let (mut winner, mut rivals) = self.pick_overload(&fits, &cands, block_arity, &ext_src);
             // An argument whose type is still to be inferred fits every
             // overload, binding it: the first that fits takes it, as the
             // checks of the arguments cannot tell them apart.
@@ -12431,7 +12506,28 @@ impl Checker {
                 }
             };
             self.last_winner = Some((expr.id, winner));
-            if !rivals.is_empty() {
+            // (The pair named: among the tied methods, those no other of
+            // them overrides.)
+            let tied: Vec<MethodId> = std::iter::once(winner)
+                .chain(rivals.iter().copied())
+                .collect();
+            let open: Vec<MethodId> = tied
+                .iter()
+                .copied()
+                .filter(|t| {
+                    !tied
+                        .iter()
+                        .any(|u| u != t && self.overridden_by(*u).contains(t))
+                })
+                .collect();
+            let ext_pair = open.iter().enumerate().find_map(|(i, x)| {
+                open[i + 1..]
+                    .iter()
+                    .find_map(|y| self.extension_rivals(*x, *y, &ext_src).map(|p| (*x, *y, p)))
+            });
+            if let Some((x, y, (ea, eb))) = ext_pair {
+                self.extension_ambiguity(&call.name, x, y, ea, eb, expr.span);
+            } else if !rivals.is_empty() {
                 let mut names: Vec<String> = std::iter::once(winner)
                     .chain(rivals)
                     .map(|m| self.signature(self.world.method(m)))
@@ -12842,6 +12938,7 @@ impl Checker {
         fits: &[(usize, MethodId, bool)],
         cands: &[(MethodId, HashMap<TypeParamId, Type>)],
         block_arity: Option<usize>,
+        ext_src: &[(ClassId, ExtensionId)],
     ) -> (MethodId, Vec<MethodId>) {
         let best_level = fits.iter().any(|f| !f.2);
         let level: Vec<&(usize, MethodId, bool)> =
@@ -12851,7 +12948,7 @@ impl Checker {
             .filter(|x| {
                 !level
                     .iter()
-                    .any(|y| self.beats((y.0, y.1), (x.0, x.1), cands, block_arity))
+                    .any(|y| self.beats((y.0, y.1), (x.0, x.1), cands, block_arity, ext_src))
             })
             .map(|x| x.1)
             .collect();
@@ -12874,13 +12971,17 @@ impl Checker {
     /// its block takes as many parameters as the call's (`block_arity`),
     /// or else the fewest more than it,
     /// or it is an extension's method in scope beside the class's own, or
-    /// it comes first from another owner (an override, a subclass's).
+    /// it comes first from another owner (an override, a subclass's) —
+    /// except between the modules of two active extensions of the same
+    /// target (`ext_src`, `World::resolution_sources`), which tie: the
+    /// override table decides, else the call is ambiguous (#577).
     fn beats(
         &self,
         x: (usize, MethodId),
         y: (usize, MethodId),
         cands: &[(MethodId, HashMap<TypeParamId, Type>)],
         block_arity: Option<usize>,
+        ext_src: &[(ClassId, ExtensionId)],
     ) -> bool {
         let (a, b) = (self.world.method(x.1), self.world.method(y.1));
         let (sa, sb) = (&cands[x.0].1, &cands[y.0].1);
@@ -12913,7 +13014,205 @@ impl Checker {
         }
         // (Two files' top-level `def`s are one set: neither comes first.)
         let main = |c: ClassId| self.world.class(c).kind == ClassKind::Main;
+        // (Two active extensions' modules: no order; a body over an
+        // abstract declaration, a requirement and not an implementation,
+        // #522; two declarations, the first, either being no body.)
+        if self.extension_rivals(x.1, y.1, ext_src).is_some() {
+            return match (a.is_abstract, b.is_abstract) {
+                (false, true) => true,
+                (true, true) => x.0 < y.0,
+                _ => false,
+            };
+        }
         a.owner != b.owner && !(main(a.owner) && main(b.owner)) && x.0 < y.0
+    }
+
+    /// The modules of `recv`'s static order that an active scoped or
+    /// conditional extension brought, with that extension
+    /// (`World::resolution_sources`), on both sides.
+    fn extension_sources(&self, recv: &Type) -> Vec<(ClassId, ExtensionId)> {
+        match recv {
+            Type::Class(id, args) | Type::ClassObject(id, args) => self
+                .world
+                .resolution_sources(*id, args)
+                .into_iter()
+                .filter_map(|(k, _, e)| e.map(|e| (k, e)))
+                .collect(),
+            // (A class object of a type parameter, `Type[T]`: its bounds'.)
+            Type::TypeOf(t) => self.extension_sources(t),
+            // (A type parameter's: its bounds', as its lookup is.)
+            Type::Param(p) => self
+                .world
+                .param_bounds(*p)
+                .iter()
+                .flat_map(|b| self.extension_sources(b))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether methods `a` and `b` belong to modules two different active
+    /// extensions of the same target brought (`ext_src`): those
+    /// extensions, which no order separates (#577).
+    fn extension_rivals(
+        &self,
+        a: MethodId,
+        b: MethodId,
+        ext_src: &[(ClassId, ExtensionId)],
+    ) -> Option<(ExtensionId, ExtensionId)> {
+        let of = |m: MethodId| {
+            let owner = self.world.method(m).owner;
+            ext_src.iter().find(|(k, _)| *k == owner).map(|(_, e)| *e)
+        };
+        let (ea, eb) = (of(a)?, of(b)?);
+        let target = |e: ExtensionId| self.world.extensions[e as usize].target;
+        (ea != eb && target(ea) == target(eb)).then_some((ea, eb))
+    }
+
+    /// The error for a call that two active extensions' modules both answer
+    /// (#577), naming the extensions and the modules: "includes" a module
+    /// one of its includes is, "brings" one that comes through them.
+    fn extension_ambiguity(
+        &mut self,
+        name: &str,
+        a: MethodId,
+        b: MethodId,
+        ea: ExtensionId,
+        eb: ExtensionId,
+        span: Span,
+    ) {
+        let msg = self.extension_ambiguity_message(name, a, b, ea, eb);
+        self.extension_ambiguities += 1;
+        self.table_journal.push(TableUndo::ExtensionAmbiguity);
+        self.error(msg, span);
+    }
+
+    /// `extension_ambiguity`'s message.
+    fn extension_ambiguity_message(
+        &self,
+        name: &str,
+        a: MethodId,
+        b: MethodId,
+        ea: ExtensionId,
+        eb: ExtensionId,
+    ) -> String {
+        let part = |c: &Self, m: MethodId, e: ExtensionId| {
+            let owner = c.world.method(m).owner;
+            let direct = c.world.extensions[e as usize]
+                .includes
+                .iter()
+                .any(|t| matches!(t, Type::Class(k, _) if *k == owner));
+            let verb = if direct { "includes" } else { "brings" };
+            (verb, c.world.class(owner).name.clone())
+        };
+        let ((va, ma), (vb, mb)) = (part(self, a, ea), part(self, b, eb));
+        let (na, nb) = (self.extension_name(ea), self.extension_name(eb));
+        // (Two extensions in one module have the same name.)
+        let who = if na == nb {
+            format!(
+                "two {}: one {va} `{ma}`, the other {vb} `{mb}`",
+                na.replacen("the extension", "extensions", 1).replacen(
+                    "the top-level extension",
+                    "top-level extensions",
+                    1
+                )
+            )
+        } else {
+            format!("{na} {va} `{ma}` and {nb} {vb} `{mb}`")
+        };
+        format!(
+            "the call of `{name}` is ambiguous: {who}, both active here, and each gives `{name}` (neither overrides the other); pass the value where one module's type is expected (a parameter typed `{ma}`), or leave out one `using`"
+        )
+    }
+
+    /// Of `cands`, those `&:name` can call (`symbol_callable`), each
+    /// tried and undone.
+    fn symbol_callable_cands(
+        &mut self,
+        cands: &[(MethodId, HashMap<TypeParamId, Type>)],
+        name: &str,
+    ) -> Vec<(MethodId, HashMap<TypeParamId, Type>)> {
+        cands
+            .iter()
+            .filter(|(k, ks)| {
+                let saved = self.infer.save();
+                let ok = self.symbol_callable(*k, ks, name).is_ok();
+                self.infer.restore(saved);
+                ok
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// For a call found by name (`chosen`, among `cands`, the candidates
+    /// that form can call), the method it resolves to when active
+    /// extensions' modules give more than one (#577): such a form has no
+    /// arguments to choose with, so every candidate a rival active
+    /// extension of the same target brought counts; of their bodies (an
+    /// abstract declaration gives none, #522), the one overriding all the
+    /// others, or else the ambiguous pair and their extensions for
+    /// `extension_ambiguity`. `chosen` when no rival gives one.
+    fn by_name_choice(
+        &self,
+        recv: &Type,
+        chosen: MethodId,
+        cands: &[(MethodId, HashMap<TypeParamId, Type>)],
+    ) -> Result<MethodId, (MethodId, MethodId, ExtensionId, ExtensionId)> {
+        let src = self.extension_sources(recv);
+        if src.is_empty() {
+            return Ok(chosen);
+        }
+        let mut group = vec![chosen];
+        for (r, _) in cands {
+            if *r != chosen && self.extension_rivals(chosen, *r, &src).is_some() {
+                group.push(*r);
+            }
+        }
+        if group.len() == 1 {
+            return Ok(chosen);
+        }
+        let bodies: Vec<MethodId> = group
+            .iter()
+            .copied()
+            .filter(|m| !self.world.method(*m).is_abstract)
+            .collect();
+        let open: Vec<MethodId> = bodies
+            .iter()
+            .copied()
+            .filter(|t| {
+                !bodies
+                    .iter()
+                    .any(|u| u != t && self.overridden_by(*u).contains(t))
+            })
+            .collect();
+        match open[..] {
+            [] => Ok(chosen),
+            [only] => Ok(only),
+            _ => {
+                for (i, x) in open.iter().enumerate() {
+                    for y in &open[i + 1..] {
+                        if let Some((ea, eb)) = self.extension_rivals(*x, *y, &src) {
+                            return Err((*x, *y, ea, eb));
+                        }
+                    }
+                }
+                Ok(open[0])
+            }
+        }
+    }
+
+    /// An extension as the user wrote it: "the extension of `C` in `Sc`"
+    /// (or "the top-level extension of `C`").
+    fn extension_name(&self, e: ExtensionId) -> String {
+        let ext = &self.world.extensions[e as usize];
+        let target = &self.world.class(ext.target).name;
+        match ext.module {
+            Some(m) => format!(
+                "the extension of `{target}` in `{}`",
+                self.world.class(m).name
+            ),
+            None => format!("the top-level extension of `{target}`"),
+        }
     }
 
     /// The methods `m` overrides: its entry in the override table
@@ -13602,6 +13901,30 @@ impl Checker {
                             return Err(format!("`&:{name}` needs a block with one parameter"));
                         }
                         let recv = self.infer.resolve(&params[0]);
+                        // (A member two active extensions' modules both give
+                        // the method, #577: the ambiguity, by its name.)
+                        if matches!(recv, Type::Union(_)) {
+                            for m in recv.members() {
+                                let all = self.world.lookup_methods(&m, name);
+                                // (The callable ones, as `union_symbol`.)
+                                let all = self.symbol_callable_cands(&all, name);
+                                let Some((first, _)) = all.first().cloned() else {
+                                    continue;
+                                };
+                                if let Err((a, b, ea, eb)) = self.by_name_choice(&m, first, &all) {
+                                    let msg = format!(
+                                        "{} (in `&:{name}`)",
+                                        self.extension_ambiguity_message(name, a, b, ea, eb)
+                                    );
+                                    if report {
+                                        self.extension_ambiguities += 1;
+                                        self.table_journal.push(TableUndo::ExtensionAmbiguity);
+                                        self.error(msg.clone(), e.span);
+                                    }
+                                    return Err(msg);
+                                }
+                            }
+                        }
                         let union = self.union_symbol(&recv, name);
                         // (As a call: a `Meta::ClassDef` member and a class
                         // object holding the same value, #491.)
@@ -13662,6 +13985,26 @@ impl Checker {
                                 self.error(msg.clone(), e.span);
                             }
                             return Err(msg);
+                        };
+                        let callable = self.symbol_callable_cands(&cands, name);
+                        let (mid, msubst) = match self.by_name_choice(&recv, mid, &callable) {
+                            Ok(m) => cands
+                                .iter()
+                                .find(|(k, _)| *k == m)
+                                .cloned()
+                                .unwrap_or((mid, msubst)),
+                            Err((a, b, ea, eb)) => {
+                                let msg = format!(
+                                    "{} (in `&:{name}`)",
+                                    self.extension_ambiguity_message(name, a, b, ea, eb)
+                                );
+                                if report {
+                                    self.extension_ambiguities += 1;
+                                    self.table_journal.push(TableUndo::ExtensionAmbiguity);
+                                    self.error(msg.clone(), e.span);
+                                }
+                                return Err(msg);
+                            }
                         };
                         // `deinitialize` runs only at the release (docs/03
                         // §4), `initialize` only from `new` and `super`
@@ -14344,17 +14687,15 @@ impl Checker {
         let mut table = Vec::new();
         let mut substs = Vec::new();
         for m in &members {
-            // (The first callable one, as for one class object.)
-            let found = self
-                .world
-                .lookup_methods(m, name)
-                .into_iter()
-                .find(|(k, ks)| {
-                    let saved = self.infer.save();
-                    let ok = self.symbol_callable(*k, ks, name).is_ok();
-                    self.infer.restore(saved);
-                    ok
-                })?;
+            // (The first callable one, as for one class object; between two
+            // active extensions' modules, the one overriding the other, #577.)
+            let all = self.world.lookup_methods(m, name);
+            let all = self.symbol_callable_cands(&all, name);
+            let first = all.first().cloned()?;
+            let found = match self.by_name_choice(m, first.0, &all) {
+                Ok(k) => all.iter().find(|(x, _)| *x == k).cloned().unwrap_or(first),
+                Err(_) => return None,
+            };
             table.push((m.clone(), found.0));
             substs.push(found);
         }
@@ -15861,6 +16202,9 @@ impl Checker {
         let mut after_own = false;
         let mut next_owner = None;
         let mut cands = Vec::new();
+        // (Every method after the own group on its side: two active
+        // extensions' modules there give `super` no order, #577.)
+        let mut after = Vec::new();
         for (c, subst) in found {
             let cm = self.world.method(c);
             if in_own_group(cm) {
@@ -15874,10 +16218,31 @@ impl Checker {
             {
                 continue;
             }
-            if *next_owner.get_or_insert(cm.owner) != cm.owner {
-                break;
+            after.push((c, subst.clone()));
+            if next_owner.is_some_and(|o| o != cm.owner) {
+                continue;
             }
+            next_owner = Some(cm.owner);
             cands.push((c, subst));
+        }
+        // (The next owner a module an active extension brought: the
+        // methods of the other active extensions' modules on the same
+        // target join it, the overload choice deciding among them as a
+        // call's does, the overriding one or else an ambiguity, #577;
+        // their `using` order gives none.)
+        let src = self.extension_sources(&self_ty);
+        let target_of = |c: MethodId| {
+            let owner = self.world.method(c).owner;
+            src.iter()
+                .find(|(k, _)| *k == owner)
+                .map(|(_, e)| self.world.extensions[*e as usize].target)
+        };
+        if let Some(target) = cands.first().and_then(|(c, _)| target_of(*c)) {
+            for (c, cs) in &after {
+                if !cands.iter().any(|(k, _)| k == c) && target_of(*c) == Some(target) {
+                    cands.push((*c, cs.clone()));
+                }
+            }
         }
         if cands.is_empty() {
             // A built-in function is no method to override (docs/01 §1).

@@ -2274,3 +2274,146 @@ fn super_past_an_abstract_declaration_with_nothing_after() {
         "{out:?}"
     );
 }
+
+/// #577: two active scoped extensions whose includes give the class a
+/// method of the name, neither overriding the other: the call is
+/// ambiguous, naming both extensions and modules, wherever the `using`s
+/// are and on both sides.
+#[test]
+fn two_active_extensions_includes_are_ambiguous() {
+    let base = "module M1\n  def it -> String = \"M1\"\n  def self.tag -> String = \"M1\"\nend\nmodule M2\n  def it -> Int = 2\n  def self.tag -> Int = 2\nend\nclass C\n  def initialize; end\nend\n";
+    let exts = "module S1\n  extension C\n    include M1\n  end\nend\nmodule S2\n  extension C\n    include M2\n  end\nend\n";
+    let both = "module Both\n  extension C\n    include M1\n  end\n  extension C\n    include M2\n  end\nend\n";
+    let cases = [
+        format!("{base}{exts}def f -> Object\n  using S1\n  using S2\n  C.new.it\nend\n"),
+        format!("{base}{exts}def f -> Object\n  using S2\n  using S1\n  C.new.it\nend\n"),
+        format!("{base}{exts}using S1\nusing S2\nx = C.new.it\n"),
+        format!("{base}{both}def f -> Object\n  using Both\n  C.new.it\nend\n"),
+        format!("{base}{exts}def f -> Object\n  using S1\n  using S2\n  C.tag\nend\n"),
+        // A receiver of a bounded type parameter, a method reference,
+        // `&:name`, an interpolation, `super` in another extension's
+        // method, a `for` loop's `each`.
+        format!("{base}{exts}def f[T <: C](x: T) -> Object\n  using S1\n  using S2\n  x.it\nend\n"),
+        format!("{base}{exts}def f -> Object\n  using S1\n  using S2\n  m = C.new.:it\n  m.call\nend\n"),
+        format!("{base}{exts}def f -> Object\n  using S1\n  using S2\n  [C.new].map(&:it)\nend\n"),
+        format!("{base}{exts}def f -> Object\n  using S1\n  using S2\n  \"#{{C.new}}\"\nend\n").replace("def it ->", "def to_s ->").replace(".map(&:it)", ""),
+        format!("{base}{exts}module S3\n  using S1\n  using S2\n  extension C\n    def it -> Object = super\n  end\nend\n"),
+    ];
+    for src in &cases {
+        let out = common::diagnostics(src);
+        assert!(
+            out.iter().any(|d| d.contains("is ambiguous: ")
+                && d.contains("extension")
+                && d.contains("`M1`")
+                && d.contains("`M2`")),
+            "{src}\n{out:?}"
+        );
+    }
+}
+
+/// #577: a scoped conditional extension's include beside another scoped
+/// one's, both active and the bound holding: ambiguous; with the bound
+/// failing (`Box[String]`), the other's alone.
+#[test]
+fn a_conditional_extensions_include_beside_a_scoped_one_is_ambiguous() {
+    let src = "module M1\n  def it -> String = \"M1\"\nend\nmodule M2\n  def it -> String = \"M2\"\nend\nclass Box[T]\n  def initialize; end\nend\nmodule S1\n  extension Box[T <: Int]\n    include M1\n  end\nend\nmodule S2\n  extension Box[T]\n    include M2\n  end\nend\ndef f -> String\n  using S1\n  using S2\n  Box[Int].new.it\nend\ndef g -> String\n  using S1\n  using S2\n  Box[String].new.it\nend\n";
+    let out = common::diagnostics(src);
+    let amb: Vec<_> = out.iter().filter(|d| d.contains("is ambiguous")).collect();
+    assert_eq!(amb.len(), 1, "{out:?}");
+    assert!(amb[0].contains("the extension of `Box` in `S1`"), "{out:?}");
+}
+
+/// #577: the pair named is two the others do not override (M2 overrides
+/// M1 but ties with M3), and a module that comes through an extension's
+/// include is said to be brought.
+#[test]
+fn an_ambiguity_names_the_tied_modules() {
+    let src = "module M1\n  def it -> String = \"M1\"\nend\nmodule M2\n  include M1\n  def it -> String = \"M2\"\nend\nmodule M3\n  def it -> String = \"M3\"\nend\nmodule N3\n  include M3\nend\nclass C\n  def initialize; end\nend\nmodule S1\n  extension C\n    include M1\n  end\nend\nmodule S2\n  extension C\n    include M2\n  end\nend\nmodule S3\n  extension C\n    include N3\n  end\nend\ndef f -> String\n  using S1\n  using S2\n  using S3\n  C.new.it\nend\n";
+    let out = common::diagnostics(src);
+    assert!(
+        out.iter()
+            .any(|d| d.contains("in `S2` includes `M2`") && d.contains("in `S3` brings `M3`")),
+        "{out:?}"
+    );
+}
+
+/// #577: a `for` loop whose `each` two active extensions' modules give
+/// reports the ambiguity, not its fallback's error.
+#[test]
+fn a_for_loop_over_an_ambiguous_each_says_so() {
+    let src = "module M1\n  def each(&: (Int) -> Void) -> Void\n    yield 1\n  end\nend\nmodule M2\n  def each(&: (Int) -> Void) -> Void\n    yield 2\n  end\nend\nclass C\n  def initialize; end\nend\nmodule S1\n  extension C\n    include M1\n  end\nend\nmodule S2\n  extension C\n    include M2\n  end\nend\ndef f -> Void\n  using S1\n  using S2\n  for x in C.new\n    puts x\n  end\nend\n";
+    let out = common::diagnostics(src);
+    assert!(
+        out.iter()
+            .any(|d| d.contains("the call of `each` is ambiguous")),
+        "{out:?}"
+    );
+}
+
+/// #577: compound assignment and `&:name` on a union element, where two
+/// active extensions' modules give the operator or method, are ambiguous
+/// too; and a trial of `&:name` that an overload discards counts for no
+/// `for` loop (one over another overload's result is accepted).
+#[test]
+fn compound_assignment_and_union_symbols_are_ambiguous() {
+    let base = "module M1\n  def +(o: Int) -> C = C.new\n  def it -> String = \"M1\"\nend\nmodule M2\n  def +(o: Int) -> C = C.new\n  def it -> String = \"M2\"\nend\nclass C\n  def initialize; end\nend\nclass D\n  def initialize; end\n  def it -> String = \"D\"\nend\nmodule S1\n  extension C\n    include M1\n  end\nend\nmodule S2\n  extension C\n    include M2\n  end\nend\n";
+    for body in [
+        "def f -> Object\n  using S1\n  using S2\n  x = C.new\n  x += 1\n  x\nend\n",
+        "def f -> Object\n  using S1\n  using S2\n  xs: Array[C | D] = [C.new, D.new]\n  xs.map(&:it)\nend\n",
+    ] {
+        let out = common::diagnostics(&format!("{base}{body}"));
+        assert!(
+            out.iter().any(|d| d.contains("is ambiguous: the extension of `C` in `S")),
+            "{body}\n{out:?}"
+        );
+    }
+}
+
+/// #577 (quarz-manager's review): a class object of a type parameter, two
+/// top-level conditional extensions, and a method reference whose rival
+/// modules' overloads differ in parameters (no arguments to choose with)
+/// are ambiguous too.
+#[test]
+fn more_forms_of_two_extensions_are_ambiguous() {
+    let hdr = "module M1\n  def it -> String = \"M1\"\n  def self.tag -> String = \"M1t\"\nend\nmodule M2\n  def it -> String = \"M2\"\n  def self.tag -> String = \"M2t\"\nend\nclass C\n  def initialize; end\nend\nmodule S1\n  extension C\n    include M1\n  end\nend\nmodule S2\n  extension C\n    include M2\n  end\nend\n";
+    let cases = [
+        format!("{hdr}def g[T <: C](k: Type[T]) -> String\n  using S1\n  using S2\n  k.tag\nend\n"),
+        "module M1\n  def it -> String = \"M1\"\nend\nmodule M2\n  def it -> String = \"M2\"\nend\nclass Box[T]\n  def initialize; end\nend\nextension Box[T <: Int]\n  include M1\nend\nextension Box[T <: Comparable[T]]\n  include M2\nend\nputs Box[Int].new.it\n".to_string(),
+        "module M1\n  def it(x: Int) -> String = \"M1\"\nend\nmodule M2\n  def it(x: Float) -> String = \"M2\"\nend\nclass K\n  def initialize; end\nend\nmodule S1\n  extension K\n    include M1\n  end\nend\nmodule S2\n  extension K\n    include M2\n  end\nend\ndef f -> Object\n  using S1\n  using S2\n  K.new.:it\nend\n".to_string(),
+    ];
+    for src in &cases {
+        let out = common::diagnostics(src);
+        assert!(
+            out.iter().any(|d| d.contains("is ambiguous: ")),
+            "{src}\n{out:?}"
+        );
+    }
+}
+
+/// #577: an ambiguity inside an overload trial that is discarded counts
+/// for no `for` loop: the loop over the other overload's result falls back
+/// as without it.
+#[test]
+fn a_discarded_trials_ambiguity_leaves_a_for_loop_alone() {
+    let src = "module M1\n  def it -> String = \"M1\"\nend\nmodule M2\n  def it -> String = \"M2\"\nend\nclass C\n  def initialize; end\nend\nclass Z\n  def initialize; end\n  def it -> String = \"Z\"\nend\nmodule S1\n  extension C\n    include M1\n  end\nend\nmodule S2\n  extension C\n    include M2\n  end\nend\nclass W\n  def initialize; end\n  def map(&b: (Int) -> Object) -> Array[Object] = [b.call(1)]\nend\ndef pick(&b: (C) -> String) -> W = W.new\ndef pick(&b: (Z) -> String) -> W = W.new\ndef f -> Void\n  using S1\n  using S2\n  for x in pick { |c| c.it }\n    puts x\n  end\nend\n";
+    let out = common::diagnostics(src);
+    assert!(
+        !out.iter().any(|d| d.contains("undefined method `each`")),
+        "{out:?}"
+    );
+}
+
+/// #577: a module credited to a top-level conditional extension only where
+/// its bound holds for the receiver: an extension of the superclass that
+/// does not apply does not hide the rivalry of the class's own one with a
+/// scoped one.
+#[test]
+fn an_inapplicable_conditional_extension_hides_no_rivalry() {
+    let src = "module A\n  def foo -> String = \"A\"\nend\nmodule M2\n  def foo -> String = \"M2\"\nend\nclass Base[T]\n  def initialize(v: T); end\nend\nclass Sub[T] < Base[T]\n  def initialize(v: T); end\nend\nextension Base[T <: String]\n  include A\nend\nextension Sub[T <: Int]\n  include A\nend\nmodule S\n  extension Sub[T]\n    include M2\n  end\nend\ndef r1\n  using S\n  puts Sub.new(1).foo\nend\nr1\n";
+    let out = common::diagnostics(src);
+    assert!(
+        out.iter()
+            .any(|d| d.contains("is ambiguous: the top-level extension of `Sub`")),
+        "{out:?}"
+    );
+}

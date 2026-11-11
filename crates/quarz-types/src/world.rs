@@ -1142,6 +1142,95 @@ impl World {
         self.ancestors_under(id, args, self.view_extensions(view))
     }
 
+    /// `resolution(id, args, View::Static)` with each entry's source: the
+    /// active scoped or conditional extension whose include put the module
+    /// there, or `None` (the class, its own includes, its top-level
+    /// extensions' modules, its superclasses'). Two modules of different
+    /// active extensions on the same target, neither in the other's
+    /// ancestry, give a call they both answer no order (#577).
+    pub fn resolution_sources(
+        &self,
+        id: ClassId,
+        args: &[Type],
+    ) -> Vec<(ClassId, Vec<Type>, Option<ExtensionId>)> {
+        let exts = self.conformance_extensions();
+        let mut out = self.ordered_sources(id, args, &exts, false, true);
+        self.credit_conditional(id, args, &exts, &mut out);
+        out
+    }
+
+    /// `resolution_sources`' credit of a module only a top-level
+    /// conditional extension brings (whose bound holds for the target's
+    /// arguments here) to that extension: lexical only, as a scoped one's
+    /// (#577). Apart from the plain static order, which needs none of it.
+    fn credit_conditional(
+        &self,
+        c: ClassId,
+        own: &[Type],
+        exts: &[ExtensionId],
+        out: &mut [(ClassId, Vec<Type>, Option<ExtensionId>)],
+    ) {
+        let top = self.walked_extensions(exts);
+        // (A module only a top-level conditional extension brings is, as a
+        // scoped one's, lexical only: its source is that extension, #577;
+        // one the class's own includes or a top-level unconditional
+        // extension bring keeps none, ordered as the class's own, #523.)
+        let conditional = |e: &ExtensionId| {
+            self.extensions[*e as usize]
+                .type_params
+                .iter()
+                .any(|tp| !tp.bounds.is_empty())
+        };
+        if !top.iter().any(conditional) {
+            return;
+        }
+        let plain: Vec<ExtensionId> = top.iter().copied().filter(|e| !conditional(e)).collect();
+        let walked: Vec<ClassId> = self
+            .ancestors_under(c, own, plain)
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        // (One whose bound holds for the target's arguments here: an
+        // extension that does not apply brings nothing.)
+        let applying: Vec<ExtensionId> = top
+            .iter()
+            .copied()
+            .filter(conditional)
+            .filter(|e| {
+                let ext = &self.extensions[*e as usize];
+                out.iter()
+                    .any(|(t, targs, _)| *t == ext.target && self.extension_bounds_hold(ext, targs))
+            })
+            .collect();
+        if applying.is_empty() {
+            return;
+        }
+        for entry in out.iter_mut() {
+            let k = entry.0;
+            if walked.contains(&k) {
+                continue;
+            }
+            let found = applying.iter().copied().find(|e| {
+                self.extensions[*e as usize]
+                    .includes
+                    .iter()
+                    .any(|inc| match inc {
+                        Type::Class(mid, margs) => {
+                            *mid == k
+                                || self
+                                    .ancestors_under(*mid, margs, Vec::new())
+                                    .iter()
+                                    .any(|(a, _)| *a == k)
+                        }
+                        _ => false,
+                    })
+            });
+            if found.is_some() {
+                entry.2 = found;
+            }
+        }
+    }
+
     /// The extensions whose conformances `view` takes. `View::Static`'s is
     /// the one read of the active set for conformance (`active_extension_ids`).
     pub fn view_extensions(&self, view: View) -> Vec<ExtensionId> {
@@ -2813,6 +2902,24 @@ impl World {
         assume: bool,
         lexical: bool,
     ) -> Vec<(ClassId, Vec<Type>)> {
+        self.ordered_sources(c, own, exts, assume, lexical)
+            .into_iter()
+            .map(|(k, a, _)| (k, a))
+            .collect()
+    }
+
+    /// `ordered_under`, each entry with the extension whose include put it
+    /// there after the walk (a scoped or conditional one; `None` for the
+    /// walk itself: the class, its own includes, its top-level extensions'
+    /// modules, its superclasses').
+    fn ordered_sources(
+        &self,
+        c: ClassId,
+        own: &[Type],
+        exts: &[ExtensionId],
+        assume: bool,
+        lexical: bool,
+    ) -> Vec<(ClassId, Vec<Type>, Option<ExtensionId>)> {
         // (The order is dispatch's, `View::Lookup`'s: the class's own
         // includes and the top-level unconditional extensions' modules; a
         // module another extension brings at a superclass does not count
@@ -2825,6 +2932,7 @@ impl World {
         let top = self.walked_extensions(exts);
         let rest: Vec<ExtensionId> = exts.to_vec();
         let mut out = self.ancestors_under(c, own, top);
+        let mut src: Vec<Option<ExtensionId>> = vec![None; out.len()];
         // (Then the modules of the other extensions, scoped or conditional,
         // which a class's own methods and includes override and which
         // override nothing of theirs (docs/01 §7): after everything else.
@@ -2889,10 +2997,12 @@ impl World {
                             if !out.iter().any(|(x, _)| *x == b.0) {
                                 if lexical {
                                     out.insert(at, b);
+                                    src.insert(at, Some(*e));
                                     at += 1;
                                     ext_end += 1;
                                 } else {
                                     out.push(b);
+                                    src.push(Some(*e));
                                 }
                             }
                         }
@@ -2900,7 +3010,10 @@ impl World {
                 }
             }
         }
-        out
+        out.into_iter()
+            .zip(src)
+            .map(|((k, a), e)| (k, a, e))
+            .collect()
     }
 
     /// The override table for every method (`overrides`), the classes that
