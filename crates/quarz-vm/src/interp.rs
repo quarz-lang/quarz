@@ -2770,14 +2770,22 @@ impl Interp {
         // class, the module's own runs.)
         let module_owner = self.program.world.class(m.owner).kind == quarz_ir::RtClassKind::Module;
         if module_owner && !self.includes_on_class_side(cid, m.owner) {
-            // A class conforming through an extension: the witness its
-            // conformance recorded, the nearest up the chain (a subclass
-            // conforming on its own has its own), run as is (#504).
-            // (Fixed: the witness runs for the class and its subclasses
-            // alike; the module's default is the module's own.)
-            if let Some(by) = self.class_witness(cid, mid) {
-                found = (by != mid).then_some(by);
-            }
+            // A class conforming through an extension: the row of the
+            // witness table (`RtWorld::witnesses`, #536 step 3), run as is
+            // (#504: fixed, the witness runs for the class and its
+            // subclasses alike; the module's default is the module's own).
+            // A class that is the module's only through an extension has a
+            // row for each of its class methods: none is an internal error,
+            // not the module's own.
+            let by = self.class_witness(cid, mid).unwrap_or_else(|| {
+                panic!(
+                    "internal error: no witness of `{}.{}` for `{}`",
+                    self.program.world.class(m.owner).name,
+                    m.name,
+                    self.program.world.class(cid).name
+                )
+            });
+            found = (by != mid).then_some(by);
             self.class_method_cache
                 .borrow_mut()
                 .insert((cid, mid), found);
@@ -2846,19 +2854,10 @@ impl Interp {
     }
 
     /// The witness of module class method `mid` for class `cid` (#504):
-    /// recorded for the nearest class up its superclass chain, or for a
-    /// module one of them includes (an extension of that module, `extension
-    /// Mid; include M`), as the instance side's `ext_impls` reach it.
+    /// the row of the witness table (`RtWorld::witnesses`), which has one
+    /// for each class a conformance through an extension reaches.
     fn class_witness(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
-        let w = &self.program.world;
-        // (`RtClass::class_side`, `World::class_side_order`: the checker's
-        // order.)
-        w.class(cid).class_side.iter().find_map(|k| {
-            w.class_ext_impls
-                .iter()
-                .find(|(x, o, _)| x == k && *o == mid)
-                .map(|(_, _, by)| *by)
-        })
+        self.program.world.witness(cid, mid)
     }
 
     /// Whether class `cid` or a superclass includes `module` itself (its
@@ -2889,54 +2888,41 @@ impl Interp {
             .collect()
     }
 
-    /// The extension's method that implements abstract method `abs` for
-    /// class `anc` itself (`RtWorld::ext_impls`): the one an extension that
-    /// makes it conform (`include`) gives, else the one found where the
-    /// class was declared.
-    fn ext_impl(&self, anc: ClassId, abs: MethodId) -> Option<MethodId> {
-        let world = &self.program.world;
-        let m = self.program.method(abs);
-        // (Of the extension's methods of the name, one that takes what the
-        // abstract method's callers pass, as the checker's `implements`; an
-        // overload of another arity is not it.)
-        let (amin, amax) = m.positional_arity();
-        let takes = |i: MethodId| {
-            let c = self.program.method(i);
-            let (cmin, cmax) = c.positional_arity();
-            !c.is_abstract
-                && c.has_block == m.has_block
-                && cmin <= amin
-                && cmax >= amax
-                && c.keywords_accept(m)
-        };
-        for ext in &world.extensions {
-            if ext.target == anc && world.extension_dispatches(ext, m.owner) {
-                if let Some(ids) = ext.methods.get(&m.name) {
-                    let exact = ids
-                        .iter()
-                        .find(|i| takes(**i) && self.same_signature(**i, abs));
-                    if let Some(i) = exact.or_else(|| ids.iter().find(|i| takes(**i))) {
-                        return Some(*i);
-                    }
-                }
-            }
-        }
-        world
-            .ext_impls
-            .iter()
-            .find(|(c, a, _)| *c == anc && *a == abs)
-            .map(|(_, _, i)| *i)
-    }
-
     /// A method of `cid` (or of an ancestor before the owner of `mid`)
-    /// that overrides `mid`: same name, and the same signature when the
-    /// name is overloaded.
+    /// that overrides `mid`. For a module `cid` has only through an
+    /// extension, and for an abstract method only an extension's own
+    /// method implements, the row of the witness table
+    /// (`RtWorld::witnesses`, #536 step 3) is the answer, and for such a
+    /// module a missing row is an internal error. Otherwise the override
+    /// table's (`RtMethod::overrides`, `RtWorld::include_overrides`), going
+    /// up dispatch's order (`RtClass::ancestors`, the modules of
+    /// `RtClass::lookup`).
     fn find_override(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
         let m = self.program.method(mid);
-        for anc in &self.program.world.class(cid).ancestors {
+        let world = &self.program.world;
+        if let Some(by) = world.witness(cid, mid) {
+            return (by != mid).then_some(by);
+        }
+        let class = world.class(cid);
+        if world.class(m.owner).kind == quarz_ir::RtClassKind::Module
+            && !class.class_side.contains(&m.owner)
+            && class.ancestors.contains(&m.owner)
+        {
+            panic!(
+                "internal error: no witness of `{}#{}` for `{}`",
+                world.class(m.owner).name,
+                m.name,
+                class.name
+            );
+        }
+        // (Dispatch's order: `ancestors` without the modules that are not
+        // in `lookup`, a scoped or conditional extension's, which override
+        // nothing here and whose own methods go by the rows above; their
+        // place in `ancestors` is not read.)
+        for anc in class.ancestors.iter().filter(|a| class.lookup.contains(a)) {
             let anc = *anc;
             // (An abstract method stands in for none: what implements it
-            // for this class may come later, `World::ext_impls`.)
+            // for this class comes later.)
             if anc == m.owner && !m.is_abstract {
                 return None;
             }
@@ -2945,31 +2931,11 @@ impl Interp {
             if self.program.world.class(anc).kind == quarz_ir::RtClassKind::Main {
                 continue;
             }
-            // An abstract method an extension implements for this class
-            // (its conformance), unless the class defines its own.
-            let own = self.program.world.class(anc).methods.contains_key(&m.name);
-            if m.is_abstract {
-                // What the checker found implements it for this class by
-                // signature (an inherited method, past an overload of the
-                // name here), then an extension's.
-                if let Some((_, _, i)) = self
-                    .program
-                    .world
-                    .ext_impls
-                    .iter()
-                    .find(|(c, a, _)| *c == anc && *a == mid)
-                {
-                    return Some(*i);
-                }
-                if !own {
-                    if let Some(i) = self.ext_impl(anc, mid) {
-                        return Some(i);
-                    }
-                }
-            }
+            // (A prelude extension's methods take part in dispatch; any
+            // other extension's only as witnesses, above.)
             let mut candidates: Vec<MethodId> = Vec::new();
             for ext in &self.program.world.extensions {
-                if ext.target == anc && self.program.world.extension_dispatches(ext, m.owner) {
+                if ext.target == anc && ext.always_active {
                     if let Some(ids) = ext.methods.get(&m.name) {
                         candidates.extend(ids);
                     }
@@ -3009,44 +2975,12 @@ impl Interp {
         None
     }
 
-    /// Whether `a` stands in for `b` by signature, for `ext_impl`'s
-    /// run-time choice among an extension's methods only (the extension
-    /// witnesses, #536 step 3; overrides read `RtMethod::overrides`).
-    fn same_signature(&self, a: MethodId, b: MethodId) -> bool {
-        let (a, b) = (self.program.method(a), self.program.method(b));
-        let same_ty = |p: &quarz_ir::RtParam, q: &quarz_ir::RtParam| {
-            p.ty == q.ty || p.ty.is_none() || q.ty.is_none()
-        };
-        a.positional_params().count() == b.positional_params().count()
-            && a.positional_params()
-                .zip(b.positional_params())
-                .all(|(p, q)| p.kind == q.kind && same_ty(p, q))
-            && a.keywords_accept(b)
-            // (Both with a block or neither, as the checker has it:
-            // `block_ty` is `None` for no block too.)
-            && a.has_block == b.has_block
-            && (a.block_ty == b.block_ty || a.block_ty.is_none() || b.block_ty.is_none())
-            && a.params
-                .iter()
-                .filter(|p| matches!(p.kind, RtParamKind::KeywordOnly | RtParamKind::KeywordRest))
-                .all(|p| {
-                    // (By name, and `**rest` with `**rest`.)
-                    b.params
-                        .iter()
-                        .find(|q| {
-                            q.kind == p.kind
-                                && (q.kind == RtParamKind::KeywordRest || q.name == p.name)
-                        })
-                        .is_none_or(|q| same_ty(p, q))
-                })
-    }
-
     /// Find a method by name on a class (first match in resolution order
     /// that accepts `argc` positional arguments), in `RtClass::lookup`: the
     /// modules of scoped and conditional extensions are not searched, so
     /// none of their methods is found by name (docs/01 §7) — except an
     /// abstract method of such a module, which resolves through the
-    /// witness its conformance recorded (`ext_impl`), conformance holding
+    /// witness its conformance recorded (`RtWorld::witnesses`), conformance holding
     /// wherever the value goes (natives calling `each` or `<=>` by name on
     /// a class conforming to `Enumerable` or `Comparable` through a scoped
     /// extension).
@@ -3141,7 +3075,8 @@ impl Interp {
         }
         // Not found by name: an abstract method of a module only an
         // extension's include brings (in `ancestors`, not in `lookup`),
-        // when a witness implements it for the class; nothing else.
+        // when its row of the witness table names an implementation for
+        // the class; nothing else.
         if found.is_none() && witness {
             let rc = self.program.world.class(cid);
             'mods: for anc in &rc.ancestors {
@@ -3158,11 +3093,11 @@ impl Interp {
                         && min <= argc
                         && argc <= max
                         && m.has_block == with_block
-                        && rc
-                            .ancestors
-                            .iter()
-                            .take_while(|a| **a != m.owner)
-                            .any(|a| self.ext_impl(*a, *id).is_some())
+                        && self
+                            .program
+                            .world
+                            .witness(cid, *id)
+                            .is_some_and(|by| !self.program.method(by).is_abstract)
                     {
                         found = Some(*id);
                         break 'mods;
@@ -3170,18 +3105,13 @@ impl Interp {
                 }
             }
         }
-        // An abstract method (a module's) that an extension implements for
-        // the class: conformance holds wherever the value goes.
+        // An abstract method (a module's): what implements it for the
+        // class, as a call of it finds (`find_override`: the witness
+        // table's row, conformance holding wherever the value goes, or the
+        // override table).
         if let Some(abs) = found.filter(|m| self.program.method(*m).is_abstract) {
-            let owner = self.program.method(abs).owner;
-            for anc in &self.program.world.class(cid).ancestors {
-                if *anc == owner {
-                    break;
-                }
-                if let Some(i) = self.ext_impl(*anc, abs) {
-                    found = Some(i);
-                    break;
-                }
+            if let Some(i) = self.find_override(cid, abs) {
+                found = Some(i);
             }
         }
         let result = found.or(fallback);

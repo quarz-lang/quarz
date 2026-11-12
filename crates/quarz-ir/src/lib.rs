@@ -1434,7 +1434,7 @@ pub struct RtClass {
     /// methods are this class's class methods, in lookup order (the class,
     /// the modules it brings itself, its superclass, the modules that one
     /// brings, ...): `World::resolution` in the declared view (an
-    /// extension's include brings witnesses, `class_ext_impls`, not class
+    /// extension's include brings witnesses, `RtWorld::witnesses`, not class
     /// methods, #504). The VM's class-side walks read it (#536 step 2).
     pub class_side: Vec<ClassId>,
     /// Whether this class's values are made by the runtime, not by `new`
@@ -1514,10 +1514,6 @@ pub struct RtMethod {
     pub singleton: bool,
     pub params: Vec<RtParam>,
     pub has_block: bool,
-    /// The block's type as `same_signature` compares it (`None` where it
-    /// mentions the method's own type parameters, or with no block).
-    #[serde(default)]
-    pub block_ty: Option<String>,
     pub func: Option<FuncId>,
     /// `Type#name` / `Type.name` for natives.
     pub native_key: Option<String>,
@@ -1684,15 +1680,16 @@ pub struct RtWorld {
     pub methods: Vec<RtMethod>,
     pub consts: Vec<RtConst>,
     pub extensions: Vec<RtExtension>,
-    /// Abstract methods an extension's method implements for a class
-    /// (class, abstract method, implementation): its conformance, which
-    /// holds wherever the value goes.
-    pub ext_impls: Vec<(ClassId, MethodId, MethodId)>,
-    /// (class, module's class method, its witness): what runs in place of
-    /// a module's class method for a class conforming to the module
-    /// through an extension (`World::class_ext_impls`, #504).
+    /// The witness table (`World::witnesses`, #536 step 3), as (class,
+    /// method, what runs), sorted by class and method (`witness`): for a
+    /// class that conforms to a module through an extension, each method
+    /// of the module, of either side; and an abstract method of a class's
+    /// own ancestors that only an extension's own method implements. The
+    /// runtime looks a row up and has no rule of its own: for a module
+    /// the class has only through an extension, a missing row is an
+    /// internal error.
     #[serde(default)]
-    pub class_ext_impls: Vec<(ClassId, MethodId, MethodId)>,
+    pub witnesses: Vec<(ClassId, MethodId, MethodId)>,
     /// (class, overridden, overriding): the class-relative part of the
     /// override table (`World::include_overrides`, #536): a method of a
     /// module the class includes over a later ancestor's (its superclass's
@@ -1725,17 +1722,14 @@ impl RtWorld {
         &self.methods[id as usize]
     }
 
-    /// Whether the methods of `ext` take part in the dispatch of a
-    /// method declared by `owner`: always for an extension active
-    /// everywhere, and for the methods of a module the extension makes
-    /// its target conform to (a value typed as that module may have come
-    /// from anywhere, so its conformance must hold everywhere).
-    pub fn extension_dispatches(&self, ext: &RtExtension, owner: ClassId) -> bool {
-        ext.always_active
-            || ext
-                .includes
-                .iter()
-                .any(|m| *m == owner || self.classes[*m as usize].ancestors.contains(&owner))
+    /// The row of the witness table for class `class` and `method`: what
+    /// runs in its place (`method` itself for a module's default nothing
+    /// replaces, or an abstract method nothing implements).
+    pub fn witness(&self, class: ClassId, method: MethodId) -> Option<MethodId> {
+        self.witnesses
+            .binary_search_by_key(&(class, method), |(c, m, _)| (*c, *m))
+            .ok()
+            .map(|i| self.witnesses[i].2)
     }
 
     /// Membership at run time: whether a value of class `sub` is a `sup`
@@ -1794,7 +1788,6 @@ impl Droppable for RtMethod {
             singleton: false,
             params: Vec::new(),
             has_block: false,
-            block_ty: None,
             func: None,
             native_key: None,
             synth: RtSynth::None,

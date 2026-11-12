@@ -57,32 +57,33 @@ fn receivers(world: &RtWorld, mid: MethodId) -> Option<Vec<(ClassId, MethodId)>>
 fn resolve(world: &RtWorld, cid: ClassId, mid: MethodId) -> Option<Option<MethodId>> {
     let m = &world.methods[mid as usize];
     let class = &world.classes[cid as usize];
-    let chain: Vec<ClassId> = if class.ancestors.first() == Some(&cid) {
-        class.ancestors.clone()
-    } else {
-        std::iter::once(cid)
-            .chain(class.ancestors.iter().copied())
-            .collect()
-    };
+    // A conformance through an extension, or an abstract method an
+    // extension's own method implements (`RtWorld::witnesses`): dispatched
+    // at run time.
+    if world.witness(cid, mid).is_some() {
+        return None;
+    }
+    // (Dispatch's order, as `Interp::find_override`: `ancestors` without
+    // the modules that are not in `lookup`.)
+    let chain: Vec<ClassId> = std::iter::once(cid)
+        .chain(
+            class
+                .ancestors
+                .iter()
+                .copied()
+                .filter(|a| *a != cid && class.lookup.contains(a)),
+        )
+        .collect();
     for anc in chain {
         // A file's top-level `def`s are functions: none is a method here.
         if world.classes[anc as usize].kind == RtClassKind::Main {
             continue;
         }
-        if world.extensions.iter().any(|e| {
-            e.target == anc
-                && e.methods.contains_key(&m.name)
-                && world.extension_dispatches(e, m.owner)
-        }) {
-            return None;
-        }
-        // An extension's method implementing it for this class (its
-        // conformance, `RtWorld::ext_impls`): dispatched at run time.
-        if m.is_abstract
-            && world
-                .ext_impls
-                .iter()
-                .any(|(c, a, _)| *c == anc && *a == mid)
+        // (A prelude extension's method takes part in dispatch.)
+        if world
+            .extensions
+            .iter()
+            .any(|e| e.always_active && e.target == anc && e.methods.contains_key(&m.name))
         {
             return None;
         }

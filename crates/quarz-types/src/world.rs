@@ -479,21 +479,6 @@ const SUBTYPE_DEPTH: u32 = 256;
 /// include), the module, and its arguments in the class's parameters.
 pub type Conformance = (Option<(ExtensionId, usize)>, ClassId, Vec<Type>);
 
-/// A class-side witness of an extension's conformance
-/// (`World::class_ext_impls`).
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ClassWitness {
-    /// The extension whose include makes the conformance.
-    pub ext: ExtensionId,
-    pub class: ClassId,
-    /// The module, with its arguments as the extension includes it.
-    pub module: ClassId,
-    pub args: Vec<Type>,
-    /// The module's class method, and what runs in its place.
-    pub method: MethodId,
-    pub by: MethodId,
-}
-
 /// A method of a module a class includes over one of its superclass's
 /// (`World::include_overrides_of`), or a module's class method over a
 /// superclass's class method (`World::class_include_overrides_of`).
@@ -649,23 +634,14 @@ pub struct World {
     /// ran, not when they are declared: one of their ancestors has
     /// statements, which may generate the implementations (docs/14 §5).
     pub conformance_deferred: Vec<ClassId>,
-    /// Abstract methods an extension's method implements for a class
-    /// (class, abstract method, implementation), found where the class is
-    /// declared: conformance holds wherever the value goes.
-    pub ext_impls: Vec<(ClassId, MethodId, MethodId)>,
-    /// The class-side witnesses of extensions' conformances (#504): for a
-    /// class that conforms to a module through an extension's `include`,
-    /// each class method of the module that the extension's own `def
-    /// self.` or the class's own (or a superclass's) implements or
-    /// overrides, checked at the extension. A call of the module's class
-    /// method through a `Type[M]` value holding the class runs the
-    /// witness; an extension takes no other part in dynamic dispatch
-    /// (docs/01 §7).
-    pub class_ext_impls: Vec<ClassWitness>,
     /// `ancestors` remembered while the classes do not change (checking;
     /// `freeze_ancestors`): a lookup computed them again and again.
     #[serde(skip)]
     ancestors_memo: AncestorsMemo,
+    /// The witness table for the declarations as they stand
+    /// (`World::witnesses`).
+    #[serde(skip)]
+    pub(crate) witness_memo: crate::witness::WitnessMemo,
 }
 
 type AncestorsKey = (ClassId, Vec<Type>, Vec<ExtensionId>);
@@ -1128,6 +1104,14 @@ impl World {
     /// `args`. A class's class side is the same order (its class methods
     /// and its modules'). `view` names which extensions' conformances are
     /// in it; every other ancestry question is a view of this.
+    ///
+    /// Where `View::Runtime` puts the modules of a scoped or conditional
+    /// extension (appended after the walk, each extension's in include
+    /// order) is membership only: dispatch does not read their order. The
+    /// runtime walks `RtClass::ancestors` restricted to `RtClass::lookup`
+    /// and reads the witness table for the rest (`World::witnesses`, #536
+    /// step 3). One reader of that order is left, `Interp::find_method`'s
+    /// fallback for a gated send (#599).
     pub fn resolution(&self, id: ClassId, args: &[Type], view: View) -> Vec<(ClassId, Vec<Type>)> {
         if view == View::Override {
             return self.override_resolution(id, args);
@@ -1282,6 +1266,7 @@ impl World {
     pub fn freeze_ancestors(&mut self, on: bool) {
         self.ancestors_memo.on = on;
         self.ancestors_memo.map.get_mut().clear();
+        self.witness_memo.clear();
     }
 
     /// The modules class `id` itself brings to its resolution order (not

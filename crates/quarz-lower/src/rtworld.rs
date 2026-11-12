@@ -174,7 +174,7 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
                 // (The declared view: an extension's conformance brings
-                // witnesses, `class_ext_impls`, not dispatch, #504.)
+                // witnesses, `RtWorld::witnesses`, not dispatch, #504.)
                 class_side: world
                     .resolution(c.id, &[], quarz_types::world::View::Declared)
                     .into_iter()
@@ -282,7 +282,6 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
                     })
                     .collect(),
                 has_block: m.block.is_some(),
-                block_ty: m.block.as_ref().and_then(|(_, t)| rt_sig_type(world, m, t)),
                 func: lw.method_funcs.get(m.id as usize).copied().flatten(),
                 native_key: if m.is_native && m.synth == Synth::None {
                     Some(m.native_key(world))
@@ -417,12 +416,16 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
         methods,
         consts,
         extensions,
-        ext_impls: world.ext_impls.clone(),
-        class_ext_impls: world
-            .class_ext_impls
-            .iter()
-            .map(|w| (w.class, w.method, w.by))
-            .collect(),
+        witnesses: {
+            let mut rows: Vec<(ClassId, MethodId, MethodId)> = world
+                .witnesses()
+                .rows
+                .iter()
+                .map(|w| (w.class, w.method, w.by))
+                .collect();
+            rows.sort_unstable();
+            rows
+        },
         include_overrides: world.include_overrides(),
         class_include_overrides: world.class_include_overrides(),
         top,
@@ -455,11 +458,10 @@ fn literal_constant(e: &quarz_syntax::ast::Expr) -> Option<Constant> {
     })
 }
 
-/// A parameter's type as `same_signature` compares it: `None`, which
-/// matches anything, where it mentions one of the method's own type
-/// parameters or `Self` (another method names them otherwise); a class's
-/// type parameter is compared by name, the substituted relation
-/// (`overridden_methods`) deciding across instantiations.
+/// A parameter's type by name (`RtParam::ty`, what the runtime's checks
+/// of a native's operands and the AOT's unboxing read): `None` where it
+/// mentions one of the method's own type parameters or `Self` (another
+/// method names them otherwise); a class's type parameter by its name.
 fn rt_sig_type(world: &World, m: &types::MethodInfo, t: &Type) -> Option<String> {
     fn open(m: &types::MethodInfo, t: &Type) -> bool {
         match t {

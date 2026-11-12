@@ -1059,3 +1059,46 @@ fn a_later_unconditional_extension_that_breaks_a_test_is_refused() {
         "{out:?}"
     );
 }
+
+#[test]
+fn a_later_conformance_changes_the_row_an_earlier_function_reaches() {
+    // #536 step 3: the witness table is rebuilt with each input's world
+    // (each input has its own interpreter, the function tables staying
+    // extend-only), so `via`, checked and lowered in an earlier input,
+    // runs the row as it is now. A subclass first inherits its
+    // superclass's row, then conforms on its own.
+    let (out, _) = values(&[
+        "module Named; abstract def label -> String; end",
+        "class Box; def initialize; end; def label -> String = \"own\"; end",
+        "module S1; extension Box; include Named; end; def self.n(b: Box) -> Named = b; end",
+        "def via(n: Named) -> String = n.label",
+        "via(S1.n(Box.new))",
+        "class Sub < Box; def initialize; end; end",
+        "via(S1.n(Sub.new))",
+        "module S2; extension Sub; include Named; def label -> String = \"sub-ext\"; end; end",
+        "via(S1.n(Sub.new))",
+        "via(S1.n(Box.new))",
+    ]);
+    assert_eq!(out[4], "=> \"own\"", "{out:?}");
+    assert_eq!(out[6], "=> \"own\"", "{out:?}");
+    assert_eq!(out[8], "=> \"sub-ext\"", "{out:?}");
+    assert_eq!(out[9], "=> \"own\"", "{out:?}");
+}
+
+#[test]
+fn a_later_extension_of_an_earlier_class_gives_it_rows() {
+    // #536 step 3: an extension declared in a later input makes an earlier
+    // class conform; the earlier function, called with it through the
+    // module, finds the new row (on both sides).
+    let (out, _) = values(&[
+        "module Named; abstract def label -> String; def self.kind -> String = \"Named\"; end",
+        "def via(n: Named) -> String = n.label",
+        "def kind_of(t: Type[Named]) -> String = t.kind",
+        "class K; def initialize; end; end",
+        "module S3; extension K; include Named; def label -> String = \"k\"; def self.kind -> String = \"K\"; end; def self.n(k: K) -> Named = k; def self.t -> Type[Named] = K; end",
+        "via(S3.n(K.new))",
+        "kind_of(S3.t)",
+    ]);
+    assert_eq!(out[5], "=> \"k\"", "{out:?}");
+    assert_eq!(out[6], "=> \"K\"", "{out:?}");
+}

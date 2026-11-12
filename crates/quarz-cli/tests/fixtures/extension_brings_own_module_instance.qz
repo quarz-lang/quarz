@@ -1,0 +1,30 @@
+# An extension's include of `N`, which brings `M` that the class includes
+# itself: for `M` the class's own conformance holds on the instance side
+# too (#536 step 3; the class side: extension_brings_own_module), so a
+# call through `M` or `N` runs the class's own `m` by ordinary dispatch;
+# the extension's `m` is an extension method, chosen statically where the
+# extension is active; `N`'s own method goes by the extension's witness.
+module M
+  abstract def m -> String
+end
+module N
+  include M
+  abstract def n -> String
+end
+class K
+  include M
+  def initialize; end
+  def m -> String = "own"
+end
+module X
+  extension K
+    include N
+    def m -> String = "ext-m"
+    def n -> String = "ext-n"
+  end
+  def self.as_n(k: K) -> N = k
+  def self.direct(k: K) -> String = k.m
+end
+def via_m(x: M) -> String = x.m
+def via_n(x: N) -> String = x.m + "," + x.n
+puts via_m(K.new), via_n(X.as_n(K.new)), X.direct(K.new)

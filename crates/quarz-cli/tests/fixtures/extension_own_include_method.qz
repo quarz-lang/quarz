@@ -1,0 +1,51 @@
+# An abstract method of a module the class includes itself, or of its
+# abstract superclass, that nothing in the class implements may be
+# implemented by the own method of a top-level extension of the class
+# (docs/01 §7; a row of the witness table, #536 step 3): it runs wherever
+# the value goes, through the module, a native's gated send and a
+# subclass without its own method; a subclass's own overrides it.
+module Named
+  abstract def label -> String
+end
+class Box
+  include Named
+  def initialize; end
+end
+class Sub < Box
+  def initialize; end
+  def label -> String = "sub"
+end
+class Sub2 < Box
+  def initialize; end
+end
+extension Box
+  def label -> String = "ext"
+end
+def via(n: Named) -> String = n.label
+puts via(Box.new), via(Sub.new), via(Sub2.new)
+
+class V
+  include Comparable[V]
+  @v: Int
+  def initialize(@v: Int); end
+  def v -> Int = @v
+end
+extension V
+  def <=>(o: V) -> Int = v <=> o.v
+end
+def typed(a: Comparable[V], b: V) -> Int = a <=> b
+puts [V.new(2), V.new(1)].sort.map(&:v).join(",")
+puts typed(V.new(1), V.new(2))
+
+abstract class Shape
+  def initialize; end
+  abstract def area -> Int
+end
+class Sq < Shape
+  def initialize; end
+end
+extension Sq
+  def area -> Int = 4
+end
+def area_of(s: Shape) -> Int = s.area
+puts area_of(Sq.new)

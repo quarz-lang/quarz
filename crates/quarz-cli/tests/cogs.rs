@@ -2479,6 +2479,44 @@ fn witness_matrix_across_cogs() {
     assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
 }
 
+#[test]
+fn instance_witness_matrix_across_cogs() {
+    // The cross-cog column of the #536 step 3 witness matrix, instance
+    // side (the other columns: the `witness_matrix_instance_*.qz`
+    // fixtures): a library's top-level extensions make its classes conform
+    // to `M`, one per witness source; the application's subclasses of
+    // them (the extensions are not active in the application) reach the
+    // same witnesses through the library's `M`, one with its own method
+    // overriding the witness (step 1), run and built.
+    let w = World::new();
+    w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
+    w.write(
+        "lib/src/m.qz",
+        "module M\n  def m -> String = \"M\"\nend\nmodule A\n  abstract def a -> String\nend\nmodule N\n  include M\n  def m -> String = \"N\"\nend\nmodule E2\n  def a -> String = \"E2\"\nend\nclass B\n  def initialize; end\n  def a -> String = \"sup\"\nend\n",
+    );
+    w.write(
+        "lib/src/x.qz",
+        "class XExt\n  def initialize; end\nend\nextension XExt\n  include M\n  def m -> String = \"ext\"\nend\nclass XOwn\n  def initialize; end\n  def m -> String = \"own\"\nend\nextension XOwn\n  include M\nend\nclass XSup < B\n  def initialize; end\nend\nextension XSup\n  include A\nend\nclass XN\n  def initialize; end\nend\nextension XN\n  include N\nend\nclass XDef\n  def initialize; end\nend\nextension XDef\n  include M\nend\nclass XMod\n  def initialize; end\nend\nextension XMod\n  include A\n  include E2\nend\n",
+    );
+    w.write(
+        "lib/src/reg.qz",
+        "module Reg\n  def self.m(x: M) -> String = x.m\n  def self.a(x: A) -> String = x.a\n  def self.ext(x: XExt) -> String = m(x)\n  def self.own(x: XOwn) -> String = m(x)\n  def self.sup(x: XSup) -> String = a(x)\n  def self.n(x: XN) -> String = m(x)\n  def self.default(x: XDef) -> String = m(x)\n  def self.emod(x: XMod) -> String = a(x)\nend\n",
+    );
+    w.commit("lib", Some("v0.1.0"));
+    let dep = format!("L = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("lib"));
+    w.app(
+        &dep,
+        "class SExt < L::XExt\n  def initialize; end\nend\nclass SOwn < L::XOwn\n  def initialize; end\nend\nclass SSup < L::XSup\n  def initialize; end\nend\nclass SN < L::XN\n  def initialize; end\nend\nclass SDef < L::XDef\n  def initialize; end\nend\nclass SMod < L::XMod\n  def initialize; end\nend\nclass SSub < L::XExt\n  def initialize; end\n  def m -> String = \"sub\"\nend\nputs L::Reg.ext(L::XExt.new), L::Reg.ext(SExt.new)\nputs L::Reg.own(L::XOwn.new), L::Reg.own(SOwn.new)\nputs L::Reg.sup(L::XSup.new), L::Reg.sup(SSup.new)\nputs L::Reg.n(L::XN.new), L::Reg.n(SN.new)\nputs L::Reg.default(L::XDef.new), L::Reg.default(SDef.new)\nputs L::Reg.emod(L::XMod.new), L::Reg.emod(SMod.new)\nputs L::Reg.ext(SSub.new)\n",
+    );
+    let expected = "ext\next\nown\nown\nsup\nsup\nN\nN\nM\nM\nE2\nE2\nsub\n";
+    assert_eq!(w.ok("app", &["run"]), expected);
+    w.ok("app", &["build", "-o", "app.bin"]);
+    let run = std::process::Command::new(w.path("app/app.bin"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+}
+
 /// #537: a library's extension of its module making it conform to a
 /// generic module with one set of arguments, and an application's class
 /// including the module and the generic module with another: the conflict

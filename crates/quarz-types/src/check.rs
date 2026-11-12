@@ -13,6 +13,7 @@ use quarz_syntax::{Diagnostic, Severity, Span};
 
 use crate::declare::{TypeScope, SELF_PARAM};
 use crate::types::*;
+use crate::witness::WitnessSource;
 use crate::world::*;
 
 /// Where a local variable lives at run time: `depth` frames up from the
@@ -1158,7 +1159,7 @@ pub struct Checker {
     /// constructor check has seen: an input checks its new classes
     /// against every site and its new sites against every class, the
     /// pairs before it being checked already; and how many witnesses
-    /// (`World::class_ext_impls`): a new one may pin an old site for an
+    /// (`World::witnesses`): a new one may pin an old site for an
     /// old class, so every pair is checked again (#504).
     repl_ctor_marks: (usize, usize, usize),
     /// The run-time tests against a module accepted so far, for the REPL:
@@ -1747,40 +1748,42 @@ impl Checker {
     }
 
     /// Whether class `sid` conforms to module `m` through an extension's
-    /// include (recorded witnesses, for the class, a superclass, or a
-    /// module one of them includes), whatever extensions are active.
+    /// include (a row of the witness table, `World::witnesses`, for one of
+    /// its class methods), whatever extensions are active.
     fn conforms_by_extension(&self, sid: ClassId, m: ClassId) -> bool {
-        self.world.class_ext_impls.iter().any(|w| {
-            self.extension_may_reach(w.ext, sid)
-                && self.world.ancestor_ids(w.module).contains(&m)
-                && self.world.class_side_owner(sid, w.class).is_some()
+        self.world.witnesses().of(sid).iter().any(|w| {
+            w.module == m
+                && self.world.method(w.method).singleton
+                && match w.source {
+                    WitnessSource::Include { ext, .. } => self.extension_may_reach(ext, sid),
+                    WitnessSource::Method { .. } | WitnessSource::Inherited => false,
+                }
         })
     }
 
     /// The class at which dispatch through `Type[M]` starts for class
     /// `sid` and a class method named `name`, when a fixed witness of that
-    /// name (an extension's own, or a class's) runs for it: the witness's
-    /// class, or the class in `sid`'s chain that includes the module the
-    /// witness was recorded for (#504).
+    /// name (an extension's own, or a class's) runs for it: the class of
+    /// `sid`'s chain the conformance hangs from (the extension's target,
+    /// or the class that includes a module it targets) (#504).
     fn witness_floor(&self, sid: ClassId, name: &str) -> Option<ClassId> {
         // (Of several witnesses of the name, for different modules, the
         // highest: below it some witness may run instead of the class's
         // own.)
         let chain = self.world.superclass_chain(sid);
-        let floors: Vec<ClassId> = self
-            .world
-            .class_ext_impls
+        let table = self.world.witnesses();
+        let floors: Vec<ClassId> = table
+            .of(sid)
             .iter()
             .filter_map(|w| {
                 let mm = self.world.method(w.method);
-                if w.by == w.method
-                    || mm.name != name
-                    || self.includes_itself(sid, mm.owner)
-                    || self.witness_for(sid, w.method) != Some(w.by)
-                {
+                let WitnessSource::Include { target, .. } = w.source else {
+                    return None;
+                };
+                if w.by == w.method || !mm.singleton || mm.name != name {
                     return None;
                 }
-                self.world.class_side_owner(sid, w.class)
+                self.world.class_side_owner(sid, target)
             })
             .collect();
         floors
@@ -1828,19 +1831,9 @@ impl Checker {
     }
 
     /// The witness the runtime runs for module class method `mid` on class
-    /// `sid` (`Interp::class_witness`): recorded for the nearest class up
-    /// the chain, or for a module it includes itself (last first), before
-    /// its superclass.
+    /// `sid`: the row of the witness table (`World::witnesses`).
     fn witness_for(&self, sid: ClassId, mid: MethodId) -> Option<MethodId> {
-        let at = |k: ClassId| {
-            self.world
-                .class_ext_impls
-                .iter()
-                .find(|w| w.class == k && w.method == mid)
-                .map(|w| w.by)
-        };
-        // (`World::class_side_order`, the runtime's order too.)
-        self.world.class_side_order(sid).into_iter().find_map(at)
+        self.world.witness(sid, mid)
     }
 
     fn check_inherited_constructors_from(&mut self, marks: (usize, usize)) {
@@ -1905,11 +1898,8 @@ impl Checker {
                 // whose witness it is, as the runtime picks it
                 // (`witness_for`): no class method of the subclass excuses
                 // it (witnesses are fixed, #504).
-                let pinned = self.world.class_ext_impls.iter().any(|w| {
-                    w.by == method
-                        && w.by != w.method
-                        && !self.includes_itself(sid, self.world.method(w.method).owner)
-                        && self.witness_for(sid, w.method) == Some(method)
+                let pinned = self.world.witnesses().of(sid).iter().any(|w| {
+                    w.by == method && w.by != w.method && self.world.method(w.method).singleton
                 });
                 let mut past_module = via_extension || pinned;
                 // Through `Type[M]` a fixed witness of this name runs for
@@ -2469,7 +2459,7 @@ impl Checker {
         // an `initialize` that takes its arguments, as in a program (a
         // failed input is discarded, so what passed stays checked).
         let (sites, classes, witnesses) = self.repl_ctor_marks;
-        let marks = if self.world.class_ext_impls.len() == witnesses {
+        let marks = if self.world.witnesses().rows.len() == witnesses {
             (sites, classes)
         } else {
             (0, 0)
@@ -2481,7 +2471,7 @@ impl Checker {
         self.repl_ctor_marks = (
             self.self_news.len(),
             self.world.classes.len(),
-            self.world.class_ext_impls.len(),
+            self.world.witnesses().rows.len(),
         );
     }
 

@@ -1588,11 +1588,18 @@ fn overridden_methods(world: &World) -> HashSet<(ClassId, String)> {
             }
         }
     }
-    // A module's class method an extension's own takes the place of for
-    // its target class (`World::class_ext_impls`, #504).
-    for w in world.class_ext_impls.iter().filter(|w| w.by != w.method) {
+    // A module's method another takes the place of for a class that
+    // conforms through an extension, on either side, and an abstract
+    // method an extension's own method implements (`World::witnesses`,
+    // #536 step 3).
+    for w in world.witnesses().rows.iter().filter(|w| w.by != w.method) {
         let om = world.method(w.method);
-        out.insert((om.owner, format!("self.{}", om.name)));
+        let name = if om.singleton {
+            format!("self.{}", om.name)
+        } else {
+            om.name.clone()
+        };
+        out.insert((om.owner, name));
     }
     // A superclass's class method that a module a class includes overrides
     // (`World::class_include_overrides`).

@@ -218,15 +218,15 @@ impl Shake<'_> {
         let mut act: Vec<ClassId> = class.ancestors.clone();
         act.push(c);
         // (And the owners of the witnesses of its conformances through
-        // extensions, or its superclasses': `N.d` for `M.d` when an
-        // extension includes `N`, which may be no ancestor here, #504.)
-        let witnesses: Vec<ClassId> = self
-            .module
-            .world
-            .class_ext_impls
+        // extensions, on either side: `N.d` for `M.d` when an extension
+        // includes `N`, which may be no ancestor here, #504; the table has
+        // a row for each class, `RtWorld::witnesses`.)
+        let world = &self.module.world;
+        let from = world.witnesses.partition_point(|(k, _, _)| *k < c);
+        let witnesses: Vec<ClassId> = world.witnesses[from..]
             .iter()
-            .filter(|(k, _, _)| act.contains(k))
-            .map(|(_, _, by)| self.module.world.methods[*by as usize].owner)
+            .take_while(|(k, _, _)| *k == c)
+            .map(|(_, _, by)| world.methods[*by as usize].owner)
             .collect();
         act.extend(witnesses);
         for a in act {

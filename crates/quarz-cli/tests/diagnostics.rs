@@ -596,6 +596,93 @@ end
 }
 
 #[test]
+fn the_witnesses_of_an_extensions_include_are_checked_at_the_extension() {
+    // #536 step 3: what runs in place of a module's instance method for
+    // the class (the witness table's row) is checked with it as an
+    // override at the extension. Two modules under one extension, the
+    // later one's method in the earlier one's place (the last include
+    // comes first, docs/01 §7): it returns what the other declares.
+    let out = common::diagnostics(
+        r#"module M
+  abstract def m -> String
+end
+module N1
+  include M
+  def m -> String = "N1"
+end
+module N2
+  def m -> Int = 2
+end
+class K
+  def initialize; end
+end
+module X
+  extension K
+    include N1
+    include N2
+  end
+end
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("`m` returns Int but `N1#m`, which it overrides, returns String")
+            && out.contains("`m` returns Int but `M#m`, which it overrides, returns String"),
+        "{out}"
+    );
+    // A method the class inherits, the witness of an abstract method (the
+    // extension defines nothing): checked too, at the extension.
+    let out = common::diagnostics(
+        r#"module Named
+  abstract def label -> String
+end
+class A
+  def initialize; end
+  def label -> Int = 1
+end
+class B < A
+  def initialize; end
+end
+module Sc
+  extension B
+    include Named
+  end
+end
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("`label` returns Int but `Named#label`, which it overrides, returns String"),
+        "{out}"
+    );
+    // Compatible ones are accepted.
+    let out = common::diagnostics(
+        r#"module M
+  abstract def m -> Object
+end
+module N1
+  include M
+  def m -> Object = "N1"
+end
+module N2
+  def m -> String = "N2"
+end
+class K
+  def initialize; end
+end
+module X
+  extension K
+    include N1
+    include N2
+  end
+end
+"#,
+    )
+    .join("\n");
+    assert!(!out.contains("error:"), "{out}");
+}
+
+#[test]
 fn an_extension_cannot_include_what_the_class_includes_itself() {
     // #504 (the user's decision): a class that has the module through its
     // own or a superclass's own `include` conforms already and overrides

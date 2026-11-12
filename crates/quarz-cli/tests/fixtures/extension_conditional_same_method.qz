@@ -1,0 +1,33 @@
+# Two conditional extensions of one class, each including its own module
+# and defining a method of the same name (#529): a call through a module's
+# type runs the method of the extension that includes that module (the
+# witness table's row is keyed by the module's method, #536 step 3), on
+# both sides.
+module PI
+  abstract def parse(s: String) -> Int
+  abstract def self.make(s: String) -> Int
+end
+module PS
+  abstract def parse(s: String) -> String
+  abstract def self.make(s: String) -> String
+end
+class Box[T]
+  @v: T
+  def initialize(@v: T); end
+end
+extension Box[T <: Int]
+  include PI
+  def parse(s: String) -> Int = @v + s.to_i
+  def self.make(s: String) -> Int = 1
+end
+extension Box[T <: String]
+  include PS
+  def parse(s: String) -> String = @v + s
+  def self.make(s: String) -> String = "two"
+end
+def ps(x: PS) -> String = x.parse("!")
+def pi(x: PI) -> Int = x.parse("41")
+a: PS = Box[String].new("x")
+p a.parse("1")
+p ps(a)
+p pi(Box[Int].new(1))
