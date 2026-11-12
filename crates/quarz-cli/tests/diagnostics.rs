@@ -596,134 +596,151 @@ end
 }
 
 #[test]
-fn the_witnesses_of_an_extensions_include_are_checked_at_the_extension() {
-    // #536 step 3: what runs in place of a module's instance method for
-    // the class (the witness table's row) is checked with it as an
-    // override at the extension. Two modules under one extension, the
-    // later one's method in the earlier one's place (the last include
-    // comes first, docs/01 §7): it returns what the other declares.
-    let out = common::diagnostics(
-        r#"module M
-  abstract def m -> String
+fn every_witness_of_the_table_is_a_checked_pair() {
+    // #536 step 3: the witness table takes a witness only where a check
+    // covers the pair (`World::witnesses`' invariant). For each source,
+    // the candidate with another result type is refused, by that check;
+    // what the table does not take is not refused.
+    let head = r#"module Named
+  abstract def label -> String
 end
-module N1
-  include M
-  def m -> String = "N1"
+module Dflt
+  def label -> String = "d"
 end
-module N2
-  def m -> Int = 2
-end
-class K
+"#;
+    let refused: &[(&str, &str, &str)] = &[
+        (
+            "the extension's own method",
+            r#"class A
   def initialize; end
 end
-module X
-  extension K
-    include N1
-    include N2
+module Sc
+  extension A
+    include Named
+    def label -> Int = 1
   end
 end
 "#,
-    )
-    .join("\n");
-    assert!(
-        out.contains("`m` returns Int but `N1#m`, which it overrides, returns String")
-            && out.contains("`m` returns Int but `M#m`, which it overrides, returns String"),
-        "{out}"
-    );
-    // A method the class inherits, the witness of an abstract method (the
-    // extension defines nothing): checked too, at the extension.
-    let out = common::diagnostics(
-        r#"module Named
-  abstract def label -> String
+            "`label` returns Int but `Named#label`, which it overrides, returns String",
+        ),
+        (
+            "the class's own method, an abstract one",
+            r#"class A
+  def initialize; end
+  def label -> Int = 1
+end
+module Sc
+  extension A
+    include Named
+  end
+end
+"#,
+            "`label` returns Int but `Named#label`, which it overrides, returns String",
+        ),
+        (
+            "the class's own method, over a body",
+            r#"class A
+  def initialize; end
+  def label -> Int = 1
+end
+module Sc
+  extension A
+    include Dflt
+  end
+end
+"#,
+            "`label` returns Int but `Dflt#label`, which it overrides, returns String",
+        ),
+        (
+            "a module the class includes itself",
+            r#"module I
+  def label -> Int = 1
 end
 class A
+  include I
+  def initialize; end
+end
+module Sc
+  extension A
+    include Dflt
+  end
+end
+"#,
+            "`label` returns Int but `Dflt#label`, which it overrides in `A`, which includes `I`, returns String",
+        ),
+        (
+            "the included module over the one it brings",
+            r#"module N
+  include Dflt
+  def label -> Int = 1
+end
+class A
+  def initialize; end
+end
+module Sc
+  extension A
+    include N
+  end
+end
+"#,
+            "`label` returns Int but `Dflt#label`, which it overrides, returns String",
+        ),
+        (
+            "a subclass's own method",
+            r#"class A
+  def initialize; end
+end
+class B < A
+  def initialize; end
+  def label -> Int = 1
+end
+module Sc
+  extension A
+    include Named
+    def label -> String = "A"
+  end
+end
+"#,
+            "`label` returns Int but `Named#label`, which it overrides, returns String",
+        ),
+        (
+            "a module a subclass includes itself",
+            r#"module L
+  def label -> Int = 1
+end
+class A
+  def initialize; end
+end
+class B < A
+  include L
+  def initialize; end
+end
+module Sc
+  extension A
+    include Dflt
+  end
+end
+"#,
+            "`label` returns Int but `Dflt#label`, which it overrides in `B`, which includes `L`, returns String",
+        ),
+        (
+            "an inherited method, the conformance active where the class is declared",
+            r#"class A
   def initialize; end
   def label -> Int = 1
 end
 class B < A
   def initialize; end
 end
-module Sc
-  extension B
-    include Named
-  end
+extension B
+  include Named
 end
 "#,
-    )
-    .join("\n");
-    assert!(
-        out.contains("`label` returns Int but `Named#label`, which it overrides, returns String"),
-        "{out}"
-    );
-    // The module another extension brings, which implements an abstract
-    // method whichever extension is declared first (#522): checked in
-    // both orders.
-    let named = r#"module SN1
-  extension CN
-    include Named
-  end
-end
-"#;
-    let giver = r#"module SN2
-  extension CN
-    include Giver
-  end
-end
-"#;
-    for (first, second) in [(named, giver), (giver, named)] {
-        let out = common::diagnostics(&format!(
-            r#"module Named
-  abstract def name -> String
-end
-module Giver
-  def name -> Int = 1
-end
-class CN
-  def initialize; end
-end
-{first}{second}"#
-        ))
-        .join("\n");
-        assert!(
-            out.contains("`name` returns Int but `Named#name`, which it overrides"),
-            "{out}"
-        );
-    }
-    // A class including a module the extension targets, its inherited
-    // method the witness: checked from the class.
-    let out = common::diagnostics(
-        r#"module Named
-  abstract def label -> String
-end
-module Seq
-end
-class A
-  def initialize; end
-  def label -> Int = 1
-end
-class K < A
-  include Seq
-  def initialize; end
-end
-module Sc
-  extension Seq
-    include Named
-  end
-end
-"#,
-    )
-    .join("\n");
-    assert!(
-        out.contains("`label` returns Int but `Named#label`, which it overrides, returns String"),
-        "{out}"
-    );
-    // An extension's own method that is the witness (a top-level one of
-    // the class's group, under a top-level conformance): checked.
-    let out = common::diagnostics(
-        r#"module Named
-  abstract def label -> String
-end
-class A
+            "`label` returns Int but `Named#label`, which it overrides, returns String",
+        ),
+        (
+            "an extension's method that includes nothing, under such a conformance",
+            r#"class A
   def initialize; end
 end
 class B < A
@@ -737,19 +754,114 @@ extension B
   def label -> Int = 5
 end
 "#,
-    )
-    .join("\n");
-    assert!(
-        out.contains("`label` returns Int but `Named#label`, which it overrides, returns String"),
-        "{out}"
-    );
-    // Under a scoped conformance that method is no witness (an extension
-    // method, chosen statically): of any result.
-    let out = common::diagnostics(
-        r#"module Named
-  abstract def label -> String
+            "`label` returns Int but `Named#label`, which it overrides, returns String",
+        ),
+        (
+            "a module another extension brings, declared after (#522)",
+            r#"module Giver
+  def label -> Int = 1
 end
-class A
+class CN
+  def initialize; end
+end
+module SN1
+  extension CN
+    include Named
+  end
+end
+module SN2
+  extension CN
+    include Giver
+  end
+end
+"#,
+            "`label` returns Int but `Named#label`, which it overrides in `CN`, which includes `Giver`, returns String",
+        ),
+        (
+            "an inherited method two classes share through a generic superclass: for each class",
+            r#"module M
+  abstract def get -> Int
+end
+class Base[T]
+  @v: T
+  def initialize(@v: T); end
+  def get -> T = @v
+end
+class X < Base[Int]
+  def initialize; super(1); end
+end
+class Y < Base[String]
+  def initialize; super("s"); end
+end
+extension X
+  include M
+end
+extension Y
+  include M
+end
+"#,
+            "`get` returns String but `M#get`, which it overrides, returns Int",
+        ),
+        (
+            "the extension's method for a module it brings through another extension",
+            r#"module TM[U]
+  abstract def tm -> U
+end
+module TN[T]
+end
+class TC
+  def initialize; end
+end
+module St
+  extension TN[T]
+    include TM[T]
+  end
+  extension TC
+    include TN[Int]
+    def tm -> String = "s"
+  end
+end
+"#,
+            "`tm` returns String but `TM#tm`, which it overrides, returns Int",
+        ),
+        (
+            "... a generic target, the bringing extension with a bound",
+            r#"module TM[U]
+  abstract def tm -> U
+end
+module TN[T]
+end
+class TG[V]
+  def initialize; end
+end
+module St
+  extension TN[T <: Int]
+    include TM[T]
+  end
+  extension TG[V <: Int]
+    include TN[V]
+    def tm -> String = "s"
+  end
+end
+"#,
+            "`tm` returns String but `TM#tm`, which it overrides, returns V",
+        ),
+    ];
+    for (what, src, want) in refused {
+        let out = common::diagnostics(&format!("{head}{src}")).join("\n");
+        assert!(out.contains(want), "{what}: {out}");
+    }
+    // No witness in the table, so no pair to refuse: an extension's method
+    // that includes nothing under a scoped conformance (an extension
+    // method, chosen statically); a method the class inherits under a
+    // scoped conformance and a module the same extension includes beside
+    // the abstract one's (nothing implements it: #600, #557's other
+    // order); a module another extension brings, declared before (#605);
+    // an include outside the bringing extension's bound (not brought).
+    let accepted: &[(&str, &str)] = &[
+        (
+            "an extension's method under a scoped conformance",
+            r#"class A
   def initialize; end
 end
 class B < A
@@ -765,20 +877,31 @@ extension B
   def label -> Int = 5
 end
 "#,
-    )
-    .join("\n");
-    assert!(!out.contains("error:"), "{out}");
-    // Compatible ones are accepted.
-    let out = common::diagnostics(
-        r#"module M
-  abstract def m -> Object
+        ),
+        (
+            "an inherited method under a scoped conformance",
+            r#"class A
+  def initialize; end
+  def label -> Int = 1
 end
-module N1
-  include M
-  def m -> Object = "N1"
+class B < A
+  def initialize; end
+end
+module Sc
+  extension B
+    include Named
+  end
+end
+"#,
+        ),
+        (
+            "two modules of one extension",
+            r#"module N1
+  include Named
+  def label -> String = "N1"
 end
 module N2
-  def m -> String = "N2"
+  def label -> Int = 2
 end
 class K
   def initialize; end
@@ -790,9 +913,53 @@ module X
   end
 end
 "#,
-    )
-    .join("\n");
-    assert!(!out.contains("error:"), "{out}");
+        ),
+        (
+            "a module another extension brings, declared before",
+            r#"module Giver
+  def label -> Int = 1
+end
+class CN
+  def initialize; end
+end
+module SN2
+  extension CN
+    include Giver
+  end
+end
+module SN1
+  extension CN
+    include Named
+  end
+end
+"#,
+        ),
+        (
+            "an include outside the bringing extension's bound",
+            r#"module TM[U]
+  abstract def tm -> U
+end
+module TN[T]
+end
+class TC
+  def initialize; end
+end
+module St
+  extension TN[T <: Int]
+    include TM[T]
+  end
+  extension TC
+    include TN[String]
+    def tm -> Symbol = :s
+  end
+end
+"#,
+        ),
+    ];
+    for (what, src) in accepted {
+        let out = common::diagnostics(&format!("{head}{src}")).join("\n");
+        assert!(!out.contains("error:"), "{what}: {out}");
+    }
 }
 
 #[test]

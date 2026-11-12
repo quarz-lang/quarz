@@ -1,7 +1,8 @@
-# The witness of a module's abstract method may come from another module
-# the extension includes after it (#557): `Cmp#<=>` for `Comparable#<=>`,
-# through a native's gated send (`max`), a typed call, and from a module
-# the extension includes before it.
+# The witness of a module's abstract method may be the method of another
+# module the extension includes after it (#557): `Cmp#<=>` for
+# `Comparable#<=>`, a pair of the override table, through a typed call
+# and through a native's gated send (`max`), which reads the same row
+# (#536 step 3).
 module Cmp
   abstract def v -> Int
   def <=>(o: Box) -> Int = o.v - v
@@ -25,22 +26,3 @@ puts [Box.new(1), Box.new(3)].max.to_s
 def typed(a: Comparable[Box], b: Box) -> Int = a <=> b
 puts typed(Box.new(1), Box.new(3))
 puts Box.new(1) < Box.new(3)
-
-module Named
-  abstract def label -> String
-end
-module Gives
-  def label -> String = "Gives"
-end
-class K
-  def initialize; end
-end
-module S2
-  extension K
-    include Gives
-    include Named
-  end
-  def self.n(k: K) -> Named = k
-end
-def via(n: Named) -> String = n.label
-puts via(S2.n(K.new))

@@ -1,0 +1,29 @@
+typed/ext/abstract/scoped: 102
+typed/ext/default/scoped: 102
+typed/own/abstract/scoped: 103
+typed/own/default/scoped: 103
+typed/inc/abstract/scoped: 104
+typed/inc/default/scoped: 104
+typed/nmod/abstract/scoped: 105
+typed/nmod/default/scoped: 105
+typed/default/default/scoped: 101
+typed/sub/abstract/scoped: 106
+typed/sub/default/scoped: 106
+typed/ext/abstract/top: 102
+typed/ext/default/top: 102
+typed/own/abstract/top: 103
+typed/own/default/top: 103
+typed/inc/abstract/top: 104
+typed/inc/default/top: 104
+typed/nmod/abstract/top: 105
+typed/nmod/default/top: 105
+typed/default/default/top: 101
+typed/sub/abstract/top: 106
+typed/sub/default/top: 106
+typed/shared/inherited/class: unimplemented unimplemented
+typed/shared/inherited/module: unimplemented unimplemented
+typed/shared/extension: 107 s!
+typed/outside-bound/variance: 101 101
+typed/outside-bound/scoped: 101
+typed/through-extension/generic: 108 109
+typed/through-extension/bound: 108 109

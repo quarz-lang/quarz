@@ -146,6 +146,72 @@ impl WitnessMemo {
     }
 }
 
+/// The override table's pairs (#536 step 1) as the table's walk reads
+/// them, remembered for one build: `World::overrides` of a method, as
+/// seen where its class is declared; the pairs of
+/// `World::include_overrides_of` a class has, as (overridden, by),
+/// likewise; and a class's run-time order.
+/// The modules an extension brings, with their arguments in its
+/// parameters (`World::brought_modules`).
+type Brought = Rc<Vec<(ClassId, Vec<Type>)>>;
+
+#[derive(Default)]
+struct Pairs {
+    overrides: HashMap<MethodId, Rc<Vec<MethodId>>>,
+    includes: HashMap<ClassId, Rc<Vec<(MethodId, MethodId)>>>,
+    runtime: HashMap<ClassId, Rc<Vec<ClassId>>>,
+    brought: HashMap<ExtensionId, Brought>,
+}
+
+impl Pairs {
+    fn overrides(&mut self, world: &World, m: MethodId) -> Rc<Vec<MethodId>> {
+        self.overrides
+            .entry(m)
+            .or_insert_with(|| {
+                let owner = world.method(m).owner;
+                Rc::new(world.with_view(world.declaration_view(owner), || world.overrides(m)))
+            })
+            .clone()
+    }
+
+    fn include(&mut self, world: &World, c: ClassId) -> Rc<Vec<(MethodId, MethodId)>> {
+        self.includes
+            .entry(c)
+            .or_insert_with(|| {
+                Rc::new(world.with_view(world.declaration_view(c), || {
+                    world
+                        .include_overrides_of(c)
+                        .into_iter()
+                        .map(|o| (o.overridden, o.by))
+                        .collect()
+                }))
+            })
+            .clone()
+    }
+
+    fn brought(&mut self, world: &World, e: ExtensionId) -> Brought {
+        self.brought
+            .entry(e)
+            .or_insert_with(|| Rc::new(world.brought_modules(&world.extensions[e as usize])))
+            .clone()
+    }
+
+    fn runtime(&mut self, world: &World, c: ClassId) -> Rc<Vec<ClassId>> {
+        self.runtime
+            .entry(c)
+            .or_insert_with(|| {
+                Rc::new(
+                    world
+                        .resolution(c, &[], View::Runtime)
+                        .into_iter()
+                        .map(|(k, _)| k)
+                        .collect(),
+                )
+            })
+            .clone()
+    }
+}
+
 /// A conformance of a class through an extension's include
 /// (`World::extension_conformances`).
 #[derive(Clone, Debug)]
@@ -179,52 +245,59 @@ impl World {
     /// side also where `K`'s own include of `M` does nothing, a superclass
     /// having it already through an extension in dispatch's order
     /// (`shadowed_includes`; the class side goes by the declared order,
-    /// #504). `E` is the
-    /// extension whose include brings `M` (`extension_conformances`: the
-    /// nearest target up `K`'s declared order, the first declared
-    /// extension there; bounds are not consulted, a class value carrying
-    /// no type arguments), `C` the class of `K`'s chain it hangs from. For
-    /// a module `K` has itself, ordinary dispatch holds (the override
-    /// table, #536 step 1) and the extension's method of the name is an
-    /// extension method, chosen statically.
+    /// #504). For a module `K` has itself, ordinary dispatch holds (the
+    /// override table, #536 step 1) and an extension's method of the name
+    /// is an extension method, chosen statically. Bounds are not
+    /// consulted for a row's existence, a class value carrying no type
+    /// arguments.
+    ///
+    /// The invariant: a row's witness is the module's own method, or the
+    /// own method of an extension, or a method the override table pairs
+    /// with the module's method for a class of `K`'s run-time order, or
+    /// what `implementation_for` finds for the class under a conformance
+    /// active where it is declared. The table adds no pair of its own
+    /// (`row_is_a_checked_pair`), so each pair is one a check of the
+    /// declarer covers: an extension's method at the extension, in its
+    /// parameters (`Declarer::check_extension_own_witnesses`); a pair of
+    /// `World::overrides` or `World::include_overrides_of` where the
+    /// override table is checked; `implementation_for`'s with the class
+    /// (`Declarer::check_conformance_of`).
     ///
     /// Instance side (a call through a value typed `M`; #536 step 1's
     /// decisions (3) and (4): the class's own methods and own includes
-    /// override any extension's module, a subclass's too):
-    /// 1. below `C`, the first method of `K`'s lookup order
-    ///    (`View::Lookup`) that replaces `r` (`World::replaces_seen`): a
-    ///    subclass's own, or one of a module it includes itself;
-    /// 2. `E`'s own method of the name that takes `r`'s calls (the same
-    ///    signature first);
-    /// 3. the first method of `C`'s own part of the lookup order (`C`,
-    ///    the modules it includes itself and those of its top-level
-    ///    unconditional extensions) in front of `M` that replaces `r`;
-    /// 4. a method of a module `E` includes after the one bringing `M`,
-    ///    the last included first (#523), that replaces `r`;
-    /// 5. the nearest method, in the included module's own ancestry in
-    ///    front of `M`, that replaces `r`;
-    /// 6. `r` itself when it has a body. An abstract `r` is implemented
-    ///    by what follows `M` in the order, as for a class's own include:
-    ///    a module `E` includes before it, then the rest of `C`'s lookup
-    ///    order (an inherited method), then a module another extension
-    ///    makes the class conform to (#522); in 1, 3 and here, where a class
-    ///    gives no method and `E` is itself active where the class is
-    ///    declared (a prelude extension, a top-level one of the class's
-    ///    group), also by an own method of such an extension that targets
-    ///    the class (`WitnessSource::Method`'s rule). One that nothing
-    ///    implements stays in the row and raises when called (#600,
-    ///    #555).
+    /// override any extension's module, a subclass's too): going up `K`'s
+    /// run-time order (`View::Runtime`: dispatch's, then the modules of
+    /// the scoped and conditional extensions), at each entry
+    /// 1. the own method of an extension targeting the entry that brings
+    ///    `M` (the first declared), which takes `r`'s calls
+    ///    (`extension_own_witness`);
+    /// 2. else the entry's own method that the override table pairs with
+    ///    `r`: a class's own method or a subclass's, one of a module they
+    ///    include themselves, a module's over the one it includes, an
+    ///    abstract `r` with what the table says implements it;
     ///
-    /// Each class's rows are asked as seen where the class is declared
-    /// (`declaration_view`: what the pairing rule's subtyping and the
-    /// bounds read), so the table does not depend on the extensions
-    /// active where it is asked for.
+    /// and the walk ends at `M` when `r` has a body (the module's own
+    /// runs). Before the walk, for an abstract `r` under a conformance
+    /// whose extension is active where `K` is declared (the class's
+    /// conformance check then sees the module): what the rule of the
+    /// class's own abstract methods finds when the walk would not, the
+    /// own method of an extension that includes nothing for it, or a
+    /// method further up than the module (`implementation_for`; the
+    /// replaced record had both), checked with the class. An abstract `r` nothing implements stays in the row and
+    /// raises when called (#600, #555). What the override table does not
+    /// pair is no witness yet: a method the class inherits, a module the
+    /// same extension includes beside `M` (#557), a module another
+    /// extension brings, beyond the pairs `include_overrides_of` has
+    /// (#605).
     ///
     /// Class side (a call through `Type[M]` or `T <: M`; #504): witnesses
-    /// are fixed, the row of `C` serves `C` and every class below it (no
-    /// step 1). Steps 2, 4, 5 and 6 alike; step 3 is `C`'s own or a
-    /// superclass's own class method only, not one of a module they
-    /// include (#601); an abstract `r` has no later implementation.
+    /// are fixed, the row of the class the conformance hangs from serves
+    /// it and every class below it: the extension's own `def self.`, else
+    /// the class's own or a superclass's own class method (not one of a
+    /// module they include, #601), else a module the extension includes
+    /// after it (the last first, #523), else the nearest in the included
+    /// module's own ancestry, else the module's default; each checked at
+    /// the extension (`Declarer::check_extension_class_side`).
     ///
     /// Two more kinds of row, for a concrete class and an abstract
     /// instance method of its declared ancestors (`implementation_for`,
@@ -237,6 +310,12 @@ impl World {
     /// abstract superclass's stub over an inherited body, the choice by
     /// signature past an overload): a fact of the override relation, kept
     /// here as the record this table replaces kept it.
+    ///
+    /// Each class's rows are asked as seen where the class is declared
+    /// (`declaration_view`), each pair of the override table where its
+    /// class is, an extension's own method where the extension is: the
+    /// table does not depend on the extensions active where it is asked
+    /// for.
     ///
     /// The gated sends of natives (`Interp::find_method`) still look the
     /// name up first (#599).
@@ -396,6 +475,7 @@ impl World {
         // once for the classes below.)
         let mut at_root: HashMap<(ClassId, ExtensionId, ClassId, MethodId), MethodId> =
             HashMap::default();
+        let mut pairs = Pairs::default();
         for k in 0..self.classes.len() as ClassId {
             if self.class(k).kind == ClassKind::Module {
                 continue;
@@ -404,7 +484,7 @@ impl World {
             // table does not depend on the extensions active where it is
             // asked for.)
             self.with_view(self.declaration_view(k), || {
-                self.class_witnesses(k, &mut table, &mut at_root)
+                self.class_witnesses(k, &mut table, &mut at_root, &mut pairs)
             });
         }
         table
@@ -417,6 +497,7 @@ impl World {
         k: ClassId,
         table: &mut WitnessTable,
         at_root: &mut HashMap<(ClassId, ExtensionId, ClassId, MethodId), MethodId>,
+        pairs: &mut Pairs,
     ) {
         let kind = self.class(k).kind;
         let own = self.own_args(k);
@@ -447,88 +528,77 @@ impl World {
                 );
             }
         }
-        for conf in self.extension_conformances(k) {
-            let c = self.part_class(k, conf.root);
+        // A conformance through an extension, and a module the class
+        // includes itself that a superclass has already, through an
+        // extension, in dispatch's order (the own include then does
+        // nothing, docs/01 §6): on the instance side the superclass's
+        // conformance holds.
+        let mut confs: Vec<(ExtConformance, bool)> = self
+            .extension_conformances(k)
+            .into_iter()
+            .map(|c| (c, true))
+            .collect();
+        for (m, margs, p) in self.shadowed_includes(k) {
+            if let Some(at_p) = self
+                .extension_conformances(p)
+                .into_iter()
+                .find(|x| x.module == m)
+            {
+                confs.push((
+                    ExtConformance {
+                        args: margs,
+                        ..at_p
+                    },
+                    false,
+                ));
+            }
+        }
+        for (conf, class_side) in confs {
             let source = WitnessSource::Include {
                 ext: conf.ext,
                 include: conf.include,
                 target: conf.target,
             };
             let module = self.class(conf.module);
-            let instance: Vec<MethodId> = module.methods.values().flatten().copied().collect();
-            let class_side: Vec<MethodId> = module
-                .singleton_methods
+            let methods: Vec<MethodId> = module
+                .methods
                 .values()
                 .flatten()
+                .chain(module.singleton_methods.values().flatten())
                 .copied()
+                .filter(|&r| self.method(r).owner == conf.module)
                 .collect();
-            for r in instance.into_iter().chain(class_side) {
-                let info = self.method(r);
-                if info.owner != conf.module {
-                    continue;
-                }
-                let below = (c != k && !info.singleton)
-                    .then(|| self.witness_below(k, c, &lookup, &conf, r))
-                    .flatten();
-                let by = below.unwrap_or_else(|| {
+            for r in methods {
+                let by = if self.method(r).singleton {
+                    if !class_side {
+                        continue;
+                    }
+                    // (Fixed, #504: the row of the class the conformance
+                    // hangs from.)
+                    let c = self.part_class(k, conf.root);
                     *at_root
                         .entry((c, conf.ext, conf.module, r))
-                        .or_insert_with(|| self.conformance_witness(c, r))
-                });
-                table.push(Witness {
+                        .or_insert_with(|| self.class_conformance_witness(c, r))
+                } else {
+                    self.instance_witness(k, &lookup, &conf, r, pairs)
+                };
+                let w = Witness {
                     class: k,
                     module: conf.module,
                     args: conf.args.clone(),
                     source: source.clone(),
                     method: r,
                     by,
-                });
-            }
-        }
-        // A module the class includes itself that a superclass has
-        // already, through an extension, in dispatch's order (the own
-        // include then does nothing, docs/01 §6): on the instance side
-        // the superclass's conformance holds, the class's own part of
-        // the order in front of it (step 1).
-        for (m, margs, p) in self.shadowed_includes(k) {
-            let Some(at_p) = self
-                .extension_conformances(p)
-                .into_iter()
-                .find(|x| x.module == m)
-            else {
-                continue;
-            };
-            let c = self.part_class(k, at_p.root);
-            let conf = ExtConformance {
-                args: margs,
-                ..at_p
-            };
-            let methods: Vec<MethodId> =
-                self.class(m).methods.values().flatten().copied().collect();
-            for r in methods {
-                let info = self.method(r);
-                if info.owner != m || info.singleton {
-                    continue;
-                }
-                let by = self
-                    .witness_below(k, c, &lookup, &conf, r)
-                    .unwrap_or_else(|| {
-                        *at_root
-                            .entry((c, conf.ext, conf.module, r))
-                            .or_insert_with(|| self.conformance_witness(c, r))
-                    });
-                table.push(Witness {
-                    class: k,
-                    module: m,
-                    args: conf.args.clone(),
-                    source: WitnessSource::Include {
-                        ext: conf.ext,
-                        include: conf.include,
-                        target: conf.target,
-                    },
-                    method: r,
-                    by,
-                });
+                };
+                debug_assert!(
+                    self.row_is_a_checked_pair(&w),
+                    "internal error: the witness table pairs `{}` with `{}#{}` for `{}` by no check",
+                    self.method(by).name,
+                    self.class(conf.module).name,
+                    self.method(r).name,
+                    self.class(k).name
+                );
+                table.push(w);
             }
         }
         // The other kinds: an abstract method of the class's declared
@@ -662,13 +732,28 @@ impl World {
         r: MethodId,
     ) -> Option<(ExtensionId, MethodId)> {
         let group = self.file_groups.get(&self.class(k).file);
-        self.extensions
+        let found: Vec<(ExtensionId, MethodId)> = self
+            .extensions
             .iter()
             .filter(|e| {
                 e.target == entry
                     && (e.always_active || (group.is_some() && e.group.as_ref() == group))
             })
-            .find_map(|e| self.extension_method_for(e, r).map(|i| (e.id, i)))
+            .filter_map(|e| self.extension_method_for(e, r).map(|i| (e.id, i)))
+            .collect();
+        // (Of several, one whose extension brings the method's module
+        // itself: `extension Box[T <: String]; include PS; def parse` for
+        // `PS#parse`, not another extension's `parse` written for the
+        // module that one includes, #529. Else the first declared, #605.)
+        let module = self.method(r).owner;
+        found
+            .iter()
+            .copied()
+            .find(|(e, _)| {
+                self.brought_args(&self.extensions[*e as usize], module)
+                    .is_some()
+            })
+            .or_else(|| found.first().copied())
     }
 
     /// The own method of extension `e` that stands for the abstract
@@ -701,74 +786,219 @@ impl World {
             && c.keywords_accept(a)
     }
 
-    /// The method of class or module `entry` (its own, on `r`'s side)
-    /// that replaces `r`, each seen through its substitution.
-    fn entry_replaces(
-        &self,
-        entry: ClassId,
-        esubst: &HashMap<TypeParamId, Type>,
-        r: MethodId,
-        rsubst: &HashMap<TypeParamId, Type>,
-    ) -> Option<MethodId> {
-        let info = self.method(r);
-        let class = self.class(entry);
-        let table = if info.singleton {
-            &class.singleton_methods
-        } else {
-            &class.methods
-        };
-        table.get(&info.name)?.iter().copied().find(|&i| {
-            let im = self.method(i);
-            im.owner == entry
-                && !im.is_abstract
-                && im.singleton == info.singleton
-                && i != r
-                && self.replaces_seen(i, esubst, r, rsubst)
-        })
-    }
-
-    /// Step 1 of the instance side (`witnesses`): for class `k` below the
-    /// class `c` its conformance hangs from, the first method of `k`'s
-    /// lookup order in front of `c` that replaces `r`, seen from `k`; for
-    /// an abstract `r`, also the extension's method `group_gives` finds
-    /// for an entry.
-    fn witness_below(
+    /// The instance-side row for class `k` and method `r` of a module it
+    /// has through the conformance `conf` (`witnesses`): going up `k`'s
+    /// run-time order, at each entry the own method of an extension
+    /// targeting it that brings the module (`extension_own_witness`), else
+    /// the entry's method that the override table pairs with `r`
+    /// (`Pairs`); ending at the module when `r` has a body. `r` itself
+    /// when nothing is found.
+    fn instance_witness(
         &self,
         k: ClassId,
-        c: ClassId,
         lookup: &[(ClassId, Vec<Type>)],
         conf: &ExtConformance,
         r: MethodId,
-    ) -> Option<MethodId> {
-        let rsubst = self.class_subst(conf.module, &conf.args);
-        let abstract_ = self.method(r).is_abstract;
-        let grouped = self.active_where_declared(k, conf.ext);
-        // (The module's own ancestry gives `r` nothing: it is behind it.)
-        let behind: Vec<ClassId> = self
-            .resolution(conf.module, &conf.args, View::Declared)
-            .into_iter()
-            .map(|(m, _)| m)
-            .collect();
-        for (e, eargs) in lookup.iter().take_while(|(e, _)| *e != c) {
-            if behind.contains(e) {
+        pairs: &mut Pairs,
+    ) -> MethodId {
+        let info = self.method(r);
+        let x = conf.module;
+        // An abstract `r` under a conformance active where `k` is declared
+        // (the class's conformance check sees the module): what the rule
+        // of the class's own abstract methods finds when it is not where
+        // the walk below finds it, an extension's own method that includes
+        // nothing or a method further up than the module
+        // (`implementation_for`: the replaced record had these too).
+        if info.is_abstract && self.active_where_declared(k, conf.ext) {
+            match self.implementation_for(k, lookup, x, r) {
+                Implementation::Extension(_, i) | Implementation::Inherited(i) => return i,
+                Implementation::Own(_) | Implementation::Missing => {}
+            }
+        }
+        let order = pairs.runtime(self, k);
+        for &a in order.iter() {
+            if a == x && !info.is_abstract {
+                return r;
+            }
+            // (A file's top-level `def`s are functions, no methods here.)
+            if self.class(a).kind == ClassKind::Main {
                 continue;
             }
-            if let Some(i) = self.entry_replaces(*e, &self.class_subst(*e, eargs), r, &rsubst) {
-                return Some(i);
+            for e in &self.extensions {
+                if e.target != a || e.includes.is_empty() || !e.methods.contains_key(&info.name) {
+                    continue;
+                }
+                let brought = pairs.brought(self, e.id);
+                if let Some((_, args)) = brought.iter().find(|(m, _)| *m == x) {
+                    if let Some(i) = self.extension_own_witness_with(e, x, args, r) {
+                        return i;
+                    }
+                }
             }
-            if abstract_ && grouped {
-                if let Some((_, i)) = self.group_gives(k, *e, r) {
-                    return Some(i);
+            let class = self.class(a);
+            if let Some(ids) = class.methods.get(&info.name) {
+                let candidates: Vec<MethodId> = ids
+                    .iter()
+                    .copied()
+                    .filter(|&i| {
+                        let im = self.method(i);
+                        im.owner == a && !im.is_abstract && !im.singleton && i != r
+                    })
+                    .collect();
+                // (A module's method over it where a class of the
+                // receiver's includes the module, then what the method's
+                // own entry says: the two parts of the override table.)
+                if let Some(&i) = candidates.iter().find(|&&i| {
+                    order
+                        .iter()
+                        .any(|&c| pairs.include(self, c).contains(&(r, i)))
+                }) {
+                    return i;
+                }
+                if let Some(&i) = candidates
+                    .iter()
+                    .find(|&&i| pairs.overrides(self, i).contains(&r))
+                {
+                    return i;
                 }
             }
         }
-        None
+        r
     }
 
-    /// The witness of method `r` for class `c` itself, the class its
-    /// conformance to `r`'s module hangs from: steps 2 to 6 of
-    /// `witnesses`. `r` itself when nothing else is found.
-    pub fn conformance_witness(&self, c: ClassId, r: MethodId) -> MethodId {
+    /// The own method of extension `ext` that runs in place of method `r`
+    /// of module `x`, when the extension brings `x` (`brought_modules`):
+    /// for an abstract `r`, the method that takes what
+    /// its callers pass, of the same signature first
+    /// (`extension_method_for`); for one with a body, the method that
+    /// replaces it (`World::replaces_seen`), `x`'s arguments as the
+    /// extension includes it. Asked as seen where the extension is
+    /// declared, whoever asks: the table for every class the extension
+    /// reaches, and the declarer, which checks the pair at the extension.
+    pub fn extension_own_witness(
+        &self,
+        ext: ExtensionId,
+        x: ClassId,
+        r: MethodId,
+    ) -> Option<MethodId> {
+        let e = &self.extensions[ext as usize];
+        let args = self.brought_args(e, x)?;
+        self.extension_own_witness_with(e, x, &args, r)
+    }
+
+    /// `extension_own_witness`, `x`'s arguments as the extension brings it
+    /// given.
+    fn extension_own_witness_with(
+        &self,
+        e: &ExtensionInfo,
+        x: ClassId,
+        args: &[Type],
+        r: MethodId,
+    ) -> Option<MethodId> {
+        let info = self.method(r);
+        let ids = e.methods.get(&info.name)?;
+        if info.is_abstract {
+            return self.extension_method_for(e, r);
+        }
+        let rsubst = self.class_subst(x, args);
+        let none = HashMap::default();
+        self.with_view(self.extension_view(e), || {
+            ids.iter().copied().find(|&i| {
+                let im = self.method(i);
+                !im.is_abstract
+                    && im.singleton == info.singleton
+                    && self.replaces_seen(i, &none, r, &rsubst)
+            })
+        })
+    }
+
+    /// The modules extension `e` brings (what its includes are, what they
+    /// include, and what extensions make those conform to), each with its
+    /// arguments in the extension's parameters, the last include's first;
+    /// as seen where the extension is declared.
+    pub fn brought_modules(&self, e: &ExtensionInfo) -> Vec<(ClassId, Vec<Type>)> {
+        self.with_view(self.extension_view(e), || {
+            let mut out: Vec<(ClassId, Vec<Type>)> = Vec::new();
+            for inc in e.includes.iter().rev() {
+                let Type::Class(m, margs) = inc else { continue };
+                for (x, xargs) in self.resolution(*m, margs, View::Override) {
+                    if self.class(x).kind == ClassKind::Module && !out.iter().any(|(k, _)| *k == x)
+                    {
+                        out.push((x, xargs));
+                    }
+                }
+            }
+            out
+        })
+    }
+
+    /// Whether extension `e` brings module `x` (`brought_modules`), and
+    /// with which arguments in the extension's parameters.
+    pub fn brought_args(&self, e: &ExtensionInfo, x: ClassId) -> Option<Vec<Type>> {
+        self.brought_modules(e)
+            .into_iter()
+            .find(|(k, _)| *k == x)
+            .map(|(_, a)| a)
+    }
+
+    /// The extensions active where extension `e` is declared, whoever
+    /// asks: the prelude's and the top-level ones of its group.
+    pub fn extension_view(&self, e: &ExtensionInfo) -> Vec<ExtensionId> {
+        let group = self.file_groups.get(&e.file);
+        self.extensions
+            .iter()
+            .filter(|o| o.always_active || (group.is_some() && o.group.as_ref() == group))
+            .map(|o| o.id)
+            .collect()
+    }
+
+    /// The invariant of the table (#536 step 3): a row's witness is the
+    /// module's own method, an own method of an extension, or a method the
+    /// override table pairs with the module's for a class of the row's
+    /// class's run-time order; the table adds no pair of its own, so every
+    /// pair is one a check of the declarer covers (an extension's method
+    /// at the extension or with the class it implements the method for,
+    /// the override table's pairs where that table is checked). The class
+    /// side's witnesses are checked at the extension, each conformance
+    /// (`Declarer::check_extension_class_side`). Asked again here from the
+    /// relations themselves, not from what the walk remembered.
+    fn row_is_a_checked_pair(&self, w: &Witness) -> bool {
+        let (r, by) = (w.method, w.by);
+        if by == r || self.method(r).singleton || self.method(by).extension.is_some() {
+            return true;
+        }
+        // (The record rule, under a conformance active where the class is
+        // declared: checked with the class, `check_conformance_of`.)
+        if let WitnessSource::Include { ext, .. } = w.source {
+            if self.method(r).is_abstract && self.active_where_declared(w.class, ext) {
+                let lookup = self.resolution(w.class, &self.own_args(w.class), View::Lookup);
+                if self.implementation_for(w.class, &lookup, w.module, r)
+                    == Implementation::Inherited(by)
+                {
+                    return true;
+                }
+            }
+        }
+        let owner = self.method(by).owner;
+        if self
+            .with_view(self.declaration_view(owner), || self.overrides(by))
+            .contains(&r)
+        {
+            return true;
+        }
+        self.resolution(w.class, &[], View::Runtime)
+            .into_iter()
+            .any(|(c, _)| {
+                self.with_view(self.declaration_view(c), || self.include_overrides_of(c))
+                    .iter()
+                    .any(|o| o.overridden == r && o.by == by)
+            })
+    }
+
+    /// The class-side witness of method `r` for class `c` itself, the
+    /// class its conformance to `r`'s module hangs from (`witnesses`). `r`
+    /// itself when nothing else is found.
+    fn class_conformance_witness(&self, c: ClassId, r: MethodId) -> MethodId {
         let owner = self.method(r).owner;
         let Some(conf) = self
             .extension_conformances(c)
@@ -779,13 +1009,13 @@ impl World {
         };
         // (Seen where `c` is declared, whichever class's rows ask.)
         self.with_view(self.declaration_view(c), || {
-            self.witness_at(c, &conf, r).unwrap_or(r)
+            self.class_witness_at(c, &conf, r).unwrap_or(r)
         })
     }
 
-    /// `conformance_witness` for extension `ext`'s include number
-    /// `include`, as if no other extension made its target conform: what
-    /// the declarer checks at the extension, also for one that is not the
+    /// The witnesses of extension `ext`'s include number `include` for its
+    /// target, as if no other extension made the target conform: what the
+    /// declarer checks at the extension, also for one that is not the
     /// first to bring the module (#517). The methods of the modules the
     /// include brings that the target does not have itself, each with its
     /// witness for the target (`None`: an abstract one nothing
@@ -822,6 +1052,8 @@ impl World {
         let margs: Vec<Type> = eargs.iter().map(|t| t.subst(&esubst)).collect();
         let here = self.resolution(*m, &margs, View::Declared);
         let there = self.resolution(*m, eargs, View::Declared);
+        let mut pairs = Pairs::default();
+        let lookup = self.resolution(target, &targs, View::Lookup);
         let mut out = Vec::new();
         for ((x, xargs), (_, xeargs)) in here.into_iter().zip(there) {
             if self.class(x).kind != ClassKind::Module || declared.contains(&x) {
@@ -846,178 +1078,17 @@ impl World {
                 .copied()
                 .filter(|&r| self.method(r).owner == x)
                 .collect();
-            // (A module target has no class of its own to answer for: the
-            // classes including it do, each from its own rows.)
-            let c = if self.class(target).kind == ClassKind::Module {
-                None
-            } else {
-                Some(target)
-            };
             for r in methods {
-                let by = match c {
-                    Some(c) => self.witness_at(c, &conf, r),
-                    None => self.witness_at(target, &conf, r),
+                let by = if self.method(r).singleton {
+                    self.class_witness_at(target, &conf, r)
+                } else {
+                    let by = self.instance_witness(target, &lookup, &conf, r, &mut pairs);
+                    (by != r || !self.method(r).is_abstract).then_some(by)
                 };
                 out.push((conf.clone(), r, by));
             }
         }
         out
-    }
-
-    /// Steps 2 to 6 for `conf`, a conformance class `c` has from its own
-    /// part of the declared order; `None` for an abstract `r` nothing
-    /// implements.
-    fn witness_at(&self, c: ClassId, conf: &ExtConformance, r: MethodId) -> Option<MethodId> {
-        let info = self.method(r);
-        let e = &self.extensions[conf.ext as usize];
-        if info.singleton {
-            return self.class_witness_at(c, conf, r);
-        }
-        let x = conf.module;
-        // (Seen from `c`, and from the extension for its own methods and
-        // its modules'.)
-        let rsubst = self.class_subst(x, &conf.args);
-        let rsubst_e = self.class_subst(x, &conf.ext_args);
-        let none = HashMap::default();
-        let lookup = self.resolution(c, &self.own_args(c), View::Lookup);
-        // (An extension's own method for an abstract `r`, `group_gives`:
-        // only where the conformance's extension is itself active where
-        // the class is declared, so that the class's conformance check
-        // sees the module and checks the pair, as for a module the class
-        // includes itself.)
-        let grouped = self.active_where_declared(c, conf.ext);
-        // (`c`'s own part of the order in front of the conformance: for a
-        // module target `c` includes itself, what comes before it.)
-        let root_at = lookup.iter().position(|(k, _)| *k == conf.root);
-        // 2. The extension's own method.
-        let own = if info.is_abstract {
-            self.extension_method_for(e, r)
-        } else {
-            e.methods.get(&info.name).and_then(|ids| {
-                ids.iter().copied().find(|&i| {
-                    let im = self.method(i);
-                    !im.is_abstract && !im.singleton && self.replaces_seen(i, &none, r, &rsubst_e)
-                })
-            })
-        };
-        // (In front of the extension's own, what `c` has before a module
-        // target of its own: the class's own methods and own includes
-        // override any extension's module.)
-        if let Some(at) = root_at {
-            for (k, kargs) in &lookup[..at] {
-                if let Some(i) = self.entry_replaces(*k, &self.class_subst(*k, kargs), r, &rsubst) {
-                    return Some(i);
-                }
-            }
-        }
-        if own.is_some() {
-            return own;
-        }
-        // The module's own ancestry, which gives `r` nothing: its methods
-        // are behind `r` (the module overrides them).
-        let behind: Vec<ClassId> = self
-            .resolution(x, &conf.args, View::Declared)
-            .into_iter()
-            .map(|(k, _)| k)
-            .collect();
-        // 3. `c`'s own part of the lookup order in front of the module:
-        // from the conformance's root to the next class, up to the module
-        // itself where a top-level unconditional extension puts it there.
-        let from = root_at.unwrap_or(0);
-        let part_end = lookup[from + 1..]
-            .iter()
-            .position(|(k, _)| self.class(*k).kind != ClassKind::Module)
-            .map_or(lookup.len(), |p| from + 1 + p);
-        let x_at = lookup.iter().position(|(k, _)| *k == x);
-        let front_end = x_at.filter(|p| *p < part_end).unwrap_or(part_end);
-        for (k, kargs) in &lookup[from..front_end] {
-            if behind.contains(k) {
-                continue;
-            }
-            if let Some(i) = self.entry_replaces(*k, &self.class_subst(*k, kargs), r, &rsubst) {
-                return Some(i);
-            }
-            if info.is_abstract && grouped {
-                if let Some((_, i)) = self.group_gives(c, *k, r) {
-                    return Some(i);
-                }
-            }
-        }
-        // 4. A module the extension includes after the one that brings the
-        // module, the last included first.
-        let brought = |inc: &Type| -> Vec<(ClassId, Vec<Type>)> {
-            match inc {
-                Type::Class(m, margs) => self
-                    .resolution(*m, margs, View::Declared)
-                    .into_iter()
-                    .filter(|(k, _)| self.class(*k).kind == ClassKind::Module)
-                    .collect(),
-                _ => Vec::new(),
-            }
-        };
-        for inc in e.includes[conf.include + 1..].iter().rev() {
-            for (k, kargs) in brought(inc) {
-                if behind.contains(&k) {
-                    continue;
-                }
-                if let Some(i) = self.entry_replaces(k, &self.class_subst(k, &kargs), r, &rsubst_e)
-                {
-                    return Some(i);
-                }
-            }
-        }
-        // 5. The included module's own ancestry in front of the module.
-        for (k, kargs) in brought(&e.includes[conf.include]) {
-            if k == x {
-                break;
-            }
-            if let Some(i) = self.entry_replaces(k, &self.class_subst(k, &kargs), r, &rsubst_e) {
-                return Some(i);
-            }
-        }
-        // 6. The module's own; an abstract one is implemented by what
-        // follows it: the modules the extension includes before it, then
-        // the rest of the lookup order.
-        if !info.is_abstract {
-            return Some(r);
-        }
-        for inc in e.includes[..conf.include].iter().rev() {
-            for (k, kargs) in brought(inc) {
-                if behind.contains(&k) {
-                    continue;
-                }
-                if let Some(i) = self.entry_replaces(k, &self.class_subst(k, &kargs), r, &rsubst_e)
-                {
-                    return Some(i);
-                }
-            }
-        }
-        for (k, kargs) in &lookup[front_end..] {
-            if behind.contains(k) {
-                continue;
-            }
-            if let Some(i) = self.entry_replaces(*k, &self.class_subst(*k, kargs), r, &rsubst) {
-                return Some(i);
-            }
-            if grouped {
-                if let Some((_, i)) = self.group_gives(c, *k, r) {
-                    return Some(i);
-                }
-            }
-        }
-        // (And by a module another extension makes the class conform to,
-        // whichever is declared first: an abstract declaration gives no
-        // method beside another's body, #522.)
-        for other in self.extension_conformances(c) {
-            if behind.contains(&other.module) {
-                continue;
-            }
-            let osubst = self.class_subst(other.module, &other.args);
-            if let Some(i) = self.entry_replaces(other.module, &osubst, r, &rsubst) {
-                return Some(i);
-            }
-        }
-        None
     }
 
     /// The class side of `witness_at` (#504): the extension's own `def

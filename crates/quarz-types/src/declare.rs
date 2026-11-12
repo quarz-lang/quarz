@@ -12,7 +12,7 @@ use quarz_syntax::ast::*;
 use quarz_syntax::{Diagnostic, Span};
 
 use crate::types::*;
-use crate::witness::{Witness, WitnessSource};
+use crate::witness::WitnessSource;
 use crate::world::*;
 
 /// Reserved type parameter id standing for the receiver's type in method
@@ -1084,96 +1084,6 @@ impl<'ast> Declarer<'ast> {
             self.file = e.file;
             self.check_extension_static(e);
         }
-        // (After the checks above, whose messages say more: a pair they
-        // refused is not said again.)
-        let classes: Vec<ClassId> = pending.iter().map(|p| p.id).collect();
-        let exts: Vec<(ExtensionId, u32, Span)> = pending_ext
-            .iter()
-            .map(|e| (e.id, e.file, e.def.target.span))
-            .collect();
-        self.check_witness_rows(&classes, &exts);
-    }
-
-    /// The rows of the witness table that the classes and extensions
-    /// declared now make or change are checked (`check_witness_rows_of`):
-    /// those of each new class, and of every class one of whose rows
-    /// comes from a new extension's include or names a new extension's
-    /// method as its witness (a class including a module target, a
-    /// subclass with a module of its own in front; a module the include
-    /// brings may also be what implements another conformance's abstract
-    /// method, #522, whichever was declared first). Reported at the new
-    /// extension whose include makes a row's conformance, else at the
-    /// witness.
-    fn check_witness_rows(&mut self, classes: &[ClassId], exts: &[(ExtensionId, u32, Span)]) {
-        let table = self.world.witnesses();
-        let new_ext = |x: ExtensionId| exts.iter().find(|(e, _, _)| *e == x);
-        let mut reached: Vec<ClassId> = classes.to_vec();
-        for w in &table.rows {
-            let from = match w.source {
-                WitnessSource::Include { ext, .. } | WitnessSource::Method { ext } => {
-                    new_ext(ext).is_some()
-                }
-                WitnessSource::Inherited => false,
-            };
-            let by = self.world.method(w.by).extension;
-            if (from || by.is_some_and(|x| new_ext(x).is_some())) && !reached.contains(&w.class) {
-                reached.push(w.class);
-            }
-        }
-        for k in reached {
-            // (At the extension declared now that makes the class conform,
-            // when there is one.)
-            let at = table.of(k).iter().find_map(|w| match w.source {
-                WitnessSource::Include { ext, .. } => new_ext(ext).copied(),
-                _ => None,
-            });
-            self.file = match at {
-                Some((_, file, _)) => file,
-                None => self.world.class(k).file,
-            };
-            self.check_witness_rows_of(k, at.map(|(_, _, span)| span));
-        }
-    }
-
-    /// The rows of the witness table for class `id` that a conformance
-    /// through an extension makes (one declared before the class, too):
-    /// what runs in a module's method's place is checked with it as an
-    /// override, seen from the class (`check_witness_row`).
-    /// (`span`: reported there, at an extension; else at the method.) Only
-    /// where the conformance may hold for the class, as the override
-    /// table has it (`View::Override`: not a conditional extension's
-    /// whose bound the class's arguments fail, `CSub < Box[String]` under
-    /// `extension Box[T <: Int]`): the table has rows whatever the bounds,
-    /// a class value carrying no arguments, and no value reaches those.
-    fn check_witness_rows_of(&mut self, id: ClassId, span: Option<Span>) {
-        let table = self.world.witnesses();
-        let rows: Vec<&Witness> = table
-            .of(id)
-            .iter()
-            .filter(|w| w.source != WitnessSource::Inherited)
-            .collect();
-        if rows.is_empty() {
-            return;
-        }
-        // (Seen where the class is declared, as the rows were found:
-        // `World::declaration_view`.)
-        let view = self.world.group_extensions(self.world.class(id).file);
-        let saved = std::mem::replace(&mut self.world.active_extensions, view);
-        let may_hold: Vec<ClassId> = self
-            .world
-            .own_ancestors(id)
-            .into_iter()
-            .map(|(m, _)| m)
-            .collect();
-        for w in rows {
-            let conformance = matches!(w.source, WitnessSource::Include { .. });
-            if !conformance || may_hold.contains(&w.module) {
-                // (Only a conformance's row is the extension's to answer
-                // for.)
-                self.check_witness_row(w, span.filter(|_| conformance));
-            }
-        }
-        self.world.active_extensions = saved;
     }
 
     /// A generic module with `static def self.` macros (docs/14 §2) is
@@ -1424,9 +1334,9 @@ impl<'ast> Declarer<'ast> {
                     continue;
                 }
                 self.check_extension_class_side(e.id, i, mid, margs, e.def.target.span);
-                self.check_extension_instance_side(e.id, i, e.def.target.span);
             }
         }
+        self.check_extension_own_witnesses(e.id);
     }
 
     /// An extension's include brings the module's class methods to the
@@ -1600,120 +1510,57 @@ impl<'ast> Declarer<'ast> {
         }
     }
 
-    /// The instance side of an extension's include (#536 step 3): each
-    /// method of the modules it brings whose witness for the target
-    /// (`World::include_witnesses`) is another method is checked with it
-    /// as an override, the extension's own method where it is written,
-    /// any other (the class's own or inherited, a module's the class or
-    /// the extension includes: `N2#m` over `M#m` and over `N1#m` for
-    /// `include N1; include N2`) at the extension. An abstract method
-    /// nothing implements is not refused here yet (#600).
-    fn check_extension_instance_side(&mut self, ext: ExtensionId, include: usize, span: Span) {
+    /// The instance side of an extension's includes (#536 step 3): an own
+    /// method of the extension that runs in place of a method of a module
+    /// the extension brings (`World::extension_own_witness`, the witness
+    /// table's step for an extension's own methods) is checked with it as
+    /// an override, in the extension's parameters and as seen where the
+    /// extension is declared: every class the extension reaches is an
+    /// instance of them. (A module the target has itself keeps its own
+    /// conformance; the extension's method of the name is then an
+    /// extension method, chosen statically.) The other witnesses the
+    /// table takes are pairs of the override table, checked where that
+    /// table is (`check_override_returns`, `check_include_overrides`).
+    fn check_extension_own_witnesses(&mut self, ext: ExtensionId) {
         let e = self.world.extensions[ext as usize].clone();
+        if e.includes.is_empty() {
+            return;
+        }
         let target = e.target;
-        let instance = Type::Class(target, self.world.own_args(target));
-        // (Seen where the target is declared, as the witnesses were found:
-        // `World::declaration_view`.)
-        let view = self.world.group_extensions(self.world.class(target).file);
+        let declared: Vec<ClassId> = self
+            .world
+            .resolution(target, &self.world.own_args(target), View::Declared)
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect();
+        let own = Type::Class(target, e.target_args.clone());
+        let view = self.world.group_extensions(e.file);
         let saved = std::mem::replace(&mut self.world.active_extensions, view);
-        for (conf, r, by) in self.world.include_witnesses(ext, include) {
-            let Some(i) = by else { continue };
-            if i == r || self.world.method(r).singleton {
+        for (x, xargs) in self.world.brought_modules(&e) {
+            if declared.contains(&x) {
                 continue;
             }
-            let im = self.world.method(i);
-            if im.file == 0 || im.synth != Synth::None {
-                continue;
-            }
-            if im.extension == Some(ext) {
-                // (In the extension's own parameters.)
-                let own = Type::Class(target, e.target_args.clone());
-                self.check_implementation(i, r, conf.module, &conf.ext_args, own);
-                continue;
-            }
-            // (How its owner is seen from the target: an ancestor of the
-            // class, or a module the extension includes.)
-            let owner = im.owner;
-            let esubst = self.world.extension_subst(&e, &conf.target_args);
-            let oargs = self
+            let rs: Vec<MethodId> = self
                 .world
-                .resolution(target, &conf.target_args, View::Lookup)
-                .into_iter()
-                .chain(e.includes.iter().flat_map(|t| match t.subst(&esubst) {
-                    Type::Class(m, margs) => self.world.resolution(m, &margs, View::Declared),
-                    _ => Vec::new(),
-                }))
-                .find(|(k, _)| *k == owner)
-                .map(|(_, a)| a);
-            self.override_span = Some(span);
-            self.override_span_always = true;
-            self.check_implementation_seen(
-                i,
-                r,
-                conf.module,
-                &conf.args,
-                instance.clone(),
-                owner,
-                oargs,
-            );
-            self.override_span = None;
-            self.override_span_always = false;
+                .class(x)
+                .methods
+                .iter()
+                .filter(|(name, _)| e.methods.contains_key(*name))
+                .flat_map(|(_, ids)| ids.iter().copied())
+                .filter(|&r| self.world.method(r).owner == x)
+                .collect();
+            for r in rs {
+                let Some(i) = self.world.extension_own_witness(ext, x, r) else {
+                    continue;
+                };
+                let im = self.world.method(i);
+                if im.file == 0 || im.synth != Synth::None {
+                    continue;
+                }
+                self.check_implementation(i, r, x, &xargs, own.clone());
+            }
         }
         self.world.active_extensions = saved;
-    }
-
-    /// A row of the witness table is checked: its witness with the module's
-    /// method as an override, both seen from the row's class (`span`:
-    /// reported there, at the extension that makes the conformance; else
-    /// at the witness). A class's or a module's method through its
-    /// owner's arguments in the class; an extension's own method (the
-    /// conformance's, checked where it is written already; another's, which
-    /// `group_gives` found) through its target's.
-    fn check_witness_row(&mut self, w: &Witness, span: Option<Span>) {
-        if w.by == w.method || self.world.method(w.method).singleton {
-            return;
-        }
-        let im = self.world.method(w.by);
-        if im.is_abstract {
-            return;
-        }
-        let owner = im.owner;
-        let own_args = self.world.own_args(w.class);
-        let lookup = self.world.resolution(w.class, &own_args, View::Lookup);
-        let own = Type::Class(w.class, own_args);
-        let mine = match im.extension {
-            // (A prelude extension's method is the prelude's to check.)
-            Some(_) if im.file == 0 => return,
-            Some(x) => {
-                let e = &self.world.extensions[x as usize];
-                let Some((_, targs)) = lookup.iter().find(|(k, _)| *k == e.target) else {
-                    return;
-                };
-                self.world.extension_subst(e, targs)
-            }
-            // (How its owner is seen from the class: an entry of its lookup
-            // order, or a module another conformance brings.)
-            None => lookup
-                .iter()
-                .find(|(k, _)| *k == owner)
-                .map(|(_, a)| a.clone())
-                .or_else(|| {
-                    self.world
-                        .extension_conformances(w.class)
-                        .into_iter()
-                        .find(|c| c.module == owner)
-                        .map(|c| c.args)
-                })
-                .map(|args| self.world.class_subst(owner, &args))
-                .unwrap_or_default(),
-        };
-        if span.is_some() {
-            self.override_span = span;
-            self.override_span_always = true;
-        }
-        self.check_implementation_under(w.by, w.method, w.module, &w.args, own, mine);
-        self.override_span = None;
-        self.override_span_always = false;
     }
 
     /// An extension cannot include a module its target already has through
@@ -2293,7 +2140,7 @@ impl<'ast> Declarer<'ast> {
     /// extension makes it include is implemented there. (An extension's
     /// method that runs in place of a module's, the witness of its
     /// conformance, is checked with the include:
-    /// `check_extension_instance_side`.)
+    /// `check_extension_own_witnesses`.)
     fn check_extensions_overrides(&mut self) {
         self.check_std_overrides_of_extension_modules();
         let mut missing: Vec<(String, String, String, Span)> = Vec::new();
@@ -2302,9 +2149,31 @@ impl<'ast> Declarer<'ast> {
                 continue;
             }
             for i in 0..e.includes.len() {
+                // (What the include brings itself: the module and what it
+                // includes.)
+                let own_modules: Vec<ClassId> = match &e.includes[i] {
+                    Type::Class(m, margs) => self
+                        .world
+                        .resolution(*m, margs, View::Declared)
+                        .into_iter()
+                        .map(|(k, _)| k)
+                        .collect(),
+                    _ => Vec::new(),
+                };
                 for (conf, r, by) in self.world.include_witnesses(e.id, i) {
                     let om = self.world.method(r);
-                    if by.is_none() && !om.singleton {
+                    // (Implemented by the extension's own method, by the
+                    // std class's ancestry, or within the included module's
+                    // own: a module another include or another extension
+                    // brings is the program's, whose pair with this one no
+                    // check of a std class covers.)
+                    let implemented = by.is_some_and(|b| {
+                        let bm = self.world.method(b);
+                        bm.extension == Some(e.id)
+                            || self.world.class(bm.owner).file == 0
+                            || own_modules.contains(&bm.owner)
+                    });
+                    if !implemented && !om.singleton {
                         missing.push((
                             self.world.class(e.target).name.clone(),
                             om.name.clone(),
@@ -4057,7 +3926,6 @@ impl<'ast> Declarer<'ast> {
             self.world.active_extensions = self.world.group_extensions(file);
             self.check_conformance_of(id);
             self.world.active_extensions.clear();
-            self.check_witness_rows_of(id, None);
         }
     }
 
@@ -4106,10 +3974,23 @@ impl<'ast> Declarer<'ast> {
                             .get(id, *mid)
                             .filter(|w| matches!(w.source, WitnessSource::Include { .. }))
                         {
+                            use crate::witness::Implementation;
                             if self.world.method(w.by).is_abstract {
                                 missing.push((m.name.clone(), *anc));
-                            } else if self.world.method(w.by).extension.is_some() {
-                                found_impls.push((w.by, *mid, *anc));
+                            } else {
+                                // (What the rule of the class's own
+                                // abstract methods found for the row: an
+                                // extension's method, a method further up,
+                                // checked as those are.)
+                                match self.world.implementation_for(id, &lookup, *anc, *mid) {
+                                    Implementation::Extension(_, i) if i == w.by => {
+                                        found_impls.push((i, *mid, *anc))
+                                    }
+                                    Implementation::Inherited(i) if i == w.by => {
+                                        inherited_impls.push((i, *mid, *anc))
+                                    }
+                                    _ => {}
+                                }
                             }
                             continue;
                         }
@@ -4145,6 +4026,11 @@ impl<'ast> Declarer<'ast> {
                     .iter()
                     .find(|(c, _)| *c == owner)
                     .map(|(_, a)| a.clone());
+                // (For each class, not once per pair: an inherited method
+                // of a generic superclass is another type in each,
+                // `Base[T]#get -> T` for `A < Base[Int]` and `B <
+                // Base[String]`.)
+                self.override_pairs.remove(&(i, abs));
                 self.check_implementation_seen(i, abs, anc, &aargs, own, owner, iargs);
             }
             // (An extension's method implements it whatever its signature,

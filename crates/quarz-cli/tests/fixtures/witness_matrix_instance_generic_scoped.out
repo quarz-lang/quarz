@@ -2,8 +2,6 @@ generic/ext/ext/abstract/none/scoped: ext ext ext
 generic/ext/ext/default/none/scoped: ext ext ext
 generic/ext/own/abstract/none/scoped: own own own
 generic/ext/own/default/none/scoped: own own own
-generic/ext/sup/abstract/none/scoped: sup sup sup
-generic/ext/emod/abstract/none/scoped: E2 E2 E2
 generic/ext/nmod/default/none/scoped: N N N
 generic/ext//default/none/scoped: M M M
 generic/ext/ext+own/default/none/scoped: ext ext ext
@@ -11,14 +9,11 @@ generic/ext_sub/ext/abstract/none/scoped: ext ext ext
 generic/ext_sub//default/none/scoped: M M M
 generic/ext_sub_own/ext/abstract/none/scoped: sub sub ext
 generic/ext_sub_own/own/abstract/none/scoped: sub sub sub
-generic/ext_sub_own/emod/abstract/none/scoped: sub sub sub
 generic/ext_sub_own//default/none/scoped: sub sub sub
 generic/ext/ext/abstract/concrete/scoped: ext ext ext
 generic/ext/ext/default/concrete/scoped: ext ext ext
 generic/ext/own/abstract/concrete/scoped: own own own
 generic/ext/own/default/concrete/scoped: own own own
-generic/ext/sup/abstract/concrete/scoped: sup sup sup
-generic/ext/emod/abstract/concrete/scoped: E2 E2 E2
 generic/ext/nmod/default/concrete/scoped: N N N
 generic/ext//default/concrete/scoped: M M M
 generic/ext/ext+own/default/concrete/scoped: ext ext ext
@@ -26,14 +21,11 @@ generic/ext_sub/ext/abstract/concrete/scoped: ext ext ext
 generic/ext_sub//default/concrete/scoped: M M M
 generic/ext_sub_own/ext/abstract/concrete/scoped: sub sub ext
 generic/ext_sub_own/own/abstract/concrete/scoped: sub sub sub
-generic/ext_sub_own/emod/abstract/concrete/scoped: sub sub sub
 generic/ext_sub_own//default/concrete/scoped: sub sub sub
 generic/ext/ext/abstract/param/scoped: ext ext ext
 generic/ext/ext/default/param/scoped: ext ext ext
 generic/ext/own/abstract/param/scoped: own own own
 generic/ext/own/default/param/scoped: own own own
-generic/ext/sup/abstract/param/scoped: sup sup sup
-generic/ext/emod/abstract/param/scoped: E2 E2 E2
 generic/ext/nmod/default/param/scoped: N N N
 generic/ext//default/param/scoped: M M M
 generic/ext/ext+own/default/param/scoped: ext ext ext
@@ -41,5 +33,4 @@ generic/ext_sub/ext/abstract/param/scoped: ext ext ext
 generic/ext_sub//default/param/scoped: M M M
 generic/ext_sub_own/ext/abstract/param/scoped: sub sub ext
 generic/ext_sub_own/own/abstract/param/scoped: sub sub sub
-generic/ext_sub_own/emod/abstract/param/scoped: sub sub sub
 generic/ext_sub_own//default/param/scoped: sub sub sub

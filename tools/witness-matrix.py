@@ -3,7 +3,7 @@
 expected output, which is computed here from the rules of World::witnesses,
 not taken from a run.
 
-  gen_matrix.py TARGET OUT.qz OUT.out      TARGET: class_scoped | class_top | class_args | generic_scoped | generic_top | abstract | module
+  gen_matrix.py TARGET OUT.qz OUT.out      TARGET: class_scoped | class_top | class_args | generic_scoped | generic_top | abstract | module | typed
 """
 import sys
 
@@ -18,20 +18,21 @@ HEADER = """# The #536 step 3 witness matrix, instance side, target `{target}`{n
 # active), and for a direct call on a receiver typed as the conforming
 # class where the extension is active. The expected output was computed
 # from the rules, not taken from a run. For a class `K` that has `M`
-# only through an extension `E` hanging from `C` on its chain, a call
-# through `M` runs: (1) below `C`, the first method of `K`'s lookup order
-# that replaces it (a subclass's own, one of a module it includes); (2)
-# `E`'s own method; (3) the first of `C`'s own part of the order (its
-# own methods, the modules it includes itself); (4) one of a module `E`
-# includes after it; (5) the nearest in the included module's own
-# ancestry; (6) the module's own body, an abstract one being implemented
-# by what follows (a module `E` includes before it, an inherited
-# method). For a module target, the including class's own method comes
-# before the extension's. A direct call where the extension is active
-# runs the extension's own method when it has one (chosen statically,
-# also on a subclass's value typed as the class), else what the call
-# through `M` runs. An own include (path `own`) goes by ordinary
-# dispatch.
+# only through an extension, a call through `M` runs the first found
+# going up `K`'s order: at a class or module, the own method of an
+# extension of it that brings `M`, else its own method that the override
+# table pairs with `M`'s (a subclass's own, one of a module the class or
+# a subclass includes itself, the included module `N` over the `M` it
+# brings); then `M`'s own body. So below the class the conformance hangs
+# from, a subclass's own method or its own include's comes first; at
+# that class the extension's method comes before the class's own; for a
+# module target, the including class's own comes before the extension's,
+# which comes before the module's own. A direct call where the extension
+# is active runs the extension's own method when it has one (chosen
+# statically, also on a subclass's value typed as the class), else what
+# the call through `M` runs. An own include (path `own`) goes by
+# ordinary dispatch. The table takes no witness the override table does
+# not pair: witness_matrix_typed has the cells that would show one.
 # Skipped as identical by the rules or not expressible:
 {skipped}"""
 
@@ -41,8 +42,9 @@ SKIPPED = {
         "path own with a subclass's value: ordinary dispatch, one class down",
         "args concrete beyond the reduced list of _class_args, and the reduced lists of the subclass paths: the same rule cell by cell as path ext x args none (one file per scope keeps the checker's time down)",
         "path own x witness ext/emod/nmod/prev: no extension (cell 1's extension method is in extension_own_include_method)",
-        "witness default/prev x requirement abstract: nothing implements it (#600), or the cell is `prev`",
+        "witness default x requirement abstract: nothing implements it (#600)",
         "the gated sends (`sort`, `clamp`): they look the name up first (#599)",
+        "witnesses the override table does not pair (a module the extension includes beside `M`, a method the class inherits for an abstract one): none in this table, left to their own pull requests (#557's family); extension_witness_other_module has the pair the override table does have",
         "an extension's own method that includes nothing as the witness (the rows of the kind `Method`, and under a conformance active where the class is declared): extension_own_include_method, extension_method_witness_where_declared",
         "an own include a superclass's extension already brings: superclass_scoped_extension_order",
         "conditional extensions: extension_conditional_same_method, conditional_extension_include_dispatch, conditional_extension_own_override",
@@ -73,9 +75,19 @@ out_qz = []
 out_exp = []
 
 
+def left(path, wit, req):
+    """The cells whose witness the override table does not pair: no witness
+    in #536 step 3's table, left to the pull requests that add them with
+    their checks (a module the extension includes beside `M`: #557's
+    family; a method the class inherits for an abstract one)."""
+    return bool(wit & {"emod", "prev"}) or (path != "own" and "sup" in wit and req == "abstract")
+
+
 def cell(target, path, wit, req, args, scope):
     """Emit one cell; returns nothing. wit is a set of sources."""
     global n
+    if left(path, wit, req):
+        return
     i = n
     n += 1
     generic_m = args in ("concrete", "param")
@@ -254,18 +266,16 @@ def expect(target, path, wit, req):
         at_c = "T" if target == "module" else "own"
     elif "inc" in wit:
         at_c = "inc"
-    elif "emod" in wit:
-        at_c = "E2"
     elif "nmod" in wit:
         at_c = "N"
     elif req == "default":
+        # (A method the class inherits does not take a body's place: the
+        # module is in front of the superclass.)
         at_c = "M"
-    elif "prev" in wit:
-        at_c = "E0"
-    elif "sup" in wit:
-        at_c = "sup"
     else:
-        raise SystemExit(f"nothing implements the cell {target}/{path}/{wit}/{req}")
+        raise SystemExit(f"the cell {target}/{path}/{wit}/{req} is not in this matrix")
+    if wit & {"emod", "prev"}:
+        raise SystemExit(f"the cell {target}/{path}/{wit}/{req} is left to its own pull request")
     below = {"ext_sub_own": "sub", "ext_sub_inc": "subinc", "sub_own_ext": "subext"}.get(path)
     typed = below or at_c
     # The direct call where the extension is active, the receiver typed as
@@ -284,8 +294,274 @@ def expect(target, path, wit, req):
     return typed, lexical
 
 
+TYPED_HEADER = """# The #536 step 3 witness matrix with types (generated by
+# tools/witness-matrix.py): the requirement is `m -> Int`, every candidate
+# returns its own number (or another type where it must not be taken),
+# and the call through `M` adds to the result, so a witness the table took
+# without a check is a `QIR fact violated` under QUARZ_VERIFY=moves and
+# "a value not of its static type" compiled, not the same string. The
+# table's invariant: a row's witness is the module's own method, an own
+# method of an extension that brings the module (checked at the
+# extension, in its parameters), or a method the override table pairs
+# with the module's (checked where that table is); it adds no pair of
+# its own. The expected output was computed from that rule, not taken
+# from a run:
+# - each source of a witness, scoped and top-level: its number plus 100;
+# - a candidate two classes share through different arguments of a
+#   generic superclass (`Base[T]#m -> T` for `A < Base[Int]` and
+#   `B < Base[String]`, through extensions of the classes and of a module
+#   both include): an inherited method is no pair of the override table,
+#   so nothing implements the abstract method for either (#600);
+# - an extension's own generic method (`extension Base[T]; include
+#   MG[T]; def g -> T`): checked once in the extension's parameters, right
+#   for both instantiations;
+# - a subclass outside a conditional extension's bound that a value
+#   reaches all the same (through a contravariant parameter; through a
+#   bound that holds only where a scoped extension is active): the
+#   override table does not pair its own method (of another type) with
+#   the module's, so the module's own runs;
+# - an extension's own method for a module it brings only through
+#   another extension, generic or with a bound: its number plus 100 (the
+#   wrong-typed ones are refused: diagnostics.rs).
+"""
+
+
+def typed(qz, exp):
+    L = []
+    E = []
+    w = L.append
+    w("module M")
+    w("  abstract def m -> Int")
+    w("end")
+    w("module D")
+    w("  def m -> Int = 1")
+    w("end")
+    w("def via(x: M) -> Int = x.m + 100")
+    w("def via_d(x: D) -> Int = x.m + 100")
+    w("def show(x: M) -> String")
+    w("  begin")
+    w("    via(x).to_s")
+    w("  rescue NotImplementedError => e")
+    w("    \"unimplemented\"")
+    w("  end")
+    w("end")
+    i = 0
+    # Each source, abstract (`M`) and with a body (`D`), scoped and top-level.
+    for scope in ("scoped", "top"):
+        for src, value in (("ext", 2), ("own", 3), ("inc", 4), ("nmod", 5), ("default", 1), ("sub", 6)):
+            for req in ("abstract", "default"):
+                if src == "default" and req == "abstract":
+                    continue
+                i += 1
+                mod = "M" if req == "abstract" else "D"
+                viaf = "via" if req == "abstract" else "via_d"
+                ind = "  " if scope == "scoped" else ""
+                if src == "inc":
+                    w(f"module I{i}")
+                    w("  def m -> Int = 4")
+                    w("end")
+                if src == "nmod":
+                    w(f"module N{i}")
+                    w(f"  include {mod}")
+                    w("  def m -> Int = 5")
+                    w("end")
+                w(f"class C{i}")
+                if src == "inc":
+                    w(f"  include I{i}")
+                w("  def initialize; end")
+                if src == "own":
+                    w("  def m -> Int = 3")
+                w("end")
+                recv = f"C{i}"
+                if src == "sub":
+                    w(f"class S{i} < C{i}")
+                    w("  def initialize; end")
+                    w("  def m -> Int = 6")
+                    w("end")
+                    recv = f"S{i}"
+                if scope == "scoped":
+                    w(f"module X{i}")
+                w(f"{ind}extension C{i}")
+                w(f"{ind}  include {'N' + str(i) if src == 'nmod' else mod}")
+                # (Under `sub` the class itself needs a witness of an
+                # abstract method: the extension's.)
+                if src == "ext" or (src == "sub" and req == "abstract"):
+                    w(f"{ind}  def m -> Int = 2")
+                w(f"{ind}end")
+                if scope == "scoped":
+                    w(f"  def self.up(x: C{i}) -> {mod} = x")
+                    w("end")
+                    up = f"X{i}.up"
+                else:
+                    w(f"def up{i}(x: C{i}) -> {mod} = x")
+                    up = f"up{i}"
+                label = f"typed/{src}/{req}/{scope}"
+                w(f"puts \"{label}: #{{{viaf}({up}({recv}.new))}}\"")
+                E.append(f"{label}: {value + 100}")
+    # A candidate shared through a generic superclass's arguments: an
+    # inherited method is no pair of the override table.
+    w("class Base[T]")
+    w("  @v: T")
+    w("  def initialize(@v: T); end")
+    w("  def v -> T = @v")
+    w("  def m -> T = @v")
+    w("end")
+    w("class A < Base[Int]")
+    w("  def initialize; super(1); end")
+    w("end")
+    w("class B < Base[String]")
+    w("  def initialize; super(\"s\"); end")
+    w("end")
+    w("module Sh")
+    w("  extension A")
+    w("    include M")
+    w("  end")
+    w("  extension B")
+    w("    include M")
+    w("  end")
+    w("  def self.a(x: A) -> M = x")
+    w("  def self.b(x: B) -> M = x")
+    w("end")
+    w("puts \"typed/shared/inherited/class: #{show(Sh.a(A.new))} #{show(Sh.b(B.new))}\"")
+    E.append("typed/shared/inherited/class: unimplemented unimplemented")
+    w("module Seq")
+    w("end")
+    w("class K1 < Base[Int]")
+    w("  include Seq")
+    w("  def initialize; super(1); end")
+    w("end")
+    w("class K2 < Base[String]")
+    w("  include Seq")
+    w("  def initialize; super(\"s\"); end")
+    w("end")
+    w("module Sq")
+    w("  extension Seq")
+    w("    include M")
+    w("  end")
+    w("  def self.up(x: Seq) -> M = x")
+    w("end")
+    w("puts \"typed/shared/inherited/module: #{show(Sq.up(K1.new))} #{show(Sq.up(K2.new))}\"")
+    E.append("typed/shared/inherited/module: unimplemented unimplemented")
+    # An extension's own generic method: one check, in its parameters.
+    w("module MG[U]")
+    w("  abstract def g -> U")
+    w("end")
+    w("class GB[T]")
+    w("  @v: T")
+    w("  def initialize(@v: T); end")
+    w("  def v -> T = @v")
+    w("end")
+    w("class GA < GB[Int]")
+    w("  def initialize; super(7); end")
+    w("end")
+    w("class GS < GB[String]")
+    w("  def initialize; super(\"s\"); end")
+    w("end")
+    w("module Sg")
+    w("  extension GB[T]")
+    w("    include MG[T]")
+    w("    def g -> T = v")
+    w("  end")
+    w("  def self.i(x: GB[Int]) -> MG[Int] = x")
+    w("  def self.s(x: GB[String]) -> MG[String] = x")
+    w("end")
+    w("def via_i(x: MG[Int]) -> Int = x.g + 100")
+    w("def via_s(x: MG[String]) -> String = x.g + \"!\"")
+    w("puts \"typed/shared/extension: #{via_i(Sg.i(GA.new))} #{via_s(Sg.s(GS.new))}\"")
+    E.append("typed/shared/extension: 107 s!")
+    # A subclass outside a conditional extension's bound, reached through
+    # a contravariant parameter.
+    w("class Animal")
+    w("  def initialize; end")
+    w("end")
+    w("class Dog < Animal")
+    w("  def initialize; end")
+    w("end")
+    w("class Sink[in T]")
+    w("  def initialize; end")
+    w("  def put(x: T) -> Void")
+    w("  end")
+    w("end")
+    w("extension Sink[T <: Animal]")
+    w("  include D")
+    w("end")
+    w("class CSub < Sink[Object]")
+    w("  def initialize; end")
+    w("  def m -> String = \"s\"")
+    w("end")
+    w("def up_sink(s: Sink[Dog]) -> D = s")
+    w("puts \"typed/outside-bound/variance: #{via_d(up_sink(Sink[Dog].new))} #{via_d(up_sink(CSub.new))}\"")
+    E.append("typed/outside-bound/variance: 101 101")
+    # ... and through a bound that holds only where a scoped extension is
+    # active.
+    w("module Marked")
+    w("end")
+    w("class Bx[T]")
+    w("  def initialize; end")
+    w("end")
+    w("extension Bx[T <: Marked]")
+    w("  include D")
+    w("end")
+    w("class BSub < Bx[String]")
+    w("  def initialize; end")
+    w("  def m -> String = \"s\"")
+    w("end")
+    w("module Sm")
+    w("  extension String")
+    w("    include Marked")
+    w("  end")
+    w("  def self.up(b: Bx[String]) -> D = b")
+    w("end")
+    w("puts \"typed/outside-bound/scoped: #{via_d(Sm.up(BSub.new))}\"")
+    E.append("typed/outside-bound/scoped: 101")
+    # An extension's own method for a module it brings only through
+    # another extension (`extension TN[T]; include TM[T]`), that one
+    # generic or with a bound, the target concrete or generic: the pair is
+    # checked at the extension with the module's arguments through the
+    # bringing extension's parameters.
+    w("module TM[U]")
+    w("  abstract def tm -> U")
+    w("end")
+    w("def via_tm(x: TM[Int]) -> Int = x.tm + 100")
+    for tag, bound in (("generic", ""), ("bound", " <: Int")):
+        n = "TN" + tag.capitalize()
+        w(f"module {n}[T]")
+        w("end")
+        w(f"class TC{tag}")
+        w("  def initialize; end")
+        w("end")
+        w(f"class TG{tag}[V]")
+        w("  @v: V")
+        w("  def initialize(@v: V); end")
+        w("  def v -> V = @v")
+        w("end")
+        w(f"module St{tag}")
+        w(f"  extension {n}[T{bound}]")
+        w("    include TM[T]")
+        w("  end")
+        w(f"  extension TC{tag}")
+        w(f"    include {n}[Int]")
+        w("    def tm -> Int = 8")
+        w("  end")
+        w(f"  extension TG{tag}[V{bound}]")
+        w(f"    include {n}[V]")
+        w("    def tm -> V = v")
+        w("  end")
+        w(f"  def self.c(x: TC{tag}) -> TM[Int] = x")
+        w(f"  def self.g(x: TG{tag}[Int]) -> TM[Int] = x")
+        w("end")
+        w(f"puts \"typed/through-extension/{tag}: #{{via_tm(St{tag}.c(TC{tag}.new))}} #{{via_tm(St{tag}.g(TG{tag}[Int].new(9)))}}\"")
+        E.append(f"typed/through-extension/{tag}: 108 109")
+    with open(qz, "w") as f:
+        f.write(TYPED_HEADER + "\n".join(L) + "\n")
+    with open(exp, "w") as f:
+        f.write("\n".join(E) + "\n")
+
+
 def main():
     target, qz, exp = sys.argv[1:4]
+    if target == "typed":
+        return typed(qz, exp)
     scopes = ["scoped", "top"]
     if target in ("class_scoped", "class_top", "class_args"):
         variant, target = target, "class"

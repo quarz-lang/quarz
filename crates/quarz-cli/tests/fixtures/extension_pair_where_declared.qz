@@ -1,0 +1,37 @@
+# Whether a class's method takes a module's method's place is decided as
+# seen where the class is declared (#536 step 3): `K` is a `Named` only
+# through a scoped extension, so `A#m(x: Named)` does not take the calls
+# of `M#m(x: K)` there, and the module's own runs through `M`, whether
+# or not a `using` of that extension is in effect further down the file
+# (the override table of a class's own includes: #606). A direct call
+# where the extension is active finds `A#m` for a `K`.
+module Named
+  def label -> String = "named"
+end
+class K
+  def initialize; end
+end
+module M
+  def m(x: K) -> String = "M"
+  def mm(x: K) -> String = m(x) + "!"
+end
+class A
+  def initialize; end
+  def m(x: Named) -> String = "A"
+end
+module Sc2
+  extension K
+    include Named
+  end
+end
+module Sc
+  extension A
+    include M
+  end
+  def self.up(a: A) -> M = a
+end
+def via(x: M) -> String = x.mm(K.new)
+puts via(Sc.up(A.new))
+using Sc2
+puts via(Sc.up(A.new))
+puts A.new.m(K.new)
