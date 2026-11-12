@@ -717,6 +717,57 @@ end
         out.contains("`label` returns Int but `Named#label`, which it overrides, returns String"),
         "{out}"
     );
+    // An extension's own method that is the witness (a top-level one of
+    // the class's group, under a top-level conformance): checked.
+    let out = common::diagnostics(
+        r#"module Named
+  abstract def label -> String
+end
+class A
+  def initialize; end
+end
+class B < A
+  def initialize; end
+end
+extension A
+  include Named
+  def label -> String = "A"
+end
+extension B
+  def label -> Int = 5
+end
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("`label` returns Int but `Named#label`, which it overrides, returns String"),
+        "{out}"
+    );
+    // Under a scoped conformance that method is no witness (an extension
+    // method, chosen statically): of any result.
+    let out = common::diagnostics(
+        r#"module Named
+  abstract def label -> String
+end
+class A
+  def initialize; end
+end
+class B < A
+  def initialize; end
+end
+module Sc
+  extension A
+    include Named
+    def label -> String = "A"
+  end
+end
+extension B
+  def label -> Int = 5
+end
+"#,
+    )
+    .join("\n");
+    assert!(!out.contains("error:"), "{out}");
     // Compatible ones are accepted.
     let out = common::diagnostics(
         r#"module M

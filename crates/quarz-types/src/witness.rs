@@ -90,6 +90,19 @@ impl WitnessTable {
             .map(|i| &self.rows[*i as usize])
     }
 
+    /// A number that changes when a row does (its class, method or what
+    /// runs): for "did the table change" between two inputs of the REPL,
+    /// which the number of rows does not say (a nearer conformance changes
+    /// a subclass's rows without adding one).
+    pub fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = rustc_hash::FxHasher::default();
+        for w in &self.rows {
+            (w.class, w.method, w.by).hash(&mut h);
+        }
+        h.finish()
+    }
+
     /// The rows of class `class`.
     pub fn of(&self, class: ClassId) -> &[Witness] {
         match self.ranges.get(&class) {
@@ -195,11 +208,17 @@ impl World {
     ///    a module `E` includes before it, then the rest of `C`'s lookup
     ///    order (an inherited method), then a module another extension
     ///    makes the class conform to (#522); in 1, 3 and here, where a class
-    ///    gives no method, also by an own method of a prelude extension
-    ///    or of a top-level extension of the class's group that targets
-    ///    it (`WitnessSource::Method`'s rule). One that nothing
+    ///    gives no method and `E` is itself active where the class is
+    ///    declared (a prelude extension, a top-level one of the class's
+    ///    group), also by an own method of such an extension that targets
+    ///    the class (`WitnessSource::Method`'s rule). One that nothing
     ///    implements stays in the row and raises when called (#600,
     ///    #555).
+    ///
+    /// Each class's rows are asked as seen where the class is declared
+    /// (`declaration_view`: what the pairing rule's subtyping and the
+    /// bounds read), so the table does not depend on the extensions
+    /// active where it is asked for.
     ///
     /// Class side (a call through `Type[M]` or `T <: M`; #504): witnesses
     /// are fixed, the row of `C` serves `C` and every class below it (no
@@ -378,136 +397,178 @@ impl World {
         let mut at_root: HashMap<(ClassId, ExtensionId, ClassId, MethodId), MethodId> =
             HashMap::default();
         for k in 0..self.classes.len() as ClassId {
-            let kind = self.class(k).kind;
-            if kind == ClassKind::Module {
+            if self.class(k).kind == ClassKind::Module {
                 continue;
             }
-            let own = self.own_args(k);
-            let lookup = self.resolution(k, &own, View::Lookup);
-            for conf in self.extension_conformances(k) {
-                let c = self.part_class(k, conf.root);
-                let source = WitnessSource::Include {
-                    ext: conf.ext,
-                    include: conf.include,
-                    target: conf.target,
-                };
-                let module = self.class(conf.module);
-                let instance: Vec<MethodId> = module.methods.values().flatten().copied().collect();
-                let class_side: Vec<MethodId> = module
-                    .singleton_methods
-                    .values()
-                    .flatten()
-                    .copied()
-                    .collect();
-                for r in instance.into_iter().chain(class_side) {
-                    let info = self.method(r);
-                    if info.owner != conf.module {
-                        continue;
-                    }
-                    let below = (c != k && !info.singleton)
-                        .then(|| self.witness_below(k, c, &lookup, &conf, r))
-                        .flatten();
-                    let by = below.unwrap_or_else(|| {
+            // (Each class's rows as seen where the class is declared: the
+            // table does not depend on the extensions active where it is
+            // asked for.)
+            self.with_view(self.declaration_view(k), || {
+                self.class_witnesses(k, &mut table, &mut at_root)
+            });
+        }
+        table
+    }
+
+    /// The rows of class `k` (`witnesses`), asked under `k`'s
+    /// `declaration_view`.
+    fn class_witnesses(
+        &self,
+        k: ClassId,
+        table: &mut WitnessTable,
+        at_root: &mut HashMap<(ClassId, ExtensionId, ClassId, MethodId), MethodId>,
+    ) {
+        let kind = self.class(k).kind;
+        let own = self.own_args(k);
+        let lookup = self.resolution(k, &own, View::Lookup);
+        // (The conformances are enumerated here, the run-time membership
+        // by `resolution`: every module a value of the class is by
+        // membership and the class does not declare has its rows.)
+        #[cfg(debug_assertions)]
+        {
+            let declared: Vec<ClassId> = self
+                .resolution(k, &own, View::Declared)
+                .into_iter()
+                .map(|(c, _)| c)
+                .collect();
+            let confs: Vec<ClassId> = self
+                .extension_conformances(k)
+                .into_iter()
+                .map(|c| c.module)
+                .collect();
+            for (m, _) in self.resolution(k, &[], View::Runtime) {
+                assert!(
+                    self.class(m).kind != ClassKind::Module
+                        || declared.contains(&m)
+                        || confs.contains(&m),
+                    "internal error: `{}` is a `{}` at run time by no conformance the witness table knows",
+                    self.class(k).name,
+                    self.class(m).name
+                );
+            }
+        }
+        for conf in self.extension_conformances(k) {
+            let c = self.part_class(k, conf.root);
+            let source = WitnessSource::Include {
+                ext: conf.ext,
+                include: conf.include,
+                target: conf.target,
+            };
+            let module = self.class(conf.module);
+            let instance: Vec<MethodId> = module.methods.values().flatten().copied().collect();
+            let class_side: Vec<MethodId> = module
+                .singleton_methods
+                .values()
+                .flatten()
+                .copied()
+                .collect();
+            for r in instance.into_iter().chain(class_side) {
+                let info = self.method(r);
+                if info.owner != conf.module {
+                    continue;
+                }
+                let below = (c != k && !info.singleton)
+                    .then(|| self.witness_below(k, c, &lookup, &conf, r))
+                    .flatten();
+                let by = below.unwrap_or_else(|| {
+                    *at_root
+                        .entry((c, conf.ext, conf.module, r))
+                        .or_insert_with(|| self.conformance_witness(c, r))
+                });
+                table.push(Witness {
+                    class: k,
+                    module: conf.module,
+                    args: conf.args.clone(),
+                    source: source.clone(),
+                    method: r,
+                    by,
+                });
+            }
+        }
+        // A module the class includes itself that a superclass has
+        // already, through an extension, in dispatch's order (the own
+        // include then does nothing, docs/01 §6): on the instance side
+        // the superclass's conformance holds, the class's own part of
+        // the order in front of it (step 1).
+        for (m, margs, p) in self.shadowed_includes(k) {
+            let Some(at_p) = self
+                .extension_conformances(p)
+                .into_iter()
+                .find(|x| x.module == m)
+            else {
+                continue;
+            };
+            let c = self.part_class(k, at_p.root);
+            let conf = ExtConformance {
+                args: margs,
+                ..at_p
+            };
+            let methods: Vec<MethodId> =
+                self.class(m).methods.values().flatten().copied().collect();
+            for r in methods {
+                let info = self.method(r);
+                if info.owner != m || info.singleton {
+                    continue;
+                }
+                let by = self
+                    .witness_below(k, c, &lookup, &conf, r)
+                    .unwrap_or_else(|| {
                         *at_root
                             .entry((c, conf.ext, conf.module, r))
                             .or_insert_with(|| self.conformance_witness(c, r))
                     });
-                    table.push(Witness {
-                        class: k,
-                        module: conf.module,
-                        args: conf.args.clone(),
-                        source: source.clone(),
-                        method: r,
-                        by,
-                    });
-                }
-            }
-            // A module the class includes itself that a superclass has
-            // already, through an extension, in dispatch's order (the own
-            // include then does nothing, docs/01 §6): on the instance side
-            // the superclass's conformance holds, the class's own part of
-            // the order in front of it (step 1).
-            for (m, margs, p) in self.shadowed_includes(k) {
-                let Some(at_p) = self
-                    .extension_conformances(p)
-                    .into_iter()
-                    .find(|x| x.module == m)
-                else {
-                    continue;
-                };
-                let c = self.part_class(k, at_p.root);
-                let conf = ExtConformance {
-                    args: margs,
-                    ..at_p
-                };
-                let methods: Vec<MethodId> =
-                    self.class(m).methods.values().flatten().copied().collect();
-                for r in methods {
-                    let info = self.method(r);
-                    if info.owner != m || info.singleton {
-                        continue;
-                    }
-                    let by = self
-                        .witness_below(k, c, &lookup, &conf, r)
-                        .unwrap_or_else(|| {
-                            *at_root
-                                .entry((c, conf.ext, conf.module, r))
-                                .or_insert_with(|| self.conformance_witness(c, r))
-                        });
-                    table.push(Witness {
-                        class: k,
-                        module: m,
-                        args: conf.args.clone(),
-                        source: WitnessSource::Include {
-                            ext: conf.ext,
-                            include: conf.include,
-                            target: conf.target,
-                        },
-                        method: r,
-                        by,
-                    });
-                }
-            }
-            // The other kinds: an abstract method of the class's declared
-            // ancestors.
-            let concrete = match kind {
-                ClassKind::Class => !self.class(k).is_abstract,
-                ClassKind::Data | ClassKind::Variant => true,
-                ClassKind::Module | ClassKind::Enum | ClassKind::Main => false,
-            };
-            if !concrete {
-                continue;
-            }
-            for (d, dargs) in self.resolution(k, &own, View::Declared) {
-                let abstracts: Vec<MethodId> = self
-                    .class(d)
-                    .methods
-                    .values()
-                    .flatten()
-                    .copied()
-                    .filter(|&r| {
-                        let m = self.method(r);
-                        m.is_abstract && m.owner == d && !m.singleton
-                    })
-                    .collect();
-                for r in abstracts {
-                    let (source, by) = match self.implementation_for(k, &lookup, d, r) {
-                        Implementation::Extension(ext, by) => (WitnessSource::Method { ext }, by),
-                        Implementation::Inherited(by) => (WitnessSource::Inherited, by),
-                        Implementation::Missing | Implementation::Own(_) => continue,
-                    };
-                    table.push(Witness {
-                        class: k,
-                        module: d,
-                        args: dargs.clone(),
-                        source,
-                        method: r,
-                        by,
-                    });
-                }
+                table.push(Witness {
+                    class: k,
+                    module: m,
+                    args: conf.args.clone(),
+                    source: WitnessSource::Include {
+                        ext: conf.ext,
+                        include: conf.include,
+                        target: conf.target,
+                    },
+                    method: r,
+                    by,
+                });
             }
         }
-        table
+        // The other kinds: an abstract method of the class's declared
+        // ancestors.
+        let concrete = match kind {
+            ClassKind::Class => !self.class(k).is_abstract,
+            ClassKind::Data | ClassKind::Variant => true,
+            ClassKind::Module | ClassKind::Enum | ClassKind::Main => false,
+        };
+        if !concrete {
+            return;
+        }
+        for (d, dargs) in self.resolution(k, &own, View::Declared) {
+            let abstracts: Vec<MethodId> = self
+                .class(d)
+                .methods
+                .values()
+                .flatten()
+                .copied()
+                .filter(|&r| {
+                    let m = self.method(r);
+                    m.is_abstract && m.owner == d && !m.singleton
+                })
+                .collect();
+            for r in abstracts {
+                let (source, by) = match self.implementation_for(k, &lookup, d, r) {
+                    Implementation::Extension(ext, by) => (WitnessSource::Method { ext }, by),
+                    Implementation::Inherited(by) => (WitnessSource::Inherited, by),
+                    Implementation::Missing | Implementation::Own(_) => continue,
+                };
+                table.push(Witness {
+                    class: k,
+                    module: d,
+                    args: dargs.clone(),
+                    source,
+                    method: r,
+                    by,
+                });
+            }
+        }
     }
 
     /// What implements the abstract instance method `r`, declared by `d`,
@@ -681,6 +742,7 @@ impl World {
     ) -> Option<MethodId> {
         let rsubst = self.class_subst(conf.module, &conf.args);
         let abstract_ = self.method(r).is_abstract;
+        let grouped = self.active_where_declared(k, conf.ext);
         // (The module's own ancestry gives `r` nothing: it is behind it.)
         let behind: Vec<ClassId> = self
             .resolution(conf.module, &conf.args, View::Declared)
@@ -694,7 +756,7 @@ impl World {
             if let Some(i) = self.entry_replaces(*e, &self.class_subst(*e, eargs), r, &rsubst) {
                 return Some(i);
             }
-            if abstract_ {
+            if abstract_ && grouped {
                 if let Some((_, i)) = self.group_gives(k, *e, r) {
                     return Some(i);
                 }
@@ -715,7 +777,10 @@ impl World {
         else {
             return r;
         };
-        self.witness_at(c, &conf, r).unwrap_or(r)
+        // (Seen where `c` is declared, whichever class's rows ask.)
+        self.with_view(self.declaration_view(c), || {
+            self.witness_at(c, &conf, r).unwrap_or(r)
+        })
     }
 
     /// `conformance_witness` for extension `ext`'s include number
@@ -726,6 +791,18 @@ impl World {
     /// witness for the target (`None`: an abstract one nothing
     /// implements).
     pub fn include_witnesses(
+        &self,
+        ext: ExtensionId,
+        include: usize,
+    ) -> Vec<(ExtConformance, MethodId, Option<MethodId>)> {
+        // (Seen where the target is declared, as its rows are.)
+        let target = self.extensions[ext as usize].target;
+        self.with_view(self.declaration_view(target), || {
+            self.include_witnesses_at(ext, include)
+        })
+    }
+
+    fn include_witnesses_at(
         &self,
         ext: ExtensionId,
         include: usize,
@@ -803,6 +880,12 @@ impl World {
         let rsubst_e = self.class_subst(x, &conf.ext_args);
         let none = HashMap::default();
         let lookup = self.resolution(c, &self.own_args(c), View::Lookup);
+        // (An extension's own method for an abstract `r`, `group_gives`:
+        // only where the conformance's extension is itself active where
+        // the class is declared, so that the class's conformance check
+        // sees the module and checks the pair, as for a module the class
+        // includes itself.)
+        let grouped = self.active_where_declared(c, conf.ext);
         // (`c`'s own part of the order in front of the conformance: for a
         // module target `c` includes itself, what comes before it.)
         let root_at = lookup.iter().position(|(k, _)| *k == conf.root);
@@ -854,7 +937,7 @@ impl World {
             if let Some(i) = self.entry_replaces(*k, &self.class_subst(*k, kargs), r, &rsubst) {
                 return Some(i);
             }
-            if info.is_abstract {
+            if info.is_abstract && grouped {
                 if let Some((_, i)) = self.group_gives(c, *k, r) {
                     return Some(i);
                 }
@@ -916,8 +999,10 @@ impl World {
             if let Some(i) = self.entry_replaces(*k, &self.class_subst(*k, kargs), r, &rsubst) {
                 return Some(i);
             }
-            if let Some((_, i)) = self.group_gives(c, *k, r) {
-                return Some(i);
+            if grouped {
+                if let Some((_, i)) = self.group_gives(c, *k, r) {
+                    return Some(i);
+                }
             }
         }
         // (And by a module another extension makes the class conform to,

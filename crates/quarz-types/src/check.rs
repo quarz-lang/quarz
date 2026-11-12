@@ -982,7 +982,7 @@ pub struct ReplSnapshot {
     file_mains: Vec<Option<ClassId>>,
     self_news: Vec<SelfNew>,
     generated_news: Vec<(ClassId, ClassId, MethodId, Option<MethodId>)>,
-    repl_ctor_marks: (usize, usize, usize),
+    repl_ctor_marks: (usize, usize, u64),
     runtime_tests: Vec<RuntimeTest>,
     repl_test_marks: (usize, usize, usize),
 }
@@ -1161,7 +1161,7 @@ pub struct Checker {
     /// pairs before it being checked already; and how many witnesses
     /// (`World::witnesses`): a new one may pin an old site for an
     /// old class, so every pair is checked again (#504).
-    repl_ctor_marks: (usize, usize, usize),
+    repl_ctor_marks: (usize, usize, u64),
     /// The run-time tests against a module accepted so far, for the REPL:
     /// a later input that makes one unanswerable is refused there (#515).
     runtime_tests: Vec<RuntimeTest>,
@@ -2459,7 +2459,7 @@ impl Checker {
         // an `initialize` that takes its arguments, as in a program (a
         // failed input is discarded, so what passed stays checked).
         let (sites, classes, witnesses) = self.repl_ctor_marks;
-        let marks = if self.world.witnesses().rows.len() == witnesses {
+        let marks = if self.world.witnesses().fingerprint() == witnesses {
             (sites, classes)
         } else {
             (0, 0)
@@ -2471,7 +2471,7 @@ impl Checker {
         self.repl_ctor_marks = (
             self.self_news.len(),
             self.world.classes.len(),
-            self.world.witnesses().rows.len(),
+            self.world.witnesses().fingerprint(),
         );
     }
 

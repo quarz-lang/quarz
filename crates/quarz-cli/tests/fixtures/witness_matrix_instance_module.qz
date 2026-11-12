@@ -25,6 +25,7 @@
 # dispatch.
 # Skipped as identical by the rules or not expressible:
 # - witness sup: a module has no superclass
+# - a module the including class includes before the target: step 3 again (in front of `M` under a scoped extension; behind it under a top-level one, whose module is ordered as the class's own includes)
 # - witness inc: a module the including class includes is `cls` one entry later
 # - the direct call column where both the class and the extension define the method: the extension is of the module, the method the class's own; not a witness question
 # - args concrete/param, paths sub_own_ext/ext_sub_inc: as the class target

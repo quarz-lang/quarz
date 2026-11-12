@@ -38,10 +38,15 @@ HEADER = """# The #536 step 3 witness matrix, instance side, target `{target}`{n
 SKIPPED = {
     "class": [
         "args param: no class parameter to pass (generic target)",
+        "path own with a subclass's value: ordinary dispatch, one class down",
         "args concrete beyond the reduced list of _class_args, and the reduced lists of the subclass paths: the same rule cell by cell as path ext x args none (one file per scope keeps the checker's time down)",
         "path own x witness ext/emod/nmod/prev: no extension (cell 1's extension method is in extension_own_include_method)",
         "witness default/prev x requirement abstract: nothing implements it (#600), or the cell is `prev`",
         "the gated sends (`sort`, `clamp`): they look the name up first (#599)",
+        "an extension's own method that includes nothing as the witness (the rows of the kind `Method`, and under a conformance active where the class is declared): extension_own_include_method, extension_method_witness_where_declared",
+        "an own include a superclass's extension already brings: superclass_scoped_extension_order",
+        "conditional extensions: extension_conditional_same_method, conditional_extension_include_dispatch, conditional_extension_own_override",
+        "a module another extension brings as what implements an abstract method: scoped_extensions_not_ambiguous, extension_witness_other_module",
         "an inference variable as the module's argument: the conformance is declared with written arguments; the call sites infer `T <: M` in witness_matrix_generic",
     ],
     "generic": [
@@ -56,6 +61,7 @@ SKIPPED = {
     ],
     "module": [
         "witness sup: a module has no superclass",
+        "a module the including class includes before the target: step 3 again (in front of `M` under a scoped extension; behind it under a top-level one, whose module is ordered as the class's own includes)",
         "witness inc: a module the including class includes is `cls` one entry later",
         "the direct call column where both the class and the extension define the method: the extension is of the module, the method the class's own; not a witness question",
         "args concrete/param, paths sub_own_ext/ext_sub_inc: as the class target",

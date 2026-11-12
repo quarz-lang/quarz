@@ -25,10 +25,15 @@
 # dispatch.
 # Skipped as identical by the rules or not expressible:
 # - args param: no class parameter to pass (generic target)
+# - path own with a subclass's value: ordinary dispatch, one class down
 # - args concrete beyond the reduced list of _class_args, and the reduced lists of the subclass paths: the same rule cell by cell as path ext x args none (one file per scope keeps the checker's time down)
 # - path own x witness ext/emod/nmod/prev: no extension (cell 1's extension method is in extension_own_include_method)
 # - witness default/prev x requirement abstract: nothing implements it (#600), or the cell is `prev`
 # - the gated sends (`sort`, `clamp`): they look the name up first (#599)
+# - an extension's own method that includes nothing as the witness (the rows of the kind `Method`, and under a conformance active where the class is declared): extension_own_include_method, extension_method_witness_where_declared
+# - an own include a superclass's extension already brings: superclass_scoped_extension_order
+# - conditional extensions: extension_conditional_same_method, conditional_extension_include_dispatch, conditional_extension_own_override
+# - a module another extension brings as what implements an abstract method: scoped_extensions_not_ambiguous, extension_witness_other_module
 # - an inference variable as the module's argument: the conformance is declared with written arguments; the call sites infer `T <: M` in witness_matrix_generic
 module M0[T]
   abstract def m(x: T) -> String

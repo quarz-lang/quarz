@@ -1102,3 +1102,54 @@ fn a_later_extension_of_an_earlier_class_gives_it_rows() {
     assert_eq!(out[5], "=> \"k\"", "{out:?}");
     assert_eq!(out[6], "=> \"K\"", "{out:?}");
 }
+
+#[test]
+fn a_nearer_conformance_checks_the_earlier_constructor_sites_again() {
+    // #536 step 3 (review): a later extension nearer to a subclass changes
+    // its rows of the witness table without adding one; the constructor
+    // check of the earlier sites runs again (the table's fingerprint, not
+    // its length), and the input is refused as in a program.
+    let (out, _) = values(&[
+        "module P; def self.build -> Object = \"P\"; end",
+        "class K; def initialize; end; end",
+        "class S0 < K; def initialize(x: Int); super(); end; def self.build -> Object = new(1); end",
+        "class T < S0; @y: Int; def initialize(x: Int, @y: Int); super(x); end; def y -> Int = @y; def self.build -> Object = new(1, 2); end",
+        "module X1; extension K; include P; end; def self.t(k: Type[K]) -> Type[P] = k; end",
+        "def cv(t: Type[P]) -> Object = t.build",
+        "cv(X1.t(T))",
+        "module X2; extension S0; include P; end; end",
+        "cv(X1.t(T))",
+    ]);
+    assert_eq!(out[6], "=> \"P\"", "{out:?}");
+    assert!(
+        out[7].starts_with("error: ")
+            && out[7].contains("`T#initialize` does not take the arguments of `new` in `S0.build`"),
+        "{out:?}"
+    );
+    assert_eq!(out[8], "=> \"P\"", "{out:?}");
+}
+
+#[test]
+fn the_witness_table_does_not_depend_on_what_else_an_input_declares() {
+    // #536 step 3 (review): each class's rows are found as seen where the
+    // class is declared, not with the extensions active where the table
+    // is first asked for; an unrelated class in the same input changes
+    // nothing. (`K` is a `Named` through a top-level extension, so
+    // `A#m(x: Named)` takes `M#m(x: K)`'s calls.)
+    for extra in ["", "class Unrelated; def initialize; end; end; "] {
+        let scoped = format!(
+            "{extra}module Sc; extension A; include M; end; def self.up(a: A) -> M = a; end"
+        );
+        let (out, _) = values(&[
+            "module Named; def label -> String = \"named\"; end",
+            "class K; def initialize; end; end",
+            "module M; def m(x: K) -> String = \"M\"; def mm(x: K) -> String = m(x) + \"!\"; end",
+            "class A; def initialize; end; def m(x: Named) -> String = \"A\"; end",
+            "extension K; include Named; end",
+            &scoped,
+            "def via(x: M) -> String = x.mm(K.new)",
+            "via(Sc.up(A.new))",
+        ]);
+        assert_eq!(out[7], "=> \"A!\"", "{out:?}");
+    }
+}

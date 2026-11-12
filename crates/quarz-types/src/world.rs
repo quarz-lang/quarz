@@ -642,6 +642,10 @@ pub struct World {
     /// (`World::witnesses`).
     #[serde(skip)]
     pub(crate) witness_memo: crate::witness::WitnessMemo,
+    /// The extensions taken as active while a question is asked from a
+    /// fixed place, whatever `active_extensions` holds (`with_view`).
+    #[serde(skip)]
+    view: std::cell::RefCell<Option<Vec<ExtensionId>>>,
 }
 
 type AncestorsKey = (ClassId, Vec<Type>, Vec<ExtensionId>);
@@ -2314,7 +2318,42 @@ impl World {
             .collect()
     }
 
+    /// The extensions active where class `k` is declared, whatever is
+    /// active where this is asked: the prelude's and those at the top
+    /// level of the group of its file (what the declarer checks the class
+    /// under).
+    pub fn declaration_view(&self, k: ClassId) -> Vec<ExtensionId> {
+        let group = self.file_groups.get(&self.class(k).file);
+        self.extensions
+            .iter()
+            .filter(|e| e.always_active || (group.is_some() && e.group.as_ref() == group))
+            .map(|e| e.id)
+            .collect()
+    }
+
+    /// Whether extension `ext` is active where class `k` is declared
+    /// (`declaration_view`).
+    pub fn active_where_declared(&self, k: ClassId, ext: ExtensionId) -> bool {
+        let e = &self.extensions[ext as usize];
+        let group = self.file_groups.get(&self.class(k).file);
+        e.always_active || (group.is_some() && e.group.as_ref() == group)
+    }
+
+    /// Answer `f` with `view` as the active extensions (static subtyping,
+    /// bounds), not those active where it is asked: a question whose
+    /// answer must not depend on the asker's place (the witness table,
+    /// each class's rows seen from where the class is declared).
+    pub fn with_view<R>(&self, view: Vec<ExtensionId>, f: impl FnOnce() -> R) -> R {
+        let saved = self.view.replace(Some(view));
+        let r = f();
+        *self.view.borrow_mut() = saved;
+        r
+    }
+
     pub fn active_extension_ids(&self) -> Vec<ExtensionId> {
+        if let Some(view) = self.view.borrow().as_ref() {
+            return view.clone();
+        }
         let mut ids: Vec<ExtensionId> = self
             .extensions
             .iter()

@@ -1,0 +1,87 @@
+# An extension's own method that includes nothing is the witness of an
+# abstract method only where the conformance's extension is itself active
+# where the class is declared (a top-level one of its group), as for a
+# module the class includes itself; the pair is then checked with the
+# class. Under a scoped conformance it is an extension method, chosen
+# statically, and the conformance's own witness runs.
+module Named
+  abstract def label -> String
+end
+
+# (a) A scoped conformance at `A`; a top-level extension of the subclass.
+class A
+  def initialize; end
+end
+class B < A
+  def initialize; end
+end
+module Sc
+  extension A
+    include Named
+    def label -> String = "A"
+  end
+  def self.n(x: A) -> Named = x
+end
+extension B
+  def label -> String = "topB"
+end
+def via(n: Named) -> String = n.label
+puts via(Sc.n(A.new)), via(Sc.n(B.new)), B.new.label
+
+# (b) A top-level conformance at `A2`; a top-level extension of the subclass.
+class A2
+  def initialize; end
+end
+class B2 < A2
+  def initialize; end
+end
+extension A2
+  include Named
+  def label -> String = "A2"
+end
+extension B2
+  def label -> String = "topB2"
+end
+puts via(A2.new), via(B2.new)
+
+# (c) A top-level conformance that defines nothing; another top-level
+# extension of the class gives the method.
+class A3
+  def initialize; end
+end
+extension A3
+  include Named
+end
+extension A3
+  def label -> String = "other"
+end
+puts via(A3.new)
+
+# (d) The pairing sees what is active where the class is declared: `K` is
+# a `Marked` through a top-level extension, so `C#m(x: Marked)` takes
+# `M#m(x: K)`'s calls and runs through `M`.
+module Marked
+  def mark -> String = "marked"
+end
+class K
+  def initialize; end
+end
+module M
+  def m(x: K) -> String = "M"
+  def mm(x: K) -> String = m(x) + "!"
+end
+class C
+  def initialize; end
+  def m(x: Marked) -> String = "C"
+end
+extension K
+  include Marked
+end
+module Sm
+  extension C
+    include M
+  end
+  def self.up(c: C) -> M = c
+end
+def via_m(x: M) -> String = x.mm(K.new)
+puts via_m(Sm.up(C.new))
