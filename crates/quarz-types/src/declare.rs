@@ -12,6 +12,7 @@ use quarz_syntax::ast::*;
 use quarz_syntax::{Diagnostic, Span};
 
 use crate::types::*;
+use crate::witness::{Witness, WitnessSource};
 use crate::world::*;
 
 /// Reserved type parameter id standing for the receiver's type in method
@@ -1080,6 +1081,45 @@ impl<'ast> Declarer<'ast> {
             self.file = e.file;
             self.check_extension_static(e);
         }
+        // (After the checks above, whose messages say more: a pair they
+        // refused is not said again.)
+        for p in &pending {
+            self.file = self.pending_file(p);
+            self.check_witness_rows_of(p.id, None);
+        }
+    }
+
+    /// The rows of the witness table for class `id` that a conformance
+    /// through an extension makes (one declared before the class, too):
+    /// what runs in a module's method's place is checked with it as an
+    /// override, seen from the class (`check_witness_row`).
+    /// (`span`: reported there, at an extension; else at the method.) Only
+    /// where the conformance may hold for the class, as the override
+    /// table has it (`View::Override`: not a conditional extension's
+    /// whose bound the class's arguments fail, `CSub < Box[String]` under
+    /// `extension Box[T <: Int]`): the table has rows whatever the bounds,
+    /// a class value carrying no arguments, and no value reaches those.
+    fn check_witness_rows_of(&mut self, id: ClassId, span: Option<Span>) {
+        let table = self.world.witnesses();
+        let rows: Vec<&Witness> = table
+            .of(id)
+            .iter()
+            .filter(|w| matches!(w.source, WitnessSource::Include { .. }))
+            .collect();
+        if rows.is_empty() {
+            return;
+        }
+        let may_hold: Vec<ClassId> = self
+            .world
+            .own_ancestors(id)
+            .into_iter()
+            .map(|(m, _)| m)
+            .collect();
+        for w in rows {
+            if may_hold.contains(&w.module) {
+                self.check_witness_row(w, span);
+            }
+        }
     }
 
     /// A generic module with `static def self.` macros (docs/14 §2) is
@@ -1556,6 +1596,66 @@ impl<'ast> Declarer<'ast> {
             self.override_span = None;
             self.override_span_always = false;
         }
+        // Every class the include reaches (the target, a class including a
+        // module target, a subclass with a module of its own in front): its
+        // rows of the witness table, each seen from the class. All of them,
+        // those of other extensions' conformances too: a module this
+        // include brings may be what implements another's abstract method
+        // (#522), whichever was declared first.
+        let table = self.world.witnesses();
+        let mut reached: Vec<ClassId> = table
+            .rows
+            .iter()
+            .filter(|w| {
+                matches!(w.source, WitnessSource::Include { ext: x, include: i, .. }
+                    if x == ext && i == include)
+            })
+            .map(|w| w.class)
+            .collect();
+        reached.dedup();
+        for k in reached {
+            self.check_witness_rows_of(k, Some(span));
+        }
+    }
+
+    /// A row of the witness table whose witness is a class's or a module's
+    /// method (not an extension's own, checked where it is written) is
+    /// checked with the module's method as an override, both seen from the
+    /// row's class (`span`: reported there, at the extension that makes
+    /// the conformance; else at the method).
+    fn check_witness_row(&mut self, w: &Witness, span: Option<Span>) {
+        if w.by == w.method || self.world.method(w.method).singleton {
+            return;
+        }
+        let im = self.world.method(w.by);
+        if im.is_abstract || im.extension.is_some() {
+            return;
+        }
+        let owner = im.owner;
+        let own_args = self.world.own_args(w.class);
+        // (How its owner is seen from the class: an entry of its lookup
+        // order, or a module another conformance brings.)
+        let oargs = self
+            .world
+            .resolution(w.class, &own_args, View::Lookup)
+            .into_iter()
+            .find(|(k, _)| *k == owner)
+            .map(|(_, a)| a)
+            .or_else(|| {
+                self.world
+                    .extension_conformances(w.class)
+                    .into_iter()
+                    .find(|c| c.module == owner)
+                    .map(|c| c.args)
+            });
+        let own = Type::Class(w.class, own_args);
+        if span.is_some() {
+            self.override_span = span;
+            self.override_span_always = true;
+        }
+        self.check_implementation_seen(w.by, w.method, w.module, &w.args, own, owner, oargs);
+        self.override_span = None;
+        self.override_span_always = false;
     }
 
     /// An extension cannot include a module its target already has through
@@ -3884,6 +3984,7 @@ impl<'ast> Declarer<'ast> {
             self.world.active_extensions = self.world.group_extensions(file);
             self.check_conformance_of(id);
             self.world.active_extensions.clear();
+            self.check_witness_rows_of(id, None);
         }
     }
 
@@ -3928,9 +4029,10 @@ impl<'ast> Declarer<'ast> {
                         // (one active where it is declared): the witness
                         // table's row is what runs (`World::witnesses`), an
                         // abstract method there one nothing implements.
-                        if let Some(w) = table.get(id, *mid).filter(|w| {
-                            matches!(w.source, crate::witness::WitnessSource::Include { .. })
-                        }) {
+                        if let Some(w) = table
+                            .get(id, *mid)
+                            .filter(|w| matches!(w.source, WitnessSource::Include { .. }))
+                        {
                             if self.world.method(w.by).is_abstract {
                                 missing.push((m.name.clone(), *anc));
                             } else if self.world.method(w.by).extension.is_some() {

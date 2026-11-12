@@ -313,6 +313,9 @@ impl World {
     /// the class's own include does nothing (docs/01 §6, as Ruby). Each
     /// with its arguments in `k`'s parameters and that class. (A scoped
     /// extension's module at a superclass does not move an own include.)
+    /// `World::resolution` alone decides it: the module's place in two of
+    /// its views is compared, the rule of includes is not derived again
+    /// from the declarations.
     fn shadowed_includes(&self, k: ClassId) -> Vec<(ClassId, Vec<Type>, ClassId)> {
         let declared = self.resolution(k, &self.own_args(k), View::Declared);
         if !declared

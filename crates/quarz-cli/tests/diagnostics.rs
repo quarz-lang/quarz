@@ -655,6 +655,68 @@ end
         out.contains("`label` returns Int but `Named#label`, which it overrides, returns String"),
         "{out}"
     );
+    // The module another extension brings, which implements an abstract
+    // method whichever extension is declared first (#522): checked in
+    // both orders.
+    let named = r#"module SN1
+  extension CN
+    include Named
+  end
+end
+"#;
+    let giver = r#"module SN2
+  extension CN
+    include Giver
+  end
+end
+"#;
+    for (first, second) in [(named, giver), (giver, named)] {
+        let out = common::diagnostics(&format!(
+            r#"module Named
+  abstract def name -> String
+end
+module Giver
+  def name -> Int = 1
+end
+class CN
+  def initialize; end
+end
+{first}{second}"#
+        ))
+        .join("\n");
+        assert!(
+            out.contains("`name` returns Int but `Named#name`, which it overrides"),
+            "{out}"
+        );
+    }
+    // A class including a module the extension targets, its inherited
+    // method the witness: checked from the class.
+    let out = common::diagnostics(
+        r#"module Named
+  abstract def label -> String
+end
+module Seq
+end
+class A
+  def initialize; end
+  def label -> Int = 1
+end
+class K < A
+  include Seq
+  def initialize; end
+end
+module Sc
+  extension Seq
+    include Named
+  end
+end
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("`label` returns Int but `Named#label`, which it overrides, returns String"),
+        "{out}"
+    );
     // Compatible ones are accepted.
     let out = common::diagnostics(
         r#"module M
