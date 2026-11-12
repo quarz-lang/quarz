@@ -5882,6 +5882,22 @@ fn the_std_side_of_an_extensions_module_is_checked_in_every_direction() {
     // A class's own method implementing the module's abstract one, over a
     // superclass's of another result: the class's runs.
     ok("module OM\n  abstract def m -> String\nend\nclass Base\n  def m -> Object = 1\nend\nclass Foo < Base\n  include OM\n  def m -> String = \"foo\"\nend\ndef g(p: OM) -> String = p.m\nputs g(Foo.new) + \"!\"");
+    // #564: a class object is whatever `Type` is, a `Shareable` too: an
+    // extension of `Shareable` (or of any module `Type` includes) puts
+    // every std class's class methods over its module's, whether or not
+    // the class's instances are `Shareable` (`Random`'s are not).
+    err(
+        "module OM\n  def new_seed -> String = \"om\"\nend\nextension Shareable\n  include OM\nend\ndef g(p: OM) -> String = p.new_seed\nputs g(Random).size",
+        "`new_seed` returns Int but `OM#new_seed`, which it overrides as `Random.new_seed`, returns String",
+    );
+    err(
+        "module OM\n  def now -> String = \"om\"\nend\nmodule App\n  extension Shareable\n    include OM\n  end\nend",
+        "`now` returns Time but `OM#now`, which it overrides as `Time.now`, returns String",
+    );
+    // A compatible class method, a name no std class has, and an
+    // extension of a module class objects are not (`Comparable`): fine.
+    ok("module OM\n  def new_seed -> Int = 1\n  def om_name -> String = \"om\"\nend\nextension Shareable\n  include OM\nend\ndef g(p: OM) -> Int = p.new_seed\nputs g(Random)");
+    ok("module OM\n  def now -> String = \"om\"\nend\nextension Comparable[T]\n  include OM\nend");
 }
 
 #[test]

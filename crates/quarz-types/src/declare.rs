@@ -2784,15 +2784,23 @@ impl<'ast> Declarer<'ast> {
                 .iter()
                 .flat_map(|m| self.world.class(*m).methods.keys().map(|n| n.as_str()))
                 .collect();
+            // A class object is an `Object` too, and whatever else `Type`
+            // is (a `Shareable`, #564): where class objects conform to the
+            // target, every std class's class methods come over the
+            // module's (`Time.now`, `Random.new_seed`), whether or not the
+            // class's instances conform.
+            let objects = e.target == self.world.builtin.object
+                || self.world.class_is_a(self.world.builtin.class_, e.target);
             for c in &self.world.classes {
-                if c.file != 0
-                    || c.kind == ClassKind::Module
-                    || !(c.id == e.target || self.world.class_is_a(c.id, e.target))
-                {
+                if c.file != 0 || c.kind == ClassKind::Module {
+                    continue;
+                }
+                let instances = c.id == e.target || self.world.class_is_a(c.id, e.target);
+                if !instances && !objects {
                     continue;
                 }
                 for (name, ids) in &c.methods {
-                    if !names.contains(name.as_str()) {
+                    if !instances || !names.contains(name.as_str()) {
                         continue;
                     }
                     for &pm in ids {
@@ -2810,7 +2818,12 @@ impl<'ast> Declarer<'ast> {
                 // what implements the module's abstract ones further up
                 // (`Enumerable#first` in `Set`, `Object#hash` for `Int`):
                 // the class-relative part of the table.
-                for ie in self.world.include_overrides_of(c.id) {
+                let includes = if instances {
+                    self.world.include_overrides_of(c.id)
+                } else {
+                    Vec::new()
+                };
+                for ie in includes {
                     if modules.contains(&self.world.method(ie.overridden).owner)
                         && self.world.method(ie.by).file == 0
                     {
@@ -2824,10 +2837,6 @@ impl<'ast> Declarer<'ast> {
                         ));
                     }
                 }
-                // A class object is an `Object` too: its class's class
-                // methods over the module's (`Time.now`).
-                let objects = e.target == self.world.builtin.object
-                    || self.world.class_is_a(self.world.builtin.class_, e.target);
                 if objects {
                     for (name, ids) in &c.singleton_methods {
                         if !names.contains(name.as_str()) {
