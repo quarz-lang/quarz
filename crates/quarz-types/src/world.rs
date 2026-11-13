@@ -1434,6 +1434,252 @@ impl World {
     /// chain, with what they include; `None`), and each include of every
     /// extension whose target is one of `conformance_sources(c)`, with the
     /// modules it brings (`Some((extension, index of the include))`).
+    /// The witness record (#536 step 3, S1): for every class `C` with
+    /// values and every abstract instance requirement `r` of a module `M`
+    /// it conforms to, the method that runs for `r` on `C`'s values, and
+    /// the extension whose conformance it is (`None`: `C`'s own). The
+    /// rules, each from the decision it comes from (S2 makes this the run
+    /// time's rule):
+    ///
+    /// 1. **One conformance per module.** `C`'s own if it has `M` on its
+    ///    own side (an own include, a superclass's, or a top-level
+    ///    unconditional extension's module in its dispatch); else the
+    ///    extension's whose target is nearest `C` up its chain. (D2 of
+    ///    2026-11-12 and rule A, #636: for a module the class has itself,
+    ///    the class's own conformance holds; an extension's method is then
+    ///    an extension method, chosen statically.)
+    /// 2. **Below the conformance's class**, a method that the override
+    ///    table pairs with `r` under `C`'s declaration view
+    ///    (`World::overrides`, or `C`'s `include_overrides_of`) replaces the
+    ///    witness; so does the own method of an extension in `C`'s
+    ///    declaration view that takes `r`'s calls (`implements`' arity), only
+    ///    where that view sees the conformance (as the declarer records it,
+    ///    `check_conformance_of`). A method the table does not pair is no
+    ///    override, and the witness runs. (Addendum (A)'s rule 1 with
+    ///    #606's decision (a); step 1's decision (4): the witness is
+    ///    dispatched for the receiver.)
+    /// 3. **`C`'s own conformance:** the first method in `C`'s dispatch by
+    ///    name (`resolution(C, …, View::Lookup)`) that the override table
+    ///    pairs with `r`, or that takes `r`'s calls by type, its result
+    ///    included (a concrete method further up, the declarer's
+    ///    `inherited_impls`); else one that takes them by arity only, as
+    ///    the declarer records it, for the safety net to judge in the
+    ///    class's frame. (Step 1's relation; rule A: an extension's own
+    ///    method is never it.)
+    /// 4. **An extension's conformance:** the extension's own method that
+    ///    takes `r`'s calls by type, its result included; else the witness
+    ///    R0 recorded for its target (`ext_impls`): the first in the order
+    ///    a call on the target sees with the extension active
+    ///    (`resolution(…, View::Static)`), of the target's own side and the
+    ///    extension's modules. (R0, #635; #654, #658; addendum (A)'s rule 2:
+    ///    the extension that makes the conformance supplies its method,
+    ///    #529.)
+    ///
+    /// A witness that is a class's or module's method is resolved for a
+    /// receiver below it as `find_override` resolves it (#654).
+    pub fn witness_record(
+        &self,
+    ) -> Vec<(ClassId, MethodId, Option<MethodId>, Option<ExtensionId>)> {
+        let mut out = Vec::new();
+        let n = self.classes.len() as ClassId;
+        for c in 0..n {
+            let kind = self.class(c).kind;
+            if matches!(kind, ClassKind::Module | ClassKind::Main) {
+                continue;
+            }
+            let own_side = self.ancestors_with_no_extensions(c);
+            // (The class's dispatch by name: its own side and the modules
+            // of the top-level unconditional extensions, which take part in
+            // it, docs/01 §7.)
+            let lookup = self.resolution(c, &self.own_args(c), View::Lookup);
+            // One conformance per module: the class's own if it has one
+            // (D2, rule A), else the extension's whose target is nearest
+            // the class up its chain.
+            let mut chosen: Vec<Conformance> = Vec::new();
+            for (src, m, margs) in self.conformances(c) {
+                let pos = |s: &Option<(ExtensionId, usize)>| match s {
+                    None => 0,
+                    Some((e, _)) => {
+                        let t = self.extensions[*e as usize].target;
+                        own_side
+                            .iter()
+                            .position(|(k, _)| *k == t)
+                            .map_or(usize::MAX, |p| p + 1)
+                    }
+                };
+                match chosen.iter().position(|(_, x, _)| *x == m) {
+                    Some(at) if pos(&src) < pos(&chosen[at].0) => chosen[at] = (src, m, margs),
+                    Some(_) => {}
+                    None => chosen.push((src, m, margs)),
+                }
+            }
+            for (src, m, margs) in chosen {
+                let rsubst = self.class_subst(m, &margs);
+                let reqs: Vec<MethodId> = self
+                    .class(m)
+                    .methods
+                    .values()
+                    .flatten()
+                    .copied()
+                    .filter(|&r| {
+                        let rm = self.method(r);
+                        rm.owner == m && rm.is_abstract && !rm.singleton
+                    })
+                    .collect();
+                for r in reqs {
+                    let rm = self.method(r);
+                    let by_type = |i: MethodId, subst: &HashMap<TypeParamId, Type>| {
+                        let im = self.method(i);
+                        i != r
+                            && !im.is_abstract
+                            && !im.singleton
+                            && im.name == rm.name
+                            && self.takes_calls_of(im, subst, rm, &rsubst)
+                            && self.is_subtype(&im.ret.subst(subst), &rm.ret.subst(&rsubst))
+                    };
+                    // A class below the conformance's class (an extension's
+                    // target, or the class including the module): its own
+                    // method the override table says replaces the
+                    // requirement, or the own method of an extension of it
+                    // active where it is declared (`declaration_view`) that
+                    // takes the requirement's calls (`implements`' arity),
+                    // runs first, as the declarer records it for that class
+                    // (`check_conformance_of`).
+                    let upto = match src {
+                        Some((e, _)) => Some(self.extensions[e as usize].target),
+                        None => own_side
+                            .iter()
+                            .find(|(k, _)| {
+                                self.class(*k).includes.iter().any(|t| {
+                                    matches!(t, Type::Class(i, _) if *i == m || self.ancestor_ids(*i).contains(&m))
+                                })
+                            })
+                            .map(|(k, _)| *k),
+                    };
+                    let view = self.declaration_view(c);
+                    let (amin, amax) = rm.positional_arity();
+                    let arity = |i: MethodId| {
+                        let im = self.method(i);
+                        let (cmin, cmax) = im.positional_arity();
+                        !im.is_abstract
+                            && im.singleton == rm.singleton
+                            && cmin <= amin
+                            && cmax >= amax
+                            && im.block.is_some() == rm.block.is_some()
+                            && im.keywords_accept(rm)
+                    };
+                    // (Whether this conformance is seen from the class's
+                    // declaration view: only there did the declarer record
+                    // an extension's method for it, `check_conformance_of`.)
+                    let seen = self
+                        .with_active(view.clone(), || {
+                            self.resolution(c, &self.own_args(c), View::Static)
+                        })
+                        .iter()
+                        .any(|(k, _)| *k == m);
+                    // (Below the conformance's class, a method replaces the
+                    // witness only if the override table pairs it with the
+                    // requirement under the class's declaration view:
+                    // addendum (A)'s rule 1 with #606's decision (a); the
+                    // class's own includes count.)
+                    // (The class's own pairs: a module it includes over the
+                    // requirement, `include_overrides_of`, in its view.)
+                    let paired_here: Vec<MethodId> = self
+                        .include_overrides_of(c)
+                        .into_iter()
+                        .filter(|io| io.overridden == r)
+                        .map(|io| io.by)
+                        .collect();
+                    let below = own_side
+                        .iter()
+                        .map(|(k, _)| *k)
+                        .take_while(|k| Some(*k) != upto)
+                        .find_map(|k| {
+                            self.class(k)
+                                .methods
+                                .get(&rm.name)
+                                .and_then(|ids| {
+                                    ids.iter().copied().find(|&i| {
+                                        let im = self.method(i);
+                                        im.owner == k
+                                            && !im.is_abstract
+                                            && (self.overrides(i).contains(&r)
+                                                || paired_here.contains(&i))
+                                    })
+                                })
+                                .or_else(|| {
+                                    if !seen || self.class(k).kind == ClassKind::Module {
+                                        return None;
+                                    }
+                                    view.iter()
+                                        .map(|e| &self.extensions[*e as usize])
+                                        .filter(|e| e.target == k)
+                                        .find_map(|e| {
+                                            e.methods.get(&rm.name).and_then(|ids| {
+                                                ids.iter().copied().find(|&i| arity(i))
+                                            })
+                                        })
+                                })
+                        });
+                    let w = below.or_else(|| match src {
+                        Some((e, _)) => {
+                            let ext = &self.extensions[e as usize];
+                            let targs = own_side
+                                .iter()
+                                .find(|(k, _)| *k == ext.target)
+                                .map(|(_, a)| a.clone())
+                                .unwrap_or_default();
+                            let esubst = self.extension_subst(ext, &targs);
+                            ext.methods
+                                .get(&rm.name)
+                                .and_then(|ids| ids.iter().copied().find(|&i| by_type(i, &esubst)))
+                                .or_else(|| {
+                                    self.ext_impls
+                                        .iter()
+                                        .find(|(k, a, _)| *k == ext.target && *a == r)
+                                        .map(|(_, _, i)| *i)
+                                })
+                        }
+                        // (The class's own conformance: the override table's
+                        // answer, step 1's relation: the first on its own
+                        // side whose method replaces the requirement.)
+                        // (Or, by signature, a concrete method further up that
+                        // the table does not pair, as the declarer records
+                        // it, `inherited_impls`: `B2#m` for `C2 < B2;
+                        // include M2[Int]`.)
+                        None => lookup
+                            .iter()
+                            .find_map(|(k, kargs)| {
+                                let ks = self.class_subst(*k, kargs);
+                                self.class(*k).methods.get(&rm.name).and_then(|ids| {
+                                    ids.iter().copied().find(|&i| {
+                                        let im = self.method(i);
+                                        im.owner == *k
+                                            && !im.is_abstract
+                                            && (self.overrides(i).contains(&r) || by_type(i, &ks))
+                                    })
+                                })
+                            })
+                            // (Else one that takes the calls by arity only, as the
+                            // declarer records it: the net judges it in the
+                            // class's frame, as R0's last candidate.)
+                            .or_else(|| {
+                                lookup.iter().find_map(|(k, _)| {
+                                    self.class(*k).methods.get(&rm.name).and_then(|ids| {
+                                        ids.iter()
+                                            .copied()
+                                            .find(|&i| self.method(i).owner == *k && arity(i))
+                                    })
+                                })
+                            }),
+                    });
+                    out.push((c, r, w, src.map(|(e, _)| e)));
+                }
+            }
+        }
+        out
+    }
+
     pub fn conformances(&self, c: ClassId) -> Vec<Conformance> {
         let mut out: Vec<Conformance> = self
             .ancestors_with_no_extensions(c)

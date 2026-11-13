@@ -356,3 +356,48 @@ fn a_compile_time_run_reaching_a_refused_row_does_not_run() {
         assert!(!err.contains("TypeError"), "{err}");
     }
 }
+
+/// The witness record's oracle (#536 step 3, S1) excludes two families
+/// from its assertion, by their shape: #529's (two conditional extensions'
+/// same-named methods) and #662's (a scoped extension's own method running
+/// for a module the class has itself). S2 makes the rows read the record,
+/// and these counts go to zero.
+#[test]
+fn the_witness_oracle_excludes_only_529_and_662() {
+    let summary = |src: &str| {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "quarz-witness-oracle-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("main.qz");
+        std::fs::write(&path, src).unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_quarz"))
+            .arg("check")
+            .arg(&path)
+            .env("QUARZ_WITNESS_ORACLE", "report")
+            .env("QUARZ_NO_CACHE", "1")
+            .output()
+            .expect("run quarz");
+        std::fs::remove_dir_all(&dir).ok();
+        String::from_utf8_lossy(&out.stderr)
+            .lines()
+            .find(|l| l.starts_with("witness-oracle: summary"))
+            .unwrap_or_default()
+            .to_string()
+    };
+    let s = summary(R529_ORACLE);
+    assert!(
+        s.contains("ext 0/") && s.contains("own 0/") && s.contains("excluded #529 1, #662 0"),
+        "{s}"
+    );
+    let s = summary(T3_ORACLE);
+    assert!(
+        s.contains("ext 0/") && s.contains("own 0/") && s.contains("excluded #529 0, #662 1"),
+        "{s}"
+    );
+}
+const R529_ORACLE: &str = "module PI\n  abstract def parse(s: String) -> Int\n  abstract def self.make(s: String) -> Int\nend\nmodule PS\n  abstract def parse(s: String) -> String\n  abstract def self.make(s: String) -> String\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\nend\nextension Box[T <: Int]\n  include PI\n  def parse(s: String) -> Int = @v + s.to_i\n  def self.make(s: String) -> Int = 1\nend\nextension Box[T <: String]\n  include PS\n  def parse(s: String) -> String = @v + s\n  def self.make(s: String) -> String = \"two\"\nend\ndef ps(x: PS) -> String = x.parse(\"!\")\na: PS = Box[String].new(\"x\")\np a.parse(\"1\")\np ps(a)\n";
+const T3_ORACLE: &str = "module M\n  abstract def m -> String\nend\nmodule N\n  include M\n  abstract def n -> String\nend\nclass K\n  include M\n  def initialize; end\n  def m -> String = \"own\"\nend\nmodule X\n  extension K\n    include N\n    def m -> String = \"ext-m\"\n    def n -> String = \"ext-n\"\n  end\n  def self.as_n(k: K) -> N = k\n  def self.direct(k: K) -> String = k.m\nend\ndef via_m(x: M) -> String = x.m\ndef via_n(x: N) -> String = x.m + \",\" + x.n\nputs via_m(K.new), via_n(X.as_n(K.new)), X.direct(K.new)\n";
