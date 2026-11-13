@@ -184,6 +184,9 @@ pub enum Decl {
 /// time does not find an inherited witness for an extension's conformance
 /// yet, and the program is refused rather than raising there. One whose
 /// witness is another module's the class conforms to is #557's, likewise.
+/// A row with no frame (`Verdict::NoFrame`: the net could not check it)
+/// is an error too, an internal one, placed like the others.
+///
 /// Rule: an instance-side row of an abstract class is not checked for
 /// no-impl: it has no instances, and each concrete subclass has its own
 /// row (its `abstract def` of the name is what R0 accepts). Only no-impl is
@@ -204,7 +207,10 @@ pub fn errors(
     let mut out: Vec<FileDiagnostic> = Vec::new();
     for r in checked {
         let reason = match &r.verdict {
-            Verdict::Passes | Verdict::NoFrame => continue,
+            Verdict::Passes => continue,
+            // (A row the net could not put in a frame is a row it did not
+            // check: it refuses the program.)
+            Verdict::NoFrame => Some(String::new()),
             Verdict::Refused { reason, .. } => Some(reason.clone()),
             // (An abstract class has no instances: its instance-side rows
             // are never reached, its subclasses' are checked for them, and
@@ -224,6 +230,11 @@ pub fn errors(
         let module = req.owner;
         let mname = &world.class(module).name;
         let message = match reason {
+            Some(_) if r.verdict == Verdict::NoFrame => format!(
+                "internal error: no frame to check `{cname}`'s row for `{}` in (what runs: `{}`); please report",
+                name(r.req),
+                name(r.by)
+            ),
             Some(reason) => format!(
                 "`{cname}`'s conformance to `{mname}` runs `{}` for `{}`, which does not take its place for `{cname}`: {reason}",
                 name(r.by),

@@ -6074,3 +6074,45 @@ fn the_preludes_classes_are_checked_as_overrides() {
         "{errors:?}"
     );
 }
+
+/// The safety net's error stage (#644): a row the net could not put in a
+/// frame (`Verdict::NoFrame`) refuses the program with an internal error,
+/// placed like the others (here at the class: its own include).
+#[test]
+fn a_row_with_no_frame_is_an_error() {
+    use quarz_types::witness_net::{errors, Checked as Row, Verdict};
+    let prelude = parse(PRELUDE_SOURCE);
+    let src = "module M\n  abstract def m -> Int\nend\nclass K\n  include M\n  def initialize; end\n  def m -> Int = 1\nend\n";
+    let base = unit_base(0);
+    let parsed = parse_with_bases(src, base, base);
+    let (checked, _) = check(&prelude.program, &parsed.program);
+    let world = checked.expect("checks").world;
+    let class = |n: &str| {
+        world
+            .classes
+            .iter()
+            .position(|c| c.name == n)
+            .expect("class") as u32
+    };
+    let method = |owner: u32| {
+        world
+            .methods
+            .iter()
+            .position(|m| m.owner == owner && m.name == "m")
+            .expect("method") as u32
+    };
+    let (k, m) = (class("K"), class("M"));
+    let row = Row {
+        table: "override",
+        class: k,
+        req: method(m),
+        by: method(k),
+        verdict: Verdict::NoFrame,
+    };
+    let diags = errors(&world, &[row], &|_| true);
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert_eq!(
+        diags[0].1.message,
+        "internal error: no frame to check `K`'s row for `M#m` in (what runs: `K#m`); please report"
+    );
+}
