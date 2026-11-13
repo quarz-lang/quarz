@@ -2875,6 +2875,8 @@ fn an_extension_completes_the_conformance_it_makes() {
         format!("{named}class B\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n  end\nend\n"),
         // Only another extension's module gives it (#522's witness part).
         format!("{named}module Giver\n  def label -> String = \"g\"\nend\nclass B\n  def initialize; end\nend\nmodule S1\n  extension B\n    include Named\n  end\nend\nmodule S2\n  extension B\n    include Giver\n  end\nend\n"),
+        // An `abstract def` on the target of another signature only.
+        format!("{named}abstract class B\n  abstract def label(x: Int) -> String\nend\nclass C < B\n  def initialize; end\n  def label(x: Int) -> String = \"c\"\nend\nextension B\n  include Named\nend\n"),
         // Only an overload of another parameter type.
         "module M\n  abstract def m(x: String) -> String\nend\nmodule N\n  def m(x: Int) -> String = \"n\"\nend\nclass B\n  def initialize; end\nend\nextension B\n  include M\n  include N\nend\n".to_string(),
     ];
@@ -2897,7 +2899,8 @@ fn an_extension_completes_the_conformance_it_makes() {
         "{out}"
     );
     let accepted = [
-        // (1) The extension's own method.
+        // (1) The extension's own method, written after its `include` (the
+        // check runs once the extension's body is declared).
         format!("{named}class B\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n    def label -> String = \"e\"\n  end\nend\n"),
         // (2) A module the same extension includes.
         format!("{named}module Giver\n  def label -> String = \"g\"\nend\nclass B\n  def initialize; end\nend\nextension B\n  include Named\n  include Giver\nend\n"),

@@ -1903,8 +1903,8 @@ impl<'ast> Declarer<'ast> {
     /// extension's own methods, (2) the methods of the modules the
     /// extension's includes bring, (3) the target's own methods and those of
     /// its own includes and superclasses (`World::ancestors_with_no_extensions`;
-    /// an `abstract def` there counts, and the target's concrete classes
-    /// must implement it). Otherwise an error at the extension, whatever its
+    /// an `abstract def` there that takes the calls counts, and the
+    /// target's concrete classes must implement it). Otherwise an error at the extension, whatever its
     /// bounds. The modules come from `World::conformances`' sources; "takes
     /// its calls" is `World::takes_calls_of`, or the run time's same
     /// signature, with each side seen in the target's own parameters.
@@ -1955,12 +1955,16 @@ impl<'ast> Declarer<'ast> {
                 .collect();
             for r in abstracts {
                 let rm = self.world.method(r).clone();
-                let takes = |s: &Self, i: MethodId, csubst: &HashMap<TypeParamId, Type>| {
+                // (Whether method `i` takes the requirement's calls by type;
+                // `takes` asks it of a method with a body.)
+                let fits = |s: &Self, i: MethodId, csubst: &HashMap<TypeParamId, Type>| {
                     let im = s.world.method(i);
-                    !im.is_abstract
-                        && !im.singleton
+                    !im.singleton
                         && (s.world.takes_calls_of(im, csubst, &rm, &rsubst)
                             || s.world.same_signature_at_run_time(i, r))
+                };
+                let takes = |s: &Self, i: MethodId, csubst: &HashMap<TypeParamId, Type>| {
+                    !s.world.method(i).is_abstract && fits(s, i, csubst)
                 };
                 let by_ext = ext_info
                     .methods
@@ -1985,10 +1989,9 @@ impl<'ast> Declarer<'ast> {
                         .get(&rm.name)
                         .is_some_and(|ids| {
                             ids.iter().any(|&i| {
-                                let im = self.world.method(i);
-                                im.owner == *k
-                                    && !im.singleton
-                                    && (takes(self, i, &ks) || (im.is_abstract && i != r))
+                                // (An `abstract def` there counts when it
+                                // takes the requirement's calls by type too.)
+                                self.world.method(i).owner == *k && i != r && fits(self, i, &ks)
                             })
                         })
                 });
