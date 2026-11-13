@@ -1911,7 +1911,14 @@ impl Checker {
                         && !self.includes_itself(sid, self.world.method(w.method).owner)
                         && self.witness_for(sid, w.method) == Some(method)
                 });
-                let mut past_module = via_extension || pinned;
+                // An extension's class method is bound statically (docs/01
+                // §7): a call of it runs it for every class it reaches,
+                // whatever class methods of its name they declare, so none
+                // excuses its `new` (#526, decided 2026-11-13: checked
+                // against the target and every class a call can reach, its
+                // subclasses or, for a module, the classes including it).
+                let from_extension = self.world.method(method).extension.is_some();
+                let mut past_module = via_extension || pinned || from_extension;
                 // Through `Type[M]` a fixed witness of this name runs for
                 // `sid`, so dispatch starts at the witness's class: classes
                 // below it do not take this method's place (a `super` in
@@ -2095,7 +2102,11 @@ impl Checker {
                     self.diagnostics.push((
                         s.file,
                         Diagnostic::error(
-                            if via_extension || pinned {
+                            if from_extension && !via_extension && !pinned {
+                                // (Bound statically: a class method of the
+                                // class's own does not replace it, #526.)
+                                format!("{what} does not take the arguments of {new_in} in the extension's `{cname}{sep}{mname}`, which runs for `{sname}` wherever it is called (an extension's method is bound statically, so a class method of `{sname}`'s own does not replace it): keep the parameters of `{iname}#initialize`, their names and whether they are optional (adding only optional ones), or build `{sname}` outside the extension")
+                            } else if via_extension || pinned {
                                 // (Witnesses are fixed: a subclass's own class
                                 // method does not replace one, #504.)
                                 format!("{what} does not take the arguments of {new_in} in `{cname}{sep}{mname}`, which runs for `{sname}` through its conformance by an extension: keep the parameters of `{iname}#initialize`, their names and whether they are optional (adding only optional ones), or make `{sname}` conform on its own (its own `include` of the module)")

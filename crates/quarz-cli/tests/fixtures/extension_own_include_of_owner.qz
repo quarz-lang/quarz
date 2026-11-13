@@ -1,6 +1,8 @@
 # A subclass including the module that declares a witnessed class method
 # conforms on its own: its own `make` runs, and its `new` arguments are
-# its own (#504).
+# its own (#504). (`B`'s `initialize` takes a default since #526: the
+# extension's `A.make`, bound statically, builds `B` with no argument
+# through a `Type[A]` value holding `B`, whatever `B`'s own `make`.)
 module M
   abstract def self.make -> Self
 end
@@ -17,7 +19,7 @@ end
 class B < A
   include M
   @s: String
-  def initialize(@s: String); end
+  def initialize(@s: String = "b"); end
   def self.make -> Self = new("b")
   def s -> String = @s
 end
