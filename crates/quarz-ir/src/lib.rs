@@ -1847,7 +1847,10 @@ impl RtWorld {
             for ext in &self.extensions {
                 if ext.target == anc && self.extension_dispatches(ext, m.owner) {
                     if let Some(ids) = ext.methods.get(&m.name) {
-                        candidates.extend(ids);
+                        // (Of `m`'s side: an extension keeps both sides'
+                        // methods in one table, #590.)
+                        candidates
+                            .extend(ids.iter().filter(|i| method(**i).singleton == m.singleton));
                     }
                 }
             }
@@ -2236,7 +2239,9 @@ impl RtWorld {
         let takes = |i: MethodId| {
             let c = self.method(i);
             let (cmin, cmax) = c.positional_arity();
+            // (Of `abs`'s side, #590.)
             !c.is_abstract
+                && c.singleton == m.singleton
                 && c.has_block == m.has_block
                 && cmin <= amin
                 && cmax >= amax

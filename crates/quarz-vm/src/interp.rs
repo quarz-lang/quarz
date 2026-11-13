@@ -2913,6 +2913,7 @@ impl Interp {
             if self.program.world.class(anc).kind == quarz_ir::RtClassKind::Main {
                 continue;
             }
+            let mut ext_lists: Vec<Vec<MethodId>> = Vec::new();
             let mut lists: Vec<&Vec<MethodId>> = Vec::new();
             // Always-active extensions on this ancestor come first (a
             // module's extension applies only where `using` makes it
@@ -2920,10 +2921,18 @@ impl Interp {
             for ext in &self.program.world.extensions {
                 if ext.always_active && ext.target == anc {
                     if let Some(ids) = ext.methods.get(name) {
-                        lists.push(ids);
+                        // (A send by name on a value: the instance side; an
+                        // extension keeps both sides in one table, #590.)
+                        ext_lists.push(
+                            ids.iter()
+                                .copied()
+                                .filter(|i| !self.program.method(*i).singleton)
+                                .collect(),
+                        );
                     }
                 }
             }
+            lists.extend(ext_lists.iter());
             if let Some(ids) = self.program.world.class(anc).methods.get(name) {
                 lists.push(ids);
             }

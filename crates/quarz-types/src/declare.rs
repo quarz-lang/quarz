@@ -4872,7 +4872,8 @@ impl<'ast> Declarer<'ast> {
     /// one's counts as its implementation.
     fn implements(&self, candidate: MethodId, abstract_id: MethodId) -> bool {
         let (c, a) = (self.world.method(candidate), self.world.method(abstract_id));
-        if c.is_abstract || c.name != a.name {
+        // (Of the same side: an extension keeps both in one table, #590.)
+        if c.is_abstract || c.name != a.name || c.singleton != a.singleton {
             return false;
         }
         let (cmin, cmax) = c.positional_arity();
