@@ -1,7 +1,8 @@
 # #509 (docs/01 §6): a module written as the argument of a `Type[T]`
 # parameter whose bound has an abstract class method is a compile-time
 # error; a module reaching the parameter through a `Type[M]` variable keeps
-# the run-time error of any `Type[M]` value holding it.
+# the run-time error of any `Type[M]` value holding it: a `TypeError` that
+# says so (#630; until #510).
 module Named
   abstract def self.kind -> String
   def tag -> String = "t"
@@ -18,6 +19,6 @@ puts k(x)
 x = Named
 begin
   puts k(x)
-rescue NotImplementedError => e
-  puts "NotImplementedError"
+rescue TypeError => e
+  puts e.message
 end

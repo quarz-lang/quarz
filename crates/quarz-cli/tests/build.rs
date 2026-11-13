@@ -286,3 +286,33 @@ fn aot_opt_levels() {
         "{err}"
     );
 }
+
+/// #630, compiled: an abstract method reached at run time (#600's
+/// reproducer) is a violation under `QUARZ_VERIFY` and a `TypeError`
+/// without it, as on the VM (tests/verify.rs).
+#[test]
+fn an_abstract_method_reached_compiled() {
+    let dir = std::env::temp_dir().join(format!("quarz-abstract-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("main.qz");
+    fs::write(
+        &src,
+        "module Named\n  abstract def label -> String\nend\nclass B\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n  end\n  def self.n(x: B) -> Named = x\nend\ndef via(n: Named) -> String = n.label\nputs via(Sc.n(B.new))\n",
+    )
+    .unwrap();
+    let exe = dir.join("main");
+    build(&src, &exe);
+    for (verify, code, want) in [
+        ("moves", 101, "QIR fact violated: abstract method `label` called on B, which no check saw implemented"),
+        ("0", 1, "TypeError: abstract method `label` called on B, which no check saw implemented"),
+    ] {
+        let out = Command::new(&exe)
+            .env("QUARZ_VERIFY", verify)
+            .output()
+            .expect("run the executable");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(code), "{verify}: {err}");
+        assert!(err.contains(want), "{verify}: {err}");
+    }
+    fs::remove_dir_all(&dir).ok();
+}

@@ -787,3 +787,36 @@ fn a_read_of_a_capture_task_blocking_moved_stops() {
         "{err}"
     );
 }
+
+/// #630 (#600's reproducer): an abstract method reached at run time is a
+/// check the checker missed, a violation under `QUARZ_VERIFY`, otherwise
+/// a `TypeError` that says so (not `NotImplementedError`).
+const ABSTRACT_REACHED: &str = "module Named\n  abstract def label -> String\nend\nclass B\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n  end\n  def self.n(x: B) -> Named = x\nend\ndef via(n: Named) -> String = n.label\nputs via(Sc.n(B.new))\n";
+
+#[test]
+fn an_abstract_method_reached_is_a_violation() {
+    let (code, err) = in_child_with("an_abstract_method_reached_is_a_violation", "moves", || {
+        common::lower(ABSTRACT_REACHED)
+    });
+    assert_eq!(code, Some(101), "{err}");
+    assert!(
+        err.contains("QIR fact violated: abstract method `label` called on B, which no check saw implemented"),
+        "{err}"
+    );
+}
+
+#[test]
+fn an_abstract_method_reached_without_verify_is_a_type_error() {
+    let (code, err) = in_child_with(
+        "an_abstract_method_reached_without_verify_is_a_type_error",
+        "0",
+        || common::lower(ABSTRACT_REACHED),
+    );
+    assert_eq!(code, Some(1), "{err}");
+    assert!(
+        err.contains(
+            "TypeError: abstract method `label` called on B, which no check saw implemented"
+        ),
+        "{err}"
+    );
+}
