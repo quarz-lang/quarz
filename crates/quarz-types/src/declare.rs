@@ -2331,7 +2331,7 @@ impl<'ast> Declarer<'ast> {
             for ids in e.methods.values() {
                 for &mid in ids {
                     let m = self.world.method(mid);
-                    if m.file == 0 || m.synth != Synth::None {
+                    if m.synth != Synth::None {
                         continue;
                     }
                     for (a, aargs) in &ancestors {
@@ -2712,8 +2712,6 @@ impl<'ast> Declarer<'ast> {
                 .collect();
             for mid in mine {
                 let m = self.world.method(mid).clone();
-                // (The prelude specializes some of what it overrides, as
-                // Ruby: `Hash#select` and `Hash#filter` give a `Hash`.)
                 // (An included module's abstract method never runs in place
                 // of the superclass's: the runtime goes on to it, which
                 // implements it, `check_implementation_seen`.)
@@ -2722,7 +2720,6 @@ impl<'ast> Declarer<'ast> {
                 // the runtime dispatches to it alike; not a constructor.)
                 if m.owner != x
                     || m.synth == Synth::DataInit
-                    || m.file == 0
                     || (!m.singleton && (m.name == "initialize" || m.name == "deinitialize"))
                     || (m.is_abstract && x != id)
                 {
@@ -2759,6 +2756,13 @@ impl<'ast> Declarer<'ast> {
                                     || include_pairs.contains(&(mid, o)))
                         };
                         if !replaces {
+                            continue;
+                        }
+                        // (A prelude method over a program's module, which
+                        // an extension makes the prelude class include: the
+                        // pair is checked and reported at the extension,
+                        // `check_std_overrides_of_extension_modules`.)
+                        if m.file == 0 && self.world.method(o).file != 0 {
                             continue;
                         }
                         // (A module's class method that a class method of
@@ -2821,8 +2825,8 @@ impl<'ast> Declarer<'ast> {
 
     /// A std (prelude) class's own method overrides the method of a module
     /// an extension of it or of an ancestor includes, as a program class's
-    /// does (docs/01 §7, (g)); the prelude's classes are not checked by
-    /// `check_override_returns`, so the pairs are checked here, at the
+    /// does (docs/01 §7, (g)); `check_override_returns` leaves a prelude
+    /// method over a program's module to this check, which reports it at the
     /// extension: `hash -> String` in a module `extension Object` includes
     /// is an error, `Int#hash` returning Int (#536).
     fn check_std_overrides_of_extension_modules(&mut self) {
@@ -3004,7 +3008,7 @@ impl<'ast> Declarer<'ast> {
     /// (docs/01 §9).
     fn check_class_side_overrides(&mut self, id: ClassId) {
         let class = self.world.class(id);
-        if class.file == 0 || matches!(class.kind, ClassKind::Main) {
+        if matches!(class.kind, ClassKind::Main) {
             return;
         }
         let args: Vec<Type> = class
@@ -3059,9 +3063,6 @@ impl<'ast> Declarer<'ast> {
         // method on the class object, #494.)
         for (anc, _) in self.world.class_modules_included(id, &args) {
             let mc = self.world.class(anc);
-            if mc.file == 0 {
-                continue;
-            }
             mine.extend(
                 mc.singleton_methods
                     .values()
@@ -3151,9 +3152,6 @@ impl<'ast> Declarer<'ast> {
         let own = Type::Class(id, own_args);
         for io in self.world.include_overrides_of(id) {
             let (o, by) = (io.overridden, io.by);
-            if self.world.method(by).file == 0 && self.world.method(o).file == 0 {
-                continue;
-            }
             if self.override_pairs.contains(&(by, o)) {
                 continue;
             }
@@ -3185,9 +3183,6 @@ impl<'ast> Declarer<'ast> {
         let own = Type::Class(id, own_args);
         for eo in self.world.class_include_overrides_of(id) {
             let (o, by) = (eo.overridden, eo.by);
-            if self.world.method(by).file == 0 && self.world.method(o).file == 0 {
-                continue;
-            }
             if self.override_pairs.contains(&(by, o)) {
                 continue;
             }
