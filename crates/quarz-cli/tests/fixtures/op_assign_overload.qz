@@ -1,0 +1,48 @@
+# #586: a compound assignment `x op= v` calls the overload `x op v` calls:
+# the most specific among those taking the right-hand side, not the first
+# that fits. The class's own overloads (1), and two active extensions'
+# modules giving one each (2).
+class E
+  @n: String
+  def initialize(@n: String); end
+  def n -> String = @n
+  def +(o: Int?) -> E = E.new("opt")
+  def +(o: Int) -> E = E.new("int")
+end
+e = E.new("x")
+d = e + 1
+e += 1
+puts "#{d.n} #{e.n}"
+
+class F
+  @n: String
+  def initialize(@n: String); end
+  def n -> String = @n
+end
+module K1
+  def -(o: Int?) -> F = F.new("k1 opt")
+end
+module K2
+  def -(o: Int) -> F = F.new("k2 int")
+end
+module S1
+  extension F
+    include K1
+  end
+end
+module S2
+  extension F
+    include K2
+  end
+end
+module Use
+  using S1
+  using S2
+  def self.go -> String
+    f = F.new("x")
+    g = f - 1
+    f -= 1
+    "#{g.n} #{f.n}"
+  end
+end
+puts Use.go
