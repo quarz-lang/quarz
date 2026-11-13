@@ -1509,6 +1509,12 @@ pub enum RtSynth {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RtMethod {
+    /// The positional shape (`RtMethod::shape_of`): two methods of one
+    /// shape other than `NO_SHAPE` take the same positional arguments and
+    /// block, nothing else, so a call laid out for one can run the other's
+    /// body as is (#561).
+    #[serde(default = "no_shape")]
+    pub shape: u32,
     pub name: String,
     pub owner: ClassId,
     pub singleton: bool,
@@ -1559,7 +1565,31 @@ pub struct RtMethod {
     pub keyword_hash: bool,
 }
 
+/// The shape of a method with a parameter other than a positional one.
+pub const NO_SHAPE: u32 = u32::MAX;
+
+fn no_shape() -> u32 {
+    NO_SHAPE
+}
+
 impl RtMethod {
+    /// A method's positional shape: its number of parameters and whether
+    /// it takes a block, when every parameter is positional; `NO_SHAPE`
+    /// otherwise (a rest, keywords).
+    pub fn shape_of(params: &[RtParam], has_block: bool) -> u32 {
+        if params.iter().all(|p| p.kind == RtParamKind::Positional) && params.len() < (1 << 30) {
+            ((params.len() as u32) << 1) | u32::from(has_block)
+        } else {
+            NO_SHAPE
+        }
+    }
+
+    /// Whether this method's body can run a call laid out for `other`'s:
+    /// the same shape, positional only (`shape_of`).
+    pub fn same_shape(&self, other: &RtMethod) -> bool {
+        self.shape != NO_SHAPE && self.shape == other.shape
+    }
+
     /// Whether this method takes every keyword call `other` takes (as an
     /// override or an implementation of it must, docs/01 §3): each of
     /// `other`'s keywords by name, optional where it is, a `**rest` where
@@ -2343,6 +2373,7 @@ impl Droppable for RtMethod {
 
     fn dropped() -> Self {
         RtMethod {
+            shape: NO_SHAPE,
             name: String::new(),
             owner: 0,
             singleton: false,

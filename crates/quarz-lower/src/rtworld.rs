@@ -290,6 +290,7 @@ pub fn declared(world: &World, out: &types::Output) -> RtWorld {
                 None
             };
             RtMethod {
+                shape: NO_SHAPE,
                 name: m.name.clone(),
                 owner: m.owner,
                 singleton: m.singleton,
@@ -358,6 +359,10 @@ pub fn declared(world: &World, out: &types::Output) -> RtWorld {
                 },
                 keyword_hash: m.generated.as_ref().is_some_and(|g| g.keywords),
             }
+        })
+        .map(|mut m| {
+            m.shape = RtMethod::shape_of(&m.params, m.has_block);
+            m
         })
         .collect();
     // Every extension is listed: the always-active ones (the prelude's)

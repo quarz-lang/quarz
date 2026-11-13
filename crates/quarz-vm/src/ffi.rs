@@ -552,6 +552,74 @@ pub unsafe extern "C" fn qz_field_set(
 /// function's (`CallKind::Function`).
 pub const STATIC_FUNCTION: u32 = 1 << 31;
 
+/// Whether `found`, the method a call of `declared` dispatched to, runs
+/// the call as laid out for `declared`: the same shape
+/// (`RtMethod::same_shape`, computed once by the lowering). Otherwise it
+/// binds the arguments by its own signature through `Interp::invoke`,
+/// the binder `qz_enter_virtual` uses for a target of another shape
+/// (#561). Debug builds check the shapes against the full comparison.
+fn same_shape(m: &quarz_ir::RtMethod, d: &quarz_ir::RtMethod) -> bool {
+    let same = m.same_shape(d);
+    #[cfg(debug_assertions)]
+    {
+        let positional = |x: &quarz_ir::RtMethod| {
+            x.params
+                .iter()
+                .all(|p| p.kind == quarz_ir::RtParamKind::Positional)
+        };
+        let full = m.params.len() == d.params.len()
+            && m.has_block == d.has_block
+            && positional(m)
+            && positional(d);
+        assert_eq!(same, full, "the shapes of {} and {}", m.name, d.name);
+    }
+    same
+}
+
+/// `qz_call_static`'s call of `found`, a method of another shape than the
+/// one the call was laid out for: the arguments bound by its own
+/// signature (`Interp::invoke`, as `qz_enter_virtual`'s general path).
+///
+/// # Safety
+/// As `qz_call_static`.
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+unsafe fn call_by_signature(
+    rt: &Interp,
+    act: &Activation,
+    found: quarz_ir::MethodId,
+    regs: *mut Value,
+    recv: u32,
+    arg_regs: *const u32,
+    nargs: u32,
+    block: u32,
+    dst: u32,
+) -> u32 {
+    let recv = if recv == u32::MAX {
+        act.self_val.clone()
+    } else {
+        (*regs.add(recv as usize)).clone()
+    };
+    let block = if block == u32::MAX {
+        None
+    } else {
+        Some((*regs.add(block as usize)).clone())
+    };
+    let mut args = crate::interp::ArgVec::with_capacity(nargs as usize);
+    for i in 0..nargs as usize {
+        args.push((*regs.add(*arg_regs.add(i) as usize)).clone());
+    }
+    let r = rt.invoke(found, recv, args, Vec::new(), block.clone());
+    match rt.catch_break(&block, r) {
+        Ok(v) => {
+            *regs.add(dst as usize) = v;
+            STATUS_OK
+        }
+        Err(flow) => rt.park_flow(flow),
+    }
+}
+
 /// A statically resolved call of a method that nothing overrides, with
 /// positional arguments only (and possibly a block): natives are called
 /// directly, bodies get their parameters bound without the generic path
@@ -580,18 +648,31 @@ pub unsafe extern "C" fn qz_call_static(
     // for a function (`CallKind::Function`, the top bit of `mid`).
     let function = mid & STATIC_FUNCTION != 0;
     let mid = mid & !STATIC_FUNCTION;
-    let mid = if !function && rt.program.method(mid).overridden {
+    let declared = rt.program.method(mid);
+    // (`m`: the method the call runs, looked up once.)
+    let (mid, m) = if !function && declared.overridden {
         let recv_ref: &Value = if recv == u32::MAX {
             &act.self_val
         } else {
             &*regs.add(recv as usize)
         };
         match rt.resolve_dynamic(recv_ref, mid) {
-            Ok(mid) => mid,
+            // (A class method of another shape than the declared one
+            // binds the arguments by its own signature, #561.)
+            Ok(found) if found == mid => (mid, declared),
+            Ok(found) => {
+                let m = rt.program.method(found);
+                if !same_shape(m, declared) {
+                    return call_by_signature(
+                        rt, act, found, regs, recv, arg_regs, nargs, block, dst,
+                    );
+                }
+                (found, m)
+            }
             Err(flow) => return rt.park_flow(flow),
         }
     } else {
-        mid
+        (mid, declared)
     };
     // A native with a by-reference version: no copies, no argument list.
     if block == u32::MAX && nargs <= 3 {
@@ -626,7 +707,6 @@ pub unsafe extern "C" fn qz_call_static(
     } else {
         Some((*regs.add(block as usize)).clone())
     };
-    let m = &rt.program.method(mid);
     let nparams = m.params.len();
     let mut args: crate::interp::ArgVec =
         crate::interp::ArgVec::with_capacity(nparams.max(nargs as usize) + 1);

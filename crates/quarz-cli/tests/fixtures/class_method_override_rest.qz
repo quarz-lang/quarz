@@ -1,0 +1,21 @@
+# #561: a class method overriding another with an added rest or optional
+# parameter takes the call's arguments as it declares them (an empty rest,
+# its own defaults), whether the call names the class, goes through a
+# `Type[B]` value or is an implicit call in an inherited class method; on
+# the VM and compiled alike. An override of the same shape (`same`) runs
+# as the call laid it out.
+class B
+  def self.cm(x: Int) -> String = "b"
+  def self.op(x: Int) -> String = "b"
+  def self.same(x: Int) -> String = "b#{x}"
+  def self.via_self -> String = cm(1) + "/" + op(1) + "/" + same(2)
+end
+class S < B
+  def self.cm(x: Int, *ys: Int) -> String = "rest #{ys.size}"
+  def self.op(x: Int, y: Int = 7) -> String = "opt #{x + y}"
+  def self.same(x: Int) -> String = "s#{x}"
+end
+def viat(t: Type[B]) -> String = t.cm(1) + "/" + t.op(1) + "/" + t.same(3)
+puts S.cm(1), S.cm(1, 2, 3), S.op(1)
+puts viat(S), viat(B)
+puts S.via_self, B.via_self
