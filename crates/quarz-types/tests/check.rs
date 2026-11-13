@@ -5887,22 +5887,16 @@ fn the_std_side_of_an_extensions_module_is_checked_in_every_direction() {
     // A class's own method implementing the module's abstract one, over a
     // superclass's of another result: the class's runs.
     ok("module OM\n  abstract def m -> String\nend\nclass Base\n  def m -> Object = 1\nend\nclass Foo < Base\n  include OM\n  def m -> String = \"foo\"\nend\ndef g(p: OM) -> String = p.m\nputs g(Foo.new) + \"!\"");
-    // #564: a class object is whatever `Type` is, a `Shareable` too: an
-    // extension of `Shareable` (or of any module `Type` includes) puts
-    // every std class's class methods over its module's, whether or not
-    // the class's instances are `Shareable` (`Random`'s are not).
-    err(
-        "module OM\n  def new_seed -> String = \"om\"\nend\nextension Shareable\n  include OM\nend\ndef g(p: OM) -> String = p.new_seed\nputs g(Random).size",
-        "`new_seed` returns Int but `OM#new_seed`, which it overrides as `Random.new_seed`, returns String",
-    );
-    err(
+    // (#564's cells, an extension of `Shareable` or `Comparable` including a
+    // module, are refused at the include since rule B: an extension of a
+    // module cannot include.)
+    for src in [
+        "module OM\n  def new_seed -> Int = 1\nend\nextension Shareable\n  include OM\nend",
         "module OM\n  def now -> String = \"om\"\nend\nmodule App\n  extension Shareable\n    include OM\n  end\nend",
-        "`now` returns Time but `OM#now`, which it overrides as `Time.now`, returns String",
-    );
-    // A compatible class method, a name no std class has, and an
-    // extension of a module class objects are not (`Comparable`): fine.
-    ok("module OM\n  def new_seed -> Int = 1\n  def om_name -> String = \"om\"\nend\nextension Shareable\n  include OM\nend\ndef g(p: OM) -> Int = p.new_seed\nputs g(Random)");
-    ok("module OM\n  def now -> String = \"om\"\nend\nextension Comparable[T]\n  include OM\nend");
+        "module OM\n  def now -> String = \"om\"\nend\nextension Comparable[T]\n  include OM\nend",
+    ] {
+        err(src, "an extension of the module `");
+    }
 }
 
 #[test]
@@ -6022,12 +6016,12 @@ fn sort_pairs_takes_comparable_keys_only() {
 
 #[test]
 fn two_argument_sets_on_a_module_with_no_includer() {
-    // #538: the one-arguments rule compares a module target's own includes
-    // too, so the conflict is reported where it is written, with no class
-    // including the module.
+    // #538: the conflict of a module target's own includes with an
+    // extension's include is reported where it is written, with no class
+    // including the module; since rule B, by refusing the include itself.
     err(
         "module P[T]\n  def it -> Int = 1\nend\nmodule Wrap[U]\n  include P[U]\nend\nmodule Mid\n  include P[Int]\nend\nextension Mid\n  include Wrap[String]\nend",
-        "`Mid` already conforms to `P[Int]` (its own include): this extension cannot include `P[String]` (through `Wrap[String]`)",
+        "an extension of the module `Mid` cannot include `Wrap`",
     );
 }
 

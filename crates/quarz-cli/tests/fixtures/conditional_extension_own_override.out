@@ -12,9 +12,6 @@ Sub3[Int] direct: sub
 Sub3[Int] via EA3: sub
 Sub3[Int] via EM3: sub
 Sub3[Int] go: sub
-Box4[Int] via EM4: box
-Box4[Int] EM4's self call: box
 CSub5: 5
 Sub6 via EM6: mm
 Sub6 direct: mm
-Sub7[Int] via EM7: sub

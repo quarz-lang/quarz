@@ -2,6 +2,10 @@
 # module a conditional extension includes, where the bound holds (docs/01
 # §7): the only values a call through the module reaches. Every call on a
 # value runs the same method, whatever static type it is called through.
+# Dropped cells (rule B): a conditional extension of a module the class
+# includes (`extension N4[T <: Int]; include EM4`), and one including a
+# module another conditional extension targets (`extension Boxy7[...];
+# include EM7`): an extension of a module cannot include.
 
 # The class's own method.
 module EM1
@@ -82,26 +86,6 @@ puts "Sub3[Int] via EA3: #{via_ea3(s)}"
 puts "Sub3[Int] via EM3: #{via_em3(s)}"
 puts "Sub3[Int] go: #{s.go}"
 
-# A conditional extension of a module the class includes.
-module EM4
-  def m(x: Int) -> String = "module"
-  def call_m -> String = m(1)
-end
-module N4[T]
-end
-extension N4[T <: Int]
-  include EM4
-end
-class Box4[T]
-  include N4[T]
-  def initialize; end
-  def m(x: Int) -> String = "box"
-end
-def via_em4(e: EM4) -> String = e.m(1)
-b4 = Box4[Int].new
-puts "Box4[Int] via EM4: #{via_em4(b4)}"
-puts "Box4[Int] EM4's self call: #{b4.call_m}"
-
 # A bound that fails for the superclass's concrete arguments: no pair (a
 # `CSub5` is never an `EM5`), so its `m` is its own, of any result.
 module EM5
@@ -141,26 +125,3 @@ end
 def via_em6(e: EM6) -> String = e.m(1)
 puts "Sub6 via EM6: #{via_em6(Sub6.new)}"
 puts "Sub6 direct: #{Sub6.new.m(1)}"
-
-# A conditional extension including a module another conditional extension
-# targets: the class's own method overrides the module that one includes.
-module EM7
-  def m(x: Int) -> String = "module"
-end
-module Boxy7[T]
-end
-extension Boxy7[T <: Int]
-  include EM7
-end
-class Box7[T]
-  def initialize; end
-end
-extension Box7[T <: Int]
-  include Boxy7[T]
-end
-class Sub7[U] < Box7[U]
-  def initialize; end
-  def m(x: Int) -> String = "sub"
-end
-def via_em7(e: EM7) -> String = e.m(1)
-puts "Sub7[Int] via EM7: #{via_em7(Sub7[Int].new)}"

@@ -6,7 +6,9 @@
 # unconditional top-level extension (a scoped or conditional one's
 # never); the class's own method always first; `is_a?` holds for
 # every conformance. Skipped: another cog (tests/cogs.rs), the class
-# side (step 2b).
+# side (step 2b). Dropped cells (rule B): an extension of an included
+# module that includes a module (`extension N7`, `extension N17`): an
+# extension of a module cannot include.
 class B1
   def initialize; end
   def m -> String = "base"
@@ -101,24 +103,6 @@ extension C6[T <: Int]
 end
 def f6(x: B6) -> String = x.m
 puts "conditional extension of a generic class: #{f6(C6[Int].new)} #{C6[Int].new.is_a?(M6)}"
-class B7
-  def initialize; end
-  def m -> String = "base"
-end
-module M7
-  def m -> String = "mod"
-end
-module N7
-end
-extension N7
-  include M7
-end
-class C7 < B7
-  include N7
-  def initialize; end
-end
-def f7(x: B7) -> String = x.m
-puts "top-level extension of an included module: #{f7(C7.new)} #{C7.new.is_a?(M7)}"
 class B8
   def initialize; end
   def m -> String = "base"
@@ -280,27 +264,6 @@ class S16 < C16[Int]
 end
 def f16(x: B16) -> String = x.m
 puts "conditional extension of a generic class (subclass): #{f16(S16.new)} #{S16.new.is_a?(M16)}"
-class B17
-  def initialize; end
-  def m -> String = "base"
-end
-module M17
-  def m -> String = "mod"
-end
-module N17
-end
-extension N17
-  include M17
-end
-class C17 < B17
-  include N17
-  def initialize; end
-end
-class S17 < C17
-  def initialize; end
-end
-def f17(x: B17) -> String = x.m
-puts "top-level extension of an included module (subclass): #{f17(S17.new)} #{S17.new.is_a?(M17)}"
 class B18
   def initialize; end
   def m -> String = "base"
