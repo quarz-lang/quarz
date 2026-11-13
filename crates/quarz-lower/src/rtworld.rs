@@ -426,6 +426,7 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
         ext_rescan: Vec::new(),
         override_rows: Vec::new(),
         witness_rows: Vec::new(),
+        class_override_rows: Vec::new(),
         include_overrides: world.include_overrides(),
         class_include_overrides: world.class_include_overrides(),
         top,
