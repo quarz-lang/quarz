@@ -541,6 +541,20 @@ pub struct World {
     /// yet known (`refuse_undecided`).
     #[serde(skip)]
     pub undecided_refusals: std::cell::Cell<u64>,
+    /// The last conditional extension bound a check could not decide
+    /// because a type argument is not inferred yet (`extension_bounds_hold`,
+    /// #519), said in a diagnostic.
+    #[serde(skip)]
+    pub undecided_bound: std::cell::RefCell<Option<String>>,
+    /// The same, kept for an overloaded call's choice
+    /// (`Checker::resolve_pretyped`), which clears it.
+    #[serde(skip)]
+    pub undecided_bound_seen: std::cell::RefCell<Option<String>>,
+    /// How many of `undecided_refusals` were such bounds (the others are
+    /// Shareable checks): an overloaded call's error names the bound only
+    /// when no Shareable check refused.
+    #[serde(skip)]
+    pub undecided_bound_refusals: std::cell::Cell<u64>,
     #[serde(skip)]
     subtype_depth: std::cell::Cell<u32>,
     /// The subtype questions being answered: one met again is answered
@@ -1267,11 +1281,19 @@ impl World {
         if !self.ancestors_memo.on {
             return self.ancestors_with(id, args, &exts);
         }
+        // (A walk that met a bound not known yet is not remembered: it
+        // counts the refusal each time, and answers otherwise when made
+        // as if the types were known, #519.)
+        let undecided = args.iter().any(|t| t.has_vars());
         let key = (id, args.to_vec(), exts);
         if let Some(found) = self.ancestors_memo.map.borrow().get(&key) {
             return found.as_ref().clone();
         }
+        let refusals = self.undecided_refusals.get();
         let found = self.ancestors_with(id, args, &key.2);
+        if undecided && (self.undecided_passes.get() || self.undecided_refusals.get() != refusals) {
+            return found;
+        }
         self.ancestors_memo
             .map
             .borrow_mut()
@@ -1844,23 +1866,49 @@ impl World {
     /// to its target with `args`, the arguments the class has at this
     /// point of a walk (a subclass's instantiation of it along the
     /// superclass chain, #516): every bound holds for its argument. With
-    /// no arguments (a bare class) or one not inferred yet, it applies.
+    /// no arguments (a bare class), it applies.
+    ///
+    /// A bound against an argument not inferred yet (at any depth, or a
+    /// bound naming one) is undecided (#519's decision (i), 2026-11-14):
+    /// one that can never hold (`may_be_subtype`) fails; one that still
+    /// can is counted as a refusal of a type not yet known
+    /// (`refuse_undecided`, said in `undecided_bound`) and does not hold,
+    /// so the conformance is refused on the spot, and an overloaded call
+    /// that a candidate's conformance would decide is an error at the
+    /// call (`Checker::resolve_pretyped`), never another overload. While
+    /// such a call is tried again as if the types were known
+    /// (`undecided_passes`), it holds where it still can.
     pub fn extension_bounds_hold(&self, ext: &ExtensionInfo, args: &[Type]) -> bool {
         if args.is_empty() || ext.type_params.iter().all(|tp| tp.bounds.is_empty()) {
             return true;
         }
         let subst = self.extension_subst(ext, args);
-        // (An argument not inferred yet, at any depth, counts as holding,
-        // as method lookup treats it: `Bx[Array[?]]`; #519 tightens both.)
         ext.type_params.iter().all(|tp| match subst.get(&tp.id) {
             None => true,
             Some(t) => tp.bounds.iter().all(|b| {
                 let b = b.subst(&subst);
-                if t.has_vars() || b.has_vars() {
-                    self.may_be_subtype(t, &b)
-                } else {
-                    self.is_subtype(t, &b)
+                if !t.has_vars() && !b.has_vars() {
+                    return self.is_subtype(t, &b);
                 }
+                if !self.may_be_subtype(t, &b) {
+                    return false;
+                }
+                if !self.refuse_undecided() {
+                    return true;
+                }
+                self.undecided_bound_refusals
+                    .set(self.undecided_bound_refusals.get() + 1);
+                let target = self.type_name(&Type::Class(ext.target, ext.target_args.clone()));
+                let said = format!(
+                    "`{target}`'s extension applies only where `{} <: {}`, which is not known for `{}` here; write the type argument (as `{}[...]`)",
+                    self.type_param_name(tp.id),
+                    self.type_name(&b),
+                    self.type_name(t),
+                    self.class(ext.target).name
+                );
+                *self.undecided_bound_seen.borrow_mut() = Some(said.clone());
+                *self.undecided_bound.borrow_mut() = Some(said);
+                false
             }),
         })
     }
@@ -1872,8 +1920,9 @@ impl World {
     /// filled with `Object` (the same fill on both sides). So
     /// `Bx[Array[?]]` may meet `T <: Array[Int]` (`Array` is covariant)
     /// and `Bx[Array[Array[?]]]` never can; a variable in an invariant
-    /// position is refused unless a fill fits. The check when the
-    /// variables resolve, with plain `is_subtype`, is #519.
+    /// position can only if a fill fits. (An approximation in the
+    /// accepting direction, used only to tell a bound that can never hold
+    /// from one not known yet, which `extension_bounds_hold` refuses, #519.)
     fn may_be_subtype(&self, t: &Type, b: &Type) -> bool {
         if !t.has_vars() && !b.has_vars() {
             return self.is_subtype(t, b);
