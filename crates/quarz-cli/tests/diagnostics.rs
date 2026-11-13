@@ -2796,3 +2796,20 @@ end
     .join("\n");
     assert!(!out.contains("error:"), "{out}");
 }
+
+#[test]
+fn enumerables_select_is_typed_as_an_enumerable() {
+    // #622: `Enumerable#select` (and `filter`, `reject`, `find_all`)
+    // returns `Enumerable[T]`: through `Enumerable` the result may be a
+    // `Set` (whose `select` returns a `Set`), so array methods on it are
+    // refused.
+    let out = common::diagnostics(
+        "def firsts(e: Enumerable[Int]) -> Int\n  a = e.select { |x| x > 0 }\n  a[0]\nend\nputs firsts(Set[3, 1, 2])\n",
+    )
+    .join("\n");
+    assert!(
+        out.contains("3:3: error: undefined method `[]` for Enumerable[Int]"),
+        "{out}"
+    );
+    assert_eq!(out.matches("error:").count(), 1, "{out}");
+}

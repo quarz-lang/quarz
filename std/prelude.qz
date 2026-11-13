@@ -3246,17 +3246,17 @@ module Enumerable[out T]
   end
 
   # The elements for which the block is truthy, in order.
-  def select(&: (T) -> Object) -> Array[T]
+  def select(&: (T) -> Object) -> Enumerable[T]
     Array.build do |out|
       each { |x| out << x if yield(x) }
     end
   end
 
   # The elements for which the block is truthy: `#select`.
-  def filter(&: (T) -> Object) -> Array[T] = select { |x| yield(x) }
+  def filter(&: (T) -> Object) -> Enumerable[T] = select { |x| yield(x) }
 
   # The elements for which the block is falsy (`nil` or `false`).
-  def reject(&: (T) -> Object) -> Array[T]
+  def reject(&: (T) -> Object) -> Enumerable[T]
     Array.build do |out|
       each { |x| out << x unless yield(x) }
     end
@@ -3644,7 +3644,7 @@ module Enumerable[out T]
   # The concatenation of the arrays the block returns: `#flat_map`.
   def collect_concat[U](&: (T) -> Array[U]) -> Array[U] = flat_map { |x| yield(x) }
   # The elements for which the block is truthy: `#select`.
-  def find_all(&: (T) -> Object) -> Array[T] = select { |x| yield(x) }
+  def find_all(&: (T) -> Object) -> Enumerable[T] = select { |x| yield(x) }
   # Whether an element is `==` to `value`: `#include?`.
   def member?(value: Object) -> Bool = include?(value)
   # The elements as an array: `#to_a`.
@@ -4316,6 +4316,16 @@ class Array[out T]
   native def map[U](&: (T) -> U) -> Array[U]
   # The elements for which the block is truthy, in order.
   native def select(&: (T) -> Object) -> Array[T]
+  # The elements for which the block is truthy: `#select`.
+  def filter(&: (T) -> Object) -> Array[T] = select { |x| yield(x) }
+  # The elements for which the block is truthy: `#select`.
+  def find_all(&: (T) -> Object) -> Array[T] = select { |x| yield(x) }
+  # The elements for which the block is falsy (`nil` or `false`), in order.
+  def reject(&: (T) -> Object) -> Array[T]
+    Array.build do |out|
+      each { |x| out << x unless yield(x) }
+    end
+  end
   # An enumerator over the elements.
   #
   # ```
