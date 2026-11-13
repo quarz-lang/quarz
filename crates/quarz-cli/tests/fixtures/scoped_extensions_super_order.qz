@@ -1,14 +1,15 @@
 # #577: `super` from an extension method, and calls, over two active
-# extensions' modules of the same target (M2 including M1): the same
-# answers in either `using` order, the overload choice deciding among
-# both modules' methods (the overriding one first).
+# extensions' modules of the same target: the same answers in either
+# `using` order, the overload choice deciding among both modules' methods.
+# Dropped cell (#517): M2 including M1, its `it` overriding M1's (and
+# calling it through `super`): the second extension would bring M1 to `Q`
+# again, which is refused since #517; here the two modules' overloads of
+# `it` take different arguments.
 module M1
-  def it -> String = "M1"
   def it(x: Int) -> String = "M1i"
 end
 module M2
-  include M1
-  def it -> String = "M2>" + super
+  def it -> String = "M2"
   def it(x: Float) -> String = "M2f"
 end
 class Q
