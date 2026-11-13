@@ -2474,10 +2474,12 @@ impl<'ast> Declarer<'ast> {
     fn duplicate_errors(&self, ids: &[MethodId], errors: &mut Vec<(String, Span, u32)>) {
         for (i, later) in ids.iter().enumerate() {
             let b = self.world.method(*later);
-            if let Some(earlier) = ids[..i]
-                .iter()
-                .find(|e| self.same_signature(self.world.method(**e), b))
-            {
+            // (Of the same side: an extension keeps its class methods and
+            // instance methods in one table, a class in two, #590.)
+            if let Some(earlier) = ids[..i].iter().find(|e| {
+                let a = self.world.method(**e);
+                a.singleton == b.singleton && self.same_signature(a, b)
+            }) {
                 // Reported at the one the user wrote (a data type's
                 // generated methods are declared after its own).
                 let a = self.world.method(*earlier);

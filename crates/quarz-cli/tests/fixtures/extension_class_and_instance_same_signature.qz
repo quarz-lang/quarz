@@ -1,0 +1,12 @@
+# #590: an extension may define a class method and an instance method of
+# the same name and parameters, as a class may; each runs on its side.
+class K
+  def initialize; end
+  def self.g(x: Int) -> String = "s"
+  def g(x: Int) -> String = "i"
+end
+extension K
+  def self.q(x: Int) -> String = "s"
+  def q(x: Int) -> String = "i"
+end
+puts K.g(1) + K.new.g(1) + K.q(1) + K.new.q(1)
