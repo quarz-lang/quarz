@@ -2601,8 +2601,8 @@ fn runtime_tests_through_extensions_elements_and_class_values_are_refused() {
 /// run time, and is refused.
 #[test]
 fn runtime_tests_through_variance_unions_and_generic_modules_are_refused() {
-    // (As above, `K` declares `n` abstract, R0.)
-    for src in ["# skip of a concrete-argument class under covariance: D[U] < Box[Int], D[U <: String] brings Num\nmodule Num\n  abstract def n -> Int\nend\nclass Box[out T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nclass D[U] < Box[Int]\n  @u: U\n  def initialize(@u: U); super(1); end\n  def u -> U = @u\nend\nextension D[U <: String]\n  include Num\n  def n -> Int = u.size\nend\ndef f(x: Box[Object]) -> Int\n  y = x.as?(Num)\n  y ? y.n : -1\nend\nputs f(D.new(\"abc\"))\nputs f(D.new(7))\n", "module Num\n  abstract def n -> Int\nend\nclass Box[out T]\n  def initialize; end\nend\nclass D[U] < Box[Int]\n  @u: U\n  def initialize(@u: U); end\n  def u -> U = @u\nend\nextension D[U <: String]\n  include Num\n  def n -> Int = u.size\nend\ndef f(x: Box[Int | String]) -> Bool = x.is_a?(Num)\nputs f(D.new(7))\n", "# always shortcut through a generic module whose bounded extension brings Num\nmodule Num\n  abstract def n -> Int\nend\nmodule K[T]\n  abstract def n -> Int\nend\nextension K[T <: Int]\n  include Num\nend\nclass G[T]\n  include K[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension G[T <: Int]\n  include Num\n  def n -> Int = v + 1\nend\ndef f(x: K[String]) -> Int\n  y = x.as?(Num)\n  y ? y.n : -1\nend\nputs f(G.new(\"s\"))\n"] {
+    // (As above: `K`'s extension implements the `n` it brings, R0.)
+    for src in ["# skip of a concrete-argument class under covariance: D[U] < Box[Int], D[U <: String] brings Num\nmodule Num\n  abstract def n -> Int\nend\nclass Box[out T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nclass D[U] < Box[Int]\n  @u: U\n  def initialize(@u: U); super(1); end\n  def u -> U = @u\nend\nextension D[U <: String]\n  include Num\n  def n -> Int = u.size\nend\ndef f(x: Box[Object]) -> Int\n  y = x.as?(Num)\n  y ? y.n : -1\nend\nputs f(D.new(\"abc\"))\nputs f(D.new(7))\n", "module Num\n  abstract def n -> Int\nend\nclass Box[out T]\n  def initialize; end\nend\nclass D[U] < Box[Int]\n  @u: U\n  def initialize(@u: U); end\n  def u -> U = @u\nend\nextension D[U <: String]\n  include Num\n  def n -> Int = u.size\nend\ndef f(x: Box[Int | String]) -> Bool = x.is_a?(Num)\nputs f(D.new(7))\n", "# always shortcut through a generic module whose bounded extension brings Num\nmodule Num\n  abstract def n -> Int\nend\nmodule K[T]\nend\nextension K[T <: Int]\n  include Num\n  def n -> Int = 0\nend\nclass G[T]\n  include K[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension G[T <: Int]\n  include Num\n  def n -> Int = v + 1\nend\ndef f(x: K[String]) -> Int\n  y = x.as?(Num)\n  y ? y.n : -1\nend\nputs f(G.new(\"s\"))\n"] {
         let out = common::diagnostics(src);
         assert!(
             out.iter().any(|d| d.contains("cannot check at run time that a value of type")),
@@ -2913,6 +2913,62 @@ fn an_extension_completes_the_conformance_it_makes() {
         // the rule; under a scoped extension the run time does not find it
         // yet (#632).
         format!("{named}class A\n  def initialize; end\n  def label -> String = \"a\"\nend\nclass B < A\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n  end\nend\n"),
+    ];
+    for src in &accepted {
+        let out = common::diagnostics(src).join("\n");
+        assert!(!out.contains("error:"), "{src}\n{out}");
+    }
+}
+
+#[test]
+fn an_own_includes_requirement_is_implemented_on_the_class_side() {
+    // Rule A (the user's decision, 2026-11-13): an abstract method from a
+    // class's own side (a module it includes itself, or a superclass) is
+    // implemented by the class's own methods, own includes or superclasses;
+    // an extension's method is not its implementation (#605, #607, #608).
+    let named = "module Named\n  abstract def label -> String\nend\n";
+    let refused = [
+        // A top-level extension's method.
+        format!("{named}class B\n  include Named\n  def initialize; end\nend\nextension B\n  def label -> String = \"e\"\nend\n"),
+        // A conditional extension's method (#607).
+        format!("{named}class K[T]\n  include Named\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension K[T <: Int]\n  def label -> String = \"int#{{v + 1}}\"\nend\n"),
+        // An extension of a superclass (#608).
+        "module M\n  abstract def get -> Int\nend\nclass Base[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension Base[T]\n  def get -> T = v\nend\nclass A < Base[Int]\n  include M\n  def initialize; super(1); end\nend\n".to_string(),
+    ];
+    for src in &refused {
+        let out = common::diagnostics(src).join("\n");
+        assert!(out.contains(" from the module `"), "{src}\n{out}");
+        assert!(out.contains("so it is implemented in `"), "{src}\n{out}");
+    }
+    // A superclass's abstract method too: the class's own side implements
+    // it, an extension's method does not.
+    let out = common::diagnostics(
+        "abstract class Base\n  abstract def f -> String\nend\nclass C < Base\n  def initialize; end\nend\nextension C\n  def f -> String = \"e\"\nend\n",
+    )
+    .join("\n");
+    assert!(
+        out.contains("`C` has `Base#f` from its superclass `Base`, so it is implemented in `C`"),
+        "{out}"
+    );
+    let out = common::diagnostics(
+        "abstract class Base\n  abstract def f -> String\nend\nclass C < Base\n  def initialize; end\n  def f -> String = \"c\"\nend\n",
+    )
+    .join("\n");
+    assert!(!out.contains("error:"), "{out}");
+    // A scoped extension's method is no implementation either: the class
+    // must implement it (the contract's own error).
+    let out = common::diagnostics(&format!(
+        "{named}class B\n  include Named\n  def initialize; end\nend\nmodule Sc\n  extension B\n    def label -> String = \"e\"\n  end\nend\n"
+    ))
+    .join("\n");
+    assert!(out.contains("`B` must implement `label`"), "{out}");
+    let accepted = [
+        // The class's own method, an own include's, a superclass's.
+        format!("{named}class B\n  include Named\n  def initialize; end\n  def label -> String = \"b\"\nend\n"),
+        format!("{named}module Giver\n  def label -> String = \"g\"\nend\nclass B\n  include Named\n  include Giver\n  def initialize; end\nend\n"),
+        format!("{named}class A\n  def label -> String = \"a\"\nend\nclass B < A\n  include Named\n  def initialize; end\nend\n"),
+        // An extension that includes the module itself implements it (R0).
+        format!("{named}class B\n  def initialize; end\nend\nextension B\n  include Named\n  def label -> String = \"e\"\nend\n"),
     ];
     for src in &accepted {
         let out = common::diagnostics(src).join("\n");

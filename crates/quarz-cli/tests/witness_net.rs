@@ -50,12 +50,14 @@ fn report(src: &str) -> Vec<String> {
     lines
 }
 
-/// #608: one extension's method checked in each receiver's frame: `A <
-/// Base[Int]` passes, `B < Base[String]` is refused.
+/// One method checked in each receiver's frame: `Base#get -> T` for `M#get
+/// -> Int` passes for `A < Base[Int]` and is refused for `B < Base[String]`
+/// (the class side's form of #608; an extension's method for an own include,
+/// #608's own form, is refused at compile time since rule A).
 #[test]
-fn an_extensions_method_is_checked_in_each_receivers_frame() {
+fn a_method_is_checked_in_each_receivers_frame() {
     let lines = report(
-        "module M\n  abstract def get -> Int\nend\nclass Base[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension Base[T]\n  def get -> T = v\nend\nclass A < Base[Int]\n  include M\n  def initialize; super(1); end\nend\nclass B < Base[String]\n  include M\n  def initialize; super(\"s\"); end\nend\ndef via(m: M) -> Int = m.get + 1\nputs via(A.new)\n",
+        "module M\n  abstract def get -> Int\nend\nclass Base[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\n  def get -> T = v\nend\nclass A < Base[Int]\n  include M\n  def initialize; super(1); end\nend\nclass B < Base[String]\n  include M\n  def initialize; super(\"s\"); end\nend\ndef via(m: M) -> Int = m.get + 1\nputs via(A.new)\n",
     );
     let refused: Vec<&String> = lines
         .iter()
