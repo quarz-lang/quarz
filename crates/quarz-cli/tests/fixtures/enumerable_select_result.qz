@@ -1,0 +1,13 @@
+# #622: `Enumerable#select`, `filter`, `reject` and `find_all` return
+# `Enumerable[T]`; `Array`'s return arrays and `Set`'s sets (covariant
+# overrides), and through `Enumerable` the result is the receiver's own,
+# usable as an `Enumerable`.
+a = [3, 1, 2, 4]
+p a.select { |x| x > 1 }[0], a.filter(&:even?).size, a.reject { |x| x > 2 }, a.find_all { |x| x < 3 }.first
+s = Set[3, 1, 2, 4]
+p s.select { |x| x > 1 }.include?(1), s.reject { |x| x > 2 }.size, s.filter(&:even?).to_a.sort
+def evens(e: Enumerable[Int]) -> Enumerable[Int] = e.select(&:even?)
+def total(e: Enumerable[Int]) -> Int = e.reject { |x| x > 2 }.sum
+p evens(a).to_a, evens(s).to_a.sort, total(a), total(s)
+p evens(s).class, evens(a).class
+p evens(1..6).to_a, total(1..6), evens(1..6).class
