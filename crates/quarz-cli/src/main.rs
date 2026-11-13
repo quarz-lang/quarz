@@ -352,7 +352,13 @@ fn load_and_check(
         };
         eprint!("{}", diag.render(f));
     }
-    checked.map(|c| (c, files, runner.into_lowerer()))
+    // The runtime's tables and the safety net over their rows, once: the
+    // lowering takes them (`Lowerer::declare`).
+    checked.map(|c| {
+        let mut lowerer = runner.into_lowerer();
+        lowerer.declare(&c.world, &c.output);
+        (c, files, lowerer)
+    })
 }
 
 fn run_file(target: &Target, argv: Vec<String>) -> ExitCode {

@@ -64,6 +64,10 @@ pub struct StaticRound {
 
 #[derive(Default)]
 pub struct Lowerer {
+    /// The tables the declarations decide, built after the program's check
+    /// (`declare`) and taken by the next lowering round, which completes
+    /// them (`rtworld::fill`): built once per program.
+    declared: Option<quarz_ir::RtWorld>,
     /// Lowering for a compile-time run (docs/14): every method is lazy,
     /// reached from the statement, and one whose body is not checked yet
     /// is reported instead of lowered.
@@ -359,6 +363,19 @@ impl Lowerer {
         Lowerer::default()
     }
 
+    /// Build the tables the declarations of a checked program decide, with
+    /// their witness rows (`rtworld::declared`), and run the safety net
+    /// over the rows (`witness_net`). Called by the front end after a check
+    /// without errors (`quarz check`, `run`, `build`, `test`), so the net
+    /// sees every program the check accepts; the next `lower` takes the
+    /// tables instead of building them again (it builds them itself, the
+    /// same way, when nothing called this: a caller of `lower_checked`).
+    pub fn declare(&mut self, world: &World, out: &Output) {
+        let rt = rtworld::declared(world, out);
+        witness_net(world, &rt);
+        self.declared = Some(rt);
+    }
+
     pub(crate) fn alloc_func(&mut self) -> FuncId {
         let id = self.next_func;
         self.next_func += 1;
@@ -518,8 +535,11 @@ impl Lowerer {
             .map(|f| f.expect("function lowered"))
             .collect();
         let file_names = self.files.iter().map(|f| f.name.clone()).collect();
-        let rt = rtworld::build(world, out, self, file_names);
-        witness_net(world, &rt);
+        if self.declared.is_none() {
+            self.declare(world, out);
+        }
+        let mut rt = self.declared.take().expect("declared above");
+        rtworld::fill(&mut rt, world, self, file_names);
         Delta {
             world: rt,
             base: self.round_base,
