@@ -3085,6 +3085,26 @@ fn an_extensions_new_is_checked_for_every_class_it_reaches() {
 }
 
 #[test]
+fn a_modules_new_is_checked_for_data_types_and_variants() {
+    // #527: the inherited-constructor check covers a `data` type and an
+    // enum's variant (made by their generated `initialize`), as a class.
+    let msg = "does not take the arguments of `new` in `M.make`";
+    for src in [
+        "module M\n  def self.make -> Self = new\nend\ndata Pt(x: Int)\n  include M\nend\ndef f[T <: M](t: Type[T]) -> T = t.make\nputs f(Pt).x + 1\n",
+        "module M\n  def self.make -> Self = new\nend\nenum Color\n  include M\n  variant Red\n  variant Rgb(r: Int)\nend\ndef f[T <: M](t: Type[T]) -> T = t.make\np f(Color::Rgb).as(Color::Rgb).r + 1\n",
+    ] {
+        let out = common::diagnostics(src).join("\n");
+        assert!(out.contains(msg), "{src}\n{out}");
+    }
+    // A `data` type whose fields all have defaults is built by `new`.
+    let out = common::diagnostics(
+        "module M\n  def self.make -> Self = new\nend\ndata Pt(x: Int = 0)\n  include M\nend\ndef f[T <: M](t: Type[T]) -> T = t.make\nputs f(Pt).x + 1\n",
+    )
+    .join("\n");
+    assert!(!out.contains("error:"), "{out}");
+}
+
+#[test]
 fn super_under_a_method_level_using_of_the_same_class_is_refused() {
     // #593 (decided 2026-11-13): a `super` in an extension's method whose
     // body has a `using` of a module that extends the same class is an
