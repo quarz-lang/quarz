@@ -3061,3 +3061,25 @@ fn a_class_side_witness_comes_from_r0s_candidates() {
         "{out}"
     );
 }
+
+#[test]
+fn an_extensions_new_is_checked_for_every_class_it_reaches() {
+    // #526 (decided 2026-11-13): a `new` in an extension's class method is
+    // checked, with no excuse, against the target and every class a call of
+    // it can reach; a class method of the class's own does not replace an
+    // extension's, which is bound statically.
+    let msg = "does not take the arguments of `new` in the extension's";
+    for src in [
+        // The reproducer: a subclass with its own `build`.
+        "class C\nend\nmodule X\n  extension C\n    def self.make -> Self = build\n    def self.build -> Self = new\n  end\n  def self.go -> Sub = Sub.make\nend\nclass Sub < C\n  @x: Int\n  def initialize(@x: Int); end\n  def self.build -> Self = new(2)\n  def x -> Int = @x\nend\nputs X.go.x + 1\n",
+        // A module's extension and a class including the module.
+        "module N\nend\nextension N\n  def self.make -> Self = new\nend\nclass K\n  include N\n  def self.make -> Self = new(41)\n  def initialize(x: Int); @x = x; end\n  @x: Int\n  def x -> Int = @x\nend\ndef mk(t: Type[N]) -> N = t.make\np mk(K).as(K).x + 1\n",
+        // A subclass conforming on its own, reached through `Type[A]` (the
+        // hole the fixture `extension_own_include_of_owner` had on main:
+        // `via_a(B)` built `B` with a nil `String` field).
+        "module M\n  abstract def self.make -> Self\nend\nmodule N\n  include M\nend\nclass A\n  def initialize; end\nend\nextension A\n  include N\n  def self.make -> Self = new\nend\nclass B < A\n  include M\n  @s: String\n  def initialize(@s: String); end\n  def self.make -> Self = new(\"b\")\n  def s -> String = @s\nend\ndef via_a(k: Type[A]) -> A = k.make\nputs via_a(B).as(B).s.size\n",
+    ] {
+        let out = common::diagnostics(src).join("\n");
+        assert!(out.contains(msg), "{src}\n{out}");
+    }
+}
