@@ -470,7 +470,13 @@ fn load_and_check(
     let mut files = vec![prelude_file];
     files.append(&mut sources);
     files.extend(extras.into_iter().map(|e| e.source));
-    checked.map(|c| (c, files, runner.into_lowerer()))
+    // The runtime's tables and the safety net over their rows, once: the
+    // lowering takes them (`Lowerer::declare`).
+    checked.map(|c| {
+        let mut lowerer = runner.into_lowerer();
+        lowerer.declare(&c.world, &c.output);
+        (c, files, lowerer)
+    })
 }
 
 /// A unit `quarz test` adds: an example's (with the comment's line of each

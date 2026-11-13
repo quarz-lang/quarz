@@ -59,47 +59,94 @@ fn param_kind(k: ParamKind) -> RtParamKind {
     }
 }
 
+/// The runtime's world for a lowering round: what the declarations decide
+/// (`declared`), then what the lowering made (`fill`).
 pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
+    let mut rt = declared(world, out);
+    fill(&mut rt, world, lw, file_names);
+    rt
+}
+
+/// What the lowering adds to `declared`'s tables: the classes' fields and
+/// their defaults (the layouts), each method's function and whether it is
+/// overridden, the constants' functions and the quoted blocks' trees, the
+/// file names. Nothing `declared`'s rows read.
+pub fn fill(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<String>) {
+    for (c, rc) in world.classes.iter().zip(rt.classes.iter_mut()) {
+        let layout = &lw.layouts[c.id as usize];
+        // A type with a parameter in it has no name of its own: a
+        // parameter prints as its name, which may be a class's
+        // (`class Box[String]`).
+        let ty_name = |t: &Type| {
+            (!t.mentions_any_param() && !t.has_vars()).then(|| world.type_name(&world.devoid(t)))
+        };
+        // A declared field stored in one physical field keeps its
+        // default there; a flattened one runs it through the
+        // logical view.
+        let ivars: Vec<RtIvar> = layout
+            .ivars
+            .iter()
+            .enumerate()
+            .map(|(i, iv)| RtIvar {
+                name: iv.name.clone(),
+                ty: ty_name(&iv.ty),
+                slot: iv.slot,
+                flat: iv.flat,
+                default: lw.field_default(world, c.id, i),
+            })
+            .collect();
+        let fields: Vec<RtField> = layout
+            .slots
+            .iter()
+            .enumerate()
+            .map(|(k, s)| RtField {
+                name: s.name.clone(),
+                default: ivars
+                    .iter()
+                    .find(|iv| iv.flat.is_none() && iv.slot as usize == k)
+                    .and_then(|iv| iv.default),
+                ty: ty_name(&s.ty),
+            })
+            .collect();
+        rc.ivars = ivars;
+        rc.fields = fields;
+    }
+    for (m, rm) in world.methods.iter().zip(rt.methods.iter_mut()) {
+        let key = if m.singleton {
+            format!("self.{}", m.name)
+        } else {
+            m.name.clone()
+        };
+        rm.overridden |= lw.overridden.contains(&(m.owner, key));
+        rm.func = lw.method_funcs.get(m.id as usize).copied().flatten();
+    }
+    rt.consts = world
+        .consts
+        .iter()
+        .map(|c| RtConst {
+            name: c.name.clone(),
+            owner: c.owner,
+            init: lw.const_funcs.get(c.id as usize).copied().flatten(),
+            file: c.file,
+        })
+        .collect();
+    // The quoted blocks' trees (docs/14 §6), after the world's.
+    rt.consts.extend(lw.quoted_consts.iter().cloned());
+    rt.file_names = file_names;
+}
+
+/// The runtime's tables the declarations alone decide, with the rows over
+/// them (`rescan_extensions`, `build_witness_rows`): the classes'
+/// ancestors, lookup, class side and methods, the methods' signatures and
+/// override table, the extensions and their witnesses. Built once per
+/// program after its check (`Lowerer::declare`, where the safety net
+/// reads the rows) and completed by the lowering (`fill`); the lowering's
+/// fields are empty here.
+pub fn declared(world: &World, out: &types::Output) -> RtWorld {
     let classes: Vec<RtClass> = world
         .classes
         .iter()
         .map(|c| {
-            let layout = &lw.layouts[c.id as usize];
-            // A type with a parameter in it has no name of its own: a
-            // parameter prints as its name, which may be a class's
-            // (`class Box[String]`).
-            let ty_name = |t: &Type| {
-                (!t.mentions_any_param() && !t.has_vars())
-                    .then(|| world.type_name(&world.devoid(t)))
-            };
-            // A declared field stored in one physical field keeps its
-            // default there; a flattened one runs it through the
-            // logical view.
-            let ivars: Vec<RtIvar> = layout
-                .ivars
-                .iter()
-                .enumerate()
-                .map(|(i, iv)| RtIvar {
-                    name: iv.name.clone(),
-                    ty: ty_name(&iv.ty),
-                    slot: iv.slot,
-                    flat: iv.flat,
-                    default: lw.field_default(world, c.id, i),
-                })
-                .collect();
-            let fields: Vec<RtField> = layout
-                .slots
-                .iter()
-                .enumerate()
-                .map(|(k, s)| RtField {
-                    name: s.name.clone(),
-                    default: ivars
-                        .iter()
-                        .find(|iv| iv.flat.is_none() && iv.slot as usize == k)
-                        .and_then(|iv| iv.default),
-                    ty: ty_name(&s.ty),
-                })
-                .collect();
             let members = c
                 .members
                 .iter()
@@ -154,8 +201,8 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
                     }
                     l
                 },
-                fields,
-                ivars,
+                fields: Vec::new(),
+                ivars: Vec::new(),
                 module_init: !world.has_fields_to_assign(c.id, true),
                 inherited_inits: out
                     .inherited_inits
@@ -221,12 +268,8 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
             // A class method is dispatched on the class it is called on
             // (`Circle.describe` runs `Circle.label` for an implicit
             // `label` in `Shape.describe`).
-            let key = if m.singleton {
-                format!("self.{}", m.name)
-            } else {
-                m.name.clone()
-            };
-            let overridden = m.is_abstract || lw.overridden.contains(&(m.owner, key));
+            // (`fill` adds the lowering's overridden methods.)
+            let overridden = m.is_abstract;
             let synth = match &m.synth {
                 Synth::None => RtSynth::None,
                 Synth::FieldGet(name) => {
@@ -283,7 +326,7 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
                     .collect(),
                 has_block: m.block.is_some(),
                 block_ty: m.block.as_ref().and_then(|(_, t)| rt_sig_type(world, m, t)),
-                func: lw.method_funcs.get(m.id as usize).copied().flatten(),
+                func: None,
                 native_key: if m.is_native && m.synth == Synth::None {
                     Some(m.native_key(world))
                 } else {
@@ -317,18 +360,6 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
             }
         })
         .collect();
-    let mut consts: Vec<RtConst> = world
-        .consts
-        .iter()
-        .map(|c| RtConst {
-            name: c.name.clone(),
-            owner: c.owner,
-            init: lw.const_funcs.get(c.id as usize).copied().flatten(),
-            file: c.file,
-        })
-        .collect();
-    // The quoted blocks' trees (docs/14 §6), after the world's.
-    consts.extend(lw.quoted_consts.iter().cloned());
     // Every extension is listed: the always-active ones (the prelude's)
     // take part in dispatch by name and come first; any other only
     // through the modules it makes its target conform to (a module method
@@ -417,7 +448,7 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
     let mut rt = RtWorld {
         classes,
         methods,
-        consts,
+        consts: Vec::new(),
         extensions,
         ext_impls: world.ext_impls.clone(),
         class_ext_impls: world
@@ -433,7 +464,7 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
         class_include_overrides: world.class_include_overrides(),
         top,
         builtin,
-        file_names,
+        file_names: Vec::new(),
         file_mains,
     };
     // (The scan of the extensions the interpreter made at run time, made
