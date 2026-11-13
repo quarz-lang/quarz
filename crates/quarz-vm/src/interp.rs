@@ -3212,15 +3212,41 @@ impl Interp {
                 ),
             ));
         }
+        // An abstract method reached at run time: nothing implements it for
+        // the receiver's class, which the checker refuses, so a check missed
+        // it (#630; #555, #600). A violation under `QUARZ_VERIFY`, else a
+        // `TypeError` that says so, as for a class no check saw
+        // (`resolve_dynamic`); not `NotImplementedError`, which is for what
+        // this platform does not implement.
         if m.is_abstract {
-            return Err(self.raise(
-                self.program.exc.not_implemented,
-                &format!(
-                    "abstract method `{}` called on {}",
-                    m.name,
-                    self.class_name(&recv)
-                ),
-            ));
+            // (The documented exception, #509: a `Type[M]` value holding the
+            // module or the abstract class itself, whose abstract class
+            // method nothing implements; a catchable `TypeError` that says
+            // so, until #510 makes such a value impossible.)
+            if let Value::Class(cid) = &recv {
+                let c = self.program.world.class(*cid);
+                if m.singleton && (c.kind == quarz_ir::RtClassKind::Module || c.is_abstract) {
+                    let what = if c.kind == quarz_ir::RtClassKind::Module {
+                        "the module"
+                    } else {
+                        "the abstract class"
+                    };
+                    return Err(self.err_type(&format!(
+                        "abstract class method `{}` called on {what} `{}` itself: a `Type` value holding it has no implementation (#510)",
+                        m.name, c.name
+                    )));
+                }
+            }
+            let what = format!(
+                "abstract method `{}` called on {}, which no check saw implemented",
+                m.name,
+                self.class_name(&recv)
+            );
+            if crate::verify::enabled() {
+                self.violated(what);
+                unreachable!()
+            }
+            return Err(self.err_type(&what));
         }
         let Some(fid) = m.func else {
             if self.deadline.get().is_some() {
