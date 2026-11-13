@@ -3890,8 +3890,10 @@ fn an_extension_implementing_an_abstract_method_keeps_its_types_anywhere() {
         "`abs` returns Int but `Absy#abs`, which it overrides, returns String",
     );
     // tmp/repro/extension-implements-abstract.qz: an extension's method
-    // implementing a superclass's abstract one.
-    err("abstract class Base\n  abstract def describe -> String\nend\nextension Shape\n  def describe -> Int = 3\nend\nclass Shape < Base\nend\ndef f(b: Base) -> String = b.describe\nputs f(Shape.new).size", "`describe` returns Int but `Base#describe`, which it overrides, returns String");
+    // for a superclass's abstract one is refused by rule A (#636); it makes
+    // no conformance, so it is no witness to check as an override (#665's
+    // decision (α)).
+    err("abstract class Base\n  abstract def describe -> String\nend\nextension Shape\n  def describe -> Int = 3\nend\nclass Shape < Base\nend\ndef f(b: Base) -> String = b.describe\nputs f(Shape.new).size", "`Shape` has `Base#describe` from its superclass `Base`, so it is implemented in `Shape` (its own methods, includes or superclasses), not by a top-level `extension Shape`'s method");
     // Of overloads, the one of the same signature implements it.
     ok("module Sized\n  abstract def f(x: Int) -> Int\n  def g -> Int = f(1) + 1\nend\nclass Box\nend\nextension Box\n  include Sized\n  def f(x: String) -> String = x\n  def f(x: Int) -> Int = x\nend");
 }
@@ -5186,10 +5188,12 @@ fn an_extensions_equality_is_an_ordinary_method() {
         "class Cond\nend\nmodule M\n  extension Nil\n    def ==(other: Nil) -> Cond = Cond.new\n  end\nend\nusing M\ndef f(x: Int?) -> Int\n  if x == nil\n    0\n  else\n    x + 1\n  end\nend",
         "undefined method `+` for Nil",
     );
-    // Implementing an abstract `==` is still checked as an override.
+    // An extension's `==` for a superclass's abstract one is refused by
+    // rule A (#636), and no witness to check as an override (#665's
+    // decision (α)).
     err(
         "class Cond\nend\nabstract class Base\n  abstract def ==(other: Object) -> Bool\n  def hash -> Int = 0\nend\nextension Shape\n  def ==(other: String) -> Cond = Cond.new\nend\nclass Shape < Base\nend",
-        "`==` takes String for `other` but `Base#==`, which it overrides, is given Object",
+        "`Shape` has `Base#==` from its superclass `Base`, so it is implemented in `Shape` (its own methods, includes or superclasses), not by a top-level `extension Shape`'s method",
     );
 }
 
