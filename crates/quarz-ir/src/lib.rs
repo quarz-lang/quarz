@@ -1702,6 +1702,16 @@ pub struct RtWorld {
     /// (`extension_impl`). The runtime reads it before `ext_impls`.
     #[serde(default)]
     pub ext_rescan: Vec<(ClassId, MethodId, MethodId)>,
+    /// (class, module method, what runs): `find_override` for every key
+    /// `in_witness_rows` admits, the method itself when nothing overrides
+    /// it (`build_witness_rows`). Sorted. The runtime reads it for those
+    /// keys; a key without a row is an internal error.
+    #[serde(default)]
+    pub override_rows: Vec<(ClassId, MethodId, MethodId)>,
+    /// (class, abstract module method, its witness for a call by name):
+    /// `witness_of` for every abstract key of `override_rows`. Sorted.
+    #[serde(default)]
+    pub witness_rows: Vec<(ClassId, MethodId, Option<MethodId>)>,
     /// (class, overridden, overriding): the class-relative part of the
     /// override table (`World::include_overrides`, #536): a method of a
     /// module the class includes over a later ancestor's (its superclass's
@@ -1753,6 +1763,198 @@ impl RtWorld {
             .binary_search_by_key(&(anc, abs), |(c, a, _)| (*c, *a))
             .ok()
             .map(|i| self.ext_rescan[i].2)
+    }
+
+    /// The extension's method that implements abstract method `abs` for
+    /// class `anc` itself: the one an extension that makes it conform
+    /// (`include`) gives (`ext_rescan`), else the one found where the class
+    /// was declared (`ext_impls`).
+    pub fn ext_impl(&self, anc: ClassId, abs: MethodId) -> Option<MethodId> {
+        self.extension_impl(anc, abs).or_else(|| {
+            self.ext_impls
+                .iter()
+                .find(|(c, a, _)| *c == anc && *a == abs)
+                .map(|(_, _, i)| *i)
+        })
+    }
+
+    /// A method of `cid` (or of an ancestor before the owner of `mid`)
+    /// that overrides `mid`: same name, and the same signature when the
+    /// name is overloaded.
+    pub fn find_override<'m>(
+        &self,
+        method: &dyn Fn(MethodId) -> &'m RtMethod,
+        cid: ClassId,
+        mid: MethodId,
+    ) -> Option<MethodId> {
+        let m = method(mid);
+        for anc in &self.class(cid).ancestors {
+            let anc = *anc;
+            // (An abstract method stands in for none: what implements it
+            // for this class may come later, `World::ext_impls`.)
+            if anc == m.owner && !m.is_abstract {
+                return None;
+            }
+            // A file's top-level `def`s are functions, not overrides of
+            // `Object`'s methods (docs/01 §1).
+            if self.class(anc).kind == RtClassKind::Main {
+                continue;
+            }
+            // An abstract method an extension implements for this class
+            // (its conformance), unless the class defines its own.
+            let own = self.class(anc).methods.contains_key(&m.name);
+            if m.is_abstract {
+                // What the checker found implements it for this class by
+                // signature (an inherited method, past an overload of the
+                // name here), then an extension's.
+                if let Some((_, _, i)) = self
+                    .ext_impls
+                    .iter()
+                    .find(|(c, a, _)| *c == anc && *a == mid)
+                {
+                    return Some(*i);
+                }
+                if !own {
+                    if let Some(i) = self.ext_impl(anc, mid) {
+                        return Some(i);
+                    }
+                }
+            }
+            let mut candidates: Vec<MethodId> = Vec::new();
+            for ext in &self.extensions {
+                if ext.target == anc && self.extension_dispatches(ext, m.owner) {
+                    if let Some(ids) = ext.methods.get(&m.name) {
+                        candidates.extend(ids);
+                    }
+                }
+            }
+            if let Some(ids) = self.class(anc).methods.get(&m.name) {
+                candidates.extend(ids);
+            }
+            // (An abstract one stands in for none, the method's own too;
+            // whether one replaces `mid` is the override table's answer
+            // alone, #536.)
+            candidates.retain(|c| !method(*c).is_abstract);
+            if candidates.is_empty() {
+                continue;
+            }
+            // A module's method over it where a class of the receiver's
+            // includes the module (`World::include_overrides`).
+            let ancestors = &self.class(cid).ancestors;
+            if let Some(o) = candidates.iter().find(|c| {
+                self.include_overrides
+                    .iter()
+                    .any(|(k, o, by)| *o == mid && by == *c && ancestors.contains(k))
+            }) {
+                return Some(*o);
+            }
+            // What the override table says replaces it (`RtMethod::overrides`,
+            // `World::overrides`): any other is an overload, so keep looking.
+            if let Some(o) = candidates
+                .iter()
+                .find(|c| method(**c).overrides.contains(&mid))
+            {
+                return Some(*o);
+            }
+        }
+        None
+    }
+
+    /// The witness of abstract method `abs` for class `cid` that a call
+    /// by name reaches (`Interp::find_method`): the first `ext_impl` up
+    /// `cid`'s ancestors before the method's owner.
+    pub fn witness_of<'m>(
+        &self,
+        method: &dyn Fn(MethodId) -> &'m RtMethod,
+        cid: ClassId,
+        abs: MethodId,
+    ) -> Option<MethodId> {
+        let owner = method(abs).owner;
+        self.class(cid)
+            .ancestors
+            .iter()
+            .take_while(|a| **a != owner)
+            .find_map(|a| self.ext_impl(*a, abs))
+    }
+
+    /// Whether (class `cid`, method `mid`) is a key of `override_rows`
+    /// (and, when `mid` is abstract, of `witness_rows`): `cid` a class
+    /// whose values exist (not a module, not a file's top level), `mid`
+    /// an instance method a module among `cid`'s ancestors declares. The
+    /// one definition of the key set: the rows are built over it, and a
+    /// lookup of a key in it finds a row or is an internal error.
+    pub fn in_witness_rows<'m>(
+        &self,
+        method: &dyn Fn(MethodId) -> &'m RtMethod,
+        cid: ClassId,
+        mid: MethodId,
+    ) -> bool {
+        let c = self.class(cid);
+        let m = method(mid);
+        !matches!(c.kind, RtClassKind::Module | RtClassKind::Main)
+            && !m.singleton
+            && self.class(m.owner).kind == RtClassKind::Module
+            && c.ancestors.contains(&m.owner)
+            && self
+                .class(m.owner)
+                .methods
+                .get(&m.name)
+                .is_some_and(|ids| ids.contains(&mid))
+    }
+
+    /// Fill `override_rows` and `witness_rows` over every key
+    /// `in_witness_rows` admits: `find_override` and `witness_of` for
+    /// each, evaluated once. Called where `rescan_extensions` is, after
+    /// it (`ext_impl` reads its table): by `quarz_lower::rtworld::build`
+    /// and at the end of `shake`, never by the runtime.
+    pub fn build_witness_rows(&mut self) {
+        let mut rows: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
+        let mut witnesses: Vec<(ClassId, MethodId, Option<MethodId>)> = Vec::new();
+        {
+            let method = |id: MethodId| &self.methods[id as usize];
+            for (cid, c) in self.classes.iter().enumerate() {
+                let cid = cid as ClassId;
+                for anc in &c.ancestors {
+                    let a = self.class(*anc);
+                    if a.kind != RtClassKind::Module {
+                        continue;
+                    }
+                    for &mid in a.methods.values().flatten() {
+                        if method(mid).owner != *anc || !self.in_witness_rows(&method, cid, mid) {
+                            continue;
+                        }
+                        let found = self.find_override(&method, cid, mid).unwrap_or(mid);
+                        rows.push((cid, mid, found));
+                        if method(mid).is_abstract {
+                            witnesses.push((cid, mid, self.witness_of(&method, cid, mid)));
+                        }
+                    }
+                }
+            }
+        }
+        rows.sort_unstable();
+        rows.dedup();
+        witnesses.sort_unstable();
+        witnesses.dedup();
+        self.override_rows = rows;
+        self.witness_rows = witnesses;
+    }
+
+    /// The row of `override_rows` for (`cid`, `mid`).
+    pub fn override_row(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
+        self.override_rows
+            .binary_search_by_key(&(cid, mid), |(c, m, _)| (*c, *m))
+            .ok()
+            .map(|i| self.override_rows[i].2)
+    }
+
+    /// The row of `witness_rows` for (`cid`, `abs`): `None` when the key
+    /// has no row, else the witness (or none).
+    pub fn witness_row(&self, cid: ClassId, abs: MethodId) -> Option<Option<MethodId>> {
+        self.witness_rows
+            .binary_search_by_key(&(cid, abs), |(c, m, _)| (*c, *m))
+            .ok()
+            .map(|i| self.witness_rows[i].2)
     }
 
     /// Fill `ext_rescan`: `rescan` for every class an extension targets

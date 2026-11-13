@@ -709,8 +709,10 @@ pub fn shake(module: &mut Module) -> usize {
         keep(&mut e.methods);
     }
     // (The extensions and methods changed: the table of the scan over them
-    // is made again, so that it is what a scan of this world gives and
-    // names no method dropped here.)
+    // and the witness rows are made again, so that they are what the
+    // runtime's walks over this world give and name no method dropped
+    // here.)
     module.world.rescan_extensions();
+    module.world.build_witness_rows();
     dropped
 }
