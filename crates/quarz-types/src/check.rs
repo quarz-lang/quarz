@@ -1883,7 +1883,12 @@ impl Checker {
                 // need not be active here: its witnesses run anywhere,
                 // #504.)
                 if sid == cid
-                    || self.world.class(sid).kind != ClassKind::Class
+                    // (A `data` type and an enum's variant too, made by their
+                    // generated `initialize`, #527.)
+                    || !matches!(
+                        self.world.class(sid).kind,
+                        ClassKind::Class | ClassKind::Data | ClassKind::Variant
+                    )
                     || !(self.world.class_is_a(sid, cid) || self.conforms_by_extension(sid, cid))
                 {
                     continue;
