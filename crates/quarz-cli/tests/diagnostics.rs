@@ -2922,10 +2922,10 @@ fn an_extension_completes_the_conformance_it_makes() {
 
 #[test]
 fn an_own_includes_requirement_is_implemented_on_the_class_side() {
-    // Rule A (the user's decision, 2026-11-13): an abstract method of a
-    // module a class includes itself is implemented by the class's own
-    // methods, own includes or superclasses; an extension's method is not
-    // its implementation (#605, #607, #608).
+    // Rule A (the user's decision, 2026-11-13): an abstract method from a
+    // class's own side (a module it includes itself, or a superclass) is
+    // implemented by the class's own methods, own includes or superclasses;
+    // an extension's method is not its implementation (#605, #607, #608).
     let named = "module Named\n  abstract def label -> String\nend\n";
     let refused = [
         // A top-level extension's method.
@@ -2937,9 +2937,24 @@ fn an_own_includes_requirement_is_implemented_on_the_class_side() {
     ];
     for src in &refused {
         let out = common::diagnostics(src).join("\n");
-        assert!(out.contains("itself, so `"), "{src}\n{out}");
-        assert!(out.contains("is implemented in `"), "{src}\n{out}");
+        assert!(out.contains(" from the module `"), "{src}\n{out}");
+        assert!(out.contains("so it is implemented in `"), "{src}\n{out}");
     }
+    // A superclass's abstract method too: the class's own side implements
+    // it, an extension's method does not.
+    let out = common::diagnostics(
+        "abstract class Base\n  abstract def f -> String\nend\nclass C < Base\n  def initialize; end\nend\nextension C\n  def f -> String = \"e\"\nend\n",
+    )
+    .join("\n");
+    assert!(
+        out.contains("`C` has `Base#f` from its superclass `Base`, so it is implemented in `C`"),
+        "{out}"
+    );
+    let out = common::diagnostics(
+        "abstract class Base\n  abstract def f -> String\nend\nclass C < Base\n  def initialize; end\n  def f -> String = \"c\"\nend\n",
+    )
+    .join("\n");
+    assert!(!out.contains("error:"), "{out}");
     // A scoped extension's method is no implementation either: the class
     // must implement it (the contract's own error).
     let out = common::diagnostics(&format!(

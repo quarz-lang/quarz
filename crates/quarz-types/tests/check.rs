@@ -1593,7 +1593,7 @@ fn module_contracts() {
     ok("module M\n  abstract def zero -> Int\nend\nclass A\nend\nextension A\n  include M\n  def zero -> Int = 0\nend\nputs A.new.zero");
     err(
         "module M\n  abstract def zero -> Int\nend\nclass A\n  include M\nend\nextension A\n  def zero -> Int = 0\nend\nputs A.new.zero",
-        "`A` includes `M` itself, so `M#zero` is implemented in `A`",
+        "`A` has `M#zero` from the module `M` it includes itself, so it is implemented in `A`",
     );
     // A module's abstract class methods are class-side contracts of the
     // classes including it.
