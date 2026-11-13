@@ -2,13 +2,16 @@
 # same name are ambiguous (#577; the ambiguous calls are diagnostics
 # tests). Not ambiguous: the class's own method in front; extensions of a
 # class and of its superclass (the class's comes first); one extension's
-# includes (the last first); an abstract declaration beside a body; a
-# conditional extension that does not apply.
+# includes (the last first); a conditional extension that does not apply.
 # Dropped cells (#517): one module overriding the other (M2 includes M1)
 # across two extensions of one class, on both sides and by the forms found
 # by name (a method reference, `&:name`, an interpolation, an operator,
 # `super`): the second extension would bring M1 to the class again, which
 # is refused since #517.
+# Dropped cell (R0, #555): an abstract declaration beside another active
+# extension's body (#522's witness part): an extension including `Named`
+# whose `name` only another extension's module gives is refused, since an
+# extension completes the conformance it makes.
 module N1
   def it -> String = "N1"
 end
@@ -71,40 +74,6 @@ def last_include -> String
   E.new.it
 end
 
-# An abstract declaration gives no method (#522): beside another active
-# extension's body, the body, in either `using` order, by every form.
-module Named
-  abstract def name -> String
-  def hello -> String = "hello " + name
-end
-module Giver
-  def name -> String = "giver"
-end
-class CN
-  def initialize; end
-end
-module SN1
-  extension CN
-    include Named
-  end
-end
-module SN2
-  extension CN
-    include Giver
-  end
-end
-def abstract_beside -> String
-  using SN1
-  using SN2
-  c = CN.new
-  [c.name, c.:name.call, [c].map(&:name)[0], c.hello].join(",")
-end
-def abstract_beside_b -> String
-  using SN2
-  using SN1
-  CN.new.name
-end
-
 # Two top-level conditional extensions, one applying (its includes, the
 # last first) and one not: no rival. (Each brings its own modules: one
 # module brought by both would be a second conformance, #517.)
@@ -129,4 +98,4 @@ extension CBox[T <: Int]
 end
 def one_applies -> String = CBox.new(1).foo
 
-puts own_in_front, class_and_superclass, last_include, abstract_beside, abstract_beside_b, one_applies
+puts own_in_front, class_and_superclass, last_include, one_applies

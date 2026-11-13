@@ -1413,6 +1413,7 @@ impl<'ast> Declarer<'ast> {
         {
             return;
         }
+        self.check_extension_completes(ext, target, module, &margs, span);
         let own: Vec<MethodId> = self.world.extensions[ext as usize]
             .methods
             .values()
@@ -1893,6 +1894,120 @@ impl<'ast> Declarer<'ast> {
             span,
         );
         false
+    }
+
+    /// An extension that includes a module completes the conformance itself
+    /// (the user's rule on #555, 2026-11-13): each abstract instance method
+    /// of the module and of what it brings is implemented, where the
+    /// extension is declared, by a method that takes its calls among (1) the
+    /// extension's own methods, (2) the methods of the modules the
+    /// extension's includes bring, (3) the target's own methods and those of
+    /// its own includes and superclasses (`World::ancestors_with_no_extensions`;
+    /// an `abstract def` there counts, and the target's concrete classes
+    /// must implement it). Otherwise an error at the extension, whatever its
+    /// bounds. The modules come from `World::conformances`' sources; "takes
+    /// its calls" is `World::takes_calls_of`, or the run time's same
+    /// signature, with each side seen in the target's own parameters.
+    fn check_extension_completes(
+        &mut self,
+        ext: ExtensionId,
+        target: ClassId,
+        module: ClassId,
+        margs: &[Type],
+        span: Span,
+    ) {
+        let cur = self.include_position(ext, module, margs);
+        let conf = self.world.conformances(target);
+        let mine: Vec<ClassId> = conf
+            .iter()
+            .filter(|(src, _, _)| *src == Some((ext, cur)))
+            .map(|(_, m, _)| *m)
+            .collect();
+        let ext_mods: Vec<ClassId> = conf
+            .iter()
+            .filter(|(src, _, _)| matches!(src, Some((k, _)) if *k == ext))
+            .map(|(_, m, _)| *m)
+            .collect();
+        let args_in_conf = |m: ClassId| {
+            conf.iter()
+                .find(|(_, x, _)| *x == m)
+                .map(|(_, _, a)| a.clone())
+                .unwrap_or_default()
+        };
+        let own_args = self.world.own_args(target);
+        let typed = self.world.ancestors_with_no_extensions(target);
+        let ext_info = self.world.extensions[ext as usize].clone();
+        let ext_subst = self.world.extension_subst(&ext_info, &own_args);
+        let mut missing: Vec<(String, String)> = Vec::new();
+        for m in &mine {
+            let rsubst = self.world.class_subst(*m, &args_in_conf(*m));
+            let abstracts: Vec<MethodId> = self
+                .world
+                .class(*m)
+                .methods
+                .values()
+                .flatten()
+                .copied()
+                .filter(|&r| {
+                    let rm = self.world.method(r);
+                    rm.owner == *m && rm.is_abstract && !rm.singleton
+                })
+                .collect();
+            for r in abstracts {
+                let rm = self.world.method(r).clone();
+                let takes = |s: &Self, i: MethodId, csubst: &HashMap<TypeParamId, Type>| {
+                    let im = s.world.method(i);
+                    !im.is_abstract
+                        && !im.singleton
+                        && (s.world.takes_calls_of(im, csubst, &rm, &rsubst)
+                            || s.world.same_signature_at_run_time(i, r))
+                };
+                let by_ext = ext_info
+                    .methods
+                    .get(&rm.name)
+                    .is_some_and(|ids| ids.iter().any(|&i| takes(self, i, &ext_subst)));
+                let by_mods = ext_mods.iter().any(|k| {
+                    let ks = self.world.class_subst(*k, &args_in_conf(*k));
+                    self.world
+                        .class(*k)
+                        .methods
+                        .get(&rm.name)
+                        .is_some_and(|ids| {
+                            ids.iter()
+                                .any(|&i| self.world.method(i).owner == *k && takes(self, i, &ks))
+                        })
+                });
+                let by_own = typed.iter().any(|(k, kargs)| {
+                    let ks = self.world.class_subst(*k, kargs);
+                    self.world
+                        .class(*k)
+                        .methods
+                        .get(&rm.name)
+                        .is_some_and(|ids| {
+                            ids.iter().any(|&i| {
+                                let im = self.world.method(i);
+                                im.owner == *k
+                                    && !im.singleton
+                                    && (takes(self, i, &ks) || (im.is_abstract && i != r))
+                            })
+                        })
+                });
+                if !(by_ext || by_mods || by_own) {
+                    missing.push((rm.name.clone(), self.world.class(*m).name.clone()));
+                }
+            }
+        }
+        missing.sort();
+        missing.dedup();
+        let tname = self.world.class(target).name.clone();
+        for (name, owner) in missing {
+            self.error(
+                format!(
+                    "this extension includes `{owner}` but nothing here implements `{name}`: define it in the extension or in `{tname}` (an extension completes the conformance it makes)"
+                ),
+                span,
+            );
+        }
     }
 
     /// The position of `module` with `margs` among extension `ext`'s
