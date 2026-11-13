@@ -3013,3 +3013,28 @@ fn an_extension_of_a_module_cannot_include() {
     .join("\n");
     assert!(!out.contains("error:"), "{out}");
 }
+
+#[test]
+fn an_extension_does_not_redefine_a_module_method_that_overrides() {
+    // Rule E (the user's decision, 2026-11-13, #603): an extension does not
+    // define a method that a module it includes gives with a body when that
+    // module's method overrides an ancestor's; calls through the module and
+    // through the ancestor would run different methods.
+    let msg = "this extension defines `m`, which `M` (included here) gives over an ancestor's";
+    let refused = [
+        // #603: `M#m` over `Base#m` for `C < Base`.
+        "class Base\n  def initialize; end\n  def m -> String = \"Base\"\nend\nmodule M\n  def m -> String = \"M\"\nend\nclass C < Base\n  def initialize; end\nend\nextension C\n  include M\n  def m -> String = \"ext\"\nend\n",
+        // A module's method over a module it includes (the override table).
+        "module M0\n  def m -> String = \"M0\"\nend\nmodule M\n  include M0\n  def m -> String = \"M\"\nend\nclass C\n  def initialize; end\nend\nextension C\n  include M\n  def m -> String = \"ext\"\nend\n",
+    ];
+    for src in refused {
+        let out = common::diagnostics(src).join("\n");
+        assert!(out.contains(msg), "{src}\n{out}");
+    }
+    // The same method where the module's overrides nothing: fine.
+    let out = common::diagnostics(
+        "module M\n  def m -> String = \"M\"\nend\nclass C\n  def initialize; end\nend\nextension C\n  include M\n  def m -> String = \"ext\"\nend\n",
+    )
+    .join("\n");
+    assert!(!out.contains("error:"), "{out}");
+}
