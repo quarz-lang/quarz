@@ -1848,6 +1848,34 @@ impl Checker {
         self.world.class_side_order(sid).into_iter().find_map(at)
     }
 
+    /// Where class `sid` comes to reach a method of `cid` (a module it
+    /// conforms to, or a superclass): the extension making the
+    /// conformance, else the class whose include brings the module to
+    /// `sid`'s class side (`World::class_side_owner`), else `sid`'s own
+    /// declaration (#549).
+    fn reach_source(&self, sid: ClassId, cid: ClassId) -> (u32, Span) {
+        let at_class = |c: ClassId| {
+            let k = self.world.class(c);
+            (k.file, k.span)
+        };
+        if self.world.class(cid).kind != ClassKind::Module {
+            return at_class(sid);
+        }
+        let by_extension = self
+            .world
+            .conformances(sid)
+            .into_iter()
+            .find(|(_, m, _)| *m == cid)
+            .and_then(|(src, _, _)| src.map(|(e, _)| e));
+        match by_extension {
+            Some(e) => {
+                let ext = &self.world.extensions[e as usize];
+                (ext.file, ext.span)
+            }
+            None => at_class(self.world.class_side_owner(sid, cid).unwrap_or(sid)),
+        }
+    }
+
     fn check_inherited_constructors_from(&mut self, marks: (usize, usize)) {
         let (sites_seen, classes_seen) = marks;
         let new_sites: HashSet<(ClassId, MethodId, u32, Option<MethodId>)> = self
@@ -2010,11 +2038,16 @@ impl Checker {
                             self.world.class(sid).name.clone(),
                             self.world.class(cid).name.clone(),
                         );
+                        // At the declaration that makes `sid` reach the
+                        // method, which the program's author wrote: the
+                        // extension or the class including the module, or
+                        // the subclass (#549). The method's `new` is named.
+                        let (file, at) = self.reach_source(sid, cid);
                         self.diagnostics.push((
-                            self.world.method(method).file,
+                            file,
                             Diagnostic::error(
                                 format!("{new_in} in `{cname}{sep}{mname}` reaches `{sname}`, whose values the runtime makes (`{sname}` is not built with `new`): do not make `{sname}` conform to `{cname}`, or override `{mname}` for it"),
-                                span,
+                                at,
                             ),
                         ));
                     }

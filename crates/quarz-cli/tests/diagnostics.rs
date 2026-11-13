@@ -2147,7 +2147,7 @@ p x.rand(10) < 10
         let out = common::diagnostics(src).join("\n");
         assert!(
             out.contains(&format!(
-                "2:27: error: `new` in `M.make` reaches `{class}`, whose values the runtime makes"
+                "4:1: error: `new` in `M.make` reaches `{class}`, whose values the runtime makes"
             )),
             "{out}"
         );
@@ -2167,7 +2167,7 @@ x = mk(MyR).as(MyR)
 puts "made"
 p x.rand(10)
 "#,
-            "`new` in `M.make` reaches `MyR`, whose values the runtime makes",
+            "4:1: error: `new` in `M.make` reaches `MyR`, whose values the runtime makes",
         ),
         (
             r#"class MyIO < IO
@@ -2182,6 +2182,42 @@ x.puts "hi"
         let out = common::diagnostics(src).join("\n");
         assert!(out.contains(want), "{out}");
     }
+}
+
+/// The refusal of a module's `new` reaching a class the runtime makes is
+/// placed at the program's extension, not in the module's file (#549).
+#[test]
+fn a_modules_new_reaching_a_runtime_built_class_is_reported_at_the_extension() {
+    let dir = std::env::temp_dir().join(format!("quarz-reach-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("m.qz"),
+        "module M\n  def self.make -> Self = new\nend\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("app.qz"),
+        "require_relative \"m\"\nextension Time\n  include M\nend\nclass MyIO < IO\n  include M\nend\n",
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .args(["check", "app.qz"])
+        .current_dir(&dir)
+        .env("QUARZ_NO_CACHE", "1")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(
+        err.contains("app.qz:2:1: error: `new` in `M.make` reaches `Time`"),
+        "{err}"
+    );
+    assert!(
+        err.contains("app.qz:5:1: error: `new` in `M.make` reaches `MyIO`"),
+        "{err}"
+    );
+    assert!(!err.contains("m.qz:"), "{err}");
 }
 
 #[test]
