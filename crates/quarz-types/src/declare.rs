@@ -4523,6 +4523,8 @@ impl<'ast> Declarer<'ast> {
                 .map(|(k, _)| k)
                 .collect();
             let mut by_extension: Vec<(String, ClassId, String)> = Vec::new();
+            // (The conformances that hold for the class, once.)
+            let chosen = self.world.chosen_conformances(id);
             for anc in &ancestors {
                 for ids in self.world.class(*anc).methods.values() {
                     for mid in ids {
@@ -4552,9 +4554,7 @@ impl<'ast> Declarer<'ast> {
                                 }
                                 // (The conformance that holds for the class,
                                 // the witness record's rule 1.)
-                                let makes = self
-                                    .world
-                                    .chosen_conformances(id)
+                                let makes = chosen
                                     .iter()
                                     .any(|(src, k, _)| *k == *anc && src.map(|(e, _)| e) == ext);
                                 if makes {
