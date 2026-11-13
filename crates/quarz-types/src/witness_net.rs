@@ -1,5 +1,5 @@
-//! The safety net over the witness rows the runtime reads (report-only,
-//! `tmp/plan-safety-net.md`): every row (class `C`, requirement `req`,
+//! The safety net over the witness rows the runtime reads (report-only):
+//! every row (class `C`, requirement `req`,
 //! what runs `by`) of `RtWorld::override_rows`, `witness_rows` and
 //! `class_override_rows` is checked as an override for `C` itself, by the
 //! declarer's one pair check (`Declarer::check_override_pair`), with `C`'s
@@ -41,8 +41,10 @@ pub enum Verdict {
     NoImplementation,
     /// `check_override_pair` refuses the pair in `C`'s frame.
     Refused { reason: String, bound: Bound },
-    /// `req`'s owner is not among `C`'s ancestors in the override view:
-    /// no frame to compare in (an internal inconsistency, listed apart).
+    /// `req`'s owner, `by`'s owner or `by`'s extension's target is not
+    /// among `C`'s ancestors in the override view: no frame to compare in
+    /// (an internal inconsistency, listed apart, never compared with an
+    /// empty substitution).
     NoFrame,
 }
 
@@ -110,7 +112,11 @@ fn check_row(d: &mut Declarer, c: ClassId, req: MethodId, by: MethodId) -> Verdi
     let (mine, bound) = match d.world.method(by).extension {
         Some(e) => {
             let ext = d.world.extensions[e as usize].clone();
-            let targs = args_of(ext.target).unwrap_or_default();
+            // (No arguments for the target in `C`'s frame: nothing to
+            // compare in, listed apart rather than compared with none.)
+            let Some(targs) = args_of(ext.target) else {
+                return Verdict::NoFrame;
+            };
             let bound = if ext.type_params.iter().all(|tp| tp.bounds.is_empty()) {
                 Bound::None
             } else if targs.iter().any(|t| t.has_params()) {
@@ -124,10 +130,11 @@ fn check_row(d: &mut Declarer, c: ClassId, req: MethodId, by: MethodId) -> Verdi
         }
         None => {
             let owner = d.world.method(by).owner;
-            let mine = match args_of(owner) {
-                Some(a) => d.world.class_subst(owner, &a),
-                None => Default::default(),
+            // (Likewise for what runs' owner.)
+            let Some(a) = args_of(owner) else {
+                return Verdict::NoFrame;
             };
+            let mine = d.world.class_subst(owner, &a);
             (mine, Bound::None)
         }
     };

@@ -1704,7 +1704,7 @@ pub fn lower_checked_with(mut lw: Lowerer, checked: &Checked, files: &[SourceFil
 }
 
 /// The safety net's report over the rows just built, on stderr, when
-/// `QUARZ_WITNESS_NET` asks for it (report-only, `tmp/plan-safety-net.md`):
+/// `QUARZ_WITNESS_NET` asks for it (report-only):
 /// `report` checks every row (`quarz_types::witness_net`), `rows` prints
 /// the rows themselves (`RtWorld::witness_row_lines`), to compare with the
 /// rows a compiled program keeps after `shake`.
