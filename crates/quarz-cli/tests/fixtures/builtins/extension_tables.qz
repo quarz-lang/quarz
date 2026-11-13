@@ -1,15 +1,18 @@
 # Top-level extensions take no part in by-name dispatch: what the checker
 # resolved is called, by the type each check of a block saw, and an
-# extension that implements an abstract method does wherever the value goes.
+# extension that includes a module and implements its abstract method does
+# wherever the value goes. (Not for a module the class includes itself,
+# whose abstract method the class's side implements: the cell where `A`
+# included `M` itself and `extension A` gave `f` is dropped, rule A.)
 
 module M
   abstract def f -> String
   def g -> String = "g:" + f
 end
 class A
-  include M
 end
 extension A
+  include M
   def f -> String = "extA"
 end
 class C < A

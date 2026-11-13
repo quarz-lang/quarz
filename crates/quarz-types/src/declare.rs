@@ -4362,6 +4362,15 @@ impl<'ast> Declarer<'ast> {
                 .map(|p| Type::Param(p.id))
                 .collect();
             let typed = self.world.ancestors(id, &own_args);
+            // (Requirements of a module the class includes itself that an
+            // extension's method would implement: refused, rule A.)
+            let own_side: Vec<ClassId> = self
+                .world
+                .ancestors_with_no_extensions(id)
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+            let mut by_extension: Vec<(String, String, String)> = Vec::new();
             for anc in &ancestors {
                 for ids in self.world.class(*anc).methods.values() {
                     for mid in ids {
@@ -4375,6 +4384,15 @@ impl<'ast> Declarer<'ast> {
                             // is declared) implements it: it does wherever
                             // the value goes (`World::ext_impls`).
                             Some(i) if self.world.method(i).extension.is_some() => {
+                                if own_side.contains(anc) {
+                                    by_extension.push((
+                                        m.name.clone(),
+                                        self.world.class(*anc).name.clone(),
+                                        self.world.extension_label(
+                                            self.world.method(i).extension.unwrap_or_default(),
+                                        ),
+                                    ));
+                                }
                                 impls.push((id, *mid, i));
                                 found_impls.push((i, *mid, *anc));
                             }
@@ -4406,6 +4424,21 @@ impl<'ast> Declarer<'ast> {
                         }
                     }
                 }
+            }
+            // An abstract method of a module the class includes itself is
+            // implemented on the class's side (its own methods, own
+            // includes, superclasses); an extension's method never is its
+            // implementation (rule A, the user's decision of 2026-11-13).
+            by_extension.sort();
+            by_extension.dedup();
+            for (name, module, ext) in by_extension {
+                self.error(
+                    format!(
+                        "`{}` includes `{module}` itself, so `{module}#{name}` is implemented in `{}` (its own methods, includes or superclasses), not by {ext}'s method",
+                        class.name, class.name
+                    ),
+                    class.span,
+                );
             }
             self.world.ext_impls.extend(impls);
             for (i, abs, anc) in inherited_impls {

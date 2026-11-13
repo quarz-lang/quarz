@@ -1588,8 +1588,13 @@ fn module_contracts() {
         "module M\n  abstract def zero -> Int\nend\ndata P(x: Int)\n  include M\nend",
         "`P` must implement `zero`",
     );
-    // An extension can supply the implementation.
-    ok("module M\n  abstract def zero -> Int\nend\nclass A\n  include M\nend\nextension A\n  def zero -> Int = 0\nend\nputs A.new.zero");
+    // An extension that includes the module supplies the implementation;
+    // for a module the class includes itself, the class does (rule A).
+    ok("module M\n  abstract def zero -> Int\nend\nclass A\nend\nextension A\n  include M\n  def zero -> Int = 0\nend\nputs A.new.zero");
+    err(
+        "module M\n  abstract def zero -> Int\nend\nclass A\n  include M\nend\nextension A\n  def zero -> Int = 0\nend\nputs A.new.zero",
+        "`A` includes `M` itself, so `M#zero` is implemented in `A`",
+    );
     // A module's abstract class methods are class-side contracts of the
     // classes including it.
     err(
