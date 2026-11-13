@@ -1,0 +1,18 @@
+# #567: a module value reaching a `Type[T]` parameter (`T <: Root`) runs the
+# module's own class method that overrides the bound's abstract one, as
+# through a `Type[Root]` variable; a module including it inherits it.
+module Root
+  abstract def self.kind -> String
+end
+module Named
+  include Root
+  def self.kind -> String = "named"
+end
+module Sub
+  include Named
+end
+def k[T <: Root](t: Type[T]) -> String = t.kind
+x: Type[Root] = Named
+puts x.kind
+puts k(Named)
+puts k(Sub)

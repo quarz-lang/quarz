@@ -1,0 +1,39 @@
+# #524: a module an extension includes overriding its own included
+# module's method runs through a value typed by the inner module, as an
+# own include would (`N#d` over `M#d`); and a class's own method
+# implements a module's requirement through a module the extension
+# includes that gives one too (`Num#z` through `P`, docs/01 §7: the class's
+# own methods override an extension's modules). On the VM and compiled
+# alike.
+module M
+  def d -> Object = "M"
+  def show -> String = "show:#{d}"
+end
+module N
+  include M
+  def d -> String = "N"
+end
+class Num
+end
+extension Num
+  include N
+end
+def m(x: M) -> String = "#{x.d} #{x.show}"
+puts m(Num.new)
+
+module NZ
+  abstract def z -> Int
+end
+module PZ
+  include NZ
+  def z -> Int = 9
+end
+class NumZ
+  def z -> Int = 1
+end
+extension NumZ
+  include PZ
+end
+def n(x: NZ) -> Int = x.z
+def p(x: PZ) -> Int = x.z
+puts n(NumZ.new), p(NumZ.new)
