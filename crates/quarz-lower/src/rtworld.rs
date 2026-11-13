@@ -450,7 +450,28 @@ pub fn declared(world: &World, out: &types::Output) -> RtWorld {
         methods,
         consts: Vec::new(),
         extensions,
-        ext_impls: world.ext_impls.clone(),
+        ext_impls: {
+            // One witness per (class, requirement): the declarer records
+            // one where a class's own conformance is checked and R0 one
+            // where an extension's is (#632); were they two methods,
+            // `find_override` would take whichever came first.
+            #[cfg(debug_assertions)]
+            for (k, &(c, a, i)) in world.ext_impls.iter().enumerate() {
+                if let Some(&(_, _, j)) = world.ext_impls[..k]
+                    .iter()
+                    .find(|(c2, a2, j)| *c2 == c && *a2 == a && *j != i)
+                {
+                    panic!(
+                        "internal error: two witnesses recorded for `{}`'s `{}`: `{}` and `{}`",
+                        world.class(c).name,
+                        world.method(a).name,
+                        world.method(j).name,
+                        world.method(i).name
+                    );
+                }
+            }
+            world.ext_impls.clone()
+        },
         class_ext_impls: world
             .class_ext_impls
             .iter()

@@ -1830,7 +1830,9 @@ impl RtWorld {
                     // that overrides it nearest the receiver, by this same
                     // function (#632); an extension's own is overridden by
                     // nothing.
-                    if method(*i).is_extension {
+                    // (Never through this branch again: what is resolved
+                    // is not abstract.)
+                    if method(*i).is_extension || method(*i).is_abstract {
                         return Some(*i);
                     }
                     return Some(self.find_override(method, cid, *i).unwrap_or(*i));
