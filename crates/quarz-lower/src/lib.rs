@@ -67,7 +67,7 @@ pub struct Lowerer {
     /// The tables the declarations decide, built after the program's check
     /// (`declare`) and taken by the next lowering round, which completes
     /// them (`rtworld::fill`): built once per program.
-    declared: Option<quarz_ir::RtWorld>,
+    declared: Option<(quarz_ir::RtWorld, [usize; 3])>,
     /// Lowering for a compile-time run (docs/14): every method is lazy,
     /// reached from the statement, and one whose body is not checked yet
     /// is reported instead of lowered.
@@ -373,7 +373,7 @@ impl Lowerer {
     pub fn declare(&mut self, world: &World, out: &Output) {
         let rt = rtworld::declared(world, out);
         witness_net(world, &rt);
-        self.declared = Some(rt);
+        self.declared = Some((rt, world_size(world)));
     }
 
     pub(crate) fn alloc_func(&mut self) -> FuncId {
@@ -535,11 +535,62 @@ impl Lowerer {
             .map(|f| f.expect("function lowered"))
             .collect();
         let file_names = self.files.iter().map(|f| f.name.clone()).collect();
-        if self.declared.is_none() {
+        let prebuilt = self.declared.is_some();
+        if !prebuilt {
             self.declare(world, out);
         }
-        let mut rt = self.declared.take().expect("declared above");
+        let (mut rt, size) = self.declared.take().expect("declared above");
+        // (Nothing declares between the check and the lowering: the tables
+        // are for this world, or the front end declared too early.)
+        assert_eq!(
+            size,
+            world_size(world),
+            "internal error: the tables were declared for another world"
+        );
+        // Oracle (to be deleted once CI is green on it): the tables the
+        // front end built after the check are the ones built here.
+        #[cfg(debug_assertions)]
+        if prebuilt {
+            let fresh = rtworld::declared(world, out);
+            assert_eq!(
+                format!("{fresh:?}"),
+                format!("{rt:?}"),
+                "internal error: the tables declared after the check differ from the lowering's"
+            );
+        }
+        #[cfg(debug_assertions)]
+        let rows = format!(
+            "{:?}",
+            (
+                &rt.ext_rescan,
+                &rt.override_rows,
+                &rt.witness_rows,
+                &rt.class_override_rows
+            )
+        );
         rtworld::fill(&mut rt, world, self, file_names);
+        // Oracle (to be deleted with the one above): the rows read nothing
+        // `fill` adds, so built again over the filled tables they are the
+        // same.
+        #[cfg(debug_assertions)]
+        {
+            let mut again = rt.clone();
+            again.rescan_extensions();
+            again.build_witness_rows();
+            assert_eq!(
+                format!(
+                    "{:?}",
+                    (
+                        &again.ext_rescan,
+                        &again.override_rows,
+                        &again.witness_rows,
+                        &again.class_override_rows
+                    )
+                ),
+                rows,
+                "internal error: the rows read what the lowering fills in"
+            );
+        }
         Delta {
             world: rt,
             base: self.round_base,
@@ -1721,6 +1772,16 @@ pub fn lower_checked_with(mut lw: Lowerer, checked: &Checked, files: &[SourceFil
         functions,
         units: delta.units,
     }
+}
+
+/// The world's size the declared tables were built for: its classes,
+/// methods and extensions.
+fn world_size(world: &World) -> [usize; 3] {
+    [
+        world.classes.len(),
+        world.methods.len(),
+        world.extensions.len(),
+    ]
 }
 
 /// The safety net's report over the rows just built, on stderr, when
