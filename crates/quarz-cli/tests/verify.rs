@@ -792,7 +792,10 @@ fn a_read_of_a_capture_task_blocking_moved_stops() {
 /// missed, a violation under `QUARZ_VERIFY`, otherwise a `TypeError` that
 /// says so (not `NotImplementedError`). The program is #632's (a scoped
 /// extension's conformance whose witness the target inherits), which R0
-/// accepts and the run time does not yet find; #600's is refused now.
+/// accepts and the run time does not yet find. The `quarz` command refuses
+/// it since the safety net's error stage (and #600's since R0): no program
+/// it accepts reaches an abstract method, so this one is lowered through
+/// the library API (`common::lower`), which runs no net.
 const ABSTRACT_REACHED: &str = "module Named\n  abstract def label -> String\nend\nclass A\n  def initialize; end\n  def label -> String = \"a\"\nend\nclass B < A\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n  end\n  def self.n(x: B) -> Named = x\nend\ndef via(n: Named) -> String = n.label\nputs via(Sc.n(B.new))\n";
 
 #[test]

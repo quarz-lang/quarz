@@ -14,6 +14,21 @@ use quarz_types::Checked;
 
 /// Lower and run a checked program; returns the exit code. `files` are
 /// the sources by file index (0 = the prelude), for line numbers.
+/// Whether a declaration is the program's own for the safety net's errors
+/// (`quarz_types::witness_net::errors`): in the application's files (a
+/// script's and those it requires), not a dependency's or the standard
+/// library's.
+pub fn own_in_app(world: &quarz_types::World, d: quarz_types::witness_net::Decl) -> bool {
+    let file = match d {
+        quarz_types::witness_net::Decl::Class(c) => world.class(c).file,
+        quarz_types::witness_net::Decl::Extension(e) => world.extensions[e as usize].file,
+    };
+    matches!(
+        world.file_groups.get(&file),
+        Some(quarz_types::UnitGroup::App)
+    )
+}
+
 pub fn run(checked: Checked, files: &[SourceFile], argv: Vec<String>) -> i32 {
     let module = quarz_lower::lower_checked(&checked, files);
     quarz_vm::run(module, argv)

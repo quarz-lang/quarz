@@ -1059,3 +1059,23 @@ fn a_later_unconditional_extension_that_breaks_a_test_is_refused() {
         "{out:?}"
     );
 }
+
+#[test]
+fn an_input_that_makes_a_refused_row_is_refused() {
+    // The safety net's error stage (#536, #642): an input whose extension
+    // makes a row the net refuses is refused there, and the session goes
+    // on without it.
+    let (out, _) = values(&[
+        "module M; def m -> Int = 1; end",
+        "module N; def m -> String = \"N\"; def nn -> String = m + \"!\"; end",
+        "extension Int; include N; include M; end",
+        "extension Int; include N; end",
+        "5.nn",
+    ]);
+    assert!(
+        out[2].starts_with("error: ")
+            && out[2].contains("`Int`'s conformance to `N` runs `M#m` for `N#m`"),
+        "{out:?}"
+    );
+    assert_eq!(out[4], "=> \"N!\"", "{out:?}");
+}

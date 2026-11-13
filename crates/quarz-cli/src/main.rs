@@ -344,6 +344,16 @@ fn load_and_check(
         diagnostics.extend(errors);
         ok
     });
+    // The runtime's tables and the safety net over their rows, once
+    // (`Lowerer::declare`): a refused row refuses the program; the lowering
+    // takes the tables.
+    let mut lowerer = runner.into_lowerer();
+    let checked = checked.filter(|c| {
+        let errors = lowerer.declare(&c.world, &c.output, &|d| quarz_cli::own_in_app(&c.world, d));
+        let ok = errors.is_empty();
+        diagnostics.extend(errors);
+        ok
+    });
     for (file_index, diag) in &diagnostics {
         let f = if *file_index == 0 {
             &prelude_file
@@ -352,13 +362,7 @@ fn load_and_check(
         };
         eprint!("{}", diag.render(f));
     }
-    // The runtime's tables and the safety net over their rows, once: the
-    // lowering takes them (`Lowerer::declare`).
-    checked.map(|c| {
-        let mut lowerer = runner.into_lowerer();
-        lowerer.declare(&c.world, &c.output);
-        (c, files, lowerer)
-    })
+    checked.map(|c| (c, files, lowerer))
 }
 
 fn run_file(target: &Target, argv: Vec<String>) -> ExitCode {
