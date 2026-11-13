@@ -2331,7 +2331,7 @@ impl<'ast> Declarer<'ast> {
             for ids in e.methods.values() {
                 for &mid in ids {
                     let m = self.world.method(mid);
-                    if m.file == 0 || m.synth != Synth::None {
+                    if m.synth != Synth::None {
                         continue;
                     }
                     for (a, aargs) in &ancestors {
@@ -2712,8 +2712,6 @@ impl<'ast> Declarer<'ast> {
                 .collect();
             for mid in mine {
                 let m = self.world.method(mid).clone();
-                // (The prelude specializes some of what it overrides, as
-                // Ruby: `Hash#select` and `Hash#filter` give a `Hash`.)
                 // (An included module's abstract method never runs in place
                 // of the superclass's: the runtime goes on to it, which
                 // implements it, `check_implementation_seen`.)
@@ -2722,7 +2720,6 @@ impl<'ast> Declarer<'ast> {
                 // the runtime dispatches to it alike; not a constructor.)
                 if m.owner != x
                     || m.synth == Synth::DataInit
-                    || m.file == 0
                     || (!m.singleton && (m.name == "initialize" || m.name == "deinitialize"))
                     || (m.is_abstract && x != id)
                 {
@@ -3004,7 +3001,7 @@ impl<'ast> Declarer<'ast> {
     /// (docs/01 §9).
     fn check_class_side_overrides(&mut self, id: ClassId) {
         let class = self.world.class(id);
-        if class.file == 0 || matches!(class.kind, ClassKind::Main) {
+        if matches!(class.kind, ClassKind::Main) {
             return;
         }
         let args: Vec<Type> = class
@@ -3059,9 +3056,6 @@ impl<'ast> Declarer<'ast> {
         // method on the class object, #494.)
         for (anc, _) in self.world.class_modules_included(id, &args) {
             let mc = self.world.class(anc);
-            if mc.file == 0 {
-                continue;
-            }
             mine.extend(
                 mc.singleton_methods
                     .values()
@@ -3151,9 +3145,6 @@ impl<'ast> Declarer<'ast> {
         let own = Type::Class(id, own_args);
         for io in self.world.include_overrides_of(id) {
             let (o, by) = (io.overridden, io.by);
-            if self.world.method(by).file == 0 && self.world.method(o).file == 0 {
-                continue;
-            }
             if self.override_pairs.contains(&(by, o)) {
                 continue;
             }
@@ -3185,9 +3176,6 @@ impl<'ast> Declarer<'ast> {
         let own = Type::Class(id, own_args);
         for eo in self.world.class_include_overrides_of(id) {
             let (o, by) = (eo.overridden, eo.by);
-            if self.world.method(by).file == 0 && self.world.method(o).file == 0 {
-                continue;
-            }
             if self.override_pairs.contains(&(by, o)) {
                 continue;
             }

@@ -6044,3 +6044,34 @@ fn builder_sort_without_a_block_takes_comparable_elements_only() {
         "type bounds not satisfied",
     );
 }
+
+#[test]
+fn the_preludes_classes_are_checked_as_overrides() {
+    // #622: the prelude's classes are checked as overrides like any
+    // other (its methods once went unchecked): an instance method that
+    // renames the parameter of the module method it overrides, and one
+    // that returns another type, are refused there too.
+    let src = format!(
+        "{PRELUDE_SOURCE}\nclass PreludeBag\n  include Enumerable[Int]\n  def initialize; end\n  def each(&: (Int) -> Void) -> Void\n  end\n  def include?(key: Object) -> Bool = false\n  def count -> String = \"none\"\nend\n"
+    );
+    let prelude = parse(&src);
+    let empty = parse("");
+    let (_, diags) = check(&prelude.program, &empty.program);
+    let errors: Vec<String> = diags
+        .iter()
+        .filter(|(_, d)| d.is_error())
+        .map(|(_, d)| d.message.clone())
+        .collect();
+    assert!(
+        errors
+            .iter()
+            .any(|m| m.contains("`include?` renames parameter `value` to `key`")),
+        "{errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|m| m.contains("`count` returns String but `Enumerable#count`")),
+        "{errors:?}"
+    );
+}
