@@ -2,6 +2,8 @@
 //! `quarz_types::witness_net`): every witness row the runtime reads,
 //! checked for its own class.
 
+mod common;
+
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -134,4 +136,24 @@ fn report_over_the_fixtures() {
             }
         }
     }
+}
+
+/// #599: a gated send's first dispatch for a class outside the witness
+/// rows' key set is an internal error (`check_gated_key`): the gate makes
+/// it unreachable, so the panic is shown on the function itself, with
+/// `Nil`, which is not `Comparable`.
+#[test]
+#[should_panic(expected = "not a key of the witness rows")]
+fn a_gated_send_outside_the_key_set_is_an_internal_error() {
+    let module = common::lower("puts 1\n");
+    let world = &module.world;
+    let cmp = world.builtin.comparable;
+    let req = world.class(cmp).methods["<=>"]
+        .iter()
+        .copied()
+        .find(|&m| world.method(m).owner == cmp)
+        .expect("Comparable#<=>");
+    let method = |id: quarz_ir::MethodId| world.method(id);
+    assert!(world.in_witness_rows(&method, world.builtin.int, req));
+    quarz_vm::interp::check_gated_key(world, &method, world.builtin.nil, req, "<=>");
 }

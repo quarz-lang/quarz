@@ -2993,8 +2993,10 @@ impl Interp {
     /// dispatches the requirement `req` as a call typed through the module
     /// does (`resolve_dynamic`, the row of `RtWorld::override_rows`), not
     /// the first method of the name in `RtClass::lookup`. A receiver whose
-    /// class is not a key of the rows for `req` is an internal error: the
-    /// gate (a bound on `Comparable`, an `Enumerable` receiver) admits none.
+    /// class is not a key of the rows for `req` is an internal error
+    /// (`check_gated_key`, on the first dispatch for the class, before the
+    /// vtable cell is filled): the gate (a bound on `Comparable`, an
+    /// `Enumerable` receiver) admits none.
     /// So is a missing requirement (`req` is `None`): `shake` drops it only
     /// when no class with values includes the module, and a gated send is
     /// then never reached with an object (built-in values compare inline).
@@ -3013,13 +3015,20 @@ impl Interp {
                 self.program.world.class(cid).name
             );
         };
-        let method = |id: MethodId| self.program.method(id);
-        if !self.program.world.in_witness_rows(&method, cid, req) {
-            panic!(
-                "internal error: a gated `{name}` on `{}`, not a key of the witness rows",
-                self.program.world.class(cid).name
-            );
+        // (A filled dispatch cell for the class: what a typed call reads,
+        // and nothing more. The key-set test runs once, when the cell is
+        // first filled for the class.)
+        let slot = self.program.vslots[req as usize];
+        if slot != u32::MAX {
+            let at = cid as usize * self.program.nvslots + slot as usize;
+            if let Some(&hit) = self.vtable.borrow().get(at) {
+                if hit != 0 {
+                    return self.invoke(hit - 1, recv.clone(), args, Vec::new(), block);
+                }
+            }
         }
+        let method = |id: MethodId| self.program.method(id);
+        check_gated_key(&self.program.world, &method, cid, req, name);
         let mid = self.resolve_dynamic(recv, req)?;
         self.invoke(mid, recv.clone(), args, Vec::new(), block)
     }
@@ -4291,6 +4300,26 @@ pub(crate) fn inspect_quoted(s: &str, symbol: bool) -> String {
 /// (see `native_bt`), innermost first.
 fn native_frames() -> Vec<(usize, FuncId, u32)> {
     crate::native_bt::frames()
+}
+
+/// A conformance-gated send's first dispatch for class `cid` and
+/// requirement `req` (`Interp::send_requirement`): the class must be a key of
+/// the witness rows for it (`RtWorld::in_witness_rows`), which the gate (a
+/// `Comparable` bound, an `Enumerable` receiver) guarantees; otherwise an
+/// internal error.
+pub fn check_gated_key<'m>(
+    world: &quarz_ir::RtWorld,
+    method: &dyn Fn(MethodId) -> &'m RtMethod,
+    cid: ClassId,
+    req: MethodId,
+    name: &str,
+) {
+    if !world.in_witness_rows(method, cid, req) {
+        panic!(
+            "internal error: a gated `{name}` on `{}`, not a key of the witness rows",
+            world.class(cid).name
+        );
+    }
 }
 
 /// The abstract method `name` the prelude module `module` declares (a
