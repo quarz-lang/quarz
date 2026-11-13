@@ -141,15 +141,19 @@ fn the_629_row_is_refused() {
 }
 const F1: &str = "# an extension's overload of another parameter type beside the class's own implementation\nmodule M\n  abstract def m(x: String) -> String\n  def mm -> String = m(\"s\") + \"!\"\nend\nclass K\n  def initialize; end\n  def m(x: String) -> String = \"K\"\nend\nmodule Sc\n  extension K\n    include M\n    def m(x: Int) -> String = \"ext#{x + 1}\"\n  end\n  def self.up(k: K) -> M = k\n  def self.n(k: K) -> String = k.m(1)\nend\ndef via(v: M) -> String = v.mm\nputs via(Sc.up(K.new))\nputs Sc.n(K.new)\n";
 
-/// A row with no implementation is an error. #632's shape (a scoped
-/// extension's conformance whose witness the class inherits, which the
-/// run time does not find yet) says so; the program raised at run time
-/// before the error stage.
+/// #632: a scoped extension's conformance whose witness the class
+/// inherits has a row (R0 records it), and each class's row is checked in
+/// its own frame: `Base#get -> T` passes for `A < Base[Int]` and is refused
+/// for `B < Base[String]` (R0's run-time-signature disjunct lets it
+/// through, #641's note).
 #[test]
-fn a_row_with_no_implementation_is_an_error() {
+fn an_inherited_witness_has_a_row_checked_per_class() {
+    let base = "module M\n  abstract def get -> Int\nend\nclass Base[T]\n  @v: T\n  def initialize(@v: T); end\n  def get -> T = @v\nend\nclass A < Base[Int]\n  def initialize; super(1); end\nend\nmodule SA\n  extension A\n    include M\n  end\n  def self.m(x: A) -> M = x\nend\n";
+    let (code, err) = check(&format!("{base}puts SA.m(A.new).get + 1\n"));
+    assert_eq!(code, Some(0), "{err}");
     refused(
-        "module Named\n  abstract def label -> String\nend\nclass A\n  def initialize; end\n  def label -> String = \"a\"\nend\nclass B < A\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n  end\n  def self.n(x: B) -> Named = x\nend\nputs 1\n",
-        &["main.qz:12:3: error: `B`'s conformance to `Named` has no implementation of `Named#label` at run time: the witness is a method `B` has on its own side, which an extension's conformance does not find yet (#632)"],
+        &format!("{base}class B < Base[String]\n  def initialize; super(\"s\"); end\nend\nmodule SB\n  extension B\n    include M\n  end\nend\nputs 1\n"),
+        &["error: `B`'s conformance to `M` runs `Base#get` for `M#get`, which does not take its place for `B`"],
     );
 }
 

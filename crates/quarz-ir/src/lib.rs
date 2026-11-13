@@ -1825,7 +1825,15 @@ impl RtWorld {
                     .iter()
                     .find(|(c, a, _)| *c == anc && *a == mid)
                 {
-                    return Some(*i);
+                    // A class's or a module's method runs for the receiver
+                    // as a call typed through its owner does: the method
+                    // that overrides it nearest the receiver, by this same
+                    // function (#632); an extension's own is overridden by
+                    // nothing.
+                    if method(*i).is_extension {
+                        return Some(*i);
+                    }
+                    return Some(self.find_override(method, cid, *i).unwrap_or(*i));
                 }
                 if !own {
                     if let Some(i) = self.ext_impl(anc, mid) {
