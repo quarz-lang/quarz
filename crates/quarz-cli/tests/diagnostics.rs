@@ -3083,3 +3083,24 @@ fn an_extensions_new_is_checked_for_every_class_it_reaches() {
         assert!(out.contains(msg), "{src}\n{out}");
     }
 }
+
+#[test]
+fn super_under_a_method_level_using_of_the_same_class_is_refused() {
+    // #593 (decided 2026-11-13): a `super` in an extension's method whose
+    // body has a `using` of a module that extends the same class is an
+    // error; written at the declaration level, the `using` is ordered by
+    // #585's rule.
+    let msg = "`super` in an extension's method under a `using` of another extension of `A`";
+    let looped = "class A\n  def initialize; end\n  def f(x: Int) -> String = \"A\"\nend\nmodule Y\n  extension A\n    def f(x: Int) -> String\n      using X\n      \"Y/\" + super(x)\n    end\n  end\nend\nmodule X\n  extension A\n    def f(x: Int) -> String\n      using Y\n      \"X/\" + super(x)\n    end\n  end\nend\nmodule Z\n  using X\n  def self.go -> String = A.new.f(1)\nend\nputs Z.go.size\n";
+    let out = common::diagnostics(looped).join("\n");
+    assert_eq!(out.matches(msg).count(), 2, "{out}");
+    // A `using` of a module extending another class, or a `super` with no
+    // such `using`: fine.
+    for ok in [
+        "class A\n  def initialize; end\n  def f(x: Int) -> String = \"A\"\nend\nclass B\nend\nmodule W\n  extension B\n    def g -> Int = 1\n  end\nend\nmodule Y\n  extension A\n    def f(x: Int) -> String\n      using W\n      \"Y/\" + super(x)\n    end\n  end\nend\nputs 1\n",
+        "class A\n  def initialize; end\n  def f(x: Int) -> String = \"A\"\nend\nmodule Y\n  extension A\n    def f(x: Int) -> String = \"Y/\" + super(x)\n  end\nend\nputs 1\n",
+    ] {
+        let out = common::diagnostics(ok).join("\n");
+        assert!(!out.contains("error:"), "{ok}\n{out}");
+    }
+}

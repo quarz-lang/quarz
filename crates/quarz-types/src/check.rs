@@ -1019,6 +1019,10 @@ const DEINITIALIZE_CALLED: &str =
 const COERCE_DEPTH: u32 = 256;
 
 pub struct Checker {
+    /// The extensions a `using` inside the bodies being checked made
+    /// active (scoped as `World::active_extensions`): a `super` in an
+    /// extension's method under one of the same class is an error (#593).
+    local_usings: Vec<ExtensionId>,
     /// While a bare `super`'s call is resolved: how many variables it
     /// forwards (the parameters, then the block), read as the method's
     /// own (`zsuper_local`).
@@ -1265,6 +1269,7 @@ impl Checker {
             symbol_on_class_object: Default::default(),
             world,
             diagnostics: Vec::new(),
+            local_usings: Vec::new(),
             ambiguous: Vec::new(),
             table_journal: Vec::new(),
             kept_ambiguous: Vec::new(),
@@ -6434,6 +6439,7 @@ impl Checker {
         // `using M` inside a body: its extensions are active from there to
         // the end of this statement list.
         let active_len = self.world.active_extensions.get_mut().len();
+        let local_len = self.local_usings.len();
         for (i, e) in body.iter().enumerate() {
             let last = i == body.len() - 1;
             if dead {
@@ -6456,6 +6462,7 @@ impl Checker {
             }
         }
         self.world.active_extensions.get_mut().truncate(active_len);
+        self.local_usings.truncate(local_len);
         result
     }
 
@@ -6468,6 +6475,7 @@ impl Checker {
                 let ids = self.world.class(id).extensions.clone();
                 for e in ids {
                     if !self.world.active_extensions.get_mut().contains(&e) {
+                        self.local_usings.push(e);
                         self.world.active_extensions.get_mut().push(e);
                     }
                 }
@@ -16423,6 +16431,29 @@ impl Checker {
             return Type::Nothing;
         };
         let m = self.world.method(mid).clone();
+        // A `using` inside an extension's method of a module that extends
+        // the same class adds candidates to its `super` that #585's order
+        // (from the declarations) does not see, and two such methods can
+        // reach each other in a loop (#593, decided 2026-11-13): refused,
+        // with the `using` to be written at the declaration level, where
+        // the extensions are ordered.
+        if let Some(e) = m.extension {
+            let target = self.world.extensions[e as usize].target;
+            if let Some(&x) = self
+                .local_usings
+                .iter()
+                .find(|&&x| x != e && self.world.extensions[x as usize].target == target)
+            {
+                let label = self.world.extension_label(x);
+                let tname = self.world.class(target).name.clone();
+                self.error(
+                    format!(
+                        "`super` in an extension's method under a `using` of another extension of `{tname}` ({label}): such a `using` adds candidates that no order sees, which can call each other in a loop; write the `using` at the declaration level (around the extension), where the extensions are ordered (#585)"
+                    ),
+                    expr.span,
+                );
+            }
+        }
         // An operator's or a setter's takes no keyword argument, in `super`
         // as in a call (docs/01 §9).
         if quarz_syntax::positional_only_name(&m.name) {
