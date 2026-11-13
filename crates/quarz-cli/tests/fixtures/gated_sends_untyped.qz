@@ -1,0 +1,71 @@
+# #599 and #557: the gated sends (`sort`, `max`, `to_a`, `map`) dispatch
+# `Comparable#<=>` and `Enumerable#each` in programs that never call them
+# through the module, so that nothing else keeps the requirement reached
+# (compiled programs shake what is not); each case as filed.
+
+# #599, a class's own `<=>(o: Int)` overload declared first.
+class OwnBox
+  include Comparable[OwnBox]
+  @v: Int
+  def initialize(@v: Int); end
+  def v -> Int = @v
+  def <=>(o: Int) -> Int = 7
+  def <=>(o: OwnBox) -> Int = v <=> o.v
+end
+puts [OwnBox.new(2), OwnBox.new(1)].sort.map(&:v).join(",")
+
+# #599, the conformance through a scoped extension, the class's own
+# `<=>(o: Int)` an overload.
+class ScBox
+  @v: Int
+  def initialize(@v: Int); end
+  def v -> Int = @v
+  def <=>(o: Int) -> Int = 7
+end
+module Sc
+  extension ScBox
+    include Comparable[ScBox]
+    def <=>(o: ScBox) -> Int = v <=> o.v
+  end
+end
+module UseSc
+  using Sc
+  def self.show -> String = [ScBox.new(2), ScBox.new(1)].sort.map(&:v).join(",")
+end
+puts UseSc.show
+
+# `Enumerable#each` beside an `each` without a block.
+class Bag
+  include Enumerable[Int]
+  def initialize; end
+  def each -> Enumerator[Int] = [9].each
+  def each(&: (Int) -> Void) -> Void
+    yield 1
+    yield 2
+  end
+end
+p Bag.new.to_a, Bag.new.map { |x| x * 10 }
+
+# #557: `<=>` from a second module the extension includes.
+module Cmp
+  abstract def v -> Int
+  def <=>(o: CmpBox) -> Int = o.v - v
+end
+class CmpBox
+  @v: Int
+  def initialize(@v: Int)
+  end
+  def v -> Int = @v
+  def to_s -> String = "B#{@v}"
+end
+module Scope
+  extension CmpBox
+    include Comparable[CmpBox]
+    include Cmp
+  end
+end
+module UseScope
+  using Scope
+  def self.show -> String = [CmpBox.new(1), CmpBox.new(3)].max.to_s
+end
+puts UseScope.show

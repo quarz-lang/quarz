@@ -1087,8 +1087,8 @@ impl Interp {
             consts,
             singletons,
         });
-        let req_cmp = requirement(&program, "Comparable", "<=>");
-        let req_each = requirement(&program, "Enumerable", "each");
+        let req_cmp = requirement(&program, program.world.builtin.comparable, "<=>");
+        let req_each = requirement(&program, program.world.builtin.enumerable, "each");
         let interp = std::rc::Rc::new(Interp {
             hot: Hot::new(),
             program,
@@ -2995,8 +2995,9 @@ impl Interp {
     /// the first method of the name in `RtClass::lookup`. A receiver whose
     /// class is not a key of the rows for `req` is an internal error: the
     /// gate (a bound on `Comparable`, an `Enumerable` receiver) admits none.
-    /// When the program has no such requirement (`req` is `None`: shaken
-    /// out of a compiled program that never reaches it) the send is by name.
+    /// So is a missing requirement (`req` is `None`): `shake` drops it only
+    /// when no class with values includes the module, and a gated send is
+    /// then never reached with an object (built-in values compare inline).
     pub(crate) fn send_requirement(
         &self,
         recv: &Value,
@@ -3005,19 +3006,22 @@ impl Interp {
         args: ArgVec,
         block: Option<Value>,
     ) -> EvalResult {
-        if let Some(req) = req {
-            let cid = self.class_of(recv);
-            let method = |id: MethodId| self.program.method(id);
-            if self.program.world.in_witness_rows(&method, cid, req) {
-                let mid = self.resolve_dynamic(recv, req)?;
-                return self.invoke(mid, recv.clone(), args, Vec::new(), block);
-            }
+        let cid = self.class_of(recv);
+        let Some(req) = req else {
+            panic!(
+                "internal error: a gated `{name}` on `{}` with no requirement shipped",
+                self.program.world.class(cid).name
+            );
+        };
+        let method = |id: MethodId| self.program.method(id);
+        if !self.program.world.in_witness_rows(&method, cid, req) {
             panic!(
                 "internal error: a gated `{name}` on `{}`, not a key of the witness rows",
                 self.program.world.class(cid).name
             );
         }
-        self.send_with(recv, name, args, Vec::new(), block, true)
+        let mid = self.resolve_dynamic(recv, req)?;
+        self.invoke(mid, recv.clone(), args, Vec::new(), block)
     }
 
     /// Call a method by name with dynamic lookup (used by `&:sym`,
@@ -4289,21 +4293,21 @@ fn native_frames() -> Vec<(usize, FuncId, u32)> {
     crate::native_bt::frames()
 }
 
-/// The method `name` a prelude module `module` declares (a requirement a
-/// gated send dispatches, `Interp::send_requirement`): `None` when the
-/// program has none (a compiled program's shaken world).
-fn requirement(program: &Program, module: &str, name: &str) -> Option<MethodId> {
-    let world = &program.world;
-    let cid = world
-        .classes
-        .iter()
-        .position(|c| c.kind == quarz_ir::RtClassKind::Module && c.name == module)?
-        as ClassId;
-    world
-        .class(cid)
+/// The abstract method `name` the prelude module `module` declares (a
+/// requirement a gated send dispatches, `Interp::send_requirement`):
+/// `None` when `shake` dropped it (its name cleared), which happens only
+/// when no class with values includes the module, so that no gated send
+/// can reach one.
+fn requirement(program: &Program, module: ClassId, name: &str) -> Option<MethodId> {
+    program
+        .world
+        .class(module)
         .methods
         .get(name)?
         .iter()
         .copied()
-        .find(|&m| program.method(m).owner == cid)
+        .find(|&m| {
+            let m = program.method(m);
+            m.owner == module && m.name == name && m.is_abstract
+        })
 }
