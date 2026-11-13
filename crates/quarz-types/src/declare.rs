@@ -2012,20 +2012,31 @@ impl<'ast> Declarer<'ast> {
                                 .any(|&i| self.world.method(i).owner == *k && takes(self, i, &ks))
                         })
                 });
-                let by_own = typed.iter().any(|(k, kargs)| {
+                // (The first in the target's order: an `abstract def` there
+                // counts when it takes the requirement's calls by type too.)
+                let own_witness = typed.iter().find_map(|(k, kargs)| {
                     let ks = self.world.class_subst(*k, kargs);
-                    self.world
-                        .class(*k)
-                        .methods
-                        .get(&rm.name)
-                        .is_some_and(|ids| {
-                            ids.iter().any(|&i| {
-                                // (An `abstract def` there counts when it
-                                // takes the requirement's calls by type too.)
-                                self.world.method(i).owner == *k && i != r && fits(self, i, &ks)
-                            })
+                    self.world.class(*k).methods.get(&rm.name).and_then(|ids| {
+                        ids.iter().copied().find(|&i| {
+                            self.world.method(i).owner == *k && i != r && fits(self, i, &ks)
                         })
+                    })
                 });
+                let by_own = own_witness.is_some();
+                // What implements it on the target's own side runs for the
+                // conformance (#632): recorded here, where R0 accepts it, so
+                // that "accepted" and "has a row" are one decision; the run
+                // time dispatches it for the receiver (`find_override`). An
+                // `abstract def` there leaves it to the concrete classes;
+                // the extension's own method needs no entry.
+                if let (false, false, Some(i)) = (by_ext, by_mods, own_witness) {
+                    if !self.world.method(i).is_abstract {
+                        let entry = (target, r, i);
+                        if !self.world.ext_impls.contains(&entry) {
+                            self.world.ext_impls.push(entry);
+                        }
+                    }
+                }
                 if !(by_ext || by_mods || by_own) {
                     missing.push((rm.name.clone(), self.world.class(*m).name.clone()));
                 }

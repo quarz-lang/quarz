@@ -290,19 +290,19 @@ fn aot_opt_levels() {
 /// #630, compiled: an abstract method reached at run time is a violation
 /// under `QUARZ_VERIFY` and a `TypeError` without it, as on the VM
 /// (tests/verify.rs). No program the `quarz` command accepts reaches one
-/// any more (#600's is refused by R0, #632's by the safety net's error
-/// stage): #632's program is lowered through the library API, which runs
+/// any more (#600's is refused by R0, #557's by the safety net's error
+/// stage): #557's program is lowered through the library API, which runs
 /// no net, and compiled.
 #[test]
 fn an_abstract_method_reached_compiled() {
     let dir = std::env::temp_dir().join(format!("quarz-abstract-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
-    let src = "module Named\n  abstract def label -> String\nend\nclass A\n  def initialize; end\n  def label -> String = \"a\"\nend\nclass B < A\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n  end\n  def self.n(x: B) -> Named = x\nend\ndef via(n: Named) -> String = n.label\nputs via(Sc.n(B.new))\n";
+    let src = "module Named\n  abstract def label -> String\nend\nmodule Gives\n  def label -> String = \"Gives\"\nend\nclass K\n  def initialize; end\nend\nmodule S2\n  extension K\n    include Gives\n    include Named\n  end\n  def self.n(k: K) -> Named = k\nend\ndef via(n: Named) -> String = n.label\nputs via(S2.n(K.new))\n";
     let exe = dir.join("main");
     quarz_aot::build(&common::lower(src), &exe).expect("build");
     for (verify, code, want) in [
-        ("moves", 101, "QIR fact violated: abstract method `label` called on B, which no check saw implemented"),
-        ("0", 1, "TypeError: abstract method `label` called on B, which no check saw implemented"),
+        ("moves", 101, "QIR fact violated: abstract method `label` called on K, which no check saw implemented"),
+        ("0", 1, "TypeError: abstract method `label` called on K, which no check saw implemented"),
     ] {
         let out = Command::new(&exe)
             .env("QUARZ_VERIFY", verify)

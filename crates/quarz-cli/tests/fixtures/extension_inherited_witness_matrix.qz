@@ -1,0 +1,76 @@
+# #632: a witness the target inherits (R0's third candidate, the target's
+# own side) is recorded for the extension's conformance and dispatched for
+# the receiver, as a call typed through its owner is: a subclass's override
+# of it runs. Expected output from the rule. Axes: extension top-level (1)
+# and scoped (2), called where it is active and elsewhere; receiver the
+# target, a subclass without and with its own override; a generic
+# superclass under the target's own arguments (3). VM and compiled (the
+# build tests). Skipped: `B < Base[String]` for `M#get -> Int` is refused
+# (witness_net.rs, the net per class).
+module Named
+  abstract def label -> String
+end
+
+# (1) Top-level.
+class A1
+  def initialize; end
+  def label -> String = "a1"
+end
+class B1 < A1
+  def initialize; end
+end
+class C1 < B1
+  def initialize; end
+  def label -> String = "c1"
+end
+extension B1
+  include Named
+end
+def via(n: Named) -> String = n.label
+puts via(B1.new), via(C1.new)
+
+# (2) Scoped.
+class A2
+  def initialize; end
+  def label -> String = "a2"
+end
+class B2 < A2
+  def initialize; end
+end
+class C2 < B2
+  def initialize; end
+  def label -> String = "c2"
+end
+module S2
+  extension B2
+    include Named
+  end
+  def self.n(x: B2) -> Named = x
+  def self.here(x: B2) -> String = via(x)
+end
+puts via(S2.n(B2.new)), via(S2.n(C2.new)), S2.here(C2.new)
+
+# (3) A generic superclass, under the target's own arguments.
+module Num
+  abstract def get -> Int
+end
+class Base[T]
+  @v: T
+  def initialize(@v: T); end
+  def get -> T = @v
+end
+class I3 < Base[Int]
+  def initialize; super(41); end
+end
+class J3 < I3
+  def initialize; super; end
+  def get -> Int = 99
+end
+module S3
+  extension I3
+    include Num
+  end
+  def self.n(x: I3) -> Num = x
+end
+def num(n: Num) -> Int = n.get + 1
+puts num(S3.n(I3.new)), num(S3.n(J3.new))

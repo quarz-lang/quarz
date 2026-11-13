@@ -2915,8 +2915,8 @@ fn an_extension_completes_the_conformance_it_makes() {
         format!("{named}module Giver\n  def label -> String = \"g\"\nend\nclass B\n  include Giver\n  def initialize; end\nend\nextension B\n  include Named\nend\n"),
         format!("{named}abstract class B\n  abstract def label -> String\nend\nclass C < B\n  def initialize; end\n  def label -> String = \"c\"\nend\nextension B\n  include Named\nend\n"),
         // (3) A method the target inherits from a superclass: accepted by
-        // the rule; under a scoped extension the run time does not find it
-        // yet (#632).
+        // the rule, recorded as the witness and dispatched for the receiver
+        // (#632).
         format!("{named}class A\n  def initialize; end\n  def label -> String = \"a\"\nend\nclass B < A\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n  end\nend\n"),
     ];
     for src in &accepted {
