@@ -535,8 +535,7 @@ impl Lowerer {
             .map(|f| f.expect("function lowered"))
             .collect();
         let file_names = self.files.iter().map(|f| f.name.clone()).collect();
-        let prebuilt = self.declared.is_some();
-        if !prebuilt {
+        if self.declared.is_none() {
             self.declare(world, out);
         }
         let (mut rt, size) = self.declared.take().expect("declared above");
@@ -547,50 +546,7 @@ impl Lowerer {
             world_size(world),
             "internal error: the tables were declared for another world"
         );
-        // Oracle (to be deleted once CI is green on it): the tables the
-        // front end built after the check are the ones built here.
-        #[cfg(debug_assertions)]
-        if prebuilt {
-            let fresh = rtworld::declared(world, out);
-            assert_eq!(
-                format!("{fresh:?}"),
-                format!("{rt:?}"),
-                "internal error: the tables declared after the check differ from the lowering's"
-            );
-        }
-        #[cfg(debug_assertions)]
-        let rows = format!(
-            "{:?}",
-            (
-                &rt.ext_rescan,
-                &rt.override_rows,
-                &rt.witness_rows,
-                &rt.class_override_rows
-            )
-        );
         rtworld::fill(&mut rt, world, self, file_names);
-        // Oracle (to be deleted with the one above): the rows read nothing
-        // `fill` adds, so built again over the filled tables they are the
-        // same.
-        #[cfg(debug_assertions)]
-        {
-            let mut again = rt.clone();
-            again.rescan_extensions();
-            again.build_witness_rows();
-            assert_eq!(
-                format!(
-                    "{:?}",
-                    (
-                        &again.ext_rescan,
-                        &again.override_rows,
-                        &again.witness_rows,
-                        &again.class_override_rows
-                    )
-                ),
-                rows,
-                "internal error: the rows read what the lowering fills in"
-            );
-        }
         Delta {
             world: rt,
             base: self.round_base,
