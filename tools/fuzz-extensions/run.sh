@@ -7,7 +7,11 @@
 #   tools/fuzz-extensions/run.sh OLD_QUARZ NEW_QUARZ [COUNT] [FIRST_SEED]
 #
 # For each seed and each generator (gen1.py: one extension per
-# conformance; gen2.py: a module brought through a second extension), the
+# conformance; gen2.py: a module brought through a second extension;
+# gen3.py: the witness record's rarer rules, #536 step 3: generic targets
+# under different arguments, an extension's own method below a
+# conformance, an own include whose only method of the name has another
+# result type, two conformances to one module up a chain), the
 # program is run on the interpreter with each binary (QUARZ_NO_CACHE=1,
 # QUARZ_THREADS=1, QUARZ_VERIFY=moves, a timeout of 60 seconds) and the
 # two outputs (stdout and stderr together) and exit statuses are
@@ -68,7 +72,7 @@ one() {
 export -f one
 
 export FZ_OLD="$old" FZ_NEW="$new" FZ_HERE="$here" FZ_OUT="$out"
-results=$(for gen in gen1 gen2; do
+results=$(for gen in gen1 gen2 gen3; do
   seq "$first" $((first + count - 1)) | sed "s/^/$gen /"
 done | xargs -P "$jobs_n" -n 2 bash -c 'one "$1" "$2" "$FZ_OLD" "$FZ_NEW" "$FZ_HERE" "$FZ_OUT"' _)
 
