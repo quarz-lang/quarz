@@ -178,6 +178,12 @@ impl Repl {
         self.buffer.clear();
         // The input keeps its base: what it requires is parsed after it.
         self.session.reserve_input();
+        // The input's own declarations (its requires' too) from here on,
+        // for the safety net's errors (`net_in`).
+        let first = (
+            self.session.world().classes.len(),
+            self.session.world().extensions.len(),
+        );
         // The standard library modules the input names without requiring
         // them, then what it requires, running each library's top level
         // the first time it is loaded.
@@ -196,6 +202,7 @@ impl Repl {
                         Some(&mut *runner),
                     )?;
                     compile_time_only_in(session, runner, &units)?;
+                    net_in(session, first)?;
                     Ok(units)
                 },
             );
@@ -226,6 +233,7 @@ impl Repl {
                             Some(&mut *runner),
                         )?;
                         compile_time_only_in(session, runner, &units)?;
+                        net_in(session, first)?;
                         Ok(units)
                     },
                 );
@@ -257,11 +265,11 @@ impl Repl {
                 runner,
                 &|f, span| f == 1 && span.start >= base,
             );
-            if errors.is_empty() {
-                Ok(body)
-            } else {
-                Err(errors)
+            if !errors.is_empty() {
+                return Err(errors);
             }
+            net_in(session, first)?;
+            Ok(body)
         });
         let body = match fed {
             Ok(body) => body,
@@ -428,6 +436,25 @@ impl Repl {
 /// The calls of compile-time-only `static def`s in files just required
 /// (docs/14 §1), reported before their top levels run, as a program's
 /// are before it runs.
+/// The safety net over the session's rows after an input's check
+/// (`quarz_lower::net_errors`): a refused row refuses the input, reported
+/// at its own declarations (those from `first`, its classes and
+/// extensions) where they make the row. The rows of earlier inputs passed
+/// when they were fed, so a refused row is this input's doing.
+fn net_in(session: &Session, first: (usize, usize)) -> Result<(), Vec<FileDiagnostic>> {
+    use quarz_types::witness_net::Decl;
+    let own = |d: Decl| match d {
+        Decl::Class(c) => c as usize >= first.0,
+        Decl::Extension(e) => e as usize >= first.1,
+    };
+    let errors = quarz_lower::net_errors(session.world(), session.output(), &own);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 fn compile_time_only_in(
     session: &Session,
     runner: &mut Runner,

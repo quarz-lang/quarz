@@ -16,8 +16,10 @@
 //! whether it holds for some instantiation of a generic `C` is #556's.
 
 use crate::declare::Declarer;
-use crate::types::{ClassId, MethodId, Type};
+use crate::types::{ClassId, ExtensionId, MethodId, Type};
 use crate::world::{View, World};
+use crate::FileDiagnostic;
+use quarz_syntax::Diagnostic;
 
 /// What a conditional extension's bound says for the class's own
 /// arguments for its target (not reachability, see the module's comment).
@@ -154,6 +156,171 @@ fn check_row(d: &mut Declarer, c: ClassId, req: MethodId, by: MethodId) -> Verdi
             bound,
         }
     }
+}
+
+/// A declaration the program being checked makes: the front end says
+/// which are its own (`errors`' `own`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Decl {
+    Class(ClassId),
+    Extension(ExtensionId),
+}
+
+/// The safety net's errors (the error stage, decided on #536): a refused
+/// row and a row with no implementation are compile errors, one per
+/// (class, requirement, what runs), with no exclusion by the bound label.
+///
+/// Each is reported at what makes the conformance (`World::conformances`'
+/// source for the requirement's module): the extension whose include
+/// brings it, or the class (its own include, or a superclass's). When that
+/// declaration is not one of the program's own (`own`: an application's
+/// against its dependencies, a REPL input's against the earlier ones), the
+/// error goes to the class if it is the program's own, else to an
+/// extension of the program's own on the class's chain, naming the
+/// conformance; with none of these, at the source all the same.
+///
+/// A row with no implementation whose class has a method of the name on
+/// its own side (its superclasses' or own includes') is #632's: the run
+/// time does not find an inherited witness for an extension's conformance
+/// yet, and the program is refused rather than raising there. One whose
+/// witness is another module's the class conforms to is #557's, likewise.
+/// A row with no frame (`Verdict::NoFrame`: the net could not check it)
+/// is an error too, an internal one, placed like the others.
+///
+/// Rule: an instance-side row of an abstract class is not checked for
+/// no-impl: it has no instances, and each concrete subclass has its own
+/// row (its `abstract def` of the name is what R0 accepts). Only no-impl is
+/// exempt: a refused row of an abstract class is an error like any other,
+/// and so is a class-side row with no implementation (a class method is
+/// called on the abstract class itself, #509).
+pub fn errors(
+    world: &World,
+    checked: &[Checked],
+    own: &dyn Fn(Decl) -> bool,
+) -> Vec<FileDiagnostic> {
+    let name = |m: MethodId| {
+        let mi = world.method(m);
+        let sep = if mi.singleton { "." } else { "#" };
+        format!("{}{sep}{}", world.class(mi.owner).name, mi.name)
+    };
+    let mut seen: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
+    let mut out: Vec<FileDiagnostic> = Vec::new();
+    for r in checked {
+        let reason = match &r.verdict {
+            Verdict::Passes => continue,
+            // (A row the net could not put in a frame is a row it did not
+            // check: it refuses the program.)
+            Verdict::NoFrame => Some(String::new()),
+            Verdict::Refused { reason, .. } => Some(reason.clone()),
+            // (An abstract class has no instances: its instance-side rows
+            // are never reached, its subclasses' are checked for them, and
+            // its own `abstract def` of the name is what R0 accepts.)
+            Verdict::NoImplementation if r.table != "class" && world.class(r.class).is_abstract => {
+                continue
+            }
+            Verdict::NoImplementation => None,
+        };
+        if seen.contains(&(r.class, r.req, r.by)) {
+            continue;
+        }
+        seen.push((r.class, r.req, r.by));
+        let c = world.class(r.class);
+        let cname = &c.name;
+        let req = world.method(r.req);
+        let module = req.owner;
+        let mname = &world.class(module).name;
+        let message = match reason {
+            Some(_) if r.verdict == Verdict::NoFrame => format!(
+                "internal error: no frame to check `{cname}`'s row for `{}` in (what runs: `{}`); please report",
+                name(r.req),
+                name(r.by)
+            ),
+            Some(reason) => format!(
+                "`{cname}`'s conformance to `{mname}` runs `{}` for `{}`, which does not take its place for `{cname}`: {reason}",
+                name(r.by),
+                name(r.req)
+            ),
+            None => {
+                let inherited = !req.singleton
+                    && world
+                        .ancestors_with_no_extensions(r.class)
+                        .iter()
+                        .chain(std::iter::once(&(r.class, Vec::new())))
+                        .any(|(k, _)| {
+                            *k != module
+                                && world.class(*k).methods.get(&req.name).is_some_and(|ids| {
+                                    ids.iter().any(|&i| {
+                                        let im = world.method(i);
+                                        im.owner == *k && !im.is_abstract && !im.singleton
+                                    })
+                                })
+                        });
+                // (A non-abstract method of the name in another module the
+                // class conforms to: #557's witness.)
+                let other_module = if inherited || req.singleton {
+                    None
+                } else {
+                    world
+                        .conformances(r.class)
+                        .into_iter()
+                        .map(|(_, k, _)| k)
+                        .find(|k| {
+                            *k != module
+                                && world.class(*k).methods.get(&req.name).is_some_and(|ids| {
+                                    ids.iter().any(|&i| {
+                                        let im = world.method(i);
+                                        im.owner == *k && !im.is_abstract && !im.singleton
+                                    })
+                                })
+                        })
+                };
+                if let Some(k) = other_module {
+                    format!(
+                        "`{cname}`'s conformance to `{mname}` has no implementation of `{}` at run time: the witness is `{}#{}` of another module `{cname}` conforms to, which the run time does not find yet (#557)",
+                        name(r.req),
+                        world.class(k).name,
+                        req.name
+                    )
+                } else if inherited {
+                    format!(
+                        "`{cname}`'s conformance to `{mname}` has no implementation of `{}` at run time: the witness is a method `{cname}` has on its own side, which an extension's conformance does not find yet (#632)",
+                        name(r.req)
+                    )
+                } else {
+                    format!(
+                        "`{cname}`'s conformance to `{mname}` has no implementation of `{}` (internal error: the checker accepted it)",
+                        name(r.req)
+                    )
+                }
+            }
+        };
+        // Where: the conformance's source, else the program's own
+        // declaration that makes the row.
+        let source = world
+            .conformances(r.class)
+            .into_iter()
+            .find(|(_, m, _)| *m == module)
+            .and_then(|(src, _, _)| src.map(|(e, _)| e));
+        let at_ext = |e: ExtensionId| {
+            let ext = &world.extensions[e as usize];
+            (ext.file, ext.span)
+        };
+        let at_class = (c.file, c.span);
+        let chain = world.class_side_order(r.class);
+        let place = match source {
+            Some(e) if own(Decl::Extension(e)) => at_ext(e),
+            None if own(Decl::Class(r.class)) => at_class,
+            _ if own(Decl::Class(r.class)) => at_class,
+            _ => world
+                .extensions
+                .iter()
+                .find(|e| chain.contains(&e.target) && own(Decl::Extension(e.id)))
+                .map(|e| at_ext(e.id))
+                .unwrap_or_else(|| source.map(at_ext).unwrap_or(at_class)),
+        };
+        out.push((place.0, Diagnostic::error(message, place.1)));
+    }
+    out
 }
 
 /// The report's lines: one per refused row, one per row with no

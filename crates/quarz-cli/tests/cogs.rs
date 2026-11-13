@@ -2566,3 +2566,35 @@ fn a_librarys_runtime_test_broken_by_the_application_is_reported_there() {
     // library's own extension with bounds of a module, `extension Seq[T <:
     // Int]; include Num`; an extension of a module cannot include.)
 }
+
+/// The safety net's error stage (#536, #641): a row an application's
+/// extension makes for a library's class hierarchy is refused in the
+/// application, never in the library (which checks without error). (`A`
+/// first: the checker checks the pair once, for `A`, #641.)
+#[test]
+fn a_refused_row_of_an_applications_extension_is_reported_there() {
+    let w = World::new();
+    w.write(
+        "baselib/Cog.toml",
+        "[cog]\nname = \"baselib\"\nversion = \"0.1.0\"\n",
+    );
+    w.write(
+        "baselib/src/base.qz",
+        "module M\n  abstract def get -> Int\nend\nclass Base[T]\n  @v: T\n  def initialize(@v: T); end\n  def get -> T = @v\nend\n",
+    );
+    w.commit("baselib", Some("v0.1.0"));
+    w.ok("baselib", &["check"]);
+    w.app(
+        &format!(
+            "Baselib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n",
+            w.url("baselib")
+        ),
+        "class A < Baselib::Base[Int]\n  def initialize; super(1); end\nend\nextension A\n  include Baselib::M\nend\nclass B < Baselib::Base[String]\n  def initialize; super(\"s\"); end\nend\nextension B\n  include Baselib::M\nend\nputs 1\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("main.qz:10:1: error: `B`'s conformance to `Baselib::M` runs `Baselib::Base#get` for `Baselib::M#get`"),
+        "{err}"
+    );
+    assert!(!err.contains("base.qz"), "{err}");
+}

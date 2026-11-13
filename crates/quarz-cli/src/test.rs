@@ -423,6 +423,16 @@ fn load_and_check(
         diagnostics.extend(errors);
         ok
     });
+    // The runtime's tables and the safety net over their rows, once
+    // (`Lowerer::declare`): a refused row refuses the program; the lowering
+    // takes the tables.
+    let mut lowerer = runner.into_lowerer();
+    let checked = checked.filter(|c| {
+        let errors = lowerer.declare(&c.world, &c.output, &|d| quarz_cli::own_in_app(&c.world, d));
+        let ok = errors.is_empty();
+        diagnostics.extend(errors);
+        ok
+    });
     for (file_index, diag) in &diagnostics {
         let extra = file_index
             .checked_sub(first_extra)
@@ -470,13 +480,7 @@ fn load_and_check(
     let mut files = vec![prelude_file];
     files.append(&mut sources);
     files.extend(extras.into_iter().map(|e| e.source));
-    // The runtime's tables and the safety net over their rows, once: the
-    // lowering takes them (`Lowerer::declare`).
-    checked.map(|c| {
-        let mut lowerer = runner.into_lowerer();
-        lowerer.declare(&c.world, &c.output);
-        (c, files, lowerer)
-    })
+    checked.map(|c| (c, files, lowerer))
 }
 
 /// A unit `quarz test` adds: an example's (with the comment's line of each

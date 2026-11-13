@@ -365,15 +365,25 @@ impl Lowerer {
 
     /// Build the tables the declarations of a checked program decide, with
     /// their witness rows (`rtworld::declared`), and run the safety net
-    /// over the rows (`witness_net`). Called by the front end after a check
-    /// without errors (`quarz check`, `run`, `build`, `test`), so the net
-    /// sees every program the check accepts; the next `lower` takes the
-    /// tables instead of building them again (it builds them itself, the
-    /// same way, when nothing called this: a caller of `lower_checked`).
-    pub fn declare(&mut self, world: &World, out: &Output) {
+    /// over the rows: its errors (`net_errors`), which refuse the program.
+    /// Called by the `quarz` command's front ends after a check without
+    /// errors (`quarz check`, `run`, `build`, `test`), so the net sees
+    /// every program the command accepts; the next `lower` takes the
+    /// tables of a program without errors instead of building them again
+    /// (it builds them itself, the same way but with no net, when nothing
+    /// called this: a caller of `lower_checked`, a test's harness).
+    pub fn declare(
+        &mut self,
+        world: &World,
+        out: &Output,
+        own: &dyn Fn(quarz_types::witness_net::Decl) -> bool,
+    ) -> Vec<quarz_types::FileDiagnostic> {
         let rt = rtworld::declared(world, out);
-        witness_net(world, &rt);
-        self.declared = Some((rt, world_size(world)));
+        let errors = rows_errors(world, &rt, own);
+        if errors.is_empty() {
+            self.declared = Some((rt, world_size(world)));
+        }
+        errors
     }
 
     pub(crate) fn alloc_func(&mut self) -> FuncId {
@@ -536,7 +546,9 @@ impl Lowerer {
             .collect();
         let file_names = self.files.iter().map(|f| f.name.clone()).collect();
         if self.declared.is_none() {
-            self.declare(world, out);
+            let rt = rtworld::declared(world, out);
+            witness_net(world, &rt);
+            self.declared = Some((rt, world_size(world)));
         }
         let (mut rt, size) = self.declared.take().expect("declared above");
         // (Nothing declares between the check and the lowering: the tables
@@ -1728,6 +1740,34 @@ pub fn lower_checked_with(mut lw: Lowerer, checked: &Checked, files: &[SourceFil
         functions,
         units: delta.units,
     }
+}
+
+/// The safety net's errors over the rows of `world` (`rtworld::declared`,
+/// `quarz_types::witness_net::errors`), without keeping the tables: for a
+/// REPL input, whose lowering builds them again over the session's world.
+pub fn net_errors(
+    world: &World,
+    out: &Output,
+    own: &dyn Fn(quarz_types::witness_net::Decl) -> bool,
+) -> Vec<quarz_types::FileDiagnostic> {
+    rows_errors(world, &rtworld::declared(world, out), own)
+}
+
+/// The net over `rt`'s rows: the report `QUARZ_WITNESS_NET` asks for, and
+/// the errors.
+fn rows_errors(
+    world: &World,
+    rt: &quarz_ir::RtWorld,
+    own: &dyn Fn(quarz_types::witness_net::Decl) -> bool,
+) -> Vec<quarz_types::FileDiagnostic> {
+    witness_net(world, rt);
+    let checked = quarz_types::witness_net::check(
+        world,
+        &rt.override_rows,
+        &rt.witness_rows,
+        &rt.class_override_rows,
+    );
+    quarz_types::witness_net::errors(world, &checked, own)
 }
 
 /// The world's size the declared tables were built for: its classes,
