@@ -1453,13 +1453,11 @@ impl World {
     ///    included, as rule 1's own side, #672), a method that the override
     ///    table pairs with `r` under `C`'s declaration view
     ///    (`World::overrides`, or `C`'s `include_overrides_of`) replaces the
-    ///    witness; so does the own method of an extension in `C`'s
-    ///    declaration view that takes `r`'s calls (`implements`' arity), only
-    ///    where that view sees the conformance (as the declarer records it,
-    ///    `check_conformance_of`). A method the table does not pair is no
-    ///    override, and the witness runs. (Addendum (A)'s rule 1 with
-    ///    #606's decision (a); step 1's decision (4): the witness is
-    ///    dispatched for the receiver.)
+    ///    witness. A method the table does not pair is no override, and the
+    ///    witness runs; nor is an extension's own method, a witness only of
+    ///    the conformance its extension makes (#665's decision (α)).
+    ///    (Addendum (A)'s rule 1 with #606's decision (a); step 1's
+    ///    decision (4): the witness is dispatched for the receiver.)
     /// 3. **`C`'s own conformance:** the first method in `C`'s dispatch by
     ///    name (`resolution(C, …, View::Lookup)`) that the override table
     ///    pairs with `r`, or that takes `r`'s calls by type, its result
@@ -1541,11 +1539,9 @@ impl World {
                     // A class below the conformance's class (an extension's
                     // target, or the class including the module): its own
                     // method the override table says replaces the
-                    // requirement, or the own method of an extension of it
-                    // active where it is declared (`declaration_view`) that
-                    // takes the requirement's calls (`implements`' arity),
-                    // runs first, as the declarer records it for that class
-                    // (`check_conformance_of`).
+                    // requirement runs first. (An extension's own method is
+                    // a witness only of the conformance its extension
+                    // makes, #665's decision (α): not here.)
                     let upto = match src {
                         Some((e, _)) => Some(self.extensions[e as usize].target),
                         None => lookup
@@ -1557,7 +1553,6 @@ impl World {
                             })
                             .map(|(k, _)| *k),
                     };
-                    let view = self.declaration_view(c);
                     let (amin, amax) = rm.positional_arity();
                     let arity = |i: MethodId| {
                         let im = self.method(i);
@@ -1569,15 +1564,6 @@ impl World {
                             && im.block.is_some() == rm.block.is_some()
                             && im.keywords_accept(rm)
                     };
-                    // (Whether this conformance is seen from the class's
-                    // declaration view: only there did the declarer record
-                    // an extension's method for it, `check_conformance_of`.)
-                    let seen = self
-                        .with_active(view.clone(), || {
-                            self.resolution(c, &self.own_args(c), View::Static)
-                        })
-                        .iter()
-                        .any(|(k, _)| *k == m);
                     // (Below the conformance's class, a method replaces the
                     // witness only if the override table pairs it with the
                     // requirement under the class's declaration view:
@@ -1596,31 +1582,15 @@ impl World {
                         .map(|(k, _)| *k)
                         .take_while(|k| Some(*k) != upto)
                         .find_map(|k| {
-                            self.class(k)
-                                .methods
-                                .get(&rm.name)
-                                .and_then(|ids| {
-                                    ids.iter().copied().find(|&i| {
-                                        let im = self.method(i);
-                                        im.owner == k
-                                            && !im.is_abstract
-                                            && (self.overrides(i).contains(&r)
-                                                || paired_here.contains(&i))
-                                    })
+                            self.class(k).methods.get(&rm.name).and_then(|ids| {
+                                ids.iter().copied().find(|&i| {
+                                    let im = self.method(i);
+                                    im.owner == k
+                                        && !im.is_abstract
+                                        && (self.overrides(i).contains(&r)
+                                            || paired_here.contains(&i))
                                 })
-                                .or_else(|| {
-                                    if !seen || self.class(k).kind == ClassKind::Module {
-                                        return None;
-                                    }
-                                    view.iter()
-                                        .map(|e| &self.extensions[*e as usize])
-                                        .filter(|e| e.target == k)
-                                        .find_map(|e| {
-                                            e.methods.get(&rm.name).and_then(|ids| {
-                                                ids.iter().copied().find(|&i| arity(i))
-                                            })
-                                        })
-                                })
+                            })
                         });
                     let w = below.or_else(|| match src {
                         Some((e, _)) => {

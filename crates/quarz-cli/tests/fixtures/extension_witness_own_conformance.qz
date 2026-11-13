@@ -1,0 +1,70 @@
+# An extension's own method is the witness only of the conformance its
+# own extension makes (docs/01 §7; #665's decision (α), which also
+# closes #529).
+#
+# 1. Below a conformance an extension of `A` makes, another extension's
+#    method of `C < A` (or two of them, #665) is not the witness: a call
+#    through `M` runs `A`'s extension's `m`. A direct call on `D` sees its
+#    extension's method.
+# 2. Two conditional extensions of `Box` with disjoint bounds each make a
+#    conformance and define `parse` (#529): a call through `PS` on a
+#    `Box[String]` runs the `PS` extension's `parse`, not the other's.
+module M
+  abstract def m -> Int
+end
+class A
+  def initialize; end
+end
+class C < A
+  def initialize; super; end
+end
+class D < A
+  def initialize; super; end
+end
+extension A
+  include M
+  def m -> Int = 100
+end
+extension C
+  def m -> Int = 101
+end
+extension C
+  def m -> Int = 102
+end
+extension D
+  def m -> Int = 201
+end
+def via(v: M) -> Int = v.m
+puts via(C.new)
+puts via(D.new)
+puts D.new.m
+
+module PI
+  abstract def parse(s: String) -> Int
+  abstract def self.make(s: String) -> Int
+end
+module PS
+  abstract def parse(s: String) -> String
+  abstract def self.make(s: String) -> String
+end
+class Box[T]
+  @v: T
+  def initialize(@v: T); end
+end
+extension Box[T <: Int]
+  include PI
+  def parse(s: String) -> Int = @v + s.to_i
+  def self.make(s: String) -> Int = 1
+end
+extension Box[T <: String]
+  include PS
+  def parse(s: String) -> String = @v + s
+  def self.make(s: String) -> String = "two"
+end
+def ps(x: PS) -> String = x.parse("!")
+def pi(x: PI) -> Int = x.parse("2")
+a: PS = Box[String].new("x")
+p a.parse("1")
+p ps(a)
+p pi(Box[Int].new(40))
+p Box[Int].new(1).parse("3")
