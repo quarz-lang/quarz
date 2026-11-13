@@ -1,7 +1,10 @@
 # A conditional extension's bound against an argument not inferred yet
-# (#518's review): `Bx[Array[?]]` may still meet `T <: Array[Int]` and
-# takes the `Summ` overload; `Bx[Array[Array[?]]]` never can and takes
-# `Object`'s.
+# (#518's review): `Bx[Array[Array[?]]]` can never meet `T <: Array[Int]`
+# and takes `Object`'s overload, as a known argument that does not meet
+# it does.
+# (`f(Bx.new([]))`, with an argument not inferred yet, is an error since #519's
+# decision (i): which overload it takes would turn on a bound not known
+# yet. `diagnostics.rs`: `an_overload_on_a_bound_not_known_yet_is_refused`.)
 module Summ
   abstract def total -> Int
 end
@@ -18,5 +21,4 @@ def f(s: Summ) -> String = "summ #{s.total}"
 def f(o: Object) -> String = "obj"
 p f(Bx.new([1]))
 p f(Bx.new(["a"]))
-p f(Bx.new([]))
 p f(Bx.new([[]]))

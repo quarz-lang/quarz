@@ -1885,11 +1885,13 @@ p X.go
 }
 
 #[test]
-fn a_nested_argument_not_inferred_yet_meets_a_conditional_bound() {
-    // #516 (#518's review): `Bx.new([])` is a `Bx[Array[?]]`; an argument
-    // with an inference variable at any depth counts as meeting
-    // `extension Bx[T <: Array[Int]]`'s bound, as method lookup treats it
-    // (assigned to `Summ` and passed as `Summ`); #519 tightens both.
+fn a_nested_argument_not_inferred_yet_is_refused_for_a_conditional_bound() {
+    // #519's decision (i): `Bx.new([])` is a `Bx[Array[?]]`; whether it
+    // meets `extension Bx[T <: Array[Int]]`'s bound is not known yet, so
+    // it is no `Summ` there (assigned or passed), an error saying which
+    // bound and to write the type argument. A known argument conforms;
+    // the extension's own method, chosen statically, still binds the
+    // variable (`y.total`).
     let out = common::diagnostics(
         r#"module Summ
   abstract def total -> Int
@@ -1911,15 +1913,218 @@ p y.total
 "#,
     )
     .join("\n");
+    let note =
+        "`Bx[T]`'s extension applies only where `T <: Array[Int]`, which is not known for `Array[?";
+    assert!(
+        out.contains("cannot assign Bx[Array[?1]] to `w` of type Summ: ") && out.contains(note),
+        "{out}"
+    );
+    assert!(
+        out.contains("argument `s` of tk(s: Summ) -> Int expects Summ but found Bx[Array[?"),
+        "{out}"
+    );
+    assert!(
+        out.contains("write the type argument (as `Bx[...]`)"),
+        "{out}"
+    );
+    assert_eq!(out.matches("error:").count(), 2, "{out}");
+}
+
+#[test]
+fn an_overload_on_a_bound_not_known_yet_is_refused() {
+    // #519's decision (i): an overloaded call whose choice turns on a
+    // conditional extension's bound against an argument not inferred yet
+    // is an error at the call, never the other overload (the calls taken
+    // out of the `extension_bound_not_inferred*` fixtures). One whose
+    // bound can never hold (`Bx[Array[Array[?]]]`) takes `Object`'s.
+    for (src, n) in [
+        (
+            r#"module Summ
+  abstract def total -> Int
+end
+class Bx[T]
+  @v: T
+  def initialize(@v: T); end
+  def v -> T = @v
+end
+extension Bx[T <: Array[Int]]
+  include Summ
+  def total -> Int = v.sum
+end
+def f(s: Summ) -> String = "summ #{s.total}"
+def f(o: Object) -> String = "obj"
+p f(Bx.new([]))
+p f(Bx.new([[]]))
+"#,
+            1,
+        ),
+        (
+            r#"module Summ
+  abstract def total -> Int
+end
+class Sink[in T]
+  def initialize; end
+  def put(x: T) -> Int = 1
+end
+class Bx[T]
+  @v: T
+  def initialize(@v: T); end
+  def v -> T = @v
+end
+extension Bx[T <: Sink[Array[Int]]]
+  include Summ
+  def total -> Int = v.put([1])
+end
+def mk[X] -> Sink[Enumerable[X]] = Sink[Enumerable[X]].new
+def f(s: Summ) -> String = "summ #{s.total}"
+def f(o: Object) -> String = "obj"
+p f(Bx.new(mk))
+"#,
+            1,
+        ),
+        (
+            r#"module Summ
+  abstract def total -> Int
+end
+class Bx[T]
+  @v: T
+  def initialize(@v: T); end
+  def v -> T = @v
+end
+extension Bx[T <: Array[Object]]
+  include Summ
+  def total -> Int = v.size
+end
+def f(s: Summ) -> String = "summ #{s.total}"
+def f(o: Object) -> String = "obj"
+p f(Bx.new([[]]))
+"#,
+            1,
+        ),
+        (
+            r#"module Summ
+  abstract def total -> Int
+end
+class Bx[T]
+  @v: T
+  def initialize(@v: T); end
+  def v -> T = @v
+end
+data Pr[A] = (a: A)
+extension Bx[T <: Shareable]
+  include Summ
+  def total -> Int = 7
+end
+def f(s: Summ) -> String = "summ #{s.total}"
+def f(o: Object) -> String = "obj"
+p f(Bx.new(Pr.new([])))
+p f(Bx.new([]))
+p f(Bx.new([[]]))
+p f(Bx.new({}))
+"#,
+            4,
+        ),
+    ] {
+        let out = common::diagnostics(src).join("\n");
+        assert_eq!(
+            out.matches("error: which overload this call takes depends on a conditional extension's bound not yet known here, which f(s: Summ) -> String needs: `Bx[T]`'s extension applies only where `T <: ").count(),
+            n,
+            "{out}"
+        );
+        assert_eq!(out.matches("error:").count(), n, "{out}");
+    }
+}
+
+#[test]
+fn a_value_escaping_before_its_bound_is_known_is_refused() {
+    // #519's reproducers: a `Holder[?]` escaping as a `Parsable[Int]` into
+    // an array before `T` is inferred, and an `Array[?]` passed where std's
+    // `extension Array[T <: Comparable[T]]` must make it `Comparable`,
+    // were accepted and ran the extension on an instantiation that does
+    // not meet the bound. Both are refused where the value is used; with
+    // the variable inferred first, the conformance holds.
+    let out = common::diagnostics(
+        r#"module Parsable[U]
+  abstract def parse(s: String) -> U
+end
+class Holder[T]
+  var @a: Array[T]
+  def initialize(@a: Array[T]); end
+  def add(x: T) -> Void
+    @a.push!(x)
+  end
+end
+extension Holder[T <: Int]
+  include Parsable[Int]
+  def parse(s: String) -> Int = @a[0] + s.to_i
+end
+h = Holder.new([])
+ps: Array[Parsable[Int]] = [h]
+h.add("s")
+p ps[0].parse("1") + 1
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("array elements have type Holder[?0] but Parsable[Int] was expected: `Holder[T]`'s extension applies only where `T <: Int`, which is not known for `?0` here"),
+        "{out}"
+    );
+    let out = common::diagnostics(
+        r#"class H[T]
+  var @a: Array[T]
+  def initialize(@a: Array[T]); end
+  def add(x: T) -> Void
+    @a.push!(x)
+  end
+  def arr -> Array[T] = @a
+end
+class Blob
+  def initialize; end
+end
+def big[T <: Comparable[T]](a: T, b: T) -> T = a > b ? a : b
+h = H.new([])
+f = -> { p big(h.arr, h.arr) }
+h.add(Blob.new)
+h.add(Blob.new)
+f.call
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("type argument Array[?0] for `T` does not satisfy the bound Comparable[Array[?0]]: `Array[T]`'s extension applies only where"),
+        "{out}"
+    );
+    let out = common::diagnostics(
+        r#"module Parsable[U]
+  abstract def parse(s: String) -> U
+end
+class Holder[T]
+  var @a: Array[T]
+  def initialize(@a: Array[T]); end
+  def add(x: T) -> Void
+    @a.push!(x)
+  end
+end
+extension Holder[T <: Int]
+  include Parsable[Int]
+  def parse(s: String) -> Int = @a[0] + s.to_i
+end
+h = Holder.new([])
+h.add(1)
+x: Parsable[Int] = h
+p x.parse("2")
+"#,
+    )
+    .join("\n");
     assert!(!out.contains("error:"), "{out}");
 }
 
 #[test]
 fn an_argument_not_inferred_yet_meets_a_bound_only_if_it_still_can() {
-    // #518's review: an argument not inferred yet meets a bound when it
-    // does with its variables filled with `Nothing` or with `Object`:
-    // `Bx[Array[Array[?]]]` can never meet `T <: Array[Int]` (refused as a
-    // `Summ`); a bound naming a variable (`B <: Array[A]`) is met.
+    // #518's review: `Bx[Array[Array[?]]]` can never meet `T <: Array[Int]`
+    // (refused as a `Summ`, with no note: nothing left to know). A bound
+    // naming a variable (`B <: Array[A]`) is not known yet (#519's
+    // decision (i)): refused as a `Cnt`, with the note.
     let out = common::diagnostics(
         r#"module Summ
   abstract def total -> Int
@@ -1967,7 +2172,14 @@ p w.cnt
 "#,
     )
     .join("\n");
-    assert!(!out.contains("error:"), "{out}");
+    assert!(
+        out.contains("argument `s` of tk(s: Cnt) -> Int expects Cnt but found P[Array[?")
+            && out.contains(
+                "to `w` of type Cnt: `P[A, B]`'s extension applies only where `B <: Array[Array[?"
+            ),
+        "{out}"
+    );
+    assert_eq!(out.matches("error:").count(), 2, "{out}");
     // (Method lookup alike, #542: `Bx.new([[]]).total` is refused.)
     let out = common::diagnostics(
         r#"module Summ

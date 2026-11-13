@@ -3985,6 +3985,29 @@ impl Checker {
 
     /// Whether a value of type `actual` can be used where `expected` is
     /// required, binding inference variables on either side.
+    /// `coerce` for a check that reports a mismatch: the conditional
+    /// extension bound it found not known yet (`World::undecided_bound`,
+    /// #519) is kept for `bound_note`.
+    fn coerce_noting(&mut self, actual: &Type, expected: &Type) -> bool {
+        self.world.undecided_bound.take();
+        let ok = self.coerce(actual, expected);
+        if ok {
+            self.world.undecided_bound.take();
+        }
+        ok
+    }
+
+    /// What a mismatch that `coerce_noting` found adds when a conditional
+    /// extension's bound was not known yet there (#519's decision (i)):
+    /// which bound, and to write the type argument.
+    fn bound_note(&self) -> String {
+        self.world
+            .undecided_bound
+            .take()
+            .map(|b| format!(": {b}"))
+            .unwrap_or_default()
+    }
+
     fn coerce(&mut self, actual: &Type, expected: &Type) -> bool {
         // A defensive limit, as `World::is_subtype`'s.
         if self.coerce_depth >= COERCE_DEPTH {
@@ -5170,12 +5193,13 @@ impl Checker {
                     return Type::Nothing;
                 };
                 let vt = self.check_expr(value, Some(&declared));
-                if !self.coerce(&vt, &declared) {
+                if !self.coerce_noting(&vt, &declared) {
                     self.error(
                         format!(
-                            "cannot assign {} to `{name}` of type {}",
+                            "cannot assign {} to `{name}` of type {}{}",
                             self.name(&vt),
-                            self.name(&declared)
+                            self.name(&declared),
+                            self.bound_note(),
                         ),
                         value.span,
                     );
@@ -7476,9 +7500,14 @@ impl Checker {
                         unreachable!()
                     };
                     let t = self.check_expr(e, Some(et));
-                    if !self.coerce(&t, et) {
+                    if !self.coerce_noting(&t, et) {
                         self.error(
-                            format!("expected {} but found {}", self.name(et), self.name(&t)),
+                            format!(
+                                "expected {} but found {}{}",
+                                self.name(et),
+                                self.name(&t),
+                                self.bound_note()
+                            ),
                             e.span,
                         );
                     }
@@ -7544,14 +7573,15 @@ impl Checker {
             }
         }
         if let Some(et) = &elem_expected {
-            if elem.is_nothing() || self.coerce(&elem, et) {
+            if elem.is_nothing() || self.coerce_noting(&elem, et) {
                 return self.world.array_of(et.clone());
             }
             self.error(
                 format!(
-                    "array elements have type {} but {} was expected",
+                    "array elements have type {} but {} was expected{}",
                     self.name(&elem),
-                    self.name(et)
+                    self.name(et),
+                    self.bound_note(),
                 ),
                 span,
             );
@@ -8660,12 +8690,13 @@ impl Checker {
                         self.env.frames[n - 1 - depth].vars[slot].declared.clone()
                     };
                     let vt = self.check_expr(value, Some(&declared));
-                    if !self.coerce(&vt, &declared) {
+                    if !self.coerce_noting(&vt, &declared) {
                         self.error(
                             format!(
-                                "cannot assign {} to `{name}` of type {}",
+                                "cannot assign {} to `{name}` of type {}{}",
                                 self.name(&vt),
-                                self.name(&declared)
+                                self.name(&declared),
+                                self.bound_note(),
                             ),
                             value.span,
                         );
@@ -8727,12 +8758,13 @@ impl Checker {
                 }
                 let fty = field.ty.subst(&subst);
                 let vt = self.check_expr(value, Some(&fty));
-                if !self.coerce(&vt, &fty) {
+                if !self.coerce_noting(&vt, &fty) {
                     self.error(
                         format!(
-                            "cannot assign {} to `@{name}` of type {}",
+                            "cannot assign {} to `@{name}` of type {}{}",
                             self.name(&vt),
-                            self.name(&fty)
+                            self.name(&fty),
+                            self.bound_note(),
                         ),
                         value.span,
                     );
@@ -9008,12 +9040,13 @@ impl Checker {
                     let n = self.env.frames.len();
                     self.env.frames[n - 1 - depth].vars[slot].declared.clone()
                 };
-                if !self.coerce(&result, &declared) {
+                if !self.coerce_noting(&result, &declared) {
                     self.error(
                         format!(
-                            "cannot assign {} to `{name}` of type {}",
+                            "cannot assign {} to `{name}` of type {}{}",
                             self.name(&result),
-                            self.name(&declared)
+                            self.name(&declared),
+                            self.bound_note(),
                         ),
                         expr.span,
                     );
@@ -9025,12 +9058,13 @@ impl Checker {
                 if let Some(cid) = self.env.class_id {
                     if let Some((f, subst)) = self.find_field_here(cid, name) {
                         let fty = f.ty.subst(&subst);
-                        if !self.coerce(&result, &fty) {
+                        if !self.coerce_noting(&result, &fty) {
                             self.error(
                                 format!(
-                                    "cannot assign {} to `@{name}` of type {}",
+                                    "cannot assign {} to `@{name}` of type {}{}",
                                     self.name(&result),
-                                    self.name(&fty)
+                                    self.name(&fty),
+                                    self.bound_note(),
                                 ),
                                 expr.span,
                             );
@@ -9387,12 +9421,13 @@ impl Checker {
                         let n = self.env.frames.len();
                         self.env.frames[n - 1 - depth].vars[slot].declared.clone()
                     };
-                    if !self.coerce(ty, &declared) {
+                    if !self.coerce_noting(ty, &declared) {
                         self.error(
                             format!(
-                                "cannot assign {} to `{name}` of type {}",
+                                "cannot assign {} to `{name}` of type {}{}",
                                 self.name(ty),
-                                self.name(&declared)
+                                self.name(&declared),
+                                self.bound_note(),
                             ),
                             *vspan,
                         );
@@ -9425,12 +9460,13 @@ impl Checker {
                         if !f.mutable && (!self.env.in_initialize || self.in_late_closure()) {
                             self.error(format!("field `@{name}` is immutable"), span);
                         }
-                        if !self.coerce(ty, &fty) {
+                        if !self.coerce_noting(ty, &fty) {
                             self.error(
                                 format!(
-                                    "cannot assign {} to `@{name}` of type {}",
+                                    "cannot assign {} to `@{name}` of type {}{}",
                                     self.name(ty),
-                                    self.name(&fty)
+                                    self.name(&fty),
+                                    self.bound_note(),
                                 ),
                                 span,
                             );
@@ -12628,6 +12664,7 @@ impl Checker {
         }
         let (infer, diags, tables) = (self.infer.save(), self.diagnostics.len(), self.table_mark());
         let refusals = self.world.undecided_refusals.get();
+        self.world.undecided_bound_seen.take();
         self.last_winner = None;
         let t = self.resolve_pretyped_once(
             expr,
@@ -12645,6 +12682,9 @@ impl Checker {
         // (What this call refused, it deals with here: the count goes
         // back, so the calls around it do not choose again.)
         let winner = self.last_winner.filter(|w| w.0 == expr.id).map(|w| w.1);
+        // (A conditional extension's bound not known yet, rather than a
+        // Shareable, #519.)
+        let bound = self.world.undecided_bound_seen.take();
         // As if known: what it chooses is all that is kept.
         self.infer.restore(infer.clone());
         self.truncate_diagnostics(diags);
@@ -12682,12 +12722,15 @@ impl Checker {
                 return t;
             }
             let sig = self.signature(self.world.method(k));
-            self.error(
-                format!(
+            let message = match bound {
+                Some(b) => format!(
+                    "which overload this call takes depends on a conditional extension's bound not yet known here, which {sig} needs: {b}"
+                ),
+                None => format!(
                     "which overload this call takes depends on a type not yet known here, which must be Shareable for {sig}: annotate it (as `a: Array[Int] = []`)"
                 ),
-                expr.span,
-            );
+            };
+            self.error(message, expr.span);
         }
         t
     }
@@ -12890,16 +12933,17 @@ impl Checker {
                             // (A bound is no holder: the call's result may
                             // be, so a literal is not decided here.)
                             self.checking_bound = true;
-                            let fits = self.coerce(&rt, &b);
+                            let fits = self.coerce_noting(&rt, &b);
                             self.checking_bound = false;
                             if !fits {
                                 ok = false;
                                 self.error(
                                     format!(
-                                        "type argument {} for `{}` does not satisfy the bound {}",
+                                        "type argument {} for `{}` does not satisfy the bound {}{}",
                                         self.name(&rt),
                                         tp.name,
-                                        self.name(&b)
+                                        self.name(&b),
+                                        self.bound_note()
                                     ),
                                     expr.span,
                                 );
@@ -14325,14 +14369,15 @@ impl Checker {
                     None => self.check_expr(ma.arg, Some(&expected_ty)),
                 };
                 let p = &m.params[*pi];
-                let ok = self.coerce(&actual, &expected_ty);
+                let ok = self.coerce_noting(&actual, &expected_ty);
                 if !ok {
                     let msg = format!(
-                        "argument `{}` of {} expects {} but found {}",
+                        "argument `{}` of {} expects {} but found {}{}",
                         p.name,
                         self.signature(m),
                         self.name(&expected_ty),
-                        self.name(&actual)
+                        self.name(&actual),
+                        self.bound_note(),
                     );
                     if report {
                         self.error(msg.clone(), ma.arg.span);
@@ -16512,7 +16557,7 @@ impl Checker {
         }
         for (e, p) in positional.iter().zip(params.iter()) {
             let t = self.check_expr(e, Some(p));
-            if !self.coerce(&t, p) {
+            if !self.coerce_noting(&t, p) {
                 let message = if yielding {
                     format!(
                         "`yield` passes {} where the block expects {}",
@@ -16520,7 +16565,12 @@ impl Checker {
                         self.name(p)
                     )
                 } else {
-                    format!("expected {} but found {}", self.name(p), self.name(&t))
+                    format!(
+                        "expected {} but found {}{}",
+                        self.name(p),
+                        self.name(&t),
+                        self.bound_note()
+                    )
                 };
                 self.error(message, e.span);
             }

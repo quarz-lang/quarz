@@ -1,6 +1,9 @@
 # A conditional extension's bound against an argument not inferred yet,
 # decided with the subtyping rules (variance, derived Shareable): #518's
 # review.
+# (`f(Bx.new([]))` and the like, with an argument not inferred yet, is an error since #519's
+# decision (i): which overload it takes would turn on a bound not known
+# yet. `diagnostics.rs`: `an_overload_on_a_bound_not_known_yet_is_refused`.)
 module Summ
   abstract def total -> Int
 end
@@ -17,7 +20,3 @@ end
 def f(s: Summ) -> String = "summ #{s.total}"
 def f(o: Object) -> String = "obj"
 p f(Bx.new(Pr.new([1])))
-p f(Bx.new(Pr.new([])))
-p f(Bx.new([]))
-p f(Bx.new([[]]))
-p f(Bx.new({}))
