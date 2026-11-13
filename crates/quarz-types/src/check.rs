@@ -6717,7 +6717,9 @@ impl Checker {
                 if t.is_nothing() {
                     t = self.infer.fresh();
                 }
-                Type::Class(self.world.builtin.range, vec![t])
+                let range = Type::Class(self.world.builtin.range, vec![t.clone()]);
+                self.check_range_bound(&t, expr.span);
+                range
             }
             Lambda(block) => self.check_lambda(expr.id, block, expected),
             Local(name) => match self.zsuper_local(expr.id).or_else(|| self.lookup_var(name)) {
@@ -12325,6 +12327,40 @@ impl Checker {
 
     /// Check the bounds of a class's type parameters against the arguments
     /// of an instance type (`Channel[T <: Shareable]`).
+    /// `Range[T <: Comparable[T]]`'s bound where a range is made (`a..b`)
+    /// or a range pattern compares (`in a..b`), as for a written type
+    /// (#559): the bounds' type with `nil` taken out (a missing bound, which
+    /// nothing compares with), and none for built-in numbers, which compare
+    /// with each other inline (`1..Float::INFINITY`). A type parameter
+    /// without the bound is refused, as in a written `Range[T]`; so is a
+    /// type not yet inferred, which could become anything.
+    pub(crate) fn check_range_bound(&mut self, elem: &Type, span: Span) {
+        let e = self.resolve(elem).without_nil(self.world.builtin.nil);
+        if e.is_nothing() {
+            return;
+        }
+        // (Not yet known: the comparison would run on whatever it becomes,
+        // so it is refused rather than left unchecked.)
+        if e.has_vars() {
+            self.error(
+                "the type of the range's bounds is not yet known here, but a range compares them, so it must be Comparable: give the bounds a type",
+                span,
+            );
+            return;
+        }
+        // (Numbers of the built-in classes compare with each other, inline.)
+        let b = &self.world.builtin;
+        let numbers = [b.int, b.integer, b.float];
+        if e.members()
+            .iter()
+            .all(|m| matches!(m, Type::Class(id, _) if numbers.contains(id)))
+        {
+            return;
+        }
+        let range = Type::Class(self.world.builtin.range, vec![e]);
+        self.check_class_bounds(&range, span);
+    }
+
     fn check_class_bounds(&mut self, instance: &Type, span: Span) {
         let Type::Class(cid, args) = self.resolve(instance) else {
             return;

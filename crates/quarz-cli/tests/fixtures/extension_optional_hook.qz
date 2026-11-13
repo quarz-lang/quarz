@@ -3,6 +3,10 @@
 # witness of a scoped extension (lexical, outside its scope here) nor of a
 # conditional one (whose bound the value may not meet), which only a call
 # conformance gates reaches.
+# Dropped cell (#559, `Range[T <: Comparable[T]]`): a range of a class
+# comparable only through a scoped extension not active where the range is
+# made (`case R.new(2) when R.new(1)..R.new(3)` outside `using`) is refused
+# now; the gated `<=>` of a range in its scope is #559's fixture.
 require "json"
 module ToJ
   abstract def to_json -> String
@@ -33,26 +37,3 @@ module ScopeG
   end
 end
 puts JSON.generate(G.new("abc"))
-
-# A range's `include?` and a range pattern compare the endpoints by name
-# (`Range[T]` takes any `T`): not with a scoped extension's `<=>`, which
-# holds only where it is active (none here).
-class R
-  @v: Int
-  def initialize(@v: Int)
-  end
-  def v -> Int = @v
-end
-module ScopeR
-  extension R
-    include Comparable[R]
-    def <=>(other: R) -> Int
-      puts "scoped <=>"
-      v <=> other.v
-    end
-  end
-end
-case R.new(2)
-when R.new(1)..R.new(3) then puts "in"
-else puts "out"
-end

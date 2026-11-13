@@ -5243,7 +5243,7 @@ end
 # (1.0..2.0).include?(1.5)   # => true
 # (1..3).sum           # => 6
 # ```
-class Range[T]
+class Range[T <: Comparable[T]]
   include Shareable
   include Enumerable[T]
 

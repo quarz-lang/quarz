@@ -76,6 +76,9 @@ impl Checker {
                     t = self.join_types(&t, &st);
                 }
                 self.restore_alternatives(saved);
+                // The pattern compares with the bounds' `<=>`, as a range
+                // does: `Range[T <: Comparable[T]]`'s bound (#559).
+                self.check_range_bound(&t, pattern.span);
                 if Self::undecided(&value_ty) {
                     return value_ty;
                 }
