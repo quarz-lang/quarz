@@ -4363,6 +4363,9 @@ fn class_objects_a_class_test_cannot_tell_apart() {
         "class P\n  def self.k -> String = \"p\"\nend\nclass Q\n  def self.k -> String = \"q\"\nend\ndef w(c: Type[P] | Type[Q]) -> String = c.then { |x| x.:k.call }",
         "cannot tell at run time which `k` to call",
     );
+    // A member's own class method overriding `Type`'s of the name: the
+    // receiver's own runs, as on a `Type` receiver (#562), no error.
+    ok("class P\n  def self.name -> String = \"custom\"\nend\nclass Q\nend\ndef w(c: Type[P] | Type[Q]) -> String = c.name\nputs w(P)");
     // In a block checked once per member, `Type[T]` is a class object too.
     err(
         "class A\n  def self.k(x: Int) -> String = \"a\"\nend\nclass Q\n  def self.k(x: Int) -> String = \"q\"\nend\ndef u[T <: A](c: Type[T] | Type[Q]) -> String = c.then { |x| x.k(1) }",

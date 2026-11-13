@@ -3864,9 +3864,13 @@ impl World {
     /// extension's), the most derived such one: `Kind.k` for `Kind.k` and
     /// `SubKind.k`, and for two siblings' overrides of it.
     pub fn overridden_class_method(&self, methods: &[MethodId]) -> Option<MethodId> {
+        // (A class method, or a method of `Type` itself, which every class
+        // object answers and a class method of its name and signature
+        // overrides: `P.name` over `Type#name`, #562.)
+        let class_ = self.builtin.class_;
         let plain = |k: MethodId| {
             let i = self.method(k);
-            i.singleton && i.extension.is_none()
+            i.extension.is_none() && (i.singleton || i.owner == class_)
         };
         if !methods.iter().all(|&k| plain(k)) {
             return None;

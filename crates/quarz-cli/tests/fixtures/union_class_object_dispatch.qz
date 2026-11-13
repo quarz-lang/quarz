@@ -1,0 +1,15 @@
+# #562: a class method called on a union of class objects runs the
+# receiver's own when it overrides `Type`'s method of the name (docs/01 §7:
+# unless one of them is a class method the others override, the call runs
+# the receiver's own), as a call on a `Type`-typed receiver does.
+class P
+  def self.name -> String = "custom P"
+  def self.<=(other: Type[Object]) -> Bool = true
+end
+class Q
+end
+def pick(b: Bool) -> Type[P] | Type[Q] = b ? P : Q
+puts pick(true).name, pick(false).name
+c: Type = P
+puts c.name
+puts pick(true) <= String, pick(false) <= String
