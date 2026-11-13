@@ -1,0 +1,47 @@
+# #606: whether a class's method takes a module method's place is decided
+# with the extensions active where the class is declared (its declaration
+# view), at the check and in the shipped table alike. A pair that holds only
+# through a scoped extension's conformance (`K` a `Named` only under `Sc2`)
+# is no pair, whether or not a `using` of it is in effect further down: the
+# module's own method runs through the module. A direct call where the
+# extension is active still finds the class's method.
+module Named
+  def label -> String = "named"
+end
+class K
+  def initialize; end
+end
+module M
+  def m(x: K) -> String = "M"
+  def mm(x: K) -> String = m(x) + "!"
+end
+
+# The class's own include (#606's reproducer, `-> Int` there).
+class A
+  include M
+  def initialize; end
+  def m(x: Named) -> Int = 5
+end
+
+# Through an extension's include (#604's `extension_pair_where_declared`).
+class B
+  def initialize; end
+  def m(x: Named) -> String = "B"
+end
+module Sc
+  extension B
+    include M
+  end
+  def self.up(b: B) -> M = b
+end
+
+module Sc2
+  extension K
+    include Named
+  end
+end
+def via(x: M) -> String = x.mm(K.new)
+puts via(A.new), via(Sc.up(B.new))
+using Sc2
+puts via(A.new), via(Sc.up(B.new))
+puts B.new.m(K.new)
