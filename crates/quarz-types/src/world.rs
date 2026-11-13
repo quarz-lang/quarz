@@ -550,6 +550,11 @@ pub struct World {
     /// (`Checker::resolve_pretyped`), which clears it.
     #[serde(skip)]
     pub undecided_bound_seen: std::cell::RefCell<Option<String>>,
+    /// How many of `undecided_refusals` were such bounds (the others are
+    /// Shareable checks): an overloaded call's error names the bound only
+    /// when no Shareable check refused.
+    #[serde(skip)]
+    pub undecided_bound_refusals: std::cell::Cell<u64>,
     #[serde(skip)]
     subtype_depth: std::cell::Cell<u32>,
     /// The subtype questions being answered: one met again is answered
@@ -1891,6 +1896,8 @@ impl World {
                 if !self.refuse_undecided() {
                     return true;
                 }
+                self.undecided_bound_refusals
+                    .set(self.undecided_bound_refusals.get() + 1);
                 let target = self.type_name(&Type::Class(ext.target, ext.target_args.clone()));
                 let said = format!(
                     "`{target}`'s extension applies only where `{} <: {}`, which is not known for `{}` here; write the type argument (as `{}[...]`)",

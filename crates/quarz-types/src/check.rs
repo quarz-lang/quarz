@@ -12664,6 +12664,7 @@ impl Checker {
         }
         let (infer, diags, tables) = (self.infer.save(), self.diagnostics.len(), self.table_mark());
         let refusals = self.world.undecided_refusals.get();
+        let bound_refusals = self.world.undecided_bound_refusals.get();
         self.world.undecided_bound_seen.take();
         self.last_winner = None;
         let t = self.resolve_pretyped_once(
@@ -12683,8 +12684,13 @@ impl Checker {
         // back, so the calls around it do not choose again.)
         let winner = self.last_winner.filter(|w| w.0 == expr.id).map(|w| w.1);
         // (A conditional extension's bound not known yet, rather than a
-        // Shareable, #519.)
-        let bound = self.world.undecided_bound_seen.take();
+        // Shareable, #519: only when every refusal was such a bound.)
+        let by_bounds = self.world.undecided_bound_refusals.get() - bound_refusals;
+        let bound = self
+            .world
+            .undecided_bound_seen
+            .take()
+            .filter(|_| by_bounds == self.world.undecided_refusals.get() - refusals);
         // As if known: what it chooses is all that is kept.
         self.infer.restore(infer.clone());
         self.truncate_diagnostics(diags);
@@ -12717,6 +12723,7 @@ impl Checker {
             pre,
         );
         self.world.undecided_refusals.set(refusals);
+        self.world.undecided_bound_refusals.set(bound_refusals);
         if let (Some(w), Some(k)) = (winner, known) {
             if w == k {
                 return t;
