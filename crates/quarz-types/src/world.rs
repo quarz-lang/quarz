@@ -1724,8 +1724,16 @@ impl World {
     /// `include_overrides` for class `id`, each side with how it is seen
     /// from the class. A module's methods are its own and those of its
     /// always-active (prelude) extensions, which the runtime takes too
-    /// (`Interp::find_override`).
+    /// (`Interp::find_override`). Asked under the class's declaration view
+    /// (`declaration_view`, #606).
     pub fn include_overrides_of(&self, id: ClassId) -> Vec<IncludeOverride> {
+        self.with_active(self.declaration_view(id), || {
+            self.include_overrides_here(id)
+        })
+    }
+
+    /// `include_overrides_of` under the extensions active now.
+    fn include_overrides_here(&self, id: ClassId) -> Vec<IncludeOverride> {
         let mut out: Vec<IncludeOverride> = Vec::new();
         let c = self.class(id);
         // (Only a class or module with includes of its own, or that an
@@ -1935,8 +1943,16 @@ impl World {
 
     /// `class_include_overrides` for class `id`, each side with how it is
     /// seen from the class (`module` is the included module, or the one it
-    /// includes, that declares `by`).
+    /// includes, that declares `by`). Asked under the class's declaration
+    /// view (`declaration_view`, #606).
     pub fn class_include_overrides_of(&self, id: ClassId) -> Vec<IncludeOverride> {
+        self.with_active(self.declaration_view(id), || {
+            self.class_include_overrides_here(id)
+        })
+    }
+
+    /// `class_include_overrides_of` under the extensions active now.
+    fn class_include_overrides_here(&self, id: ClassId) -> Vec<IncludeOverride> {
         let mut out: Vec<IncludeOverride> = Vec::new();
         let c = self.class(id);
         // (A module too: its own includes' pairs, #536.)
@@ -2953,8 +2969,15 @@ impl World {
     /// The override table's entry for method `m`: the methods of its
     /// owner's ancestors (with its own type parameters) it replaces
     /// (`replaces`). What `RtMethod::overrides` ships and every reader
-    /// takes (#536 step 1).
+    /// takes (#536 step 1). Asked under its owner's declaration view
+    /// (`declaration_view`, #606), whatever is active where it is asked.
     pub fn overrides(&self, m: MethodId) -> Vec<MethodId> {
+        let owner = self.method(m).owner;
+        self.with_active(self.declaration_view(owner), || self.overrides_here(m))
+    }
+
+    /// `overrides` under the extensions active now.
+    fn overrides_here(&self, m: MethodId) -> Vec<MethodId> {
         let ancs = self.own_ancestors(self.method(m).owner);
         self.overrides_with(
             m,
@@ -3271,9 +3294,20 @@ impl World {
                 let a = ancs
                     .entry(owner)
                     .or_insert_with(|| self.own_ancestors_under(owner, &conf));
-                self.overrides_with(m, a, &types, &exts)
+                // (Under the owner's declaration view, as `overrides`.)
+                self.with_active(self.declaration_view(owner), || {
+                    self.overrides_with(m, a, &types, &exts)
+                })
             })
             .collect()
+    }
+
+    /// The extensions active where class `c` is declared: those at the top
+    /// level of its group's files (`group_extensions`). The view the
+    /// override table and the include pairs are asked under (#606), the
+    /// one the declarer checks a class's overrides with.
+    pub fn declaration_view(&self, c: ClassId) -> Vec<ExtensionId> {
+        self.group_extensions(self.class(c).file)
     }
 
     /// `Type` and its subclasses (`Meta::ClassDef`), the classes of class
