@@ -2896,64 +2896,13 @@ impl Interp {
     /// was declared (`RtWorld::ext_impls`).
     fn ext_impl(&self, anc: ClassId, abs: MethodId) -> Option<MethodId> {
         let world = &self.program.world;
-        let found = world.extension_impl(anc, abs).or_else(|| {
+        world.extension_impl(anc, abs).or_else(|| {
             world
                 .ext_impls
                 .iter()
                 .find(|(c, a, _)| *c == anc && *a == abs)
                 .map(|(_, _, i)| *i)
-        });
-        // (The oracle: the scan this table replaces, made here as it was,
-        // must give the same answer at every lookup, #536 step 3.)
-        #[cfg(debug_assertions)]
-        {
-            let old = self.ext_impl_at_run_time(anc, abs);
-            assert!(
-                found == old,
-                "internal error: the extension table gives {found:?} for `{}` on `{}`, the scan at run time {old:?}",
-                self.program.method(abs).name,
-                world.class(anc).name
-            );
-        }
-        found
-    }
-
-    /// `ext_impl` as the interpreter computed it before `RtWorld::ext_rescan`
-    /// (#536 step 3): kept in debug builds as the oracle of the table.
-    #[cfg(debug_assertions)]
-    fn ext_impl_at_run_time(&self, anc: ClassId, abs: MethodId) -> Option<MethodId> {
-        let world = &self.program.world;
-        let m = self.program.method(abs);
-        // (Of the extension's methods of the name, one that takes what the
-        // abstract method's callers pass, as the checker's `implements`; an
-        // overload of another arity is not it.)
-        let (amin, amax) = m.positional_arity();
-        let takes = |i: MethodId| {
-            let c = self.program.method(i);
-            let (cmin, cmax) = c.positional_arity();
-            !c.is_abstract
-                && c.has_block == m.has_block
-                && cmin <= amin
-                && cmax >= amax
-                && c.keywords_accept(m)
-        };
-        for ext in &world.extensions {
-            if ext.target == anc && world.extension_dispatches(ext, m.owner) {
-                if let Some(ids) = ext.methods.get(&m.name) {
-                    let exact = ids
-                        .iter()
-                        .find(|i| takes(**i) && self.same_signature(**i, abs));
-                    if let Some(i) = exact.or_else(|| ids.iter().find(|i| takes(**i))) {
-                        return Some(*i);
-                    }
-                }
-            }
-        }
-        world
-            .ext_impls
-            .iter()
-            .find(|(c, a, _)| *c == anc && *a == abs)
-            .map(|(_, _, i)| *i)
+        })
     }
 
     /// A method of `cid` (or of an ancestor before the owner of `mid`)
@@ -3035,39 +2984,6 @@ impl Interp {
             }
         }
         None
-    }
-
-    /// Whether `a` stands in for `b` by signature, for
-    /// `ext_impl_at_run_time`'s choice among an extension's methods (the
-    /// oracle of `RtWorld::ext_rescan`, whose `same_signature` this was).
-    #[cfg(debug_assertions)]
-    fn same_signature(&self, a: MethodId, b: MethodId) -> bool {
-        let (a, b) = (self.program.method(a), self.program.method(b));
-        let same_ty = |p: &quarz_ir::RtParam, q: &quarz_ir::RtParam| {
-            p.ty == q.ty || p.ty.is_none() || q.ty.is_none()
-        };
-        a.positional_params().count() == b.positional_params().count()
-            && a.positional_params()
-                .zip(b.positional_params())
-                .all(|(p, q)| p.kind == q.kind && same_ty(p, q))
-            && a.keywords_accept(b)
-            // (Both with a block or neither, as the checker has it:
-            // `block_ty` is `None` for no block too.)
-            && a.has_block == b.has_block
-            && (a.block_ty == b.block_ty || a.block_ty.is_none() || b.block_ty.is_none())
-            && a.params
-                .iter()
-                .filter(|p| matches!(p.kind, RtParamKind::KeywordOnly | RtParamKind::KeywordRest))
-                .all(|p| {
-                    // (By name, and `**rest` with `**rest`.)
-                    b.params
-                        .iter()
-                        .find(|q| {
-                            q.kind == p.kind
-                                && (q.kind == RtParamKind::KeywordRest || q.name == p.name)
-                        })
-                        .is_none_or(|q| same_ty(p, q))
-                })
     }
 
     /// Find a method by name on a class (first match in resolution order
