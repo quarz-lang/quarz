@@ -2758,6 +2758,13 @@ impl<'ast> Declarer<'ast> {
                         if !replaces {
                             continue;
                         }
+                        // (A prelude method over a program's module, which
+                        // an extension makes the prelude class include: the
+                        // pair is checked and reported at the extension,
+                        // `check_std_overrides_of_extension_modules`.)
+                        if m.file == 0 && self.world.method(o).file != 0 {
+                            continue;
+                        }
                         // (A module's class method that a class method of
                         // the class itself hides runs in place of none.)
                         if x != id && m.singleton {
@@ -2818,8 +2825,8 @@ impl<'ast> Declarer<'ast> {
 
     /// A std (prelude) class's own method overrides the method of a module
     /// an extension of it or of an ancestor includes, as a program class's
-    /// does (docs/01 §7, (g)); the prelude's classes are not checked by
-    /// `check_override_returns`, so the pairs are checked here, at the
+    /// does (docs/01 §7, (g)); `check_override_returns` leaves a prelude
+    /// method over a program's module to this check, which reports it at the
     /// extension: `hash -> String` in a module `extension Object` includes
     /// is an error, `Int#hash` returning Int (#536).
     fn check_std_overrides_of_extension_modules(&mut self) {
