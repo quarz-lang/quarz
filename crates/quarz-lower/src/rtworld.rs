@@ -506,8 +506,8 @@ pub fn declared(world: &World, out: &types::Output) -> RtWorld {
 /// - #529: the record's witness and the row are methods of the same name
 ///   of two different extensions of the same target;
 /// - #662: the class has the requirement's module on its own side (the
-///   record's conformance is the class's own) and the row is a scoped
-///   extension's own method.
+///   record's conformance is the class's own) and the row is an
+///   extension's own method, scoped or top-level.
 ///
 /// `QUARZ_WITNESS_ORACLE=report` prints every disagreement and the
 /// counts, the excluded ones by family (a test counts them, so that S2
@@ -560,12 +560,7 @@ fn witness_oracle(world: &World, rt: &RtWorld) {
             {
                 Some(529)
             }
-            (_, Some(b))
-                if ext.is_none()
-                    && ext_of(b).is_some_and(|y| world.extensions[y as usize].module.is_some()) =>
-            {
-                Some(662)
-            }
+            (_, Some(b)) if ext.is_none() && ext_of(b).is_some() => Some(662),
             _ => None,
         };
         let kind = if ext.is_some() { "ext" } else { "own" };

@@ -398,6 +398,14 @@ fn the_witness_oracle_excludes_only_529_and_662() {
         s.contains("ext 0/") && s.contains("own 0/") && s.contains("excluded #529 0, #662 1"),
         "{s}"
     );
+    // (#662 with a top-level extension: `D < A` includes `M` itself, `A`
+    // has its own `m` and a top-level extension of `A` its own `m` too.)
+    let s = summary(TOP_662_ORACLE);
+    assert!(
+        s.contains("ext 0/") && s.contains("own 0/") && s.contains("#662 1"),
+        "{s}"
+    );
 }
+const TOP_662_ORACLE: &str = "module M\n  abstract def m -> Int\nend\nclass A\n  def initialize; end\n  def m -> Int = 10\nend\nclass D < A\n  include M\n  def initialize; super; end\nend\nextension A\n  include M\n  def m -> Int = 100\nend\ndef via(v: M) -> Int = v.m\nputs via(D.new)\n";
 const R529_ORACLE: &str = "module PI\n  abstract def parse(s: String) -> Int\n  abstract def self.make(s: String) -> Int\nend\nmodule PS\n  abstract def parse(s: String) -> String\n  abstract def self.make(s: String) -> String\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\nend\nextension Box[T <: Int]\n  include PI\n  def parse(s: String) -> Int = @v + s.to_i\n  def self.make(s: String) -> Int = 1\nend\nextension Box[T <: String]\n  include PS\n  def parse(s: String) -> String = @v + s\n  def self.make(s: String) -> String = \"two\"\nend\ndef ps(x: PS) -> String = x.parse(\"!\")\na: PS = Box[String].new(\"x\")\np a.parse(\"1\")\np ps(a)\n";
 const T3_ORACLE: &str = "module M\n  abstract def m -> String\nend\nmodule N\n  include M\n  abstract def n -> String\nend\nclass K\n  include M\n  def initialize; end\n  def m -> String = \"own\"\nend\nmodule X\n  extension K\n    include N\n    def m -> String = \"ext-m\"\n    def n -> String = \"ext-n\"\n  end\n  def self.as_n(k: K) -> N = k\n  def self.direct(k: K) -> String = k.m\nend\ndef via_m(x: M) -> String = x.m\ndef via_n(x: N) -> String = x.m + \",\" + x.n\nputs via_m(K.new), via_n(X.as_n(K.new)), X.direct(K.new)\n";
