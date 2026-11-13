@@ -3024,7 +3024,9 @@ impl Interp {
     /// `true`, through `compare` (`compare_with(.., true)`), the element
     /// type bounded by `Comparable`: `Enumerable#sort`/`min`/`max`/`minmax`
     /// (`extension Enumerable[T <: Comparable[T]]`), `Array#<=>`
-    /// (`extension Array[T <: Comparable[T]]`), `Array::Builder#sort_by!`
+    /// (`extension Array[T <: Comparable[T]]`), `Array::Builder#sort!`
+    /// without a block (`extension Array::Builder[T <: Comparable[T]]`,
+    /// #560), `Array::Builder#sort_by!`
     /// (`U <: Comparable[U]`), `Enumerable#sort_pairs` (`K <: Comparable[K]`,
     /// for `sort_by`'s keys, #579), `Comparable#clamp` (`self` conforms);
     /// `Symbol#<=>` and numbers' `<=>` reach only symbols and numbers.
@@ -3032,8 +3034,7 @@ impl Interp {
     /// `false`: `has_user_method`, natives' optional hooks on any value
     /// (`to_s`, `inspect`, `==` in `values_equal`, `JSON.generate`'s
     /// `to_json`, `Enumerator#rewind`'s `rewind`); `range_covers`
-    /// (`Range[T]` takes any `T`, #559); `Array::Builder#sort!`
-    /// (unbounded, #560); the hash-key probe of
+    /// (`Range[T]` takes any `T`, #559); the hash-key probe of
     /// `==`/`hash`; the block fast path's first lookup.
     pub fn find_method(
         &self,

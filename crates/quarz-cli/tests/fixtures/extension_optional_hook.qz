@@ -56,32 +56,3 @@ case R.new(2)
 when R.new(1)..R.new(3) then puts "in"
 else puts "out"
 end
-
-# `Array::Builder#sort!` (an unbounded element type, #560) compares by
-# name without a witness: a scoped extension's `<=>`, inactive here, is
-# not run (`undefined method`, as for a class with no `<=>`). (`sort_pairs`
-# is bounded by `Comparable` since #579: such a call is refused.)
-class S
-  @v: Int
-  def initialize(@v: Int)
-  end
-  def v -> Int = @v
-end
-module ScopeS
-  extension S
-    include Comparable[S]
-    def <=>(other: S) -> Int
-      puts "scoped <=>"
-      v <=> other.v
-    end
-  end
-end
-begin
-  sb = Array::Builder[S].new
-  sb << S.new(2)
-  sb << S.new(1)
-  sb.sort!
-  p sb.to_a.map { |s| s.v }
-rescue RuntimeError => e
-  puts e.message
-end

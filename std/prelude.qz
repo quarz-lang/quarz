@@ -4555,8 +4555,6 @@ class Array[out T]
     native def clear -> Self
     # Reverses the elements in place, and returns the builder.
     native def reverse! -> Self
-    # Sorts the elements in ascending order (by `<=>`), and returns the builder.
-    native def sort! -> Self
     # Replaces each element with the block's result for it, and returns the builder.
     native def map!(&: (T) -> T) -> Self
     # Keeps the elements for which the block is truthy, and returns the builder.
@@ -4647,6 +4645,13 @@ class Array[out T]
     # The elements' `inspect` in brackets, as `Array#inspect`.
     native def inspect -> String
   end
+end
+
+# A builder of comparable elements sorts them in place (with a block,
+# `Array::Builder#sort!` sorts any elements).
+extension Array::Builder[T <: Comparable[T]]
+  # Sorts the elements in ascending order (by `<=>`), and returns the builder.
+  native def sort! -> Self
 end
 
 # Arrays of comparable elements compare element by element (as tuples

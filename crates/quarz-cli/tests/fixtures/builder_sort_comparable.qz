@@ -1,0 +1,36 @@
+# `Array::Builder#sort!` without a block takes comparable elements only
+# (`extension Array::Builder[T <: Comparable[T]]`, #560) and compares
+# them through the conformance's witness, as `Array#sort` does; with a
+# block it sorts any elements.
+b = Array::Builder[Int].new
+b << 3
+b << 1
+b << 2
+p b.sort!.to_a
+
+o = Array::Builder[Object].new
+o << 2
+o << "x"
+o << 1
+o.sort! { |x, y| x.to_s <=> y.to_s }
+p o.to_a
+
+# Comparable only through a scoped extension, active here: its `<=>`
+# (descending) is the one `sort!` runs.
+class SB
+  @v: Int
+  def initialize(@v: Int); end
+  def v -> Int = @v
+end
+module ScB
+  extension SB
+    include Comparable[SB]
+    def <=>(o: SB) -> Int = o.v - v
+  end
+end
+using ScB
+s = Array::Builder[SB].new
+s << SB.new(1)
+s << SB.new(3)
+s << SB.new(2)
+p s.sort!.to_a.map { |x| x.v }
