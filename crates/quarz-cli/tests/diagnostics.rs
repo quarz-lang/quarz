@@ -3038,3 +3038,26 @@ fn an_extension_does_not_redefine_a_module_method_that_overrides() {
     .join("\n");
     assert!(!out.contains("error:"), "{out}");
 }
+
+#[test]
+fn a_class_side_witness_comes_from_r0s_candidates() {
+    // D (#601, the user's decision on #536): an own include's class method
+    // is a witness for an extension's conformance, as on the instance side.
+    let ok = common::diagnostics(
+        "module Named\n  abstract def self.label -> String\nend\nmodule Lab\n  def self.label -> String = \"Lab\"\nend\nclass B\n  include Lab\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n  end\n  def self.t -> Type[Named] = B\nend\nputs 1\n",
+    )
+    .join("\n");
+    assert!(!ok.contains("error:"), "{ok}");
+    // One of another result type is refused at the extension, checked as
+    // an override of the module's.
+    let out = common::diagnostics(
+        "module Named\n  abstract def self.label -> String\nend\nmodule Lab\n  def self.label -> Int = 1\nend\nclass B\n  include Lab\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n  end\nend\nputs 1\n",
+    )
+    .join("\n");
+    assert!(
+        out.contains(
+            "error: `label` returns Int but `Named.label`, which it overrides, returns String"
+        ),
+        "{out}"
+    );
+}

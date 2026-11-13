@@ -1,0 +1,246 @@
+# D (#601, the user's decision on #536, 2026-11-13): the class side of an
+# extension's conformance takes R0's candidates for a module's class
+# method: the extension's own, the class's and its superclasses' (today's
+# sources: its own class methods, a superclass's, a module a later include
+# of the extension brings, #523), then (new) a module another include of
+# the extension brings (an earlier one, or through an include) and a module
+# on the target's own side (its own includes, a superclass's). Today's
+# sources come first, so a program accepted before keeps its witness
+# (cells 8, 9), and a module's class method with a body stays its own
+# default beside another include's of the name (cell 14: the new sources
+# serve abstract requirements only, as R0's). Each line is the witness the rule gives, called through a
+# `Type[R]` value; a scoped extension's (12, 13) runs where it is active
+# and elsewhere alike (the class side's witness is fixed, #504).
+# Accepted before D: 1, 2, 3, 5 (a module a later include brings), 8, 9, 14;
+# refused before ("must implement `self.label`"): 4, 6, 7, 10, 11, 12, 13.
+# Axes: target (class 1-9, 12, 13; abstract class 10; generic class 11);
+# source (own 1, superclass 2, later include 3, earlier include 4, brought
+# 5, own include 6, superclass's include 7, precedence 8, 9); scope
+# (top-level 1-11, scoped 12-13); backend (VM, and compiled by the build
+# tests). Skipped: a module target (rule B refuses an extension of a module
+# that includes).
+module R1
+  abstract def self.label -> String
+end
+class C1
+  def initialize; end
+end
+extension C1
+  include R1
+  def self.label -> String = "1 own"
+end
+def via1(t: Type[R1]) -> String = t.label
+module R2
+  abstract def self.label -> String
+end
+class P2
+  def self.label -> String = "2 sup"
+end
+class C2 < P2
+  def initialize; end
+end
+extension C2
+  include R2
+end
+def via2(t: Type[R2]) -> String = t.label
+module R3
+  abstract def self.label -> String
+end
+module L3
+  def self.label -> String = "3 later"
+end
+class C3
+  def initialize; end
+end
+extension C3
+  include R3
+  include L3
+end
+def via3(t: Type[R3]) -> String = t.label
+module R4
+  abstract def self.label -> String
+end
+module E4
+  def self.label -> String = "4 earlier"
+end
+class C4
+  def initialize; end
+end
+extension C4
+  include E4
+  include R4
+end
+def via4(t: Type[R4]) -> String = t.label
+module R5
+  abstract def self.label -> String
+end
+module X5
+  def self.label -> String = "5 brought"
+end
+module W5
+  include X5
+end
+class C5
+  def initialize; end
+end
+extension C5
+  include R5
+  include W5
+end
+def via5(t: Type[R5]) -> String = t.label
+module R6
+  abstract def self.label -> String
+end
+module O6
+  def self.label -> String = "6 own include"
+end
+class C6
+  include O6
+  def initialize; end
+end
+extension C6
+  include R6
+end
+def via6(t: Type[R6]) -> String = t.label
+module R7
+  abstract def self.label -> String
+end
+module O7
+  def self.label -> String = "7 superclass include"
+end
+class P7
+  include O7
+end
+class C7 < P7
+  def initialize; end
+end
+extension C7
+  include R7
+end
+def via7(t: Type[R7]) -> String = t.label
+module R8
+  abstract def self.label -> String
+end
+module E8
+  def self.label -> String = "8 earlier"
+end
+class P8
+  def self.label -> String = "8 sup"
+end
+class C8 < P8
+  def initialize; end
+end
+extension C8
+  include E8
+  include R8
+end
+def via8(t: Type[R8]) -> String = t.label
+module R9
+  abstract def self.label -> String
+end
+module L9
+  def self.label -> String = "9 later"
+end
+module O9
+  def self.label -> String = "9 own include"
+end
+class C9
+  include O9
+  def initialize; end
+end
+extension C9
+  include R9
+  include L9
+end
+def via9(t: Type[R9]) -> String = t.label
+module R10
+  abstract def self.label -> String
+end
+module O10
+  def self.label -> String = "10 abstract own include"
+end
+abstract class C10
+  include O10
+end
+extension C10
+  include R10
+end
+def via10(t: Type[R10]) -> String = t.label
+module R11
+  abstract def self.label -> String
+end
+module O11
+  def self.label -> String = "11 generic own include"
+end
+class C11[T]
+  include O11
+  def initialize; end
+end
+extension C11[T]
+  include R11
+end
+def via11(t: Type[R11]) -> String = t.label
+module R12
+  abstract def self.label -> String
+end
+module E12
+  def self.label -> String = "12 scoped earlier"
+end
+class C12
+  def initialize; end
+end
+module S12
+  extension C12
+    include E12
+    include R12
+  end
+  def self.t -> Type[R12] = C12
+  def self.here -> String = t.label
+end
+def via12(t: Type[R12]) -> String = t.label
+module R13
+  abstract def self.label -> String
+end
+module O13
+  def self.label -> String = "13 scoped own include"
+end
+class C13
+  include O13
+  def initialize; end
+end
+module S13
+  extension C13
+    include R13
+  end
+  def self.t -> Type[R13] = C13
+  def self.here -> String = t.label
+end
+def via13(t: Type[R13]) -> String = t.label
+module R14
+  def self.label -> String = "14 default"
+end
+module E14
+  def self.label -> String = "14 earlier"
+end
+class C14
+  def initialize; end
+end
+extension C14
+  include E14
+  include R14
+end
+def via14(t: Type[R14]) -> String = t.label
+puts via1(C1)
+puts via2(C2)
+puts via3(C3)
+puts via4(C4)
+puts via5(C5)
+puts via6(C6)
+puts via7(C7)
+puts via8(C8)
+puts via9(C9)
+puts via10(C10)
+puts via11(C11)
+puts S12.here, via12(S12.t)
+puts S13.here, via13(S13.t)
+puts via14(C14)
