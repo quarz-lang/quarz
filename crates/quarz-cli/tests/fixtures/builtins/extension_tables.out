@@ -1,7 +1,7 @@
 extA
 C own
-extD
-g:extD
+C own
+g:C own
 Foo(2) 3 Foo(2)
 Bar(101) 111 Bar(101)
 Sub Sub

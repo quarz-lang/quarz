@@ -505,18 +505,16 @@ pub fn declared(world: &World, out: &types::Output) -> RtWorld {
 /// (`World::witness_record`) against what the run time's rows run
 /// (`override_rows`), each record entry resolved for its class as
 /// `find_override` resolves a recorded class or module method. Every
-/// disagreement is an internal error, except the two families S2 changes
-/// (the record is right there; the rows' answer is the bug), told by
-/// their shape:
-/// - #529: the record's witness and the row are methods of the same name
-///   of two different extensions of the same target;
-/// - #662: the class has the requirement's module on its own side (the
-///   record's conformance is the class's own) and the row is an
-///   extension's own method, scoped or top-level.
+/// disagreement is an internal error, except the family S2 changes (the
+/// record is right there; the rows' answer is the bug), told by its
+/// shape: #662, the class has the requirement's module on its own side
+/// (the record's conformance is the class's own) and the row is an
+/// extension's own method, scoped or top-level. (#529's family, two
+/// extensions of one target, went with #665's decision (α).)
 ///
 /// `QUARZ_WITNESS_ORACLE=report` prints every disagreement and the
-/// counts, the excluded ones by family (a test counts them, so that S2
-/// shows them gone). Release builds compute nothing here.
+/// counts, the excluded ones (a test counts them, so that S2 shows them
+/// gone). Release builds compute nothing here.
 fn witness_oracle(world: &World, rt: &RtWorld) {
     let report = std::env::var("QUARZ_WITNESS_ORACLE").as_deref() == Ok("report");
     if !cfg!(debug_assertions) && !report {
@@ -527,8 +525,7 @@ fn witness_oracle(world: &World, rt: &RtWorld) {
         let mi = world.method(m);
         format!("{}#{}", world.class(mi.owner).name, mi.name)
     };
-    let (mut ext_n, mut own_n, mut ext_bad, mut own_bad, mut ex_529, mut ex_662) =
-        (0, 0, 0, 0, 0, 0);
+    let (mut ext_n, mut own_n, mut ext_bad, mut own_bad, mut ex_662) = (0, 0, 0, 0, 0);
     for (c, r, w, ext) in world.witness_record() {
         // (What runs for the key: the override row, `find_override`'s
         // answer; only keys the rows have, a class whose values exist.)
@@ -554,20 +551,7 @@ fn witness_oracle(world: &World, rt: &RtWorld) {
             continue;
         }
         let ext_of = |m: MethodId| world.method(m).extension;
-        let family = match (expected, row) {
-            (Some(a), Some(b))
-                if ext_of(a).zip(ext_of(b)).is_some_and(|(x, y)| {
-                    x != y
-                        && world.extensions[x as usize].target
-                            == world.extensions[y as usize].target
-                        && world.method(a).name == world.method(b).name
-                }) =>
-            {
-                Some(529)
-            }
-            (_, Some(b)) if ext.is_none() && ext_of(b).is_some() => Some(662),
-            _ => None,
-        };
+        let excluded = matches!(row, Some(b) if ext.is_none() && ext_of(b).is_some());
         let kind = if ext.is_some() { "ext" } else { "own" };
         let line = format!(
             "witness-oracle: [{kind}] {} {}: record {}, rows {}",
@@ -576,28 +560,26 @@ fn witness_oracle(world: &World, rt: &RtWorld) {
             expected.map_or("none".to_string(), name),
             row.map_or("none".to_string(), name)
         );
-        match family {
-            Some(529) => ex_529 += 1,
-            Some(_) => ex_662 += 1,
-            None => {
-                if ext.is_some() {
-                    ext_bad += 1;
-                } else {
-                    own_bad += 1;
-                }
-                if !report {
-                    panic!("internal error: the witness record and the rows disagree: {line}");
-                }
+        if excluded {
+            ex_662 += 1;
+        } else {
+            if ext.is_some() {
+                ext_bad += 1;
+            } else {
+                own_bad += 1;
+            }
+            if !report {
+                panic!("internal error: the witness record and the rows disagree: {line}");
             }
         }
         if report {
-            let tag = family.map_or(String::new(), |f| format!("  [excluded: #{f}]"));
+            let tag = if excluded { "  [excluded: #662]" } else { "" };
             eprintln!("{line}{tag}");
         }
     }
     if report {
         eprintln!(
-            "witness-oracle: summary  ext {ext_bad}/{ext_n} disagree, own {own_bad}/{own_n} disagree, excluded #529 {ex_529}, #662 {ex_662}"
+            "witness-oracle: summary  ext {ext_bad}/{ext_n} disagree, own {own_bad}/{own_n} disagree, excluded #662 {ex_662}"
         );
     }
 }

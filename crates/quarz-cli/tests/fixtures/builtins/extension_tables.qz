@@ -4,6 +4,9 @@
 # wherever the value goes. (Not for a module the class includes itself,
 # whose abstract method the class's side implements: the cell where `A`
 # included `M` itself and `extension A` gave `f` is dropped, rule A.)
+# `extension D`'s own `f` makes no conformance, so it is no witness
+# (#665's decision (α)): through `M`, `D` runs `C`'s own `f`, which the
+# override table pairs with `M#f` below `A`.
 
 module M
   abstract def f -> String

@@ -115,18 +115,6 @@ fn modules_an_extension_of_a_std_class_includes_are_checked() {
 const S8: &str = "# std class: one extension, two includes (the last include first)\nmodule M\n  def m -> Int = 1\nend\nmodule N\n  def m -> String = \"N\"\n  def nn -> String = m + \"!\"\nend\nextension Int\n  include N\n  include M\nend\ndef via(v: N) -> String = v.nn\nputs via(5)\n";
 const S6: &str = "# std class: two top-level extensions' modules, one's method over the other's\nmodule M\n  def m -> Int = 1\nend\nmodule N\n  def m -> String = \"N\"\n  def nn -> String = m + \"!\"\nend\nextension Int\n  include M\nend\nextension Int\n  include N\nend\ndef via(v: N) -> String = v.nn\nputs via(5)\n";
 
-/// #529's row choice (two conditional extensions, the wrong one's method
-/// for `PS#parse`) is refused, failing safe; #529 stays open for the
-/// choice itself.
-#[test]
-fn the_529_row_is_refused() {
-    refused(
-        R529,
-        &["error: `Box`'s conformance to `PS` runs `Box#parse` for `PS#parse`"],
-    );
-}
-const R529: &str = "module PI\n  abstract def parse(s: String) -> Int\n  abstract def self.make(s: String) -> Int\nend\nmodule PS\n  abstract def parse(s: String) -> String\n  abstract def self.make(s: String) -> String\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\nend\nextension Box[T <: Int]\n  include PI\n  def parse(s: String) -> Int = @v + s.to_i\n  def self.make(s: String) -> Int = 1\nend\nextension Box[T <: String]\n  include PS\n  def parse(s: String) -> String = @v + s\n  def self.make(s: String) -> String = \"two\"\nend\ndef ps(x: PS) -> String = x.parse(\"!\")\na: PS = Box[String].new(\"x\")\np a.parse(\"1\")\np ps(a)\n";
-
 /// #629's row (the rescan's overload of another parameter type), never
 /// read, is refused like any other until #629 is decided.
 #[test]
@@ -357,13 +345,14 @@ fn a_compile_time_run_reaching_a_refused_row_does_not_run() {
     }
 }
 
-/// The witness record's oracle (#536 step 3, S1) excludes two families
-/// from its assertion, by their shape: #529's (two conditional extensions'
-/// same-named methods) and #662's (a scoped extension's own method running
-/// for a module the class has itself). S2 makes the rows read the record,
-/// and these counts go to zero.
+/// The witness record's oracle (#536 step 3, S1) excludes one family
+/// from its assertion, by its shape: #662's (a scoped extension's own
+/// method running for a module the class has itself). S2 makes the rows
+/// read the record, and this count goes to zero. (#529's, two conditional
+/// extensions' same-named methods, went with #665's decision (α): the
+/// record and the rows agree on it.)
 #[test]
-fn the_witness_oracle_excludes_only_529_and_662() {
+fn the_witness_oracle_excludes_only_662() {
     let summary = |src: &str| {
         static N: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
@@ -390,12 +379,12 @@ fn the_witness_oracle_excludes_only_529_and_662() {
     };
     let s = summary(R529_ORACLE);
     assert!(
-        s.contains("ext 0/") && s.contains("own 0/") && s.contains("excluded #529 1, #662 0"),
+        s.contains("ext 0/") && s.contains("own 0/") && s.contains("excluded #662 0"),
         "{s}"
     );
     let s = summary(T3_ORACLE);
     assert!(
-        s.contains("ext 0/") && s.contains("own 0/") && s.contains("excluded #529 0, #662 1"),
+        s.contains("ext 0/") && s.contains("own 0/") && s.contains("excluded #662 1"),
         "{s}"
     );
     // (#662 with a top-level extension: `D < A` includes `M` itself, `A`
@@ -411,7 +400,7 @@ fn the_witness_oracle_excludes_only_529_and_662() {
     // exclusion.)
     let s = summary(R672_ORACLE);
     assert!(
-        s.contains("ext 0/") && s.contains("own 0/") && s.contains("excluded #529 0, #662 0"),
+        s.contains("ext 0/") && s.contains("own 0/") && s.contains("excluded #662 0"),
         "{s}"
     );
     // (The same method of another result type: refused as an override.)

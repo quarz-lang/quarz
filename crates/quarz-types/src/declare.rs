@@ -4523,6 +4523,8 @@ impl<'ast> Declarer<'ast> {
                 .map(|(k, _)| k)
                 .collect();
             let mut by_extension: Vec<(String, ClassId, String)> = Vec::new();
+            // (The conformances that hold for the class, once.)
+            let chosen = self.world.chosen_conformances(id);
             for anc in &ancestors {
                 for ids in self.world.class(*anc).methods.values() {
                     for mid in ids {
@@ -4534,19 +4536,31 @@ impl<'ast> Declarer<'ast> {
                             None => missing.push((m.name.clone(), *anc)),
                             // An extension's method (active where the class
                             // is declared) implements it: it does wherever
-                            // the value goes (`World::ext_impls`).
+                            // the value goes (`World::ext_impls`), but only
+                            // for a conformance its own extension makes
+                            // (docs/01 §7's exception; #665's decision (α)),
+                            // the one that holds for the class:
+                            // another extension's method of the name, below
+                            // that conformance's class or of the same
+                            // target, is not its witness.
                             Some(i) if self.world.method(i).extension.is_some() => {
+                                let ext = self.world.method(i).extension;
                                 if own_side.contains(anc) {
                                     by_extension.push((
                                         m.name.clone(),
                                         *anc,
-                                        self.world.extension_label(
-                                            self.world.method(i).extension.unwrap_or_default(),
-                                        ),
+                                        self.world.extension_label(ext.unwrap_or_default()),
                                     ));
                                 }
-                                impls.push((id, *mid, i));
-                                found_impls.push((i, *mid, *anc));
+                                // (The conformance that holds for the class,
+                                // the witness record's rule 1.)
+                                let makes = chosen
+                                    .iter()
+                                    .any(|(src, k, _)| *k == *anc && src.map(|(e, _)| e) == ext);
+                                if makes {
+                                    impls.push((id, *mid, i));
+                                    found_impls.push((i, *mid, *anc));
+                                }
                             }
                             // A concrete method further up the chain than
                             // the abstract one (`A#<=>` for `Comparable`

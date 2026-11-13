@@ -1,0 +1,165 @@
+# An extension's own method is the witness only of the conformance its
+# own extension makes (docs/01 §7; #665's decision (α), which also
+# closes #529).
+#
+# 1. Below a conformance an extension of `A` makes, another extension's
+#    method of `C < A` (or two of them, #665) is not the witness: a call
+#    through `M` runs `A`'s extension's `m`. A direct call on `D` sees its
+#    extension's method.
+# 2. Two conditional extensions of `Box` with disjoint bounds each make a
+#    conformance and define `parse` (#529): a call through `PS` on a
+#    `Box[String]` runs the `PS` extension's `parse`, not the other's.
+# 3. A subclass conforming through its own extension (#517's per-class
+#    rule) below a superclass's extension's conformance: the conformance
+#    that holds for `C3` is the nearest, `extension C3`'s, whose witness
+#    R0 takes from `C3`'s side, `G3#m` (1); `A3`'s extension's `m` (101)
+#    is `A3`'s witness only (#665's fuzz programs 260 and 3708, which
+#    recorded both).
+# 4. Another extension's `m` of another result type beside the extension
+#    making the conformance (refused on main as an override of `M4#m`):
+#    a statically bound extension method only, so a direct call where it
+#    is active gives its `String`, and through `M4` the witness, `G4#m`,
+#    gives the `Int`.
+# 5. A requirement of a module the extension's include brings (`N5`
+#    includes `M5`): the conformance to `M5` is the extension's too, so its
+#    `m` is the witness through `M5` and through `N5` (5, 6), for `A5` and
+#    for `C5 < A5`, whose other extension's `m` is not (a direct call where
+#    it is active gives 50); likewise for a conditional extension of a
+#    generic class (7, 8).
+module M
+  abstract def m -> Int
+end
+class A
+  def initialize; end
+end
+class C < A
+  def initialize; super; end
+end
+class D < A
+  def initialize; super; end
+end
+extension A
+  include M
+  def m -> Int = 100
+end
+extension C
+  def m -> Int = 101
+end
+extension C
+  def m -> Int = 102
+end
+extension D
+  def m -> Int = 201
+end
+def via(v: M) -> Int = v.m
+puts via(C.new)
+puts via(D.new)
+puts D.new.m
+
+module PI
+  abstract def parse(s: String) -> Int
+  abstract def self.make(s: String) -> Int
+end
+module PS
+  abstract def parse(s: String) -> String
+  abstract def self.make(s: String) -> String
+end
+class Box[T]
+  @v: T
+  def initialize(@v: T); end
+end
+extension Box[T <: Int]
+  include PI
+  def parse(s: String) -> Int = @v + s.to_i
+  def self.make(s: String) -> Int = 1
+end
+extension Box[T <: String]
+  include PS
+  def parse(s: String) -> String = @v + s
+  def self.make(s: String) -> String = "two"
+end
+def ps(x: PS) -> String = x.parse("!")
+def pi(x: PI) -> Int = x.parse("2")
+a: PS = Box[String].new("x")
+p a.parse("1")
+p ps(a)
+p pi(Box[Int].new(40))
+p Box[Int].new(1).parse("3")
+
+module M3
+  abstract def m -> Int
+  def mm -> String = "#{m + 1}!"
+end
+class G3[T]
+  @v: T
+  def initialize(@v: T); end
+  def m -> T = @v
+end
+class A3 < G3[Int]
+  def initialize; super(1); end
+end
+class C3 < A3
+  def initialize; super; end
+end
+extension C3
+  include M3
+end
+extension A3
+  include M3
+  def m -> Int = 101
+end
+def via3(v: M3) -> String = v.mm
+puts via3(C3.new), via3(A3.new)
+
+module M4
+  abstract def m -> Int
+end
+class G4[T]
+  @v: T
+  def initialize(@v: T); end
+  def m -> T = @v
+end
+class C4 < G4[Int]
+  def initialize; super(7); end
+end
+extension C4
+  include M4
+end
+extension C4
+  def m -> String = "x1"
+end
+def via4(v: M4) -> Int = v.m
+p C4.new.m, via4(C4.new)
+
+module M5
+  abstract def m -> Int
+end
+module N5
+  include M5
+  def nn -> Int = m + 1
+end
+class A5
+  def initialize; end
+end
+class C5 < A5
+  def initialize; super; end
+end
+extension A5
+  include N5
+  def m -> Int = 5
+end
+extension C5
+  def m -> Int = 50
+end
+def viam5(v: M5) -> Int = v.m
+def vian5(v: N5) -> Int = v.nn
+p viam5(A5.new), vian5(A5.new), viam5(C5.new), vian5(C5.new), C5.new.m
+class G5[T]
+  @v: T
+  def initialize(@v: T); end
+end
+extension G5[T <: Int]
+  include N5
+  def m -> Int = 7
+end
+p viam5(G5[Int].new(1)), vian5(G5[Int].new(1))
