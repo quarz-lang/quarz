@@ -10,8 +10,8 @@ class/ext/ext/none: ext ext ext
 class/ext/ext/concrete: ext ext ext
 class/ext/own/none: own own own
 class/ext/own/concrete: own own own
-class/ext/sup/none: sup sup sup
-class/ext/sup/concrete: sup sup sup
+class/ext/sup/none: M M M
+class/ext/sup/concrete: M M M
 class/ext/nmod/none: N N N
 class/ext/nmod/concrete: N N N
 class/ext/default/none: M M M
@@ -20,8 +20,8 @@ class/ext_sub/ext/none: ext ext ext
 class/ext_sub/ext/concrete: ext ext ext
 class/ext_sub/own/none: own own own
 class/ext_sub/own/concrete: own own own
-class/ext_sub/sup/none: sup sup sup
-class/ext_sub/sup/concrete: sup sup sup
+class/ext_sub/sup/none: M M M
+class/ext_sub/sup/concrete: M M M
 class/ext_sub/nmod/none: N N N
 class/ext_sub/nmod/concrete: N N N
 class/ext_sub/default/none: M M M

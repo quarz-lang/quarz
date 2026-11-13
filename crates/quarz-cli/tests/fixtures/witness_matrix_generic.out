@@ -16,8 +16,8 @@ generic/ext/ext/param: ext ext ext
 generic/ext/own/none: own own own
 generic/ext/own/concrete: own own own
 generic/ext/own/param: own own own
-generic/ext/sup/none: sup sup sup
-generic/ext/sup/param: sup sup sup
+generic/ext/sup/none: M M M
+generic/ext/sup/param: M M M
 generic/ext/nmod/none: N N N
 generic/ext/nmod/concrete: N N N
 generic/ext/nmod/param: N N N
@@ -30,8 +30,8 @@ generic/ext_sub/ext/param: ext ext ext
 generic/ext_sub/own/none: own own own
 generic/ext_sub/own/concrete: own own own
 generic/ext_sub/own/param: own own own
-generic/ext_sub/sup/none: sup sup sup
-generic/ext_sub/sup/param: sup sup sup
+generic/ext_sub/sup/none: M M M
+generic/ext_sub/sup/param: M M M
 generic/ext_sub/nmod/none: N N N
 generic/ext_sub/nmod/concrete: N N N
 generic/ext_sub/nmod/param: N N N

@@ -448,9 +448,32 @@ p Box[String].again("5")
 
 #[test]
 fn a_witness_of_an_extensions_conformance_is_checked_at_the_extension() {
-    // #504: a superclass's class method is the witness of a module's for
-    // the class an extension makes conform, checked as an override where
-    // the extension is (wherever it is active).
+    // #504: a superclass's class method is the witness of a module's
+    // abstract one for the class an extension makes conform, checked as an
+    // override where the extension is (wherever it is active). (A module's
+    // class method with a body is its own witness, reached before the
+    // superclass, #669's decision (y): accepted, below.)
+    let out = common::diagnostics(
+        r#"module Parsable
+  abstract def self.describe -> String
+end
+class A
+  def self.describe -> Int = 1
+end
+class B < A
+end
+module X
+  extension B
+    include Parsable
+  end
+end
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("10:13: error: `describe` returns Int but `Parsable.describe`, which it overrides, returns String"),
+        "{out}"
+    );
     let out = common::diagnostics(
         r#"module Parsable
   def self.describe -> String = "parsable"
@@ -468,8 +491,120 @@ end
 "#,
     )
     .join("\n");
+    assert!(!out.contains("error:"), "{out}");
+}
+
+#[test]
+fn another_extensions_module_supplies_no_witness() {
+    // #669's decision (y), with R0 and D: the class-side witness is looked
+    // for in the class's order with this extension alone active, so a
+    // scoped extension of the superclass active where it is declared
+    // (`extension P17; include Q17`) supplies none: an extension completes
+    // its conformance itself. Refused on both sides, as R0 refuses the
+    // instance side's mirror.
+    let out = common::diagnostics(
+        r#"module R17
+  abstract def self.label -> String
+end
+module Q17
+  def self.label -> String = "17 superclass's extension"
+end
+class P17
+end
+class C17 < P17
+  def initialize; end
+end
+module S17
+  extension P17
+    include Q17
+  end
+  extension C17
+    include R17
+  end
+  def self.via17(t: Type[R17]) -> String = t.label
+  def self.run -> Void
+    puts via17(C17), C17.label
+  end
+end
+S17.run
+"#,
+    )
+    .join("\n");
     assert!(
-        out.contains("10:13: error: `describe` returns Int but `Parsable.describe`, which it overrides, returns String"),
+        out.contains("error: `C17` must implement `self.label` (abstract in `R17`, which this extension includes)"),
+        "{out}"
+    );
+    let out = common::diagnostics(
+        r#"module R17
+  abstract def label -> String
+end
+module Q17
+  def label -> String = "17 superclass's extension"
+end
+class P17
+  def initialize; end
+end
+class C17 < P17
+  def initialize; super; end
+end
+module S17
+  extension P17
+    include Q17
+  end
+  extension C17
+    include R17
+  end
+  def self.via17(v: R17) -> String = v.label
+  def self.run -> Void
+    puts via17(C17.new)
+  end
+end
+S17.run
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("error: this extension includes `R17` but nothing here implements `label`: define it in the extension or in `C17`"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_module_default_witness_checks_new_for_the_class() {
+    // #669's decision (y): `M.make`, with a body, is its own witness for
+    // `A` (reached before the superclass's `Base.make`), so its `new` runs
+    // for `A` through `Type[M]`, whose `initialize` does not take its
+    // arguments: refused (the program `extension_class_side_no_dispatch`
+    // ran before the decision; the fixture keeps its abstract variant).
+    let out = common::diagnostics(
+        r#"# An extension's include makes no override of a superclass's class method
+# at run time (#504): `Base.make`, the witness, runs for `A` through
+# `Type[Base]`, though `A` includes another module itself.
+module Z
+  def z -> Int = 0
+end
+module M
+  def self.make -> Self = new
+end
+class Base
+  @i: Int
+  def initialize(@i: Int); end
+  def self.make -> Self = new(1)
+  def i -> Int = @i
+end
+class A < Base
+  include Z
+end
+extension A
+  include M
+end
+def k(t: Type[Base]) -> Base = t.make
+puts k(A).i + 1
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("error: `Base#initialize`, which `A` builds with, does not take the arguments of `new` in `M.make`, which runs for `A` through its conformance by an extension"),
         "{out}"
     );
 }
@@ -929,9 +1064,11 @@ end
             "`d` returns Int but `M.d`, which it overrides, returns String",
         ),
         (
+            // (`M.d` abstract: with a body it would be its own witness,
+            // reached before the superclass, #669's decision (y).)
             "witness of another type, sup (class)",
             r#"module M
-  def self.d -> String = "M"
+  abstract def self.d -> String
 end
 class B
   def initialize; end
@@ -1143,9 +1280,11 @@ end
             "`d` returns Int but `M.d`, which it overrides, returns String",
         ),
         (
+            // (`M.d` abstract: with a body it would be its own witness,
+            // reached before the superclass, #669's decision (y).)
             "witness of another type, sup (generic)",
             r#"module M
-  def self.d -> String = "M"
+  abstract def self.d -> String
 end
 class B[U]
   def initialize; end

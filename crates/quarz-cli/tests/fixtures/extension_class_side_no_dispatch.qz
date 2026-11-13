@@ -1,11 +1,16 @@
 # An extension's include makes no override of a superclass's class method
-# at run time (#504): `Base.make`, the witness, runs for `A` through
-# `Type[Base]`, though `A` includes another module itself.
+# at run time (#504): `Base.make` runs for `A` through `Type[Base]`,
+# though `A` includes another module itself. `M.make` is abstract, so the
+# class-side order with the extension active passes over it to
+# `Base.make`, the witness. (With a body, `M.make` would be its own
+# witness, #669's decision (y), and its `new` would run for `A`, whose
+# `initialize` does not take its arguments: refused, diagnostics.rs
+# `a_module_default_witness_checks_new_for_the_class`.)
 module Z
   def z -> Int = 0
 end
 module M
-  def self.make -> Self = new
+  abstract def self.make -> Self
 end
 class Base
   @i: Int

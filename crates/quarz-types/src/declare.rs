@@ -1318,22 +1318,7 @@ impl<'ast> Declarer<'ast> {
         let includes = self.world.extensions[e.id as usize].includes.clone();
         // (The last written first, as the resolution order has them, so a
         // later include's witness comes first, #523.)
-        for (i, t) in includes.iter().cloned().enumerate().rev() {
-            // (The modules included after it, with what they include: their
-            // class methods take an earlier module's place, as an own
-            // include's do, `class_include_overrides`.)
-            // (The last written first, as the resolution order has them:
-            // the nearest later include is not the one that runs.)
-            let later: Vec<ClassId> = includes[i + 1..]
-                .iter()
-                .rev()
-                .filter_map(|t| match t {
-                    Type::Class(m, _) => Some(*m),
-                    _ => None,
-                })
-                .flat_map(|m| self.world.ancestor_ids(m))
-                .filter(|m| self.world.class(*m).kind == ClassKind::Module)
-                .collect();
+        for t in includes.iter().cloned().rev() {
             if let Type::Class(mid, margs) = t {
                 if self.has_static_defs(mid) {
                     let mname = self.world.class(mid).name.clone();
@@ -1345,7 +1330,7 @@ impl<'ast> Declarer<'ast> {
                     );
                     continue;
                 }
-                self.check_extension_class_side(e.id, mid, margs, &later, e.def.target.span);
+                self.check_extension_class_side(e.id, mid, margs, e.def.target.span);
             }
         }
     }
@@ -1366,7 +1351,6 @@ impl<'ast> Declarer<'ast> {
         ext: ExtensionId,
         module: ClassId,
         margs: Vec<Type>,
-        later: &[ClassId],
         span: Span,
     ) {
         let target = self.world.extensions[ext as usize].target;
@@ -1411,6 +1395,14 @@ impl<'ast> Declarer<'ast> {
             .collect();
         let instance = Type::Class(target, target_args);
         let mut missing: Vec<(String, String)> = Vec::new();
+        // (The class's class-side order where the extension is declared,
+        // with it active: what a direct call there runs, #669.)
+        let order: Vec<ClassId> = self
+            .world
+            .class_side_with(ext)
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
         // (A module the class includes itself, through its own or a
         // superclass's include, is its own conformance: ordinary dispatch,
         // no witness, #504.)
@@ -1484,109 +1476,32 @@ impl<'ast> Declarer<'ast> {
                     };
                     this.world.takes_calls_of(im, &isubst, &info, &msubst)
                 };
-                // The extension's own, else the first in the class's own
-                // class-side dispatch (`World::class_side_order`: its class
-                // methods, the modules it includes, then a superclass's;
-                // not another extension's, which takes no part in it), as a
-                // direct call on the class finds it (#669's decision,
-                // option 1).
+                // The extension's own, else the first in the class's
+                // class-side order with the extension active
+                // (`class_side_with`: its class methods, its own includes,
+                // the extension's includes, last written first, each with
+                // what it brings, then a superclass's), as a direct call
+                // there finds it (#669's decision, (y)). The requirement's
+                // own module reached, a class method with a body is its
+                // own witness (the module's default); an abstract one is
+                // passed over.
                 let by = own.iter().copied().find(|&i| fits(self, i)).or_else(|| {
-                    self.world
-                        .class_side_order(target)
-                        .into_iter()
-                        .find_map(|c| {
-                            self.world
-                                .class(c)
-                                .singleton_methods
-                                .get(&info.name)
-                                .and_then(|ids| {
-                                    ids.iter()
-                                        .copied()
-                                        .find(|&i| self.world.method(i).owner == c && fits(self, i))
-                                })
-                        })
-                });
-                // Else a module the extension includes after it (the last
-                // written first, #523): its class method of the signature
-                // takes the earlier one's place, checked below as an
-                // override, as an own include's does.
-                let by = by.or_else(|| {
-                    later.iter().find_map(|&x| {
-                        if x == module || self.world.ancestor_ids(module).contains(&x) {
-                            return None;
+                    order.iter().copied().find_map(|c| {
+                        if c == anc {
+                            return (!info.is_abstract).then_some(m);
                         }
                         self.world
-                            .class(x)
+                            .class(c)
                             .singleton_methods
                             .get(&info.name)
                             .and_then(|ids| {
                                 ids.iter().copied().find(|&i| {
                                     let im = self.world.method(i);
-                                    im.owner == x && !im.is_abstract && fits(self, i)
+                                    im.owner == c && !im.is_abstract && fits(self, i)
                                 })
                             })
                     })
                 });
-                // Else the nearest in the included module's own ancestry
-                // (`N`'s `def self.d` over the `M` it includes), as an own
-                // include of `N` would run.
-                let by = by.or_else(|| {
-                    self.world
-                        .ancestor_ids(module)
-                        .into_iter()
-                        .take_while(|&x| x != anc)
-                        .find_map(|x| {
-                            self.world
-                                .class(x)
-                                .singleton_methods
-                                .get(&info.name)
-                                .and_then(|ids| {
-                                    ids.iter().copied().find(|&i| {
-                                        let im = self.world.method(i);
-                                        im.owner == x && !im.is_abstract && fits(self, i)
-                                    })
-                                })
-                        })
-                });
-                // Else, after every source above (D, #601: the class side
-                // takes R0's candidates, the sources it did not take before
-                // coming last so that no accepted program changes witness):
-                // (2) a module another include of this extension brings (an
-                // earlier include, or one brought through an include). (A
-                // module on the target's own side, D's (3), comes first now,
-                // in the class-side order above, #669.)
-                // For an abstract requirement only, as R0's: a module's
-                // class method with a body is its own default, which these
-                // sources never replaced (probe s2c: `N2.m` through
-                // `Type[N2]` stays `N2`'s beside an `N1.m`).
-                let by = by.or_else(|| {
-                    if !info.is_abstract {
-                        return None;
-                    }
-                    let brought = conf
-                        .iter()
-                        .filter(|(src, _, _)| matches!(src, Some((k, _)) if *k == ext))
-                        .map(|(_, k, _)| *k);
-                    let sources: Vec<ClassId> = brought.collect();
-                    sources.into_iter().find_map(|x| {
-                        if x == anc {
-                            return None;
-                        }
-                        self.world
-                            .class(x)
-                            .singleton_methods
-                            .get(&info.name)
-                            .and_then(|ids| {
-                                ids.iter().copied().find(|&i| {
-                                    let im = self.world.method(i);
-                                    im.owner == x && !im.is_abstract && fits(self, i)
-                                })
-                            })
-                    })
-                });
-                // (A default nothing replaces is its own witness: the class
-                // conforms, the module's runs.)
-                let by = by.or((!info.is_abstract).then_some(m));
                 match by {
                     Some(i) if i == m => {
                         let w = ClassWitness {

@@ -4,9 +4,12 @@
 # through `Type[M]`, `T <: M` and a direct call where the extension is
 # active. The expected output was computed from the rules, not taken
 # from a run: the witness is the extension's own `def self.`, else the
-# target's own class method, else a superclass's of the signature,
-# else the nearest override in the included module's ancestry, else
-# the module's default; it runs for the target and its subclasses
+# first of the signature in the target's class-side order with the
+# extension active (its own class methods, its own includes, the
+# extension's includes with what they bring, then a superclass's), the
+# included module's own default where the walk reaches it (#669's
+# decision (y): so the module's default comes before a superclass's
+# method, the `ext/sup` cells); it runs for the target and its subclasses
 # alike, unless a subclass conforms on its own (its own extension's
 # witness); an own include goes by ordinary dispatch.
 # Skipped as identical by the rules or not expressible:

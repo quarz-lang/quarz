@@ -1,6 +1,8 @@
 # class_call_scoped_extension with `using` at file level: `C.tag` runs
-# the extension's module's class method (#580); through `Type[C]` the
-# class's own (here inherited) one, the witness.
+# the extension's module's class method (#580); through `Type[C]`, typed
+# as the module's where the extension is active, the witness, which is
+# the module's own `A.tag` too: the class-side order with the extension
+# active reaches it before the inherited `P.tag` (#669's decision (y)).
 module A
   def self.tag -> Object = "A"
 end
