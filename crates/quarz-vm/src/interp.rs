@@ -2890,10 +2890,38 @@ impl Interp {
     }
 
     /// The extension's method that implements abstract method `abs` for
-    /// class `anc` itself (`RtWorld::ext_impls`): the one an extension that
-    /// makes it conform (`include`) gives, else the one found where the
-    /// class was declared.
+    /// class `anc` itself: the one an extension that makes it conform
+    /// (`include`) gives (`RtWorld::ext_rescan`, the scan of the
+    /// extensions the lowering made), else the one found where the class
+    /// was declared (`RtWorld::ext_impls`).
     fn ext_impl(&self, anc: ClassId, abs: MethodId) -> Option<MethodId> {
+        let world = &self.program.world;
+        let found = world.extension_impl(anc, abs).or_else(|| {
+            world
+                .ext_impls
+                .iter()
+                .find(|(c, a, _)| *c == anc && *a == abs)
+                .map(|(_, _, i)| *i)
+        });
+        // (The oracle: the scan this table replaces, made here as it was,
+        // must give the same answer at every lookup, #536 step 3.)
+        #[cfg(debug_assertions)]
+        {
+            let old = self.ext_impl_at_run_time(anc, abs);
+            assert!(
+                found == old,
+                "internal error: the extension table gives {found:?} for `{}` on `{}`, the scan at run time {old:?}",
+                self.program.method(abs).name,
+                world.class(anc).name
+            );
+        }
+        found
+    }
+
+    /// `ext_impl` as the interpreter computed it before `RtWorld::ext_rescan`
+    /// (#536 step 3): kept in debug builds as the oracle of the table.
+    #[cfg(debug_assertions)]
+    fn ext_impl_at_run_time(&self, anc: ClassId, abs: MethodId) -> Option<MethodId> {
         let world = &self.program.world;
         let m = self.program.method(abs);
         // (Of the extension's methods of the name, one that takes what the
@@ -3009,9 +3037,10 @@ impl Interp {
         None
     }
 
-    /// Whether `a` stands in for `b` by signature, for `ext_impl`'s
-    /// run-time choice among an extension's methods only (the extension
-    /// witnesses, #536 step 3; overrides read `RtMethod::overrides`).
+    /// Whether `a` stands in for `b` by signature, for
+    /// `ext_impl_at_run_time`'s choice among an extension's methods (the
+    /// oracle of `RtWorld::ext_rescan`, whose `same_signature` this was).
+    #[cfg(debug_assertions)]
     fn same_signature(&self, a: MethodId, b: MethodId) -> bool {
         let (a, b) = (self.program.method(a), self.program.method(b));
         let same_ty = |p: &quarz_ir::RtParam, q: &quarz_ir::RtParam| {

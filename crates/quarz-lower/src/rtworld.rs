@@ -412,7 +412,7 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
             file_mains[c.file as usize] = Some(id as ClassId);
         }
     }
-    RtWorld {
+    let mut rt = RtWorld {
         classes,
         methods,
         consts,
@@ -423,13 +423,18 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
             .iter()
             .map(|w| (w.class, w.method, w.by))
             .collect(),
+        ext_rescan: Vec::new(),
         include_overrides: world.include_overrides(),
         class_include_overrides: world.class_include_overrides(),
         top,
         builtin,
         file_names,
         file_mains,
-    }
+    };
+    // (The scan of the extensions the interpreter made at run time, made
+    // once: `RtWorld::ext_rescan`.)
+    rt.rescan_extensions();
+    rt
 }
 
 /// Whether a positional parameter of `m` follows the one named `name`.

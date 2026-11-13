@@ -1693,6 +1693,15 @@ pub struct RtWorld {
     /// through an extension (`World::class_ext_impls`, #504).
     #[serde(default)]
     pub class_ext_impls: Vec<(ClassId, MethodId, MethodId)>,
+    /// (class or module, abstract method, the extension's method): the
+    /// method an extension that targets the class gives for the abstract
+    /// method, where the extension is active everywhere or makes its
+    /// target conform to the method's module (`rescan_extensions`: the
+    /// rescan the interpreter made at run time, `Interp::ext_impl`, made
+    /// once here, #536 step 3). Sorted by class and method
+    /// (`extension_impl`). The runtime reads it before `ext_impls`.
+    #[serde(default)]
+    pub ext_rescan: Vec<(ClassId, MethodId, MethodId)>,
     /// (class, overridden, overriding): the class-relative part of the
     /// override table (`World::include_overrides`, #536): a method of a
     /// module the class includes over a later ancestor's (its superclass's
@@ -1736,6 +1745,116 @@ impl RtWorld {
                 .includes
                 .iter()
                 .any(|m| *m == owner || self.classes[*m as usize].ancestors.contains(&owner))
+    }
+
+    /// The row of `ext_rescan` for class `anc` and abstract method `abs`.
+    pub fn extension_impl(&self, anc: ClassId, abs: MethodId) -> Option<MethodId> {
+        self.ext_rescan
+            .binary_search_by_key(&(anc, abs), |(c, a, _)| (*c, *a))
+            .ok()
+            .map(|i| self.ext_rescan[i].2)
+    }
+
+    /// Fill `ext_rescan`: `rescan` for every class an extension targets
+    /// and every abstract method of the name of one of that extension's
+    /// methods (no other pair can have an answer). Called in two places
+    /// only, never by the runtime: by `quarz_lower::rtworld::build`, over
+    /// the world as built (each REPL input builds the whole world again,
+    /// so the table is made anew there too), and at the end of `shake`,
+    /// which clears the names of the methods it drops and removes them
+    /// from the extensions: a compiled program's runtime used to rescan
+    /// that shaken world, so the table is made again over it, and names
+    /// no dropped method. (It lives here rather than in the lowering
+    /// because `shake` is in this crate.)
+    pub fn rescan_extensions(&mut self) {
+        let mut abstract_by_name: HashMap<&str, Vec<MethodId>> = HashMap::default();
+        for (id, m) in self.methods.iter().enumerate() {
+            if m.is_abstract {
+                abstract_by_name
+                    .entry(m.name.as_str())
+                    .or_default()
+                    .push(id as MethodId);
+            }
+        }
+        let mut keys: Vec<(ClassId, MethodId)> = Vec::new();
+        for ext in &self.extensions {
+            for name in ext.methods.keys() {
+                for abs in abstract_by_name.get(name.as_str()).into_iter().flatten() {
+                    keys.push((ext.target, *abs));
+                }
+            }
+        }
+        keys.sort_unstable();
+        keys.dedup();
+        let rows: Vec<(ClassId, MethodId, MethodId)> = keys
+            .into_iter()
+            .filter_map(|(anc, abs)| self.rescan(anc, abs).map(|i| (anc, abs, i)))
+            .collect();
+        self.ext_rescan = rows;
+    }
+
+    /// The extension's method that implements abstract method `abs` for
+    /// class `anc` itself: the one an extension that makes it conform
+    /// (`include`), or is active everywhere, gives. (Moved as it was from
+    /// the interpreter's `ext_impl`, which made this scan at run time.)
+    fn rescan(&self, anc: ClassId, abs: MethodId) -> Option<MethodId> {
+        let m = self.method(abs);
+        // (Of the extension's methods of the name, one that takes what the
+        // abstract method's callers pass, as the checker's `implements`; an
+        // overload of another arity is not it.)
+        let (amin, amax) = m.positional_arity();
+        let takes = |i: MethodId| {
+            let c = self.method(i);
+            let (cmin, cmax) = c.positional_arity();
+            !c.is_abstract
+                && c.has_block == m.has_block
+                && cmin <= amin
+                && cmax >= amax
+                && c.keywords_accept(m)
+        };
+        for ext in &self.extensions {
+            if ext.target == anc && self.extension_dispatches(ext, m.owner) {
+                if let Some(ids) = ext.methods.get(&m.name) {
+                    let exact = ids
+                        .iter()
+                        .find(|i| takes(**i) && self.same_signature(**i, abs));
+                    if let Some(i) = exact.or_else(|| ids.iter().find(|i| takes(**i))) {
+                        return Some(*i);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Whether `a` stands in for `b` by signature, for `rescan`'s choice
+    /// among an extension's methods only (overrides read
+    /// `RtMethod::overrides`). (Moved as it was from the interpreter.)
+    fn same_signature(&self, a: MethodId, b: MethodId) -> bool {
+        let (a, b) = (self.method(a), self.method(b));
+        let same_ty = |p: &RtParam, q: &RtParam| p.ty == q.ty || p.ty.is_none() || q.ty.is_none();
+        a.positional_params().count() == b.positional_params().count()
+            && a.positional_params()
+                .zip(b.positional_params())
+                .all(|(p, q)| p.kind == q.kind && same_ty(p, q))
+            && a.keywords_accept(b)
+            // (Both with a block or neither, as the checker has it:
+            // `block_ty` is `None` for no block too.)
+            && a.has_block == b.has_block
+            && (a.block_ty == b.block_ty || a.block_ty.is_none() || b.block_ty.is_none())
+            && a.params
+                .iter()
+                .filter(|p| matches!(p.kind, RtParamKind::KeywordOnly | RtParamKind::KeywordRest))
+                .all(|p| {
+                    // (By name, and `**rest` with `**rest`.)
+                    b.params
+                        .iter()
+                        .find(|q| {
+                            q.kind == p.kind
+                                && (q.kind == RtParamKind::KeywordRest || q.name == p.name)
+                        })
+                        .is_none_or(|q| same_ty(p, q))
+                })
     }
 
     /// Membership at run time: whether a value of class `sub` is a `sup`
