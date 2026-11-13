@@ -25,7 +25,6 @@ rustc-hash = "2"
 chrono = "0.4"
 smallvec = "1"
 unicode-segmentation = "1"
-polling = "3"
 # `std/digest.qz` and `std/base64.qz`.
 sha2 = "0.11"
 hmac = "0.13"
@@ -70,6 +69,11 @@ crypto = ["dep:rsa", "dep:rand", "dep:pem-rfc7468", "dep:aes-gcm", "dep:getrando
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# The scheduler's poller off Linux (`sched.rs`); Linux has its own
+# (`epoll.rs`).
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+polling = "3"
 
 # Where the `tls` feature says it looked for the system's certificates.
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]

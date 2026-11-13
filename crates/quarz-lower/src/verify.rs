@@ -1278,9 +1278,9 @@ fn maybe_written(f: &Function) -> Vec<Vec<Vec<bool>>> {
     let mut changed = true;
     while changed {
         changed = false;
-        for bi in 0..nblocks {
+        for (bi, b) in f.blocks.iter().enumerate().take(nblocks) {
             let out = out_of(bi, &entry);
-            for s in quarz_ir::live::successors(&f.blocks[bi]) {
+            for s in quarz_ir::live::successors(b) {
                 for (e, o) in entry[s as usize].iter_mut().zip(&out) {
                     if *o && !*e {
                         *e = true;
@@ -1396,8 +1396,8 @@ pub fn copyprop(old: &Function, new: &Function) -> Vec<Violation> {
                 }
                 k += 1;
             }
-            for k in k..i {
-                if let Inst::Move { dst, src } = ob.insts[k] {
+            for (k, inst) in ob.insts.iter().enumerate().take(i).skip(k) {
+                if let Inst::Move { dst, src } = *inst {
                     removed.entry(dst).or_default().push(src);
                     deleted.insert((bi, k));
                 }
