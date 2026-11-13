@@ -11816,8 +11816,7 @@ impl Checker {
         // Each node's first use in each member's check, compared pairwise.
         let mut by_node: Vec<(NodeId, Vec<(usize, usize)>)> = Vec::new();
         for (k, &(start, end)) in uses.iter().enumerate() {
-            for i in start..end.min(self.self_uses.len()) {
-                let u = &self.self_uses[i];
+            for (i, u) in self.self_uses.iter().enumerate().take(end).skip(start) {
                 // (A call no method answered: an error of its own.)
                 if u.method.is_none() {
                     continue;

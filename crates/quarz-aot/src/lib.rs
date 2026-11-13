@@ -17,8 +17,10 @@ mod unbox;
 // ----- building executables ----------------------------------------------------------
 
 /// The runtime static library compiled programs link against: `$QUARZ_RT_LIB`
-/// or `libquarz_vm.a` next to the running executable (or one directory
-/// up, for `target/debug/deps`).
+/// or `libquarz_vm.a` next to the running executable or in a directory
+/// up to four levels above it: Cargo's profile directory (`target/debug`)
+/// for a test binary, which Cargo puts in `target/debug/deps` up to Rust
+/// 1.99 and in `target/debug/build/<package>/<hash>/out` from 1.100.
 pub fn find_runtime_lib() -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("QUARZ_RT_LIB") {
         let p = PathBuf::from(p);
@@ -28,7 +30,7 @@ pub fn find_runtime_lib() -> Result<PathBuf, String> {
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut dir = exe.parent();
-    for _ in 0..3 {
+    for _ in 0..5 {
         if let Some(d) = dir {
             let candidate = d.join("libquarz_vm.a");
             if candidate.exists() {
