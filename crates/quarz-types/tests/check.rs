@@ -1693,6 +1693,18 @@ fn reraise_block_params_narrowing() {
         "class A\n  protected def f -> Int = 1\n  def g(xs: Array[A]) -> Array[Int] = xs.map(&:f)\nend",
         "`f` is protected for A: `&:f` calls only public methods",
     );
+    // A method reference follows a call's visibility (#582): a private
+    // method only on `self`, a protected one also from an instance of its
+    // class.
+    err(
+        "class C\n  private def secret -> String = \"s\"\nend\nf = C.new.:secret\n",
+        "`secret` is private (in `.:secret`): it is referenced only on `self`",
+    );
+    err(
+        "class C\n  protected def p -> Int = 1\nend\nf = C.new.:p\n",
+        "`p` is protected (in `.:p`)",
+    );
+    ok("class C\n  private def secret -> String = \"s\"\n  def own -> () -> String = self.:secret\n  protected def p -> Int = 1\n  def peer(o: C) -> () -> Int = o.:p\nend\n");
     // A built-in function is no method of the element.
     err("[1].each(&:puts)", "undefined method `puts` for Int");
     // `&:name` chooses as a call does: by the bounds of an extension's

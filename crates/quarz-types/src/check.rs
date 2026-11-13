@@ -6851,6 +6851,32 @@ impl Checker {
                     }
                 };
                 let m = self.world.method(mid).clone();
+                // Visibility, as a call's (#582): a private method only on
+                // `self`, a protected one also from an instance of its
+                // class.
+                let on_self = matches!(recv.kind, ExprKind::SelfRef);
+                if m.visibility == quarz_syntax::ast::Visibility::Private && !on_self {
+                    self.error(
+                        format!(
+                            "`{name}` is private (in `.:{name}`): it is referenced only on `self`"
+                        ),
+                        expr.span,
+                    );
+                    return Type::Nothing;
+                }
+                if m.visibility == quarz_syntax::ast::Visibility::Protected
+                    && !on_self
+                    && !self.may_call_protected(m.owner)
+                {
+                    self.error(
+                        format!(
+                            "`{name}` is protected (in `.:{name}`): it is referenced on another receiver only from an instance of {}",
+                            self.world.class(m.owner).name
+                        ),
+                        expr.span,
+                    );
+                    return Type::Nothing;
+                }
                 // `initialize` runs only from `new` and `super` (docs/01
                 // §3): a reference to it would run it on a made object.
                 if name == "initialize" && !m.singleton {
