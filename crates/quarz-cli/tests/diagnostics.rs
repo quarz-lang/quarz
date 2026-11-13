@@ -409,7 +409,12 @@ end
         out.contains("`Own` already includes `Parsable` (through its own `include`): an extension cannot include it again; override its methods in `Own` itself"),
         "{out}"
     );
-    assert_eq!(out.matches("error:").count(), 2, "{out}");
+    // (The same arguments twice: a second conformance, #517.)
+    assert!(
+        out.contains("31:13: error: `Same` already conforms to `Parsable[Int]` through another extension (a top-level `extension Same`): this extension cannot include it again; a class conforms to a module once"),
+        "{out}"
+    );
+    assert_eq!(out.matches("error:").count(), 3, "{out}");
 }
 
 #[test]
@@ -592,7 +597,13 @@ end
         out.contains("`Box` already includes `Parsable` (through its own `include`): an extension cannot include it again"),
         "{out}"
     );
-    assert_eq!(out.matches("error:").count(), 2, "{out}");
+    // (`Pair[X]` and `Pair[Y]` both including `Parsable` of the target's
+    // parameter: a second conformance, #517.)
+    assert!(
+        out.contains("18:13: error: `Pair` already conforms to `Parsable[A]` through another extension (a top-level `extension Pair`): this extension cannot include it again; a class conforms to a module once"),
+        "{out}"
+    );
+    assert_eq!(out.matches("error:").count(), 3, "{out}");
 }
 
 #[test]
@@ -2324,11 +2335,13 @@ fn a_conditional_extensions_include_beside_a_scoped_one_is_ambiguous() {
 }
 
 /// #577: the pair named is two the others do not override (M2 overrides
-/// M1 but ties with M3), and a module that comes through an extension's
-/// include is said to be brought.
+/// M1, which it includes, but ties with M3), and a module that comes
+/// through an extension's include is said to be brought. (A third
+/// extension including M1 itself, the cell before #517, would bring M1 to
+/// `C` a second time: refused since #517.)
 #[test]
 fn an_ambiguity_names_the_tied_modules() {
-    let src = "module M1\n  def it -> String = \"M1\"\nend\nmodule M2\n  include M1\n  def it -> String = \"M2\"\nend\nmodule M3\n  def it -> String = \"M3\"\nend\nmodule N3\n  include M3\nend\nclass C\n  def initialize; end\nend\nmodule S1\n  extension C\n    include M1\n  end\nend\nmodule S2\n  extension C\n    include M2\n  end\nend\nmodule S3\n  extension C\n    include N3\n  end\nend\ndef f -> String\n  using S1\n  using S2\n  using S3\n  C.new.it\nend\n";
+    let src = "module M1\n  def it -> String = \"M1\"\nend\nmodule M2\n  include M1\n  def it -> String = \"M2\"\nend\nmodule M3\n  def it -> String = \"M3\"\nend\nmodule N3\n  include M3\nend\nclass C\n  def initialize; end\nend\nmodule S2\n  extension C\n    include M2\n  end\nend\nmodule S3\n  extension C\n    include N3\n  end\nend\ndef f -> String\n  using S2\n  using S3\n  C.new.it\nend\n";
     let out = common::diagnostics(src);
     assert!(
         out.iter()
@@ -2610,4 +2623,176 @@ fn element_tests_through_another_member_are_refused() {
             "{src}\n{out:?}"
         );
     }
+}
+
+#[test]
+fn a_class_conforms_to_a_module_once() {
+    // #517: a second extension of a class including a module the class
+    // already conforms to through another extension is an error at the
+    // later one, naming the other: on both sides, whatever the bounds,
+    // wherever declared, directly or through a module it includes.
+    let refused: &[(&str, &str, &str)] = &[
+        (
+            "class side (the issue's reproducer)",
+            r#"module Parsable
+  def self.describe -> String = "Parsable"
+end
+class Same
+end
+module X
+  extension Same
+    include Parsable
+    def self.describe -> String = "X"
+  end
+end
+module Y
+  extension Same
+    include Parsable
+    def self.describe -> String = "Y"
+  end
+  def self.direct -> String = Same.describe
+  def self.t -> Type[Parsable] = Same
+end
+"#,
+            "13:13: error: `Same` already conforms to `Parsable` through another extension (`extension Same` in `X`): this extension cannot include it again; a class conforms to a module once",
+        ),
+        (
+            "instance side",
+            r#"module Named
+  abstract def name -> String
+end
+class Same
+  def initialize; end
+end
+module X
+  extension Same
+    include Named
+    def name -> String = "X"
+  end
+end
+module Y
+  extension Same
+    include Named
+    def name -> String = "Y"
+  end
+end
+"#,
+            "14:13: error: `Same` already conforms to `Named` through another extension (`extension Same` in `X`)",
+        ),
+        (
+            "top-level, then scoped",
+            r#"module Named
+  abstract def name -> String
+end
+class C
+  def initialize; end
+end
+extension C
+  include Named
+  def name -> String = "top"
+end
+module Y
+  extension C
+    include Named
+    def name -> String = "Y"
+  end
+end
+"#,
+            "12:13: error: `C` already conforms to `Named` through another extension (a top-level `extension C`)",
+        ),
+        (
+            "scoped, then top-level",
+            r#"module Named
+  abstract def name -> String
+end
+class C
+  def initialize; end
+end
+module Y
+  extension C
+    include Named
+    def name -> String = "Y"
+  end
+end
+extension C
+  include Named
+  def name -> String = "top"
+end
+"#,
+            "13:11: error: `C` already conforms to `Named` through another extension (`extension C` in `Y`)",
+        ),
+        (
+            "conditional, disjoint bounds",
+            r#"module Named
+  abstract def name -> String
+end
+class Box[T]
+  @v: T
+  def initialize(@v: T)
+  end
+  def v -> T = @v
+end
+extension Box[T <: Int]
+  include Named
+  def name -> String = (v + 1).to_s
+end
+extension Box[T <: String]
+  include Named
+  def name -> String = v
+end
+"#,
+            "14:11: error: `Box` already conforms to `Named` through another extension (a top-level `extension Box`)",
+        ),
+        (
+            "through a module it includes",
+            r#"module Named
+  abstract def name -> String
+end
+module Wrap
+  include Named
+end
+class C
+  def initialize; end
+end
+extension C
+  include Named
+  def name -> String = "top"
+end
+module Y
+  extension C
+    include Wrap
+  end
+end
+"#,
+            "15:13: error: `C` already conforms to `Named` through another extension (a top-level `extension C`): this extension cannot bring it again through `Wrap`",
+        ),
+    ];
+    for (label, src, want) in refused {
+        let out = common::diagnostics(src).join("\n");
+        assert!(out.contains(want), "{label}: {out}");
+        assert_eq!(out.matches("error:").count(), 1, "{label}: {out}");
+    }
+    // A superclass's conformance through an extension does not count: a
+    // subclass may conform on its own.
+    let out = common::diagnostics(
+        r#"module Named
+  abstract def name -> String
+end
+class Base
+  def initialize; end
+end
+class Sub < Base
+end
+extension Base
+  include Named
+  def name -> String = "base"
+end
+extension Sub
+  include Named
+  def name -> String = "sub"
+end
+"#,
+    )
+    .join("\n");
+    assert!(!out.contains("error:"), "{out}");
 }

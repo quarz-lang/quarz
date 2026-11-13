@@ -1409,6 +1409,7 @@ impl<'ast> Declarer<'ast> {
         }
         if !self.check_not_included_already(target, module, span)
             || !self.check_one_conformance(ext, target, module, &margs, span)
+            || !self.check_conforms_once(ext, target, module, &margs, span)
         {
             return;
         }
@@ -1726,11 +1727,7 @@ impl<'ast> Declarer<'ast> {
         span: Span,
     ) -> bool {
         let include = self.world.type_name(&Type::Class(module, margs.to_vec()));
-        let cur = self.world.extensions[ext as usize]
-            .includes
-            .iter()
-            .position(|t| matches!(t, Type::Class(m, a) if *m == module && a.as_slice() == margs))
-            .unwrap_or(0);
+        let cur = self.include_position(ext, module, margs);
         // Every class the conformance reaches (`World::class_side_order`:
         // the target, its subclasses, the classes including a module
         // target), the target first: in each, the generic modules this
@@ -1839,6 +1836,73 @@ impl<'ast> Declarer<'ast> {
             }
         }
         true
+    }
+
+    /// A class conforms to a module at most once through its own
+    /// extensions, on both sides (#517, the user's decision): a module
+    /// that extension `ext`'s include brings to its target (the module
+    /// itself, or one it includes) must not be brought there by an
+    /// earlier extension of the same target, whatever the two extensions'
+    /// bounds (a class value carries no arguments at run time, so nothing
+    /// could choose between the two witnesses) and wherever they are
+    /// declared. The conformances are `World::conformances`. One through
+    /// the class's own `include` is `check_not_included_already`'s, one
+    /// with other arguments is `check_one_conformance`'s, and a
+    /// superclass's extension does not count (a subclass may conform on
+    /// its own). Whether `ext`'s include may stand.
+    fn check_conforms_once(
+        &mut self,
+        ext: ExtensionId,
+        target: ClassId,
+        module: ClassId,
+        margs: &[Type],
+        span: Span,
+    ) -> bool {
+        let cur = self.include_position(ext, module, margs);
+        let conformances = self.world.conformances(target);
+        let mine: Vec<ClassId> = conformances
+            .iter()
+            .filter(|(src, _, _)| *src == Some((ext, cur)))
+            .map(|(_, m, _)| *m)
+            .collect();
+        let Some((k, m, args)) = conformances.iter().find_map(|(src, m, a)| match src {
+            Some((k, _))
+                if *k < ext
+                    && self.world.extensions[*k as usize].target == target
+                    && mine.contains(m) =>
+            {
+                Some((*k, *m, a.clone()))
+            }
+            _ => None,
+        }) else {
+            return true;
+        };
+        let cname = self.world.class(target).name.clone();
+        let mname = self.world.type_name(&Type::Class(m, args));
+        let include = self.world.type_name(&Type::Class(module, margs.to_vec()));
+        let again = if m == module {
+            "include it again".to_string()
+        } else {
+            format!("bring it again through `{include}`")
+        };
+        let label = self.world.extension_label(k);
+        self.error(
+            format!(
+                "`{cname}` already conforms to `{mname}` through another extension ({label}): this extension cannot {again}; a class conforms to a module once"
+            ),
+            span,
+        );
+        false
+    }
+
+    /// The position of `module` with `margs` among extension `ext`'s
+    /// includes.
+    fn include_position(&self, ext: ExtensionId, module: ClassId, margs: &[Type]) -> usize {
+        self.world.extensions[ext as usize]
+            .includes
+            .iter()
+            .position(|t| matches!(t, Type::Class(m, a) if *m == module && a.as_slice() == margs))
+            .unwrap_or(0)
     }
 
     /// The generic modules extension `ext`'s include of `module` (with
