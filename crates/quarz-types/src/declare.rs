@@ -1484,12 +1484,15 @@ impl<'ast> Declarer<'ast> {
                     };
                     this.world.takes_calls_of(im, &isubst, &info, &msubst)
                 };
-                // The extension's own, else the class's (its own class
-                // methods, or a superclass's: not a module's or another
-                // extension's, which take no part in dispatch).
+                // The extension's own, else the first in the class's own
+                // class-side dispatch (`World::class_side_order`: its class
+                // methods, the modules it includes, then a superclass's;
+                // not another extension's, which takes no part in it), as a
+                // direct call on the class finds it (#669's decision,
+                // option 1).
                 let by = own.iter().copied().find(|&i| fits(self, i)).or_else(|| {
                     self.world
-                        .superclass_chain(target)
+                        .class_side_order(target)
                         .into_iter()
                         .find_map(|c| {
                             self.world
@@ -1549,9 +1552,9 @@ impl<'ast> Declarer<'ast> {
                 // takes R0's candidates, the sources it did not take before
                 // coming last so that no accepted program changes witness):
                 // (2) a module another include of this extension brings (an
-                // earlier include, or one brought through an include), then
-                // (3) a module on the target's own side (its own includes
-                // and its superclasses', `ancestors_with_no_extensions`).
+                // earlier include, or one brought through an include). (A
+                // module on the target's own side, D's (3), comes first now,
+                // in the class-side order above, #669.)
                 // For an abstract requirement only, as R0's: a module's
                 // class method with a body is its own default, which these
                 // sources never replaced (probe s2c: `N2.m` through
@@ -1564,13 +1567,7 @@ impl<'ast> Declarer<'ast> {
                         .iter()
                         .filter(|(src, _, _)| matches!(src, Some((k, _)) if *k == ext))
                         .map(|(_, k, _)| *k);
-                    let own_side = self
-                        .world
-                        .ancestors_with_no_extensions(target)
-                        .into_iter()
-                        .map(|(k, _)| k)
-                        .filter(|k| self.world.class(*k).kind == ClassKind::Module);
-                    let sources: Vec<ClassId> = brought.chain(own_side).collect();
+                    let sources: Vec<ClassId> = brought.collect();
                     sources.into_iter().find_map(|x| {
                         if x == anc {
                             return None;

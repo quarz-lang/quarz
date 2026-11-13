@@ -1,24 +1,29 @@
 # D (#601, the user's decision on #536, 2026-11-13): the class side of an
 # extension's conformance takes R0's candidates for a module's class
-# method: the extension's own, the class's and its superclasses' (today's
-# sources: its own class methods, a superclass's, a module a later include
-# of the extension brings, #523), then (new) a module another include of
-# the extension brings (an earlier one, or through an include) and a module
-# on the target's own side (its own includes, a superclass's). Today's
-# sources come first, so a program accepted before keeps its witness
-# (cells 8, 9), and a module's class method with a body stays its own
-# default beside another include's of the name (cell 14: the new sources
-# serve abstract requirements only, as R0's). Each line is the witness the rule gives, called through a
-# `Type[R]` value; a scoped extension's (12, 13) runs where it is active
-# and elsewhere alike (the class side's witness is fixed, #504).
-# Accepted before D: 1, 2, 3, 5 (a module a later include brings), 8, 9, 14;
-# refused before ("must implement `self.label`"): 4, 6, 7, 10, 11, 12, 13.
-# Axes: target (class 1-9, 12, 13; abstract class 10; generic class 11);
-# source (own 1, superclass 2, later include 3, earlier include 4, brought
-# 5, own include 6, superclass's include 7, precedence 8, 9); scope
-# (top-level 1-11, scoped 12-13); backend (VM, and compiled by the build
-# tests). Skipped: a module target (rule B refuses an extension of a module
-# that includes).
+# method: the extension's own, then the target's own class-side dispatch
+# in its order (`World::class_side_order`: its class methods, the modules
+# it includes, then a superclass's with its includes; #669's decision,
+# option 1, 2026-11-14), then a module a later include of the extension
+# brings (#523), then a module another include of the extension brings (an
+# earlier one, or through an include). So the target's own include comes
+# before a later include of the extension (cell 9, which D had the other
+# way) and before a superclass's method (cell 15, #669's reproducer, for
+# the class and a subclass: what `C15.label` runs), and a module's class
+# method with a body stays its own default beside another include's of
+# the name (cell 14: the extension's other includes serve abstract
+# requirements only, as R0's). Each line is the witness the rule gives,
+# called through a `Type[R]` value; a scoped extension's (12, 13) runs
+# where it is active and elsewhere alike (the class side's witness is
+# fixed, #504).
+# Accepted before D: 1, 2, 3, 5 (a module a later include brings), 8, 9,
+# 14, 15; refused before ("must implement `self.label`"): 4, 6, 7, 10, 11,
+# 12, 13. Answers #669 changed: 9 (was "9 later"), 15 (was "15 sup").
+# Axes: target (class 1-9, 12, 13, 15; abstract class 10; generic class
+# 11); source (own 1, superclass 2, later include 3, earlier include 4,
+# brought 5, own include 6, superclass's include 7, precedence 8, 9, 15);
+# scope (top-level 1-11, 15, scoped 12-13); backend (VM, and compiled by
+# the build tests). Skipped: a module target (rule B refuses an extension
+# of a module that includes).
 module R1
   abstract def self.label -> String
 end
@@ -230,6 +235,25 @@ extension C14
   include R14
 end
 def via14(t: Type[R14]) -> String = t.label
+module R15
+  abstract def self.label -> String
+end
+class P15
+  def self.label -> String = "15 sup"
+end
+module O15
+  def self.label -> String = "15 own include"
+end
+class C15 < P15
+  include O15
+  def initialize; end
+end
+class D15 < C15
+end
+extension C15
+  include R15
+end
+def via15(t: Type[R15]) -> String = t.label
 puts via1(C1)
 puts via2(C2)
 puts via3(C3)
@@ -244,3 +268,4 @@ puts via11(C11)
 puts S12.here, via12(S12.t)
 puts S13.here, via13(S13.t)
 puts via14(C14)
+puts via15(C15), via15(D15), C15.label

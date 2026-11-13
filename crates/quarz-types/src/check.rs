@@ -1766,13 +1766,15 @@ impl Checker {
     /// `sid` and a class method named `name`, when a fixed witness of that
     /// name (an extension's own, or a class's) runs for it: the witness's
     /// class, or the class in `sid`'s chain that includes the module the
-    /// witness was recorded for (#504).
-    fn witness_floor(&self, sid: ClassId, name: &str) -> Option<ClassId> {
+    /// witness was recorded for (#504); with the witness itself, which
+    /// runs there (#528, #669: a module's class method as well as a
+    /// class's).
+    fn witness_floor(&self, sid: ClassId, name: &str) -> Option<(ClassId, MethodId)> {
         // (Of several witnesses of the name, for different modules, the
         // highest: below it some witness may run instead of the class's
         // own.)
         let chain = self.world.superclass_chain(sid);
-        let floors: Vec<ClassId> = self
+        let floors: Vec<(ClassId, MethodId)> = self
             .world
             .class_ext_impls
             .iter()
@@ -1785,12 +1787,12 @@ impl Checker {
                 {
                     return None;
                 }
-                self.world.class_side_owner(sid, w.class)
+                self.world.class_side_owner(sid, w.class).map(|f| (f, w.by))
             })
             .collect();
         floors
             .into_iter()
-            .max_by_key(|f| chain.iter().position(|c| c == f).unwrap_or(0))
+            .max_by_key(|(f, _)| chain.iter().position(|c| c == f).unwrap_or(0))
     }
 
     /// Whether extension `ext`'s conformance may hold for class `sid` (its
@@ -2001,8 +2003,28 @@ impl Checker {
                         &class.methods
                     };
                     // (`c` strictly below the witness's class.)
-                    let below_floor = floor
-                        .is_some_and(|f| c != f && self.world.superclass_chain(c).contains(&f));
+                    let below_floor = floor.is_some_and(|(f, _)| {
+                        c != f && self.world.superclass_chain(c).contains(&f)
+                    });
+                    // (At the witness's class, the witness runs: a module's
+                    // class method that the class's include puts in the
+                    // method's place (`class_include_overrides_of`), which
+                    // `c`'s own table does not hold, replaces it as an own
+                    // one would, #528.)
+                    if let Some((_, by)) = floor.filter(|(f, by)| {
+                        *f == c
+                            && !past_module
+                            && self.world.method(*by).owner != c
+                            && (self.replaces_at_run_time(*by, site.id)
+                                || self
+                                    .world
+                                    .class_include_overrides_of(c)
+                                    .iter()
+                                    .any(|o| o.overridden == site.id && o.by == *by))
+                    }) {
+                        overrides = true;
+                        chain.push(by);
+                    }
                     if let Some(ids) = table.get(&mname).filter(|_| !past_module && !below_floor) {
                         if ids.iter().any(|&o| self.replaces_at_run_time(o, site.id)) {
                             overrides = true;
