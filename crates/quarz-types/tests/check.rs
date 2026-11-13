@@ -3634,6 +3634,23 @@ fn a_range_compares_its_bounds() {
 }
 
 #[test]
+fn an_overridden_candidate_is_left_out_of_the_list() {
+    // #624: "no overload … matches" lists a method another candidate
+    // overrides once, as the overriding one, whatever their result types
+    // (`Array#select -> Array[T]` over `Enumerable#select ->
+    // Enumerable[T]`).
+    let errs = diagnostics(
+        "class Member\n  def age -> Int? = nil\nend\np([Member.new].select { |m| m.age > 18 })\n",
+    );
+    let all = errs.join("\n");
+    assert!(
+        all.contains("select(&: (T) -> Object) -> Array[T]"),
+        "{all}"
+    );
+    assert!(!all.contains("-> Enumerable[T]"), "{all}");
+}
+
+#[test]
 fn an_override_with_wider_parameters_keeps_the_result_and_block_types() {
     // The runtime takes a method with wider parameters to override
     // (`rtworld::overridden_methods`): its result and block type are

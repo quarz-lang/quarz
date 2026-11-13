@@ -12636,7 +12636,16 @@ impl Checker {
         let mut kept: Option<KeptFirst> = None;
         // The candidates whose arguments passed and whose block failed.
         let mut block_failed: Vec<(MethodId, HashMap<TypeParamId, Type>)> = Vec::new();
+        // Which candidate each failure is of (filled at the next one), to
+        // leave out of the list a method another candidate overrides
+        // (#624).
+        let mut failure_of: Vec<MethodId> = Vec::new();
+        let mut last_tried: Option<MethodId> = None;
         for (index, (mid, class_subst)) in cands.iter().enumerate().rev() {
+            if let Some(prev) = last_tried {
+                failure_of.resize(failures.len(), prev);
+            }
+            last_tried = Some(*mid);
             if !single
                 && !inferring
                 && fits.iter().any(|f| {
@@ -12997,6 +13006,28 @@ impl Checker {
                 );
             }
             return t;
+        }
+        if let Some(prev) = last_tried {
+            failure_of.resize(failures.len(), prev);
+        }
+        // A candidate another candidate overrides, by the override table
+        // (`overridden_by`), whatever their result types: listed once, as
+        // the overriding one (#624).
+        if failure_of.len() == failures.len() {
+            let hidden = |m: MethodId| {
+                cands
+                    .iter()
+                    .any(|(o, _)| *o != m && self.overridden_by(*o).contains(&m))
+            };
+            let keep: Vec<bool> = failure_of.iter().map(|m| !hidden(*m)).collect();
+            if keep.iter().any(|k| *k) {
+                let mut i = 0;
+                failures.retain(|_| {
+                    let k = keep[i];
+                    i += 1;
+                    k
+                });
+            }
         }
         // Tried from the last: listed in declaration order.
         failures.reverse();
