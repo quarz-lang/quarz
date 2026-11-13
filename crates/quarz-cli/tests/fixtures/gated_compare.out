@@ -1,0 +1,6 @@
+own: 1,2 1 1
+scoped: 1,2 1
+mod: typed 1 gated 1,2 2
+cls: typed 1 gated 1,2 2
+both: typed 1 gated 1,2 2
+sub: typed 1 gated 1,2 2

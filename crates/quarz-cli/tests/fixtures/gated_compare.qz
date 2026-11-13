@@ -1,0 +1,99 @@
+# #599: a conformance-gated send of `<=>` (`sort`, `min`, `clamp`, ...)
+# dispatches `Comparable#<=>` as a call typed through `Comparable` does
+# (the override table, then the extension's witness), not the first
+# `<=>` found by name and arity. Each line prints the typed call's
+# answer and the gated sends', which agree.
+
+# The class's own `<=>(o: Int)` overload beside the one that overrides.
+class Own
+  include Comparable[Own]
+  @v: Int
+  def initialize(@v: Int); end
+  def v -> Int = @v
+  def <=>(o: Int) -> Int = 7
+  def <=>(o: Own) -> Int = v <=> o.v
+end
+o1 = Own.new(1)
+o2 = Own.new(2)
+puts "own: #{[o2, o1].sort.map(&:v).join(",")} #{[o2, o1].min&.v} #{o2.clamp(o1, o1).v}"
+
+# The conformance through a scoped extension, the class's own `<=>(o: Int)`
+# an overload.
+class Sc
+  @v: Int
+  def initialize(@v: Int); end
+  def v -> Int = @v
+  def <=>(o: Int) -> Int = 7
+end
+module ScS
+  extension Sc
+    include Comparable[Sc]
+    def <=>(o: Sc) -> Int = v <=> o.v
+  end
+end
+module UseS
+  using ScS
+  def self.show -> String
+    a = Sc.new(2)
+    b = Sc.new(1)
+    "scoped: #{[a, b].sort.map(&:v).join(",")} #{[a, b].min&.v}"
+  end
+end
+puts UseS.show
+
+# #536 step 3's cells: a conformance through an extension defining `<=>`,
+# beside a module the class includes itself (Mod), the class's own `<=>`
+# (Cls), or both (Both); and a subclass without its own (Sub).
+module Gives
+  def <=>(o: Object) -> Int = 100
+end
+class Mod
+  include Gives
+  @v: Int
+  def initialize(@v: Int); end
+  def v -> Int = @v
+end
+class Cls
+  @v: Int
+  def initialize(@v: Int); end
+  def v -> Int = @v
+  def <=>(o: Cls) -> Int = 200
+end
+class Both
+  include Gives
+  @v: Int
+  def initialize(@v: Int); end
+  def v -> Int = @v
+  def <=>(o: Both) -> Int = 300
+end
+class Sub < Both
+  def initialize(v: Int); super(v); end
+end
+extension Mod
+  include Comparable[Mod]
+  def <=>(o: Mod) -> Int = v <=> o.v
+end
+extension Cls
+  include Comparable[Cls]
+  def <=>(o: Cls) -> Int = v <=> o.v
+end
+extension Both
+  include Comparable[Both]
+  def <=>(o: Both) -> Int = v <=> o.v
+end
+def cmp_mod(a: Comparable[Mod], b: Mod) -> Int = a <=> b
+def cmp_cls(a: Comparable[Cls], b: Cls) -> Int = a <=> b
+def cmp_both(a: Comparable[Both], b: Both) -> Int = a <=> b
+m1 = Mod.new(1)
+m2 = Mod.new(2)
+puts "mod: typed #{cmp_mod(m2, m1)} gated #{[m2, m1].sort.map(&:v).join(",")} #{[m2, m1].max&.v}"
+c1 = Cls.new(1)
+c2 = Cls.new(2)
+puts "cls: typed #{cmp_cls(c2, c1)} gated #{[c2, c1].sort.map(&:v).join(",")} #{[c2, c1].max&.v}"
+b1 = Both.new(1)
+b2 = Both.new(2)
+puts "both: typed #{cmp_both(b2, b1)} gated #{[b2, b1].sort.map(&:v).join(",")} #{[b2, b1].max&.v}"
+s1 = Sub.new(1)
+s2 = Sub.new(2)
+subs: Array[Both] = [s2, s1]
+puts "sub: typed #{cmp_both(s2, s1)} gated #{subs.sort.map(&:v).join(",")} #{subs.max&.v}"

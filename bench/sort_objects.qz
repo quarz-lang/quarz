@@ -1,0 +1,21 @@
+# Sorting objects that are `Comparable` through their own `<=>`: every
+# comparison a native's gated send of `Comparable#<=>` (#599).
+class Item
+  include Comparable[Item]
+  @key: Int
+  def initialize(@key: Int); end
+  def key -> Int = @key
+  def <=>(o: Item) -> Int = @key <=> o.key
+end
+seed = 12345
+items = Array.new(200_000) do |i|
+  seed = (seed * 1103515245 + 12345) % 2147483648
+  Item.new(seed)
+end
+total = 0
+5.times do
+  sorted = items.sort
+  total += sorted[0].key + sorted[-1].key
+  total += (items.min || items[0]).key + (items.max || items[0]).key
+end
+puts total
