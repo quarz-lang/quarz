@@ -1439,11 +1439,19 @@ impl<'ast> Declarer<'ast> {
             let cargs_t = self
                 .conformance_args(ext, &margs, target)
                 .unwrap_or_else(|| margs.clone());
+            // (The modules this extension's includes bring, in the target's
+            // own parameters, after: for D's candidates below.)
+            let conf = self.world.conformances(target);
             let in_target: Vec<(ClassId, Vec<Type>)> = self
                 .world
                 .ancestors_with_no_extensions(target)
                 .into_iter()
                 .chain(self.world.ancestors(module, &cargs_t))
+                .chain(
+                    conf.iter()
+                        .filter(|(src, _, _)| matches!(src, Some((k, _)) if *k == ext))
+                        .map(|(_, k, a)| (*k, a.clone())),
+                )
                 .collect();
             let aargs_t = in_target
                 .iter()
@@ -1536,6 +1544,48 @@ impl<'ast> Declarer<'ast> {
                                     })
                                 })
                         })
+                });
+                // Else, after every source above (D, #601: the class side
+                // takes R0's candidates, the sources it did not take before
+                // coming last so that no accepted program changes witness):
+                // (2) a module another include of this extension brings (an
+                // earlier include, or one brought through an include), then
+                // (3) a module on the target's own side (its own includes
+                // and its superclasses', `ancestors_with_no_extensions`).
+                // For an abstract requirement only, as R0's: a module's
+                // class method with a body is its own default, which these
+                // sources never replaced (probe s2c: `N2.m` through
+                // `Type[N2]` stays `N2`'s beside an `N1.m`).
+                let by = by.or_else(|| {
+                    if !info.is_abstract {
+                        return None;
+                    }
+                    let brought = conf
+                        .iter()
+                        .filter(|(src, _, _)| matches!(src, Some((k, _)) if *k == ext))
+                        .map(|(_, k, _)| *k);
+                    let own_side = self
+                        .world
+                        .ancestors_with_no_extensions(target)
+                        .into_iter()
+                        .map(|(k, _)| k)
+                        .filter(|k| self.world.class(*k).kind == ClassKind::Module);
+                    let sources: Vec<ClassId> = brought.chain(own_side).collect();
+                    sources.into_iter().find_map(|x| {
+                        if x == anc {
+                            return None;
+                        }
+                        self.world
+                            .class(x)
+                            .singleton_methods
+                            .get(&info.name)
+                            .and_then(|ids| {
+                                ids.iter().copied().find(|&i| {
+                                    let im = self.world.method(i);
+                                    im.owner == x && !im.is_abstract && fits(self, i)
+                                })
+                            })
+                    })
                 });
                 // (A default nothing replaces is its own witness: the class
                 // conforms, the module's runs.)
