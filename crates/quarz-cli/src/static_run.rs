@@ -96,6 +96,9 @@ pub struct Runner {
     state: Option<SharedState>,
     world: Option<RtWorld>,
     files: Vec<SourceFile>,
+    /// The safety net refused a row of a compile-time round's tables
+    /// (#645): no compile-time code runs any more in this check.
+    net_refused: bool,
     prepared: bool,
     /// The constants a `def_field` leaves initialized: those of the REPL's
     /// earlier inputs (`continuing`).
@@ -1118,6 +1121,7 @@ impl Runner {
             state: None,
             world: None,
             files,
+            net_refused: false,
             prepared: false,
             keep_consts: 0,
             ends: Default::default(),
@@ -1176,6 +1180,22 @@ impl Runner {
                 callee,
                 self.files.clone(),
             );
+            // The safety net over the round's rows, before its tables are
+            // loaded and anything runs on them (#645): a refused row is an
+            // error at its own place, and no compile-time code runs after
+            // (`execute`, `run_hook`). Checked until it first refuses: the
+            // check fails then, so later rounds and the final net
+            // (`Lowerer::declare`) report nothing again.
+            if !self.net_refused {
+                let world = host.world();
+                let errors = quarz_lower::rows_net(world, &round.delta.world, &|d| {
+                    crate::own_in_app(world, d)
+                });
+                if !errors.is_empty() {
+                    self.net_refused = true;
+                    host.report_errors(errors);
+                }
+            }
             debug_assert_eq!(self.lowerer.done.len(), round.delta.base as usize);
             self.lowerer
                 .done
@@ -1817,6 +1837,14 @@ impl Runner {
         let errors_before = host.error_count();
         let fid = self.lower(host, stmt, callee);
         let callee_name = host.world().method(callee).name.clone();
+        if self.net_refused {
+            return Err(StaticFailure {
+                message: format!(
+                    "`{callee_name}` did not run: the program's conformances make a row the run could reach that the safety net refuses (reported above)"
+                ),
+                notes: Vec::new(),
+            });
+        }
         // Code that failed its check does not run (docs/05 §3): neither a
         // statement reaching a method or constant with errors, nor one
         // whose lowering found errors elsewhere (a field default).
@@ -1987,6 +2015,15 @@ impl Runner {
         // lowered again (what it generates is in the class now).
         let _ = self.lower(host, &hook.stmt, hook.callee);
         let callee_name = host.world().method(hook.callee).name.clone();
+        if self.net_refused {
+            return Err(StaticFailure {
+                message: format!(
+                    "the class-end hook `:{}` did not run: the program's conformances make a row the run could reach that the safety net refuses (reported above)",
+                    hook.key
+                ),
+                notes: Vec::new(),
+            });
+        }
         let context = EndContext {
             stmt: None,
             hook_of: Some(last.class),

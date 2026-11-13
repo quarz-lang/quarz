@@ -18141,6 +18141,10 @@ impl crate::StaticHost for Checker {
         self.world = std::mem::take(&mut declarer.world);
         self.world.freeze_ancestors(true);
     }
+
+    fn report_errors(&mut self, errors: Vec<crate::FileDiagnostic>) {
+        self.diagnostics.extend(errors);
+    }
 }
 
 impl Checker {

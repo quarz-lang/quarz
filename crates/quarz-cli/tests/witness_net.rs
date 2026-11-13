@@ -280,3 +280,60 @@ fn a_refused_row_of_an_abstract_class_is_an_error() {
         &["main.qz:18:1: error: `B2`'s conformance to `M` runs `Base#get` for `M#get`, which does not take its place for `B2`"],
     );
 }
+
+/// `quarz check` of a program of two files, `lib.qz` and `main.qz` (which
+/// requires it): exit code and standard error.
+fn check_two(lib: &str, main: &str) -> (Option<i32>, String) {
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "quarz-witness-net-two-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("lib.qz"), lib).unwrap();
+    std::fs::write(dir.join("main.qz"), main).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .arg("check")
+        .arg(dir.join("main.qz"))
+        .env("QUARZ_NO_CACHE", "1")
+        .output()
+        .expect("run quarz");
+    std::fs::remove_dir_all(&dir).ok();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// #645's library: #642's shape, with a `static def` dispatching through
+/// the refused row and a `static def self.` class method doing the same.
+const LIB_645: &str = "module M\n  def m -> Int = 1\nend\nmodule N\n  def m -> String = \"N\"\n  def nn -> String = m + \"!\"\nend\nextension Int\n  include N\n  include M\nend\ndef via(v: N) -> String = v.nn\nstatic def nn5 -> String = via(5)\nclass Mac\n  static def self.go -> Void\n    puts via(5)\n  end\nend\n";
+
+/// #645: a compile-time run (`static(call)`, a `static` statement) reaching
+/// a row the safety net refuses does not run: the net checks each
+/// compile-time round's rows first. The row's error is reported once, at
+/// the extension (the final net after the check does not report it again:
+/// the check failed), and the run's own error (a `TypeError` before) is
+/// not reached.
+#[test]
+fn a_compile_time_run_reaching_a_refused_row_does_not_run() {
+    let net = "`Int`'s conformance to `N` runs `M#m` for `N#m`";
+    for (main, at) in [
+        (
+            "require_relative \"lib\"\nputs static(nn5)\n",
+            "main.qz:2:13: error: `nn5` did not run",
+        ),
+        (
+            "require_relative \"lib\"\nclass App < Mac\n  go\nend\nputs 1\n",
+            "main.qz:3:3: error: `go` did not run",
+        ),
+    ] {
+        let (code, err) = check_two(LIB_645, main);
+        assert_eq!(code, Some(1), "{err}");
+        assert_eq!(err.matches(net).count(), 1, "{err}");
+        assert!(err.contains("lib.qz:8:1: error: "), "{err}");
+        assert!(err.contains(at), "{err}");
+        assert!(!err.contains("TypeError"), "{err}");
+    }
+}

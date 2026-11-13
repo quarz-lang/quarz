@@ -680,6 +680,9 @@ pub trait StaticHost {
     /// After a statement's generations: the declaration-time checks of
     /// the classes they went into, again.
     fn recheck_classes(&mut self, classes: &[ClassId]);
+    /// Errors a run found outside the statement, each at its own place:
+    /// the safety net's over a compile-time round's rows (#645).
+    fn report_errors(&mut self, errors: Vec<FileDiagnostic>);
 }
 
 /// Why a `static` statement could not run: reported at its position.

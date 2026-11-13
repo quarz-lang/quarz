@@ -1753,6 +1753,16 @@ pub fn net_errors(
     rows_errors(world, &rtworld::declared(world, out), own)
 }
 
+/// The safety net's errors over the rows of tables already built (a
+/// compile-time round's, `Lowerer::lower_static`, #645).
+pub fn rows_net(
+    world: &World,
+    rt: &quarz_ir::RtWorld,
+    own: &dyn Fn(quarz_types::witness_net::Decl) -> bool,
+) -> Vec<quarz_types::FileDiagnostic> {
+    rows_errors(world, rt, own)
+}
+
 /// The net over `rt`'s rows: the report `QUARZ_WITNESS_NET` asks for, and
 /// the errors.
 fn rows_errors(

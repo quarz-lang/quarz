@@ -1079,3 +1079,31 @@ fn an_input_that_makes_a_refused_row_is_refused() {
     );
     assert_eq!(out[4], "=> \"N!\"", "{out:?}");
 }
+
+#[test]
+fn a_compile_time_run_reaching_a_refused_row_does_not_run() {
+    // #645: the REPL's compile-time runs (`static(...)` in an input) go
+    // through the runner's rounds, where the safety net checks each
+    // round's rows before anything runs; the input is refused and rolled
+    // back, and the next input's run runs.
+    let dir = std::env::temp_dir().join(format!("quarz-repl-645-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("lib.qz"),
+        "module M\n  def m -> Int = 1\nend\nmodule N\n  def m -> String = \"N\"\n  def nn -> String = m + \"!\"\nend\nstatic def nnx(v: N) -> String = v.nn\nstatic def two -> Int = 2\n",
+    )
+    .unwrap();
+    let lib = dir.join("lib");
+    let (out, _) = values(&[
+        &format!("require_relative \"{}\"", lib.display()),
+        "extension Int; include N; include M; end; static(nnx(5))",
+        "static(two) + 1",
+    ]);
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(
+        out[1].starts_with("error: ")
+            && out[1].contains("`Int`'s conformance to `N` runs `M#m` for `N#m`"),
+        "{out:?}"
+    );
+    assert_eq!(out[2], "=> 3", "{out:?}");
+}
