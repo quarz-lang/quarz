@@ -17,6 +17,7 @@ pub mod patterns;
 mod reloc;
 pub mod types;
 mod unit;
+pub mod witness_net;
 pub mod world;
 
 use quarz_syntax::ast::{Expr, ExprKind, Program};

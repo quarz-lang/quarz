@@ -2143,6 +2143,24 @@ impl RtWorld {
                 .is_some_and(|ids| ids.contains(&mid))
     }
 
+    /// Every witness row as a line (`kind class method answer`, by id),
+    /// tagged with `stage`: what `QUARZ_WITNESS_NET=rows` prints where the
+    /// rows are built and after `shake`, so that the two can be compared.
+    pub fn witness_row_lines(&self, stage: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for (c, m, by) in &self.override_rows {
+            out.push(format!("witness-rows {stage} override {c} {m} {by}"));
+        }
+        for (c, m, by) in &self.witness_rows {
+            let by = by.map_or("-".to_string(), |b| b.to_string());
+            out.push(format!("witness-rows {stage} witness {c} {m} {by}"));
+        }
+        for (c, m, by) in &self.class_override_rows {
+            out.push(format!("witness-rows {stage} class {c} {m} {by}"));
+        }
+        out
+    }
+
     /// The row of `class_override_rows` for (`cid`, `mid`).
     pub fn class_override_row(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
         self.class_override_rows

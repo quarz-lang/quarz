@@ -107,6 +107,13 @@ pub fn build(module: &Module, output: &Path) -> Result<(), String> {
     } else {
         shaken = module.clone();
         quarz_ir::shake::shake(&mut shaken);
+        // (The rows a compiled program keeps, to compare with the
+        // lowered ones, `QUARZ_WITNESS_NET=rows`.)
+        if std::env::var("QUARZ_WITNESS_NET").as_deref() == Ok("rows") {
+            for line in shaken.world.witness_row_lines("shaken") {
+                eprintln!("{line}");
+            }
+        }
         &shaken
     };
     let obj_path = output.with_extension("o");

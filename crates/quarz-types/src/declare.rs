@@ -2531,6 +2531,28 @@ impl<'ast> Declarer<'ast> {
         if !self.override_pairs.insert((mid, o)) {
             return;
         }
+        let mine = match oargs {
+            Some(args) => self.world.class_subst(owner, &args),
+            None => HashMap::default(),
+        };
+        let (subst, mine_subst) = self.implementation_substs(mid, o, a, aargs, own, mine);
+        self.check_override_pair(mid, o, &subst, &mine_subst, None);
+    }
+
+    /// The substitutions `check_override_pair` compares implementation
+    /// `mid` and the method `o` it stands in for with, for values of type
+    /// `own` (`Self`): `o`'s owner `a` seen through `aargs`, `mid`'s own
+    /// parameters through `mine` (its owner's arguments as the class has
+    /// them), and their type parameters matched in order.
+    pub(crate) fn implementation_substs(
+        &self,
+        mid: MethodId,
+        o: MethodId,
+        a: ClassId,
+        aargs: &[Type],
+        own: Type,
+        mine: HashMap<TypeParamId, Type>,
+    ) -> (HashMap<TypeParamId, Type>, HashMap<TypeParamId, Type>) {
         let mut subst = self.world.class_subst(a, aargs);
         subst.insert(SELF_PARAM, own.clone());
         // (Their type parameters as the implementation's, in order.)
@@ -2540,12 +2562,9 @@ impl<'ast> Declarer<'ast> {
                 subst.insert(p.id, Type::Param(q.id));
             }
         }
-        let mut mine_subst = match oargs {
-            Some(args) => self.world.class_subst(owner, &args),
-            None => HashMap::default(),
-        };
+        let mut mine_subst = mine;
         mine_subst.insert(SELF_PARAM, own);
-        self.check_override_pair(mid, o, &subst, &mine_subst, None);
+        (subst, mine_subst)
     }
 
     /// `check_kept_blocks` for the methods of extensions: an extension's
@@ -3221,7 +3240,7 @@ impl<'ast> Declarer<'ast> {
     /// An override `m` of `o` (their types seen through `subst` and
     /// `mine_subst`) takes what callers of `o` pass, returns what they
     /// expect, and takes their block (docs/01 §3). False after an error.
-    fn check_override_pair(
+    pub(crate) fn check_override_pair(
         &mut self,
         mid: MethodId,
         o: MethodId,

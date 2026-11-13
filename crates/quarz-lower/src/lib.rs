@@ -518,9 +518,10 @@ impl Lowerer {
             .map(|f| f.expect("function lowered"))
             .collect();
         let file_names = self.files.iter().map(|f| f.name.clone()).collect();
-        let world = rtworld::build(world, out, self, file_names);
+        let rt = rtworld::build(world, out, self, file_names);
+        witness_net(world, &rt);
         Delta {
-            world,
+            world: rt,
             base: self.round_base,
             functions,
             units: lowered_units,
@@ -1699,6 +1700,42 @@ pub fn lower_checked_with(mut lw: Lowerer, checked: &Checked, files: &[SourceFil
         world: delta.world,
         functions,
         units: delta.units,
+    }
+}
+
+/// The safety net's report over the rows just built, on stderr, when
+/// `QUARZ_WITNESS_NET` asks for it (report-only, `tmp/plan-safety-net.md`):
+/// `report` checks every row (`quarz_types::witness_net`), `rows` prints
+/// the rows themselves (`RtWorld::witness_row_lines`), to compare with the
+/// rows a compiled program keeps after `shake`.
+fn witness_net(world: &World, rt: &quarz_ir::RtWorld) {
+    let Ok(mode) = std::env::var("QUARZ_WITNESS_NET") else {
+        return;
+    };
+    match mode.as_str() {
+        "report" => {
+            // (The rows name classes and methods by the World's ids:
+            // `rtworld::build` maps them one to one.)
+            assert!(
+                rt.classes.len() == world.classes.len() && rt.methods.len() == world.methods.len(),
+                "internal error: the runtime's ids are not the World's"
+            );
+            let checked = quarz_types::witness_net::check(
+                world,
+                &rt.override_rows,
+                &rt.witness_rows,
+                &rt.class_override_rows,
+            );
+            for line in quarz_types::witness_net::report(world, &checked) {
+                eprintln!("{line}");
+            }
+        }
+        "rows" => {
+            for line in rt.witness_row_lines("lowered") {
+                eprintln!("{line}");
+            }
+        }
+        _ => {}
     }
 }
 
