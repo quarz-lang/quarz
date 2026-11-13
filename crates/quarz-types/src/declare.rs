@@ -1394,6 +1394,7 @@ impl<'ast> Declarer<'ast> {
             return;
         }
         self.check_extension_completes(ext, target, module, &margs, span);
+        self.check_extension_over_module_override(ext, target, module, &margs, span);
         let own: Vec<MethodId> = self.world.extensions[ext as usize]
             .methods
             .values()
@@ -1987,6 +1988,71 @@ impl<'ast> Declarer<'ast> {
             self.error(
                 format!(
                     "this extension includes `{owner}` but nothing here implements `{name}`: define it in the extension or in `{tname}` (an extension completes the conformance it makes)"
+                ),
+                span,
+            );
+        }
+    }
+
+    /// An extension does not define a method that a module its include
+    /// brings gives with a body, when that module's method overrides an
+    /// ancestor's (rule E, the user's decision of 2026-11-13, #603): calls
+    /// typed through the module and through the ancestor would otherwise
+    /// run different methods (the extension's own through the module, the
+    /// module's through the ancestor). The module's method overrides an
+    /// ancestor's by the override table (`World::overrides`) or, for the
+    /// target, a pair of `World::include_overrides_of`.
+    fn check_extension_over_module_override(
+        &mut self,
+        ext: ExtensionId,
+        target: ClassId,
+        module: ClassId,
+        margs: &[Type],
+        span: Span,
+    ) {
+        let cur = self.include_position(ext, module, margs);
+        let brought: Vec<ClassId> = self
+            .world
+            .conformances(target)
+            .into_iter()
+            .filter(|(src, _, _)| *src == Some((ext, cur)))
+            .map(|(_, m, _)| m)
+            .collect();
+        let by_include: Vec<MethodId> = self
+            .world
+            .include_overrides_of(target)
+            .into_iter()
+            .map(|io| io.by)
+            .collect();
+        let names: Vec<String> = self.world.extensions[ext as usize]
+            .methods
+            .keys()
+            .cloned()
+            .collect();
+        let mut found: Vec<(String, String)> = Vec::new();
+        for name in names {
+            for k in &brought {
+                let Some(ids) = self.world.class(*k).methods.get(&name) else {
+                    continue;
+                };
+                for &j in ids {
+                    let jm = self.world.method(j);
+                    if jm.owner == *k
+                        && !jm.is_abstract
+                        && !jm.singleton
+                        && (!self.world.overrides(j).is_empty() || by_include.contains(&j))
+                    {
+                        found.push((name.clone(), self.world.class(*k).name.clone()));
+                    }
+                }
+            }
+        }
+        found.sort();
+        found.dedup();
+        for (name, kname) in found {
+            self.error(
+                format!(
+                    "this extension defines `{name}`, which `{kname}` (included here) gives over an ancestor's: calls through `{kname}` and through the ancestor would run different methods; leave `{name}` to `{kname}`, or define it in the class"
                 ),
                 span,
             );
