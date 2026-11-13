@@ -2772,167 +2772,22 @@ impl Interp {
         } else {
             world.class_method_override(&method, cid, mid)
         };
-        // (The oracle: the walk the rows replace, made here as it was,
-        // gives the same answer at every lookup.)
-        #[cfg(debug_assertions)]
-        {
-            let old = self.class_method_override_at_run_time(cid, mid);
-            assert!(
-                found == old,
-                "internal error: the class override rows give {found:?} for `{}` on `{}`, the walk at run time {old:?}",
-                self.program.method(mid).name,
-                world.class(cid).name
-            );
-        }
         self.class_method_cache
             .borrow_mut()
             .insert((cid, mid), found);
         found
     }
 
-    /// The class method of `cid` (or of a superclass below the owner of
-    /// `mid`) that overrides the class method `mid`. (As the interpreter
-    /// computed it before `RtWorld::class_override_rows`, kept in debug
-    /// builds as the oracle of `class_method_override`.)
-    #[cfg(debug_assertions)]
-    fn class_method_override_at_run_time(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
-        let m = self.program.method(mid);
-        // (An abstract one is passed over: an implementation after it in
-        // the lookup order, a superclass's or another module's, runs.)
-        // (Whether one replaces it: the override table alone, #536.)
-        let replaces = |id: MethodId| {
-            let im = self.program.method(id);
-            !im.is_abstract && im.overrides.contains(&mid)
-        };
-        let mut found = None;
-        // (A module's class method reaches only the classes that include the
-        // module themselves: an extension's include brings no class
-        // methods, #494. Elsewhere, through a `Type[M]` value holding such a
-        // class, the module's own runs.)
-        let module_owner = self.program.world.class(m.owner).kind == quarz_ir::RtClassKind::Module;
-        if module_owner && !self.includes_on_class_side(cid, m.owner) {
-            // A class conforming through an extension: the witness its
-            // conformance recorded, the nearest up the chain (a subclass
-            // conforming on its own has its own), run as is (#504).
-            // (Fixed: the witness runs for the class and its subclasses
-            // alike; the module's default is the module's own.)
-            if let Some(by) = self.class_witness(cid, mid) {
-                found = (by != mid).then_some(by);
-            }
-            return found;
-        }
-        let mut cur = Some(cid);
-        'chain: while let Some(c) = cur {
-            if c == m.owner && !m.is_abstract {
-                break;
-            }
-            let class = self.program.world.class(c);
-            if let Some(ids) = class.singleton_methods.get(&m.name) {
-                if let Some(id) = ids.iter().copied().find(|&id| replaces(id)) {
-                    found = Some(id);
-                    break;
-                }
-            }
-            // A module's class method the class's includes put in its place
-            // (over a superclass's or an earlier-included module's, docs/01
-            // §6, `World::class_include_overrides`): before the walk below,
-            // which stops at the module that declares `mid`.
-            if let Some(&(_, _, by)) = self
-                .program
-                .world
-                .class_include_overrides
-                .iter()
-                .find(|(k, o, _)| *k == c && *o == mid)
-            {
-                found = Some(by);
-                break;
-            }
-            // A module's class method (`include`, docs/01 §6): the
-            // modules the class includes, the last first, up to the one
-            // that declares it.
-            for module in &self.class_side_modules(cid, c) {
-                if *module == m.owner {
-                    if m.is_abstract {
-                        continue;
-                    }
-                    break 'chain;
-                }
-                let mc = self.program.world.class(*module);
-                if let Some(ids) = mc.singleton_methods.get(&m.name) {
-                    if let Some(id) = ids
-                        .iter()
-                        .copied()
-                        .find(|&id| self.program.method(id).owner == *module && replaces(id))
-                    {
-                        found = Some(id);
-                        break 'chain;
-                    }
-                }
-            }
-            cur = class.superclass;
-        }
-        found
-    }
-
     /// Whether class `cid` or a superclass conforms through an extension
     /// with a witness for module class method `mid` (#504).
     fn has_class_witness(&self, cid: ClassId, mid: MethodId) -> bool {
-        let found = self.program.world.class_witness(cid, mid).is_some();
-        // (The oracle: the interpreter's walk, as it was.)
-        #[cfg(debug_assertions)]
-        assert!(
-            found == self.class_witness(cid, mid).is_some(),
-            "internal error: `RtWorld::class_witness` and the walk at run time disagree"
-        );
-        found
-    }
-
-    /// The witness of module class method `mid` for class `cid` (#504):
-    /// recorded for the nearest class up its superclass chain, or for a
-    /// module one of them includes (an extension of that module, `extension
-    /// Mid; include M`), as the instance side's `ext_impls` reach it.
-    /// (The oracle's: `RtWorld::class_witness` is the one read.)
-    #[cfg(debug_assertions)]
-    fn class_witness(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
-        let w = &self.program.world;
-        // (`RtClass::class_side`, `World::class_side_order`: the checker's
-        // order.)
-        w.class(cid).class_side.iter().find_map(|k| {
-            w.class_ext_impls
-                .iter()
-                .find(|(x, o, _)| x == k && *o == mid)
-                .map(|(_, _, by)| *by)
-        })
-    }
-
-    /// Whether class `cid` or a superclass includes `module` itself (its
-    /// class methods are on `cid`'s class side, `RtClass::class_side`).
-    /// (The oracle's: `RtWorld::includes_on_class_side` is the one read.)
-    #[cfg(debug_assertions)]
-    fn includes_on_class_side(&self, cid: ClassId, module: ClassId) -> bool {
-        self.program.world.class(cid).class_side.contains(&module)
+        self.program.world.class_witness(cid, mid).is_some()
     }
 
     /// The modules class `c` (`cid` or a superclass of it) brings to `cid`'s
-    /// class side, in lookup order: the entries after `c` in
-    /// `RtClass::class_side` up to the next class (#536 step 2).
+    /// class side, in lookup order (`RtWorld::class_side_modules`).
     fn class_side_modules(&self, cid: ClassId, c: ClassId) -> Vec<ClassId> {
-        let world = &self.program.world;
-        let side = &world.class(cid).class_side;
-        // (`c` is `cid` or a class up its chain, always in it: a missing
-        // entry is an internal error, never an empty part.)
-        let at = side.iter().position(|k| *k == c).unwrap_or_else(|| {
-            panic!(
-                "internal error: `{}` is not on `{}`'s class side",
-                world.class(c).name,
-                world.class(cid).name
-            )
-        });
-        side[at + 1..]
-            .iter()
-            .copied()
-            .take_while(|k| world.class(*k).kind == quarz_ir::RtClassKind::Module)
-            .collect()
+        self.program.world.class_side_modules(cid, c)
     }
 
     /// What runs for module method `mid` on a value of class `cid`
