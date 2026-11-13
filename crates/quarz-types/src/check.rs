@@ -6759,6 +6759,21 @@ impl Checker {
             Call(call) => {
                 let uses = self.self_uses.len();
                 let t = self.check_call(expr, call, expected);
+                // `x.is_a?(k)` with a class value (`Object#is_a?`): against
+                // a type parameter's class value, checked as a test against
+                // each module the parameter may be (#598).
+                if let (Some(recv), "is_a?", [Arg::Positional(a)]) =
+                    (&call.recv, call.name.as_str(), call.args.as_slice())
+                {
+                    if !matches!(a.kind, ExprKind::Const(_) | ExprKind::TypeApp(_)) {
+                        let rt = self.out.node_types.get(&recv.id).cloned();
+                        let at = self.out.node_types.get(&a.id).cloned();
+                        if let (Some(rt), Some(at)) = (rt, at) {
+                            let (rt, at) = (self.resolve(&rt), self.resolve(&at));
+                            self.check_testable_param(&rt, &at, "is_a?", a.span);
+                        }
+                    }
+                }
                 if self.self_uses.len() > uses {
                     let method = match self.out.calls.get(&expr.id) {
                         Some(CallTarget::Method { method }) => Some(*method),
@@ -8348,6 +8363,9 @@ impl Checker {
                     }
                     let _ = no;
                 } else if let Some(st) = &subject_ty {
+                    // (A type parameter's class value: a test, #598.)
+                    let st2 = self.resolve(st);
+                    self.check_testable_param(&st2, &ct, "when", ce.span);
                     // Value comparison with `===`.
                     narrowed_to.push(self.resolve(st));
                 }
@@ -17357,6 +17375,59 @@ impl Checker {
     /// (`World::runtime_test_exact`), #515. The elements of the
     /// collections and tuples the test checks too, and a class value's
     /// test (`Type[M]`).
+    /// A run-time test against a type parameter's class value (`x.is_a?(k)`,
+    /// `when k`, with `k: Type[T]`): refused where `T` may be a module the
+    /// class alone cannot answer for (#598, decided 2026-11-13), decided as
+    /// for a written module (`runtime_untestable`, #596) over every module
+    /// `T`'s bounds admit. It errs toward refusing: an unbounded `T` admits
+    /// every module, among them those the prelude's conditional extensions
+    /// bring (`Comparable`), so it is always refused; a class bound admits
+    /// no module.
+    fn check_testable_param(&mut self, rt: &Type, at: &Type, op: &str, span: Span) {
+        // (Each member of a union of class values, `Type[T] | Type[Q]`.)
+        for m in at.members() {
+            if self.check_testable_param_one(rt, &m, op, span) {
+                return;
+            }
+        }
+    }
+
+    /// `check_testable_param` for one class value; whether it refused.
+    fn check_testable_param_one(&mut self, rt: &Type, at: &Type, op: &str, span: Span) -> bool {
+        let Type::TypeOf(inner) = at else {
+            return false;
+        };
+        let Type::Param(p) = inner.as_ref() else {
+            return false;
+        };
+        let bounds = self.world.param_bounds(*p);
+        let n = self.world.classes.len() as ClassId;
+        for x in 0..n {
+            if self.world.class(x).kind != ClassKind::Module {
+                continue;
+            }
+            let cand = Type::Class(x, self.world.own_args(x));
+            if !bounds.iter().all(|b| self.world.is_subtype(&cand, b)) {
+                continue;
+            }
+            if let Some((_, c, _)) = self.runtime_untestable(rt, &cand) {
+                let pname = self.world.type_name(inner);
+                let (mname, cname) = (
+                    self.world.class(x).name.clone(),
+                    self.world.class(c).name.clone(),
+                );
+                self.error(
+                    format!(
+                        "`{op}` against `Type[{pname}]` cannot be checked at run time: `{pname}` may be the module `{mname}`, and whether a value of class `{cname}` is one depends on its type arguments, which the run time does not see; bound `{pname}` by a class, or test against a type written out"
+                    ),
+                    span,
+                );
+                return true;
+            }
+        }
+        false
+    }
+
     fn runtime_untestable(&self, rt: &Type, target: &Type) -> Option<(Type, ClassId, Vec<Type>)> {
         let b = self.world.builtin.clone();
         for tm in target.members() {
