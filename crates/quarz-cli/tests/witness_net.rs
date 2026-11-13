@@ -73,11 +73,12 @@ fn an_extensions_method_is_checked_in_each_receivers_frame() {
     );
 }
 
-/// #600: nothing implements the requirement, listed apart.
+/// Nothing implements the requirement at run time, listed apart: #632's
+/// shape (#600's own is refused since R0).
 #[test]
 fn a_requirement_nothing_implements_is_listed_apart() {
     let lines = report(
-        "module Named\n  abstract def label -> String\nend\nclass B\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n  end\n  def self.n(x: B) -> Named = x\nend\nputs 1\n",
+        "module Named\n  abstract def label -> String\nend\nclass A\n  def initialize; end\n  def label -> String = \"a\"\nend\nclass B < A\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n  end\n  def self.n(x: B) -> Named = x\nend\nputs 1\n",
     );
     assert!(
         lines

@@ -287,9 +287,10 @@ fn aot_opt_levels() {
     );
 }
 
-/// #630, compiled: an abstract method reached at run time (#600's
-/// reproducer) is a violation under `QUARZ_VERIFY` and a `TypeError`
-/// without it, as on the VM (tests/verify.rs).
+/// #630, compiled: an abstract method reached at run time (#632's
+/// program; #600's is refused since R0) is a violation under
+/// `QUARZ_VERIFY` and a `TypeError` without it, as on the VM
+/// (tests/verify.rs).
 #[test]
 fn an_abstract_method_reached_compiled() {
     let dir = std::env::temp_dir().join(format!("quarz-abstract-{}", std::process::id()));
@@ -297,7 +298,7 @@ fn an_abstract_method_reached_compiled() {
     let src = dir.join("main.qz");
     fs::write(
         &src,
-        "module Named\n  abstract def label -> String\nend\nclass B\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n  end\n  def self.n(x: B) -> Named = x\nend\ndef via(n: Named) -> String = n.label\nputs via(Sc.n(B.new))\n",
+        "module Named\n  abstract def label -> String\nend\nclass A\n  def initialize; end\n  def label -> String = \"a\"\nend\nclass B < A\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n  end\n  def self.n(x: B) -> Named = x\nend\ndef via(n: Named) -> String = n.label\nputs via(Sc.n(B.new))\n",
     )
     .unwrap();
     let exe = dir.join("main");
