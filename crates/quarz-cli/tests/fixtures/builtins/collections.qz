@@ -41,7 +41,7 @@ p b.snapshot, b.rotate!.snapshot, b.fill(0, 1, 5).snapshot, b.slice!(0, 2), b.sn
 b.replace([1, 2, 3, 4]).delete_if(&:even?)
 p b.freeze
 h = { a: 1, b: nil, c: 3 }
-p h.include?(:a), h.member?(:z), h.has_value?(3), h.values_at(:a, :z), h.compact, h.except(:a), h.slice(:a, :c, :z)
+p h.key?(:a), h.key?(:z), h.has_value?(3), h.values_at(:a, :z), h.compact, h.except(:a), h.slice(:a, :c, :z)
 p h.fetch_values(:a, :c), h.filter { |k, v| v }, h.delete_if { |k, v| v.nil? }
 hb = Hash::Builder[Symbol, Int].new
 hb[:x] = 1
@@ -52,7 +52,7 @@ hb.each_pair { |k, v| print k, v }
 puts
 hb.select! { |k, v| v > 1 }
 hb.transform_values! { |v| v * 2 }
-p hb.snapshot, hb.include?(:x), hb.length, hb.sort_by { |k, v| -v }, hb.to_h
+p hb.snapshot, hb.key?(:x), hb.length, hb.sort_by { |k, v| -v }, hb.to_h
 s = Set[1, 2, 3]
 p s.proper_subset?(Set[1, 2, 3, 4]), s <= Set[1, 2, 3], s < Set[1, 2, 3], s.disjoint?(Set[9]), s.intersect?(Set[3])
 p s.merge([4, 5]), s.add?(1), s.add?(9), s.select(&:odd?), s.reject(&:odd?), s + Set[7], Set.new([3, 3, 4])

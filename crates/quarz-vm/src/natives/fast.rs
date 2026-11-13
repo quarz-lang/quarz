@@ -162,15 +162,11 @@ pub fn register(m: &mut super::Registry<FastNativeFn>) {
         (Value::Hash(h), [k]) => Some(Ok(h.get(k).unwrap_or(Value::Nil))),
         _ => None,
     });
-    fast!(
-        m,
-        ["Hash#key?", "Hash#has_key?", "Hash#include?"],
-        |_, r, a| match (r, a) {
-            (Value::Hash(_), [k]) if crate::keys::is_custom(k) => None,
-            (Value::Hash(h), [k]) => Some(Ok(Value::Bool(h.contains_key(k)))),
-            _ => None,
-        }
-    );
+    fast!(m, ["Hash#key?", "Hash#has_key?"], |_, r, a| match (r, a) {
+        (Value::Hash(_), [k]) if crate::keys::is_custom(k) => None,
+        (Value::Hash(h), [k]) => Some(Ok(Value::Bool(h.contains_key(k)))),
+        _ => None,
+    });
     fast!(m, "Hash#size", |_, r, a| match (r, a) {
         (Value::Hash(h), []) => Some(Ok(Value::Int(h.len() as i64))),
         _ => None,

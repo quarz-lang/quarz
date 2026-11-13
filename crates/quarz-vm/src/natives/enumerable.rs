@@ -340,10 +340,8 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
 
     // Hash
     native!(m, "Hash#include?", |i, r, a| {
-        Ok(Value::Bool(hash(i, r)?.contains_key(a.arg(0))))
-    });
-    native!(m, "Hash#member?", |i, r, a| {
-        Ok(Value::Bool(hash(i, r)?.contains_key(a.arg(0))))
+        let h = hash(i, r)?;
+        Ok(Value::Bool(has_pair(i, |k| h.get(k), a.arg(0))?))
     });
     native!(m, "Hash#has_value?", |i, r, a| {
         let map = hash(i, r)?.as_map();
@@ -481,7 +479,8 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Bool(read(i, hb(i, r)?)?.contains_key(a.arg(0))))
     });
     native!(m, "Hash::Builder#include?", |i, r, a| {
-        Ok(Value::Bool(read(i, hb(i, r)?)?.contains_key(a.arg(0))))
+        let h = read(i, hb(i, r)?)?;
+        Ok(Value::Bool(has_pair(i, |k| h.get(k).cloned(), a.arg(0))?))
     });
     native!(m, "Hash::Builder#value?", |i, r, a| {
         let values: Vec<Value> = read(i, hb(i, r)?)?.values().cloned().collect();
@@ -837,4 +836,23 @@ fn set_builder_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> 
     }
     *write(interp, b)? = out;
     Ok(recv.clone())
+}
+
+/// `Hash#include?` and `Hash::Builder#include?` (#622): whether `arg` is a
+/// `[key, value]` pair of the hash, the answer `Enumerable#include?`'s
+/// scan gives (a pair `==` to `arg`) by looking the key up: `arg` a
+/// two-element array whose key is present and whose value is `==`
+/// (`Interp::values_equal`, a user-defined `==` too) to the one stored.
+fn has_pair(i: &Interp, get: impl Fn(&Value) -> Option<Value>, arg: &Value) -> Result<bool, Flow> {
+    let Value::Array(a) = arg else {
+        return Ok(false);
+    };
+    let items = a.values();
+    let [k, v] = items.as_ref() else {
+        return Ok(false);
+    };
+    match get(k) {
+        Some(stored) => i.values_equal(&stored, v),
+        None => Ok(false),
+    }
 }
