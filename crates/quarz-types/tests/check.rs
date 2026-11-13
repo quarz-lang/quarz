@@ -541,6 +541,14 @@ fn classes_and_fields() {
         "class C\nend\nextension C\n  def g -> Int = 2\n  def g -> Int = 3\nend",
         "`g` is already defined with the same parameters",
     );
+    // A class method and an instance method of the same signature are no
+    // duplicates, in an extension as in a class (#590); two of one side
+    // are.
+    ok("class K\n  def initialize; end\nend\nextension K\n  def self.q(x: Int) -> String = \"s\"\n  def q(x: Int) -> String = \"i\"\nend\nputs K.q(1) + K.new.q(1)");
+    err(
+        "class K\nend\nextension K\n  def self.q(x: Int) -> String = \"s\"\n  def self.q(x: Int) -> String = \"t\"\nend",
+        "`q` is already defined with the same parameters",
+    );
     ok("class C\n  @x: Int\n  attr_reader :x\n  def initialize(@x: Int); end\nend\nputs C.new(1).x");
     // Keyword-only parameters' names are part of the signature.
     ok("class C\n  def f(*, a: Int) -> Int = 1\n  def f(*, b: Int) -> Int = 2\nend\nputs C.new.f(a: 0) + C.new.f(b: 0)");

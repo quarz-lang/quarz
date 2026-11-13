@@ -1,0 +1,35 @@
+# #590: an extension may define a class method and an instance method of
+# the same name and parameters, as a class may; each runs on its side,
+# whichever is declared first. Every reader of an extension's methods by
+# name takes the side it asks for: a call through a module requiring the
+# instance method and one through `Type[M]` requiring the class method,
+# a by-name send (`&:label`), and direct calls.
+module Named
+  abstract def label -> String
+  def shown -> String = label + "!"
+end
+module NamedC
+  abstract def self.label -> String
+end
+class C
+  def initialize; end
+end
+extension C
+  include Named
+  include NamedC
+  def self.label -> String = "cls"
+  def label -> String = "inst"
+end
+class D
+  def initialize; end
+end
+extension D
+  include Named
+  include NamedC
+  def label -> String = "inst"
+  def self.label -> String = "cls"
+end
+def via(n: Named) -> String = n.label
+def via_c(t: Type[NamedC]) -> String = t.label
+puts "#{via(C.new)} #{C.new.shown} #{C.new.label} #{C.label} #{via_c(C)} #{[C.new].map(&:label)}"
+puts "#{via(D.new)} #{D.new.shown} #{D.new.label} #{D.label} #{via_c(D)} #{[D.new].map(&:label)}"
