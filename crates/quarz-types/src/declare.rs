@@ -1986,13 +1986,16 @@ impl<'ast> Declarer<'ast> {
                 .collect();
             for r in abstracts {
                 let rm = self.world.method(r).clone();
-                // (Whether method `i` takes the requirement's calls by type;
-                // `takes` asks it of a method with a body.)
+                // (Whether method `i` takes the requirement's calls by type
+                // and returns what it does, in the target's frame: #656's
+                // decision (a), the result checked too; `takes` asks it of
+                // a method with a body.)
                 let fits = |s: &Self, i: MethodId, csubst: &HashMap<TypeParamId, Type>| {
                     let im = s.world.method(i);
                     !im.singleton
-                        && (s.world.takes_calls_of(im, csubst, &rm, &rsubst)
-                            || s.world.same_signature_at_run_time(i, r))
+                        && s.world.takes_calls_of(im, csubst, &rm, &rsubst)
+                        && s.world
+                            .is_subtype(&im.ret.subst(csubst), &rm.ret.subst(&rsubst))
                 };
                 let takes = |s: &Self, i: MethodId, csubst: &HashMap<TypeParamId, Type>| {
                     !s.world.method(i).is_abstract && fits(s, i, csubst)

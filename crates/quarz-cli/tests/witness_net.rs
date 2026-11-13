@@ -86,17 +86,15 @@ fn refused(src: &str, wants: &[&str]) {
     }
 }
 
-/// The error stage (decided on #536): a refused row is a compile error at
-/// what makes the conformance. #641: an extension's conformance taking the
-/// inherited `Base#get -> String` of `B < Base[String]` for `M#get -> Int`.
+/// #641: an extension's conformance whose only candidate is the inherited
+/// `Base#get -> String` of `B < Base[String]` for `M#get -> Int`. Since
+/// #656's decision (a), R0 refuses it at the extension (the candidate's
+/// result is checked too), before the net would see the row.
 #[test]
 fn a_refused_row_is_an_error_at_the_extension() {
     refused(
         T2C,
-        &[
-            "main.qz:18:1: error: `B`'s conformance to `M` runs `Base#get` for `M#get`, which does not take its place for `B`",
-            "returns String",
-        ],
+        &["main.qz:18:11: error: this extension includes `M` but nothing here implements `get`: define it in the extension or in `B`"],
     );
 }
 const T2C: &str = "module M\n  abstract def get -> Int\nend\nclass Base[T]\n  @v: T\n  def initialize(@v: T); end\n  def get -> T = @v\nend\nclass A < Base[Int]\n  def initialize; super(1); end\nend\nclass B < Base[String]\n  def initialize; super(\"s\"); end\nend\nextension A\n  include M\nend\nextension B\n  include M\nend\ndef via(m: M) -> Int = m.get + 1\nputs via(A.new)\nputs via(B.new)\n";
@@ -130,9 +128,9 @@ fn the_629_row_is_refused() {
 const F1: &str = "# an extension's overload of another parameter type beside the class's own implementation\nmodule M\n  abstract def m(x: String) -> String\n  def mm -> String = m(\"s\") + \"!\"\nend\nclass K\n  def initialize; end\n  def m(x: String) -> String = \"K\"\nend\nmodule Sc\n  extension K\n    include M\n    def m(x: Int) -> String = \"ext#{x + 1}\"\n  end\n  def self.up(k: K) -> M = k\n  def self.n(k: K) -> String = k.m(1)\nend\ndef via(v: M) -> String = v.mm\nputs via(Sc.up(K.new))\nputs Sc.n(K.new)\n";
 
 /// #557: another module's witness has a row (R0 records it), checked per
-/// class in its own frame: `Holds[T]#get -> T` passes for `Holds[Int]` and
-/// is refused for `Holds[String]` (R0's run-time-signature disjunct lets it
-/// through, #641's note).
+/// class in its own frame: `Holds[T]#get -> T` passes for `Holds[Int]`; for
+/// `Holds[String]` R0 refuses it at the extension, its result checked too
+/// (#656's decision (a)).
 #[test]
 fn another_modules_witness_has_a_row_checked_per_class() {
     let base = "module Num\n  abstract def get -> Int\nend\nmodule Holds[T]\n  def get -> T = held\n  abstract def held -> T\nend\nclass K3\n  def initialize; end\n  def held -> Int = 41\nend\nmodule S3\n  extension K3\n    include Holds[Int]\n    include Num\n  end\n  def self.n(x: K3) -> Num = x\nend\n";
@@ -140,15 +138,14 @@ fn another_modules_witness_has_a_row_checked_per_class() {
     assert_eq!(code, Some(0), "{err}");
     refused(
         &format!("{base}class K4\n  def initialize; end\n  def held -> String = \"s\"\nend\nmodule S4\n  extension K4\n    include Holds[String]\n    include Num\n  end\nend\nputs 1\n"),
-        &["error: `K4`'s conformance to `Num` runs `Holds#get` for `Num#get`, which does not take its place for `K4`"],
+        &["error: this extension includes `Num` but nothing here implements `get`: define it in the extension or in `K4`"],
     );
 }
 
 /// #632: a scoped extension's conformance whose witness the class
-/// inherits has a row (R0 records it), and each class's row is checked in
-/// its own frame: `Base#get -> T` passes for `A < Base[Int]` and is refused
-/// for `B < Base[String]` (R0's run-time-signature disjunct lets it
-/// through, #641's note).
+/// inherits has a row (R0 records it), checked in its own frame: `Base#get
+/// -> T` passes for `A < Base[Int]`; for `B < Base[String]` R0 refuses it at
+/// the extension, its result checked too (#656's decision (a)).
 #[test]
 fn an_inherited_witness_has_a_row_checked_per_class() {
     let base = "module M\n  abstract def get -> Int\nend\nclass Base[T]\n  @v: T\n  def initialize(@v: T); end\n  def get -> T = @v\nend\nclass A < Base[Int]\n  def initialize; super(1); end\nend\nmodule SA\n  extension A\n    include M\n  end\n  def self.m(x: A) -> M = x\nend\n";
@@ -156,7 +153,7 @@ fn an_inherited_witness_has_a_row_checked_per_class() {
     assert_eq!(code, Some(0), "{err}");
     refused(
         &format!("{base}class B < Base[String]\n  def initialize; super(\"s\"); end\nend\nmodule SB\n  extension B\n    include M\n  end\nend\nputs 1\n"),
-        &["error: `B`'s conformance to `M` runs `Base#get` for `M#get`, which does not take its place for `B`"],
+        &["error: this extension includes `M` but nothing here implements `get`: define it in the extension or in `B`"],
     );
 }
 
@@ -277,14 +274,15 @@ fn rows_with_no_implementation_by_kind() {
     assert_eq!(code, Some(0), "{err}");
 }
 
-/// Only no-impl is exempt for an abstract class: a refused row of an
-/// abstract class is an error (the concrete `A2` first: the checker checks
-/// the pair once, for `A2`, #641).
+/// An abstract class's extension whose only candidate does not return what
+/// the requirement does (`Base#get -> String` for `M#get -> Int`): refused
+/// by R0 at the extension since #656's decision (a), as for a concrete
+/// class (the concrete `A2` first, accepted).
 #[test]
 fn a_refused_row_of_an_abstract_class_is_an_error() {
     refused(
         "module M\n  abstract def get -> Int\nend\nclass Base[T]\n  @v: T\n  def initialize(@v: T); end\n  def get -> T = @v\nend\nclass A2 < Base[Int]\n  def initialize; super(1); end\nend\nextension A2\n  include M\nend\nabstract class B2 < Base[String]\n  def initialize; super(\"s\"); end\nend\nextension B2\n  include M\nend\nputs 1\n",
-        &["main.qz:18:1: error: `B2`'s conformance to `M` runs `Base#get` for `M#get`, which does not take its place for `B2`"],
+        &["main.qz:18:11: error: this extension includes `M` but nothing here implements `get`: define it in the extension or in `B2`"],
     );
 }
 
