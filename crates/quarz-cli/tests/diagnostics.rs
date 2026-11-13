@@ -2583,7 +2583,9 @@ fn runtime_tests_the_class_does_not_answer_are_refused() {
 /// refused, as each would answer wrongly at run time.
 #[test]
 fn runtime_tests_through_extensions_elements_and_class_values_are_refused() {
-    for src in ["module M\n  abstract def m -> Int\nend\nmodule X\nend\nextension X\n  include M\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension Box[T <: Int]\n  include X\n  def m -> Int = v + 1\nend\ndef f(o: Object) -> Int\n  if o.is_a?(M)\n    o.m\n  else\n    0\n  end\nend\nputs f(Box.new(41))\nputs f(Box.new(\"s\"))\n", "# a module type K a conditional extension brings: classes_a_value_may_hold misses Box\nmodule K\nend\nmodule Num\n  abstract def n -> Int\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension Box[T <: Int]\n  include K\nend\nextension Box[T <: String]\n  include Num\n  def n -> Int = v.size\nend\ndef f(x: K) -> Int\n  if x.is_a?(Num)\n    x.n\n  else\n    -1\n  end\nend\nputs f(Box.new(5))\n", "# element tests: Array[Num], tuple, against a module a conditional extension brings\nmodule Num\n  abstract def n -> Int\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension Box[T <: Int]\n  include Num\n  def n -> Int = v + 1\nend\no: Object = [Box.new(\"s\")]\na = o.as?(Array[Num])\nputs a ? a[0].n : -1\n", "# class objects against a module a conditional extension brings\nmodule Num\n  def self.tag -> String = \"num\"\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\nend\nextension Box[T <: Int]\n  include Num\nend\nclass Other\nend\no: Object = Box\nputs o.is_a?(Type[Num])\nk = o.as?(Type[Num])\nputs k ? k.tag : \"nil\"\no2: Object = Other\nputs o2.is_a?(Type[Num])\n"] {
+    // (A module target's extension declares the requirement it brings
+    // `abstract`: an extension completes the conformance it makes, R0.)
+    for src in ["module M\n  abstract def m -> Int\nend\nmodule X\n  abstract def m -> Int\nend\nextension X\n  include M\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension Box[T <: Int]\n  include X\n  def m -> Int = v + 1\nend\ndef f(o: Object) -> Int\n  if o.is_a?(M)\n    o.m\n  else\n    0\n  end\nend\nputs f(Box.new(41))\nputs f(Box.new(\"s\"))\n", "# a module type K a conditional extension brings: classes_a_value_may_hold misses Box\nmodule K\nend\nmodule Num\n  abstract def n -> Int\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension Box[T <: Int]\n  include K\nend\nextension Box[T <: String]\n  include Num\n  def n -> Int = v.size\nend\ndef f(x: K) -> Int\n  if x.is_a?(Num)\n    x.n\n  else\n    -1\n  end\nend\nputs f(Box.new(5))\n", "# element tests: Array[Num], tuple, against a module a conditional extension brings\nmodule Num\n  abstract def n -> Int\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension Box[T <: Int]\n  include Num\n  def n -> Int = v + 1\nend\no: Object = [Box.new(\"s\")]\na = o.as?(Array[Num])\nputs a ? a[0].n : -1\n", "# class objects against a module a conditional extension brings\nmodule Num\n  def self.tag -> String = \"num\"\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\nend\nextension Box[T <: Int]\n  include Num\nend\nclass Other\nend\no: Object = Box\nputs o.is_a?(Type[Num])\nk = o.as?(Type[Num])\nputs k ? k.tag : \"nil\"\no2: Object = Other\nputs o2.is_a?(Type[Num])\n"] {
         let out = common::diagnostics(src);
         assert!(
             out.iter().any(|d| d.contains("cannot check at run time that a value of type")),
@@ -2599,7 +2601,8 @@ fn runtime_tests_through_extensions_elements_and_class_values_are_refused() {
 /// run time, and is refused.
 #[test]
 fn runtime_tests_through_variance_unions_and_generic_modules_are_refused() {
-    for src in ["# skip of a concrete-argument class under covariance: D[U] < Box[Int], D[U <: String] brings Num\nmodule Num\n  abstract def n -> Int\nend\nclass Box[out T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nclass D[U] < Box[Int]\n  @u: U\n  def initialize(@u: U); super(1); end\n  def u -> U = @u\nend\nextension D[U <: String]\n  include Num\n  def n -> Int = u.size\nend\ndef f(x: Box[Object]) -> Int\n  y = x.as?(Num)\n  y ? y.n : -1\nend\nputs f(D.new(\"abc\"))\nputs f(D.new(7))\n", "module Num\n  abstract def n -> Int\nend\nclass Box[out T]\n  def initialize; end\nend\nclass D[U] < Box[Int]\n  @u: U\n  def initialize(@u: U); end\n  def u -> U = @u\nend\nextension D[U <: String]\n  include Num\n  def n -> Int = u.size\nend\ndef f(x: Box[Int | String]) -> Bool = x.is_a?(Num)\nputs f(D.new(7))\n", "# always shortcut through a generic module whose bounded extension brings Num\nmodule Num\n  abstract def n -> Int\nend\nmodule K[T]\nend\nextension K[T <: Int]\n  include Num\nend\nclass G[T]\n  include K[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension G[T <: Int]\n  include Num\n  def n -> Int = v + 1\nend\ndef f(x: K[String]) -> Int\n  y = x.as?(Num)\n  y ? y.n : -1\nend\nputs f(G.new(\"s\"))\n"] {
+    // (As above, `K` declares `n` abstract, R0.)
+    for src in ["# skip of a concrete-argument class under covariance: D[U] < Box[Int], D[U <: String] brings Num\nmodule Num\n  abstract def n -> Int\nend\nclass Box[out T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nclass D[U] < Box[Int]\n  @u: U\n  def initialize(@u: U); super(1); end\n  def u -> U = @u\nend\nextension D[U <: String]\n  include Num\n  def n -> Int = u.size\nend\ndef f(x: Box[Object]) -> Int\n  y = x.as?(Num)\n  y ? y.n : -1\nend\nputs f(D.new(\"abc\"))\nputs f(D.new(7))\n", "module Num\n  abstract def n -> Int\nend\nclass Box[out T]\n  def initialize; end\nend\nclass D[U] < Box[Int]\n  @u: U\n  def initialize(@u: U); end\n  def u -> U = @u\nend\nextension D[U <: String]\n  include Num\n  def n -> Int = u.size\nend\ndef f(x: Box[Int | String]) -> Bool = x.is_a?(Num)\nputs f(D.new(7))\n", "# always shortcut through a generic module whose bounded extension brings Num\nmodule Num\n  abstract def n -> Int\nend\nmodule K[T]\n  abstract def n -> Int\nend\nextension K[T <: Int]\n  include Num\nend\nclass G[T]\n  include K[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension G[T <: Int]\n  include Num\n  def n -> Int = v + 1\nend\ndef f(x: K[String]) -> Int\n  y = x.as?(Num)\n  y ? y.n : -1\nend\nputs f(G.new(\"s\"))\n"] {
         let out = common::diagnostics(src);
         assert!(
             out.iter().any(|d| d.contains("cannot check at run time that a value of type")),
@@ -2852,6 +2855,66 @@ fn a_hashs_include_tests_a_pair() {
         "h = {\"a\" => 1}\np h.key?(\"a\"), h.has_key?(\"a\")\n",
     ];
     for src in accepted {
+        let out = common::diagnostics(src).join("\n");
+        assert!(!out.contains("error:"), "{src}\n{out}");
+    }
+}
+
+#[test]
+fn an_extension_completes_the_conformance_it_makes() {
+    // R0 (the user's rule on #555, 2026-11-13): an extension that includes
+    // a module implements each of its abstract methods where it is
+    // declared, from the extension's own methods, the modules its includes
+    // bring, or the target's own side (own methods, own includes,
+    // superclasses; an `abstract def` there counts); otherwise an error at
+    // the extension, whatever its bounds.
+    let named = "module Named\n  abstract def label -> String\nend\n";
+    let msg = "this extension includes `Named` but nothing here implements `label`";
+    let refused = [
+        // #600: nothing implements it.
+        format!("{named}class B\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n  end\nend\n"),
+        // Only another extension's module gives it (#522's witness part).
+        format!("{named}module Giver\n  def label -> String = \"g\"\nend\nclass B\n  def initialize; end\nend\nmodule S1\n  extension B\n    include Named\n  end\nend\nmodule S2\n  extension B\n    include Giver\n  end\nend\n"),
+        // An `abstract def` on the target of another signature only.
+        format!("{named}abstract class B\n  abstract def label(x: Int) -> String\nend\nclass C < B\n  def initialize; end\n  def label(x: Int) -> String = \"c\"\nend\nextension B\n  include Named\nend\n"),
+        // Only an overload of another parameter type.
+        "module M\n  abstract def m(x: String) -> String\nend\nmodule N\n  def m(x: Int) -> String = \"n\"\nend\nclass B\n  def initialize; end\nend\nextension B\n  include M\n  include N\nend\n".to_string(),
+    ];
+    for src in &refused {
+        let out = common::diagnostics(src).join("\n");
+        let want = if src.contains("module M\n") {
+            "nothing here implements `m`"
+        } else {
+            msg
+        };
+        assert!(out.contains(want), "{src}\n{out}");
+    }
+    // #555: a conditional extension too, whatever its bound.
+    let out = common::diagnostics(
+        "module EM\n  abstract def m(x: Int) -> String\nend\nabstract class Box[T]\n  def initialize; end\nend\nextension Box[T <: Int]\n  include EM\nend\nclass Sub[U] < Box[U]\n  def initialize; end\nend\n",
+    )
+    .join("\n");
+    assert!(
+        out.contains("this extension includes `EM` but nothing here implements `m`"),
+        "{out}"
+    );
+    let accepted = [
+        // (1) The extension's own method, written after its `include` (the
+        // check runs once the extension's body is declared).
+        format!("{named}class B\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n    def label -> String = \"e\"\n  end\nend\n"),
+        // (2) A module the same extension includes.
+        format!("{named}module Giver\n  def label -> String = \"g\"\nend\nclass B\n  def initialize; end\nend\nextension B\n  include Named\n  include Giver\nend\n"),
+        // (3) The target's own method, own include, and an `abstract def`
+        // of the target (its concrete subclass implements it).
+        format!("{named}class B\n  def initialize; end\n  def label -> String = \"b\"\nend\nextension B\n  include Named\nend\n"),
+        format!("{named}module Giver\n  def label -> String = \"g\"\nend\nclass B\n  include Giver\n  def initialize; end\nend\nextension B\n  include Named\nend\n"),
+        format!("{named}abstract class B\n  abstract def label -> String\nend\nclass C < B\n  def initialize; end\n  def label -> String = \"c\"\nend\nextension B\n  include Named\nend\n"),
+        // (3) A method the target inherits from a superclass: accepted by
+        // the rule; under a scoped extension the run time does not find it
+        // yet (#632).
+        format!("{named}class A\n  def initialize; end\n  def label -> String = \"a\"\nend\nclass B < A\n  def initialize; end\nend\nmodule Sc\n  extension B\n    include Named\n  end\nend\n"),
+    ];
+    for src in &accepted {
         let out = common::diagnostics(src).join("\n");
         assert!(!out.contains("error:"), "{src}\n{out}");
     }
