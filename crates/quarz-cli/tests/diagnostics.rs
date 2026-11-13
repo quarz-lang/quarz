@@ -3104,3 +3104,33 @@ fn super_under_a_method_level_using_of_the_same_class_is_refused() {
         assert!(!out.contains("error:"), "{ok}\n{out}");
     }
 }
+
+#[test]
+fn a_test_against_a_type_parameters_class_value_is_checked() {
+    // #598 (decided 2026-11-13): `x.is_a?(k)` and `when k` with `k: Type[T]`
+    // are refused where `T` may be a module the class alone cannot answer
+    // for, as for a written module (#596), over every module `T`'s bounds
+    // admit.
+    let lib = "module Num\n  def n -> Int = 1\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\nend\nextension Box[T <: Int]\n  include Num\nend\n";
+    for (test, op) in [
+        ("def narrow[T](x: Object, k: Type[T]) -> Bool = x.is_a?(k)\np narrow(Box.new(\"s\"), Num)\n", "`is_a?`"),
+        ("def w[T](x: Object, k: Type[T]) -> Bool\n  case x\n  when k then true\n  else false\n  end\nend\np w(Box.new(\"s\"), Num)\n", "`when`"),
+        // A union of class values, one of them a type parameter's.
+        ("class Animal\nend\ndef u[T, Q <: Animal](x: Object, k: Type[Q] | Type[T]) -> Bool = x.is_a?(k)\nputs 1\n", "`is_a?`"),
+    ] {
+        let out = common::diagnostics(&format!("{lib}{test}")).join("\n");
+        assert!(
+            out.contains(&format!("{op} against `Type[T]` cannot be checked at run time: `T` may be the module")),
+            "{out}"
+        );
+    }
+    // A class bound admits no module; a module bound admitting only modules
+    // no conditional extension brings is answered by the class alone.
+    for ok in [
+        "class Animal\nend\ndef f[T <: Animal](x: Object, k: Type[T]) -> Bool = x.is_a?(k)\nputs 1\n",
+        "module Named\n  def label -> String = \"n\"\nend\ndef f[T <: Named](x: Object, k: Type[T]) -> Bool = x.is_a?(k)\nputs 1\n",
+    ] {
+        let out = common::diagnostics(&format!("{lib}{ok}")).join("\n");
+        assert!(!out.contains("error:"), "{ok}\n{out}");
+    }
+}
