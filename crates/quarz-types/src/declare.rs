@@ -1370,42 +1370,22 @@ impl<'ast> Declarer<'ast> {
         span: Span,
     ) {
         let target = self.world.extensions[ext as usize].target;
-        // An extension of a module cannot include a module with class
-        // methods (or one bringing such a module): the classes including
-        // the target would conform through it, which the conformance
-        // enumeration does not follow yet (#530, the fallback decided on
-        // #504).
+        // An extension of a module cannot include (rule B, the user's
+        // decision of 2026-11-13): the classes including the target would
+        // conform through it, a conformance made away from both the module
+        // and the classes (#609, #610). It may add methods to the module.
         if self.world.class(target).kind == ClassKind::Module {
-            if let Some(m) = self.world.ancestor_ids(module).into_iter().find(|&m| {
-                self.world.class(m).kind == ClassKind::Module
-                    && self
-                        .world
-                        .class(m)
-                        .singleton_methods
-                        .values()
-                        .flatten()
-                        .any(|&x| self.world.method(x).owner == m)
-            }) {
-                let (tname, mname) = (
-                    self.world.class(target).name.clone(),
-                    self.world.class(module).name.clone(),
-                );
-                let has = if m == module {
-                    format!("`{mname}` has class methods")
-                } else {
-                    format!(
-                        "`{mname}` brings `{}`, which has class methods",
-                        self.world.class(m).name
-                    )
-                };
-                self.error(
-                    format!(
-                        "an extension of the module `{tname}` cannot include `{mname}`: {has} (not supported yet, #530); include it in the classes, or extend them"
-                    ),
-                    span,
-                );
-                return;
-            }
+            let (tname, mname) = (
+                self.world.class(target).name.clone(),
+                self.world.class(module).name.clone(),
+            );
+            self.error(
+                format!(
+                    "an extension of the module `{tname}` cannot include `{mname}`: include it in `{tname}` itself, or in the classes (or extend them)"
+                ),
+                span,
+            );
+            return;
         }
         if !self.check_not_included_already(target, module, span)
             || !self.check_one_conformance(ext, target, module, &margs, span)

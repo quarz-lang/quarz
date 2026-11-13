@@ -4,7 +4,6 @@ top-level extension of the class: mod true
 top-level extension of the superclass: mod true
 scoped extension of the class: base true
 conditional extension of a generic class: base true
-top-level extension of an included module: mod true
 own method over a top-level extension's: own true
 own method over a scoped extension's: own true
 abstract superclass method, top-level extension's module: mod true
@@ -14,7 +13,6 @@ top-level extension of the class (subclass): mod true
 top-level extension of the superclass (subclass): mod true
 scoped extension of the class (subclass): base true
 conditional extension of a generic class (subclass): base true
-top-level extension of an included module (subclass): mod true
 own method over a top-level extension's (subclass): own true
 own method over a scoped extension's (subclass): own true
 abstract superclass method, top-level extension's module (subclass): mod true

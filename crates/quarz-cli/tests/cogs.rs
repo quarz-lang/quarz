@@ -2480,10 +2480,9 @@ fn witness_matrix_across_cogs() {
 }
 
 /// #537: a library's extension of its module making it conform to a
-/// generic module with one set of arguments, and an application's class
-/// including the module and the generic module with another: the conflict
-/// is reported at the application's class, naming the extension, not
-/// inside the library (which checks without error).
+/// generic module. Since rule B (an extension of a module cannot include)
+/// the library itself is refused at that include, so the cross-cog
+/// conflict #537 reported at the application's class cannot arise.
 #[test]
 fn a_cross_cog_conformance_conflict_is_reported_in_the_application() {
     let w = World::new();
@@ -2495,20 +2494,12 @@ fn a_cross_cog_conformance_conflict_is_reported_in_the_application() {
         "midlib/src/mid.qz",
         "module P[T]\n  def it -> Int = 1\nend\nmodule Mid\nend\nextension Mid\n  include P[String]\nend\n",
     );
-    w.commit("midlib", Some("v0.1.0"));
-    w.app(
-        &format!(
-            "Midlib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n",
-            w.url("midlib")
-        ),
-        "class K\n  include Midlib::Mid\n  include Midlib::P[Int]\nend\nputs 1\n",
-    );
-    let err = w.fails("app", &["check"]);
+    let err = w.fails("midlib", &["check"]);
     assert!(
-        err.contains("main.qz") && err.contains("`K` conforms to `Midlib::P[Int]`"),
+        err.contains("mid.qz")
+            && err.contains("an extension of the module `Midlib::Mid` cannot include `Midlib::P`"),
         "{err}"
     );
-    assert!(!err.contains("mid.qz"), "{err}");
 }
 
 /// #537, the other direction: an application's own extension of a
@@ -2541,8 +2532,7 @@ fn an_applications_extension_conflict_stays_in_the_application() {
 /// #515 (A): a library's run-time test made unanswerable by an
 /// application's declaration is reported at that declaration, naming the
 /// test, never inside the library: an extension with bounds bringing the
-/// tested module, and a class getting it through the library's own
-/// extension with bounds.
+/// tested module.
 #[test]
 fn a_librarys_runtime_test_broken_by_the_application_is_reported_there() {
     let w = World::new();
@@ -2552,7 +2542,7 @@ fn a_librarys_runtime_test_broken_by_the_application_is_reported_there() {
     );
     w.write(
         "marklib/src/mark.qz",
-        "module Marker\n  def m -> Int = 1\nend\nmodule Num\n  def n -> Int = 1\nend\nmodule Seq[T]\nend\nextension Seq[T <: Int]\n  include Num\nend\nclass LibBase\nend\npublic def marked(x: Object) -> Bool = x.is_a?(Marker)\npublic def numeric(x: LibBase) -> Bool = x.is_a?(Num)\n",
+        "module Marker\n  def m -> Int = 1\nend\npublic def marked(x: Object) -> Bool = x.is_a?(Marker)\n",
     );
     w.commit("marklib", Some("v0.1.0"));
     // On its own, the library checks.
@@ -2572,15 +2562,7 @@ fn a_librarys_runtime_test_broken_by_the_application_is_reported_there() {
         "{err}"
     );
     assert!(!err.contains("mark.qz"), "{err}");
-    w.app(
-        &dep,
-        "class AppSub[T] < Marklib::LibBase\n  include Marklib::Seq[T]\n  def initialize; end\nend\nputs 1\n",
-    );
-    let err = w.fails("app", &["check"]);
-    assert!(
-        err.contains("main.qz:1:")
-            && err.contains("class `AppSub` makes a run-time test of the function `numeric` of the cog `marklib` unanswerable"),
-        "{err}"
-    );
-    assert!(!err.contains("mark.qz"), "{err}");
+    // (Dropped since rule B: a class getting the tested module through the
+    // library's own extension with bounds of a module, `extension Seq[T <:
+    // Int]; include Num`; an extension of a module cannot include.)
 }
