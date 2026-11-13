@@ -4536,7 +4536,8 @@ impl<'ast> Declarer<'ast> {
                             // is declared) implements it: it does wherever
                             // the value goes (`World::ext_impls`), but only
                             // for a conformance its own extension makes
-                            // (docs/01 §7's exception; #665's decision (α)):
+                            // (docs/01 §7's exception; #665's decision (α)),
+                            // the one that holds for the class:
                             // another extension's method of the name, below
                             // that conformance's class or of the same
                             // target, is not its witness.
@@ -4549,10 +4550,13 @@ impl<'ast> Declarer<'ast> {
                                         self.world.extension_label(ext.unwrap_or_default()),
                                     ));
                                 }
-                                let makes =
-                                    self.world.conformances(id).iter().any(|(src, k, _)| {
-                                        *k == *anc && src.map(|(e, _)| e) == ext
-                                    });
+                                // (The conformance that holds for the class,
+                                // the witness record's rule 1.)
+                                let makes = self
+                                    .world
+                                    .chosen_conformances(id)
+                                    .iter()
+                                    .any(|(src, k, _)| *k == *anc && src.map(|(e, _)| e) == ext);
                                 if makes {
                                     impls.push((id, *mid, i));
                                     found_impls.push((i, *mid, *anc));
