@@ -1,0 +1,17 @@
+["a", 1]: true
+["a", 2]: false
+["b", nil]: true
+["b", 1]: false
+["z", 1]: false
+"a": false
+1: false
+nil: false
+["a"]: false
+["a", 1, 2]: false
+[#<Key @n=13>, "k"]: true
+[#<Key @n=13>, "x"]: false
+[#<Key @n=4>, "k"]: false
+true
+false
+true
+true

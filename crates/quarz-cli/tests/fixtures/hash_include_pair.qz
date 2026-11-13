@@ -1,0 +1,40 @@
+# #622: `Hash#include?` and `Hash::Builder#include?` test whether a pair is
+# an element, as `Enumerable#include?` does (`member?` is the module's,
+# calling `include?`); a key is tested with `key?`/`has_key?`. The natives
+# look the key up and compare the value with `==`: the same answers as the
+# module's scan (`Pairs`, an Enumerable of the same pairs), compared here
+# directly, through an `Enumerable`-typed call and on a builder. They can
+# differ only for a key class whose `==` and `hash` disagree, which the
+# Hash lookup contract excludes (docs/03 §5).
+class Pairs
+  include Enumerable[[Object, Object]]
+  @ps: Array[[Object, Object]]
+  def initialize(@ps: Array[[Object, Object]]); end
+  def each(&: ([Object, Object]) -> Void) -> Void
+    @ps.each { |p| yield(p) }
+  end
+end
+class Key
+  @n: Int
+  def initialize(@n: Int); end
+  def n -> Int = @n
+  def ==(other: Object) -> Bool = other.is_a?(Key) && (other.as(Key).n % 10) == (@n % 10)
+  def hash -> Int = (@n % 10).hash
+end
+def via(e: Enumerable[Object], x: Object) -> Bool = e.include?(x)
+def mem(e: Enumerable[Object], x: Object) -> Bool = e.member?(x)
+
+h: Hash[Object, Object] = {"a" => 1, "b" => nil, Key.new(3) => "k"}
+b = Hash::Builder[Object, Object].new
+h.each { |k, v| b[k] = v }
+ps = Pairs.new(h.to_a)
+probes: Array[Object] = [
+  ["a", 1], ["a", 2], ["b", nil], ["b", 1], ["z", 1], "a", 1, nil,
+  ["a"], ["a", 1, 2], [Key.new(13), "k"], [Key.new(13), "x"], [Key.new(4), "k"],
+]
+probes.each do |x|
+  direct = h.include?(x)
+  answers = [direct, via(h, x), mem(h, x), b.include?(x), via(b, x), ps.include?(x)]
+  puts "#{x.inspect}: #{answers.uniq.size == 1 ? direct.to_s : "DIFFER #{answers.inspect}"}"
+end
+p h.key?("a"), h.has_key?("z"), b.key?("b"), b.has_key?(Key.new(23))

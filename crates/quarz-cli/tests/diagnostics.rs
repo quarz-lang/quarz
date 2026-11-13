@@ -2813,3 +2813,46 @@ fn enumerables_select_is_typed_as_an_enumerable() {
     );
     assert_eq!(out.matches("error:").count(), 1, "{out}");
 }
+
+#[test]
+fn a_hashs_include_tests_a_pair() {
+    // #622: `include?`/`member?` on a `Hash` or `Hash::Builder` test
+    // whether a pair is an element; an argument that cannot be a pair is
+    // refused, pointing at `key?`.
+    let refused = [
+        ("h = {\"a\" => 1}\np h.include?(\"a\")\n", "2:3"),
+        ("h = {\"a\" => 1}\np h.member?(\"a\")\n", "2:3"),
+        ("h = {\"a\" => 1}\np h.include?(value: \"a\")\n", "2:3"),
+        (
+            "b = Hash::Builder[String, Int].new\np b.include?(\"a\")\n",
+            "2:3",
+        ),
+        (
+            "def f(h: Hash[Symbol, Int], k: Symbol) -> Bool = h.include?(k)\n",
+            "1:50",
+        ),
+    ];
+    for (src, at) in refused {
+        let out = common::diagnostics(src).join("\n");
+        assert!(
+            out.contains(&format!(
+                "{at}: error: a Hash's `{}` tests whether a pair is an element; use `key?` for a key",
+                if src.contains("member?") { "member?" } else { "include?" }
+            )),
+            "{src}\n{out}"
+        );
+        assert_eq!(out.matches("error:").count(), 1, "{src}\n{out}");
+    }
+    // A pair, or anything that may be one, is accepted.
+    let accepted = [
+        "h = {\"a\" => 1}\np h.include?([\"a\", 1])\n",
+        "h = {\"a\" => 1}\no: Object = [\"a\", 1]\np h.include?(o)\n",
+        "def f[X](h: Hash[String, Int], x: X) -> Bool = h.include?(x)\n",
+        "def f(h: Hash[String, Int], x: [String, Int] | String) -> Bool = h.include?(x)\n",
+        "h = {\"a\" => 1}\np h.key?(\"a\"), h.has_key?(\"a\")\n",
+    ];
+    for src in accepted {
+        let out = common::diagnostics(src).join("\n");
+        assert!(!out.contains("error:"), "{src}\n{out}");
+    }
+}

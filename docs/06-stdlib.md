@@ -64,9 +64,9 @@ An array of a comparable element type is `Comparable` (`<=> < <= > >= between? c
 
 ### Hash[K, out V] (immutable, insertion-ordered)
 
-- Reading: `[] []? fetch (default or block) dig (one key, like `[]?`) key? has_key? include? member? value? has_value? key keys values values_at fetch_values size length empty? each each_pair each_key each_value to_a to_h invert` + Enumerable (elements are `[K, V]` tuples, so `each { |k, v| }`, `map { |k, v| }`, `min_by { |k, v| }` …).
+- Reading: `[] []? fetch (default or block) dig (one key, like `[]?`) key? has_key? value? has_value? key keys values values_at fetch_values size length empty? each each_pair each_key each_value to_a to_h invert` + Enumerable (elements are `[K, V]` tuples, so `each { |k, v| }`, `map { |k, v| }`, `min_by { |k, v| }` …). `include?` and `member?` are Enumerable's: whether a `[key, value]` pair is an element (#622; Ruby's test a key, here `key?`/`has_key?`), and an argument that cannot be a pair is a compile error pointing at `key?`.
 - Updating: `put delete merge(&block) update(k) { |v| } select filter reject delete_if keep_if compact except slice transform_values transform_keys`.
-- `Hash::Builder[K, V]`: `[]= store [] []? fetch delete key? has_key? include? value? keys values size length empty? clear merge! (with a block) update(k) { |v| } select! reject! delete_if keep_if transform_values! compact! replace each each_pair each_key each_value to_h snapshot freeze` + Enumerable. `Hash.build { |b| }`, `Hash.new` (no default value; defaults via `fetch(k, default)` or `fetch(k) { }`).
+- `Hash::Builder[K, V]`: `[]= store [] []? fetch delete key? has_key? include? (a pair, as Hash's) value? keys values size length empty? clear merge! (with a block) update(k) { |v| } select! reject! delete_if keep_if transform_values! compact! replace each each_pair each_key each_value to_h snapshot freeze` + Enumerable. `Hash.build { |b| }`, `Hash.new` (no default value; defaults via `fetch(k, default)` or `fetch(k) { }`).
 - `Hash#[]` raises `KeyError` for a missing key; `[]?` returns `nil`. There is no `default`/`default_proc`.
 
 ### Set[out T], Range[T], Tuple

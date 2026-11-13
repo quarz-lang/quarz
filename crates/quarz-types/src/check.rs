@@ -9421,6 +9421,7 @@ impl Checker {
                 }
             }
         }
+        self.check_hash_include(expr, call);
         // A module or abstract class written as the argument of a
         // `Type[T]` parameter whose `T` is bounded (#509).
         match self.out.calls.get(&expr.id).cloned() {
@@ -9431,6 +9432,63 @@ impl Checker {
             _ => {}
         }
         t
+    }
+
+    /// A Hash's `include?` and `member?` test whether a pair is an element
+    /// (`Enumerable`'s meaning, #622): on a receiver statically a
+    /// `Hash[K, V]` or `Hash::Builder[K, V]`, an argument whose static type
+    /// cannot be a `[K, V]` (`split_by_type` gives nothing of it, as a
+    /// run-time type test decides) is refused, pointing at `key?`. It errs
+    /// towards accepting: a type not yet inferred, and any type a pair may
+    /// be (`Object`, a type parameter, a union with a tuple), pass; a union
+    /// or subclass receiver is not looked at.
+    fn check_hash_include(&mut self, expr: &Expr, call: &Call) {
+        if call.name != "include?" && call.name != "member?" {
+            return;
+        }
+        let (Some(recv), [arg]) = (&call.recv, call.args.as_slice()) else {
+            return;
+        };
+        let value = match arg {
+            Arg::Positional(e) => e,
+            Arg::Keyword { name, value, .. } if name == "value" => value,
+            _ => return,
+        };
+        if !matches!(
+            self.out.calls.get(&expr.id),
+            Some(CallTarget::Method { .. })
+        ) {
+            return;
+        }
+        let (Some(rt), Some(at)) = (
+            self.out.node_types.get(&recv.id).cloned(),
+            self.out.node_types.get(&value.id).cloned(),
+        ) else {
+            return;
+        };
+        let rt = self.resolve(&rt);
+        let at = self.resolve(&at);
+        let Type::Class(c, args) = &rt else {
+            return;
+        };
+        if (*c != self.world.builtin.hash && *c != self.world.builtin.hash_builder)
+            || args.len() != 2
+            || at.has_vars()
+            || args.iter().any(|t| t.has_vars())
+        {
+            return;
+        }
+        let pair = Type::Tuple(args.clone());
+        let (yes, _) = self.split_by_type(&at, &pair);
+        if yes.is_nothing() {
+            self.error(
+                format!(
+                    "a Hash's `{}` tests whether a pair is an element; use `key?` for a key",
+                    call.name
+                ),
+                expr.span,
+            );
+        }
     }
 
     /// Record, for `check_abstract_type_args`, the arguments of a call of

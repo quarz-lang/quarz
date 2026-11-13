@@ -4751,11 +4751,15 @@ class Hash[K, out V]
   native def key?(key: K) -> Bool
   # Whether `key` is a key: the same as `#key?`.
   native def has_key?(key: K) -> Bool
-  # Whether `key` is a key (unlike `Enumerable#include?`, which would compare
-  # pairs). A value of another type than the keys' is none.
-  native def include?(key: Object) -> Bool
-  # Whether `key` is a key: the same as `#include?`.
-  native def member?(key: Object) -> Bool
+  # Whether `value` is a `[key, value]` pair of the hash, as
+  # `Enumerable#include?` (unlike Ruby's, which tests a key: use `#key?`).
+  #
+  # ```
+  # h = {"a" => 1}
+  # h.include?(["a", 1])   # => true
+  # h.key?("a")            # => true
+  # ```
+  native def include?(value: Object) -> Bool
   # Whether some key has `value`, compared with `==`.
   native def value?(value: Object) -> Bool
   # Whether some key has `value`: the same as `#value?`.
@@ -4950,8 +4954,9 @@ class Hash[K, out V]
     native def fetch(key: K, &: (K) -> V) -> V
     # Whether `key` is a key: the same as `#key?`.
     native def has_key?(key: K) -> Bool
-    # Whether `key` is a key. A value of another type than the keys' is none.
-    native def include?(key: Object) -> Bool
+    # Whether `value` is a `[key, value]` pair of the builder, as
+    # `Enumerable#include?` (use `#key?` for a key).
+    native def include?(value: Object) -> Bool
     # Whether some key has `value`, compared with `==`.
     native def value?(value: V) -> Bool
     # The number of pairs: the same as `#size`.
