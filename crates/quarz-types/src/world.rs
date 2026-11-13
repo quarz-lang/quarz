@@ -563,8 +563,10 @@ pub struct World {
     pub extensions: Vec<ExtensionInfo>,
     pub top: HashMap<String, Member>,
     pub builtin: Builtin,
-    /// Extensions activated by `using` in the current lexical scope.
-    pub active_extensions: Vec<ExtensionId>,
+    /// Extensions activated by `using` in the current lexical scope. A
+    /// cell, so that a question can be asked under another set from `&self`
+    /// (`with_active`, #606); the checker sets it through `get_mut`.
+    pub active_extensions: std::cell::RefCell<Vec<ExtensionId>>,
     pub(crate) next_type_param: TypeParamId,
     pub type_param_names: HashMap<TypeParamId, String>,
     /// The lower bounds of method type parameters (`U >: T`).
@@ -2329,6 +2331,16 @@ impl World {
             .collect()
     }
 
+    /// `f` evaluated with `set` as the active extensions (`active_extensions`),
+    /// the previous set restored after: a relation asked under a given view
+    /// (a class's declaration view, `group_extensions`, #606).
+    pub fn with_active<R>(&self, set: Vec<ExtensionId>, f: impl FnOnce() -> R) -> R {
+        let saved = self.active_extensions.replace(set);
+        let r = f();
+        self.active_extensions.replace(saved);
+        r
+    }
+
     pub fn active_extension_ids(&self) -> Vec<ExtensionId> {
         let mut ids: Vec<ExtensionId> = self
             .extensions
@@ -2336,7 +2348,7 @@ impl World {
             .filter(|e| e.always_active)
             .map(|e| e.id)
             .collect();
-        for id in &self.active_extensions {
+        for id in self.active_extensions.borrow().iter() {
             if !ids.contains(id) {
                 ids.push(*id);
             }

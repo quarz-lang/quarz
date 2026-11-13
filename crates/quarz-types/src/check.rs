@@ -2353,12 +2353,12 @@ impl Checker {
             let saved_touched = std::mem::take(&mut self.touched);
             let saved_frame_vars = std::mem::take(&mut self.frame_vars);
             let saved_temp_stmts = std::mem::take(&mut self.temp_stmts);
-            let saved_active = std::mem::take(&mut self.world.active_extensions);
+            let saved_active = std::mem::take(self.world.active_extensions.get_mut());
             for f in &class.fields {
                 let Some(d) = &f.default else {
                     continue;
                 };
-                self.world.active_extensions =
+                *self.world.active_extensions.get_mut() =
                     self.world
                         .extensions_active_at(Some(cid), class.file, d.span.start);
                 self.scan_closures([&**d], std::iter::empty());
@@ -2381,7 +2381,7 @@ impl Checker {
             self.touched = saved_touched;
             self.frame_vars = saved_frame_vars;
             self.temp_stmts = saved_temp_stmts;
-            self.world.active_extensions = saved_active;
+            *self.world.active_extensions.get_mut() = saved_active;
         }
     }
 
@@ -2413,7 +2413,8 @@ impl Checker {
         }
         for (i, expr) in body.iter().enumerate() {
             // (A `using` is in effect from its statement on.)
-            self.world.active_extensions = self.world.file_extensions(file, expr.span.start);
+            *self.world.active_extensions.get_mut() =
+                self.world.file_extensions(file, expr.span.start);
             self.stmt_unused = !(last_used && i + 1 == body.len());
             let t = self.check_expr(expr, None);
             if i + 1 < body.len() {
@@ -3207,10 +3208,10 @@ impl Checker {
         let active =
             self.world
                 .extensions_active_at(Some(stmt.class), stmt.file, stmt.expr.span.start);
-        let saved_active = std::mem::replace(&mut self.world.active_extensions, active);
+        let saved_active = std::mem::replace(self.world.active_extensions.get_mut(), active);
         let t = self.check_expr(&stmt.expr, None);
         let _ = self.settle_vars(&t);
-        self.world.active_extensions = saved_active;
+        *self.world.active_extensions.get_mut() = saved_active;
         self.finish_frame_types();
         self.env = saved_env;
         self.infer = saved_infer;
@@ -3700,7 +3701,7 @@ impl Checker {
         let saved_touched = std::mem::take(&mut self.touched);
         let saved_frame_vars = std::mem::take(&mut self.frame_vars);
         let saved_temp_stmts = std::mem::take(&mut self.temp_stmts);
-        let saved_active = std::mem::replace(&mut self.world.active_extensions, active);
+        let saved_active = std::mem::replace(self.world.active_extensions.get_mut(), active);
 
         // Closures in the body and in default values (which run in the
         // method's frame, with its parameters).
@@ -3838,7 +3839,7 @@ impl Checker {
         self.touched = saved_touched;
         self.frame_vars = saved_frame_vars;
         self.temp_stmts = saved_temp_stmts;
-        self.world.active_extensions = saved_active;
+        *self.world.active_extensions.get_mut() = saved_active;
         self.world.self_bound = saved_bound;
         self.in_progress.pop();
         // What the body recorded is its own, checked once: a check that
@@ -3890,9 +3891,9 @@ impl Checker {
         let active = self
             .world
             .extensions_active_at(info.owner, info.file, value.span.start);
-        let saved_active = std::mem::replace(&mut self.world.active_extensions, active);
+        let saved_active = std::mem::replace(self.world.active_extensions.get_mut(), active);
         let t = self.check_expr(&value, None);
-        self.world.active_extensions = saved_active;
+        *self.world.active_extensions.get_mut() = saved_active;
         let t = self.settle_vars(&t);
         let t = self.world.erase_narrowed(&t);
         if t.has_vars() {
@@ -6421,7 +6422,7 @@ impl Checker {
         let mut dead = false;
         // `using M` inside a body: its extensions are active from there to
         // the end of this statement list.
-        let active_len = self.world.active_extensions.len();
+        let active_len = self.world.active_extensions.get_mut().len();
         for (i, e) in body.iter().enumerate() {
             let last = i == body.len() - 1;
             if dead {
@@ -6443,7 +6444,7 @@ impl Checker {
                 result = t;
             }
         }
-        self.world.active_extensions.truncate(active_len);
+        self.world.active_extensions.get_mut().truncate(active_len);
         result
     }
 
@@ -6455,8 +6456,8 @@ impl Checker {
             Some(Member::Class(id)) if self.world.class(id).kind == ClassKind::Module => {
                 let ids = self.world.class(id).extensions.clone();
                 for e in ids {
-                    if !self.world.active_extensions.contains(&e) {
-                        self.world.active_extensions.push(e);
+                    if !self.world.active_extensions.get_mut().contains(&e) {
+                        self.world.active_extensions.get_mut().push(e);
                     }
                 }
             }
@@ -14133,10 +14134,10 @@ impl Checker {
                 let is_task = Self::runs_block_in_task(&self.world, m);
                 // `&: (A) -> R using M`: the block literal sees the
                 // method's extensions.
-                let active_len = self.world.active_extensions.len();
+                let active_len = self.world.active_extensions.get_mut().len();
                 for e in m.block_usings.clone() {
-                    if !self.world.active_extensions.contains(&e) {
-                        self.world.active_extensions.push(e);
+                    if !self.world.active_extensions.get_mut().contains(&e) {
+                        self.world.active_extensions.get_mut().push(e);
                     }
                 }
                 // A named `&block` may be kept (an anonymous one is only
@@ -14215,7 +14216,7 @@ impl Checker {
                 }
                 self.env.next_block_lifted = false;
                 self.env.next_block_init = false;
-                self.world.active_extensions.truncate(active_len);
+                self.world.active_extensions.get_mut().truncate(active_len);
             } else if let Some(Arg::BlockPass(e)) =
                 call.args.iter().find(|a| matches!(a, Arg::BlockPass(_)))
             {
@@ -16482,13 +16483,13 @@ impl Checker {
         // is, last among the extensions in scope.
         let own_ext = m
             .extension
-            .filter(|e| !self.world.active_extensions.contains(e));
+            .filter(|e| !self.world.active_extensions.borrow().contains(e));
         if let Some(e) = own_ext {
-            self.world.active_extensions.push(e);
+            self.world.active_extensions.get_mut().push(e);
         }
         let found = self.world.lookup_methods(&self_ty, &m.name);
         if own_ext.is_some() {
-            self.world.active_extensions.pop();
+            self.world.active_extensions.get_mut().pop();
         }
         // (An abstract declaration is a requirement, not an
         // implementation: `super` passes over it to the next method with a

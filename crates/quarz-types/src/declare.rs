@@ -1051,7 +1051,7 @@ impl<'ast> Declarer<'ast> {
             // The top-level extensions of the class's group are active
             // there (they may implement a module's methods for it).
             let file = self.world.class(p.id).file;
-            self.world.active_extensions = self.world.group_extensions(file);
+            *self.world.active_extensions.get_mut() = self.world.group_extensions(file);
             self.check_conformance(p);
             self.check_shareable_promise(p.id);
             self.check_variance(p.id);
@@ -1065,7 +1065,7 @@ impl<'ast> Declarer<'ast> {
             self.check_eq_with_hash(p.id);
             self.check_duplicate_methods(p.id);
             self.check_static_mixins(p);
-            self.world.active_extensions.clear();
+            self.world.active_extensions.get_mut().clear();
         }
         let modules: Vec<ClassId> = pending.iter().map(|p| p.id).collect();
         self.check_module_static_defs(&modules);
@@ -4124,7 +4124,7 @@ impl<'ast> Declarer<'ast> {
             // `World::derived_shareable` reads.)
             self.world.ensure_shareable_known(&[id]);
             let file = self.world.class(id).file;
-            self.world.active_extensions = self.world.group_extensions(file);
+            *self.world.active_extensions.get_mut() = self.world.group_extensions(file);
             // A class whose conformance waits for its file's statements
             // (`World::conformance_deferred`, docs/14 §5) is checked once
             // they all ran, not after each: a later one may generate what
@@ -4143,7 +4143,7 @@ impl<'ast> Declarer<'ast> {
             self.check_copied_deinitialize(id);
             self.check_eq_with_hash(id);
             self.check_duplicate_methods(id);
-            self.world.active_extensions.clear();
+            self.world.active_extensions.get_mut().clear();
         }
     }
 
@@ -4209,9 +4209,9 @@ impl<'ast> Declarer<'ast> {
             let class = self.world.class(id);
             self.file = class.file;
             let file = class.file;
-            self.world.active_extensions = self.world.group_extensions(file);
+            *self.world.active_extensions.get_mut() = self.world.group_extensions(file);
             self.check_conformance_of(id);
-            self.world.active_extensions.clear();
+            self.world.active_extensions.get_mut().clear();
         }
     }
 
