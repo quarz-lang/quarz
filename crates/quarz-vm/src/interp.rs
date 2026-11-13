@@ -2750,11 +2750,52 @@ impl Interp {
     }
 
     /// The class method of `cid` (or of a superclass below the owner of
-    /// `mid`) that overrides the class method `mid`.
+    /// `mid`) that overrides the class method `mid`: the row of
+    /// `RtWorld::class_override_rows` for a key
+    /// `RtWorld::in_class_override_rows` admits (none there is an internal
+    /// error), else `RtWorld::class_method_override`; cached per class.
     fn class_method_override(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
         if let Some(found) = self.class_method_cache.borrow().get(&(cid, mid)) {
             return *found;
         }
+        let world = &self.program.world;
+        let method = |id: MethodId| self.program.method(id);
+        let found = if world.in_class_override_rows(&method, cid, mid) {
+            let by = world.class_override_row(cid, mid).unwrap_or_else(|| {
+                panic!(
+                    "internal error: no class override row for `{}` on `{}`",
+                    self.program.method(mid).name,
+                    world.class(cid).name
+                )
+            });
+            (by != mid).then_some(by)
+        } else {
+            world.class_method_override(&method, cid, mid)
+        };
+        // (The oracle: the walk the rows replace, made here as it was,
+        // gives the same answer at every lookup.)
+        #[cfg(debug_assertions)]
+        {
+            let old = self.class_method_override_at_run_time(cid, mid);
+            assert!(
+                found == old,
+                "internal error: the class override rows give {found:?} for `{}` on `{}`, the walk at run time {old:?}",
+                self.program.method(mid).name,
+                world.class(cid).name
+            );
+        }
+        self.class_method_cache
+            .borrow_mut()
+            .insert((cid, mid), found);
+        found
+    }
+
+    /// The class method of `cid` (or of a superclass below the owner of
+    /// `mid`) that overrides the class method `mid`. (As the interpreter
+    /// computed it before `RtWorld::class_override_rows`, kept in debug
+    /// builds as the oracle of `class_method_override`.)
+    #[cfg(debug_assertions)]
+    fn class_method_override_at_run_time(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
         let m = self.program.method(mid);
         // (An abstract one is passed over: an implementation after it in
         // the lookup order, a superclass's or another module's, runs.)
@@ -2778,9 +2819,6 @@ impl Interp {
             if let Some(by) = self.class_witness(cid, mid) {
                 found = (by != mid).then_some(by);
             }
-            self.class_method_cache
-                .borrow_mut()
-                .insert((cid, mid), found);
             return found;
         }
         let mut cur = Some(cid);
@@ -2833,22 +2871,28 @@ impl Interp {
             }
             cur = class.superclass;
         }
-        self.class_method_cache
-            .borrow_mut()
-            .insert((cid, mid), found);
         found
     }
 
     /// Whether class `cid` or a superclass conforms through an extension
     /// with a witness for module class method `mid` (#504).
     fn has_class_witness(&self, cid: ClassId, mid: MethodId) -> bool {
-        self.class_witness(cid, mid).is_some()
+        let found = self.program.world.class_witness(cid, mid).is_some();
+        // (The oracle: the interpreter's walk, as it was.)
+        #[cfg(debug_assertions)]
+        assert!(
+            found == self.class_witness(cid, mid).is_some(),
+            "internal error: `RtWorld::class_witness` and the walk at run time disagree"
+        );
+        found
     }
 
     /// The witness of module class method `mid` for class `cid` (#504):
     /// recorded for the nearest class up its superclass chain, or for a
     /// module one of them includes (an extension of that module, `extension
     /// Mid; include M`), as the instance side's `ext_impls` reach it.
+    /// (The oracle's: `RtWorld::class_witness` is the one read.)
+    #[cfg(debug_assertions)]
     fn class_witness(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
         let w = &self.program.world;
         // (`RtClass::class_side`, `World::class_side_order`: the checker's
@@ -2863,6 +2907,8 @@ impl Interp {
 
     /// Whether class `cid` or a superclass includes `module` itself (its
     /// class methods are on `cid`'s class side, `RtClass::class_side`).
+    /// (The oracle's: `RtWorld::includes_on_class_side` is the one read.)
+    #[cfg(debug_assertions)]
     fn includes_on_class_side(&self, cid: ClassId, module: ClassId) -> bool {
         self.program.world.class(cid).class_side.contains(&module)
     }
