@@ -19,6 +19,39 @@ pub fn lower(src: &str) -> quarz_ir::Module {
     quarz_cli::lower(&checked, &files)
 }
 
+/// `lower`, then class `class`'s rows for module method `module#name`
+/// pointed at that method itself, as though nothing implemented it: the
+/// run time reaches the abstract method (#630's arm). No program the
+/// checker accepts reaches it since the safety net's error stage and R0's
+/// recorded witnesses (#632, #557), so its tests make the rows so.
+#[allow(dead_code)]
+pub fn lower_with_no_witness(src: &str, class: &str, module: &str, name: &str) -> quarz_ir::Module {
+    let mut m = lower(src);
+    let w = &mut m.world;
+    let cid = w
+        .classes
+        .iter()
+        .position(|c| c.name == class)
+        .expect("the class") as quarz_ir::ClassId;
+    let mid = w
+        .methods
+        .iter()
+        .position(|x| x.name == name && w.classes[x.owner as usize].name == module)
+        .expect("the method") as quarz_ir::MethodId;
+    for row in w.override_rows.iter_mut() {
+        if row.0 == cid && row.1 == mid {
+            row.2 = mid;
+        }
+    }
+    for row in w.witness_rows.iter_mut() {
+        if row.0 == cid && row.1 == mid {
+            row.2 = None;
+        }
+    }
+    w.ext_impls.retain(|e| !(e.0 == cid && e.1 == mid));
+    m
+}
+
 /// Type-check a program, with the sources to lower it from. Panics on
 /// compile errors.
 fn check(src: &str) -> (quarz_types::Checked, Vec<SourceFile>) {

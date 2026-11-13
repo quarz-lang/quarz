@@ -1,0 +1,137 @@
+# #557: a witness that another module of the extension's includes gives
+# (R0's second candidate) is recorded for the conformance and dispatched for
+# the receiver as a call typed through that module is. Each line prints the
+# call through the requirement's module and through the witness's: the rule
+# says they agree. Expected output from the rule. Axes: extension
+# top-level (1) and scoped (2), the module included before and after the
+# requirement's, called where active and elsewhere; the target and a
+# subclass with its own method of the name; a generic module under the
+# target's arguments (3); the target's own side and another module of the
+# extension both implementing it (4: the own side first, as the class's own
+# dispatch has it, 2026-11-14); two includes of one extension both
+# bringing the requirement's module (5: the last include first, #523, as
+# the direct call; D1 of step 3's plan). VM and compiled (the build
+# tests). Skipped: a
+# generic module under arguments whose method does not take the
+# requirement's place (`Gives[String]#get -> String` for `M#get -> Int`) is
+# refused (witness_net.rs).
+module Named
+  abstract def label -> String
+end
+module Gives
+  def label -> String = "gives"
+end
+
+# (1) Top-level, `Gives` included before `Named`.
+class K1
+  def initialize; end
+end
+class L1 < K1
+  def initialize; end
+  def label -> String = "l1"
+end
+extension K1
+  include Gives
+  include Named
+end
+def via(n: Named) -> String = n.label
+def via_g(g: Gives) -> String = g.label
+puts "#{via(K1.new)} #{via_g(K1.new)}", "#{via(L1.new)} #{via_g(L1.new)}"
+
+# (2) Scoped, `Gives` included after `Named`.
+class K2
+  def initialize; end
+end
+class L2 < K2
+  def initialize; end
+  def label -> String = "l2"
+end
+module S2
+  extension K2
+    include Named
+    include Gives
+  end
+  def self.n(x: K2) -> Named = x
+  def self.g(x: K2) -> Gives = x
+  def self.here(x: K2) -> String = via(x)
+end
+puts "#{via(S2.n(K2.new))} #{via_g(S2.g(K2.new))}", "#{via(S2.n(L2.new))} #{via_g(S2.g(L2.new))}", S2.here(L2.new)
+
+# (3) A generic module under the target's arguments.
+module Num
+  abstract def get -> Int
+end
+module Holds[T]
+  def get -> T = held
+  abstract def held -> T
+end
+class K3
+  def initialize; end
+  def held -> Int = 41
+end
+module S3
+  extension K3
+    include Holds[Int]
+    include Num
+  end
+  def self.n(x: K3) -> Num = x
+end
+puts S3.n(K3.new).get + 1
+
+# (4) The target's own include and the extension's other module both
+# implement it: the own side's runs through the requirement's module, as a
+# direct call does; the other module's own method runs through that module.
+module M4
+  abstract def m(x: String) -> String
+  def mm -> String = m("s")
+end
+module N4
+  include M4
+  def m(x: Object) -> String = "n4"
+end
+module E4
+  def m(x: String) -> String = "e4"
+end
+class B4
+  include E4
+  def initialize; end
+end
+extension B4
+  include N4
+end
+def via_m(v: M4) -> String = v.mm
+def via_n(v: N4) -> String = v.m("s")
+puts "#{via_m(B4.new)} #{B4.new.m("s")} #{via_n(B4.new)}"
+
+# (5) One extension includes N5a then N5b, both bringing M5 and giving `m`:
+# the last include comes first, through M5 as directly (#523). Through N5a
+# its own `m` runs: N5b's does not override it (neither includes the
+# other, and a scoped extension's modules override nothing).
+module M5
+  abstract def m -> String
+end
+module N5a
+  include M5
+  def m -> String = "a"
+end
+module N5b
+  include M5
+  def m -> String = "b"
+end
+class K5
+  def initialize; end
+end
+module X5
+  extension K5
+    include N5a
+    include N5b
+  end
+  def self.direct -> String = K5.new.m
+  def self.as_m -> M5 = K5.new
+  def self.as_a -> N5a = K5.new
+  def self.as_b -> N5b = K5.new
+end
+def via5(x: M5) -> String = x.m
+def via5a(x: N5a) -> String = x.m
+def via5b(x: N5b) -> String = x.m
+puts "#{X5.direct} #{via5(X5.as_m)} #{via5a(X5.as_a)} #{via5b(X5.as_b)}"

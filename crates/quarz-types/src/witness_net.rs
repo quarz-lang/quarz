@@ -179,11 +179,10 @@ pub enum Decl {
 /// extension of the program's own on the class's chain, naming the
 /// conformance; with none of these, at the source all the same.
 ///
-/// A row with no implementation whose witness is another module's the
-/// class conforms to is #557's: the run time does not find it yet, and the
-/// program is refused rather than raising there. Any other is an internal
-/// error: R0 records the witness it accepts on the target's own side
-/// (#632), so an accepted conformance has a row.
+/// A row with no implementation is an internal error: R0 records the
+/// witness it accepts, on the target's own side (#632) or in another module
+/// the extension's includes bring (#557), so an accepted conformance has a
+/// row.
 /// A row with no frame (`Verdict::NoFrame`: the net could not check it)
 /// is an error too, an internal one, placed like the others.
 ///
@@ -241,38 +240,10 @@ pub fn errors(
                 name(r.req)
             ),
             None => {
-                // (A non-abstract method of the name in another module the
-                // class conforms to: #557's witness.)
-                let other_module = if req.singleton {
-                    None
-                } else {
-                    world
-                        .conformances(r.class)
-                        .into_iter()
-                        .map(|(_, k, _)| k)
-                        .find(|k| {
-                            *k != module
-                                && world.class(*k).methods.get(&req.name).is_some_and(|ids| {
-                                    ids.iter().any(|&i| {
-                                        let im = world.method(i);
-                                        im.owner == *k && !im.is_abstract && !im.singleton
-                                    })
-                                })
-                        })
-                };
-                if let Some(k) = other_module {
-                    format!(
-                        "`{cname}`'s conformance to `{mname}` has no implementation of `{}` at run time: the witness is `{}#{}` of another module `{cname}` conforms to, which the run time does not find yet (#557)",
-                        name(r.req),
-                        world.class(k).name,
-                        req.name
-                    )
-                } else {
-                    format!(
-                        "`{cname}`'s conformance to `{mname}` has no implementation of `{}` (internal error: the checker accepted it)",
-                        name(r.req)
-                    )
-                }
+                format!(
+                    "`{cname}`'s conformance to `{mname}` has no implementation of `{}` (internal error: the checker accepted it)",
+                    name(r.req)
+                )
             }
         };
         // Where: the conformance's source, else the program's own

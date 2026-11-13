@@ -2001,17 +2001,15 @@ impl<'ast> Declarer<'ast> {
                     .methods
                     .get(&rm.name)
                     .is_some_and(|ids| ids.iter().any(|&i| takes(self, i, &ext_subst)));
-                let by_mods = ext_mods.iter().any(|k| {
+                let mods_witness = ext_mods.iter().find_map(|k| {
                     let ks = self.world.class_subst(*k, &args_in_conf(*k));
-                    self.world
-                        .class(*k)
-                        .methods
-                        .get(&rm.name)
-                        .is_some_and(|ids| {
-                            ids.iter()
-                                .any(|&i| self.world.method(i).owner == *k && takes(self, i, &ks))
-                        })
+                    self.world.class(*k).methods.get(&rm.name).and_then(|ids| {
+                        ids.iter()
+                            .copied()
+                            .find(|&i| self.world.method(i).owner == *k && takes(self, i, &ks))
+                    })
                 });
+                let by_mods = mods_witness.is_some();
                 // (The first in the target's order: an `abstract def` there
                 // counts when it takes the requirement's calls by type too.)
                 let own_witness = typed.iter().find_map(|(k, kargs)| {
@@ -2023,18 +2021,62 @@ impl<'ast> Declarer<'ast> {
                     })
                 });
                 let by_own = own_witness.is_some();
-                // What implements it on the target's own side runs for the
-                // conformance (#632): recorded here, where R0 accepts it, so
-                // that "accepted" and "has a row" are one decision; the run
-                // time dispatches it for the receiver (`find_override`). An
-                // `abstract def` there leaves it to the concrete classes;
-                // the extension's own method needs no entry.
-                if let (false, false, Some(i)) = (by_ext, by_mods, own_witness) {
-                    if !self.world.method(i).is_abstract {
-                        let entry = (target, r, i);
-                        if !self.world.ext_impls.contains(&entry) {
-                            self.world.ext_impls.push(entry);
-                        }
+                // The witness that runs for the conformance is recorded
+                // here, where R0 accepts it, so that "accepted" and "has a
+                // row" are one decision; the run time dispatches it for the
+                // receiver (`find_override`). It is the first, in the
+                // order a call on the target sees with this extension
+                // active (`World::resolution`, `View::Static`: the target's
+                // own methods and own includes, then the extension's
+                // modules, then the superclasses, docs/01 §7; #557,
+                // 2026-11-14), of the target's own side and this
+                // extension's modules (another extension's never, #555),
+                // whose method takes the requirement's calls by type
+                // (`takes`), after the extension's own method (found by the
+                // run time, no entry). One R0 accepts only by the run-time
+                // signature comes last, for the safety net to judge in each
+                // class's frame. An `abstract def` on the target's side
+                // leaves it to the concrete classes.
+                let recorded = if by_ext
+                    || own_witness.is_some_and(|i| self.world.method(i).is_abstract)
+                {
+                    None
+                } else {
+                    let mut set = self.world.active_extension_ids();
+                    if !set.contains(&ext) {
+                        set.push(ext);
+                    }
+                    let order = self.world.with_active(set, || {
+                        self.world.resolution(target, &own_args, View::Static)
+                    });
+                    order
+                        .iter()
+                        .filter(|(k, _)| typed.iter().any(|(t, _)| t == k) || ext_mods.contains(k))
+                        .find_map(|(k, kargs)| {
+                            let ks = self.world.class_subst(*k, kargs);
+                            self.world.class(*k).methods.get(&rm.name).and_then(|ids| {
+                                ids.iter().copied().find(|&i| {
+                                    let im = self.world.method(i);
+                                    // (By type, the result too: what runs
+                                    // returns what the requirement does.)
+                                    im.owner == *k
+                                        && i != r
+                                        && !im.is_abstract
+                                        && !im.singleton
+                                        && self.world.takes_calls_of(im, &ks, &rm, &rsubst)
+                                        && self
+                                            .world
+                                            .is_subtype(&im.ret.subst(&ks), &rm.ret.subst(&rsubst))
+                                })
+                            })
+                        })
+                        .or(own_witness)
+                        .or(mods_witness)
+                };
+                if let Some(i) = recorded {
+                    let entry = (target, r, i);
+                    if !self.world.ext_impls.contains(&entry) {
+                        self.world.ext_impls.push(entry);
                     }
                 }
                 if !(by_ext || by_mods || by_own) {

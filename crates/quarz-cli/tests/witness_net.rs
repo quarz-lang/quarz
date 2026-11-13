@@ -141,6 +141,21 @@ fn the_629_row_is_refused() {
 }
 const F1: &str = "# an extension's overload of another parameter type beside the class's own implementation\nmodule M\n  abstract def m(x: String) -> String\n  def mm -> String = m(\"s\") + \"!\"\nend\nclass K\n  def initialize; end\n  def m(x: String) -> String = \"K\"\nend\nmodule Sc\n  extension K\n    include M\n    def m(x: Int) -> String = \"ext#{x + 1}\"\n  end\n  def self.up(k: K) -> M = k\n  def self.n(k: K) -> String = k.m(1)\nend\ndef via(v: M) -> String = v.mm\nputs via(Sc.up(K.new))\nputs Sc.n(K.new)\n";
 
+/// #557: another module's witness has a row (R0 records it), checked per
+/// class in its own frame: `Holds[T]#get -> T` passes for `Holds[Int]` and
+/// is refused for `Holds[String]` (R0's run-time-signature disjunct lets it
+/// through, #641's note).
+#[test]
+fn another_modules_witness_has_a_row_checked_per_class() {
+    let base = "module Num\n  abstract def get -> Int\nend\nmodule Holds[T]\n  def get -> T = held\n  abstract def held -> T\nend\nclass K3\n  def initialize; end\n  def held -> Int = 41\nend\nmodule S3\n  extension K3\n    include Holds[Int]\n    include Num\n  end\n  def self.n(x: K3) -> Num = x\nend\n";
+    let (code, err) = check(&format!("{base}puts S3.n(K3.new).get + 1\n"));
+    assert_eq!(code, Some(0), "{err}");
+    refused(
+        &format!("{base}class K4\n  def initialize; end\n  def held -> String = \"s\"\nend\nmodule S4\n  extension K4\n    include Holds[String]\n    include Num\n  end\nend\nputs 1\n"),
+        &["error: `K4`'s conformance to `Num` runs `Holds#get` for `Num#get`, which does not take its place for `K4`"],
+    );
+}
+
 /// #632: a scoped extension's conformance whose witness the class
 /// inherits has a row (R0 records it), and each class's row is checked in
 /// its own frame: `Base#get -> T` passes for `A < Base[Int]` and is refused
@@ -258,16 +273,16 @@ fn a_gated_send_outside_the_key_set_is_an_internal_error() {
     quarz_vm::interp::check_gated_key(world, &method, world.builtin.nil, req, "<=>");
 }
 
-/// #557's shape (the witness is another module's the extension includes,
-/// which the run time does not find yet) is refused and says so; an
-/// abstract class's row with no implementation is not an error (no
-/// instances; its subclass's row passes).
+/// #557's shape (the witness is another module's the extension includes)
+/// has a row since R0 records it, and is accepted; an abstract class's row
+/// with no implementation is not an error (no instances; its subclass's
+/// row passes).
 #[test]
 fn rows_with_no_implementation_by_kind() {
-    refused(
+    let (code, err) = check(
         "module Named\n  abstract def label -> String\nend\nmodule Gives\n  def label -> String = \"Gives\"\nend\nclass K\n  def initialize; end\nend\nmodule S2\n  extension K\n    include Gives\n    include Named\n  end\n  def self.n(k: K) -> Named = k\nend\nputs 1\n",
-        &["`K`'s conformance to `Named` has no implementation of `Named#label` at run time: the witness is `Gives#label` of another module `K` conforms to, which the run time does not find yet (#557)"],
     );
+    assert_eq!(code, Some(0), "{err}");
     let (code, err) = check(
         "module M\n  abstract def label -> String\n  def show -> String = label + \"!\"\nend\nabstract class Base\n  def initialize; end\n  abstract def label -> String\nend\nclass Impl < Base\n  def initialize; end\n  def label -> String = \"impl\"\nend\nmodule Sc\n  extension Base\n    include M\n  end\n  def self.b(x: Base) -> M = x\nend\nputs Sc.b(Impl.new).show\n",
     );
