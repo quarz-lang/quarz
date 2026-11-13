@@ -1484,7 +1484,11 @@ impl<'ast> Declarer<'ast> {
                 // there finds it (#669's decision, (y)). The requirement's
                 // own module reached, a class method with a body is its
                 // own witness (the module's default); an abstract one is
-                // passed over.
+                // passed over. One filter on that order: a method the
+                // requirement itself overrides (the override table,
+                // `World::overrides`: `M.d` for `N.d` with `N` including
+                // `M`) is never its witness (#680's decision, option 1).
+                let overridden = self.world.overrides(m);
                 let by = own.iter().copied().find(|&i| fits(self, i)).or_else(|| {
                     order.iter().copied().find_map(|c| {
                         if c == anc {
@@ -1497,7 +1501,10 @@ impl<'ast> Declarer<'ast> {
                             .and_then(|ids| {
                                 ids.iter().copied().find(|&i| {
                                     let im = self.world.method(i);
-                                    im.owner == c && !im.is_abstract && fits(self, i)
+                                    im.owner == c
+                                        && !im.is_abstract
+                                        && !overridden.contains(&i)
+                                        && fits(self, i)
                                 })
                             })
                     })

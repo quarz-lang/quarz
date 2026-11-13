@@ -27,12 +27,23 @@ def gen(seed):
     w("  abstract def self.label -> String" if r_abs else '  def self.label -> String = "R"')
     w('  def self.mm -> String = label + "!"')
     w("end")
-    # N includes R (the extension may include it to bring R), E and L are
-    # plain modules (an earlier or later include of the extension), O a
-    # module a class may include itself (with or without R).
+    # O is a module a class may include itself (with or without R); N
+    # includes R (the extension may include it to bring R) and may include
+    # O too, so that its `label` overrides one the class has from its own
+    # include (#680); E and L are plain modules (an earlier or later
+    # include of the extension).
+    w("module O")
+    if r.random() < 0.3:
+        w("  include R")
+    b = label("O", 0.3)
+    if b:
+        w(b)
+    w("end")
     w("module N")
     if r.random() < 0.7:
         w("  include R")
+    if r.random() < 0.3:
+        w("  include O")
     b = label("N", 0.4)
     if b:
         w(b)
@@ -43,13 +54,6 @@ def gen(seed):
         if b:
             w(b)
         w("end")
-    w("module O")
-    if r.random() < 0.3:
-        w("  include R")
-    b = label("O", 0.3)
-    if b:
-        w(b)
-    w("end")
     classes = ["B", "K", "S"]
     sup = {"B": None, "K": "B", "S": "K"}
     for c in classes:
@@ -65,7 +69,7 @@ def gen(seed):
     target = r.choice(["B", "K", "K", "S"])
     # The extension's includes: R itself or N (which may bring R), with E
     # before and L after, in a random order.
-    core = r.choice(["R", "R", "N"])
+    core = r.choice(["R", "R", "N", "N"])
     incs = [core]
     if r.random() < 0.4:
         incs.insert(0, "E")
@@ -88,11 +92,15 @@ def gen(seed):
     w(f"{ind}def {pfx}via(t: Type[R]) -> String = t.label")
     w(f"{ind}def {pfx}gen[T <: R](t: Type[T]) -> String = t.label")
     w(f"{ind}def {pfx}imp(t: Type[R]) -> String = t.mm")
+    if core == "N":
+        w(f"{ind}def {pfx}vn(t: Type[N]) -> String = t.label.to_s")
     body = []
     for c in below:
         body.append(f'puts "{c} " + via({c}) + " " + gen({c}) + " " + imp({c})')
         if r.random() < 0.5:
             body.append(f'puts "{c} direct " + {c}.label.to_s')
+        if core == "N":
+            body.append(f'puts "{c} through N " + vn({c})')
     if scoped:
         w("  def self.run -> Void")
         for line in body:

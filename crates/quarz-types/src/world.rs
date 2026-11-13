@@ -1423,7 +1423,10 @@ impl World {
     /// extension's module (a sibling's, ambiguous with `ext`'s, #577, or a
     /// superclass's scoped one) never supplies its witness. (A top-level
     /// unconditional extension's module, which the instance side's
-    /// dispatch counts and the class side's does not, is #681.)
+    /// dispatch counts and the class side's does not, is #681.) The
+    /// witness is the first that fits in this order with one filter, a
+    /// method the requirement itself overrides being none (#680,
+    /// `Declarer::check_extension_class_side`).
     pub fn class_side_with(&self, ext: ExtensionId) -> Vec<(ClassId, Vec<Type>)> {
         let target = self.extensions[ext as usize].target;
         self.with_active(vec![ext], || self.resolution(target, &[], View::Static))
