@@ -69,10 +69,10 @@ An array of a comparable element type is `Comparable` (`<=> < <= > >= between? c
 - `Hash::Builder[K, V]`: `[]= store [] []? fetch delete key? has_key? include? (a pair, as Hash's) value? keys values size length empty? clear merge! (with a block) update(k) { |v| } select! reject! delete_if keep_if transform_values! compact! replace each each_pair each_key each_value to_h snapshot freeze` + Enumerable. `Hash.build { |b| }`, `Hash.new` (no default value; defaults via `fetch(k, default)` or `fetch(k) { }`).
 - `Hash#[]` raises `KeyError` for a missing key; `[]?` returns `nil`. There is no `default`/`default_proc`.
 
-### Set[out T], Range[T], Tuple
+### Set[out T], Range[T <: Comparable[T]], Tuple
 
 - `Set`: `Set[1, 2]`, `Set.new(array)`, `add add? delete merge include? member? | + & - ^ union intersection difference subset? superset? proper_subset? proper_superset? <= >= < > disjoint? intersect? select filter reject delete_if keep_if size length empty? each to_a` + Enumerable. `Set::Builder`: `<< add add? delete merge subtract select! reject! delete_if keep_if clear replace to_set freeze to_a` + Enumerable.
-- `Range`: `each step reverse_each include? cover? to_a size` (`Int` ranges only) `empty? first last last(n) begin end exclude_end? min max sum` + Enumerable (`first` and `last` are the bounds, as Ruby's: `(1...3).last` is 3, and a missing bound raises `RangeError`); `each` and `step` return an enumerator without a block.
+- `Range`: `each step reverse_each include? cover? to_a size` (`Int` ranges only) `empty? first last last(n) begin end exclude_end? min max sum` + Enumerable (`first` and `last` are the bounds, as Ruby's: `(1...3).last` is 3, and a missing bound raises `RangeError`); `each` and `step` return an enumerator without a block. A range compares its bounds, so its element type is comparable (`Range[T <: Comparable[T]]`, #559), checked where a range is made (`a..b`) and where a range pattern compares (`in a..b`), as for a written `Range[T]`: a missing bound (`1..`, `..3`, a `nil` of an `Int?` bound) is none to compare, and built-in numbers compare with each other (`1..Float::INFINITY`); a type parameter needs the bound (`T <: Comparable[T]`), and bounds whose type is not yet inferred are refused.
 - Tuple `[A, B]`: `[0]` (statically typed), `size`, `to_a`, multiple assignment, patterns.
 
 ## 6. Procs

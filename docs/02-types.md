@@ -62,7 +62,7 @@ A procedure type lists its parameters' types, positional and unnamed, then, afte
 | `Array[out T]` | `Array` | Immutable |
 | `Hash[K, out V]` | `Hash` | Immutable, preserves insertion order |
 | `Set[out T]` | `Set` | Immutable |
-| `Range[T]` | `Range` | |
+| `Range[T <: Comparable[T]]` | `Range` | |
 | `Regexp`, `MatchData` | Same names | |
 | `Proc` = `(A...) -> R` | `Proc` | Generic name for procedure types |
 | `Enumerator[T]`, `Lazy[T]` | Same names | External iterators (`Lazy[T]` is *planned*) |

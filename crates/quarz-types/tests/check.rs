@@ -3584,6 +3584,44 @@ fn clamp_gives_the_receiver_or_a_bound() {
 }
 
 #[test]
+fn a_range_compares_its_bounds() {
+    // #559: `Range[T <: Comparable[T]]`, checked where a range is made
+    // (`a..b`) and where a range pattern compares (`in a..b`), as a written
+    // `Range[T]` is.
+    let g = "class G[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension G[T <: Int]\n  include Comparable[G[T]]\n  def <=>(other: G[T]) -> Int = @v <=> other.v\nend\n";
+    let must = "for `T` of `Range` must be Comparable";
+    // Values not known to be comparable: refused at the literal and at a
+    // range pattern.
+    err(&format!("{g}r = G.new(\"a\")..G.new(\"c\")\n"), must);
+    err(
+        "class P\n  def initialize; end\nend\nr = P.new..P.new\n",
+        must,
+    );
+    err(
+        "data P = (x: Int)\nLO = P.new(1)\nHI = P.new(3)\ndef f(x: P) -> Bool\n  case x\n  in LO..HI then true\n  else false\n  end\nend\n",
+        must,
+    );
+    // Comparable ones: accepted.
+    ok(&format!(
+        "{g}r = G.new(1)..G.new(3)\np r.include?(G.new(2))\n"
+    ));
+    ok("p (\"a\"..\"c\").include?(\"b\")\n");
+    // A missing bound is no value to compare: endless, beginless, a
+    // nil-able bound.
+    ok("p (1..).include?(5), (..3).include?(5)\nn: Int? = nil\np (n..n).include?(1), (1...nil).to_s\n");
+    // Built-in numbers compare with each other.
+    ok("p (1..Float::INFINITY).include?(2.5)\n");
+    // A type parameter: refused without the bound, accepted with it.
+    err("def f[T](a: T, b: T) -> Range[T] = a..b\n", must);
+    ok("def f[T <: Comparable[T]](a: T, b: T) -> Range[T] = a..b\n");
+    // Bounds of a type not yet inferred: refused, it could become anything.
+    err(
+        "a = []\nr = a.first..a.last\n",
+        "the type of the range's bounds is not yet known here",
+    );
+}
+
+#[test]
 fn an_override_with_wider_parameters_keeps_the_result_and_block_types() {
     // The runtime takes a method with wider parameters to override
     // (`rtworld::overridden_methods`): its result and block type are
