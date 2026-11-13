@@ -9,6 +9,17 @@
 # 2. Two conditional extensions of `Box` with disjoint bounds each make a
 #    conformance and define `parse` (#529): a call through `PS` on a
 #    `Box[String]` runs the `PS` extension's `parse`, not the other's.
+# 3. A subclass conforming through its own extension (#517's per-class
+#    rule) below a superclass's extension's conformance: the conformance
+#    that holds for `C3` is the nearest, `extension C3`'s, whose witness
+#    R0 takes from `C3`'s side, `G3#m` (1); `A3`'s extension's `m` (101)
+#    is `A3`'s witness only (#665's fuzz programs 260 and 3708, which
+#    recorded both).
+# 4. Another extension's `m` of another result type beside the extension
+#    making the conformance (refused on main as an override of `M4#m`):
+#    a statically bound extension method only, so a direct call where it
+#    is active gives its `String`, and through `M4` the witness, `G4#m`,
+#    gives the `Int`.
 module M
   abstract def m -> Int
 end
@@ -68,3 +79,48 @@ p a.parse("1")
 p ps(a)
 p pi(Box[Int].new(40))
 p Box[Int].new(1).parse("3")
+
+module M3
+  abstract def m -> Int
+  def mm -> String = "#{m + 1}!"
+end
+class G3[T]
+  @v: T
+  def initialize(@v: T); end
+  def m -> T = @v
+end
+class A3 < G3[Int]
+  def initialize; super(1); end
+end
+class C3 < A3
+  def initialize; super; end
+end
+extension C3
+  include M3
+end
+extension A3
+  include M3
+  def m -> Int = 101
+end
+def via3(v: M3) -> String = v.mm
+puts via3(C3.new), via3(A3.new)
+
+module M4
+  abstract def m -> Int
+end
+class G4[T]
+  @v: T
+  def initialize(@v: T); end
+  def m -> T = @v
+end
+class C4 < G4[Int]
+  def initialize; super(7); end
+end
+extension C4
+  include M4
+end
+extension C4
+  def m -> String = "x1"
+end
+def via4(v: M4) -> Int = v.m
+p C4.new.m, via4(C4.new)
