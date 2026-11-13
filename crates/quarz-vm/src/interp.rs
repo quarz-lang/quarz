@@ -2674,7 +2674,7 @@ impl Interp {
                 return Ok(hit - 1);
             }
         }
-        let found = self.find_override(cid, mid).unwrap_or(mid);
+        let found = self.override_for(cid, mid);
         if let Some(cell) = self.vtable.borrow_mut().get_mut(at) {
             *cell = found + 1;
         }
@@ -2893,7 +2893,9 @@ impl Interp {
     /// class `anc` itself: the one an extension that makes it conform
     /// (`include`) gives (`RtWorld::ext_rescan`, the scan of the
     /// extensions the lowering made), else the one found where the class
-    /// was declared (`RtWorld::ext_impls`).
+    /// was declared (`RtWorld::ext_impls`). (The oracle's, as the
+    /// interpreter had it: `RtWorld::ext_impl` is the one the rows read.)
+    #[cfg(debug_assertions)]
     fn ext_impl(&self, anc: ClassId, abs: MethodId) -> Option<MethodId> {
         let world = &self.program.world;
         world.extension_impl(anc, abs).or_else(|| {
@@ -2907,8 +2909,11 @@ impl Interp {
 
     /// A method of `cid` (or of an ancestor before the owner of `mid`)
     /// that overrides `mid`: same name, and the same signature when the
-    /// name is overloaded.
-    fn find_override(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
+    /// name is overloaded. (As the interpreter computed it before
+    /// `RtWorld::override_rows`, kept in debug builds as the oracle of
+    /// `override_for`.)
+    #[cfg(debug_assertions)]
+    fn find_override_at_run_time(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
         let m = self.program.method(mid);
         for anc in &self.program.world.class(cid).ancestors {
             let anc = *anc;
@@ -2984,6 +2989,83 @@ impl Interp {
             }
         }
         None
+    }
+
+    /// What runs for module method `mid` on a value of class `cid`
+    /// (`resolve_dynamic`): the row of `RtWorld::override_rows` for a key
+    /// `RtWorld::in_witness_rows` admits (none there is an internal
+    /// error), else `RtWorld::find_override` (a method a class declares,
+    /// resolved here once per class and slot); `mid` itself when nothing
+    /// overrides it.
+    fn override_for(&self, cid: ClassId, mid: MethodId) -> MethodId {
+        let world = &self.program.world;
+        let method = |id: MethodId| self.program.method(id);
+        let found = if world.in_witness_rows(&method, cid, mid) {
+            world.override_row(cid, mid).unwrap_or_else(|| {
+                panic!(
+                    "internal error: no override row for `{}` on `{}`",
+                    self.program.method(mid).name,
+                    world.class(cid).name
+                )
+            })
+        } else {
+            world.find_override(&method, cid, mid).unwrap_or(mid)
+        };
+        // (The oracle: the walk the rows replace, made here as it was,
+        // gives the same answer at every lookup.)
+        #[cfg(debug_assertions)]
+        {
+            let old = self.find_override_at_run_time(cid, mid).unwrap_or(mid);
+            assert!(
+                found == old,
+                "internal error: the override rows give {found} for `{}` on `{}`, the walk at run time {old}",
+                self.program.method(mid).name,
+                world.class(cid).name
+            );
+        }
+        found
+    }
+
+    /// The witness of abstract method `abs` for class `cid` that a call by
+    /// name reaches (`find_method`): the row of `RtWorld::witness_rows` for
+    /// a key `RtWorld::in_witness_rows` admits (none there is an internal
+    /// error), else `RtWorld::witness_of`.
+    fn witness_for(&self, cid: ClassId, abs: MethodId) -> Option<MethodId> {
+        let world = &self.program.world;
+        let method = |id: MethodId| self.program.method(id);
+        let found = if world.in_witness_rows(&method, cid, abs) {
+            world.witness_row(cid, abs).unwrap_or_else(|| {
+                panic!(
+                    "internal error: no witness row for `{}` on `{}`",
+                    self.program.method(abs).name,
+                    world.class(cid).name
+                )
+            })
+        } else {
+            world.witness_of(&method, cid, abs)
+        };
+        // (The oracle: the walk `find_method` made, as it was.)
+        #[cfg(debug_assertions)]
+        {
+            let owner = self.program.method(abs).owner;
+            let mut old = None;
+            for anc in &world.class(cid).ancestors {
+                if *anc == owner {
+                    break;
+                }
+                if let Some(i) = self.ext_impl(*anc, abs) {
+                    old = Some(i);
+                    break;
+                }
+            }
+            assert!(
+                found == old,
+                "internal error: the witness rows give {found:?} for `{}` on `{}`, the walk at run time {old:?}",
+                self.program.method(abs).name,
+                world.class(cid).name
+            );
+        }
+        found
     }
 
     /// Find a method by name on a class (first match in resolution order
@@ -3104,11 +3186,7 @@ impl Interp {
                         && min <= argc
                         && argc <= max
                         && m.has_block == with_block
-                        && rc
-                            .ancestors
-                            .iter()
-                            .take_while(|a| **a != m.owner)
-                            .any(|a| self.ext_impl(*a, *id).is_some())
+                        && self.witness_for(cid, *id).is_some()
                     {
                         found = Some(*id);
                         break 'mods;
@@ -3119,15 +3197,8 @@ impl Interp {
         // An abstract method (a module's) that an extension implements for
         // the class: conformance holds wherever the value goes.
         if let Some(abs) = found.filter(|m| self.program.method(*m).is_abstract) {
-            let owner = self.program.method(abs).owner;
-            for anc in &self.program.world.class(cid).ancestors {
-                if *anc == owner {
-                    break;
-                }
-                if let Some(i) = self.ext_impl(*anc, abs) {
-                    found = Some(i);
-                    break;
-                }
+            if let Some(i) = self.witness_for(cid, abs) {
+                found = Some(i);
             }
         }
         let result = found.or(fallback);
