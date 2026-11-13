@@ -9143,6 +9143,66 @@ impl Checker {
         // `y += 1` on `?v | Int` is a use as an `Int`.
         let lhs = self.settle_vars(lhs);
         let cands = self.world.lookup_methods(&lhs, name);
+        // The overload `x op v` would call (#586): among those whose one
+        // parameter takes the right-hand side, the one `pick_overload`
+        // chooses (the most specific, then the override rule), tried
+        // first below; equally fitting ones are ambiguous, as for a call.
+        let mut fits: Vec<(usize, MethodId, bool)> = Vec::new();
+        for (index, (mid, subst)) in cands.iter().enumerate() {
+            let m = self.world.method(*mid);
+            let positional: Vec<&ParamInfo> = m
+                .params
+                .iter()
+                .filter(|p| p.kind == ParamKind::Positional)
+                .collect();
+            if positional.len() != 1 || m.block.is_some() {
+                continue;
+            }
+            let mut subst = subst.clone();
+            subst.insert(SELF_PARAM, lhs.clone());
+            let pt = positional[0].ty.subst(&subst);
+            let saved = self.infer.save();
+            if self.coerce(rhs, &pt) {
+                fits.push((index, *mid, false));
+            }
+            self.infer.restore(saved);
+        }
+        let mut cands = cands;
+        // (Chosen as a call chooses: then not to be chosen again by name.)
+        let mut chosen: Option<MethodId> = None;
+        if fits.len() > 1 {
+            let ext_src = self.extension_sources(&lhs);
+            let (winner, rivals) = self.pick_overload(&fits, &cands, None, &ext_src);
+            if rivals.is_empty() {
+                chosen = Some(winner);
+            }
+            if !rivals.is_empty() {
+                // (Two active extensions' modules: the call's message,
+                // #577; others that fit equally: ambiguous as a call.)
+                let tied: Vec<(MethodId, HashMap<TypeParamId, Type>)> =
+                    fits.iter().map(|(ix, _, _)| cands[*ix].clone()).collect();
+                if let Err((a, b, ea, eb)) = self.by_name_choice(&lhs, winner, &tied) {
+                    self.extension_ambiguity(name, a, b, ea, eb, expr.span);
+                    return Type::Nothing;
+                }
+                let names: Vec<String> = std::iter::once(winner)
+                    .chain(rivals)
+                    .map(|k| self.signature(&self.world.method(k).clone()))
+                    .collect();
+                self.error(
+                    format!(
+                        "the call of `{name}` in `{name}=` is ambiguous: these overloads fit it equally (pass a right-hand side of the type of one):\n    {}",
+                        names.join("\n    ")
+                    ),
+                    expr.span,
+                );
+                return Type::Nothing;
+            }
+            if let Some(at) = cands.iter().position(|(k, _)| *k == winner) {
+                let w = cands.remove(at);
+                cands.insert(0, w);
+            }
+        }
         for (mid, subst) in cands {
             let m = self.world.method(mid).clone();
             let positional: Vec<&ParamInfo> = m
@@ -9165,6 +9225,7 @@ impl Checker {
                     .world
                     .lookup_methods(&lhs, name)
                     .into_iter()
+                    .filter(|(k, _)| chosen.is_none_or(|c| c == *k))
                     .filter(|(k, ks)| {
                         let km = self.world.method(*k);
                         let ps: Vec<&ParamInfo> = km
