@@ -1448,7 +1448,9 @@ impl World {
     ///    2026-11-12 and rule A, #636: for a module the class has itself,
     ///    the class's own conformance holds; an extension's method is then
     ///    an extension method, chosen statically.)
-    /// 2. **Below the conformance's class**, a method that the override
+    /// 2. **Below the conformance's class**, in `C`'s dispatch by name
+    ///    (`View::Lookup`: a top-level unconditional extension's modules
+    ///    included, as rule 1's own side, #672), a method that the override
     ///    table pairs with `r` under `C`'s declaration view
     ///    (`World::overrides`, or `C`'s `include_overrides_of`) replaces the
     ///    witness; so does the own method of an extension in `C`'s
@@ -1487,10 +1489,9 @@ impl World {
             if matches!(kind, ClassKind::Module | ClassKind::Main) {
                 continue;
             }
-            let own_side = self.ancestors_with_no_extensions(c);
             // (The class's dispatch by name: its own side and the modules
             // of the top-level unconditional extensions, which take part in
-            // it, docs/01 §7.)
+            // it, docs/01 §7. Every rule reads this one order, #672.)
             let lookup = self.resolution(c, &self.own_args(c), View::Lookup);
             // One conformance per module: the class's own if it has one
             // (D2, rule A), else the extension's whose target is nearest
@@ -1501,7 +1502,7 @@ impl World {
                     None => 0,
                     Some((e, _)) => {
                         let t = self.extensions[*e as usize].target;
-                        own_side
+                        lookup
                             .iter()
                             .position(|(k, _)| *k == t)
                             .map_or(usize::MAX, |p| p + 1)
@@ -1547,7 +1548,7 @@ impl World {
                     // (`check_conformance_of`).
                     let upto = match src {
                         Some((e, _)) => Some(self.extensions[e as usize].target),
-                        None => own_side
+                        None => lookup
                             .iter()
                             .find(|(k, _)| {
                                 self.class(*k).includes.iter().any(|t| {
@@ -1590,7 +1591,7 @@ impl World {
                         .filter(|io| io.overridden == r)
                         .map(|io| io.by)
                         .collect();
-                    let below = own_side
+                    let below = lookup
                         .iter()
                         .map(|(k, _)| *k)
                         .take_while(|k| Some(*k) != upto)
@@ -1624,7 +1625,7 @@ impl World {
                     let w = below.or_else(|| match src {
                         Some((e, _)) => {
                             let ext = &self.extensions[e as usize];
-                            let targs = own_side
+                            let targs = lookup
                                 .iter()
                                 .find(|(k, _)| *k == ext.target)
                                 .map(|(_, a)| a.clone())
