@@ -3730,14 +3730,14 @@ impl Interp {
     pub fn range_covers(&self, r: &RangeVal, v: &Value) -> Result<bool, Flow> {
         use std::cmp::Ordering;
         if !r.lo.is_nil() {
-            match self.compare_with(&r.lo, v, false) {
+            match self.compare_with(&r.lo, v, true) {
                 Ok(Ordering::Greater) => return Ok(false),
                 Ok(_) => {}
                 Err(_) => return Ok(false),
             }
         }
         if !r.hi.is_nil() {
-            match self.compare_with(v, &r.hi, false) {
+            match self.compare_with(v, &r.hi, true) {
                 Ok(Ordering::Greater) => return Ok(false),
                 Ok(Ordering::Equal) if r.exclusive => return Ok(false),
                 Ok(_) => {}
@@ -4094,8 +4094,8 @@ impl Interp {
     /// `compare`, saying whether a `<=>` found by name may be a witness
     /// (`find_method`): `true` for the sorting natives, whose element type
     /// is bounded by `Comparable` (the checker allows them only on
-    /// conforming values); `false` for `range_covers`, `Range[T]` taking
-    /// any `T` (#559).
+    /// conforming values), and for `range_covers` (`Range[T <:
+    /// Comparable[T]]`, #559); `false` for a comparison by name.
     pub(crate) fn compare_with(
         &self,
         a: &Value,

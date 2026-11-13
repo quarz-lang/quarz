@@ -1,0 +1,46 @@
+# #559: a range compares its bounds through `Comparable#<=>` as a call
+# typed through the module does (the gated send, `send_requirement`), so
+# an extension's conformance is answered (`Range[T <: Comparable[T]]`
+# admits only comparable values, checked where the range is made). On the
+# VM and compiled alike. Before, the bounds' `<=>` was looked up by name,
+# which does not see an extension's witness: every line below gave false
+# (or `out`).
+
+# A conditional extension's conformance, for arguments in its bound.
+class G[T]
+  @v: T
+  def initialize(@v: T)
+  end
+  def v -> T = @v
+end
+extension G[T <: Int]
+  include Comparable[G[T]]
+  def <=>(other: G[T]) -> Int = @v <=> other.v
+end
+r = G.new(1)..G.new(3)
+puts r.include?(G.new(2)), r.include?(G.new(5)), r.cover?(G.new(3)), r.cover?(G.new(0))
+puts (G.new(1)...G.new(3)).include?(G.new(3))
+case G.new(2)
+when G.new(1)..G.new(3) then puts "when: in"
+else puts "when: out"
+end
+
+# A scoped extension's conformance, where it is active: the range made
+# there carries values whose `<=>` is the extension's witness.
+class R
+  @v: Int
+  def initialize(@v: Int)
+  end
+  def v -> Int = @v
+end
+module ScopeR
+  extension R
+    include Comparable[R]
+    def <=>(other: R) -> Int
+      puts "scoped <=>"
+      v <=> other.v
+    end
+  end
+  def self.covers(x: Int) -> Bool = (R.new(1)..R.new(3)).include?(R.new(x))
+end
+puts ScopeR.covers(2), ScopeR.covers(4)
