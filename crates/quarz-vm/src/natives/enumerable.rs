@@ -225,8 +225,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let b = ab(i, r)?;
         let mut items = std::mem::take(&mut *b.borrow_mut());
         let result = match &a.block {
-            // (Unbounded `T`: no witness, `Interp::find_method`, #560.)
-            None => i.sort_values(&mut items, |x, y| i.compare_with(x, y, false)),
+            // (`T <: Comparable[T]`, `extension Array::Builder`: through
+            // the conformance's witness, `Interp::find_method`, #560.)
+            None => i.sort_values(&mut items, |x, y| i.compare(x, y)),
             Some(cmp) => i.sort_values(&mut items, |x, y| block_ordering(i, cmp, x, y)),
         };
         *b.borrow_mut() = items;

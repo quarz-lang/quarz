@@ -6025,3 +6025,22 @@ fn two_argument_sets_on_a_module_with_no_includer() {
         "`Mid` already conforms to `P[Int]` (its own include): this extension cannot include `P[String]` (through `Wrap[String]`)",
     );
 }
+
+#[test]
+fn builder_sort_without_a_block_takes_comparable_elements_only() {
+    // #560: `Array::Builder#sort!` without a block is bounded as
+    // `Array#sort` is, so elements not known to be comparable (which
+    // could reach a `<=>` by name with an argument it does not take) are
+    // refused; with a block it sorts any elements.
+    err(
+        "class C\n  include Comparable[C]\n  def initialize; end\n  def <=>(other: C) -> Int = 0\nend\nb = Array::Builder[Object].new\nb << 1\nb << C.new\nb.sort!",
+        "type bounds not satisfied",
+    );
+    ok("b = Array::Builder[Object].new\nb << 1\nb.sort! { |x, y| 0 }");
+    // Comparable only through a scoped extension, which is not active
+    // where `sort!` is called.
+    err(
+        "class S\n  def initialize; end\nend\nmodule Sc\n  extension S\n    include Comparable[S]\n    def <=>(o: S) -> Int = 0\n  end\nend\nb = Array::Builder[S].new\nb << S.new\nb.sort!",
+        "type bounds not satisfied",
+    );
+}
