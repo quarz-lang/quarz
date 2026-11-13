@@ -2889,108 +2889,6 @@ impl Interp {
             .collect()
     }
 
-    /// The extension's method that implements abstract method `abs` for
-    /// class `anc` itself: the one an extension that makes it conform
-    /// (`include`) gives (`RtWorld::ext_rescan`, the scan of the
-    /// extensions the lowering made), else the one found where the class
-    /// was declared (`RtWorld::ext_impls`). (The oracle's, as the
-    /// interpreter had it: `RtWorld::ext_impl` is the one the rows read.)
-    #[cfg(debug_assertions)]
-    fn ext_impl(&self, anc: ClassId, abs: MethodId) -> Option<MethodId> {
-        let world = &self.program.world;
-        world.extension_impl(anc, abs).or_else(|| {
-            world
-                .ext_impls
-                .iter()
-                .find(|(c, a, _)| *c == anc && *a == abs)
-                .map(|(_, _, i)| *i)
-        })
-    }
-
-    /// A method of `cid` (or of an ancestor before the owner of `mid`)
-    /// that overrides `mid`: same name, and the same signature when the
-    /// name is overloaded. (As the interpreter computed it before
-    /// `RtWorld::override_rows`, kept in debug builds as the oracle of
-    /// `override_for`.)
-    #[cfg(debug_assertions)]
-    fn find_override_at_run_time(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
-        let m = self.program.method(mid);
-        for anc in &self.program.world.class(cid).ancestors {
-            let anc = *anc;
-            // (An abstract method stands in for none: what implements it
-            // for this class may come later, `World::ext_impls`.)
-            if anc == m.owner && !m.is_abstract {
-                return None;
-            }
-            // A file's top-level `def`s are functions, not overrides of
-            // `Object`'s methods (docs/01 §1).
-            if self.program.world.class(anc).kind == quarz_ir::RtClassKind::Main {
-                continue;
-            }
-            // An abstract method an extension implements for this class
-            // (its conformance), unless the class defines its own.
-            let own = self.program.world.class(anc).methods.contains_key(&m.name);
-            if m.is_abstract {
-                // What the checker found implements it for this class by
-                // signature (an inherited method, past an overload of the
-                // name here), then an extension's.
-                if let Some((_, _, i)) = self
-                    .program
-                    .world
-                    .ext_impls
-                    .iter()
-                    .find(|(c, a, _)| *c == anc && *a == mid)
-                {
-                    return Some(*i);
-                }
-                if !own {
-                    if let Some(i) = self.ext_impl(anc, mid) {
-                        return Some(i);
-                    }
-                }
-            }
-            let mut candidates: Vec<MethodId> = Vec::new();
-            for ext in &self.program.world.extensions {
-                if ext.target == anc && self.program.world.extension_dispatches(ext, m.owner) {
-                    if let Some(ids) = ext.methods.get(&m.name) {
-                        candidates.extend(ids);
-                    }
-                }
-            }
-            if let Some(ids) = self.program.world.class(anc).methods.get(&m.name) {
-                candidates.extend(ids);
-            }
-            // (An abstract one stands in for none, the method's own too;
-            // whether one replaces `mid` is the override table's answer
-            // alone, #536.)
-            candidates.retain(|c| !self.program.method(*c).is_abstract);
-            if candidates.is_empty() {
-                continue;
-            }
-            // A module's method over it where a class of the receiver's
-            // includes the module (`World::include_overrides`).
-            let ancestors = &self.program.world.class(cid).ancestors;
-            if let Some(o) = candidates.iter().find(|c| {
-                self.program
-                    .world
-                    .include_overrides
-                    .iter()
-                    .any(|(k, o, by)| *o == mid && by == *c && ancestors.contains(k))
-            }) {
-                return Some(*o);
-            }
-            // What the override table says replaces it (`RtMethod::overrides`,
-            // `World::overrides`): any other is an overload, so keep looking.
-            if let Some(o) = candidates
-                .iter()
-                .find(|c| self.program.method(**c).overrides.contains(&mid))
-            {
-                return Some(*o);
-            }
-        }
-        None
-    }
-
     /// What runs for module method `mid` on a value of class `cid`
     /// (`resolve_dynamic`): the row of `RtWorld::override_rows` for a key
     /// `RtWorld::in_witness_rows` admits (none there is an internal
@@ -3000,7 +2898,7 @@ impl Interp {
     fn override_for(&self, cid: ClassId, mid: MethodId) -> MethodId {
         let world = &self.program.world;
         let method = |id: MethodId| self.program.method(id);
-        let found = if world.in_witness_rows(&method, cid, mid) {
+        if world.in_witness_rows(&method, cid, mid) {
             world.override_row(cid, mid).unwrap_or_else(|| {
                 panic!(
                     "internal error: no override row for `{}` on `{}`",
@@ -3010,20 +2908,7 @@ impl Interp {
             })
         } else {
             world.find_override(&method, cid, mid).unwrap_or(mid)
-        };
-        // (The oracle: the walk the rows replace, made here as it was,
-        // gives the same answer at every lookup.)
-        #[cfg(debug_assertions)]
-        {
-            let old = self.find_override_at_run_time(cid, mid).unwrap_or(mid);
-            assert!(
-                found == old,
-                "internal error: the override rows give {found} for `{}` on `{}`, the walk at run time {old}",
-                self.program.method(mid).name,
-                world.class(cid).name
-            );
         }
-        found
     }
 
     /// The witness of abstract method `abs` for class `cid` that a call by
@@ -3033,7 +2918,7 @@ impl Interp {
     fn witness_for(&self, cid: ClassId, abs: MethodId) -> Option<MethodId> {
         let world = &self.program.world;
         let method = |id: MethodId| self.program.method(id);
-        let found = if world.in_witness_rows(&method, cid, abs) {
+        if world.in_witness_rows(&method, cid, abs) {
             world.witness_row(cid, abs).unwrap_or_else(|| {
                 panic!(
                     "internal error: no witness row for `{}` on `{}`",
@@ -3043,29 +2928,7 @@ impl Interp {
             })
         } else {
             world.witness_of(&method, cid, abs)
-        };
-        // (The oracle: the walk `find_method` made, as it was.)
-        #[cfg(debug_assertions)]
-        {
-            let owner = self.program.method(abs).owner;
-            let mut old = None;
-            for anc in &world.class(cid).ancestors {
-                if *anc == owner {
-                    break;
-                }
-                if let Some(i) = self.ext_impl(*anc, abs) {
-                    old = Some(i);
-                    break;
-                }
-            }
-            assert!(
-                found == old,
-                "internal error: the witness rows give {found:?} for `{}` on `{}`, the walk at run time {old:?}",
-                self.program.method(abs).name,
-                world.class(cid).name
-            );
         }
-        found
     }
 
     /// Find a method by name on a class (first match in resolution order
