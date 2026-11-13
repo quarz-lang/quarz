@@ -804,6 +804,11 @@ pub struct Interp {
     /// method's column), the method the class runs (`0`: not looked up
     /// yet, else the method id plus one).
     vtable: RefCell<Vec<u32>>,
+    /// The module requirements the conformance-gated sends dispatch
+    /// (`send_requirement`, #599): `Comparable#<=>` and `Enumerable#each`,
+    /// found once at load (`None` when the program has none: shaken out).
+    req_cmp: Option<MethodId>,
+    req_each: Option<MethodId>,
     class_dispatch_cache: RefCell<FxHashMap<(ClassId, MethodId), Option<MethodId>>>,
     /// What each task block reads of the frames it was made in (see
     /// `natives::concurrency::captured_slots`).
@@ -1082,6 +1087,8 @@ impl Interp {
             consts,
             singletons,
         });
+        let req_cmp = requirement(&program, program.world.builtin.comparable, "<=>");
+        let req_each = requirement(&program, program.world.builtin.enumerable, "each");
         let interp = std::rc::Rc::new(Interp {
             hot: Hot::new(),
             program,
@@ -1094,6 +1101,8 @@ impl Interp {
             symbol_names: RefCell::new(Vec::new()),
             sched: state.sched,
             vtable: RefCell::new(vec![0; nvslots * nclasses]),
+            req_cmp,
+            req_each,
             class_dispatch_cache: RefCell::new(FxHashMap::default()),
             spawn_captures: RefCell::new(FxHashMap::default()),
             class_method_cache: RefCell::new(FxHashMap::default()),
@@ -2856,10 +2865,6 @@ impl Interp {
     /// - `vm.rs` `BoundMethod` (`.:name`, the checker's method reference),
     ///   the block fast path's fallback (`&:name`, typed for the block's
     ///   parameter), interpolation's `<<` on a non-builder (typed);
-    /// - `natives::collect`, `Enumerable#each_with_index_pairs`: `each`
-    ///   on an `Enumerable` receiver (the module's own natives; `collect`
-    ///   also on `Array`/`Set` arguments, which take its fast paths, and
-    ///   on `Enumerator`s, which include `Enumerable`);
     /// - `Enumerator#each` (`enumerator_each`): the source method of an
     ///   enumerator, a built-in's or an `Enumerable` native's (`times`,
     ///   `Range#each`, `Array#each`, `map`, `each_slice`, `to_enum`, ...);
@@ -2867,7 +2872,10 @@ impl Interp {
     ///   `rewind`: only after `has_user_method` (`false`) found it;
     /// - `Process::Output#success?`: `status` of a `Process::Output`.
     ///
-    /// `true`, through `compare` (`compare_with(.., true)`), the element
+    /// Not here: the sends of a module's requirement, which dispatch it
+    /// as a typed call does (`send_requirement`, #599): `each` on an
+    /// `Enumerable` (`natives::collect`, `Enumerable#each_with_index_pairs`)
+    /// and `<=>` through `compare` (`compare_with(.., true)`), the element
     /// type bounded by `Comparable`: `Enumerable#sort`/`min`/`max`/`minmax`
     /// (`extension Enumerable[T <: Comparable[T]]`), `Array#<=>`
     /// (`extension Array[T <: Comparable[T]]`), `Array::Builder#sort!`
@@ -2972,6 +2980,57 @@ impl Interp {
             .or_default()
             .insert(name.to_string(), result);
         result
+    }
+
+    /// `Enumerable#each`, the requirement `natives::collect` dispatches.
+    pub(crate) fn req_each(&self) -> Option<MethodId> {
+        self.req_each
+    }
+
+    /// A conformance-gated send of a module's requirement (#599): `<=>`
+    /// on an element bounded by `Comparable` (`compare`), `each` on an
+    /// `Enumerable` (`natives::collect`, `each_with_index_pairs`). It
+    /// dispatches the requirement `req` as a call typed through the module
+    /// does (`resolve_dynamic`, the row of `RtWorld::override_rows`), not
+    /// the first method of the name in `RtClass::lookup`. A receiver whose
+    /// class is not a key of the rows for `req` is an internal error
+    /// (`check_gated_key`, on the first dispatch for the class, before the
+    /// vtable cell is filled): the gate (a bound on `Comparable`, an
+    /// `Enumerable` receiver) admits none.
+    /// So is a missing requirement (`req` is `None`): `shake` drops it only
+    /// when no class with values includes the module, and a gated send is
+    /// then never reached with an object (built-in values compare inline).
+    pub(crate) fn send_requirement(
+        &self,
+        recv: &Value,
+        req: Option<MethodId>,
+        name: &str,
+        args: ArgVec,
+        block: Option<Value>,
+    ) -> EvalResult {
+        let cid = self.class_of(recv);
+        let Some(req) = req else {
+            panic!(
+                "internal error: a gated `{name}` on `{}` with no requirement shipped",
+                self.program.world.class(cid).name
+            );
+        };
+        // (A filled dispatch cell for the class: what a typed call reads,
+        // and nothing more. The key-set test runs once, when the cell is
+        // first filled for the class.)
+        let slot = self.program.vslots[req as usize];
+        if slot != u32::MAX {
+            let at = cid as usize * self.program.nvslots + slot as usize;
+            if let Some(&hit) = self.vtable.borrow().get(at) {
+                if hit != 0 {
+                    return self.invoke(hit - 1, recv.clone(), args, Vec::new(), block);
+                }
+            }
+        }
+        let method = |id: MethodId| self.program.method(id);
+        check_gated_key(&self.program.world, &method, cid, req, name);
+        let mid = self.resolve_dynamic(recv, req)?;
+        self.invoke(mid, recv.clone(), args, Vec::new(), block)
     }
 
     /// Call a method by name with dynamic lookup (used by `&:sym`,
@@ -4046,7 +4105,11 @@ impl Interp {
             }
             _ => {}
         }
-        let r = self.send_with(a, "<=>", smallvec![b.clone()], Vec::new(), None, witness)?;
+        let r = if witness {
+            self.send_requirement(a, self.req_cmp, "<=>", smallvec![b.clone()], None)?
+        } else {
+            self.send_with(a, "<=>", smallvec![b.clone()], Vec::new(), None, false)?
+        };
         match r {
             Value::Int(i) => Ok(i.cmp(&0)),
             _ => Err(self.err_arg(&format!(
@@ -4237,4 +4300,43 @@ pub(crate) fn inspect_quoted(s: &str, symbol: bool) -> String {
 /// (see `native_bt`), innermost first.
 fn native_frames() -> Vec<(usize, FuncId, u32)> {
     crate::native_bt::frames()
+}
+
+/// A conformance-gated send's first dispatch for class `cid` and
+/// requirement `req` (`Interp::send_requirement`): the class must be a key of
+/// the witness rows for it (`RtWorld::in_witness_rows`), which the gate (a
+/// `Comparable` bound, an `Enumerable` receiver) guarantees; otherwise an
+/// internal error.
+pub fn check_gated_key<'m>(
+    world: &quarz_ir::RtWorld,
+    method: &dyn Fn(MethodId) -> &'m RtMethod,
+    cid: ClassId,
+    req: MethodId,
+    name: &str,
+) {
+    if !world.in_witness_rows(method, cid, req) {
+        panic!(
+            "internal error: a gated `{name}` on `{}`, not a key of the witness rows",
+            world.class(cid).name
+        );
+    }
+}
+
+/// The abstract method `name` the prelude module `module` declares (a
+/// requirement a gated send dispatches, `Interp::send_requirement`):
+/// `None` when `shake` dropped it (its name cleared), which happens only
+/// when no class with values includes the module, so that no gated send
+/// can reach one.
+fn requirement(program: &Program, module: ClassId, name: &str) -> Option<MethodId> {
+    program
+        .world
+        .class(module)
+        .methods
+        .get(name)?
+        .iter()
+        .copied()
+        .find(|&m| {
+            let m = program.method(m);
+            m.owner == module && m.name == name && m.is_abstract
+        })
 }

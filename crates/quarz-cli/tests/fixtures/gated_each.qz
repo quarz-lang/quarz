@@ -1,0 +1,24 @@
+# #599: the natives of `Enumerable` that iterate (`to_a`, `map`,
+# `each_with_index`, ...) dispatch `Enumerable#each` as a call typed through
+# `Enumerable` does (the override table), not the first `each` found by name
+# with a block; an overload of another block type declared first is not run.
+class Bag
+  include Enumerable[Int]
+  def initialize; end
+  def each(&: (String) -> Void) -> Void
+    yield "not this"
+  end
+  def each(&: (Int) -> Void) -> Void
+    yield 1
+    yield 2
+  end
+end
+def typed(e: Enumerable[Int]) -> Array[Int]
+  out = Array::Builder[Int].new
+  e.each { |x| out << x }
+  out.to_a
+end
+b = Bag.new
+p typed(b), b.to_a, b.map { |x| x * 10 }, b.sum
+b.each_with_index { |x, i| print x, ":", i, " " }
+puts

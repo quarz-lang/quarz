@@ -579,7 +579,7 @@ pub fn collect(interp: &Interp, recv: &Value) -> Result<Vec<Value>, Flow> {
                     .push(args.into_iter().next().unwrap_or(Value::Nil));
                 Ok(Value::Nil)
             });
-            interp.send(recv, "each", smallvec![], Some(block))?;
+            interp.send_requirement(recv, interp.req_each(), "each", smallvec![], Some(block))?;
             let v = out.borrow().clone();
             Ok(v)
         }

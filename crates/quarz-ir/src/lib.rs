@@ -1675,6 +1675,12 @@ pub struct RtBuiltin {
     pub match_data: ClassId,
     pub bytes_match_data: ClassId,
     pub standard_error: ClassId,
+    /// `Comparable` and `Enumerable`, whose requirements the gated sends
+    /// dispatch (`Interp::send_requirement`, #599).
+    #[serde(default)]
+    pub comparable: ClassId,
+    #[serde(default)]
+    pub enumerable: ClassId,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

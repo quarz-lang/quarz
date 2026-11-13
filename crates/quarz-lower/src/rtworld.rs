@@ -370,6 +370,8 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
     let b = &world.builtin;
     let standard_error = b.standard_error;
     let builtin = RtBuiltin {
+        comparable: world.builtin.comparable,
+        enumerable: world.builtin.enumerable,
         object: b.object,
         nil: b.nil,
         bool_: b.bool_,

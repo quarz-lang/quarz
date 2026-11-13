@@ -43,7 +43,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             let n = k.replace(k.get() + 1);
             i.call_block(&b, smallvec![Value::array(vec![x, Value::Int(n)])])
         });
-        i.send(r, "each", smallvec![], Some(pairs))?;
+        i.send_requirement(r, i.req_each(), "each", smallvec![], Some(pairs))?;
         Ok(Value::Nil)
     });
     native!(m, "Enumerable#each_slice", |i, r, a| {
