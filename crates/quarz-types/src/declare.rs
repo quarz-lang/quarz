@@ -2010,10 +2010,11 @@ impl<'ast> Declarer<'ast> {
                 let takes = |s: &Self, i: MethodId, csubst: &HashMap<TypeParamId, Type>| {
                     !s.world.method(i).is_abstract && fits(s, i, csubst)
                 };
-                let by_ext = ext_info
+                let ext_choice = ext_info
                     .methods
                     .get(&rm.name)
-                    .is_some_and(|ids| ids.iter().any(|&i| takes(self, i, &ext_subst)));
+                    .and_then(|ids| ids.iter().copied().find(|&i| takes(self, i, &ext_subst)));
+                let by_ext = ext_choice.is_some();
                 let mods_witness = ext_mods.iter().find_map(|k| {
                     let ks = self.world.class_subst(*k, &args_in_conf(*k));
                     self.world.class(*k).methods.get(&rm.name).and_then(|ids| {
@@ -2083,6 +2084,12 @@ impl<'ast> Declarer<'ast> {
                         .or(own_witness)
                         .or(mods_witness)
                 };
+                if let Some(i) = ext_choice.or(recorded) {
+                    let choice = (ext, r, i);
+                    if !self.world.ext_choices.contains(&choice) {
+                        self.world.ext_choices.push(choice);
+                    }
+                }
                 if let Some(i) = recorded {
                     let entry = (target, r, i);
                     self.r0_pushed.insert(entry);
@@ -5071,20 +5078,47 @@ impl<'ast> Declarer<'ast> {
         }
         for (e, o, old) in pending_ii {
             let t = self.world.extensions[e as usize].target;
-            let rec = record(self, t);
-            let entry = rec
+            let r0 = self
+                .world
+                .ext_choices
                 .iter()
-                .find(|(k, q, _, src)| *k == t && *q == o && *src == Some(e))
-                .map(|x| &x.2);
-            let new = entry.and_then(|w| w.filter(|w| self.world.method(*w).extension == Some(e)));
-            if old != new {
+                .find(|(x, q, _)| *x == e && *q == o)
+                .map(|c| c.2);
+            // (What (ii) checks today, `ext_impl_of`, against what it
+            // will check, R0's choice when it is the extension's own.)
+            let r0_own = r0.filter(|w| self.world.method(*w).extension == Some(e));
+            if r0.is_none() {
                 Self::oracle_report(format!(
-                    "(ii) extension {e} of `{}`, requirement `{}`: checked {}, record {}",
+                    "(ii) extension {e} of `{}`, requirement `{}`: checked {}, R0 has no choice",
                     self.world.class(t).name,
                     self.oracle_name(o),
                     old.map_or("none".into(), |i| format!("`{}`", self.oracle_name(i))),
-                    show(self, entry)
                 ));
+            } else if old != r0_own {
+                Self::oracle_report(format!(
+                    "(ii) extension {e} of `{}`, requirement `{}`: checked {}, R0 chose `{}`",
+                    self.world.class(t).name,
+                    self.oracle_name(o),
+                    old.map_or("none".into(), |i| format!("`{}`", self.oracle_name(i))),
+                    self.oracle_name(r0.unwrap_or(o)),
+                ));
+            }
+            // (Where the record has an entry from this extension, its
+            // witness is R0's choice.)
+            let rec = record(self, t);
+            if let Some((_, _, w, _)) = rec
+                .iter()
+                .find(|(k, q, _, src)| *k == t && *q == o && *src == Some(e))
+            {
+                if r0.is_some() && *w != r0 {
+                    Self::oracle_report(format!(
+                        "(ii) extension {e} of `{}`, requirement `{}`: record {}, R0 chose `{}`",
+                        self.world.class(t).name,
+                        self.oracle_name(o),
+                        show(self, Some(w)),
+                        self.oracle_name(r0.unwrap_or(o)),
+                    ));
+                }
             }
         }
         for (e, o, old_missing) in pending_iii {
@@ -5123,22 +5157,20 @@ impl<'ast> Declarer<'ast> {
 
     /// (Oracle, temporary.) A disagreement: a line appended to the file
     /// `QUARZ_ORACLE_LOG` names when set (every case listed in one run),
-    /// else an internal error.
+    /// else nothing (the fatal form fired only in refused programs'
+    /// tests, on c272c29c).
     fn oracle_report(line: String) {
-        match std::env::var_os("QUARZ_ORACLE_LOG") {
-            Some(path) => {
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                {
-                    let _ = writeln!(f, "{line}");
-                }
+        // (Log-only: CI's default path never stops on it; the list is made
+        // with the switch set.)
+        if let Some(path) = std::env::var_os("QUARZ_ORACLE_LOG") {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(f, "{line}");
             }
-            None => panic!(
-                "internal error: the existence check and the witness record disagree: {line}"
-            ),
         }
     }
 

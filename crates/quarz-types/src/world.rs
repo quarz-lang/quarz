@@ -673,6 +673,14 @@ pub struct World {
     /// (class, abstract method, implementation), found where the class is
     /// declared: conformance holds wherever the value goes.
     pub ext_impls: Vec<(ClassId, MethodId, MethodId)>,
+    /// R0's choice for each (extension, requirement) it completes
+    /// (`Declarer::check_extension_completes`): the extension's own method
+    /// that takes the requirement's calls by type, else the witness it
+    /// records for the target (`ext_impls`). Kept with the world (the
+    /// prelude's and a cached file's too): what the extension's methods are
+    /// checked against (#536 step 3, item 2's (ii)).
+    #[serde(default)]
+    pub ext_choices: Vec<(ExtensionId, MethodId, MethodId)>,
     /// The class-side witnesses of extensions' conformances (#504): for a
     /// class that conforms to a module through an extension's `include`,
     /// each class method of the module that the extension's own `def
