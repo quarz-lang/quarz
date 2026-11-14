@@ -164,28 +164,24 @@ fn a_program_whose_rows_pass_checks() {
 }
 
 /// One method checked in each receiver's frame: `Base#get -> T` for `M#get
-/// -> Int` passes for `A < Base[Int]` and is refused for `B < Base[String]`
-/// (the class side's form of #608; an extension's method for an own include,
-/// #608's own form, is refused at compile time since rule A).
+/// -> Int`, `M` included by `A < Base[Int]` and by `B < Base[String]`
+/// themselves. The declarer checks the class's own conformance in each
+/// class's frame (#688: one class's pass no longer stands for another's),
+/// so `B` is refused there, before the net sees a row; `A` alone is
+/// accepted. (The net's row check still guards an extension's
+/// conformance, `an_inherited_witness_has_a_row_checked_per_class`.)
 #[test]
 fn a_method_is_checked_in_each_receivers_frame() {
-    let lines = report(
-        "module M\n  abstract def get -> Int\nend\nclass Base[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\n  def get -> T = v\nend\nclass A < Base[Int]\n  include M\n  def initialize; super(1); end\nend\nclass B < Base[String]\n  include M\n  def initialize; super(\"s\"); end\nend\ndef via(m: M) -> Int = m.get + 1\nputs via(A.new)\n",
+    let src = "module M\n  abstract def get -> Int\nend\nclass Base[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\n  def get -> T = v\nend\nclass A < Base[Int]\n  include M\n  def initialize; super(1); end\nend\nclass B < Base[String]\n  include M\n  def initialize; super(\"s\"); end\nend\ndef via(m: M) -> Int = m.get + 1\nputs via(A.new)\n";
+    refused(
+        src,
+        &["error: `get` returns String but `M#get`, which it overrides, returns Int"],
     );
-    let refused: Vec<&String> = lines
-        .iter()
-        .filter(|l| l.starts_with("witness-net: refused "))
-        .collect();
-    assert!(
-        refused
-            .iter()
-            .any(|l| l.contains("  B  M#get  by Base#get") && l.contains("returns String")),
-        "{lines:#?}"
-    );
-    assert!(
-        !refused.iter().any(|l| l.contains("  A  M#get")),
-        "{lines:#?}"
-    );
+    let (code, err) = check(&src.replace(
+        "class B < Base[String]\n  include M\n  def initialize; super(\"s\"); end\nend\n",
+        "",
+    ));
+    assert_eq!(code, Some(0), "{err}");
 }
 
 /// #604's round 2: a row whose conditional bound fails for the class's own
