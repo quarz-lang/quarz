@@ -1,0 +1,36 @@
+# A dynamic call on an abstract class's requirement (`a.m` with `a: A`),
+# whose implementation is not the first method of the name by arity: the
+# class's own overload of another parameter type comes first, the
+# implementation is in the module the class includes (an include pair
+# over `A#m`), or further down its own methods. The run time's
+# `find_override` resolves it to the override table's pair (#536 step 3's
+# S3, item (b)). Expected output from the rule. VM and compiled (the
+# build tests).
+module N
+  def m(x: String) -> String = "n:" + x
+end
+
+abstract class A
+  abstract def m(x: String) -> String
+end
+
+class C < A
+  include N
+  def initialize; end
+  def m(x: Int) -> String = "int"
+end
+
+class D < A
+  def initialize; end
+  def m(x: Int) -> String = "dint"
+  def m(x: String) -> String = "d:" + x
+end
+
+def f(a: A) -> String = a.m("s")
+
+puts f(C.new)
+puts f(D.new)
+puts C.new.m("t"), C.new.m(1)
+puts D.new.m("u"), D.new.m(2)
+xs: Array[A] = [C.new, D.new]
+puts xs.map { |a: A| a.m("v") }.join(",")

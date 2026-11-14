@@ -16,7 +16,9 @@
 # class method among the extension's own, the target's own, its own
 # includes, the extension's includes and a superclass's; gen5.py: an
 # abstract class's requirements implemented further up, by an include or
-# by the subclass, called by name and through the abstract type), the
+# by the subclass, called by name and through the abstract type; gen6.py:
+# an abstract class's requirement whose implementation is not the first
+# method of the name by arity, called through the abstract type), the
 # program is run on the interpreter with each binary (QUARZ_NO_CACHE=1,
 # QUARZ_THREADS=1, QUARZ_VERIFY=moves, a timeout of 60 seconds) and the
 # two outputs (stdout and stderr together) and exit statuses are
@@ -30,7 +32,7 @@
 # TypeError in the output: the checker accepted a program that broke a
 # guarantee; an assertion of NEW alone, an oracle's say, is a difference
 # too). Exits 1 when anything differs, 0 otherwise, 2 on a usage error.
-# FUZZ_GENS picks the generators (default: all five). COUNT is the
+# FUZZ_GENS picks the generators (default: all six). COUNT is the
 # number of seeds per generator (default 1000); runs go in
 # parallel, FUZZ_JOBS at once (default: the number of CPUs).
 #
@@ -78,7 +80,7 @@ one() {
 export -f one
 
 export FZ_OLD="$old" FZ_NEW="$new" FZ_HERE="$here" FZ_OUT="$out"
-results=$(for gen in ${FUZZ_GENS:-gen1 gen2 gen3 gen4 gen5}; do
+results=$(for gen in ${FUZZ_GENS:-gen1 gen2 gen3 gen4 gen5 gen6}; do
   seq "$first" $((first + count - 1)) | sed "s/^/$gen /"
 done | xargs -P "$jobs_n" -n 2 bash -c 'one "$1" "$2" "$FZ_OLD" "$FZ_NEW" "$FZ_HERE" "$FZ_OUT"' _)
 
