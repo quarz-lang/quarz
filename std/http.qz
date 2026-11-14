@@ -1155,6 +1155,35 @@ module HTTP
       # values in order.
       def query_params -> Hash[String, Array[String]] = HTTP.parse_query(query)
 
+      # The target's path split at `/` into segments, then each
+      # percent-decoded (so an escaped `/`, `%2F`, stays inside its
+      # segment), as `HTTP::Pattern#match` takes them; nil when a segment
+      # does not decode to UTF-8 text (a `%` not followed by two hex digits
+      # is kept as it is). An absolute-form target (`http://host/a`) gives
+      # its path's.
+      #
+      # ```
+      # HTTP::Server::Request.get("/files/a%2Fb/c").path_segments   # => ["files", "a/b", "c"]
+      # HTTP::Server::Request.get("/users/").path_segments          # => ["users", ""]
+      # HTTP::Server::Request.get("/bad/%ff").path_segments         # => nil
+      # ```
+      def path_segments -> Array[String]?
+        raw = target.partition("?")[0]
+        unless raw.start_with?("/")
+          return nil unless raw.match?(/\Ahttps?:\/\//i)
+          rest = raw.partition("://")[2]
+          slash = rest.index("/")
+          raw = slash ? rest[slash..] : "/"
+        end
+        out: Array[String] = []
+        raw.split("/", -1).drop(1).each do |part|
+          d = HTTP.percent_decode(part)
+          return nil if d.nil?
+          out = out.push(d)
+        end
+        out
+      end
+
       # The parameters of an `application/x-www-form-urlencoded` body, as
       # `#query_params` decodes them; empty for another content type. Reads the
       # body (`Body#read`), so it raises what that raises.
@@ -1708,6 +1737,7 @@ module HTTP
   # ----- the router -----------------------------------------------------------------
 
   # :nodoc:
+  # A segment of a `Pattern`.
   enum Segment
     variant Literal(text: String)
     variant Param(name: String)
@@ -1715,11 +1745,276 @@ module HTTP
   end
 
   # :nodoc:
+  # (No longer used: `Routes` holds the routes. Goes with the wrappers
+  # below once bezel has switched, #380.)
   data Route = (method: String, pattern: String, segments: Array[Segment], handler: Handler)
 
-  # Routes by method and path pattern (`/users/{id}`, `/files/{path...}`):
-  # the most specific match wins; a path that only other methods have is
-  # answered 405.
+  # A route's path pattern: `/users/{id}`, `/files/{path...}`.
+  #
+  # A pattern starts with `/`, and `/` separates its segments:
+  #
+  # - `{name}` matches one segment, which must not be empty.
+  # - `{name...}`, only last, matches the rest of the path: zero or more
+  #   segments, the slashes between them included. `/files/{p...}`
+  #   matches `/files/` (an empty rest) and `/files/a/b`, not `/files`.
+  # - Any other segment matches itself only.
+  #
+  # A trailing slash is significant: `/users/` is not `/users`. A path is
+  # matched as `Server::Request#path_segments` gives it, each segment
+  # percent-decoded, so an escaped `/` (`%2F`) stays inside its segment.
+  # The rest a `{name...}` matched is its segments joined with `/`, `..`
+  # segments kept as they are: a handler that maps it to files must check
+  # them.
+  #
+  # When several patterns match a path, the most specific one is chosen
+  # (`#compare_specificity`, `Routes#find`).
+  #
+  # ```
+  # p = HTTP::Pattern.parse("/users/{id}/posts/{rest...}")
+  # p.match(["users", "7", "posts", "2026", "11"])
+  # # => {"id" => "7", "rest" => "2026/11"}
+  # p.match(["users", "7"])                 # => nil
+  # p.names                                 # => ["id", "rest"]
+  # HTTP::Pattern.parse("/files/{p...}").match(["files", ""])   # => {"p" => ""}
+  # HTTP::Pattern.parse("/files/{p...}").match(["files"])       # => nil
+  # HTTP::Pattern.parse("users")            # raises ArgumentError
+  # HTTP::Pattern.parse("/a/{x}/{x}")       # raises ArgumentError
+  # ```
+  data Pattern(
+    # The pattern as written.
+    source: String,
+    # :nodoc:
+    # Its segments, as `.parse` makes them from `source`.
+    segments: Array[Segment]
+  )
+    # The pattern written `source`. Raises `ArgumentError` when it does not
+    # start with `/`, when `{name...}` is not its last segment, when a
+    # parameter has no name (`{}`, `{...}`), or when two parameters have
+    # the same name.
+    def self.parse(source: String) -> Pattern
+      raise ArgumentError, "a pattern starts with /: #{source}" unless source.start_with?("/")
+      parts = source.split("/", -1).drop(1)
+      out: Array[Segment] = []
+      names: Array[String] = []
+      parts.each_with_index do |part, i|
+        seg = if part.start_with?("{") && part.end_with?("...}")
+          raise ArgumentError, "{name...} must come last: #{source}" unless i == parts.size - 1
+          Segment::Rest.new(part[1...-4])
+        elsif part.start_with?("{") && part.end_with?("}")
+          Segment::Param.new(part[1...-1])
+        else
+          Segment::Literal.new(part)
+        end
+        name = Pattern.name_of(seg)
+        if name
+          raise ArgumentError, "a parameter has no name: #{source}" if name.empty?
+          raise ArgumentError, "the parameter {#{name}} appears twice: #{source}" if names.include?(name)
+          names = names.push(name)
+        end
+        out = out.push(seg)
+      end
+      Pattern.new(source, out)
+    end
+
+    # :nodoc:
+    def self.name_of(seg: Segment) -> String?
+      case seg
+      in Segment::Param(name:) then name
+      in Segment::Rest(name:) then name
+      in Segment::Literal then nil
+      end
+    end
+
+    # The parameters of `path` by name, or nil when the pattern does not
+    # match it. `path` is a request's path as `Server::Request#path_segments`
+    # gives it.
+    def match(path: Array[String]) -> Hash[String, String]?
+      params = Hash::Builder[String, String].new
+      segments.each_with_index do |seg, i|
+        case seg
+        in Segment::Rest(name:)
+          # `/files/{p...}` matches `/files/` (an empty rest), not `/files`.
+          return nil if i >= path.size
+          params[name] = path.drop(i).join("/")
+          return params.to_h
+        in Segment::Param(name:)
+          return nil if i >= path.size || path[i].empty?
+          params[name] = path[i]
+        in Segment::Literal(text:)
+          return nil if i >= path.size || path[i] != text
+        end
+      end
+      segments.size == path.size ? params.to_h : nil
+    end
+
+    # The names of its parameters, in order.
+    def names -> Array[String] = segments.filter_map { |s| Pattern.name_of(s) }
+
+    # Which of two patterns is the more specific: negative when this one
+    # is less specific than `other`, zero when they are as specific,
+    # positive when it is more, as `<=>`. They are compared segment by
+    # segment from the left, and the first segment where they differ
+    # decides: a literal is more specific than `{name}`, which is more
+    # specific than `{name...}`. When one has the other's segments and
+    # more, the longer is the more specific.
+    #
+    # ```
+    # a = HTTP::Pattern.parse("/users/me")
+    # b = HTTP::Pattern.parse("/users/{id}")
+    # a.compare_specificity(b)     # => 1
+    # HTTP::Pattern.parse("/{x}/b").compare_specificity(HTTP::Pattern.parse("/a/{y}"))   # => -1
+    # ```
+    def compare_specificity(other: Pattern) -> Int = specificity <=> other.specificity
+
+    # Whether both patterns match the same paths, being as specific: they
+    # differ in the names of their parameters at most. A `Routes` refuses
+    # a second route of one method with such a pattern.
+    #
+    # ```
+    # HTTP::Pattern.parse("/x/{a}").same_paths?(HTTP::Pattern.parse("/x/{b}"))   # => true
+    # HTTP::Pattern.parse("/x/{a}").same_paths?(HTTP::Pattern.parse("/x/y"))     # => false
+    # ```
+    def same_paths?(other: Pattern) -> Bool = shape == other.shape
+
+    # :nodoc:
+    # Literal 2, `{name}` 1, `{name...}` 0, segment by segment.
+    def specificity -> Array[Int]
+      segments.map do |s|
+        case s
+        in Segment::Literal then 2
+        in Segment::Param then 1
+        in Segment::Rest then 0
+        end
+      end
+    end
+
+    # :nodoc:
+    # The pattern without its parameters' names: equal for two patterns
+    # exactly when `#same_paths?`. (A literal segment is never `{}` nor
+    # `{...}`, which `.parse` refuses, and holds no `/`.)
+    def shape -> String
+      parts = segments.map do |s|
+        case s
+        in Segment::Literal(text:) then text
+        in Segment::Param then "{}"
+        in Segment::Rest then "{...}"
+        end
+      end
+      "/" + parts.join("/")
+    end
+  end
+
+  # Routes by method and path pattern (`Pattern`) to values of `T`: the
+  # matching rules of `Router`, for a router of another shape (a
+  # framework's, whose routes are its own values).
+  #
+  # A `Routes` value does not change: `#add` gives a new one. Each `add`
+  # checks for a conflict with one hash lookup, but copies the routes
+  # added before (#704), so building N routes copies O(N²) elements:
+  # about 35 ms for 1600 routes in a release build. `#find` looks at
+  # every route.
+  #
+  # ```
+  # routes = HTTP::Routes[Symbol].empty
+  #   .add("GET", "/users/{id}", :show)
+  #   .add("GET", "/users/me", :me)
+  # routes.find("GET", ["users", "me"])
+  # # => HTTP::Routes::Found::Match(value: :me, params: {})
+  # routes.find("GET", ["users", "7"])
+  # # => HTTP::Routes::Found::Match(value: :show, params: {"id" => "7"})
+  # routes.find("POST", ["users", "7"])
+  # # => HTTP::Routes::Found::NotAllowed(allow: ["GET", "HEAD"])
+  # routes.find("GET", ["posts"])           # => HTTP::Routes::Found::NotFound
+  # ```
+  data Routes[T <: Shareable](
+    # :nodoc:
+    # The routes, in the order they were added.
+    entries: Array[Routes::Entry[T]],
+    # :nodoc:
+    # Each route's method and pattern shape (`Pattern#shape`), with the
+    # pattern as written: the conflict check, one lookup per route.
+    shapes: Hash[String, String]
+  )
+    # :nodoc:
+    data Entry[U <: Shareable] = (method: String, pattern: Pattern, value: U)
+
+    # What `Routes#find` found.
+    enum Found[U <: Shareable]
+      # The route's value, and the parameters its pattern matched.
+      variant Match(value: U, params: Hash[String, String])
+      # Only other methods have a route for the path: those methods,
+      # sorted, as a 405's `Allow` lists them.
+      variant NotAllowed(allow: Array[String])
+      # No route matches the path.
+      variant NotFound
+    end
+
+    # No routes.
+    def self.empty -> Routes[T] = Routes[T].new([], {})
+
+    # These routes and one more, for `method` requests matching `pattern`.
+    # Raises `ArgumentError` when the pattern does not parse
+    # (`Pattern.parse`), or when a route of the same method has a pattern
+    # that matches the same paths (`Pattern#same_paths?`).
+    def add(method: String, pattern: String, value: T) -> Routes[T]
+      pat = Pattern.parse(pattern)
+      key = "#{method} #{pat.shape}"
+      other = shapes[key]?
+      raise ArgumentError, "#{method} #{pattern} conflicts with #{other}" if other
+      Routes[T].new(entries.push(Entry[T].new(method, pat, value)), shapes.put(key, pattern))
+    end
+
+    # Calls the block with each route's method, pattern and value, in the
+    # order they were added.
+    def each(&: (String, Pattern, T) -> Void) -> Void
+      entries.each { |e| yield e.method, e.pattern, e.value }
+      nil
+    end
+
+    # The number of routes.
+    def size -> Int = entries.size
+
+    # The route for a `method` request to `path` (as
+    # `Server::Request#path_segments` gives it):
+    #
+    # - `Found::Match` with the most specific route of that method whose
+    #   pattern matches (`Pattern#compare_specificity`). A HEAD request is
+    #   served by a GET route too, and by a HEAD route of the same
+    #   pattern rather than the GET one.
+    # - `Found::NotAllowed` when only routes of other methods match: those
+    #   methods, with HEAD where GET is.
+    # - `Found::NotFound` otherwise.
+    def find(method: String, path: Array[String]) -> Found[T]
+      found: Entry[T]? = nil
+      found_params: Hash[String, String] = {}
+      allowed: Array[String] = []
+      entries.each do |e|
+        params = e.pattern.match(path)
+        next if params.nil?
+        if e.method == method || (method == "HEAD" && e.method == "GET")
+          best = found
+          order = best ? e.pattern.compare_specificity(best.pattern) : 1
+          # A HEAD route beats a GET one of the same pattern.
+          if order > 0 || (order == 0 && e.method == method)
+            found = e
+            found_params = params
+          end
+        else
+          allowed = allowed.push(e.method)
+        end
+      end
+      chosen = found
+      return Found::Match[T].new(chosen.value, found_params) if chosen
+      return Found::NotFound[T].new if allowed.empty?
+      methods = allowed.uniq
+      methods = methods.push("HEAD") if methods.include?("GET") && !methods.include?("HEAD")
+      Found::NotAllowed[T].new(methods.sort)
+    end
+  end
+
+  # Routes by method and path pattern (`/users/{id}`, `/files/{path...}`,
+  # `Pattern`): the most specific match wins; a path that only other
+  # methods have is answered 405 (`Routes#find`).
   #
   # ```
   # router = HTTP::Router.build do |r|
@@ -1734,8 +2029,8 @@ module HTTP
   # router.call(HTTP::Server::Request.get("/posts")).status      # => 404
   # ```
   data Router(
-    # The routes, in the order they were added.
-    routes: Array[Route],
+    # The routes, to their handlers.
+    routes: Routes[Handler],
     # The handler of a path no route has (`RouterBuilder#not_found`).
     fallback: Handler
   )
@@ -1743,7 +2038,8 @@ module HTTP
 
     # A router of the routes the block adds to its `RouterBuilder`. Raises
     # `ArgumentError` for two routes of a method that match the same paths
-    # with equal specificity, or a pattern not starting with `/`.
+    # with equal specificity, or a pattern that does not parse
+    # (`Pattern.parse`).
     def self.build(&: (RouterBuilder) -> Void) -> Router
       b = RouterBuilder.new
       yield b
@@ -1755,62 +2051,31 @@ module HTTP
     # route; a path only other methods have is answered `405` with Allow; a
     # path with no route goes to the fallback (`404`).
     def call(req: Server::Request) -> Server::Response
-      segments = HTTP.path_segments(req)
+      segments = req.path_segments
       return fallback.call(req) if segments.nil?
-      found: Route? = nil
-      found_params: Hash[String, String] = {}
-      best: Array[Int] = []
-      allowed: Array[String] = []
-      routes.each do |route|
-        params = HTTP.match_segments(route.segments, segments)
-        next if params.nil?
-        if route.method == req.method || (req.method == "HEAD" && route.method == "GET")
-          score = HTTP.specificity(route.segments)
-          # A HEAD route beats a GET one of the same pattern.
-          if found.nil? || (score <=> best) > 0 || (score == best && route.method == req.method)
-            found = route
-            found_params = params
-            best = score
-          end
-        else
-          allowed = allowed.push(route.method)
-        end
-      end
-      chosen = found
-      if chosen
-        chosen.handler.call(req.with(params: req.params.merge(found_params)))
-      elsif allowed.empty?
+      case routes.find(req.method, segments)
+      in Routes::Found::Match(value:, params:)
+        value.call(req.with(params: req.params.merge(params)))
+      in Routes::Found::NotAllowed(allow:)
+        Server::Response.text("Method Not Allowed", 405).header("allow", allow.join(", "))
+      in Routes::Found::NotFound
         fallback.call(req)
-      else
-        methods = allowed.uniq
-        methods = methods.push("HEAD") if methods.include?("GET") && !methods.include?("HEAD")
-        Server::Response.text("Method Not Allowed", 405).header("allow", methods.sort.join(", "))
       end
     end
   end
 
-  # Collects routes for `Router.build`. A pattern is a path whose segments
-  # may be `{name}` (one segment) or, last, `{name...}` (the rest of the
-  # path, possibly empty, slashes included); a trailing slash is
-  # significant.
+  # Collects routes for `Router.build`: patterns as `Pattern` reads them.
   class RouterBuilder
     include Unshareable
 
-    var @routes: Array[Route] = []
+    var @routes: Routes[Handler] = Routes[Handler].empty
     var @fallback: Handler = ProcHandler.new(->(r: Server::Request) { Server::Response.not_found })
 
     # Routes `method` requests matching `pattern` to `handler`. Raises
-    # `ArgumentError` for a pattern that does not start with `/`, or one
-    # conflicting with a route already added.
+    # `ArgumentError` for a pattern that does not parse (`Pattern.parse`),
+    # or one conflicting with a route already added (`Routes#add`).
     def handle(method: String, pattern: String, handler: Handler) -> Void
-      segs = HTTP.parse_pattern(pattern)
-      shape = HTTP.specificity(segs)
-      @routes.each do |r|
-        if r.method == method && HTTP.specificity(r.segments) == shape && HTTP.same_literals?(r.segments, segs)
-          raise ArgumentError, "#{method} #{pattern} conflicts with #{r.pattern}"
-        end
-      end
-      @routes = @routes.push(Route.new(method, pattern, segs, handler))
+      @routes = @routes.add(method, pattern, handler)
       nil
     end
 
@@ -1850,10 +2115,10 @@ module HTTP
 
     # Another router's routes under `prefix`.
     def mount(prefix: String, router: Router) -> Void
-      pre = HTTP.parse_pattern(prefix)
-      raise ArgumentError, "a mount prefix has no {name...}" if pre.any? { |s| s.is_a?(Segment::Rest) }
-      router.routes.each do |r|
-        handle(r.method, prefix.delete_suffix("/") + r.pattern, r.handler)
+      pre = Pattern.parse(prefix)
+      raise ArgumentError, "a mount prefix has no {name...}" if pre.segments.any? { |s| s.is_a?(Segment::Rest) }
+      router.routes.each do |method, pattern, handler|
+        handle(method, prefix.delete_suffix("/") + pattern.source, handler)
       end
       nil
     end
@@ -1875,88 +2140,26 @@ module HTTP
   end
 
   # :nodoc:
-  def self.parse_pattern(pattern: String) -> Array[Segment]
-    raise ArgumentError, "a pattern starts with /: #{pattern}" unless pattern.start_with?("/")
-    parts = pattern.split("/", -1).drop(1)
-    out: Array[Segment] = []
-    parts.each_with_index do |part, i|
-      seg = if part.start_with?("{") && part.end_with?("...}")
-        raise ArgumentError, "{name...} must come last: #{pattern}" unless i == parts.size - 1
-        Segment::Rest.new(part[1...-4])
-      elsif part.start_with?("{") && part.end_with?("}")
-        Segment::Param.new(part[1...-1])
-      else
-        Segment::Literal.new(part)
-      end
-      out = out.push(seg)
-    end
-    out
-  end
+  # (The five functions below are `Pattern`'s, for bezel until it has
+  # switched to `Pattern` and `Routes`; then they go, #380.)
+  def self.parse_pattern(pattern: String) -> Array[Segment] = Pattern.parse(pattern).segments
 
   # :nodoc:
-  # The request's path split into segments, then each percent-decoded (an
-  # escaped `/` does not separate segments); nil when it does not decode.
-  def self.path_segments(req: Server::Request) -> Array[String]?
-    raw = req.target.partition("?")[0]
-    unless raw.start_with?("/")
-      return nil unless raw.match?(/\Ahttps?:\/\//i)
-      rest = raw.partition("://")[2]
-      slash = rest.index("/")
-      raw = slash ? rest[slash..] : "/"
-    end
-    out: Array[String] = []
-    raw.split("/", -1).drop(1).each do |part|
-      d = percent_decode(part)
-      return nil if d.nil?
-      out = out.push(d)
-    end
-    out
-  end
+  def self.path_segments(req: Server::Request) -> Array[String]? = req.path_segments
 
   # :nodoc:
   def self.match_segments(pattern: Array[Segment], path: Array[String]) -> Hash[String, String]?
-    params = Hash::Builder[String, String].new
-    pattern.each_with_index do |seg, i|
-      case seg
-      in Segment::Rest(name:)
-        # `/files/{p...}` matches `/files/` (an empty rest), not `/files`.
-        return nil if i >= path.size
-        params[name] = path.drop(i).join("/")
-        return params.to_h
-      in Segment::Param(name:)
-        return nil if i >= path.size || path[i].empty?
-        params[name] = path[i]
-      in Segment::Literal(text:)
-        return nil if i >= path.size || path[i] != text
-      end
-    end
-    pattern.size == path.size ? params.to_h : nil
+    Pattern.new("", pattern).match(path)
   end
 
   # :nodoc:
-  # Literal 2, `{name}` 1, `{name...}` 0, segment by segment.
-  def self.specificity(segs: Array[Segment]) -> Array[Int]
-    segs.map do |s|
-      case s
-      in Segment::Literal then 2
-      in Segment::Param then 1
-      in Segment::Rest then 0
-      end
-    end
-  end
+  def self.specificity(segs: Array[Segment]) -> Array[Int] = Pattern.new("", segs).specificity
 
   # :nodoc:
+  # (Its callers compare `specificity` first: then this is whether the
+  # two match the same paths.)
   def self.same_literals?(a: Array[Segment], b: Array[Segment]) -> Bool
-    return false unless a.size == b.size
-    a.zip(b).all? do |pair|
-      x, y = pair
-      case x
-      in Segment::Literal(text:)
-        y.is_a?(Segment::Literal) && y == x
-      else
-        true
-      end
-    end
+    Pattern.new("", a).same_paths?(Pattern.new("", b))
   end
 
   # Serves HTTP on `host`:`port`, answering each request with the
