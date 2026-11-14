@@ -1,0 +1,155 @@
+# HTTP::Pattern and HTTP::Routes on their own, and
+# Server::Request#path_segments: the pattern grammar, the specificity
+# order, the conflict check, and the choice among routes.
+require "http"
+require "test"
+
+class HttpPatternTest < Test::Case
+  def pat(s: String) -> HTTP::Pattern = HTTP::Pattern.parse(s)
+
+  def segs(target: String) -> Array[String]? = HTTP::Server::Request.get(target).path_segments
+
+  # A pattern, a path and what it matched ("-" for nothing).
+  def data_match -> Hash[String, [String, String, String]]
+    {
+      "literal" => ["/users", "/users", "{}"],
+      "parameter" => ["/users/{id}", "/users/7", "{\"id\" => \"7\"}"],
+      "empty parameter" => ["/users/{id}", "/users/", "-"],
+      "trailing slash is significant" => ["/users/", "/users", "-"],
+      "trailing slash matched" => ["/users/", "/users/", "{}"],
+      "no trailing slash on a slashed path" => ["/users", "/users/", "-"],
+      "rest of several segments" => ["/files/{p...}", "/files/a/b", "{\"p\" => \"a/b\"}"],
+      "rest may be empty" => ["/files/{p...}", "/files/", "{\"p\" => \"\"}"],
+      "rest needs its slash" => ["/files/{p...}", "/files", "-"],
+      "escaped slash stays in its segment" => ["/files/{name}", "/files/a%2Fb", "{\"name\" => \"a/b\"}"],
+      "decoded literal" => ["/café", "/caf%C3%A9", "{}"],
+      "dot segments kept in a rest" => ["/files/{p...}", "/files/../x", "{\"p\" => \"../x\"}"],
+      "longer path" => ["/users/{id}", "/users/7/posts", "-"],
+      "braces inside a literal" => ["/a{b}c", "/a{b}c", "{}"],
+    }
+  end
+
+  def test_match(data: [String, String, String])
+    pattern, target, want = data
+    path = segs(target)
+    assert_false(path.nil?)
+    got = path ? pat(pattern).match(path) : nil
+    assert_equal(want, got ? got.inspect : "-")
+  end
+
+  def test_path_segments
+    assert_equal(["users", "7"], segs("/users/7?x=1"))
+    assert_equal([""], segs("/"))
+    assert_equal(["a", ""], segs("/a/"))
+    assert_equal(["a/b", "c"], segs("/a%2Fb/c"))
+    assert_equal(["p"], segs("http://example.com/p"))
+    # A segment that does not decode to UTF-8 text.
+    assert_nil(segs("/bad/%ff"))
+  end
+
+  def test_names_and_source
+    p = pat("/users/{id}/files/{rest...}")
+    assert_equal(["id", "rest"], p.names)
+    assert_equal("/users/{id}/files/{rest...}", p.source)
+    assert_equal(Array[String].new, pat("/").names)
+  end
+
+  # The patterns refused, with the message.
+  def data_refused -> Hash[String, [String, String]]
+    {
+      "no leading slash" => ["users", "a pattern starts with /: users"],
+      "rest not last" => ["/{p...}/x", "{name...} must come last: /{p...}/x"],
+      "parameter without a name" => ["/a/{}", "a parameter has no name: /a/{}"],
+      "rest without a name" => ["/a/{...}", "a parameter has no name: /a/{...}"],
+      "a name twice" => ["/a/{x}/{x}", "the parameter {x} appears twice: /a/{x}/{x}"],
+      "a name twice, once as the rest" => ["/a/{x}/{x...}", "the parameter {x} appears twice: /a/{x}/{x...}"],
+    }
+  end
+
+  def test_refused(data: [String, String])
+    source, message = data
+    e = assert_raise(ArgumentError) { HTTP::Pattern.parse(source) }
+    assert_equal(message, e.message)
+  end
+
+  def test_specificity_order
+    # The first segment that differs decides: literal, then {name}, then
+    # {name...}; with equal segments, the longer pattern.
+    assert_equal(1, pat("/users/me").compare_specificity(pat("/users/{id}")))
+    assert_equal(1, pat("/files/{name}").compare_specificity(pat("/files/{p...}")))
+    assert_equal(-1, pat("/{y}/b/c").compare_specificity(pat("/a/{x}/c")))
+    assert_equal(1, pat("/a/{x}/{r...}").compare_specificity(pat("/a/{r...}")))
+    assert_equal(0, pat("/x/{a}").compare_specificity(pat("/x/{b}")))
+  end
+
+  def test_same_paths
+    assert_true(pat("/x/{a}").same_paths?(pat("/x/{b}")))
+    assert_true(pat("/x/{a...}").same_paths?(pat("/x/{b...}")))
+    assert_false(pat("/x/{a}").same_paths?(pat("/x/{a...}")))
+    assert_false(pat("/x/{a}").same_paths?(pat("/x/y")))
+    assert_false(pat("/x/{a}").same_paths?(pat("/x/{a}/")))
+    # A literal that looks like a parameter is a literal.
+    assert_false(pat("/x/{a").same_paths?(pat("/x/{b}")))
+  end
+
+  def routes -> HTTP::Routes[String]
+    HTTP::Routes[String].empty
+      .add("GET", "/users/{id}", "show")
+      .add("GET", "/users/me", "me")
+      .add("PUT", "/users/{id}", "update")
+      .add("GET", "/files/{p...}", "files")
+      .add("HEAD", "/files/{p...}", "files head")
+      .add("DELETE", "/files/{name}", "delete file")
+  end
+
+  def found(method: String, target: String) -> String
+    case routes.find(method, segs(target) || [])
+    in HTTP::Routes::Found::Match(value:, params:) then "#{value} #{params.inspect}"
+    in HTTP::Routes::Found::NotAllowed(allow:) then "405 #{allow.join(", ")}"
+    in HTTP::Routes::Found::NotFound then "404"
+    end
+  end
+
+  def test_find
+    assert_equal("show {\"id\" => \"7\"}", found("GET", "/users/7"))
+    assert_equal("me {}", found("GET", "/users/me"))
+    # HEAD by GET; a HEAD route of the same pattern wins.
+    assert_equal("show {\"id\" => \"7\"}", found("HEAD", "/users/7"))
+    assert_equal("files head {\"p\" => \"a\"}", found("HEAD", "/files/a"))
+    # Only other methods: their names, sorted, HEAD with GET.
+    assert_equal("405 GET, HEAD, PUT", found("POST", "/users/7"))
+    assert_equal("405 DELETE, GET, HEAD", found("POST", "/files/x"))
+    assert_equal("404", found("GET", "/posts"))
+    assert_equal(6, routes.size)
+  end
+
+  def test_add_refuses_a_conflict
+    e = assert_raise(ArgumentError) { routes.add("GET", "/users/{name}", "other") }
+    assert_equal("GET /users/{name} conflicts with /users/{id}", e.message)
+    # Another method, or a pattern that is not the same paths, is fine.
+    assert_equal(7, routes.add("POST", "/users/{name}", "other").size)
+    assert_equal(7, routes.add("GET", "/users/{id}/", "slashed").size)
+    assert_raise(ArgumentError) { routes.add("GET", "users", "bad") }
+    # A method is any string: one with a space and a pattern that differ
+    # do not conflict, the same method and shape still do.
+    spaced = HTTP::Routes[Int].empty.add("A /b", "/c", 1)
+    assert_equal(2, spaced.add("A", "/b /c", 2).size)
+    e2 = assert_raise(ArgumentError) { spaced.add("A /b", "/c", 3) }
+    assert_equal("A /b /c conflicts with /c", e2.message)
+  end
+
+  def test_each_in_order
+    seen: Array[String] = []
+    HTTP::Routes[Int].empty.add("GET", "/b", 2).add("GET", "/a", 1).each do |method, pattern, value|
+      seen = seen.push("#{method} #{pattern.source} #{value}")
+    end
+    assert_equal(["GET /b 2", "GET /a 1"], seen)
+  end
+
+  def test_value_unchanged_by_add
+    a = HTTP::Routes[Int].empty.add("GET", "/a", 1)
+    b = a.add("GET", "/b", 2)
+    assert_equal(1, a.size)
+    assert_equal(2, b.size)
+  end
+end
