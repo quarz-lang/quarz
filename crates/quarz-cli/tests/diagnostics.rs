@@ -3499,6 +3499,10 @@ fn an_extension_completes_the_conformance_it_makes() {
         format!("{named}module Giver\n  def label -> String = \"g\"\nend\nclass B\n  def initialize; end\nend\nmodule S1\n  extension B\n    include Named\n  end\nend\nmodule S2\n  extension B\n    include Giver\n  end\nend\n"),
         // An `abstract def` on the target of another signature only.
         format!("{named}abstract class B\n  abstract def label(x: Int) -> String\nend\nclass C < B\n  def initialize; end\n  def label(x: Int) -> String = \"c\"\nend\nextension B\n  include Named\nend\n"),
+        // A prelude class (no conformance check of its own): nothing, or
+        // only an overload of another arity, implements it.
+        format!("{named}extension Int\n  include Named\nend\n"),
+        format!("{named}extension Int\n  include Named\n  def label(x: Int) -> String = \"i\"\nend\n"),
         // Only an overload of another parameter type.
         "module M\n  abstract def m(x: String) -> String\nend\nmodule N\n  def m(x: Int) -> String = \"n\"\nend\nclass B\n  def initialize; end\nend\nextension B\n  include M\n  include N\nend\n".to_string(),
     ];

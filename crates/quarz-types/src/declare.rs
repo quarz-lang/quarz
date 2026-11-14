@@ -1978,10 +1978,14 @@ impl<'ast> Declarer<'ast> {
     /// extension's includes bring, (3) the target's own methods and those of
     /// its own includes and superclasses (`World::ancestors_with_no_extensions`;
     /// an `abstract def` there that takes the calls counts, and the
-    /// target's concrete classes must implement it). Otherwise an error at the extension, whatever its
-    /// bounds. The modules come from `World::conformances`' sources; "takes
-    /// its calls" is `World::takes_calls_of`, or the run time's same
-    /// signature, with each side seen in the target's own parameters.
+    /// target's concrete classes must implement it). Otherwise an error at
+    /// the extension, whatever its bounds. The modules come from
+    /// `World::conformances`' sources; "takes its calls" is by type, the
+    /// result included (`World::takes_place_of`, #656's decision (a)), with
+    /// each side seen in the target's own parameters. The choice is kept
+    /// (`World::ext_choices`, and `ext_impls` for a witness that is not the
+    /// extension's own method, the witness record's rule 4). It runs before
+    /// the class checks, which read it (`check_extension_conformance`).
     fn check_extension_completes(
         &mut self,
         ext: ExtensionId,
@@ -2076,11 +2080,11 @@ impl<'ast> Declarer<'ast> {
                 // 2026-11-14), of the target's own side and this
                 // extension's modules (another extension's never, #555),
                 // whose method takes the requirement's calls by type
-                // (`takes`), after the extension's own method (found by the
-                // run time, no entry). One R0 accepts only by the run-time
-                // signature comes last, for the safety net to judge in each
-                // class's frame. An `abstract def` on the target's side
-                // leaves it to the concrete classes.
+                // (`takes`), after the extension's own method (the record's
+                // rule 4 finds it in the extension, no entry). The first
+                // fitting method of the target's own side, then of the
+                // extension's modules, comes last. An `abstract def` on the
+                // target's side leaves it to the concrete classes.
                 let recorded = if by_ext
                     || own_witness.is_some_and(|i| self.world.method(i).is_abstract)
                 {
@@ -2668,15 +2672,13 @@ impl<'ast> Declarer<'ast> {
                             // defines the name: R0's choice
                             // (`World::ext_choices`), made by type, when it
                             // is one of the extension's own methods; the
-                            // extension's other methods of the name are
-                            // then overloads, not implementations. Without
-                            // one, a method of the extension of the name and
-                            // side that takes the requirement's calls by
-                            // shape (`implements`) could be taken for its
+                            // extension's other methods of the name are then
+                            // overloads, not implementations. Without one, a
+                            // method of the extension of the name and side
+                            // that takes the requirement's calls by shape
+                            // (`implements`) could be taken for its
                             // implementation, so each is held to the
-                            // requirement (rule (1''), #720; the chosen one
-                            // is held to it only if it takes those calls by
-                            // shape too). Otherwise, as
+                            // requirement (rule (1''), #720). Otherwise, as
                             // for any, `find_override`'s.
                             let owned = self.world.class(e.target).methods.contains_key(&m.name);
                             let replaces = if self.world.method(o).is_abstract && !owned {
@@ -2688,7 +2690,17 @@ impl<'ast> Declarer<'ast> {
                                     .find(|(x, q, _)| *x == ext && *q == o)
                                     .map(|c| c.2)
                                     .filter(|w| self.world.method(*w).extension == Some(ext));
-                                self.implements(mid, o) && choice.is_none_or(|w| w == mid)
+                                // (A method that takes the requirement's place
+                                // by type, R0's `takes`, takes its calls by
+                                // shape too.)
+                                debug_assert!(
+                                    choice.is_none_or(|w| self.implements(w, o)),
+                                    "R0's choice for an extension takes the requirement's calls by type but not by shape"
+                                );
+                                match choice {
+                                    Some(w) => w == mid,
+                                    None => self.implements(mid, o),
+                                }
                             } else {
                                 self.overrides_at_run_time(mid, o, *a, aargs)
                             };
@@ -4623,15 +4635,7 @@ impl<'ast> Declarer<'ast> {
                             // method never is its implementation (rule A,
                             // the user's decision of 2026-11-13), said so.
                             None if own_side.contains(anc) => {
-                                let ext =
-                                    self.world.active_extension_ids().into_iter().find(|&e| {
-                                        let x = &self.world.extensions[e as usize];
-                                        ancestors.contains(&x.target)
-                                            && x.methods.get(&m.name).is_some_and(|ids| {
-                                                ids.iter().any(|&i| self.implements(i, *mid))
-                                            })
-                                    });
-                                match ext {
+                                match self.taken_extension(&ancestors, *mid) {
                                     Some(e) => by_extension.push((
                                         m.name.clone(),
                                         *anc,
@@ -4669,7 +4673,16 @@ impl<'ast> Declarer<'ast> {
                                         .position(|k| *k == self.world.method(j).owner)
                                         > lookup.iter().position(|k| k == anc) =>
                             {
-                                hidden.push((m.name.clone(), *anc, j));
+                                // (Rule A's message, as when there is none,
+                                // if an extension's method would be taken.)
+                                match self.taken_extension(&ancestors, *mid) {
+                                    Some(e) if own_side.contains(anc) => by_extension.push((
+                                        m.name.clone(),
+                                        *anc,
+                                        self.world.extension_label(e),
+                                    )),
+                                    _ => hidden.push((m.name.clone(), *anc, j)),
+                                }
                             }
                             // The class's own conformance: a witness the
                             // override table does not pair with the
@@ -4940,6 +4953,22 @@ impl<'ast> Declarer<'ast> {
                 return;
             }
         }
+    }
+
+    /// For rule A's message only (the verdict is the record's): an active
+    /// extension of one of `ancestors` with a method that takes the calls of
+    /// requirement `r` by shape (`implements`), which could be taken for its
+    /// implementation on the class's own side, where an extension's method
+    /// never is one.
+    fn taken_extension(&self, ancestors: &[ClassId], r: MethodId) -> Option<ExtensionId> {
+        let name = &self.world.method(r).name;
+        self.world.active_extension_ids().into_iter().find(|&e| {
+            let x = &self.world.extensions[e as usize];
+            ancestors.contains(&x.target)
+                && x.methods
+                    .get(name)
+                    .is_some_and(|ids| ids.iter().any(|&i| self.implements(i, r)))
+        })
     }
 
     /// Whether module `m` is `target` or includes it, directly or not

@@ -3940,7 +3940,7 @@ fn keywords_are_part_of_an_overrides_signature() {
     );
     err(
         &format!("{kw}extension Int\n  include Kw\n  def kw(x: Int, *, y: Int) -> String = \"kw#{{y}}\"\nend"),
-        "`Int` must implement `kw` (abstract in `Kw`)",
+        "this extension includes `Kw` but nothing here implements `kw`",
     );
     err(
         "module Kw\n  abstract def kw(x: Int, *, y: Int) -> String\nend\nclass Pt\n  include Kw\n  def kw(x: Int) -> String = \"nokw\"\nend",
