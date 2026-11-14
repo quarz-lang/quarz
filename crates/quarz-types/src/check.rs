@@ -1752,21 +1752,22 @@ impl Checker {
     }
 
     /// Whether class `sid` conforms to module `m` through an extension's
-    /// include (recorded witnesses, for the class, a superclass, or a
-    /// module one of them includes), whatever extensions are active.
+    /// include (recorded witnesses, for the class or a superclass: an
+    /// extension of a module includes nothing, rule B), whatever extensions
+    /// are active.
     fn conforms_by_extension(&self, sid: ClassId, m: ClassId) -> bool {
         self.world.class_ext_impls.iter().any(|w| {
             self.extension_may_reach(w.ext, sid)
                 && self.world.ancestor_ids(w.module).contains(&m)
-                && self.world.class_side_owner(sid, w.class).is_some()
+                && self.world.superclass_chain(sid).contains(&w.class)
         })
     }
 
     /// The class at which dispatch through `Type[M]` starts for class
     /// `sid` and a class method named `name`, when a fixed witness of that
-    /// name (an extension's own, or a class's) runs for it: the witness's
-    /// class, or the class in `sid`'s chain that includes the module the
-    /// witness was recorded for (#504); with the witness itself, which
+    /// name (an extension's own, or a class's) runs for it: the class in
+    /// `sid`'s chain the witness was recorded for (#504; never a module, rule
+    /// B); with the witness itself, which
     /// runs there (#528, #669: a module's class method as well as a
     /// class's).
     fn witness_floor(&self, sid: ClassId, name: &str) -> Option<(ClassId, MethodId)> {
@@ -1787,7 +1788,7 @@ impl Checker {
                 {
                     return None;
                 }
-                self.world.class_side_owner(sid, w.class).map(|f| (f, w.by))
+                (self.world.superclass_chain(sid).contains(&w.class)).then_some((w.class, w.by))
             })
             .collect();
         floors
@@ -1796,7 +1797,7 @@ impl Checker {
     }
 
     /// Whether extension `ext`'s conformance may hold for class `sid` (its
-    /// target, a subclass, or a class including the target module): false
+    /// target, a class, or a subclass): false
     /// only when `sid`'s instantiation of the target is known (no type
     /// parameters), the target's parameters are invariant (no `Type[S] <:
     /// Type[Box[Int]]` through variance), no bound names a module (which an
@@ -1836,22 +1837,14 @@ impl Checker {
 
     /// The witness the runtime runs for module class method `mid` on class
     /// `sid` (`Interp::class_witness`): recorded for the nearest class up
-    /// the chain, or for a module it includes itself (last first), before
-    /// its superclass.
+    /// the chain (an extension's target, never a module, rule B).
     fn witness_for(&self, sid: ClassId, mid: MethodId) -> Option<MethodId> {
         let at = |k: ClassId| {
             self.world
                 .class_ext_impls
                 .iter()
                 .find(|w| w.class == k && w.method == mid)
-                .map(|w| {
-                    // (Recorded for the extension's target only,
-                    // `check_extension_class_side`: never a module.)
-                    if self.world.class(k).kind == ClassKind::Module {
-                        unreachable!("an extension of a module includes nothing (rule B, #638): `resolve_extension` refuses the include and keeps it out of `ExtensionInfo::includes`");
-                    }
-                    w.by
-                })
+                .map(|w| w.by)
         };
         // (`World::class_side_order`, the runtime's order too.)
         self.world.class_side_order(sid).into_iter().find_map(at)

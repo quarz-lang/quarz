@@ -1365,13 +1365,8 @@ impl<'ast> Declarer<'ast> {
         span: Span,
     ) {
         let target = self.world.extensions[ext as usize].target;
-        // (No module target reaches here: called over `ExtensionInfo::
-        // includes` only, which `resolve_extension` keeps empty for an
-        // extension of a module, refusing its includes there, rule B,
-        // #689. Its remnant of the old refusal goes in S3's deletion.)
-        if self.world.class(target).kind == ClassKind::Module {
-            unreachable!("an extension of a module includes nothing (rule B, #638): `resolve_extension` refuses the include and keeps it out of `ExtensionInfo::includes`");
-        }
+        // (Never a module: called over `ExtensionInfo::includes` only, which
+        // an extension of a module does not have, rule B, #689.)
         if !self.check_not_included_already(target, module, span)
             || !self.check_one_conformance(ext, target, module, &margs, span)
             || !self.check_conforms_once(ext, target, module, &margs, span)
@@ -1684,23 +1679,15 @@ impl<'ast> Declarer<'ast> {
     ) -> bool {
         let include = self.world.type_name(&Type::Class(module, margs.to_vec()));
         let cur = self.include_position(ext, module, margs);
-        // Every class the conformance reaches (`World::class_side_order`:
-        // the target, its subclasses, the classes including a module
-        // target), the target first: in each, the generic modules this
+        // Every class the conformance reaches (the target, a class, and its
+        // subclasses), the target first: in each, the generic modules this
         // include brings must have the arguments of every other
         // conformance of the class (`World::conformances`: its own
         // includes, the earlier extensions' and includes'), compared in
         // the class's own parameters.
         let mut reached: Vec<ClassId> = (0..self.world.classes.len() as ClassId)
-            .filter(|&c| {
-                c != target
-                    && self.world.class(c).kind != ClassKind::Module
-                    && self.world.class_side_order(c).contains(&target)
-            })
+            .filter(|&c| c != target && self.world.superclass_chain(c).contains(&target))
             .collect();
-        // (A module target too, compared with its own includes: the
-        // conflict is reported where it is written, with no class including
-        // the module as with one, #538.)
         reached.insert(0, target);
         for c in reached {
             let Some(mine) = self.brought_in(ext, module, margs, c) else {
@@ -3005,11 +2992,6 @@ impl<'ast> Declarer<'ast> {
             if e.always_active || e.includes.is_empty() {
                 continue;
             }
-            // (Never a module target, #564's `extension Shareable`: its
-            // includes are refused, rule B.)
-            if self.world.class(e.target).kind == ClassKind::Module {
-                unreachable!("an extension of a module includes nothing (rule B, #638): `resolve_extension` refuses the include and keeps it out of `ExtensionInfo::includes`");
-            }
             // The modules it brings, with what they include, each with its
             // arguments as the extension includes it (`OM[Int]`).
             let mut modules: Vec<ClassId> = Vec::new();
@@ -3036,8 +3018,8 @@ impl<'ast> Declarer<'ast> {
                 .flat_map(|m| self.world.class(*m).methods.keys().map(|n| n.as_str()))
                 .collect();
             // A class object is an `Object` too, and whatever else `Type`
-            // is (a `Shareable`, #564): where class objects conform to the
-            // target, every std class's class methods come over the
+            // is (its superclasses; a module target includes nothing, rule
+            // B): where class objects conform to the target, every std class's class methods come over the
             // module's (`Time.now`, `Random.new_seed`), whether or not the
             // class's instances conform.
             let objects = e.target == self.world.builtin.object
