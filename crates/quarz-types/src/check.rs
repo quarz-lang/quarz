@@ -15,6 +15,9 @@ use crate::declare::{TypeScope, SELF_PARAM};
 use crate::types::*;
 use crate::world::*;
 
+#[cfg(test)]
+mod statement_order_tests;
+
 /// Where a local variable lives at run time: `depth` frames up from the
 /// current one (0 = the current frame), at `slot`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -3052,16 +3055,21 @@ impl Checker {
     }
 
     /// The statements `stmts` (in file name order, then text order) in
-    /// the order they run (docs/14 §2): a class's or module's after every
-    /// statement among them of its ancestors (superclasses and the
-    /// modules it includes, transitively), so that its own
-    /// see what theirs generated; otherwise in the order given.
+    /// the order they run (docs/14 §2): a class's after every statement
+    /// among them of its ancestors, so that its own see what theirs
+    /// generated; otherwise in the order given. Only a class body holds
+    /// statements (§2, #718), and a class's ancestors that are classes
+    /// are its superclasses (an include or an extension adds modules), so
+    /// the ancestors that can hold one are `World::superclass_chain`'s.
     fn superclass_first(&self, stmts: Vec<(usize, StaticStmt)>) -> Vec<(usize, StaticStmt)> {
         let mut ancestors: HashMap<ClassId, HashSet<ClassId>> = HashMap::default();
         for (_, stmt) in &stmts {
-            ancestors
-                .entry(stmt.class)
-                .or_insert_with(|| self.statement_ancestors(stmt.class));
+            ancestors.entry(stmt.class).or_insert_with(|| {
+                self.world
+                    .superclass_chain(stmt.class)
+                    .into_iter()
+                    .collect()
+            });
         }
         let mut todo: Vec<Option<(usize, StaticStmt)>> = stmts.into_iter().map(Some).collect();
         let mut out = Vec::with_capacity(todo.len());
@@ -3082,26 +3090,6 @@ impl Checker {
             out.push(todo[pick].take().expect("not taken"));
         }
         out
-    }
-
-    /// The classes and modules a class's statements run after (docs/14
-    /// §2): its superclasses and the modules it includes,
-    /// theirs, and so on.
-    fn statement_ancestors(&self, class: ClassId) -> HashSet<ClassId> {
-        let mut seen: HashSet<ClassId> = HashSet::default();
-        let mut stack = vec![class];
-        while let Some(c) = stack.pop() {
-            let info = self.world.class(c);
-            let edges = info.superclass.iter().chain(&info.includes);
-            for t in edges {
-                if let Type::Class(id, _) = t {
-                    if *id != class && seen.insert(*id) {
-                        stack.push(*id);
-                    }
-                }
-            }
-        }
-        seen
     }
 
     /// The `static` statements of a unit that failed to declare (the
