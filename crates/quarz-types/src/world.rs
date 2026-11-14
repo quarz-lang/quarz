@@ -1,6 +1,7 @@
 //! Classes, modules, methods and constants, plus subtyping and method lookup.
 
 use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::FxHashSet as HashSet;
 use std::rc::Rc;
 
 use quarz_syntax::ast::{Expr, MethodDef, ParamKind, TypeExpr, Variance, Visibility};
@@ -3641,6 +3642,32 @@ impl World {
             .zip(src)
             .map(|((k, a), e)| (k, a, e))
             .collect()
+    }
+
+    /// The methods something takes the place of at run time, by id (#715):
+    /// every method the override table `table` (`override_table`, both
+    /// sides, extensions' methods included, a class method over the `Type`
+    /// method it replaces) says another method overrides; every method an
+    /// include pair puts another in place of (`include_overrides`,
+    /// `class_include_overrides`); and every module class method an
+    /// extension's witness replaces (`class_ext_impls`). A call of a
+    /// method outside it runs that method whatever the receiver; an
+    /// abstract method dispatches as well (`RtMethod::overridden`).
+    pub fn overridden_methods(&self, table: &[Vec<MethodId>]) -> HashSet<MethodId> {
+        let mut out: HashSet<MethodId> = table.iter().flatten().copied().collect();
+        out.extend(self.include_overrides().into_iter().map(|(_, o, _)| o));
+        out.extend(
+            self.class_include_overrides()
+                .into_iter()
+                .map(|(_, o, _)| o),
+        );
+        out.extend(
+            self.class_ext_impls
+                .iter()
+                .filter(|w| w.by != w.method)
+                .map(|w| w.method),
+        );
+        out
     }
 
     /// The override table for every method (`overrides`), the classes that

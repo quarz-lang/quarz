@@ -67,11 +67,132 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
     rt
 }
 
+/// (Oracle, temporary, #715.) The slot set by id from the tables
+/// (`World::overridden_methods`) against the lowering's by-name one
+/// (`RtMethod::overridden` as `fill` leaves it): a method the new set has
+/// and the old lacks is a run-time override with no name pair (#715's
+/// hole); one the old has and the new lacks loses its slot, listed. With
+/// `QUARZ_ORACLE_LOG` each is a line in that file, else the first is an
+/// internal error (the lost slots are only logged). With
+/// `QUARZ_CHECK_SLOTS`, every class with values and every instance method
+/// of its ancestors outside the new set must dispatch to itself
+/// (`dispatch_target`), and every class method outside it must have no
+/// override (`class_method_override`).
+fn slot_oracle(rt: &RtWorld, world: &World) {
+    let table: Vec<Vec<MethodId>> = rt.methods.iter().map(|m| m.overrides.clone()).collect();
+    let new = world.overridden_methods(&table);
+    let log = std::env::var_os("QUARZ_ORACLE_LOG");
+    let report = |line: String, fatal: bool| match &log {
+        Some(path) => {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(f, "{line}");
+            }
+        }
+        None if fatal => panic!("internal error: {line}"),
+        None => {}
+    };
+    let name = |id: MethodId| {
+        let m = &rt.methods[id as usize];
+        let sep = if m.singleton { "." } else { "#" };
+        format!("{}{sep}{}", rt.class(m.owner).name, m.name)
+    };
+    for (i, m) in rt.methods.iter().enumerate() {
+        let id = i as MethodId;
+        if m.name.is_empty() {
+            continue;
+        }
+        let now = new.contains(&id) || m.is_abstract;
+        if now && !m.overridden {
+            report(
+                format!(
+                    "slot: `{}` is overridden by the tables but has no name pair (#715)",
+                    name(id)
+                ),
+                true,
+            );
+        } else if !now && m.overridden {
+            report(format!("slot lost: `{}`", name(id)), false);
+        }
+    }
+    if std::env::var_os("QUARZ_CHECK_SLOTS").is_none() {
+        return;
+    }
+    let method = |id: MethodId| &rt.methods[id as usize];
+    let mut checked = 0usize;
+    for (ci, c) in rt.classes.iter().enumerate() {
+        let cid = ci as quarz_ir::ClassId;
+        if matches!(
+            c.kind,
+            quarz_ir::RtClassKind::Module | quarz_ir::RtClassKind::Main
+        ) {
+            continue;
+        }
+        for &anc in &c.ancestors {
+            let a = rt.class(anc);
+            for &mid in a.methods.values().flatten() {
+                let m = method(mid);
+                if m.owner != anc
+                    || m.singleton
+                    || m.is_extension
+                    || new.contains(&mid)
+                    || m.is_abstract
+                {
+                    continue;
+                }
+                checked += 1;
+                let found = rt.dispatch_target(&method, cid, mid);
+                if found != mid {
+                    report(
+                        format!(
+                            "check slots: `{}` has no slot, but `{}` runs `{}` for it",
+                            name(mid),
+                            c.name,
+                            name(found)
+                        ),
+                        true,
+                    );
+                }
+            }
+            for &mid in a.singleton_methods.values().flatten() {
+                let m = method(mid);
+                if m.owner != anc || m.is_extension || new.contains(&mid) || m.is_abstract {
+                    continue;
+                }
+                checked += 1;
+                if let Some(found) = rt.class_method_override(&method, cid, mid) {
+                    report(
+                        format!(
+                            "check slots: `{}` has no slot, but `{}` runs `{}` for it",
+                            name(mid),
+                            c.name,
+                            name(found)
+                        ),
+                        true,
+                    );
+                }
+            }
+        }
+    }
+    report(format!("check slots: {checked} pairs checked"), false);
+}
+
 /// What the lowering adds to `declared`'s tables: the classes' fields and
 /// their defaults (the layouts), each method's function and whether it is
 /// overridden, the constants' functions and the quoted blocks' trees, the
 /// file names. Nothing `declared`'s rows read.
 pub fn fill(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<String>) {
+    fill_tables(rt, world, lw, file_names);
+    if cfg!(debug_assertions) {
+        slot_oracle(rt, world);
+    }
+}
+
+fn fill_tables(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<String>) {
     for (c, rc) in world.classes.iter().zip(rt.classes.iter_mut()) {
         let layout = &lw.layouts[c.id as usize];
         // A type with a parameter in it has no name of its own: a
