@@ -1784,7 +1784,9 @@ module HTTP
     # The pattern as written.
     source: String,
     # :nodoc:
-    # Its segments, as `.parse` makes them from `source`.
+    # Its segments, as `.parse` makes them from `source`. (`Pattern.new`
+    # is public, as every `data` type's constructor is, and checks
+    # nothing: a pattern is made with `.parse`.)
     segments: Array[Segment]
   )
     # The pattern written `source`. Raises `ArgumentError` when it does not
@@ -1931,9 +1933,10 @@ module HTTP
     # The routes, in the order they were added.
     entries: Array[Routes::Entry[T]],
     # :nodoc:
-    # Each route's method and pattern shape (`Pattern#shape`), with the
-    # pattern as written: the conflict check, one lookup per route.
-    shapes: Hash[String, String]
+    # Each route's method and pattern shape (`Pattern#shape`), a pair (a
+    # method is any string, a space included), with the pattern as
+    # written: the conflict check, one lookup per route.
+    shapes: Hash[[String, String], String]
   )
     # :nodoc:
     data Entry[U <: Shareable] = (method: String, pattern: Pattern, value: U)
@@ -1958,7 +1961,7 @@ module HTTP
     # that matches the same paths (`Pattern#same_paths?`).
     def add(method: String, pattern: String, value: T) -> Routes[T]
       pat = Pattern.parse(pattern)
-      key = "#{method} #{pat.shape}"
+      key: [String, String] = [method, pat.shape]
       other = shapes[key]?
       raise ArgumentError, "#{method} #{pattern} conflicts with #{other}" if other
       Routes[T].new(entries.push(Entry[T].new(method, pat, value)), shapes.put(key, pattern))

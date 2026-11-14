@@ -130,6 +130,12 @@ class HttpPatternTest < Test::Case
     assert_equal(7, routes.add("POST", "/users/{name}", "other").size)
     assert_equal(7, routes.add("GET", "/users/{id}/", "slashed").size)
     assert_raise(ArgumentError) { routes.add("GET", "users", "bad") }
+    # A method is any string: one with a space and a pattern that differ
+    # do not conflict, the same method and shape still do.
+    spaced = HTTP::Routes[Int].empty.add("A /b", "/c", 1)
+    assert_equal(2, spaced.add("A", "/b /c", 2).size)
+    e2 = assert_raise(ArgumentError) { spaced.add("A /b", "/c", 3) }
+    assert_equal("A /b /c conflicts with /c", e2.message)
   end
 
   def test_each_in_order
