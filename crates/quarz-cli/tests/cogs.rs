@@ -2567,10 +2567,15 @@ fn a_librarys_runtime_test_broken_by_the_application_is_reported_there() {
     // Int]; include Num`; an extension of a module cannot include.)
 }
 
-/// The safety net's error stage (#536, #641): a row an application's
-/// extension makes for a library's class hierarchy is refused in the
-/// application, never in the library (which checks without error). (`A`
-/// first: the checker checks the pair once, for `A`, #641.)
+/// An application's extension making a library's class conform, whose
+/// only candidate does not take the requirement's place (#641: `Base#get
+/// -> String` of `B < Base[String]` for `M#get -> Int`), is refused in the
+/// application, never in the library (which checks without error): by R0
+/// at the extension since #656's decision (a), before the safety net (#536)
+/// would see the row. (`A < Base[Int]` conforms.) No program found reaches
+/// the net's row error across cogs since: #642's shape over a library's
+/// modules is refused by the include-pair override check (placed in the
+/// library's file, #683).
 #[test]
 fn a_refused_row_of_an_applications_extension_is_reported_there() {
     let w = World::new();
@@ -2593,7 +2598,7 @@ fn a_refused_row_of_an_applications_extension_is_reported_there() {
     );
     let err = w.fails("app", &["check"]);
     assert!(
-        err.contains("main.qz:10:1: error: `B`'s conformance to `Baselib::M` runs `Baselib::Base#get` for `Baselib::M#get`"),
+        err.contains("main.qz:10:11: error: this extension includes `Baselib::M` but nothing here implements `get`"),
         "{err}"
     );
     assert!(!err.contains("base.qz"), "{err}");

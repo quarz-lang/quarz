@@ -1534,8 +1534,7 @@ impl World {
                             && !im.is_abstract
                             && !im.singleton
                             && im.name == rm.name
-                            && self.takes_calls_of(im, subst, rm, &rsubst)
-                            && self.is_subtype(&im.ret.subst(subst), &rm.ret.subst(&rsubst))
+                            && self.takes_place_of(im, subst, rm, &rsubst)
                     };
                     // A class below the conformance's class (an extension's
                     // target, or the class including the module): its own
@@ -1930,6 +1929,22 @@ impl World {
         let object = Type::class(self.builtin.object);
         self.is_subtype(&t.fill_vars(&Type::Nothing), &b.fill_vars(&Type::Nothing))
             || self.is_subtype(&t.fill_vars(&object), &b.fill_vars(&object))
+    }
+
+    /// Whether `m` (its types through `msubst`) takes `o`'s place: it
+    /// takes every call `o` takes (`takes_calls_of`) and returns what `o`
+    /// returns, `o`'s result through `osubst` (an implementation by type,
+    /// its result included: R0's acceptance and witness, the witness
+    /// record's, the class side's candidates, #656).
+    pub fn takes_place_of(
+        &self,
+        m: &MethodInfo,
+        msubst: &HashMap<TypeParamId, Type>,
+        o: &MethodInfo,
+        osubst: &HashMap<TypeParamId, Type>,
+    ) -> bool {
+        self.takes_calls_of(m, msubst, o, osubst)
+            && self.is_subtype(&m.ret.subst(msubst), &o.ret.subst(osubst))
     }
 
     /// The classes of `ancestors(id, ..)`, in the same order, without
