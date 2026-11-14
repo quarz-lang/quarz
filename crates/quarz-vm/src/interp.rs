@@ -2822,48 +2822,29 @@ impl Interp {
     }
 
     /// The witness of abstract method `abs` for class `cid` that a call by
-    /// name reaches (`find_method`): the row of `RtWorld::witness_rows` for
-    /// a key `RtWorld::in_witness_rows` admits (none there is an internal
-    /// error), else `RtWorld::witness_of`. The only other keys `find_method`
-    /// passes are an abstract class's requirements (an instance's class is
-    /// never a module, and a file's top level has no abstract method;
-    /// `find_method` searches instance methods only), whose witness the
-    /// declarer records further up (`own_witness`): `abstract class A <
-    /// Base` with `Base#to_s` for `A`'s `abstract def to_s`.
+    /// name reaches (`find_method`): the row of `RtWorld::witness_rows`.
+    /// Every key `find_method` passes is one `RtWorld::in_witness_rows`
+    /// admits (a module's requirement on a class whose values exist): an
+    /// abstract class's requirement is implemented before it in the lookup
+    /// (#687's option 1), so a call by name never stops at one; a key
+    /// outside the rows, or one with no row, is an internal error.
     fn witness_for(&self, cid: ClassId, abs: MethodId) -> Option<MethodId> {
         let world = &self.program.world;
         let method = |id: MethodId| self.program.method(id);
-        if world.in_witness_rows(&method, cid, abs) {
-            world.witness_row(cid, abs).unwrap_or_else(|| {
-                panic!(
-                    "internal error: no witness row for `{}` on `{}`",
-                    self.program.method(abs).name,
-                    world.class(cid).name
-                )
-            })
-        } else {
-            // The only other keys `find_method` could pass are an abstract
-            // class's requirements (an instance's class is never a module,
-            // a file's top level has no abstract method, `find_method`
-            // searches instance methods, and an always-active extension's
-            // own method, looked at first on each ancestor, is never
-            // abstract: an extension declares none). `find_method` takes
-            // the first method of the name in `RtClass::lookup` accepting
-            // the call's positional count and block. Since #687's option 1
-            // the declarer refuses a concrete class unless `own_witness`'s
-            // implementation of each such requirement comes before it in
-            // `View::Lookup` (what `World::lookup_ancestors`, shipped as
-            // `RtClass::lookup`, is), and it takes the requirement's calls
-            // (every count, the block): the walk accepts it, or an earlier
-            // method, first. The `'mods` loop passes a module's requirement,
-            // a key of the rows. (#536 step 3's S3: `witness_of` goes after
-            // one CI run with this.)
-            unreachable!(
+        if !world.in_witness_rows(&method, cid, abs) {
+            panic!(
                 "internal error: `{}` on `{}` reached an abstract class's requirement by name (#687: implemented before it in the lookup)",
                 self.program.method(abs).name,
                 world.class(cid).name
             )
         }
+        world.witness_row(cid, abs).unwrap_or_else(|| {
+            panic!(
+                "internal error: no witness row for `{}` on `{}`",
+                self.program.method(abs).name,
+                world.class(cid).name
+            )
+        })
     }
 
     /// Find a method by name on a class (first match in resolution order

@@ -1926,27 +1926,6 @@ impl RtWorld {
         None
     }
 
-    /// The witness of abstract method `abs` for class `cid` that a call by
-    /// name reaches outside the witness rows (`Interp::witness_for`): an
-    /// abstract class's requirement, which the witness record does not
-    /// cover (it covers modules' requirements); the first `ext_impl` up
-    /// `cid`'s ancestors before the method's owner, the implementation the
-    /// declarer records further up (`own_witness`, #679). #536 step 3's S3
-    /// moves these keys into the record and the rows, and this goes then.
-    pub fn witness_of<'m>(
-        &self,
-        method: &dyn Fn(MethodId) -> &'m RtMethod,
-        cid: ClassId,
-        abs: MethodId,
-    ) -> Option<MethodId> {
-        let owner = method(abs).owner;
-        self.class(cid)
-            .ancestors
-            .iter()
-            .take_while(|a| **a != owner)
-            .find_map(|a| self.ext_impl(*a, abs))
-    }
-
     /// Whether (class `cid`, method `mid`) is a key of `override_rows`
     /// (and, when `mid` is abstract, of `witness_rows`): `cid` a class
     /// whose values exist (not a module, not a file's top level), `mid`
