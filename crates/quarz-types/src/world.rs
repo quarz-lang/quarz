@@ -1528,12 +1528,22 @@ impl World {
     pub fn witness_record(
         &self,
     ) -> Vec<(ClassId, MethodId, Option<MethodId>, Option<ExtensionId>)> {
-        let mut out = Vec::new();
         let n = self.classes.len() as ClassId;
-        for c in 0..n {
+        (0..n).flat_map(|c| self.witnesses_of(c)).collect()
+    }
+
+    /// The witness record's entries of class `c` (`witness_record`'s rules
+    /// for one class; the record is their concatenation over the classes).
+    /// A module or a file's top level has none.
+    pub fn witnesses_of(
+        &self,
+        c: ClassId,
+    ) -> Vec<(ClassId, MethodId, Option<MethodId>, Option<ExtensionId>)> {
+        let mut out = Vec::new();
+        {
             let kind = self.class(c).kind;
             if matches!(kind, ClassKind::Module | ClassKind::Main) {
-                continue;
+                return out;
             }
             // (The class's dispatch by name: its own side and the modules
             // of the top-level unconditional extensions, which take part in
@@ -1542,7 +1552,7 @@ impl World {
             // not computed.)
             let conformances = self.conformances(c);
             if conformances.is_empty() {
-                continue;
+                return out;
             }
             let lookup = self.resolution(c, &self.own_args(c), View::Lookup);
             // (The class's own include pairs, once per class, when a

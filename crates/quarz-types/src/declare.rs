@@ -92,6 +92,18 @@ pub struct Declarer<'ast> {
     /// frame (an include pair, an own conformance's implementation): per
     /// class, so that one class's check never stands for another's (#688).
     frame_checked: HashSet<(ClassId, MethodId, MethodId)>,
+    /// (Oracle, #536 step 3 item 2, temporary: the `ext_impls` entries
+    /// `check_conformance_of` pushed, and those R0 pushed, so that the
+    /// record is asked without the former.)
+    conf_pushed: HashSet<(ClassId, MethodId, MethodId)>,
+    r0_pushed: HashSet<(ClassId, MethodId, MethodId)>,
+    /// (Oracle, temporary.) The decisions to compare with the record
+    /// once R0 has run (`oracle_flush`): (i)'s (class, requirement,
+    /// missing, witness, arm), (ii)'s (extension, requirement, checked),
+    /// (iii)'s (extension, requirement, missing).
+    oracle_i: Vec<(ClassId, MethodId, bool, Option<MethodId>, String)>,
+    oracle_ii: Vec<(ExtensionId, MethodId, Option<MethodId>)>,
+    oracle_iii: Vec<(ExtensionId, MethodId, bool)>,
     /// The pairs a check refused (reported once, at the module or the
     /// first class including it): not reported again in another class's
     /// frame. Only refusals: a pair that passed for one class is still
@@ -225,6 +237,11 @@ impl<'ast> Declarer<'ast> {
             pending_ext: Vec::new(),
             override_pairs: HashSet::default(),
             frame_checked: HashSet::default(),
+            conf_pushed: HashSet::default(),
+            r0_pushed: HashSet::default(),
+            oracle_i: Vec::new(),
+            oracle_ii: Vec::new(),
+            oracle_iii: Vec::new(),
             refused_pairs: HashSet::default(),
             type_classes: None,
             override_span: None,
@@ -1109,6 +1126,7 @@ impl<'ast> Declarer<'ast> {
             self.file = e.file;
             self.check_extension_static(e);
         }
+        self.oracle_flush();
     }
 
     /// A generic module with `static def self.` macros (docs/14 §2) is
@@ -2067,6 +2085,7 @@ impl<'ast> Declarer<'ast> {
                 };
                 if let Some(i) = recorded {
                     let entry = (target, r, i);
+                    self.r0_pushed.insert(entry);
                     if !self.world.ext_impls.contains(&entry) {
                         self.world.ext_impls.push(entry);
                     }
@@ -2580,7 +2599,10 @@ impl<'ast> Declarer<'ast> {
     /// conformance (`check_conformance_of`).
     fn check_extensions_overrides(&mut self) {
         let mut pairs: Vec<(MethodId, MethodId, ClassId, Vec<Type>, Type)> = Vec::new();
-        for e in &self.world.extensions {
+        let mut oracle_seen: HashSet<(usize, MethodId)> = HashSet::default();
+        let mut oracle_ii: Vec<(ExtensionId, MethodId, Option<MethodId>)> = Vec::new();
+        let mut oracle_iii: Vec<(ExtensionId, MethodId, bool)> = Vec::new();
+        for (ei, e) in self.world.extensions.iter().enumerate() {
             let dispatches = |owner: ClassId| {
                 e.always_active
                     || e.includes.iter().any(|t| {
@@ -2617,6 +2639,14 @@ impl<'ast> Declarer<'ast> {
                             // module, where `using` activates it);
                             // otherwise, as for any, `find_override`'s.
                             let owned = self.world.class(e.target).methods.contains_key(&m.name);
+                            if cfg!(debug_assertions)
+                                && self.world.method(o).is_abstract
+                                && !self.world.method(o).singleton
+                                && !owned
+                                && oracle_seen.insert((ei, o))
+                            {
+                                oracle_ii.push((ei as ExtensionId, o, self.ext_impl_of(e, o)));
+                            }
                             let replaces = if self.world.method(o).is_abstract && !owned {
                                 self.ext_impl_of(e, o) == Some(mid)
                             } else {
@@ -2636,6 +2666,7 @@ impl<'ast> Declarer<'ast> {
                 }
             }
         }
+        self.oracle_ii.extend(oracle_ii);
         for (mid, o, a, aargs, own) in pairs {
             self.check_implementation(mid, o, a, &aargs, own);
         }
@@ -2643,7 +2674,7 @@ impl<'ast> Declarer<'ast> {
         // A prelude class has no conformance check of its own: what an
         // extension makes it include must be implemented there.
         let mut missing: Vec<(String, String, String, Span)> = Vec::new();
-        for e in &self.world.extensions {
+        for (ei, e) in self.world.extensions.iter().enumerate() {
             if self.world.class(e.target).file != 0 {
                 continue;
             }
@@ -2658,6 +2689,11 @@ impl<'ast> Declarer<'ast> {
                     for ids in self.world.class(anc).methods.values() {
                         for &o in ids {
                             let om = self.world.method(o);
+                            if cfg!(debug_assertions) && om.is_abstract && !om.singleton {
+                                let old_missing = self.ext_impl_of(e, o).is_none()
+                                    && self.implementation(&chain, o).is_none();
+                                oracle_iii.push((ei as ExtensionId, o, old_missing));
+                            }
                             if om.is_abstract
                                 && self.ext_impl_of(e, o).is_none()
                                 && self.implementation(&chain, o).is_none()
@@ -2674,6 +2710,7 @@ impl<'ast> Declarer<'ast> {
                 }
             }
         }
+        self.oracle_iii.extend(oracle_iii);
         missing.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
         missing.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
         for (class, name, owner, span) in missing {
@@ -4457,6 +4494,7 @@ impl<'ast> Declarer<'ast> {
             self.check_duplicate_methods(id);
             self.world.active_extensions.get_mut().clear();
         }
+        self.oracle_flush();
     }
 
     fn check_conformance(&mut self, p: &PendingClass<'ast>) {
@@ -4525,6 +4563,7 @@ impl<'ast> Declarer<'ast> {
             self.check_conformance_of(id);
             self.world.active_extensions.get_mut().clear();
         }
+        self.oracle_flush();
     }
 
     /// The conformance of class `id` to what it inherits: the abstract
@@ -4585,8 +4624,14 @@ impl<'ast> Declarer<'ast> {
                         if !m.is_abstract {
                             continue;
                         }
+                        // (Oracle, temporary: what this check decides, as
+                        // (missing, witness, arm).)
+                        let oracle_old: (bool, Option<MethodId>, &str);
                         match self.implementation(&ancestors, *mid) {
-                            None => missing.push((m.name.clone(), *anc)),
+                            None => {
+                                oracle_old = (true, None, "gate");
+                                missing.push((m.name.clone(), *anc))
+                            }
                             // An extension's method (active where the class
                             // is declared) implements it: it does wherever
                             // the value goes (`World::ext_impls`), but only
@@ -4614,6 +4659,15 @@ impl<'ast> Declarer<'ast> {
                                     impls.push((id, *mid, i));
                                     found_impls.push((i, *mid, *anc));
                                 }
+                                oracle_old = (
+                                    false,
+                                    makes.then_some(i),
+                                    if makes {
+                                        "extension"
+                                    } else {
+                                        "extension, not its conformance"
+                                    },
+                                );
                             }
                             // The class's own conformance (a module it has on
                             // its own side, or an abstract superclass): the
@@ -4630,7 +4684,10 @@ impl<'ast> Declarer<'ast> {
                                         .any(|(src, k, _)| src.is_none() && k == anc) =>
                             {
                                 match self.world.own_witness(id, *mid) {
-                                    None => missing.push((m.name.clone(), *anc)),
+                                    None => {
+                                        oracle_old = (true, None, "own");
+                                        missing.push((m.name.clone(), *anc))
+                                    }
                                     // An abstract class's `abstract def`
                                     // hides what is above it (#687's
                                     // option 1, re-abstraction, the
@@ -4651,9 +4708,11 @@ impl<'ast> Declarer<'ast> {
                                                 .position(|k| *k == self.world.method(j).owner)
                                                 > lookup.iter().position(|k| k == anc) =>
                                     {
+                                        oracle_old = (false, Some(j), "own, hidden");
                                         hidden.push((m.name.clone(), *anc, j));
                                     }
                                     Some(j) => {
+                                        oracle_old = (false, Some(j), "own");
                                         let further = ancestors
                                             .iter()
                                             .position(|a| *a == self.world.method(j).owner)
@@ -4674,7 +4733,15 @@ impl<'ast> Declarer<'ast> {
                             // decision (k2), the user's of 2026-11-14). (The
                             // first candidate by arity, `i`, is not it: an
                             // overload of another signature came first.)
-                            Some(_) => {}
+                            Some(_) => {
+                                oracle_old = (false, None, "extension's conformance, no choice");
+                            }
+                        }
+                        if cfg!(debug_assertions)
+                            && self.world.class(*anc).kind == ClassKind::Module
+                        {
+                            let (a, b, c) = oracle_old;
+                            self.oracle_i.push((id, *mid, a, b, c.to_string()));
                         }
                     }
                 }
@@ -4720,6 +4787,7 @@ impl<'ast> Declarer<'ast> {
                     class.span,
                 );
             }
+            self.conf_pushed.extend(impls.iter().copied());
             self.world.ext_impls.extend(impls);
             for (i, abs, anc) in inherited_impls {
                 let Some((_, aargs)) = typed.iter().find(|(c, _)| *c == anc) else {
@@ -4937,6 +5005,143 @@ impl<'ast> Declarer<'ast> {
     /// of `ancestors` (or an active extension of one of them).
     /// The method that implements `abstract_id` for a class with these
     /// ancestors: one of theirs, or an active extension's.
+    /// (Oracle, temporary, #536 step 3 item 2.) The record's entries for
+    /// class `c` (`World::witnesses_of`), asked without the `ext_impls`
+    /// entries `check_conformance_of` pushed (R0's kept).
+    fn oracle_record(
+        &mut self,
+        c: ClassId,
+    ) -> Vec<(ClassId, MethodId, Option<MethodId>, Option<ExtensionId>)> {
+        let saved = self.world.ext_impls.clone();
+        let (conf, r0) = (&self.conf_pushed, &self.r0_pushed);
+        self.world
+            .ext_impls
+            .retain(|e| !conf.contains(e) || r0.contains(e));
+        let out = self.world.witnesses_of(c);
+        self.world.ext_impls = saved;
+        out
+    }
+
+    /// (Oracle, temporary, #536 step 3 item 2.) Compare the decisions
+    /// (i), (ii) and (iii) made with the record, once R0 has run: called
+    /// at the end of each checking pass.
+    pub(crate) fn oracle_flush(&mut self) {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        let pending_i = std::mem::take(&mut self.oracle_i);
+        let pending_ii = std::mem::take(&mut self.oracle_ii);
+        let pending_iii = std::mem::take(&mut self.oracle_iii);
+        type Entries = Vec<(ClassId, MethodId, Option<MethodId>, Option<ExtensionId>)>;
+        let mut records: HashMap<ClassId, Entries> = HashMap::default();
+        let mut record = |this: &mut Self, c: ClassId| {
+            records
+                .entry(c)
+                .or_insert_with(|| this.oracle_record(c))
+                .clone()
+        };
+        let show = |this: &Self, w: Option<&Option<MethodId>>| match w {
+            None => "has no entry".to_string(),
+            Some(w) => format!("`{}`", w.map_or("none".into(), |i| this.oracle_name(i))),
+        };
+        for (c, r, missing, witness, arm) in pending_i {
+            let rec = record(self, c);
+            let entry = rec
+                .iter()
+                .find(|(k, q, _, _)| *k == c && *q == r)
+                .map(|e| &e.2);
+            let differs = match entry {
+                None => true,
+                Some(w) => {
+                    missing != w.is_none()
+                        || (matches!(arm.as_str(), "extension" | "own")
+                            && witness.is_some()
+                            && witness != *w)
+                }
+            };
+            if differs {
+                Self::oracle_report(format!(
+                    "(i) class `{}`, requirement `{}` ({arm}): missing {missing}, chosen {}, record {}",
+                    self.world.class(c).name,
+                    self.oracle_name(r),
+                    witness.map_or("none".into(), |i| self.oracle_name(i)),
+                    show(self, entry)
+                ));
+            }
+        }
+        for (e, o, old) in pending_ii {
+            let t = self.world.extensions[e as usize].target;
+            let rec = record(self, t);
+            let entry = rec
+                .iter()
+                .find(|(k, q, _, src)| *k == t && *q == o && *src == Some(e))
+                .map(|x| &x.2);
+            let new = entry.and_then(|w| w.filter(|w| self.world.method(*w).extension == Some(e)));
+            if old != new {
+                Self::oracle_report(format!(
+                    "(ii) extension {e} of `{}`, requirement `{}`: checked {}, record {}",
+                    self.world.class(t).name,
+                    self.oracle_name(o),
+                    old.map_or("none".into(), |i| format!("`{}`", self.oracle_name(i))),
+                    show(self, entry)
+                ));
+            }
+        }
+        for (e, o, old_missing) in pending_iii {
+            let t = self.world.extensions[e as usize].target;
+            let rec = record(self, t);
+            let entry = rec
+                .iter()
+                .find(|(k, q, _, _)| *k == t && *q == o)
+                .map(|x| &x.2);
+            if old_missing != !matches!(entry, Some(Some(_))) {
+                Self::oracle_report(format!(
+                    "(iii) extension {e} of `{}`, requirement `{}`: missing {old_missing}, record {}",
+                    self.world.class(t).name,
+                    self.oracle_name(o),
+                    show(self, entry)
+                ));
+            }
+        }
+    }
+
+    /// (Oracle, temporary.) `Owner#name` of a method, for the oracle's
+    /// lines.
+    fn oracle_name(&self, m: MethodId) -> String {
+        let mi = self.world.method(m);
+        let owner = match mi.extension {
+            Some(e) => format!(
+                "extension {e} of {}",
+                self.world
+                    .class(self.world.extensions[e as usize].target)
+                    .name
+            ),
+            None => self.world.class(mi.owner).name.clone(),
+        };
+        format!("{owner}#{}", mi.name)
+    }
+
+    /// (Oracle, temporary.) A disagreement: a line appended to the file
+    /// `QUARZ_ORACLE_LOG` names when set (every case listed in one run),
+    /// else an internal error.
+    fn oracle_report(line: String) {
+        match std::env::var_os("QUARZ_ORACLE_LOG") {
+            Some(path) => {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
+                    let _ = writeln!(f, "{line}");
+                }
+            }
+            None => panic!(
+                "internal error: the existence check and the witness record disagree: {line}"
+            ),
+        }
+    }
+
     fn implementation(&self, ancestors: &[ClassId], abstract_id: MethodId) -> Option<MethodId> {
         let name = &self.world.method(abstract_id).name;
         for anc in ancestors {
