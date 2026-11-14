@@ -1384,6 +1384,12 @@ impl World {
         frame: ClassId,
     ) -> Option<Vec<Type>> {
         let e = &self.extensions[ext as usize];
+        // (Never a module target, so `frame` is the target or a subclass:
+        // the arguments of an extension's include exist only for a class
+        // target.)
+        if self.class(e.target).kind == ClassKind::Module {
+            unreachable!("an extension of a module includes nothing (rule B, #638): `resolve_extension` refuses the include and keeps it out of `ExtensionInfo::includes`");
+        }
         let own: Vec<Type> = self
             .class(e.target)
             .type_params
@@ -1762,6 +1768,10 @@ impl World {
         for (k, e) in self.extensions.iter().enumerate() {
             if !sources.contains(&e.target) {
                 continue;
+            }
+            // (A module on `c`'s class side is a source with no includes.)
+            if self.class(e.target).kind == ClassKind::Module && !e.includes.is_empty() {
+                unreachable!("an extension of a module includes nothing (rule B, #638): `resolve_extension` refuses the include and keeps it out of `ExtensionInfo::includes`");
             }
             for (i, t) in e.includes.iter().enumerate() {
                 let Type::Class(m, a) = t else { continue };

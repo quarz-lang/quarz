@@ -1365,22 +1365,12 @@ impl<'ast> Declarer<'ast> {
         span: Span,
     ) {
         let target = self.world.extensions[ext as usize].target;
-        // An extension of a module cannot include (rule B, the user's
-        // decision of 2026-11-13): the classes including the target would
-        // conform through it, a conformance made away from both the module
-        // and the classes (#609, #610). It may add methods to the module.
+        // (No module target reaches here: called over `ExtensionInfo::
+        // includes` only, which `resolve_extension` keeps empty for an
+        // extension of a module, refusing its includes there, rule B,
+        // #689. Its remnant of the old refusal goes in S3's deletion.)
         if self.world.class(target).kind == ClassKind::Module {
-            let (tname, mname) = (
-                self.world.class(target).name.clone(),
-                self.world.class(module).name.clone(),
-            );
-            self.error(
-                format!(
-                    "an extension of the module `{tname}` cannot include `{mname}`: include it in `{tname}` itself, or in the classes (or extend them)"
-                ),
-                span,
-            );
-            return;
+            unreachable!("an extension of a module includes nothing (rule B, #638): `resolve_extension` refuses the include and keeps it out of `ExtensionInfo::includes`");
         }
         if !self.check_not_included_already(target, module, span)
             || !self.check_one_conformance(ext, target, module, &margs, span)
@@ -3050,6 +3040,11 @@ impl<'ast> Declarer<'ast> {
         for e in &self.world.extensions {
             if e.always_active || e.includes.is_empty() {
                 continue;
+            }
+            // (Never a module target, #564's `extension Shareable`: its
+            // includes are refused, rule B.)
+            if self.world.class(e.target).kind == ClassKind::Module {
+                unreachable!("an extension of a module includes nothing (rule B, #638): `resolve_extension` refuses the include and keeps it out of `ExtensionInfo::includes`");
             }
             // The modules it brings, with what they include, each with its
             // arguments as the extension includes it (`OM[Int]`).
