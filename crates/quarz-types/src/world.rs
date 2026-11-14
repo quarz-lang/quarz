@@ -3653,12 +3653,6 @@ impl World {
     /// extension's witness replaces (`class_ext_impls`). A call of a
     /// method outside it runs that method whatever the receiver; an
     /// abstract method dispatches as well (`RtMethod::overridden`).
-    ///
-    /// An approximation that marks more than run time needs, the safe
-    /// direction: the table pairs a class method with `Cog`'s instance
-    /// methods too, though a `Cog` is only a cog's root module, which has
-    /// no class methods (docs/10 §6), so those methods get a slot nothing
-    /// takes. #723 makes the table exact.
     pub fn overridden_methods(&self, table: &[Vec<MethodId>]) -> HashSet<MethodId> {
         let mut out: HashSet<MethodId> = table.iter().flatten().copied().collect();
         out.extend(self.include_overrides().into_iter().map(|(_, o, _)| o));
