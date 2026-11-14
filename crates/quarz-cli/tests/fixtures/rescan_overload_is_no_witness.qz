@@ -1,0 +1,26 @@
+# #629 (restriction C): an extension's method of the requirement's name
+# that takes other arguments (an overload, `m(x: Int)` for `M#m(x:
+# String)`) is no witness of its conformance; the run time's rescan took it
+# by arity, and the safety net refused the program. Since #536 step 3's S2
+# the rows read the witness record: through `M` the method that takes the
+# requirement's place by type runs (`K#m`, the class's own); the overload
+# stays an extension method, called directly where it is active.
+module M
+  abstract def m(x: String) -> String
+  def mm -> String = m("s") + "!"
+end
+class K
+  def initialize; end
+  def m(x: String) -> String = "K"
+end
+module Sc
+  extension K
+    include M
+    def m(x: Int) -> String = "ext#{x + 1}"
+  end
+  def self.up(k: K) -> M = k
+  def self.n(k: K) -> String = k.m(1)
+end
+def via(v: M) -> String = v.mm
+puts via(Sc.up(K.new))
+puts Sc.n(K.new)

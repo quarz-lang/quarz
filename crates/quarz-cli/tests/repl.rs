@@ -1004,6 +1004,44 @@ fn a_later_extension_pins_an_earlier_witness_for_an_earlier_class() {
 }
 
 #[test]
+fn an_inputs_extension_leaves_an_earlier_classs_own_conformance() {
+    // #536 step 3's S2 (#662): the rows read the witness record, made
+    // again for each input's world: `K` includes `M` itself in one input,
+    // a later input's scoped extension of `K` includes `N` (bringing `M`)
+    // with its own `m`; through `M`, `K`'s own `m` runs.
+    let (out, _) = values(&[
+        "module M; abstract def m -> String; end",
+        "module N; include M; abstract def n -> String; end",
+        "class K; include M; def initialize; end; def m -> String = \"own\"; end",
+        "module X; extension K; include N; def m -> String = \"ext-m\"; def n -> String = \"ext-n\"; end; def self.as_n(k: K) -> N = k; end",
+        "def via_m(x: M) -> String = x.m",
+        "via_m(K.new) + \",\" + X.as_n(K.new).n",
+    ]);
+    assert!(out[5].contains("own,ext-n"), "{out:?}");
+}
+
+#[test]
+fn a_failed_inputs_witness_record_is_not_kept() {
+    // #684's review: the lowerer keeps the witness record between
+    // compile-time rounds while the world's sizes stay the same; an input
+    // that fails after a static round set it is rolled back, and a later
+    // input reaching the same sizes with other declarations must not read
+    // it (`Lowerer::forget` drops it).
+    let (out, _) = values(&[
+        "module M; abstract def m -> String; def mm -> String = m + \"!\"; end",
+        "class Gen; static def self.make(n: Symbol, v: Int) -> Void; p n; def_method(n) { v }; end; static def self.show(x: M) -> Void; puts x.mm; end; end",
+        "class K; def initialize; end; def m -> String = \"k\"; end; class Z < Gen; make :a, 1; make :a, 2; end",
+        "class K; include M; def initialize; end; def m -> String = \"k2\"; def x -> Int = 1; end; class Z < Gen; show K.new; end",
+        "1 + 1",
+    ]);
+    // (The third input fails on its second `def_method`; the fourth is
+    // accepted, its static statement printing `k2!` at compile time.)
+    assert!(out[2].contains("already has a method `a`"), "{out:?}");
+    assert!(!out[3].contains("error"), "{out:?}");
+    assert_eq!(out[4], "=> 2", "{out:?}");
+}
+
+#[test]
 fn a_declarations_only_input_checks_new_through_an_extension() {
     // #514's review: an input of declarations alone activates no
     // extension, yet `S` conforms to `N` through `G`'s extension wherever

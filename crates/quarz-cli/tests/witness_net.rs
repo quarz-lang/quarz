@@ -113,17 +113,14 @@ fn modules_an_extension_of_a_std_class_includes_are_checked() {
 const S8: &str = "# std class: one extension, two includes (the last include first)\nmodule M\n  def m -> Int = 1\nend\nmodule N\n  def m -> String = \"N\"\n  def nn -> String = m + \"!\"\nend\nextension Int\n  include N\n  include M\nend\ndef via(v: N) -> String = v.nn\nputs via(5)\n";
 const S6: &str = "# std class: two top-level extensions' modules, one's method over the other's\nmodule M\n  def m -> Int = 1\nend\nmodule N\n  def m -> String = \"N\"\n  def nn -> String = m + \"!\"\nend\nextension Int\n  include M\nend\nextension Int\n  include N\nend\ndef via(v: N) -> String = v.nn\nputs via(5)\n";
 
-/// #629's row (the rescan's overload of another parameter type), never
-/// read, is refused like any other until #629 is decided.
+/// #629's row (the rescan's overload of another parameter type): since
+/// #536 step 3's S2 the rows read the witness record, which names the
+/// method that takes the requirement's place by type (`K#m`), so the net
+/// passes it (the fixture `rescan_overload_is_no_witness` runs it).
 #[test]
-fn the_629_row_is_refused() {
-    refused(
-        F1,
-        &[
-            "error: `K`'s conformance to `M` runs `K#m` for `M#m`",
-            "takes Int for `x`",
-        ],
-    );
+fn the_629_row_reads_the_record() {
+    let (code, err) = check(F1);
+    assert_eq!(code, Some(0), "{err}");
 }
 const F1: &str = "# an extension's overload of another parameter type beside the class's own implementation\nmodule M\n  abstract def m(x: String) -> String\n  def mm -> String = m(\"s\") + \"!\"\nend\nclass K\n  def initialize; end\n  def m(x: String) -> String = \"K\"\nend\nmodule Sc\n  extension K\n    include M\n    def m(x: Int) -> String = \"ext#{x + 1}\"\n  end\n  def self.up(k: K) -> M = k\n  def self.n(k: K) -> String = k.m(1)\nend\ndef via(v: M) -> String = v.mm\nputs via(Sc.up(K.new))\nputs Sc.n(K.new)\n";
 
@@ -343,14 +340,14 @@ fn a_compile_time_run_reaching_a_refused_row_does_not_run() {
     }
 }
 
-/// The witness record's oracle (#536 step 3, S1) excludes one family
-/// from its assertion, by its shape: #662's (a scoped extension's own
-/// method running for a module the class has itself). S2 makes the rows
-/// read the record, and this count goes to zero. (#529's, two conditional
-/// extensions' same-named methods, went with #665's decision (α): the
-/// record and the rows agree on it.)
+/// S2's oracle (#536 step 3): the rows that read the witness record
+/// against the rows the run time's dispatch gave before, excluding by shape
+/// only S2's two families of answer changes: #662's (an extension's own
+/// method ran through a module the class has itself) and #629's (the
+/// rescan's overload of another signature). Each family counted on its
+/// reproducers, and zero elsewhere; S3 deletes the oracle.
 #[test]
-fn the_witness_oracle_excludes_only_662() {
+fn the_s2_oracle_excludes_only_662_and_629() {
     let summary = |src: &str| {
         static N: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
@@ -375,42 +372,30 @@ fn the_witness_oracle_excludes_only_662() {
             .unwrap_or_default()
             .to_string()
     };
+    let clean = |s: &str| s.contains(" 0/") && s.contains("#662 0, #629 0");
     let s = summary(R529_ORACLE);
-    assert!(
-        s.contains("ext 0/") && s.contains("own 0/") && s.contains("excluded #662 0"),
-        "{s}"
-    );
+    assert!(clean(&s), "{s}");
     let s = summary(T3_ORACLE);
-    assert!(
-        s.contains("ext 0/") && s.contains("own 0/") && s.contains("excluded #662 1"),
-        "{s}"
-    );
+    assert!(s.contains(" 0/") && s.contains("#662 2, #629 0"), "{s}");
+    let s = summary(F1);
+    assert!(s.contains(" 0/") && s.contains("#662 0, #629 1"), "{s}");
     // (#662 with a top-level extension: `D < A` includes `M` itself, `A`
     // has its own `m` and a top-level extension of `A` its own `m` too.)
     let s = summary(TOP_662_ORACLE);
-    assert!(
-        s.contains("ext 0/") && s.contains("own 0/") && s.contains("#662 1"),
-        "{s}"
-    );
+    assert!(s.contains(" 0/") && s.contains("#662 2, #629 0"), "{s}");
     // (#672: below an extension's conformance, a top-level extension's
     // module in the subclass's dispatch by name gives the method the table
     // pairs with the requirement; the record walks that order too, with no
     // exclusion.)
     let s = summary(R672_ORACLE);
-    assert!(
-        s.contains("ext 0/") && s.contains("own 0/") && s.contains("excluded #662 0"),
-        "{s}"
-    );
+    assert!(clean(&s), "{s}");
     // (A class's own conformance whose witness is a generic method, its
     // own type parameters standing for the requirement's: the record's
     // rule 3 finds it by type, with no arity resort, and agrees with the
     // rows. The include-pair case of `own_witness` is
     // `a_method_is_checked_in_each_receivers_frame`, refused by the net.)
     let s = summary(GENERIC_OWN_ORACLE);
-    assert!(
-        s.contains("ext 0/") && s.contains("own 0/") && s.contains("excluded #662 0"),
-        "{s}"
-    );
+    assert!(clean(&s), "{s}");
     // (The same method of another result type: refused as an override.)
     refused(
         &R672_ORACLE.replace("def m -> String = \"E\"", "def m -> Int = 1"),

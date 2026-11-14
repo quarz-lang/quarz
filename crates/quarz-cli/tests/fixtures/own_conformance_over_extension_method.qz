@@ -1,0 +1,56 @@
+# #662: for a module the class has on its own side, the class's own
+# conformance holds (D2 of 2026-11-12, rule A, docs/01 §7): its own method
+# is the witness, and an extension's own method of the name is an extension
+# method, chosen statically where the extension is active. Since #536 step
+# 3's S2 the rows read the witness record, which says so.
+# 1. A scoped extension of `K` (which includes `M` itself) includes `N`
+#    (bringing `M`) and defines its own `m` and `n`: through `M` and through
+#    `N`, `m` is `K`'s own (`own`); `N#n` is the extension's (its
+#    conformance to `N`); a direct call inside the extension's scope is the
+#    extension's `m`.
+# 2. A top-level extension of `A` defines its own `m` and includes `M`;
+#    `D < A` includes `M` itself: through `M` on a `D`, `A`'s own `m` runs
+#    (10), not the extension's (100); on an `A`, the extension's
+#    conformance runs its own (100).
+module M
+  abstract def m -> String
+end
+module N
+  include M
+  abstract def n -> String
+end
+class K
+  include M
+  def initialize; end
+  def m -> String = "own"
+end
+module X
+  extension K
+    include N
+    def m -> String = "ext-m"
+    def n -> String = "ext-n"
+  end
+  def self.as_n(k: K) -> N = k
+  def self.direct(k: K) -> String = k.m
+end
+def via_m(x: M) -> String = x.m
+def via_n(x: N) -> String = x.m + "," + x.n
+puts via_m(K.new), via_n(X.as_n(K.new)), X.direct(K.new)
+
+module M2
+  abstract def m -> Int
+end
+class A2
+  def initialize; end
+  def m -> Int = 10
+end
+class D2 < A2
+  include M2
+  def initialize; super; end
+end
+extension A2
+  include M2
+  def m -> Int = 100
+end
+def via2(v: M2) -> Int = v.m
+puts via2(D2.new), via2(A2.new)

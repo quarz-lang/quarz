@@ -49,6 +49,13 @@ pub fn lower_with_no_witness(src: &str, class: &str, module: &str, name: &str) -
         }
     }
     w.ext_impls.retain(|e| !(e.0 == cid && e.1 == mid));
+    // (The rows read the witness record, and shake makes them again from
+    // it, #536 step 3's S2: the record's entry goes too.)
+    for row in w.witness_record.iter_mut() {
+        if row.0 == cid && row.1 == mid {
+            row.2 = None;
+        }
+    }
     m
 }
 

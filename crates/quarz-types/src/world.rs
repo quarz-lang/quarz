@@ -1534,8 +1534,17 @@ impl World {
             // (The class's dispatch by name: its own side and the modules
             // of the top-level unconditional extensions, which take part in
             // it, docs/01 §7. Every rule reads this one order, #672.)
+            // (A class with no conformance has no entry: its dispatch is
+            // not computed.)
+            let conformances = self.conformances(c);
+            if conformances.is_empty() {
+                continue;
+            }
             let lookup = self.resolution(c, &self.own_args(c), View::Lookup);
-            for (src, m, margs) in self.chosen_conformances(c) {
+            // (The class's own include pairs, once per class, when a
+            // requirement asks.)
+            let class_pairs: std::cell::OnceCell<Vec<IncludeOverride>> = std::cell::OnceCell::new();
+            for (src, m, margs) in self.chosen_conformances_in(conformances, &lookup) {
                 let rsubst = self.class_subst(m, &margs);
                 let reqs: Vec<MethodId> = self
                     .class(m)
@@ -1582,9 +1591,9 @@ impl World {
                     // class's own includes count.)
                     // (The class's own pairs: a module it includes over the
                     // requirement, `include_overrides_of`, in its view.)
-                    let paired_here: Vec<MethodId> = self
-                        .include_overrides_of(c)
-                        .into_iter()
+                    let paired_here: Vec<MethodId> = class_pairs
+                        .get_or_init(|| self.include_overrides_of(c))
+                        .iter()
                         .filter(|io| io.overridden == r)
                         .map(|io| io.by)
                         .collect();
@@ -1706,7 +1715,21 @@ impl World {
     /// (α)): a subclass conforming through its own extension (#517's
     /// per-class rule) takes that one, not its superclass's extension's.
     pub fn chosen_conformances(&self, c: ClassId) -> Vec<Conformance> {
+        let conformances = self.conformances(c);
+        if conformances.is_empty() {
+            return conformances;
+        }
         let lookup = self.resolution(c, &self.own_args(c), View::Lookup);
+        self.chosen_conformances_in(conformances, &lookup)
+    }
+
+    /// `chosen_conformances` from `c`'s conformances and its dispatch by
+    /// name (`View::Lookup`), already computed.
+    fn chosen_conformances_in(
+        &self,
+        conformances: Vec<Conformance>,
+        lookup: &[(ClassId, Vec<Type>)],
+    ) -> Vec<Conformance> {
         let pos = |s: &Option<(ExtensionId, usize)>| match s {
             None => 0,
             Some((e, _)) => {
@@ -1718,7 +1741,7 @@ impl World {
             }
         };
         let mut chosen: Vec<Conformance> = Vec::new();
-        for (src, m, margs) in self.conformances(c) {
+        for (src, m, margs) in conformances {
             match chosen.iter().position(|(_, x, _)| *x == m) {
                 Some(at) if pos(&src) < pos(&chosen[at].0) => chosen[at] = (src, m, margs),
                 Some(_) => {}
