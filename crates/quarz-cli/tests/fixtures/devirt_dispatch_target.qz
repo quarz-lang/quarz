@@ -1,0 +1,126 @@
+# devirt devirtualizes a dynamic call to what dispatch runs for each
+# receiver class (`RtWorld::dispatch_target`, #536 step 3's S3), or
+# keeps the call dispatched. Expected output from the rules: the method
+# of the receiver's class, or the nearest override up its chain, or a
+# module's row; an extension's own method through its conformance.
+# Axes: target (a class, a generic class, an abstract class's
+# requirement, a module default, a data type, an enum's variants);
+# path (own method, superclass, include, an extension of the name on an
+# ancestor of the receiver, an overload of another arity at the first
+# ancestor that has the name); backend (VM, and compiled through the
+# build tests, where devirtualization splits the call). Skipped: class
+# methods and extension methods (`find_site` never splits them), and
+# class objects or native values as receivers (`ClassIs` matches an
+# object only: they take the dispatched call).
+
+# A: a class's method, overridden by two subclasses.
+class Shape
+  def initialize; end
+  def area -> Int = 0
+end
+class Sq < Shape
+  def initialize; super; end
+  def area -> Int = 4
+end
+class Ci < Shape
+  def initialize; super; end
+  def area -> Int = 3
+end
+def area_of(s: Shape) -> Int = s.area
+
+# B, D, E: a module's default, overridden by a class, a data type and an
+# enum's body (its variants inherit it).
+module Named
+  def label -> String = "named"
+end
+class Plain
+  include Named
+  def initialize; end
+end
+class Own
+  include Named
+  def initialize; end
+  def label -> String = "own"
+end
+data Pt(x: Int)
+  include Named
+  def label -> String = "pt#{@x}"
+end
+enum Suit
+  include Named
+  variant Hearts
+  variant Clubs
+  def label -> String = "suit"
+end
+def label_of(n: Named) -> String = n.label
+
+# C: an abstract class's requirement, implemented by each subclass.
+abstract class Animal
+  abstract def sound -> String
+end
+class Dog < Animal
+  def initialize; end
+  def sound -> String = "woof"
+end
+class Cat < Animal
+  def initialize; end
+  def sound -> String = "meow"
+end
+def sound_of(a: Animal) -> String = a.sound
+
+# Generic: a generic class's method overridden under one argument.
+class Box[T]
+  @v: T
+  def initialize(@v: T); end
+  def size -> Int = 1
+end
+class Pair < Box[Int]
+  def initialize; super(0); end
+  def size -> Int = 2
+end
+def size_of(b: Box[Int]) -> Int = b.size
+
+# F: an extension of the name on an ancestor of the receiver: its own
+# method runs through the module (its conformance), so the call is not
+# devirtualized to the module's default.
+module Greets
+  def greet -> String = "hello"
+end
+class Host
+  def initialize; end
+end
+extension Host
+  include Greets
+  def greet -> String = "ext"
+end
+class Guest < Host
+  def initialize; super; end
+end
+class Other
+  include Greets
+  def initialize; end
+end
+def greet_of(g: Greets) -> String = g.greet
+
+# G: an overload of another arity at the first ancestor that has the
+# name: `Mid` runs `Base#m`.
+class Base
+  def initialize; end
+  def m(x: String) -> String = "base:" + x
+end
+class Mid < Base
+  def initialize; super; end
+  def m(x: Int, y: Int) -> String = "pair"
+end
+class Leaf < Mid
+  def initialize; super; end
+  def m(x: String) -> String = "leaf:" + x
+end
+def m_of(b: Base) -> String = b.m("s")
+
+puts area_of(Shape.new), area_of(Sq.new), area_of(Ci.new)
+puts label_of(Plain.new), label_of(Own.new), label_of(Pt.new(7)), label_of(Suit::Hearts), label_of(Suit::Clubs)
+puts sound_of(Dog.new), sound_of(Cat.new)
+puts size_of(Box[Int].new(5)), size_of(Pair.new)
+puts greet_of(Host.new), greet_of(Guest.new), greet_of(Other.new)
+puts m_of(Base.new), m_of(Mid.new), m_of(Leaf.new)
