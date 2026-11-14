@@ -1815,7 +1815,13 @@ impl RtWorld {
         cid: ClassId,
         mid: MethodId,
     ) -> MethodId {
-        if cid == method(mid).owner {
+        let m = method(mid);
+        debug_assert!(
+            !m.singleton && !m.is_extension,
+            "internal error: `{}` is a class method or an extension's, which dispatch decides apart",
+            m.name
+        );
+        if cid == m.owner {
             return mid;
         }
         if self.in_witness_rows(method, cid, mid) {
