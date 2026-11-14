@@ -1992,10 +1992,7 @@ impl<'ast> Declarer<'ast> {
                 // a method with a body.)
                 let fits = |s: &Self, i: MethodId, csubst: &HashMap<TypeParamId, Type>| {
                     let im = s.world.method(i);
-                    !im.singleton
-                        && s.world.takes_calls_of(im, csubst, &rm, &rsubst)
-                        && s.world
-                            .is_subtype(&im.ret.subst(csubst), &rm.ret.subst(&rsubst))
+                    !im.singleton && s.world.takes_place_of(im, csubst, &rm, &rsubst)
                 };
                 let takes = |s: &Self, i: MethodId, csubst: &HashMap<TypeParamId, Type>| {
                     !s.world.method(i).is_abstract && fits(s, i, csubst)
@@ -2066,10 +2063,7 @@ impl<'ast> Declarer<'ast> {
                                         && i != r
                                         && !im.is_abstract
                                         && !im.singleton
-                                        && self.world.takes_calls_of(im, &ks, &rm, &rsubst)
-                                        && self
-                                            .world
-                                            .is_subtype(&im.ret.subst(&ks), &rm.ret.subst(&rsubst))
+                                        && self.world.takes_place_of(im, &ks, &rm, &rsubst)
                                 })
                             })
                         })
