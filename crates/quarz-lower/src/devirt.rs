@@ -57,6 +57,34 @@ fn receivers(world: &RtWorld, mid: MethodId) -> Option<Vec<(ClassId, MethodId)>>
 fn resolve(world: &RtWorld, cid: ClassId, mid: MethodId) -> Option<Option<MethodId>> {
     let m = &world.methods[mid as usize];
     let class = &world.classes[cid as usize];
+    // A module's requirement: what runs is the witness row (the record,
+    // #536 step 3), which may be an extension's conformance's witness that
+    // the walk below would not find: that method when it is simple, else
+    // the call stays dispatched.
+    let method = |id: MethodId| &world.methods[id as usize];
+    if m.is_abstract && world.in_witness_rows(&method, cid, mid) {
+        // (Every key `in_witness_rows` admits has a row: a missing one is
+        // an internal error, as at run time, `Interp::witness_for`; a row
+        // with no witness keeps the dispatch.)
+        let w = world.witness_row(cid, mid).unwrap_or_else(|| {
+            panic!(
+                "internal error: no witness row for `{}` on `{}`",
+                m.name, class.name
+            )
+        })?;
+        let c = method(w);
+        let simple = !c.is_extension
+            && !c.is_abstract
+            && c.synth == RtSynth::None
+            && c.params.len() == m.params.len()
+            && c.has_block == m.has_block
+            && c.params
+                .iter()
+                .all(|p| p.kind == RtParamKind::Positional && !p.has_default)
+            && c.func.is_some()
+            && c.native_key.is_none();
+        return simple.then_some(Some(w));
+    }
     let chain: Vec<ClassId> = if class.ancestors.first() == Some(&cid) {
         class.ancestors.clone()
     } else {
@@ -74,16 +102,6 @@ fn resolve(world: &RtWorld, cid: ClassId, mid: MethodId) -> Option<Option<Method
                 && e.methods.contains_key(&m.name)
                 && world.extension_dispatches(e, m.owner)
         }) {
-            return None;
-        }
-        // An extension's method implementing it for this class (its
-        // conformance, `RtWorld::ext_impls`): dispatched at run time.
-        if m.is_abstract
-            && world
-                .ext_impls
-                .iter()
-                .any(|(c, a, _)| *c == anc && *a == mid)
-        {
             return None;
         }
         let Some(ids) = world.classes[anc as usize].methods.get(&m.name) else {

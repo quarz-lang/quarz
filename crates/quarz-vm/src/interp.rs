@@ -2860,7 +2860,7 @@ impl Interp {
     /// modules of scoped and conditional extensions are not searched, so
     /// none of their methods is found by name (docs/01 §7) — except an
     /// abstract method of such a module, which resolves through the
-    /// witness its conformance recorded (`ext_impl`), conformance holding
+    /// witness its conformance recorded (the witness rows), conformance holding
     /// wherever the value goes (natives calling `each` or `<=>` by name on
     /// a class conforming to `Enumerable` or `Comparable` through a scoped
     /// extension).

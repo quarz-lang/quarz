@@ -1,6 +1,6 @@
 # An extension that makes a class include a module implements its abstract
 # method with the overload that takes the method's arguments, not with the
-# first method of the name (`Interp::ext_impl`).
+# first method of the name (the witness record and its rows).
 module Sized
   abstract def f(x: Int) -> Int
   def g -> Int = f(1) + 1
