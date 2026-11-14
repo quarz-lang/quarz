@@ -2824,7 +2824,12 @@ impl Interp {
     /// The witness of abstract method `abs` for class `cid` that a call by
     /// name reaches (`find_method`): the row of `RtWorld::witness_rows` for
     /// a key `RtWorld::in_witness_rows` admits (none there is an internal
-    /// error), else `RtWorld::witness_of`.
+    /// error), else `RtWorld::witness_of`. The only other keys `find_method`
+    /// passes are an abstract class's requirements (an instance's class is
+    /// never a module, and a file's top level has no abstract method;
+    /// `find_method` searches instance methods only), whose witness the
+    /// declarer records further up (`own_witness`): `abstract class A <
+    /// Base` with `Base#to_s` for `A`'s `abstract def to_s`.
     fn witness_for(&self, cid: ClassId, abs: MethodId) -> Option<MethodId> {
         let world = &self.program.world;
         let method = |id: MethodId| self.program.method(id);

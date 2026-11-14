@@ -1,0 +1,25 @@
+# An abstract class's requirement implemented by a concrete method further
+# up (the declarer's own witness, `own_witness`, #679): `A#to_s` and
+# `A#m` for `C < A < Base` are `Base`'s, by name (`puts`, interpolation,
+# `inspect` of an array, a call) and through the abstract type. (#686's
+# review: a call by name that finds the abstract method first takes the
+# witness the declarer recorded, `RtWorld::witness_of`.)
+class Base
+  def initialize; end
+  def to_s -> String = "base"
+  def m -> Int = 1
+end
+abstract class A < Base
+  abstract def to_s -> String
+  abstract def m -> Int
+end
+class C < A
+  def initialize; super; end
+end
+c = C.new
+puts c
+puts "#{c}"
+puts c.m
+a: A = c
+puts a.m
+puts [c].inspect
