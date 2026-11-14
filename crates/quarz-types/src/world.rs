@@ -677,9 +677,10 @@ pub struct World {
     /// (`Declarer::check_extension_completes`): the extension's own method
     /// that takes the requirement's calls by type, else the witness it
     /// records for the target (`ext_impls`). Kept with the world (the
-    /// prelude's and a cached file's too): what the extension's methods are
-    /// checked against (#536 step 3, item 2's (ii)).
-    #[serde(default)]
+    /// prelude's too): what the extension's methods are checked against
+    /// (#536 step 3, item 2's (ii)). No `serde(default)`: an encoding
+    /// without it (the prelude's, made by another build) fails to decode
+    /// rather than read as "R0 has no choice".
     pub ext_choices: Vec<(ExtensionId, MethodId, MethodId)>,
     /// The class-side witnesses of extensions' conformances (#504): for a
     /// class that conforms to a module through an extension's `include`,
