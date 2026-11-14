@@ -769,10 +769,18 @@ impl<'ast> Declarer<'ast> {
             }
             // A call on the class being declared (`has_many Comment`) is a
             // `static` statement, run at compile time (docs/14), in a
-            // class or module body outside the prelude.
+            // class body outside the prelude. A module body takes none
+            // (docs/14 §2).
             let kind = self.world.class(id).kind;
             let is_call = matches!(&expr.kind, ExprKind::Call(call) if call.recv.is_none());
-            if is_call && !prelude && matches!(kind, ClassKind::Class | ClassKind::Module) {
+            if is_call && !prelude && kind == ClassKind::Module {
+                self.error(
+                    "a module body takes no `static` statements: only a class body does",
+                    expr.span,
+                );
+                continue;
+            }
+            if is_call && !prelude && kind == ClassKind::Class {
                 self.world.static_stmts.push(StaticStmt {
                     class: id,
                     file: self.file,

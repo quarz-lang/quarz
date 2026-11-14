@@ -2874,6 +2874,12 @@ fn static_declarations() {
         "class P\n  1 + 1\nend",
         "only declarations are allowed in a class body",
     );
+    // A module body takes no statements (docs/14 §2, #718): a module
+    // offers `static def self.` methods to the classes including it.
+    err(
+        "module Mk\n  static def self.mark -> Void; end\nend\nmodule M\n  include Mk\n  mark\nend",
+        "a module body takes no `static` statements: only a class body does",
+    );
     // Reflection is compile-time only: not from ordinary code.
     err("p Int.fields", "`fields` runs at compile time only");
     err(

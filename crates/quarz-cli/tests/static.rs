@@ -153,6 +153,27 @@ fn what_a_static_statement_may_not_do() {
         err.contains("same.qz:6:3: error: `own` is a `static def` of this file"),
         "{err}"
     );
+    // A module body takes no statements, even one calling a `static def`
+    // of a dependency (docs/14 §2, #718): refused, not run.
+    write(
+        &d.0,
+        "mk.qz",
+        "module Mk\n  static def self.mark(tag: String) -> Void\n    puts \"static #{tag}\"\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "in_module.qz",
+        "require_relative \"mk\"\nmodule M\n  include Mk\n  mark(\"M\")\nend\nputs \"ok\"\n",
+    );
+    for cmd in ["check", "run"] {
+        let (ok, out, err) = quarz(&d.0, &[cmd, app.to_str().unwrap()], &[]);
+        assert!(!ok, "{cmd}: {out}");
+        assert!(!out.contains("static M"), "{cmd}: {out}");
+        assert!(
+            err.contains("in_module.qz:4:3: error: a module body takes no `static` statements: only a class body does"),
+            "{cmd}: {err}"
+        );
+    }
     // A run-time call of a compile-time-only one (decided after lowering,
     // once the program checks otherwise); `check` and `run` agree.
     let app = write(

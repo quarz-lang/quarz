@@ -283,11 +283,14 @@ pub struct ConstInfo {
     pub file: u32,
 }
 
-/// A `static` statement of a class or module body: a call, on the class
-/// being declared, of a `static def` of a dependency (docs/14).
+/// A `static` statement of a class body: a call, on the class being
+/// declared, of a `static def` of a dependency (docs/14; a module body
+/// takes none, §2). `Checker::eval_static_exprs` also wraps a
+/// `static(...)` expression in one (§8).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct StaticStmt {
-    /// The class or module whose body holds it.
+    /// The class whose body holds it; for a `static(...)` expression, the
+    /// class or module whose class methods its implicit receiver names.
     pub class: ClassId,
     pub file: u32,
     pub expr: Rc<Expr>,
