@@ -3547,6 +3547,33 @@ fn an_extension_completes_the_conformance_it_makes() {
 }
 
 #[test]
+fn a_requirement_r0_refused_is_not_reported_again_at_the_classes() {
+    // R0's error at the extension says it once; the target and the classes
+    // under it do not repeat "must implement" for the same requirement.
+    let named = "module Named\n  abstract def label -> String\nend\n";
+    let out = common::diagnostics(&format!(
+        "{named}class B\n  def initialize; end\nend\nclass C < B\n  def initialize; end\nend\nextension B\n  include Named\nend\n"
+    ))
+    .join("\n");
+    assert!(
+        out.contains("this extension includes `Named` but nothing here implements `label`"),
+        "{out}"
+    );
+    assert!(!out.contains("must implement"), "{out}");
+    // An `abstract def` of the target completes it for R0, which leaves it
+    // to the concrete classes: one that lacks it is told so.
+    let out = common::diagnostics(&format!(
+        "{named}abstract class B\n  abstract def label -> String\nend\nclass C < B\n  def initialize; end\nend\nextension B\n  include Named\nend\n"
+    ))
+    .join("\n");
+    assert!(!out.contains("nothing here implements"), "{out}");
+    assert!(
+        out.contains("`C` must implement `label` (abstract in `Named`)"),
+        "{out}"
+    );
+}
+
+#[test]
 fn an_own_includes_requirement_is_implemented_on_the_class_side() {
     // Rule A (the user's decision, 2026-11-13): an abstract method from a
     // class's own side (a module it includes itself, or a superclass) is

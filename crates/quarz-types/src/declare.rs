@@ -97,6 +97,11 @@ pub struct Declarer<'ast> {
     /// class-side witnesses are recorded for these only, at the end of
     /// the pass (`check_extension_class_side`).
     conformance_checked: Vec<(ExtensionId, ClassId, Vec<Type>)>,
+    /// The (extension, requirement) pairs R0 refused ("nothing here
+    /// implements"): a class under the target does not report the same
+    /// requirement again (`check_conformance_of`). Diagnostic only; a pair
+    /// missing from it means a duplicate error, never a lost one.
+    r0_refused: HashSet<(ExtensionId, MethodId)>,
     /// The pairs a check refused (reported once, at the module or the
     /// first class including it): not reported again in another class's
     /// frame. Only refusals: a pair that passed for one class is still
@@ -231,6 +236,7 @@ impl<'ast> Declarer<'ast> {
             override_pairs: HashSet::default(),
             frame_checked: HashSet::default(),
             conformance_checked: Vec::new(),
+            r0_refused: HashSet::default(),
             refused_pairs: HashSet::default(),
             type_classes: None,
             override_span: None,
@@ -2131,6 +2137,7 @@ impl<'ast> Declarer<'ast> {
                     }
                 }
                 if !(by_ext || by_mods || by_own) {
+                    self.r0_refused.insert((ext, r));
                     missing.push((rm.name.clone(), self.world.class(*m).name.clone()));
                 }
             }
@@ -4644,6 +4651,14 @@ impl<'ast> Declarer<'ast> {
                                     None => missing.push((m.name.clone(), *anc)),
                                 }
                             }
+                            // A conformance an extension makes that R0
+                            // refused for this requirement: its error, at
+                            // the extension, says it once for every class
+                            // under the target. (One R0 accepted, through an
+                            // `abstract def` of the target, leaves it to the
+                            // class: reported here.)
+                            None if by_conformance
+                                .is_some_and(|e| self.r0_refused.contains(&(e, *mid))) => {}
                             None => missing.push((m.name.clone(), *anc)),
                             // An extension's own method, for the conformance
                             // it makes (docs/01 §7's exception; #665's
