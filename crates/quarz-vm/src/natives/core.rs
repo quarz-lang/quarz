@@ -24,6 +24,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         _ => Err(i.err_type("is_a? takes a class")),
     });
     native!(m, "Object#frozen?", obj_frozen);
+    native!(m, "Object#shareable?", |i, r, _| Ok(Value::Bool(
+        crate::transfer::walk(i, r, crate::transfer::Rule::Shareable)
+    )));
     native!(m, "Object#dup", obj_dup);
     native!(m, "Object#instance_exec", |i, r, a| {
         let b = super::block(i, &a)?;

@@ -564,45 +564,128 @@ fn object_movable(interp: &Interp, o: &Rc<Object>) -> bool {
         && o.field_count() > 0
 }
 
-/// Whether `v` can cross to the helper thread whole: nothing in it that
-/// `export` refuses (an object whose class defines `deinitialize`, a
-/// mutable value, a procedure, a native), walked without recursion. A
-/// capture is taken out of its frame to be moved only then: taken and
-/// refused, it would be released at once, a `deinitialize` running early
-/// (#478).
-pub fn crosses(interp: &Interp, v: &Value) -> bool {
+/// What `walk` asks of each part of a value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rule {
+    /// It can be copied to `Task.blocking`'s helper thread: nothing that
+    /// `export` refuses (an object whose class defines `deinitialize`, a
+    /// value bound to the calling thread: a builder, a channel, an atom,
+    /// a task, a procedure, an IO handle).
+    Copyable,
+    /// It is Shareable (docs/03 §5), as `Object#shareable?` answers: a
+    /// built-in collection, a tuple, a range, and a `data` value or enum
+    /// variant without the `Shareable` marker (a generic one) by their
+    /// parts; a procedure never (an approximation that errs only towards
+    /// false: the value does not record whether it is a `shareable` one,
+    /// #706); any other value by whether its class is a `Shareable` (the
+    /// membership `is_a?` reads: the marker a class's include, or the
+    /// lowering for a `data` type Shareable by its fields, puts in its
+    /// ancestors).
+    Shareable,
+}
+
+/// Whether every part of `v` passes `rule`, walked without recursion
+/// (however deeply it is nested). The parts are walked as often as they
+/// are referred to: a value whose parts are shared many times over (a
+/// list of the same array, of lists of it, ...) takes time in its size
+/// as a tree.
+pub fn walk(interp: &Interp, v: &Value, rule: Rule) -> bool {
     let mut work: Vec<Value> = vec![v.clone()];
     while let Some(v) = work.pop() {
         if leaf(interp, &v).is_some() {
             continue;
         }
-        match &v {
-            Value::Array(items) => {
-                if let ArrayData::Values(_) | ArrayData::Objects(_) = &**items {
-                    work.extend(items.iter());
-                }
-            }
-            Value::Hash(h) => {
-                for (k, x) in h.as_map().iter() {
-                    work.push(k.clone());
-                    work.push(x.clone());
-                }
-            }
-            Value::Set(s) => work.extend(s.iter().cloned()),
-            Value::Range(r) => {
-                work.push(r.lo.clone());
-                work.push(r.hi.clone());
-            }
-            Value::Regexp(_) => {}
-            Value::Object(o) => {
-                if crate::deinit::has(o.class) {
-                    return false;
-                }
-                work.extend(o.fields());
-                work.extend(o.cause());
-            }
-            _ => return false,
+        let ok = match rule {
+            Rule::Copyable => copyable_parts(&v, &mut work),
+            Rule::Shareable => shareable_parts(interp, &v, &mut work),
+        };
+        if !ok {
+            return false;
         }
+    }
+    true
+}
+
+/// Whether `v` can cross to the helper thread whole: `walk` with
+/// `Rule::Copyable`. A capture is taken out of its frame to be moved only
+/// then: taken and refused, it would be released at once, a
+/// `deinitialize` running early (#478).
+pub fn crosses(interp: &Interp, v: &Value) -> bool {
+    walk(interp, v, Rule::Copyable)
+}
+
+/// `Rule::Copyable` for a value with parts: false, or its parts pushed.
+fn copyable_parts(v: &Value, work: &mut Vec<Value>) -> bool {
+    match v {
+        Value::Array(items) => {
+            if let ArrayData::Values(_) | ArrayData::Objects(_) = &**items {
+                work.extend(items.iter());
+            }
+        }
+        Value::Hash(h) => {
+            for (k, x) in h.as_map().iter() {
+                work.push(k.clone());
+                work.push(x.clone());
+            }
+        }
+        Value::Set(s) => work.extend(s.iter().cloned()),
+        Value::Range(r) => {
+            work.push(r.lo.clone());
+            work.push(r.hi.clone());
+        }
+        Value::Regexp(_) => {}
+        Value::Object(o) => {
+            if crate::deinit::has(o.class) {
+                return false;
+            }
+            work.extend(o.fields());
+            work.extend(o.cause());
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// `Rule::Shareable` for a value with parts: false, or its parts pushed.
+fn shareable_parts(interp: &Interp, v: &Value, work: &mut Vec<Value>) -> bool {
+    use quarz_ir::RtClassKind;
+    let world = &interp.program.world;
+    let shareable = interp.program.rt.shareable;
+    match v {
+        Value::Array(items) => {
+            if let ArrayData::Values(_) | ArrayData::Objects(_) = &**items {
+                work.extend(items.iter());
+            }
+        }
+        Value::Hash(h) => {
+            for (k, x) in h.as_map().iter() {
+                work.push(k.clone());
+                work.push(x.clone());
+            }
+        }
+        Value::Set(s) => work.extend(s.iter().cloned()),
+        Value::Range(r) => {
+            work.push(r.lo.clone());
+            work.push(r.hi.clone());
+        }
+        Value::Proc(_) => return false,
+        Value::Object(o) => {
+            if world.class_is_a(o.class, shareable) {
+                return true;
+            }
+            // A `data` value or variant the lowering gave no marker (a
+            // generic type's, or one not Shareable by its fields' types):
+            // by what its fields hold. A class's instance is Shareable only
+            // by its class's promise.
+            if !matches!(
+                world.class(o.class).kind,
+                RtClassKind::Data | RtClassKind::Variant
+            ) {
+                return false;
+            }
+            work.extend(o.fields());
+        }
+        _ => return world.class_is_a(interp.class_of(v), shareable),
     }
     true
 }

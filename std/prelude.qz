@@ -86,6 +86,31 @@ class Object
   # and `Bytes::Builder`. `true` for every other value, instances of
   # classes with `var` fields included.
   native def frozen? -> Bool
+  # Whether the value is Shareable (docs/03 §5), looked at as it is now,
+  # all the way down: a collection, a tuple or a range when every element
+  # is; a `data` value or an enum variant when its type is Shareable by
+  # its fields, or, for a generic one, when what its fields hold is; an
+  # instance of a class when the class includes `Shareable`; `Atom`,
+  # `Channel`, `Task` and exceptions are, builders are not. It takes time
+  # in the value's size.
+  #
+  # `is_a?(Shareable)` differs: a type test, it sees the class only, and
+  # is a compile error on a collection, a tuple or a generic `data` value
+  # ("cannot be checked at run time").
+  #
+  # A procedure answers false, a `shareable` one too: the value does not
+  # record which it is (an approximation, wrong only towards false,
+  # #706).
+  #
+  # ```
+  # [1, "a", :b].shareable?                       # => true
+  # [1, Array::Builder[Int].new].shareable?       # => false
+  # {"k" => [1.5]}.shareable?                     # => true
+  # Atom.new(1).shareable?                        # => true
+  # Result[Int, String].ok(42).shareable?        # => true
+  # ->(x: Int) { x }.shareable?                   # => false
+  # ```
+  native def shareable? -> Bool
   # A copy of the value. A builder or an instance of a class is copied
   # (shallowly: the fields refer to the same values); an immutable built-in
   # value (an array, a string, ...) is returned as it is.
@@ -6038,9 +6063,15 @@ class Task[out T <: Shareable]
   # For long computations and blocking foreign calls: the standard library's
   # IO already suspends only the task.
   #
-  # The block is copied to the helper thread, so it may capture only
-  # immutable values (numbers, strings, collections, `data` values) and
-  # return only those; what it prints is written out when it finishes.
+  # The helper thread runs a program of its own (its own symbols,
+  # constants and scheduler), so the block and what it captures are
+  # copied there, and its value or exception copied back. The block is a
+  # `shareable` one: capturing a value that is not Shareable (a builder,
+  # an instance of a class without `include Shareable`) is a compile
+  # error. Of the Shareable values, those that belong to the calling
+  # thread's program cannot be copied: a `Channel`, an `Atom`, a `Task`,
+  # a scope, an IO handle, a `MatchData`, and an instance of a class that
+  # defines `deinitialize` (the copy would be released twice). What it prints is written out when it finishes.
   # Cancelling the waiting task raises in it, but the block runs to its
   # end. Tasks the block spawned and left running are cancelled when it
   # returns, and waited for (their `ensure` clauses run), as a scope's.
@@ -6048,7 +6079,7 @@ class Task[out T <: Shareable]
   # ## Raises
   #
   # `ArgumentError` when the block captures or returns a value that cannot
-  # be copied: a `Channel`, an `Atom`, a `Task`, a mutable object.
+  # be copied, as above.
   native def self.blocking[R](&blk: shareable () -> R) -> R
   # Raises `Task::Cancelled` when the calling task has been cancelled
   # (outside `.uncancellable`); otherwise does nothing.
