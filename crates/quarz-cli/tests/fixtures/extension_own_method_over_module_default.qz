@@ -1,0 +1,36 @@
+# An extension's own method over a default of the module its include
+# brings, where that default overrides nothing: through the module, the
+# extension's own method runs (`find_override`'s extension candidates,
+# the override rows); called on the class where the extension is active,
+# the same method. Rule E (#603, #639) refuses only the shape where the
+# module's method overrides an ancestor's; this one stays accepted, and
+# both `find_override`'s loop and `devirt::resolve`'s bail-out for an
+# extension of the name are what make it run (#639's list of what became
+# unreachable was too wide). Expected output from the rule. VM and
+# compiled (the build tests; devirtualization runs in both).
+module M
+  def greet -> String = "m"
+  def twice -> String = greet + greet
+end
+
+class C
+  def initialize; end
+end
+
+extension C
+  include M
+  def greet -> String = "ext"
+end
+
+class D < C
+  def initialize; super; end
+end
+
+def via(x: M) -> String = x.greet
+
+puts via(C.new)
+puts C.new.greet
+puts C.new.twice
+puts via(D.new)
+xs: Array[M] = [C.new, D.new]
+puts xs.map { |x: M| x.greet }.join(",")
