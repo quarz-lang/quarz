@@ -675,7 +675,9 @@ pub fn shake(module: &mut Module) -> usize {
     while let Some(f) = s.work.pop() {
         s.scan(f);
     }
-    let (funcs, methods, names, live) = (s.funcs, s.methods, s.names, s.live);
+    let (funcs, methods, names) = (s.funcs, s.methods, s.names);
+    #[cfg(debug_assertions)]
+    let live = s.live;
 
     let mut dropped = 0;
     for (i, f) in module.functions.iter_mut().enumerate() {
