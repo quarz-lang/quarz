@@ -2823,22 +2823,27 @@ impl Interp {
 
     /// The witness of abstract method `abs` for class `cid` that a call by
     /// name reaches (`find_method`): the row of `RtWorld::witness_rows` for
-    /// a key `RtWorld::in_witness_rows` admits (none there is an internal
-    /// error), else `RtWorld::witness_of`.
+    /// a key `RtWorld::in_witness_rows` admits. Another key (an abstract
+    /// method of an abstract superclass, which rule A, #636, has implemented
+    /// on the class's own side) has no witness: none is recorded for it
+    /// (#536 step 3's S3).
     fn witness_for(&self, cid: ClassId, abs: MethodId) -> Option<MethodId> {
         let world = &self.program.world;
         let method = |id: MethodId| self.program.method(id);
-        if world.in_witness_rows(&method, cid, abs) {
-            world.witness_row(cid, abs).unwrap_or_else(|| {
-                panic!(
-                    "internal error: no witness row for `{}` on `{}`",
-                    self.program.method(abs).name,
-                    world.class(cid).name
-                )
-            })
-        } else {
-            world.witness_of(&method, cid, abs)
+        if !world.in_witness_rows(&method, cid, abs) {
+            unreachable!(
+                "internal error: `{}` on `{}` is no key of the witness rows (#536 step 3's S3)",
+                self.program.method(abs).name,
+                world.class(cid).name
+            );
         }
+        world.witness_row(cid, abs).unwrap_or_else(|| {
+            panic!(
+                "internal error: no witness row for `{}` on `{}`",
+                self.program.method(abs).name,
+                world.class(cid).name
+            )
+        })
     }
 
     /// Find a method by name on a class (first match in resolution order

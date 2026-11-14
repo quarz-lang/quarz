@@ -1926,23 +1926,6 @@ impl RtWorld {
         None
     }
 
-    /// The witness of abstract method `abs` for class `cid` that a call
-    /// by name reaches (`Interp::find_method`): the first `ext_impl` up
-    /// `cid`'s ancestors before the method's owner.
-    pub fn witness_of<'m>(
-        &self,
-        method: &dyn Fn(MethodId) -> &'m RtMethod,
-        cid: ClassId,
-        abs: MethodId,
-    ) -> Option<MethodId> {
-        let owner = method(abs).owner;
-        self.class(cid)
-            .ancestors
-            .iter()
-            .take_while(|a| **a != owner)
-            .find_map(|a| self.ext_impl(*a, abs))
-    }
-
     /// Whether (class `cid`, method `mid`) is a key of `override_rows`
     /// (and, when `mid` is abstract, of `witness_rows`): `cid` a class
     /// whose values exist (not a module, not a file's top level), `mid`
@@ -1969,7 +1952,7 @@ impl RtWorld {
     }
 
     /// Fill `override_rows` and `witness_rows` over every key
-    /// `in_witness_rows` admits (`find_override` and `witness_of` for
+    /// `in_witness_rows` admits (the witness record's entry, or `find_override` for
     /// each), and `class_override_rows` over every key
     /// `in_class_override_rows` admits (`class_method_override`),
     /// evaluated once. Called where `rescan_extensions` is, after
@@ -2066,50 +2049,6 @@ impl RtWorld {
                 self.find_override(method, cid, w).unwrap_or(w)
             }
         })
-    }
-
-    /// The rows as the run time's dispatch gave them before S2 (#536 step
-    /// 3): `find_override` and `witness_of` for every abstract key. Kept for
-    /// S2's oracle only (`rtworld::witness_oracle`, debug builds and
-    /// `QUARZ_WITNESS_ORACLE=report`); S3 deletes it with the oracle.
-    #[allow(clippy::type_complexity)]
-    pub fn dispatch_rows(
-        &self,
-    ) -> (
-        Vec<(ClassId, MethodId, MethodId)>,
-        Vec<(ClassId, MethodId, Option<MethodId>)>,
-    ) {
-        let mut rows: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
-        let mut witnesses: Vec<(ClassId, MethodId, Option<MethodId>)> = Vec::new();
-        let method = |id: MethodId| &self.methods[id as usize];
-        for (cid, c) in self.classes.iter().enumerate() {
-            let cid = cid as ClassId;
-            for anc in &c.ancestors {
-                let a = self.class(*anc);
-                if a.kind != RtClassKind::Module {
-                    continue;
-                }
-                for &mid in a.methods.values().flatten() {
-                    if method(mid).owner != *anc
-                        || !method(mid).is_abstract
-                        || !self.in_witness_rows(&method, cid, mid)
-                    {
-                        continue;
-                    }
-                    rows.push((
-                        cid,
-                        mid,
-                        self.find_override(&method, cid, mid).unwrap_or(mid),
-                    ));
-                    witnesses.push((cid, mid, self.witness_of(&method, cid, mid)));
-                }
-            }
-        }
-        rows.sort_unstable();
-        rows.dedup();
-        witnesses.sort_unstable();
-        witnesses.dedup();
-        (rows, witnesses)
     }
 
     /// The row of `override_rows` for (`cid`, `mid`).

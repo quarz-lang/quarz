@@ -1791,8 +1791,6 @@ fn rows_errors(
     quarz_types::witness_net::errors(world, &checked, own)
 }
 
-/// The world's size the declared tables were built for: its classes,
-/// methods and extensions.
 /// What the witness record reads, by size: the world's classes,
 /// methods and extensions, and R0's and the class side's witnesses.
 /// Within one program it changes whenever the record could: classes and
@@ -1826,6 +1824,8 @@ impl Lowerer {
     }
 }
 
+/// The world's size the declared tables were built for: its classes,
+/// methods and extensions.
 fn world_size(world: &World) -> [usize; 3] {
     [
         world.classes.len(),

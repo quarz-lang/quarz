@@ -340,70 +340,14 @@ fn a_compile_time_run_reaching_a_refused_row_does_not_run() {
     }
 }
 
-/// S2's oracle (#536 step 3): the rows that read the witness record
-/// against the rows the run time's dispatch gave before, excluding by shape
-/// only S2's two families of answer changes: #662's (an extension's own
-/// method ran through a module the class has itself) and #629's (the
-/// rescan's overload of another signature). Each family counted on its
-/// reproducers, and zero elsewhere; S3 deletes the oracle.
+/// #672: below an extension's conformance, a method that a top-level
+/// extension's module in the subclass's dispatch by name gives, of another
+/// result type than the requirement's, is refused as an override.
 #[test]
-fn the_s2_oracle_excludes_only_662_and_629() {
-    let summary = |src: &str| {
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "quarz-witness-oracle-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::SeqCst)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("main.qz");
-        std::fs::write(&path, src).unwrap();
-        let out = Command::new(env!("CARGO_BIN_EXE_quarz"))
-            .arg("check")
-            .arg(&path)
-            .env("QUARZ_WITNESS_ORACLE", "report")
-            .env("QUARZ_NO_CACHE", "1")
-            .output()
-            .expect("run quarz");
-        std::fs::remove_dir_all(&dir).ok();
-        String::from_utf8_lossy(&out.stderr)
-            .lines()
-            .find(|l| l.starts_with("witness-oracle: summary"))
-            .unwrap_or_default()
-            .to_string()
-    };
-    let clean = |s: &str| s.contains(" 0/") && s.contains("#662 0, #629 0");
-    let s = summary(R529_ORACLE);
-    assert!(clean(&s), "{s}");
-    let s = summary(T3_ORACLE);
-    assert!(s.contains(" 0/") && s.contains("#662 2, #629 0"), "{s}");
-    let s = summary(F1);
-    assert!(s.contains(" 0/") && s.contains("#662 0, #629 1"), "{s}");
-    // (#662 with a top-level extension: `D < A` includes `M` itself, `A`
-    // has its own `m` and a top-level extension of `A` its own `m` too.)
-    let s = summary(TOP_662_ORACLE);
-    assert!(s.contains(" 0/") && s.contains("#662 2, #629 0"), "{s}");
-    // (#672: below an extension's conformance, a top-level extension's
-    // module in the subclass's dispatch by name gives the method the table
-    // pairs with the requirement; the record walks that order too, with no
-    // exclusion.)
-    let s = summary(R672_ORACLE);
-    assert!(clean(&s), "{s}");
-    // (A class's own conformance whose witness is a generic method, its
-    // own type parameters standing for the requirement's: the record's
-    // rule 3 finds it by type, with no arity resort, and agrees with the
-    // rows. The include-pair case of `own_witness` is
-    // `a_method_is_checked_in_each_receivers_frame`, refused by the net.)
-    let s = summary(GENERIC_OWN_ORACLE);
-    assert!(clean(&s), "{s}");
-    // (The same method of another result type: refused as an override.)
+fn a_top_level_extensions_module_method_of_another_type_is_refused() {
     refused(
         &R672_ORACLE.replace("def m -> String = \"E\"", "def m -> Int = 1"),
         &["`m` returns Int but `M#m`, which it overrides in `K`, which includes `E`"],
     );
 }
-const GENERIC_OWN_ORACLE: &str = "module M\n  abstract def h[T <: Comparable[T]](x: T, y: T) -> Bool\nend\nclass A\n  def initialize; end\n  def h[T <: Comparable[T]](x: T, y: T) -> Bool = x < y\nend\nclass C < A\n  include M\n  def initialize; super; end\nend\ndef via(v: M) -> Bool = v.h(1, 2)\nputs via(C.new)\n";
 const R672_ORACLE: &str = "module M\n  abstract def m -> String\nend\nmodule E\n  def m -> String = \"E\"\nend\nclass B\nend\nclass K < B\nend\nextension K\n  include E\nend\nmodule Sc\n  extension B\n    include M\n    def m -> String = \"x\"\n  end\n  def self.up(x: B) -> M = x\nend\ndef via(v: M) -> String = v.m\nputs via(Sc.up(B.new)), via(Sc.up(K.new))\n";
-const TOP_662_ORACLE: &str = "module M\n  abstract def m -> Int\nend\nclass A\n  def initialize; end\n  def m -> Int = 10\nend\nclass D < A\n  include M\n  def initialize; super; end\nend\nextension A\n  include M\n  def m -> Int = 100\nend\ndef via(v: M) -> Int = v.m\nputs via(D.new)\n";
-const R529_ORACLE: &str = "module PI\n  abstract def parse(s: String) -> Int\n  abstract def self.make(s: String) -> Int\nend\nmodule PS\n  abstract def parse(s: String) -> String\n  abstract def self.make(s: String) -> String\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\nend\nextension Box[T <: Int]\n  include PI\n  def parse(s: String) -> Int = @v + s.to_i\n  def self.make(s: String) -> Int = 1\nend\nextension Box[T <: String]\n  include PS\n  def parse(s: String) -> String = @v + s\n  def self.make(s: String) -> String = \"two\"\nend\ndef ps(x: PS) -> String = x.parse(\"!\")\na: PS = Box[String].new(\"x\")\np a.parse(\"1\")\np ps(a)\n";
-const T3_ORACLE: &str = "module M\n  abstract def m -> String\nend\nmodule N\n  include M\n  abstract def n -> String\nend\nclass K\n  include M\n  def initialize; end\n  def m -> String = \"own\"\nend\nmodule X\n  extension K\n    include N\n    def m -> String = \"ext-m\"\n    def n -> String = \"ext-n\"\n  end\n  def self.as_n(k: K) -> N = k\n  def self.direct(k: K) -> String = k.m\nend\ndef via_m(x: M) -> String = x.m\ndef via_n(x: N) -> String = x.m + \",\" + x.n\nputs via_m(K.new), via_n(X.as_n(K.new)), X.direct(K.new)\n";
