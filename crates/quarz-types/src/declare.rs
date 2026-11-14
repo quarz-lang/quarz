@@ -88,6 +88,15 @@ pub struct Declarer<'ast> {
     /// de-duplication of table entries only, never a second source of
     /// pairs (#536).
     override_pairs: HashSet<(MethodId, MethodId)>,
+    /// The (class, method, overridden method) pairs checked in a class's
+    /// frame (an include pair, an own conformance's implementation): per
+    /// class, so that one class's check never stands for another's (#688).
+    frame_checked: HashSet<(ClassId, MethodId, MethodId)>,
+    /// The pairs a check refused (reported once, at the module or the
+    /// first class including it): not reported again in another class's
+    /// frame. Only refusals: a pair that passed for one class is still
+    /// checked for the next (#688).
+    refused_pairs: HashSet<(MethodId, MethodId)>,
     /// `Type` and its subclasses (`Meta::ClassDef`), `Type` first, each
     /// with whether it takes the class as its argument: the classes a class
     /// object is an instance of (`check_class_side_overrides`), found once.
@@ -208,6 +217,8 @@ impl<'ast> Declarer<'ast> {
             pending: Vec::new(),
             pending_ext: Vec::new(),
             override_pairs: HashSet::default(),
+            frame_checked: HashSet::default(),
+            refused_pairs: HashSet::default(),
             type_classes: None,
             override_span: None,
             override_span_always: false,
@@ -2717,9 +2728,13 @@ impl<'ast> Declarer<'ast> {
         owner: ClassId,
         oargs: Option<Vec<Type>>,
     ) {
-        if !self.override_pairs.insert((mid, o)) {
-            return;
+        // (Once per class: another class's check is not this one's, #688.)
+        if let Type::Class(cid, _) = &own {
+            if !self.frame_checked.insert((*cid, mid, o)) {
+                return;
+            }
         }
+        self.override_pairs.insert((mid, o));
         let mine = match oargs {
             Some(args) => self.world.class_subst(owner, &args),
             None => HashMap::default(),
@@ -3004,6 +3019,7 @@ impl<'ast> Declarer<'ast> {
                         // itself, or at the first includer.)
                         if !self.check_override_pair(mid, o, &subst, &mine_subst, within) {
                             self.override_pairs.insert((mid, o));
+                            self.refused_pairs.insert((mid, o));
                             break;
                         }
                     }
@@ -3329,8 +3345,21 @@ impl<'ast> Declarer<'ast> {
     }
 
     /// `check_override_pair` for the overrides class `id`'s includes make
-    /// (`World::include_overrides_of`), each reported once.
+    /// (`World::include_overrides_of`), each checked once in `id`'s frame:
+    /// a pair checked for another class does not stand for this one's
+    /// (#688, the user's decision of 2026-11-14).
     fn check_include_overrides(&mut self, id: ClassId) {
+        for io in self.world.include_overrides_of(id) {
+            self.check_include_pair(id, io);
+        }
+    }
+
+    /// One include pair of class `id`, in its frame.
+    fn check_include_pair(&mut self, id: ClassId, io: IncludeOverride) {
+        let (o, by) = (io.overridden, io.by);
+        if self.refused_pairs.contains(&(by, o)) || !self.frame_checked.insert((id, by, o)) {
+            return;
+        }
         let own_args: Vec<Type> = self
             .world
             .class(id)
@@ -3339,22 +3368,19 @@ impl<'ast> Declarer<'ast> {
             .map(|p| Type::Param(p.id))
             .collect();
         let own = Type::Class(id, own_args);
-        for io in self.world.include_overrides_of(id) {
-            let (o, by) = (io.overridden, io.by);
-            if self.override_pairs.contains(&(by, o)) {
-                continue;
-            }
-            let mut subst = io.overridden_subst;
-            subst.insert(SELF_PARAM, own.clone());
-            let mut mine_subst = io.by_subst;
-            mine_subst.insert(SELF_PARAM, own.clone());
-            let within = Some(self.world.class(id).name.clone());
-            self.override_span = Some(self.world.class(id).span);
-            let ok = self.check_override_pair(by, o, &subst, &mine_subst, within);
-            self.override_span = None;
-            if !ok {
-                self.override_pairs.insert((by, o));
-            }
+        let mut subst = io.overridden_subst;
+        subst.insert(SELF_PARAM, own.clone());
+        let mut mine_subst = io.by_subst;
+        mine_subst.insert(SELF_PARAM, own);
+        let within = Some(self.world.class(id).name.clone());
+        self.override_span = Some(self.world.class(id).span);
+        let ok = self.check_override_pair(by, o, &subst, &mine_subst, within);
+        self.override_span = None;
+        // (A refused pair is not reported again by the other passes over
+        // the table, as before.)
+        if !ok {
+            self.override_pairs.insert((by, o));
+            self.refused_pairs.insert((by, o));
         }
     }
 

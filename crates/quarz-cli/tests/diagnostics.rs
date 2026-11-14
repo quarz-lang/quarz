@@ -2661,6 +2661,102 @@ fn an_overload_of_another_parameter_type_is_no_implementation() {
 }
 
 #[test]
+fn an_include_pair_is_checked_in_each_classs_frame() {
+    // #688 (the user's decision of 2026-11-14): the frame check of an
+    // include pair is made for each class, never stood for by another
+    // class's. `G#m -> T` over `M#m -> Int` passes in `A < G[Int]`'s frame
+    // and fails in `B < G[String]`'s, whichever is declared first.
+    for src in [
+        r##"module M
+  abstract def m -> Int
+  def mm -> String = "#{m + 1}!"
+end
+class G[T]
+  @v: T
+  def initialize(@v: T); end
+  def m -> T = @v
+end
+class A < G[Int]
+  def initialize; super(1); end
+end
+class B < G[String]
+  def initialize; super("s"); end
+end
+extension B
+  include M
+  def m -> Int = 100
+end
+extension A
+  include M
+end
+def via(v: M) -> String = v.mm
+puts via(B.new), via(A.new)
+"##,
+        r##"module M
+  abstract def m -> Int
+  def mm -> String = "#{m + 1}!"
+end
+class G[T]
+  @v: T
+  def initialize(@v: T); end
+  def m -> T = @v
+end
+class A < G[Int]
+  def initialize; super(1); end
+end
+extension A
+  include M
+end
+class B < G[String]
+  def initialize; super("s"); end
+end
+extension B
+  include M
+  def m -> Int = 100
+end
+def via(v: M) -> String = v.mm
+puts via(B.new), via(A.new)
+"##,
+    ] {
+        let out = common::diagnostics(src).join("\n");
+        assert!(
+            out.contains("8:3: error: `m` returns String but `M#m`, which it overrides in `B`, which includes `M`, returns Int"),
+            "{out}"
+        );
+        assert_eq!(out.matches("error:").count(), 1, "{out}");
+    }
+    // (The classes' own includes: the implementation each class's own
+    // conformance takes, `G#m`, checked in B's frame too.)
+    let out = common::diagnostics(
+        r##"module M
+  abstract def m -> Int
+  def mm -> String = "#{m + 1}!"
+end
+class G[T]
+  @v: T
+  def initialize(@v: T); end
+  def m -> T = @v
+end
+class A < G[Int]
+  include M
+  def initialize; super(1); end
+end
+class B < G[String]
+  include M
+  def initialize; super("s"); end
+end
+def via(v: M) -> String = v.mm
+puts via(A.new), via(B.new)
+"##,
+    )
+    .join("\n");
+    assert!(
+        out.contains("8:3: error: `m` returns String but `M#m`, which it overrides, returns Int"),
+        "{out}"
+    );
+}
+
+#[test]
 fn the_class_relative_override_pairs_are_checked() {
     // #536 step 1: a later-included module's method over an earlier one's,
     // a superclass's method implementing an included module's abstract
