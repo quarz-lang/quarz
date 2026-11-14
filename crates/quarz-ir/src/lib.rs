@@ -2090,9 +2090,10 @@ impl RtWorld {
     }
 
     /// The witness of module class method `mid` for class `cid` (#504):
-    /// recorded for the nearest class up its superclass chain, or for a
-    /// module one of them includes (an extension of that module, `extension
-    /// Mid; include M`), as the instance side's `ext_impls` reach it.
+    /// recorded for the nearest class up its superclass chain (an
+    /// extension's target, never a module: an extension of a module
+    /// includes nothing, rule B), as the instance side's `ext_impls` reach
+    /// it.
     pub fn class_witness(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
         let w = self;
         // (`RtClass::class_side`, `World::class_side_order`: the checker's
@@ -2101,14 +2102,7 @@ impl RtWorld {
             w.class_ext_impls
                 .iter()
                 .find(|(x, o, _)| x == k && *o == mid)
-                .map(|(_, _, by)| {
-                    // (Recorded for an extension's target, never a module:
-                    // an extension of a module includes nothing, rule B.)
-                    if w.class(*k).kind == RtClassKind::Module {
-                        unreachable!("an extension of a module includes nothing (rule B, #638): no class witness is recorded for a module");
-                    }
-                    *by
-                })
+                .map(|(_, _, by)| *by)
         })
     }
 
