@@ -112,12 +112,7 @@ pub fn fill(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<Strin
         rc.fields = fields;
     }
     for (m, rm) in world.methods.iter().zip(rt.methods.iter_mut()) {
-        let key = if m.singleton {
-            format!("self.{}", m.name)
-        } else {
-            m.name.clone()
-        };
-        rm.overridden |= lw.overridden.contains(&(m.owner, key));
+        rm.overridden |= lw.overridden.contains(&m.id);
         rm.func = lw.method_funcs.get(m.id as usize).copied().flatten();
     }
     rt.consts = world

@@ -192,10 +192,10 @@ pub struct Lowerer {
     round_base: FuncId,
     /// Source files by index, for line numbers.
     pub(crate) files: Vec<SourceFile>,
-    /// `(class, name)` pairs for which some descendant of the class (or
-    /// an extension on one) declares a method `name`: a call resolved to
-    /// the class's method may dispatch elsewhere.
-    pub(crate) overridden: HashSet<(ClassId, String)>,
+    /// The methods something takes the place of at run time
+    /// (`World::overridden_methods` over the override table): a call of
+    /// one may dispatch elsewhere (`RtMethod::overridden`, #715).
+    pub(crate) overridden: HashSet<MethodId>,
     /// Where each class's declared fields live (see `layout`).
     pub(crate) layouts: Vec<layout::Layout>,
     /// The prelude's methods are lowered only once something lowered may
@@ -340,7 +340,7 @@ impl Lowerer {
         let class_ok = |c: &ClassId| (*c as usize) < classes;
         self.field_default_funcs.retain(|(c, _), _| class_ok(c));
         self.may_deinitialize.retain(|c, _| class_ok(c));
-        self.overridden.retain(|(c, _)| class_ok(c));
+        self.overridden.retain(|m| (*m as usize) < methods);
         self.static_skip.retain(class_ok);
         self.unchecked.retain(|m| (*m as usize) < methods);
         self.unchecked_consts.retain(|c| (*c as usize) < consts);
@@ -421,7 +421,7 @@ impl Lowerer {
         self.quoted_sites.clear();
         self.pending.clear();
         self.files = files;
-        self.overridden = overridden_methods(world);
+        self.overridden = world.overridden_methods(&world.override_table());
         self.layouts = layout::compute(world);
 
         // Methods.
@@ -939,7 +939,7 @@ impl Lowerer {
         self.quoted_sites.clear();
         self.pending.clear();
         self.files = files;
-        self.overridden = overridden_methods(world);
+        self.overridden = world.overridden_methods(&world.override_table());
         self.layouts = layout::compute(world);
         if self.method_funcs.len() < world.methods.len() {
             self.method_funcs.resize(world.methods.len(), None);
@@ -1123,8 +1123,8 @@ impl Lowerer {
         }
         // A field reader nothing overrides is a field read once linked
         // (`cha::rewrite`): it calls no method of its name.
-        let plain_reader = matches!(m.synth, quarz_types::Synth::FieldGet(_))
-            && !self.overridden.contains(&(m.owner, m.name.clone()));
+        let plain_reader =
+            matches!(m.synth, quarz_types::Synth::FieldGet(_)) && !self.overridden.contains(&m.id);
         if !plain_reader {
             self.reach_name(world, &m.name, by_name, work);
         }
@@ -1551,107 +1551,6 @@ fn is_override(world: &World, o: MethodId, m: MethodId) -> bool {
                 world.class_is_a_at_run_time(c.id, owner)
                     && world.class_is_a_at_run_time(c.id, om.owner)
             }))
-}
-
-/// Class hierarchy analysis: for every class, the names its descendants
-/// (and extensions on them) declare, as `(ancestor, name)` pairs; a class
-/// method's name is spelled `self.name`.
-fn overridden_methods(world: &World) -> HashSet<(ClassId, String)> {
-    let mut declared: HashMap<ClassId, Vec<String>> = HashMap::default();
-    for c in &world.classes {
-        let names = declared.entry(c.id).or_default();
-        // (A file's top-level `def`s are functions: they override nothing.)
-        if c.kind == quarz_types::ClassKind::Main {
-            continue;
-        }
-        names.extend(c.methods.keys().cloned());
-        names.extend(c.singleton_methods.keys().map(|n| format!("self.{n}")));
-    }
-    for e in &world.extensions {
-        declared
-            .entry(e.target)
-            .or_default()
-            .extend(e.methods.keys().cloned());
-    }
-    let conf = world.all_conformance_extensions();
-    let ancestors: Vec<Vec<ClassId>> = world
-        .classes
-        .iter()
-        // (Every extension's include, a conditional one's too, whichever
-        // are active where the lowering runs: the same on a warm cache as
-        // on a cold one, #536.)
-        .map(|c| {
-            world
-                .own_ancestors_under(c.id, &conf)
-                .into_iter()
-                .map(|(a, _)| a)
-                .collect()
-        })
-        .collect();
-    let mut out = HashSet::default();
-    // (`anc`, module) pairs done: many classes include one module.
-    let mut done: HashSet<(ClassId, ClassId)> = HashSet::default();
-    for c in &world.classes {
-        let own: Vec<&String> = declared.get(&c.id).into_iter().flatten().collect();
-        let mine = &ancestors[c.id as usize];
-        // Modules the class includes (not a module itself, whose methods
-        // only reach a class through it).
-        let modules: Vec<ClassId> = if c.kind == quarz_types::ClassKind::Module {
-            Vec::new()
-        } else {
-            mine.iter()
-                .copied()
-                .filter(|m| *m != c.id && world.class(*m).kind == quarz_types::ClassKind::Module)
-                .collect()
-        };
-        for anc in mine {
-            if *anc == c.id {
-                continue;
-            }
-            for name in &own {
-                out.insert((*anc, (*name).clone()));
-            }
-            // A module the class includes overrides `anc`'s methods unless
-            // `anc` includes it too (it then comes after `anc`).
-            for m in &modules {
-                if m == anc || ancestors[*anc as usize].contains(m) || !done.insert((*anc, *m)) {
-                    continue;
-                }
-                for name in declared.get(m).into_iter().flatten() {
-                    out.insert((*anc, name.clone()));
-                }
-            }
-        }
-    }
-    // A class method replaces, on the class's value, the `Type` method of
-    // its name and signature (`Interp::class_side_override`): a call
-    // through `k: Type` dispatches (docs/01 §9).
-    let type_side = &ancestors[world.builtin.class_ as usize];
-    for c in &world.classes {
-        if c.kind == quarz_types::ClassKind::Main {
-            continue;
-        }
-        // (A module's too: an including class has them.)
-        let names: Vec<String> = c.singleton_methods.keys().cloned().collect();
-        for name in names {
-            for anc in type_side {
-                out.insert((*anc, name.clone()));
-            }
-        }
-    }
-    // A module's class method an extension's own takes the place of for
-    // its target class (`World::class_ext_impls`, #504).
-    for w in world.class_ext_impls.iter().filter(|w| w.by != w.method) {
-        let om = world.method(w.method);
-        out.insert((om.owner, format!("self.{}", om.name)));
-    }
-    // A superclass's class method that a module a class includes overrides
-    // (`World::class_include_overrides`).
-    for (_, o, _) in world.class_include_overrides() {
-        let om = world.method(o);
-        out.insert((om.owner, format!("self.{}", om.name)));
-    }
-    out
 }
 
 /// Lower a whole checked program into a module. `files` are the source
