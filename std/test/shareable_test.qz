@@ -34,6 +34,29 @@ data ShareableTestBox[T] = (v: T)
 data ShareableTestOps = (f: shareable (Int) -> Int)
 data ShareableTestHolder = (c: ShareableTestCounter)
 
+# Deliberately not Shareable, though their fields hold only Ints.
+data ShareableTestToken(n: Int)
+  include Unshareable
+end
+
+data ShareableTestGenToken[T](v: T)
+  include Unshareable
+end
+
+module ShareableTestLocal
+  include Unshareable
+end
+
+data ShareableTestViaModule[T](v: T)
+  include ShareableTestLocal
+end
+
+enum ShareableTestLocalEnum
+  include Unshareable
+  variant One(n: Int)
+  variant Two
+end
+
 enum ShareableTestTree[T]
   variant Leaf(v: T)
   variant Node(l: ShareableTestTree[T], r: ShareableTestTree[T])
@@ -104,6 +127,17 @@ class ShareableTest < Test::Case
     bad = ShareableTestTree::Leaf[ShareableTestCounter].new(ShareableTestCounter.new)
     assert_false(ShareableTestTree::Node[ShareableTestCounter].new(bad, ShareableTestTree::Empty[ShareableTestCounter].new).shareable?)
     assert_true(ShareableTestTree::Empty[ShareableTestCounter].new.shareable?)
+  end
+
+  def test_unshareable_data_and_enums
+    # `include Unshareable` makes the type not Shareable whatever its
+    # fields hold: the value answers false too.
+    assert_false(ShareableTestToken.new(1).shareable?)
+    assert_false(ShareableTestGenToken[Int].new(1).shareable?)
+    assert_false(ShareableTestViaModule[Int].new(1).shareable?)
+    assert_false(ShareableTestLocalEnum::One.new(1).shareable?)
+    assert_false(ShareableTestLocalEnum::Two.shareable?)
+    assert_false([ShareableTestToken.new(1)].shareable?)
   end
 
   def test_classes_by_their_promise

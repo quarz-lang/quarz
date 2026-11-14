@@ -575,7 +575,7 @@ pub enum Rule {
     /// It is Shareable (docs/03 §5), as `Object#shareable?` answers: a
     /// built-in collection, a tuple, a range, and a `data` value or enum
     /// variant without the `Shareable` marker (a generic one) by their
-    /// parts; a procedure never (an approximation that errs only towards
+    /// parts, but never one whose type includes `Unshareable`; a procedure never (an approximation that errs only towards
     /// false: the value does not record whether it is a `shareable` one,
     /// #706); any other value by whether its class is a `Shareable` (the
     /// membership `is_a?` reads: the marker a class's include, or the
@@ -670,6 +670,12 @@ fn shareable_parts(interp: &Interp, v: &Value, work: &mut Vec<Value>) -> bool {
         }
         Value::Proc(_) => return false,
         Value::Object(o) => {
+            // A type that includes `Unshareable` (directly or through a
+            // module) is not Shareable whatever its fields hold: its values
+            // stay in the task that made them (docs/03 §5).
+            if world.class_is_a(o.class, interp.program.rt.unshareable) {
+                return false;
+            }
             if world.class_is_a(o.class, shareable) {
                 return true;
             }
