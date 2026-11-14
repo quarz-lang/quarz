@@ -498,8 +498,10 @@ fn a_statement_reaches_what_dispatch_may_find() {
     // superclass, a module included in a subclass, a class's own
     // `def self.` over an included module's or `Type`'s (a
     // `Meta::ClassDef`'s in a static def, whose `self` is the class; not
-    // `type`, always the reflection's there, #553), an abstract method's
-    // implementation above it.
+    // `type`, always the reflection's there, #553), an abstract class's
+    // requirement implemented below it (the subclass's own method, its
+    // include, a top-level extension's module of it: one above it is
+    // hidden by the abstract declaration, #687's option 1).
     for (lib, app, want) in [
         ("module Shape\n  abstract def area -> Int\n  def describe -> String = \"area #{area}\"\nend\nclass Base\n  def area -> Int = 7\nend\nclass Sq < Base\n  include Shape\nend\nclass Model\n  static def self.show(s: Shape) -> Void\n    puts s.describe\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show Sq.new\nend\n", "area 7\n"),
         ("module Loud\n  def label -> String = \"loud\"\nend\nclass A\n  def label -> String = \"a\"\nend\nclass B < A\n  include Loud\nend\nclass Model\n  static def self.show(k: A) -> Void\n    puts k.label\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show B.new\nend\n", "loud\n"),
@@ -507,7 +509,9 @@ fn a_statement_reaches_what_dispatch_may_find() {
         ("class A\n  def self.name -> String = \"customA\"\nend\nclass Model\n  static def self.show(k: Type[Object]) -> Void\n    puts k.name\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show A\nend\n", "customA\n"),
         ("class Model\n  static def self.show -> Void\n    puts type.name\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  def self.type -> Type[Post]\n    puts \"own type\"\n    Post\n  end\n  show\nend\n", "Post\n"),
         ("module Typed\n  def self.doc(text: String) -> Void\n    puts \"typed #{text}\"\n  end\nend\nclass Model\n  static def self.show -> Void\n    doc(\"x\")\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  include Typed\n  show\nend\n", "typed x\n"),
-        ("class Base\n  def label -> String = \"base\"\nend\nabstract class A < Base\n  abstract def label -> String\nend\nclass B < A\nend\nclass Model\n  static def self.show(k: A) -> Void\n    puts k.label\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show B.new\nend\n", "base\n"),
+        ("class Base\n  def label -> String = \"base\"\nend\nabstract class A < Base\n  abstract def label -> String\nend\nclass B < A\n  def label -> String = \"b\"\nend\nclass Model\n  static def self.show(k: A) -> Void\n    puts k.label\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show B.new\nend\n", "b\n"),
+        ("module N\n  def label -> String = \"n\"\nend\nclass Base\n  def label -> String = \"base\"\nend\nabstract class A < Base\n  abstract def label -> String\nend\nclass B < A\n  include N\nend\nclass Model\n  static def self.show(k: A) -> Void\n    puts k.label\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show B.new\nend\n", "n\n"),
+        ("module N\n  def label -> String = \"top\"\nend\nclass Base\n  def label -> String = \"base\"\nend\nabstract class A < Base\n  abstract def label -> String\nend\nclass B < A\nend\nextension B\n  include N\nend\nclass Model\n  static def self.show(k: A) -> Void\n    puts k.label\n  end\nend\n", "require_relative \"lib\"\nclass Post < Model\n  show B.new\nend\n", "top\n"),
     ] {
         let d = dir();
         write(&d.0, "lib.qz", lib);

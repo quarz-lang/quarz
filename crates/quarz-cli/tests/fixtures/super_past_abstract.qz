@@ -128,13 +128,16 @@ end
 puts C8.new.f("s", true)
 
 # An extension's method over its target's own abstract: the target is
-# passed over to the superclass's body.
+# passed over to the superclass's body. (`A9#f(Object)` implements the
+# requirement for `C9`: `Base9#f` above the abstract declaration would be
+# hidden by it, #687's option 1.)
 class Base9
   def f(x: Int) -> String = "Base9:#{x}"
 end
 abstract class A9 < Base9
   abstract def f(x: Int) -> String
   def f(x: String) -> String = "A9:" + x
+  def f(x: Object) -> String = "A9obj"
 end
 class C9 < A9
   def initialize; end
@@ -147,13 +150,15 @@ puts a9.f(1)
 
 # Another extension of the target active where this one is declared
 # (`using Y` in `X`): `X`'s `super` reaches its method (#585), whose own
-# `super` passes A10 over to Base10.
+# `super` passes A10 over to Base10. (`A10#f(Object)` implements the
+# requirement for `C10`, as for `C9`.)
 class Base10
   def f(x: Int) -> String = "Base10:#{x}"
 end
 abstract class A10 < Base10
   abstract def f(x: Int) -> String
   def f(x: String) -> String = "A10str"
+  def f(x: Object) -> String = "A10obj"
 end
 class C10 < A10
   def initialize; end

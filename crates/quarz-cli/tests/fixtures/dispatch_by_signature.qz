@@ -58,8 +58,9 @@ puts above(B.new(5))
 puts above(D.new(5))
 
 # An implementation above where the abstract method is declared: in the
-# superclass of the class including the module, and above an abstract
-# class's own abstract stub.
+# superclass of the class including the module (a module's requirement,
+# accepted). Above an abstract class's own abstract stub it is hidden
+# (#687's option 1, re-abstraction): `Leaf` defines its own.
 module Counted
   abstract def size_of -> Int
   def plus_one -> Int = size_of + 1
@@ -82,6 +83,7 @@ abstract class Middle < Base
 end
 
 class Leaf < Middle
+  def count -> Int = 6
 end
 
 p Box.new.plus_one
