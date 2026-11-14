@@ -1,0 +1,39 @@
+# #528 with #669's decision: `C < Base` includes `N`, and an extension of
+# `C` makes it conform to `M`. The witness of `M.make` is `N.make`, the
+# first in `C`'s class-side dispatch; it has no `super`, so `Base.make`
+# (and its `new`) never runs for `Sub` through `Type[M]`, and `Sub`'s
+# `initialize` need not take `Base#initialize`'s arguments. Through
+# `Type[M]`, `Sub` runs the witness (`N.make`, which raises); directly,
+# its own `make`.
+module M
+  abstract def self.make -> Self
+end
+class Base
+  def self.make -> Self = new
+end
+module N
+  def self.make -> Self = raise "no"
+end
+class C < Base
+  include N
+end
+module X
+  extension C
+    include M
+  end
+  def self.t -> Type[M] = Sub
+end
+class Sub < C
+  @x: Int
+  def initialize(@x: Int); end
+  def self.make -> Self = new(1)
+  def x -> Int = @x
+end
+def f(t: Type[M]) -> String
+  t.make
+  "made"
+rescue
+  "raised"
+end
+puts Sub.make.x + 1
+puts f(X.t)

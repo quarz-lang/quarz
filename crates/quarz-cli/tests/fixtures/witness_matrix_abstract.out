@@ -2,8 +2,8 @@ abstract/ext/ext/none: ext ext ext
 abstract/ext/ext/concrete: ext ext ext
 abstract/ext/own/none: own own own
 abstract/ext/own/concrete: own own own
-abstract/ext/sup/none: sup sup sup
-abstract/ext/sup/concrete: sup sup sup
+abstract/ext/sup/none: M M M
+abstract/ext/sup/concrete: M M M
 abstract/ext/nmod/none: N N N
 abstract/ext/nmod/concrete: N N N
 abstract/ext/default/none: M M M
@@ -12,8 +12,8 @@ abstract/ext_sub/ext/none: ext ext ext
 abstract/ext_sub/ext/concrete: ext ext ext
 abstract/ext_sub/own/none: own own own
 abstract/ext_sub/own/concrete: own own own
-abstract/ext_sub/sup/none: sup sup sup
-abstract/ext_sub/sup/concrete: sup sup sup
+abstract/ext_sub/sup/none: M M M
+abstract/ext_sub/sup/concrete: M M M
 abstract/ext_sub/nmod/none: N N N
 abstract/ext_sub/nmod/concrete: N N N
 abstract/ext_sub/default/none: M M M

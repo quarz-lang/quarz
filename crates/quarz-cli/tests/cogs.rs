@@ -2449,7 +2449,10 @@ fn witness_matrix_across_cogs() {
     // classes conform to `M`, one per witness source; the application's
     // subclasses of them reach the same witnesses through the library's
     // `Type[M]` (the extensions are not active in the application), run
-    // and built.
+    // and built. (`XSup < B` with `extension XSup; include M`: `M.d`'s
+    // default comes before `B.d` in the class-side order with the
+    // extension active, #669's decision (y): `M`, as the fixtures' `sup`
+    // cells.)
     let w = World::new();
     w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
     w.write(
@@ -2470,7 +2473,7 @@ fn witness_matrix_across_cogs() {
         &dep,
         "class SExt < L::XExt\nend\nclass SOwn < L::XOwn\nend\nclass SSup < L::XSup\nend\nclass SN < L::XN\nend\nclass SDef < L::XDef\nend\nputs L::Reg.ext(L::XExt), L::Reg.ext(SExt)\nputs L::Reg.own(L::XOwn), L::Reg.own(SOwn)\nputs L::Reg.sup(L::XSup), L::Reg.sup(SSup)\nputs L::Reg.n(L::XN), L::Reg.n(SN)\nputs L::Reg.default(L::XDef), L::Reg.default(SDef)\n",
     );
-    let expected = "ext\next\nown\nown\nsup\nsup\nN\nN\nM\nM\n";
+    let expected = "ext\next\nown\nown\nM\nM\nN\nN\nM\nM\n";
     assert_eq!(w.ok("app", &["run"]), expected);
     w.ok("app", &["build", "-o", "app.bin"]);
     let run = std::process::Command::new(w.path("app/app.bin"))

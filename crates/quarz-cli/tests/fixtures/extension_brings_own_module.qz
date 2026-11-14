@@ -1,8 +1,10 @@
 # An extension's include of `N`, which brings `M` that the class has by a
 # superclass's own include (#504): for `M` the class's own conformance
 # holds, so `Type[M]` and `T <: M` go by ordinary dispatch (`M.d`, or
-# `Base2.d`); for `N` the extension's witnesses apply (`N.d`, or the
-# superclass's `Base2.d` of the signature, before the module's default).
+# `Base2.d`); for `N` the extension's witnesses apply: `N.d` for both,
+# the module's default, which the class-side order with the extension
+# active reaches before the superclass (`Base`'s `M`, `Base2.d`; #669's
+# decision (y)).
 module M
   def self.d -> String = "M"
 end

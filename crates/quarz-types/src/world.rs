@@ -1410,6 +1410,28 @@ impl World {
     /// extension's include brings witnesses, not class methods, #504). The
     /// one order class-side dispatch, the witnesses' lookup (#504) and the
     /// checker's questions about it go by; `RtClass::class_side` ships it.
+    /// The class-side order of extension `ext`'s target in which its
+    /// class-side witnesses are looked for (#669's decision (y)): the
+    /// class's order with `ext` alone active (`resolution(.., View::Static)`
+    /// under it; the prelude's always-active extensions are part of every
+    /// order): the class's own class methods, its own includes, `ext`'s
+    /// includes (the last written first, each with what it brings), then a
+    /// superclass's with its includes. No other extension is in it, active
+    /// where `ext` is declared or not: an extension completes its
+    /// conformance itself, from its own methods, the modules it includes
+    /// and the target's own side (R0, #635; D, #601), so another
+    /// extension's module (a sibling's, ambiguous with `ext`'s, #577, or a
+    /// superclass's scoped one) never supplies its witness. (A top-level
+    /// unconditional extension's module, which the instance side's
+    /// dispatch counts and the class side's does not, is #681.) The
+    /// witness is the first that fits in this order with one filter, a
+    /// method the requirement itself overrides being none (#680,
+    /// `Declarer::check_extension_class_side`).
+    pub fn class_side_with(&self, ext: ExtensionId) -> Vec<(ClassId, Vec<Type>)> {
+        let target = self.extensions[ext as usize].target;
+        self.with_active(vec![ext], || self.resolution(target, &[], View::Static))
+    }
+
     pub fn class_side_order(&self, c: ClassId) -> Vec<ClassId> {
         self.resolution(c, &[], View::Declared)
             .into_iter()
