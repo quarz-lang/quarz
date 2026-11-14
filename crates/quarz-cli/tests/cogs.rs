@@ -1980,6 +1980,34 @@ fn a_dependencys_functions_at_compile_time() {
 }
 
 #[test]
+fn a_roots_included_class_methods_answer_through_cog() {
+    // #726: a library cog's root includes a module whose class methods
+    // take the place of `Cog`'s (`name`, `version`, `module_name`): a call
+    // through a `Cog` value runs the module's, compiled as on the VM
+    // (the slot comes from the override table, #715).
+    let w = World::new();
+    w.write(
+        "lib/Cog.toml",
+        "[cog]\nname = \"lib\"\nversion = \"1.0.0\"\nmodule = \"Lib\"\n",
+    );
+    w.write(
+        "lib/src/a.qz",
+        "module Ver\n  def self.name -> String = \"ver-name\"\n  def self.version -> String = \"ver-version\"\n  def self.module_name -> String = \"ver-module\"\nend\ninclude Ver\npublic def hello -> String = \"hi\"\n",
+    );
+    w.commit("lib", Some("v1.0.0"));
+    let dep = format!("L = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url("lib"));
+    w.app(
+        &dep,
+        "def n(c: Cog) -> String = c.name\ndef v(c: Cog) -> String = c.version\ndef m(c: Cog) -> String = c.module_name\ndef t(k: Type[Object]) -> String = k.name\nputs n(L), v(L), m(L), t(L)\n",
+    );
+    let expected = "ver-name\nver-version\nver-module\nver-name\n";
+    assert_eq!(w.ok("app", &["run"]), expected);
+    w.ok("app", &["build", "-o", "app.bin"]);
+    let exe = Command::new(w.path("app/app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&exe.stdout), expected);
+}
+
+#[test]
 fn a_cogs_public_functions() {
     // docs/10 §6: `public def f` is called `Key.f` from the cogs that
     // depend on the cog (and `cog.f` inside it); a `def` is private to it.

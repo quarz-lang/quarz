@@ -3652,9 +3652,14 @@ impl World {
     /// `class_include_overrides`); and every module class method an
     /// extension's witness replaces (`class_ext_impls`). A call of a
     /// method outside it runs that method whatever the receiver; an
-    /// abstract method dispatches as well (`RtMethod::overridden`).
+    /// abstract method dispatches as well (`RtMethod::overridden`). An
+    /// extension's method is never in it: it is bound statically
+    /// (docs/01 §7), whatever replaces it in the table.
     pub fn overridden_methods(&self, table: &[Vec<MethodId>]) -> HashSet<MethodId> {
         let mut out: HashSet<MethodId> = table.iter().flatten().copied().collect();
+        // (Not an extension's method: one is bound statically, docs/01 §7,
+        // and no reader of the slot looks at it.)
+        out.retain(|m| self.method(*m).extension.is_none());
         out.extend(self.include_overrides().into_iter().map(|(_, o, _)| o));
         out.extend(
             self.class_include_overrides()

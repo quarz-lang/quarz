@@ -2666,6 +2666,21 @@ impl Interp {
         // (whose own class methods may stand in for a module's): the
         // method is the one.
         if self.program.vslots[mid as usize] == u32::MAX && !matches!(recv, Value::Class(_)) {
+            // (The slot set and the override table agree: an object's class
+            // runs the method itself, `RtWorld::dispatch_target`. #715, for
+            // one CI run; removed in the pull request's last commit.)
+            #[cfg(debug_assertions)]
+            if let Value::Object(o) = recv {
+                let method = |id: MethodId| self.program.method(id);
+                let found = self.program.world.dispatch_target(&method, o.class, mid);
+                assert!(
+                    found == mid,
+                    "internal error: `{}` has no virtual slot, but `{}` runs `{}` for it",
+                    m.name,
+                    self.program.world.class(o.class).name,
+                    self.program.method(found).name
+                );
+            }
             return Ok(mid);
         }
         if let Value::Class(cid) = recv {

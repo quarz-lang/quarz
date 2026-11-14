@@ -67,20 +67,14 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
     rt
 }
 
-/// (Oracle, temporary, #715.) The slot set by id from the tables
-/// (`World::overridden_methods`) against the lowering's by-name one
-/// (`RtMethod::overridden` as `fill` leaves it): a method the new set has
-/// and the old lacks is a run-time override with no name pair (#715's
-/// hole); one the old has and the new lacks loses its slot, listed. With
-/// `QUARZ_ORACLE_LOG` each is a line in that file, else the first is an
-/// internal error (the lost slots are only logged). With
-/// `QUARZ_CHECK_SLOTS`, every class with values and every instance method
-/// of its ancestors outside the new set must dispatch to itself
-/// (`dispatch_target`), and every class method outside it must have no
-/// override (`class_method_override`).
-fn slot_oracle(rt: &RtWorld, world: &World) {
-    let table: Vec<Vec<MethodId>> = rt.methods.iter().map(|m| m.overrides.clone()).collect();
-    let new = world.overridden_methods(&table);
+/// (Temporary, #715: removed in this pull request's last commit.) With
+/// `QUARZ_CHECK_SLOTS`, an exhaustive check of the slot set: for every
+/// class with values, every instance method of its ancestors without a
+/// slot must dispatch to itself (`dispatch_target`), and every class
+/// method without one must have no override (`class_method_override`).
+/// A failure is a line in the file `QUARZ_ORACLE_LOG` names, else an
+/// internal error. Not in CI's default path.
+fn slot_oracle(rt: &RtWorld, _world: &World) {
     let log = std::env::var_os("QUARZ_ORACLE_LOG");
     let report = |line: String, fatal: bool| match &log {
         Some(path) => {
@@ -101,24 +95,6 @@ fn slot_oracle(rt: &RtWorld, world: &World) {
         let sep = if m.singleton { "." } else { "#" };
         format!("{}{sep}{}", rt.class(m.owner).name, m.name)
     };
-    for (i, m) in rt.methods.iter().enumerate() {
-        let id = i as MethodId;
-        if m.name.is_empty() {
-            continue;
-        }
-        let now = new.contains(&id) || m.is_abstract;
-        if now && !m.overridden {
-            report(
-                format!(
-                    "slot: `{}` is overridden by the tables but has no name pair (#715)",
-                    name(id)
-                ),
-                true,
-            );
-        } else if !now && m.overridden {
-            report(format!("slot lost: `{}`", name(id)), false);
-        }
-    }
     if std::env::var_os("QUARZ_CHECK_SLOTS").is_none() {
         return;
     }
@@ -139,7 +115,7 @@ fn slot_oracle(rt: &RtWorld, world: &World) {
                 if m.owner != anc
                     || m.singleton
                     || m.is_extension
-                    || new.contains(&mid)
+                    || method(mid).overridden
                     || m.is_abstract
                 {
                     continue;
@@ -160,7 +136,7 @@ fn slot_oracle(rt: &RtWorld, world: &World) {
             }
             for &mid in a.singleton_methods.values().flatten() {
                 let m = method(mid);
-                if m.owner != anc || m.is_extension || new.contains(&mid) || m.is_abstract {
+                if m.owner != anc || m.is_extension || method(mid).overridden || m.is_abstract {
                     continue;
                 }
                 checked += 1;
@@ -233,12 +209,7 @@ fn fill_tables(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<St
         rc.fields = fields;
     }
     for (m, rm) in world.methods.iter().zip(rt.methods.iter_mut()) {
-        let key = if m.singleton {
-            format!("self.{}", m.name)
-        } else {
-            m.name.clone()
-        };
-        rm.overridden |= lw.overridden.contains(&(m.owner, key));
+        rm.overridden |= lw.overridden.contains(&m.id);
         rm.func = lw.method_funcs.get(m.id as usize).copied().flatten();
     }
     rt.consts = world
