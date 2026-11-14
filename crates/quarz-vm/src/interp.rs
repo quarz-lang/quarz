@@ -2842,7 +2842,27 @@ impl Interp {
                 )
             })
         } else {
-            world.witness_of(&method, cid, abs)
+            // The only other keys `find_method` could pass are an abstract
+            // class's requirements (an instance's class is never a module,
+            // a file's top level has no abstract method, `find_method`
+            // searches instance methods, and an always-active extension's
+            // own method, looked at first on each ancestor, is never
+            // abstract: an extension declares none). `find_method` takes
+            // the first method of the name in `RtClass::lookup` accepting
+            // the call's positional count and block. Since #687's option 1
+            // the declarer refuses a concrete class unless `own_witness`'s
+            // implementation of each such requirement comes before it in
+            // `View::Lookup` (what `World::lookup_ancestors`, shipped as
+            // `RtClass::lookup`, is), and it takes the requirement's calls
+            // (every count, the block): the walk accepts it, or an earlier
+            // method, first. The `'mods` loop passes a module's requirement,
+            // a key of the rows. (#536 step 3's S3: `witness_of` goes after
+            // one CI run with this.)
+            unreachable!(
+                "internal error: `{}` on `{}` reached an abstract class's requirement by name (#687: implemented before it in the lookup)",
+                self.program.method(abs).name,
+                world.class(cid).name
+            )
         }
     }
 
