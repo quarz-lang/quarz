@@ -107,7 +107,21 @@ fn slot_oracle(rt: &RtWorld, world: &World) {
             continue;
         }
         let now = new.contains(&id) || m.is_abstract;
-        if now && !m.overridden {
+        // (The override table pairs a class method with the instance
+        // methods of every class of class objects. One whose instances are
+        // only class objects that declare no class methods of their own
+        // (`Cog`: a cog's root module, which has none, docs/10 §6) is
+        // paired though nothing reaches the pair: the table marks more
+        // than run time, the safe direction (#723), not #715's hole.)
+        if now && !m.overridden && m.owner == rt.builtin.cog {
+            report(
+                format!(
+                    "slot: `{}` is paired by the table only (no class object reaches it, #723)",
+                    name(id)
+                ),
+                false,
+            );
+        } else if now && !m.overridden {
             report(
                 format!(
                     "slot: `{}` is overridden by the tables but has no name pair (#715)",
