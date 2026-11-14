@@ -68,6 +68,13 @@ pub struct Lowerer {
     /// (`declare`) and taken by the next lowering round, which completes
     /// them (`rtworld::fill`): built once per program.
     declared: Option<(quarz_ir::RtWorld, [usize; 3])>,
+    /// The witness record of the world a compile-time round last built
+    /// its tables for (`rtworld::witness_record`), by what it reads: the
+    /// world's size and its witness tables' (`record_key`). Made again
+    /// when they change.
+    #[allow(clippy::type_complexity)]
+    record_memo:
+        std::cell::RefCell<Option<([usize; 5], Vec<(ClassId, MethodId, Option<MethodId>)>)>>,
     /// Lowering for a compile-time run (docs/14): every method is lazy,
     /// reached from the statement, and one whose body is not checked yet
     /// is reported instead of lowered.
@@ -1782,6 +1789,31 @@ fn rows_errors(
 
 /// The world's size the declared tables were built for: its classes,
 /// methods and extensions.
+/// What the witness record reads, by size: the world's classes,
+/// methods and extensions, and R0's and the class side's witnesses.
+fn record_key(world: &World) -> [usize; 5] {
+    let [c, m, e] = world_size(world);
+    [c, m, e, world.ext_impls.len(), world.class_ext_impls.len()]
+}
+
+impl Lowerer {
+    /// The witness record for `world` (`rtworld::witness_record`), kept
+    /// while `record_key` stays the same: the compile-time rounds of a
+    /// program build their tables again and again (#536 step 3's S2).
+    pub fn witness_record(&self, world: &World) -> Vec<(ClassId, MethodId, Option<MethodId>)> {
+        let key = record_key(world);
+        let mut memo = self.record_memo.borrow_mut();
+        if let Some((k, r)) = memo.as_ref() {
+            if *k == key {
+                return r.clone();
+            }
+        }
+        let r = rtworld::witness_record(world);
+        *memo = Some((key, r.clone()));
+        r
+    }
+}
+
 fn world_size(world: &World) -> [usize; 3] {
     [
         world.classes.len(),

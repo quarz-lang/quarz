@@ -62,7 +62,7 @@ fn param_kind(k: ParamKind) -> RtParamKind {
 /// The runtime's world for a lowering round: what the declarations decide
 /// (`declared`), then what the lowering made (`fill`).
 pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
-    let mut rt = declared(world, out);
+    let mut rt = declared_with(world, out, lw.witness_record(world));
     fill(&mut rt, world, lw, file_names);
     rt
 }
@@ -143,6 +143,31 @@ pub fn fill(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<Strin
 /// reads the rows) and completed by the lowering (`fill`); the lowering's
 /// fields are empty here.
 pub fn declared(world: &World, out: &types::Output) -> RtWorld {
+    declared_with(world, out, witness_record(world))
+}
+
+/// The checker's witness record as the rows read it
+/// (`RtWorld::witness_record`): (class, requirement, witness), sorted, one
+/// entry per key (#536 step 3's S2).
+pub fn witness_record(world: &World) -> Vec<(ClassId, MethodId, Option<MethodId>)> {
+    let mut r: Vec<(ClassId, MethodId, Option<MethodId>)> = world
+        .witness_record()
+        .into_iter()
+        .map(|(c, r, w, _)| (c, r, w))
+        .collect();
+    r.sort_unstable();
+    r.dedup();
+    r
+}
+
+/// `declared` with the witness record already made (`Lowerer::
+/// witness_record` keeps it between the compile-time rounds of a world
+/// that has not changed).
+pub fn declared_with(
+    world: &World,
+    out: &types::Output,
+    record: Vec<(ClassId, MethodId, Option<MethodId>)>,
+) -> RtWorld {
     let classes: Vec<RtClass> = world
         .classes
         .iter()
@@ -483,18 +508,9 @@ pub fn declared(world: &World, out: &types::Output) -> RtWorld {
             .map(|w| (w.class, w.method, w.by))
             .collect(),
         ext_rescan: Vec::new(),
-        witness_record: {
-            // (The checker's witness record, which the abstract keys of the
-            // rows read, #536 step 3's S2: sorted, one entry per key.)
-            let mut r: Vec<(ClassId, MethodId, Option<MethodId>)> = world
-                .witness_record()
-                .into_iter()
-                .map(|(c, r, w, _)| (c, r, w))
-                .collect();
-            r.sort_unstable();
-            r.dedup();
-            r
-        },
+        // (The checker's witness record, which the abstract keys of the
+        // rows read, #536 step 3's S2.)
+        witness_record: record,
         override_rows: Vec::new(),
         witness_rows: Vec::new(),
         class_override_rows: Vec::new(),
