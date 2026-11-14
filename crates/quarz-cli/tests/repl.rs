@@ -1004,6 +1004,26 @@ fn a_later_extension_pins_an_earlier_witness_for_an_earlier_class() {
 }
 
 #[test]
+fn a_later_inputs_class_under_a_re_abstraction_is_refused() {
+    // #687's option 1: an abstract class declared in one input hides its
+    // superclass's `m`; a concrete subclass in a later input must
+    // implement it, as in a program; one that does is accepted.
+    let (out, _) = values(&[
+        "class Base; def initialize; end; def m -> Int = 1; end",
+        "abstract class A < Base; abstract def m -> Int; end",
+        "class C < A; def initialize; super; end; end",
+        "class D < A; def initialize; super; end; def m -> Int = 4; end",
+        "D.new.m",
+    ]);
+    assert!(
+        out[2].contains("`C` must implement `m` (abstract in `A`): `Base#m`, a superclass's"),
+        "{out:?}"
+    );
+    assert_eq!(out[3], "", "{out:?}");
+    assert_eq!(out[4], "=> 4", "{out:?}");
+}
+
+#[test]
 fn an_inputs_extension_leaves_an_earlier_classs_own_conformance() {
     // #536 step 3's S2 (#662): the rows read the witness record, made
     // again for each input's world: `K` includes `M` itself in one input,

@@ -1,25 +1,87 @@
-# An abstract class's requirement implemented by a concrete method further
-# up (the declarer's own witness, `own_witness`, #679): `A#to_s` and
-# `A#m` for `C < A < Base` are `Base`'s, by name (`puts`, interpolation,
-# `inspect` of an array, a call) and through the abstract type. (#686's
-# review: a call by name that finds the abstract method first takes the
-# witness the declarer recorded, `RtWorld::witness_of`.)
+# An abstract class's `abstract def` hides what is above it (#687's option
+# 1, re-abstraction): a concrete subclass implements the requirement
+# before the abstract class in its dispatch by name, so a call by name
+# never stops at the abstract method. The accepted forms, each through
+# the abstract type, by name (`puts`, interpolation, `inspect` of an
+# array) and directly: the subclass's own method (C1), a module the
+# subclass includes (C2), a top-level extension's module of the subclass
+# (C3), a generic abstract class (C4), two abstract levels (C5). The
+# refused forms (a superclass's method, the abstract class's own include)
+# are diagnostics tests (`a_requirement_hidden_by_re_abstraction`).
+# Expected output from the rule. VM and compiled (the build tests).
 class Base
   def initialize; end
   def to_s -> String = "base"
   def m -> Int = 1
 end
+
 abstract class A < Base
   abstract def to_s -> String
   abstract def m -> Int
 end
-class C < A
+
+class C1 < A
+  def initialize; super; end
+  def to_s -> String = "c1"
+  def m -> Int = 11
+end
+
+module N2
+  def to_s -> String = "n2"
+  def m -> Int = 12
+end
+
+class C2 < A
+  include N2
   def initialize; super; end
 end
-c = C.new
-puts c
-puts "#{c}"
-puts c.m
-a: A = c
-puts a.m
-puts [c].inspect
+
+module N3
+  def to_s -> String = "n3"
+  def m -> Int = 13
+end
+
+class C3 < A
+  def initialize; super; end
+end
+
+extension C3
+  include N3
+end
+
+class GBase[T]
+  @v: T
+  def initialize(@v: T); end
+  def m -> Int = 0
+end
+
+abstract class GA[T] < GBase[T]
+  abstract def m -> Int
+end
+
+class C4 < GA[String]
+  def initialize; super("s"); end
+  def m -> Int = 14
+end
+
+abstract class A5 < A
+  abstract def m -> Int
+end
+
+class C5 < A5
+  def initialize; super; end
+  def to_s -> String = "c5"
+  def m -> Int = 15
+end
+
+def via(a: A) -> String = "#{a.m} #{a}"
+
+[C1.new, C2.new, C3.new, C5.new].each do |c: A|
+  puts c
+  puts "#{c}"
+  puts via(c)
+  puts [c].inspect
+end
+puts C1.new.m, C2.new.m, C3.new.m
+g: GA[String] = C4.new
+puts g.m

@@ -4428,6 +4428,16 @@ impl<'ast> Declarer<'ast> {
                 .map(|(k, _)| k)
                 .collect();
             let mut by_extension: Vec<(String, ClassId, String)> = Vec::new();
+            // (An abstract class's requirement implemented only above its
+            // declaration: the requirement, its class, the hidden method.)
+            let mut hidden: Vec<(String, ClassId, MethodId)> = Vec::new();
+            // (The class's dispatch by name, the order `own_witness` walks.)
+            let lookup: Vec<ClassId> = self
+                .world
+                .resolution(id, &own_args, View::Lookup)
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
             // (The conformances that hold for the class, once.)
             let chosen = self.world.chosen_conformances(id);
             for anc in &ancestors {
@@ -4483,6 +4493,28 @@ impl<'ast> Declarer<'ast> {
                             {
                                 match self.world.own_witness(id, *mid) {
                                     None => missing.push((m.name.clone(), *anc)),
+                                    // An abstract class's `abstract def`
+                                    // hides what is above it (#687's
+                                    // option 1, re-abstraction, the
+                                    // maintainer's decision of 2026-11-14):
+                                    // a superclass's method, or one of a
+                                    // module the abstract class (or a class
+                                    // above it) includes, comes after the
+                                    // abstract declaration in the class's
+                                    // dispatch by name and implements
+                                    // nothing. (A module's requirement may
+                                    // be implemented further up: dispatch
+                                    // through the module does not stop at
+                                    // it.)
+                                    Some(j)
+                                        if self.world.class(*anc).kind != ClassKind::Module
+                                            && lookup
+                                                .iter()
+                                                .position(|k| *k == self.world.method(j).owner)
+                                                > lookup.iter().position(|k| k == anc) =>
+                                    {
+                                        hidden.push((m.name.clone(), *anc, j));
+                                    }
                                     Some(j) => {
                                         let further = ancestors
                                             .iter()
@@ -4514,6 +4546,25 @@ impl<'ast> Declarer<'ast> {
             // (its own methods, own includes, superclasses); an extension's
             // method never is its implementation (rule A, the user's
             // decision of 2026-11-13).
+            hidden.sort();
+            hidden.dedup();
+            for (name, anc, j) in hidden {
+                let an = self.world.class(anc).name.clone();
+                let jm = self.world.method(j);
+                let jo = self.world.class(jm.owner).name.clone();
+                let how = if self.world.class(jm.owner).kind == ClassKind::Module {
+                    format!("the module `{jo}`'s `{name}`, which comes after it")
+                } else {
+                    format!("`{jo}#{name}`, a superclass's")
+                };
+                self.error(
+                    format!(
+                        "`{}` must implement `{name}` (abstract in `{an}`): {how}, is hidden by the abstract declaration; define it in `{}` or in a module it includes",
+                        class.name, class.name
+                    ),
+                    class.span,
+                );
+            }
             by_extension.sort();
             by_extension.dedup();
             for (name, anc, ext) in by_extension {

@@ -2661,6 +2661,51 @@ fn an_overload_of_another_parameter_type_is_no_implementation() {
 }
 
 #[test]
+fn a_requirement_hidden_by_re_abstraction() {
+    // #687's option 1 (the maintainer's decision of 2026-11-14): an
+    // abstract class's `abstract def` hides what is above it in the
+    // concrete class's dispatch by name, so a method there implements
+    // nothing; one error per (class, requirement), at the class. (The
+    // accepted forms are the fixture `abstract_requirement_further_up`.)
+    let base = "class Base\n  def initialize; end\n  def m -> Int = 1\nend\n";
+    let cells: [(&str, &str); 4] = [
+        // A superclass's method.
+        (
+            "abstract class A < Base\n  abstract def m -> Int\nend\nclass C < A\n  def initialize; super; end\nend\n",
+            "`C` must implement `m` (abstract in `A`): `Base#m`, a superclass's, is hidden by the abstract declaration; define it in `C` or in a module it includes",
+        ),
+        // A module the abstract class includes itself.
+        (
+            "module N\n  def m -> Int = 2\nend\nabstract class A < Base\n  include N\n  abstract def m -> Int\nend\nclass C < A\n  def initialize; super; end\nend\n",
+            "`C` must implement `m` (abstract in `A`): the module `N`'s `m`, which comes after it, is hidden by the abstract declaration",
+        ),
+        // A top-level extension's module of the abstract class.
+        (
+            "module N\n  def m -> Int = 2\nend\nabstract class A < Base\n  abstract def m -> Int\nend\nextension A\n  include N\nend\nclass C < A\n  def initialize; super; end\nend\n",
+            "`C` must implement `m` (abstract in `A`): the module `N`'s `m`, which comes after it, is hidden by the abstract declaration",
+        ),
+        // A generic abstract class.
+        (
+            "class GB[T]\n  def initialize; end\n  def m -> Int = 1\nend\nabstract class GA[T] < GB[T]\n  abstract def m -> Int\nend\nclass C < GA[String]\n  def initialize; super; end\nend\n",
+            "`C` must implement `m` (abstract in `GA`): `GB#m`, a superclass's, is hidden by the abstract declaration",
+        ),
+    ];
+    for (src, msg) in cells {
+        let out = common::diagnostics(&format!("{base}{src}")).join("\n");
+        assert!(out.contains(msg), "{out}");
+        assert_eq!(out.matches("error:").count(), 1, "{out}");
+    }
+    // Two abstract levels: one error for each requirement.
+    let out = common::diagnostics(&format!(
+        "{base}abstract class A < Base\n  abstract def m -> Int\nend\nabstract class A2 < A\n  abstract def m -> Int\nend\nclass C < A2\n  def initialize; super; end\nend\n"
+    ))
+    .join("\n");
+    assert!(out.contains("(abstract in `A`): `Base#m`"), "{out}");
+    assert!(out.contains("(abstract in `A2`): `Base#m`"), "{out}");
+    assert_eq!(out.matches("error:").count(), 2, "{out}");
+}
+
+#[test]
 fn an_include_pair_is_checked_in_each_classs_frame() {
     // #688 (the user's decision of 2026-11-14): the frame check of an
     // include pair is made for each class, never stood for by another
