@@ -137,7 +137,7 @@ Listing what the Quarz implementation needs from the start, the decisive factor 
 | Need | Provision in Rust |
 |---|---|
 | Stackful task switching | `corosensei` |
-| Work-stealing scheduler, channels | `crossbeam` deques and synchronization primitives (planned: today the scheduler runs on one thread and needs neither) |
+| Scheduler, channels | Written in-house (`sched.rs`): worker threads with a run queue each, channels under a spin lock (§9; work stealing is planned, #338) |
 | Asynchronous IO | For sockets, epoll used directly on Linux (each socket registered once, edge-triggered) and `polling` (kqueue) elsewhere. Helper threads for whole-file, directory and metadata operations, name resolution, `connect`, child processes, and for filling or flushing the buffers of open `File`s and standard input. Writes to standard output and standard error are synchronous |
 | Bignums, regular expressions, Unicode | `num-bigint` (or `rug`), `regex`, `unicode-*` |
 | Persistent vector / HAMT | Written in-house, since in-place updates rely on RC uniqueness; `im`/`rpds` serve as references (planned: today collections are copy-on-write vectors and `indexmap` maps) |
