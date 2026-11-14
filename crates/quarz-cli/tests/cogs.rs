@@ -2088,6 +2088,46 @@ fn a_cogs_public_functions() {
     assert!(err.contains("`protected` does not apply to `p`"), "{err}");
 }
 
+/// A cog root's top-level `include` gives its class object the module's
+/// class methods (#725 asks whether it should), and one named like a
+/// `Cog` method then runs in its place, through the key, a `Cog` and a
+/// `Type`, interpreted and compiled. Why the override table pairs a
+/// module's class methods with `Cog`'s (#723): one of another signature
+/// is refused.
+#[test]
+fn a_cog_roots_include_gives_it_class_methods() {
+    let w = World::new();
+    w.write(
+        "lib/Cog.toml",
+        "[cog]\nname = \"lib\"\nversion = \"1.0.0\"\n",
+    );
+    w.write(
+        "lib/src/lib.qz",
+        "module Ver\n  def self.extra -> Int = 4\n  def self.name -> String = \"ver-name\"\nend\ninclude Ver\n",
+    );
+    w.commit("lib", Some("v1.0.0"));
+    let dep = format!("Lib = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url("lib"));
+    w.app(
+        &dep,
+        "puts Lib.extra\nputs Lib.name\nx: Cog = Lib\nputs x.name\nputs x.version\nt: Type[Object] = Lib\nputs t.name\n",
+    );
+    let expected = "4\nver-name\nver-name\n1.0.0\nver-name\n";
+    assert_eq!(w.ok("app", &["run"]), expected);
+    w.ok("app", &["build", "-o", "app.bin"]);
+    let exe = Command::new(w.path("app/app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&exe.stdout), expected);
+    // Of another signature, it would make `x.version` an Int.
+    w.write(
+        "lib/src/lib.qz",
+        "module Ver\n  def self.version -> Int = 3\nend\ninclude Ver\n",
+    );
+    let err = w.fails("lib", &["test"]);
+    assert!(
+        err.contains("`version` returns Int but `Cog#version`, which it overrides, returns String"),
+        "{err}"
+    );
+}
+
 #[test]
 fn a_cog_is_a_dependency_or_a_dev_dependency() {
     let w = World::new();
