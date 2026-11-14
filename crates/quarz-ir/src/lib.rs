@@ -1840,6 +1840,19 @@ impl RtWorld {
         cid: ClassId,
         mid: MethodId,
     ) -> Option<MethodId> {
+        self.find_override_in(method, cid, mid, true)
+    }
+
+    /// `find_override`, with its abstract branch (`branch`) or without it
+    /// (#536 step 3's S3, item (b): `same_without_branch` compares the
+    /// two, for one CI run before the branch is deleted).
+    fn find_override_in<'m>(
+        &self,
+        method: &dyn Fn(MethodId) -> &'m RtMethod,
+        cid: ClassId,
+        mid: MethodId,
+        branch: bool,
+    ) -> Option<MethodId> {
         let m = method(mid);
         for anc in &self.class(cid).ancestors {
             let anc = *anc;
@@ -1856,7 +1869,7 @@ impl RtWorld {
             // An abstract method an extension implements for this class
             // (its conformance), unless the class defines its own.
             let own = self.class(anc).methods.contains_key(&m.name);
-            if m.is_abstract {
+            if m.is_abstract && branch {
                 // What the checker found implements it for this class by
                 // signature (an inherited method, past an overload of the
                 // name here), then an extension's.
@@ -1872,13 +1885,17 @@ impl RtWorld {
                     // nothing.
                     // (Never through this branch again: what is resolved
                     // is not abstract.)
-                    if method(*i).is_extension || method(*i).is_abstract {
-                        return Some(*i);
-                    }
-                    return Some(self.find_override(method, cid, *i).unwrap_or(*i));
+                    let found = if method(*i).is_extension || method(*i).is_abstract {
+                        *i
+                    } else {
+                        self.find_override(method, cid, *i).unwrap_or(*i)
+                    };
+                    self.same_without_branch(method, cid, mid, found);
+                    return Some(found);
                 }
                 if !own {
                     if let Some(i) = self.ext_impl(anc, mid) {
+                        self.same_without_branch(method, cid, mid, i);
                         return Some(i);
                     }
                 }
@@ -2020,6 +2037,36 @@ impl RtWorld {
         self.override_rows = rows;
         self.witness_rows = witnesses;
         self.class_override_rows = class_rows;
+    }
+
+    /// #536 step 3's S3, item (b), for one CI run before the deletion of
+    /// `find_override`'s abstract branch: since S2 the rows answer every
+    /// module's requirement, so the branch is reached only by
+    /// `Interp::override_for` for an abstract class's requirement on a
+    /// dynamic call. There `find_override` without the branch must give the
+    /// method the branch gives (`found`): the deletion keeps every answer.
+    /// A different one is an internal error naming both.
+    fn same_without_branch<'m>(
+        &self,
+        method: &dyn Fn(MethodId) -> &'m RtMethod,
+        cid: ClassId,
+        mid: MethodId,
+        found: MethodId,
+    ) {
+        let without = self.find_override_in(method, cid, mid, false);
+        if without != Some(found) {
+            let name = |i: MethodId| {
+                let x = method(i);
+                format!("{}#{}", self.class(x.owner).name, x.name)
+            };
+            unreachable!(
+                "internal error: `{}` on `{}`: the abstract branch gives `{}`, the override table `{}`",
+                name(mid),
+                self.class(cid).name,
+                name(found),
+                without.map_or("none".to_string(), name)
+            );
+        }
     }
 
     /// The witness of abstract method `abs` for class `cid` by the record
