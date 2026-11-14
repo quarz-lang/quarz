@@ -93,6 +93,51 @@ class HttpShutdownTest < Test::Case
     end
   end
 
+  def test_serve_task_cancelled_after_shutdown
+    # The task running `serve` cancelled while it waits for the accept
+    # loop to end: `serve` ends with `Task::Cancelled` (#691's fix lets
+    # only the loop's own cancellation through) and closes the listener.
+    # With one worker the cancel comes there: `max_connections: 1` keeps
+    # the loop waiting for a token, and the handler shuts down and yields,
+    # so `serve` reaches its wait for the loop before the handler cancels
+    # it. (The connection is still open then, so the wait for the grace
+    # would raise the cancellation too: this test does not tell the fix
+    # from a `rescue` that drops it, which shows only with no connection.)
+    servers = Channel[HTTP::Server].new(capacity: 1)
+    tasks = Channel[Task[Nil]].new(capacity: 1)
+    handler = HTTP.handler do |req|
+      srv = servers.receive
+      serving = tasks.receive
+      srv.shutdown(timeout: 30.seconds)
+      Task.yield
+      serving.cancel
+      HTTP::Server::Response.text("ok")
+    end
+    s9 = HTTP::Server.new(handler, host: "127.0.0.1", port: 0, max_connections: 1)
+    port9 = s9.local_address.port
+    t = Task.spawn { s9.serve; nil }
+    servers.send(s9)
+    tasks.send(t)
+    # (The response, or nothing when the cancellation reached the
+    # connection first: `serve`'s scope cancels its tasks as it ends.)
+    out = raw(port9, "GET / HTTP/1.1\r\nConnection: close\r\n\r\n")
+    assert_true(out.empty? || out.start_with?("HTTP/1.1 200 OK"))
+    ended = begin
+              t.await
+              "returned"
+            rescue Task::Cancelled
+              "cancelled"
+            end
+    assert_equal("cancelled", ended)
+    s9.wait
+    refused = begin
+                raw(port9, "GET / HTTP/1.1\r\n\r\n")
+              rescue SystemCallError
+                "refused"
+              end
+    assert_equal("refused", refused)
+  end
+
   def test_grace_period_lets_slow_handler_answer
     entered = @entered
     slow = HTTP.handler do |req|
@@ -162,7 +207,7 @@ class HttpShutdownTest < Test::Case
     Task.scope do |scope|
       scope.spawn { s6.serve }
       begin
-        # The server is accepting (#691), and its handshakes work.
+        # Its handshakes work.
         assert_equal(["HTTP/1.1 200 OK", "closed"], HttpShutdownTest.https_get(port6, client_tls, true))
         silent = Socket.tcp("127.0.0.1", port6)
         begin
@@ -229,8 +274,6 @@ class HttpShutdownTest < Test::Case
     Task.scope do |scope|
       scope.spawn { s8.serve }
       begin
-        # The server is accepting (#691).
-        assert_equal("HTTP/1.1 200 OK", HttpShutdownTest.https_get(port8, config, true)[0])
         socks = 8.times.map { |_| Socket.tcp("127.0.0.1", port8) }
         clients = socks.map do |sock|
           scope.spawn do

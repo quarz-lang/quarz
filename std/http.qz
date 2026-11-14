@@ -1400,7 +1400,14 @@ module HTTP
           # case it waits for a token), and no connection is added after
           # the count below.
           acceptor.cancel
-          acceptor.await
+          begin
+            acceptor.await
+          rescue Task::Cancelled
+            # The acceptor's own end when it was cancelled before it
+            # started (its block, and so its `rescue`, never ran: #691);
+            # but this task's cancellation, when it is the one, goes on.
+            Task.check_cancel
+          end
           if @active.value > 0
             drained = @drained
             Channel.select do |s|
