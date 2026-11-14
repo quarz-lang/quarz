@@ -1844,7 +1844,14 @@ impl Checker {
                 .class_ext_impls
                 .iter()
                 .find(|w| w.class == k && w.method == mid)
-                .map(|w| w.by)
+                .map(|w| {
+                    // (Recorded for the extension's target only,
+                    // `check_extension_class_side`: never a module.)
+                    if self.world.class(k).kind == ClassKind::Module {
+                        unreachable!("an extension of a module includes nothing (rule B, #638): `resolve_extension` refuses the include and keeps it out of `ExtensionInfo::includes`");
+                    }
+                    w.by
+                })
         };
         // (`World::class_side_order`, the runtime's order too.)
         self.world.class_side_order(sid).into_iter().find_map(at)

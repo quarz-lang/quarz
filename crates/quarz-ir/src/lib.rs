@@ -2101,7 +2101,14 @@ impl RtWorld {
             w.class_ext_impls
                 .iter()
                 .find(|(x, o, _)| x == k && *o == mid)
-                .map(|(_, _, by)| *by)
+                .map(|(_, _, by)| {
+                    // (Recorded for an extension's target, never a module:
+                    // an extension of a module includes nothing, rule B.)
+                    if w.class(*k).kind == RtClassKind::Module {
+                        unreachable!("an extension of a module includes nothing (rule B, #638): no class witness is recorded for a module");
+                    }
+                    *by
+                })
         })
     }
 
