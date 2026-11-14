@@ -3900,8 +3900,27 @@ fn an_extension_implementing_an_abstract_method_keeps_its_types_anywhere() {
     // no conformance, so it is no witness to check as an override (#665's
     // decision (α)).
     err("abstract class Base\n  abstract def describe -> String\nend\nextension Shape\n  def describe -> Int = 3\nend\nclass Shape < Base\nend\ndef f(b: Base) -> String = b.describe\nputs f(Shape.new).size", "`Shape` has `Base#describe` from its superclass `Base`, so it is implemented in `Shape` (its own methods, includes or superclasses), not by a top-level `extension Shape`'s method");
-    // Of overloads, the one of the same signature implements it.
+}
+
+#[test]
+fn an_extensions_own_witness_makes_its_other_overloads_no_implementation() {
+    // R0 chooses the extension's `f(x: Int) -> Int` by type
+    // (`World::ext_choices`): only it is held to `Sized#f`, and the other
+    // overload, which takes the calls by shape only, is not (rule (1''),
+    // #720).
     ok("module Sized\n  abstract def f(x: Int) -> Int\n  def g -> Int = f(1) + 1\nend\nclass Box\nend\nextension Box\n  include Sized\n  def f(x: String) -> String = x\n  def f(x: Int) -> Int = x\nend");
+}
+
+#[test]
+fn an_extension_method_of_the_shape_is_held_to_a_requirement_another_witnesses() {
+    // R0 chooses the superclass's `G#m` (the extension's own `m` does not
+    // take `M#m`'s place by type): the extension's `m`, which takes its
+    // calls by shape, could be taken for the implementation, so it is held
+    // to the requirement (rule (1''), #720).
+    err(
+        "module M\n  abstract def m -> Int\n  def mm -> Int = m + 1\nend\nclass G\n  def m -> Int = 1\nend\nclass A < G\nend\nextension A\n  include M\n  def m -> String = \"x\"\nend",
+        "`m` returns String but `M#m`, which it overrides, returns Int",
+    );
 }
 
 #[test]

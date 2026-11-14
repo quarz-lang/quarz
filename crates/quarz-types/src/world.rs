@@ -669,9 +669,12 @@ pub struct World {
     /// ran, not when they are declared: one of their ancestors has
     /// statements, which may generate the implementations (docs/14 §5).
     pub conformance_deferred: Vec<ClassId>,
-    /// Abstract methods an extension's method implements for a class
-    /// (class, abstract method, implementation), found where the class is
-    /// declared: conformance holds wherever the value goes.
+    /// The witnesses R0 records for the conformances extensions make
+    /// (target class, abstract method, implementation:
+    /// `Declarer::check_extension_completes`), a method of the target's
+    /// side or of the extension's modules, chosen by type; the witness
+    /// record's rule 4 reads them. Conformance holds wherever the value
+    /// goes.
     pub ext_impls: Vec<(ClassId, MethodId, MethodId)>,
     /// R0's choice for each (extension, requirement) it completes
     /// (`Declarer::check_extension_completes`): the extension's own method

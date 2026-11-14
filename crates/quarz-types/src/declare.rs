@@ -92,18 +92,11 @@ pub struct Declarer<'ast> {
     /// frame (an include pair, an own conformance's implementation): per
     /// class, so that one class's check never stands for another's (#688).
     frame_checked: HashSet<(ClassId, MethodId, MethodId)>,
-    /// (Oracle, #536 step 3 item 2, temporary: the `ext_impls` entries
-    /// `check_conformance_of` pushed, and those R0 pushed, so that the
-    /// record is asked without the former.)
-    conf_pushed: HashSet<(ClassId, MethodId, MethodId)>,
-    r0_pushed: HashSet<(ClassId, MethodId, MethodId)>,
-    /// (Oracle, temporary.) The decisions to compare with the record
-    /// once R0 has run (`oracle_flush`): (i)'s (class, requirement,
-    /// missing, witness, arm), (ii)'s (extension, requirement, checked),
-    /// (iii)'s (extension, requirement, missing).
-    oracle_i: Vec<(ClassId, MethodId, bool, Option<MethodId>, String)>,
-    oracle_ii: Vec<(ExtensionId, MethodId, Option<MethodId>)>,
-    oracle_iii: Vec<(ExtensionId, MethodId, bool)>,
+    /// The extensions' includes whose conformance R0 checked
+    /// (`check_extension_conformance`, before the class checks): the
+    /// class-side witnesses are recorded for these only, at the end of
+    /// the pass (`check_extension_class_side`).
+    conformance_checked: Vec<(ExtensionId, ClassId, Vec<Type>)>,
     /// The pairs a check refused (reported once, at the module or the
     /// first class including it): not reported again in another class's
     /// frame. Only refusals: a pair that passed for one class is still
@@ -237,11 +230,7 @@ impl<'ast> Declarer<'ast> {
             pending_ext: Vec::new(),
             override_pairs: HashSet::default(),
             frame_checked: HashSet::default(),
-            conf_pushed: HashSet::default(),
-            r0_pushed: HashSet::default(),
-            oracle_i: Vec::new(),
-            oracle_ii: Vec::new(),
-            oracle_iii: Vec::new(),
+            conformance_checked: Vec::new(),
             refused_pairs: HashSet::default(),
             type_classes: None,
             override_span: None,
@@ -1091,6 +1080,18 @@ impl<'ast> Declarer<'ast> {
             ids.extend(self.world.class(id).variants.clone());
         }
         self.world.ensure_shareable_known(&ids);
+        // The conformances the extensions make, first (R0,
+        // `check_extension_completes`): the class checks below read their
+        // witnesses (the record's rule 4, `World::ext_impls`) and the
+        // extensions' overrides their choices (`World::ext_choices`). R0
+        // reads only declarations, conformances and resolution orders,
+        // complete here, with no extension active but its own.
+        let active = std::mem::take(self.world.active_extensions.get_mut());
+        for e in &pending_ext {
+            self.file = e.file;
+            self.check_extension_conformance(e);
+        }
+        *self.world.active_extensions.get_mut() = active;
         for p in &pending {
             self.file = self.pending_file(p);
             // The top-level extensions of the class's group are active
@@ -1126,7 +1127,6 @@ impl<'ast> Declarer<'ast> {
             self.file = e.file;
             self.check_extension_static(e);
         }
-        self.oracle_flush();
     }
 
     /// A generic module with `static def self.` macros (docs/14 §2) is
@@ -1448,6 +1448,37 @@ impl<'ast> Declarer<'ast> {
         }
     }
 
+    /// The conformances extension `e`'s includes make (R0): each holds
+    /// once and is completed (`check_extension_completes`, which records
+    /// its witnesses). Run before the class checks, which read them; a
+    /// module with `static def`s is refused at the end of the pass instead
+    /// (`check_extension_static`).
+    fn check_extension_conformance(&mut self, e: &PendingExtension<'ast>) {
+        let ext = e.id;
+        let target = self.world.extensions[ext as usize].target;
+        let span = e.def.target.span;
+        let includes = self.world.extensions[ext as usize].includes.clone();
+        // (The last written first, as `check_extension_static`.)
+        for t in includes.iter().cloned().rev() {
+            let Type::Class(module, margs) = t else {
+                continue;
+            };
+            if self.has_static_defs(module) {
+                continue;
+            }
+            // (Never a module: `ExtensionInfo::includes` only, which an
+            // extension of a module does not have, rule B, #689.)
+            if !self.check_not_included_already(target, module, span)
+                || !self.check_one_conformance(ext, target, module, &margs, span)
+                || !self.check_conforms_once(ext, target, module, &margs, span)
+            {
+                continue;
+            }
+            self.check_extension_completes(ext, target, module, &margs, span);
+            self.conformance_checked.push((ext, module, margs));
+        }
+    }
+
     /// An extension's include brings the module's class methods to the
     /// target class as conformance (#504, Swift's retroactive conformance;
     /// an extension takes no part in dynamic dispatch, docs/01 §7): for
@@ -1467,15 +1498,14 @@ impl<'ast> Declarer<'ast> {
         span: Span,
     ) {
         let target = self.world.extensions[ext as usize].target;
-        // (Never a module: called over `ExtensionInfo::includes` only, which
-        // an extension of a module does not have, rule B, #689.)
-        if !self.check_not_included_already(target, module, span)
-            || !self.check_one_conformance(ext, target, module, &margs, span)
-            || !self.check_conforms_once(ext, target, module, &margs, span)
+        // (Only for a conformance R0 checked, before the class checks.)
+        if !self
+            .conformance_checked
+            .iter()
+            .any(|(e, m, a)| *e == ext && *m == module && *a == margs)
         {
             return;
         }
-        self.check_extension_completes(ext, target, module, &margs, span);
         self.check_extension_over_module_override(ext, target, module, &margs, span);
         let own: Vec<MethodId> = self.world.extensions[ext as usize]
             .methods
@@ -2092,7 +2122,6 @@ impl<'ast> Declarer<'ast> {
                 }
                 if let Some(i) = recorded {
                     let entry = (target, r, i);
-                    self.r0_pushed.insert(entry);
                     if !self.world.ext_impls.contains(&entry) {
                         self.world.ext_impls.push(entry);
                     }
@@ -2606,9 +2635,6 @@ impl<'ast> Declarer<'ast> {
     /// conformance (`check_conformance_of`).
     fn check_extensions_overrides(&mut self) {
         let mut pairs: Vec<(MethodId, MethodId, ClassId, Vec<Type>, Type)> = Vec::new();
-        let mut oracle_seen: HashSet<(usize, MethodId)> = HashSet::default();
-        let mut oracle_ii: Vec<(ExtensionId, MethodId, Option<MethodId>)> = Vec::new();
-        let mut oracle_iii: Vec<(ExtensionId, MethodId, bool)> = Vec::new();
         for (ei, e) in self.world.extensions.iter().enumerate() {
             let dispatches = |owner: ClassId| {
                 e.always_active
@@ -2639,23 +2665,30 @@ impl<'ast> Declarer<'ast> {
                         };
                         for &o in os {
                             // For an abstract method, unless the target
-                            // defines the name, what `Interp::ext_impl`
-                            // runs: the extension's method that takes what
-                            // its callers pass, one of the same signature
-                            // first (also for a prelude class, and in a
-                            // module, where `using` activates it);
-                            // otherwise, as for any, `find_override`'s.
+                            // defines the name: R0's choice
+                            // (`World::ext_choices`), made by type, when it
+                            // is one of the extension's own methods; the
+                            // extension's other methods of the name are
+                            // then overloads, not implementations. Without
+                            // one, a method of the extension of the name and
+                            // side that takes the requirement's calls by
+                            // shape (`implements`) could be taken for its
+                            // implementation, so each is held to the
+                            // requirement (rule (1''), #720; the chosen one
+                            // is held to it only if it takes those calls by
+                            // shape too). Otherwise, as
+                            // for any, `find_override`'s.
                             let owned = self.world.class(e.target).methods.contains_key(&m.name);
-                            if cfg!(debug_assertions)
-                                && self.world.method(o).is_abstract
-                                && !self.world.method(o).singleton
-                                && !owned
-                                && oracle_seen.insert((ei, o))
-                            {
-                                oracle_ii.push((ei as ExtensionId, o, self.ext_impl_of(e, o)));
-                            }
                             let replaces = if self.world.method(o).is_abstract && !owned {
-                                self.ext_impl_of(e, o) == Some(mid)
+                                let ext = ei as ExtensionId;
+                                let choice = self
+                                    .world
+                                    .ext_choices
+                                    .iter()
+                                    .find(|(x, q, _)| *x == ext && *q == o)
+                                    .map(|c| c.2)
+                                    .filter(|w| self.world.method(*w).extension == Some(ext));
+                                self.implements(mid, o) && choice.is_none_or(|w| w == mid)
                             } else {
                                 self.overrides_at_run_time(mid, o, *a, aargs)
                             };
@@ -2673,72 +2706,10 @@ impl<'ast> Declarer<'ast> {
                 }
             }
         }
-        self.oracle_ii.extend(oracle_ii);
         for (mid, o, a, aargs, own) in pairs {
             self.check_implementation(mid, o, a, &aargs, own);
         }
         self.check_std_overrides_of_extension_modules();
-        // A prelude class has no conformance check of its own: what an
-        // extension makes it include must be implemented there.
-        let mut missing: Vec<(String, String, String, Span)> = Vec::new();
-        for (ei, e) in self.world.extensions.iter().enumerate() {
-            if self.world.class(e.target).file != 0 {
-                continue;
-            }
-            let target_ancestors = self.world.ancestor_ids(e.target);
-            for t in &e.includes {
-                let Type::Class(module, _) = t else { continue };
-                // (A concrete method of the included chain, `M2` over its
-                // `M1`, implements it too.)
-                let mut chain = target_ancestors.clone();
-                chain.extend(self.world.ancestor_ids(*module));
-                for anc in self.world.ancestor_ids(*module) {
-                    for ids in self.world.class(anc).methods.values() {
-                        for &o in ids {
-                            let om = self.world.method(o);
-                            if cfg!(debug_assertions) && om.is_abstract && !om.singleton {
-                                let old_missing = self.ext_impl_of(e, o).is_none()
-                                    && self.implementation(&chain, o).is_none();
-                                oracle_iii.push((ei as ExtensionId, o, old_missing));
-                            }
-                            if om.is_abstract
-                                && self.ext_impl_of(e, o).is_none()
-                                && self.implementation(&chain, o).is_none()
-                            {
-                                missing.push((
-                                    self.world.class(e.target).name.clone(),
-                                    om.name.clone(),
-                                    self.world.class(anc).name.clone(),
-                                    e.span,
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        self.oracle_iii.extend(oracle_iii);
-        missing.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
-        missing.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
-        for (class, name, owner, span) in missing {
-            self.error(
-                format!("`{class}` must implement `{name}` (abstract in `{owner}`)"),
-                span,
-            );
-        }
-    }
-
-    /// The method of extension `e` that the runtime runs for the abstract
-    /// method `abs` (`Interp::ext_impl`).
-    fn ext_impl_of(&self, e: &ExtensionInfo, abs: MethodId) -> Option<MethodId> {
-        let a = self.world.method(abs);
-        let ids = e.methods.get(&a.name)?;
-        let exact = ids
-            .iter()
-            .find(|i| self.implements(**i, abs) && self.same_signature_at_run_time(**i, abs));
-        exact
-            .or_else(|| ids.iter().find(|i| self.implements(**i, abs)))
-            .copied()
     }
 
     /// An extension's view of its target's ancestors and of what it
@@ -4501,7 +4472,6 @@ impl<'ast> Declarer<'ast> {
             self.check_duplicate_methods(id);
             self.world.active_extensions.get_mut().clear();
         }
-        self.oracle_flush();
     }
 
     fn check_conformance(&mut self, p: &PendingClass<'ast>) {
@@ -4570,7 +4540,6 @@ impl<'ast> Declarer<'ast> {
             self.check_conformance_of(id);
             self.world.active_extensions.get_mut().clear();
         }
-        self.oracle_flush();
     }
 
     /// The conformance of class `id` to what it inherits: the abstract
@@ -4591,7 +4560,6 @@ impl<'ast> Declarer<'ast> {
                 .map(|(id, _)| id)
                 .collect();
             let mut missing: Vec<(String, ClassId)> = Vec::new();
-            let mut impls: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
             let mut found_impls: Vec<(MethodId, MethodId, ClassId)> = Vec::new();
             let mut inherited_impls: Vec<(MethodId, MethodId, ClassId)> = Vec::new();
             // (The ancestors with their arguments, once for every abstract
@@ -4622,8 +4590,8 @@ impl<'ast> Declarer<'ast> {
                 .into_iter()
                 .map(|(k, _)| k)
                 .collect();
-            // (The conformances that hold for the class, once.)
-            let chosen = self.world.chosen_conformances(id);
+            // (The witness record's entries for the class, once.)
+            let record = self.world.witnesses_of(id);
             for anc in &ancestors {
                 for ids in self.world.class(*anc).methods.values() {
                     for mid in ids {
@@ -4631,124 +4599,92 @@ impl<'ast> Declarer<'ast> {
                         if !m.is_abstract {
                             continue;
                         }
-                        // (Oracle, temporary: what this check decides, as
-                        // (missing, witness, arm).)
-                        let oracle_old: (bool, Option<MethodId>, &str);
-                        match self.implementation(&ancestors, *mid) {
-                            None => {
-                                oracle_old = (true, None, "gate");
-                                missing.push((m.name.clone(), *anc))
-                            }
+                        // The witness: the record's (`World::witnesses_of`)
+                        // for a module's requirement, the conformance that
+                        // holds for the class (its own, or the one an
+                        // extension makes, whose witness R0 chose by type,
+                        // #679's decision (k2)); `own_witness` for an
+                        // abstract superclass's. None: nothing implements
+                        // it (a method taking the calls by arity only is no
+                        // witness, the decision of 2026-11-14 on #536).
+                        let (witness, by_conformance) =
+                            if self.world.class(*anc).kind == ClassKind::Module {
+                                match record.iter().find(|(_, r, _, _)| r == mid) {
+                                    Some((_, _, w, src)) => (*w, *src),
+                                    None => (None, None),
+                                }
+                            } else {
+                                (self.world.own_witness(id, *mid), None)
+                            };
+                        match witness {
                             // An extension's method (active where the class
-                            // is declared) implements it: it does wherever
-                            // the value goes (`World::ext_impls`), but only
-                            // for a conformance its own extension makes
-                            // (docs/01 §7's exception; #665's decision (α)),
-                            // the one that holds for the class:
-                            // another extension's method of the name, below
-                            // that conformance's class or of the same
-                            // target, is not its witness.
-                            Some(i) if self.world.method(i).extension.is_some() => {
-                                let ext = self.world.method(i).extension;
-                                if own_side.contains(anc) {
-                                    by_extension.push((
+                            // is declared) of the name would have been taken
+                            // for it: on the class's own side, an extension's
+                            // method never is its implementation (rule A,
+                            // the user's decision of 2026-11-13), said so.
+                            None if own_side.contains(anc) => {
+                                let ext =
+                                    self.world.active_extension_ids().into_iter().find(|&e| {
+                                        let x = &self.world.extensions[e as usize];
+                                        ancestors.contains(&x.target)
+                                            && x.methods.get(&m.name).is_some_and(|ids| {
+                                                ids.iter().any(|&i| self.implements(i, *mid))
+                                            })
+                                    });
+                                match ext {
+                                    Some(e) => by_extension.push((
                                         m.name.clone(),
                                         *anc,
-                                        self.world.extension_label(ext.unwrap_or_default()),
-                                    ));
+                                        self.world.extension_label(e),
+                                    )),
+                                    None => missing.push((m.name.clone(), *anc)),
                                 }
-                                // (The conformance that holds for the class,
-                                // the witness record's rule 1.)
-                                let makes = chosen
-                                    .iter()
-                                    .any(|(src, k, _)| *k == *anc && src.map(|(e, _)| e) == ext);
-                                if makes {
-                                    impls.push((id, *mid, i));
-                                    found_impls.push((i, *mid, *anc));
-                                }
-                                oracle_old = (
-                                    false,
-                                    makes.then_some(i),
-                                    if makes {
-                                        "extension"
-                                    } else {
-                                        "extension, not its conformance"
-                                    },
-                                );
                             }
-                            // The class's own conformance (a module it has on
-                            // its own side, or an abstract superclass): the
-                            // witness record's rule 3, `World::own_witness`
-                            // (the override table's pair, or a method taking
-                            // the calls by type, its result included, seen
-                            // with the class's arguments); none, by arity
-                            // only, is no implementation (the decision of
-                            // 2026-11-14 on #536).
-                            Some(i)
+                            None => missing.push((m.name.clone(), *anc)),
+                            // An extension's own method, for the conformance
+                            // it makes (docs/01 §7's exception; #665's
+                            // decision (α)): checked in the extension's view
+                            // below.
+                            Some(j) if self.world.method(j).extension.is_some() => {
+                                found_impls.push((j, *mid, *anc));
+                            }
+                            // A conformance an extension makes, witnessed by
+                            // a method of the target's side or of the
+                            // extension's modules: R0 checked it by type.
+                            Some(_) if by_conformance.is_some() => {}
+                            // An abstract class's `abstract def` hides what
+                            // is above it (#687's option 1, re-abstraction,
+                            // the maintainer's decision of 2026-11-14): a
+                            // superclass's method, or one of a module the
+                            // abstract class (or a class above it)
+                            // includes, comes after the abstract declaration
+                            // in the class's dispatch by name and implements
+                            // nothing. (A module's requirement may be
+                            // implemented further up: dispatch through the
+                            // module does not stop at it.)
+                            Some(j)
                                 if self.world.class(*anc).kind != ClassKind::Module
-                                    || chosen
+                                    && lookup
                                         .iter()
-                                        .any(|(src, k, _)| src.is_none() && k == anc) =>
+                                        .position(|k| *k == self.world.method(j).owner)
+                                        > lookup.iter().position(|k| k == anc) =>
                             {
-                                match self.world.own_witness(id, *mid) {
-                                    None => {
-                                        oracle_old = (true, None, "own");
-                                        missing.push((m.name.clone(), *anc))
-                                    }
-                                    // An abstract class's `abstract def`
-                                    // hides what is above it (#687's
-                                    // option 1, re-abstraction, the
-                                    // maintainer's decision of 2026-11-14):
-                                    // a superclass's method, or one of a
-                                    // module the abstract class (or a class
-                                    // above it) includes, comes after the
-                                    // abstract declaration in the class's
-                                    // dispatch by name and implements
-                                    // nothing. (A module's requirement may
-                                    // be implemented further up: dispatch
-                                    // through the module does not stop at
-                                    // it.)
-                                    Some(j)
-                                        if self.world.class(*anc).kind != ClassKind::Module
-                                            && lookup
-                                                .iter()
-                                                .position(|k| *k == self.world.method(j).owner)
-                                                > lookup.iter().position(|k| k == anc) =>
-                                    {
-                                        oracle_old = (false, Some(j), "own, hidden");
-                                        hidden.push((m.name.clone(), *anc, j));
-                                    }
-                                    Some(j) => {
-                                        oracle_old = (false, Some(j), "own");
-                                        let further = ancestors
-                                            .iter()
-                                            .position(|a| *a == self.world.method(j).owner)
-                                            > ancestors.iter().position(|a| a == anc);
-                                        if j != i || further {
-                                            impls.push((id, *mid, j));
-                                            inherited_impls.push((j, *mid, *anc));
-                                        }
-                                    }
+                                hidden.push((m.name.clone(), *anc, j));
+                            }
+                            // The class's own conformance: a witness the
+                            // override table does not pair with the
+                            // requirement (a concrete method further up, or
+                            // one taking the calls by type) is checked here,
+                            // in the class's frame.
+                            Some(j) => {
+                                let further = ancestors
+                                    .iter()
+                                    .position(|a| *a == self.world.method(j).owner)
+                                    > ancestors.iter().position(|a| a == anc);
+                                if further || !self.world.overrides(j).contains(mid) {
+                                    inherited_impls.push((j, *mid, *anc));
                                 }
                             }
-                            // A conformance an extension makes: its witness
-                            // is R0's, chosen by type for the extension's
-                            // target and recorded there
-                            // (`check_extension_completes`, `World::ext_impls`),
-                            // which the witness record's rule 4 reads; the
-                            // declarer chooses none for the class (#679's
-                            // decision (k2), the user's of 2026-11-14). (The
-                            // first candidate by arity, `i`, is not it: an
-                            // overload of another signature came first.)
-                            Some(_) => {
-                                oracle_old = (false, None, "extension's conformance, no choice");
-                            }
-                        }
-                        if cfg!(debug_assertions)
-                            && self.world.class(*anc).kind == ClassKind::Module
-                        {
-                            let (a, b, c) = oracle_old;
-                            self.oracle_i.push((id, *mid, a, b, c.to_string()));
                         }
                     }
                 }
@@ -4794,8 +4730,6 @@ impl<'ast> Declarer<'ast> {
                     class.span,
                 );
             }
-            self.conf_pushed.extend(impls.iter().copied());
-            self.world.ext_impls.extend(impls);
             for (i, abs, anc) in inherited_impls {
                 let Some((_, aargs)) = typed.iter().find(|(c, _)| *c == anc) else {
                     continue;
@@ -5006,194 +4940,6 @@ impl<'ast> Declarer<'ast> {
                 return;
             }
         }
-    }
-
-    /// Whether a concrete method implementing `abstract_id` exists on one
-    /// of `ancestors` (or an active extension of one of them).
-    /// The method that implements `abstract_id` for a class with these
-    /// ancestors: one of theirs, or an active extension's.
-    /// (Oracle, temporary, #536 step 3 item 2.) The record's entries for
-    /// class `c` (`World::witnesses_of`), asked without the `ext_impls`
-    /// entries `check_conformance_of` pushed (R0's kept).
-    fn oracle_record(
-        &mut self,
-        c: ClassId,
-    ) -> Vec<(ClassId, MethodId, Option<MethodId>, Option<ExtensionId>)> {
-        let saved = self.world.ext_impls.clone();
-        let (conf, r0) = (&self.conf_pushed, &self.r0_pushed);
-        self.world
-            .ext_impls
-            .retain(|e| !conf.contains(e) || r0.contains(e));
-        let out = self.world.witnesses_of(c);
-        self.world.ext_impls = saved;
-        out
-    }
-
-    /// (Oracle, temporary, #536 step 3 item 2.) Compare the decisions
-    /// (i), (ii) and (iii) made with the record, once R0 has run: called
-    /// at the end of each checking pass.
-    pub(crate) fn oracle_flush(&mut self) {
-        if !cfg!(debug_assertions) {
-            return;
-        }
-        let pending_i = std::mem::take(&mut self.oracle_i);
-        let pending_ii = std::mem::take(&mut self.oracle_ii);
-        let pending_iii = std::mem::take(&mut self.oracle_iii);
-        type Entries = Vec<(ClassId, MethodId, Option<MethodId>, Option<ExtensionId>)>;
-        let mut records: HashMap<ClassId, Entries> = HashMap::default();
-        let mut record = |this: &mut Self, c: ClassId| {
-            records
-                .entry(c)
-                .or_insert_with(|| this.oracle_record(c))
-                .clone()
-        };
-        let show = |this: &Self, w: Option<&Option<MethodId>>| match w {
-            None => "has no entry".to_string(),
-            Some(w) => format!("`{}`", w.map_or("none".into(), |i| this.oracle_name(i))),
-        };
-        for (c, r, missing, witness, arm) in pending_i {
-            let rec = record(self, c);
-            let entry = rec
-                .iter()
-                .find(|(k, q, _, _)| *k == c && *q == r)
-                .map(|e| &e.2);
-            let differs = match entry {
-                None => true,
-                Some(w) => {
-                    missing != w.is_none()
-                        || (matches!(arm.as_str(), "extension" | "own")
-                            && witness.is_some()
-                            && witness != *w)
-                }
-            };
-            if differs {
-                Self::oracle_report(format!(
-                    "(i) class `{}`, requirement `{}` ({arm}): missing {missing}, chosen {}, record {}",
-                    self.world.class(c).name,
-                    self.oracle_name(r),
-                    witness.map_or("none".into(), |i| self.oracle_name(i)),
-                    show(self, entry)
-                ));
-            }
-        }
-        for (e, o, old) in pending_ii {
-            let t = self.world.extensions[e as usize].target;
-            let r0 = self
-                .world
-                .ext_choices
-                .iter()
-                .find(|(x, q, _)| *x == e && *q == o)
-                .map(|c| c.2);
-            // (What (ii) checks today, `ext_impl_of`, against what it
-            // will check, R0's choice when it is the extension's own.)
-            let r0_own = r0.filter(|w| self.world.method(*w).extension == Some(e));
-            if r0.is_none() {
-                Self::oracle_report(format!(
-                    "(ii) extension {e} of `{}`, requirement `{}`: checked {}, R0 has no choice",
-                    self.world.class(t).name,
-                    self.oracle_name(o),
-                    old.map_or("none".into(), |i| format!("`{}`", self.oracle_name(i))),
-                ));
-            } else if old != r0_own {
-                Self::oracle_report(format!(
-                    "(ii) extension {e} of `{}`, requirement `{}`: checked {}, R0 chose `{}`",
-                    self.world.class(t).name,
-                    self.oracle_name(o),
-                    old.map_or("none".into(), |i| format!("`{}`", self.oracle_name(i))),
-                    self.oracle_name(r0.unwrap_or(o)),
-                ));
-            }
-            // (Where the record has an entry from this extension, its
-            // witness is R0's choice.)
-            let rec = record(self, t);
-            if let Some((_, _, w, _)) = rec
-                .iter()
-                .find(|(k, q, _, src)| *k == t && *q == o && *src == Some(e))
-            {
-                if r0.is_some() && *w != r0 {
-                    Self::oracle_report(format!(
-                        "(ii) extension {e} of `{}`, requirement `{}`: record {}, R0 chose `{}`",
-                        self.world.class(t).name,
-                        self.oracle_name(o),
-                        show(self, Some(w)),
-                        self.oracle_name(r0.unwrap_or(o)),
-                    ));
-                }
-            }
-        }
-        for (e, o, old_missing) in pending_iii {
-            let t = self.world.extensions[e as usize].target;
-            let rec = record(self, t);
-            let entry = rec
-                .iter()
-                .find(|(k, q, _, _)| *k == t && *q == o)
-                .map(|x| &x.2);
-            if old_missing != !matches!(entry, Some(Some(_))) {
-                Self::oracle_report(format!(
-                    "(iii) extension {e} of `{}`, requirement `{}`: missing {old_missing}, record {}",
-                    self.world.class(t).name,
-                    self.oracle_name(o),
-                    show(self, entry)
-                ));
-            }
-        }
-    }
-
-    /// (Oracle, temporary.) `Owner#name` of a method, for the oracle's
-    /// lines.
-    fn oracle_name(&self, m: MethodId) -> String {
-        let mi = self.world.method(m);
-        let owner = match mi.extension {
-            Some(e) => format!(
-                "extension {e} of {}",
-                self.world
-                    .class(self.world.extensions[e as usize].target)
-                    .name
-            ),
-            None => self.world.class(mi.owner).name.clone(),
-        };
-        format!("{owner}#{}", mi.name)
-    }
-
-    /// (Oracle, temporary.) A disagreement: a line appended to the file
-    /// `QUARZ_ORACLE_LOG` names when set (every case listed in one run),
-    /// else nothing (the fatal form fired only in refused programs'
-    /// tests, on c272c29c).
-    fn oracle_report(line: String) {
-        // (Log-only: CI's default path never stops on it; the list is made
-        // with the switch set.)
-        if let Some(path) = std::env::var_os("QUARZ_ORACLE_LOG") {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-            {
-                let _ = writeln!(f, "{line}");
-            }
-        }
-    }
-
-    fn implementation(&self, ancestors: &[ClassId], abstract_id: MethodId) -> Option<MethodId> {
-        let name = &self.world.method(abstract_id).name;
-        for anc in ancestors {
-            if let Some(ids) = self.world.class(*anc).methods.get(name) {
-                if let Some(i) = ids.iter().find(|i| self.implements(**i, abstract_id)) {
-                    return Some(*i);
-                }
-            }
-            for ext_id in self.world.active_extension_ids() {
-                let ext = &self.world.extensions[ext_id as usize];
-                if ext.target != *anc {
-                    continue;
-                }
-                // (As the runtime picks it: `ext_impl_of`.)
-                if let Some(i) = self.ext_impl_of(ext, abstract_id) {
-                    return Some(i);
-                }
-            }
-        }
-        None
     }
 
     /// Whether module `m` is `target` or includes it, directly or not
