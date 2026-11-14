@@ -207,7 +207,7 @@ With `trusted_proxies: ["127.0.0.1", "::1"]` (addresses, or networks as `"10.0.0
 
 ### Shutdown and signals
 
-`shutdown` stops accepting, closes the connections waiting for a request (their reader gets `IOError`, 04-concurrency §6), lets the ones in a handler finish, and after `timeout` cancels them (`Task::Cancelled` at their next wait); then `serve` returns. `shutdown` returns once it has begun, so a handler may call it; `wait` waits for `serve` to return. A shutdown before `serve` makes `serve` return at once. A connection accepted that has not sent a byte yet counts as waiting, and is closed; with `tls:`, one still in its TLS handshake does not, and ends within `read_header_timeout`. `Signal` is added with this work, enough for it:
+`shutdown` stops accepting, closes the connections waiting for a request (their reader gets `IOError`, 04-concurrency §6), lets the ones in a handler finish, and after `timeout` cancels them (`Task::Cancelled` at their next wait); then `serve` returns. `shutdown` returns once it has begun, so a handler may call it; `wait` waits for `serve` to return. A shutdown before `serve` makes `serve` return at once. A connection accepted that has not sent a byte yet counts as waiting, and is closed; with `tls:`, so does one still in its TLS handshake: the handshake runs in a task of a `Task.scope` of its own, registered in an `Atom` as the idle connections are, and `shutdown` cancels that scope, which closes the connection quietly as a failed handshake does. (The `TCPSocket` itself could not be registered: `TLS::ServerConfig#accept` takes it over when the handshake begins.) `Signal` is added with this work, enough for it:
 
 ```crystal
 server = HTTP::Server.new(handler, port: 8080)

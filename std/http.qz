@@ -1294,6 +1294,9 @@ module HTTP
     @state: Atom[Int]
     # Connections waiting for a request, by number: shutdown closes them.
     @idle: Atom[Hash[Int, IO]]
+    # The scopes of the connections' TLS handshakes, by number: shutdown
+    # cancels them, which closes those connections.
+    @handshakes: Atom[Hash[Int, Task::Scope]]
     @next_id: Atom[Int]
     @active: Atom[Int]
     # A token per connection; when none is left, accepting waits.
@@ -1341,6 +1344,7 @@ module HTTP
       @unix = path ? UNIXServer.new(path) : nil
       @state = Atom.new(0)
       @idle = Atom[Hash[Int, IO]].new({})
+      @handshakes = Atom[Hash[Int, Task::Scope]].new({})
       @next_id = Atom.new(0)
       @active = Atom.new(0)
       @tokens = Channel[Nil].new(capacity: max_connections)
@@ -1414,8 +1418,9 @@ module HTTP
     end
 
     # Stops the server: it stops accepting, closes the connections waiting
-    # for a request, lets those in a handler finish for up to `timeout`,
-    # then cancels them, and `#serve` returns.
+    # for a request (with `tls:`, those in their TLS handshake too), lets
+    # those in a handler finish for up to `timeout`, then cancels them, and
+    # `#serve` returns.
     #
     # `shutdown` itself returns at once (so a handler may call it);
     # `#wait` waits for `#serve` to return.
@@ -1468,6 +1473,8 @@ module HTTP
           nil
         end
       end
+      # (A handshake that has finished is not cancelled: its task is done.)
+      @handshakes.value.each { |_, s| s.cancel }
       nil
     end
 
@@ -1560,11 +1567,25 @@ module HTTP
         # (A TCP server's: `tls:` is refused with `path:`.)
         case raw
         in TCPSocket => sock
-          conn = begin
-            Task.timeout(opts.read_header_timeout) { tls.accept(sock) }
-          rescue Task::Timeout, IOError, SystemCallError
+          secured = begin
+            Task.timeout(opts.read_header_timeout) do
+              Task.scope do |handshake|
+                # Registered before the shutdown check, as in `@idle`
+                # below: a shutdown either finds the scope and cancels the
+                # handshake, which closes the connection, or is seen here.
+                # (Not the socket: `accept` takes it over at once.)
+                @handshakes.update { |h| h.put(id, handshake) }
+                stopping? ? nil : handshake.spawn { tls.accept(sock) }.await
+              end
+            end
+          # `Task::Cancelled`: the handshake, by `#shutdown`.
+          rescue Task::Timeout, Task::Cancelled, IOError, SystemCallError
             return nil
+          ensure
+            @handshakes.update { |h| h.delete(id) }
           end
+          return nil if secured.nil?
+          conn = secured
         else
           return nil
         end

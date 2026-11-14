@@ -1,6 +1,7 @@
 # HTTP::Server#shutdown: idle connections closed, a request in a handler
 # finished, a stuck one cancelled after the timeout; max_connections;
-# a UNIX socket server.
+# with `tls:`, a connection in its handshake closed at once; a UNIX
+# socket server.
 require "http"
 require "test"
 
@@ -111,6 +112,144 @@ class HttpShutdownTest < Test::Case
         assert_equal("HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 9|Connection: close||slow done", c.await)
       ensure
         s5.shutdown
+      end
+    end
+  end
+
+  def tls_dir -> String = "crates/quarz-cli/tests/fixtures/tls"
+
+  def server_tls -> TLS::ServerConfig
+    dir = tls_dir
+    TLS::ServerConfig.new(certificate: File.read("#{dir}/server.pem"),
+                          private_key: File.read("#{dir}/server.key"))
+  end
+
+  def client_tls -> TLS::Config = TLS::Config.new(roots: TLS::Roots.from_pem(File.read("#{tls_dir}/ca.pem")))
+
+  # A GET over TLS (with `Connection: close` when `close`); the status
+  # line, also sent to `got`, then what the server sends after the
+  # response until it closes ("closed" for nothing).
+  def self.https_get(port: Int, config: TLS::Config, close: Bool, got: Channel[String]? = nil) -> [String, String]
+    https_get(Socket.tcp("127.0.0.1", port), config, close, got)
+  end
+
+  # The same over a connected socket.
+  def self.https_get(sock: TCPSocket, config: TLS::Config, close: Bool, got: Channel[String]? = nil) -> [String, String]
+    tls = TLSSocket.connect(sock, "localhost", config)
+    begin
+      tls.write(close ? "GET / HTTP/1.1\r\nConnection: close\r\n\r\n" : "GET / HTTP/1.1\r\n\r\n")
+      status = tls.readpartial(4096).lines[0].chomp
+      got.send(status) if got
+      [status, tls.readpartial?(4096) || "closed"]
+    ensure
+      tls.close
+    end
+  end
+
+  # The server's errors, for the tests that expect none.
+  def reporting(errors: Channel[String]) -> shareable (Exception, HTTP::Server::Request?) -> Void
+    ->(e: Exception, _: HTTP::Server::Request?) { errors.send("#{e.class.name}: #{e.message}"); nil }
+  end
+
+  def test_tls_handshake_closed_at_shutdown
+    # A client that connects and sends nothing holds the server in its
+    # TLS handshake. Both timeouts are long: before #348, the shutdown
+    # waited out the 30 s grace (or `read_header_timeout`).
+    errors = Channel[String].new(capacity: 8)
+    s6 = HTTP::Server.new(HTTP.handler { |req| HTTP::Server::Response.text("ok") }, host: "127.0.0.1", port: 0,
+                          tls: server_tls, read_header_timeout: 30.seconds, on_error: reporting(errors))
+    port6 = s6.local_address.port
+    Task.scope do |scope|
+      scope.spawn { s6.serve }
+      begin
+        # The server is accepting (#691), and its handshakes work.
+        assert_equal(["HTTP/1.1 200 OK", "closed"], HttpShutdownTest.https_get(port6, client_tls, true))
+        silent = Socket.tcp("127.0.0.1", port6)
+        begin
+          # (Time for the server to accept it and start the handshake; were
+          # it not, the shutdown would refuse it, and pass too.)
+          Task.sleep(100.ms)
+          started = Time.monotonic
+          s6.shutdown(timeout: 30.seconds)
+          s6.wait
+          assert_true((Time.monotonic - started) < 10.seconds)
+          # The connection is closed (after a TLS alert, the handshake's
+          # close_notify).
+          closed = begin
+                     Task.timeout(5.seconds) { silent.read; true }
+                   rescue SystemCallError
+                     true
+                   end
+          assert_true(closed)
+        ensure
+          silent.close
+        end
+        assert_nil(errors.try_receive)
+      ensure
+        s6.shutdown
+      end
+    end
+  end
+
+  def test_tls_idle_connection_closed_at_shutdown
+    # A handshake that completed: the connection waits for its next
+    # request, and the shutdown closes it at once.
+    errors = Channel[String].new(capacity: 8)
+    s7 = HTTP::Server.new(HTTP.handler { |req| HTTP::Server::Response.text("ok") }, host: "127.0.0.1", port: 0,
+                          tls: server_tls, read_header_timeout: 30.seconds, on_error: reporting(errors))
+    port7 = s7.local_address.port
+    config = client_tls
+    Task.scope do |scope|
+      scope.spawn { s7.serve }
+      begin
+        got = Channel[String].new(capacity: 1)
+        c = scope.spawn { HttpShutdownTest.https_get(port7, config, false, got) }
+        # The response came: the connection is kept alive and waits.
+        assert_equal("HTTP/1.1 200 OK", got.receive)
+        started = Time.monotonic
+        s7.shutdown(timeout: 30.seconds)
+        s7.wait
+        assert_true((Time.monotonic - started) < 10.seconds)
+        assert_equal(["HTTP/1.1 200 OK", "closed"], c.await)
+        assert_nil(errors.try_receive)
+      ensure
+        s7.shutdown
+      end
+    end
+  end
+
+  def test_tls_shutdown_racing_handshakes
+    # Handshakes at every stage when the shutdown comes: each client gets
+    # a response or a failure, the server returns, and reports nothing.
+    errors = Channel[String].new(capacity: 8)
+    s8 = HTTP::Server.new(HTTP.handler { |req| HTTP::Server::Response.text("ok") }, host: "127.0.0.1", port: 0,
+                          tls: server_tls, read_header_timeout: 30.seconds, on_error: reporting(errors))
+    port8 = s8.local_address.port
+    config = client_tls
+    Task.scope do |scope|
+      scope.spawn { s8.serve }
+      begin
+        # The server is accepting (#691).
+        assert_equal("HTTP/1.1 200 OK", HttpShutdownTest.https_get(port8, config, true)[0])
+        socks = 8.times.map { |_| Socket.tcp("127.0.0.1", port8) }
+        clients = socks.map do |sock|
+          scope.spawn do
+            begin
+              HttpShutdownTest.https_get(sock, config, true)[0]
+            rescue IOError, SystemCallError, TLS::Error
+              "failed"
+            end
+          end
+        end
+        Task.sleep(5.ms)
+        started = Time.monotonic
+        s8.shutdown(timeout: 30.seconds)
+        s8.wait
+        assert_true((Time.monotonic - started) < 10.seconds)
+        clients.each { |t| assert_includes(["HTTP/1.1 200 OK", "failed"], t.await) }
+        assert_nil(errors.try_receive)
+      ensure
+        s8.shutdown
       end
     end
   end
