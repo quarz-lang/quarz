@@ -1,0 +1,24 @@
+# A class method named like a `Cog` method, of another signature, takes
+# no `Cog` method's place (#723): no class object with class methods of
+# a class is a `Cog` (only a cog's root module is, and it includes
+# modules, never classes). It is the class's own class method, through
+# the class and through a `Type` value.
+class C
+  def initialize; end
+  def self.version -> Int = 3
+  def self.module_name -> Int = 4
+end
+data P(x: Int)
+  def self.version -> Int = 5
+end
+enum E
+  variant V(x: Int)
+  def self.module_name -> Int = 6
+end
+p C.version
+p C.module_name
+p P.version
+p E.module_name
+k: Type[C] = C
+p k.version
+p k.name
