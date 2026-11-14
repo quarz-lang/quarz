@@ -1738,14 +1738,24 @@ pub struct RtWorld {
     /// (`extension_impl`). The runtime reads it before `ext_impls`.
     #[serde(default)]
     pub ext_rescan: Vec<(ClassId, MethodId, MethodId)>,
-    /// (class, module method, what runs): `find_override` for every key
-    /// `in_witness_rows` admits, the method itself when nothing overrides
-    /// it (`build_witness_rows`). Sorted. The runtime reads it for those
+    /// The checker's witness record (`World::witness_record`, #536 step
+    /// 3): (class, abstract module method, its witness), the witness as
+    /// recorded, before its resolution for the receiver. Sorted. Every
+    /// abstract key of `override_rows` reads it (`build_witness_rows`); a
+    /// key it lacks is an internal error.
+    #[serde(default)]
+    pub witness_record: Vec<(ClassId, MethodId, Option<MethodId>)>,
+    /// (class, module method, what runs): for an abstract method, the
+    /// record's witness resolved for the class (`witness_record`); for one
+    /// with a body, `find_override`; for every key `in_witness_rows`
+    /// admits, the method itself when nothing replaces it
+    /// (`build_witness_rows`). Sorted. The runtime reads it for those
     /// keys; a key without a row is an internal error.
     #[serde(default)]
     pub override_rows: Vec<(ClassId, MethodId, MethodId)>,
     /// (class, abstract module method, its witness for a call by name):
-    /// `witness_of` for every abstract key of `override_rows`. Sorted.
+    /// the record's witness for every abstract key of `override_rows`, as
+    /// `override_rows` resolves it. Sorted.
     #[serde(default)]
     pub witness_rows: Vec<(ClassId, MethodId, Option<MethodId>)>,
     /// (class, module class method, what runs on the class object):
@@ -1981,11 +1991,17 @@ impl RtWorld {
                         if method(mid).owner != *anc || !self.in_witness_rows(&method, cid, mid) {
                             continue;
                         }
+                        // (An abstract method: the record's witness, resolved
+                        // for the class, #536 step 3's S2; a key the record
+                        // lacks is an internal error.)
+                        if method(mid).is_abstract {
+                            let w = self.recorded_witness(&method, cid, mid);
+                            rows.push((cid, mid, w.unwrap_or(mid)));
+                            witnesses.push((cid, mid, w));
+                            continue;
+                        }
                         let found = self.find_override(&method, cid, mid).unwrap_or(mid);
                         rows.push((cid, mid, found));
-                        if method(mid).is_abstract {
-                            witnesses.push((cid, mid, self.witness_of(&method, cid, mid)));
-                        }
                     }
                 }
             }
@@ -2021,6 +2037,79 @@ impl RtWorld {
         self.override_rows = rows;
         self.witness_rows = witnesses;
         self.class_override_rows = class_rows;
+    }
+
+    /// The witness of abstract method `abs` for class `cid` by the record
+    /// (`witness_record`), resolved for `cid` as a call typed through its
+    /// owner is: a class's or module's method by `find_override`, an
+    /// extension's own method as is (#654's rule).
+    pub fn recorded_witness<'m>(
+        &self,
+        method: &dyn Fn(MethodId) -> &'m RtMethod,
+        cid: ClassId,
+        abs: MethodId,
+    ) -> Option<MethodId> {
+        let Ok(i) = self
+            .witness_record
+            .binary_search_by_key(&(cid, abs), |(c, m, _)| (*c, *m))
+        else {
+            panic!(
+                "internal error: the witness record has no entry for `{}`'s `{}`",
+                self.class(cid).name,
+                method(abs).name
+            )
+        };
+        self.witness_record[i].2.map(|w| {
+            if method(w).is_extension || method(w).is_abstract {
+                w
+            } else {
+                self.find_override(method, cid, w).unwrap_or(w)
+            }
+        })
+    }
+
+    /// The rows as the run time's dispatch gave them before S2 (#536 step
+    /// 3): `find_override` and `witness_of` for every abstract key. Kept for
+    /// S2's oracle only (`rtworld::witness_oracle`, debug builds and
+    /// `QUARZ_WITNESS_ORACLE=report`); S3 deletes it with the oracle.
+    #[allow(clippy::type_complexity)]
+    pub fn dispatch_rows(
+        &self,
+    ) -> (
+        Vec<(ClassId, MethodId, MethodId)>,
+        Vec<(ClassId, MethodId, Option<MethodId>)>,
+    ) {
+        let mut rows: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
+        let mut witnesses: Vec<(ClassId, MethodId, Option<MethodId>)> = Vec::new();
+        let method = |id: MethodId| &self.methods[id as usize];
+        for (cid, c) in self.classes.iter().enumerate() {
+            let cid = cid as ClassId;
+            for anc in &c.ancestors {
+                let a = self.class(*anc);
+                if a.kind != RtClassKind::Module {
+                    continue;
+                }
+                for &mid in a.methods.values().flatten() {
+                    if method(mid).owner != *anc
+                        || !method(mid).is_abstract
+                        || !self.in_witness_rows(&method, cid, mid)
+                    {
+                        continue;
+                    }
+                    rows.push((
+                        cid,
+                        mid,
+                        self.find_override(&method, cid, mid).unwrap_or(mid),
+                    ));
+                    witnesses.push((cid, mid, self.witness_of(&method, cid, mid)));
+                }
+            }
+        }
+        rows.sort_unstable();
+        rows.dedup();
+        witnesses.sort_unstable();
+        witnesses.dedup();
+        (rows, witnesses)
     }
 
     /// The row of `override_rows` for (`cid`, `mid`).

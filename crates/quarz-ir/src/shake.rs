@@ -675,7 +675,7 @@ pub fn shake(module: &mut Module) -> usize {
     while let Some(f) = s.work.pop() {
         s.scan(f);
     }
-    let (funcs, methods, names) = (s.funcs, s.methods, s.names);
+    let (funcs, methods, names, live) = (s.funcs, s.methods, s.names, s.live);
 
     let mut dropped = 0;
     for (i, f) in module.functions.iter_mut().enumerate() {
@@ -714,5 +714,23 @@ pub fn shake(module: &mut Module) -> usize {
     // here.)
     module.world.rescan_extensions();
     module.world.build_witness_rows();
+    // (The rows read the witness record, #536 step 3's S2: for a class
+    // that may have instances and a requirement shake keeps (its name is
+    // called), the witness the record names is kept too, or a row that a
+    // call reads would name a dropped method. The other rows are never
+    // read.)
+    #[cfg(debug_assertions)]
+    {
+        let w = &module.world;
+        for &(c, r, m) in &w.override_rows {
+            if live[c as usize] && methods[r as usize] && m != r && !methods[m as usize] {
+                panic!(
+                    "internal error: the row of `{}`'s `{}` names a method shake dropped",
+                    w.class(c).name,
+                    w.methods[r as usize].name
+                );
+            }
+        }
+    }
     dropped
 }

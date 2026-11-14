@@ -483,6 +483,18 @@ pub fn declared(world: &World, out: &types::Output) -> RtWorld {
             .map(|w| (w.class, w.method, w.by))
             .collect(),
         ext_rescan: Vec::new(),
+        witness_record: {
+            // (The checker's witness record, which the abstract keys of the
+            // rows read, #536 step 3's S2: sorted, one entry per key.)
+            let mut r: Vec<(ClassId, MethodId, Option<MethodId>)> = world
+                .witness_record()
+                .into_iter()
+                .map(|(c, r, w, _)| (c, r, w))
+                .collect();
+            r.sort_unstable();
+            r.dedup();
+            r
+        },
         override_rows: Vec::new(),
         witness_rows: Vec::new(),
         class_override_rows: Vec::new(),
@@ -501,20 +513,23 @@ pub fn declared(world: &World, out: &types::Output) -> RtWorld {
     rt
 }
 
-/// S1's oracle (#536 step 3), in debug builds: the witness record
-/// (`World::witness_record`) against what the run time's rows run
-/// (`override_rows`), each record entry resolved for its class as
-/// `find_override` resolves a recorded class or module method. Every
-/// disagreement is an internal error, except the family S2 changes (the
-/// record is right there; the rows' answer is the bug), told by its
-/// shape: #662, the class has the requirement's module on its own side
-/// (the record's conformance is the class's own) and the row is an
-/// extension's own method, scoped or top-level. (#529's family, two
-/// extensions of one target, went with #665's decision (α).)
+/// S2's oracle (#536 step 3), in debug builds: the rows the run time
+/// ships, which read the witness record for every abstract key, against
+/// the rows its dispatch gave before S2 (`RtWorld::dispatch_rows`:
+/// `find_override`, `witness_of`). Every disagreement is an internal
+/// error, except the two families S2 changes, told by their shape:
+/// - #662: the record's conformance is the class's own (the class has the
+///   requirement's module on its own side) and the old row is an
+///   extension's own method;
+/// - #629: the old row is the extension rescan's choice that does not take
+///   the requirement's place by type (an extension's own method of
+///   another signature).
 ///
-/// `QUARZ_WITNESS_ORACLE=report` prints every disagreement and the
-/// counts, the excluded ones (a test counts them, so that S2 shows them
-/// gone). Release builds compute nothing here.
+/// It also asserts that the record and the rows have the same keys. S3
+/// deletes it with the old computation it keeps alive.
+/// `QUARZ_WITNESS_ORACLE=report` prints every disagreement and the counts,
+/// the excluded ones by family (a test counts them). Release builds compute
+/// nothing here.
 fn witness_oracle(world: &World, rt: &RtWorld) {
     let report = std::env::var("QUARZ_WITNESS_ORACLE").as_deref() == Ok("report");
     if !cfg!(debug_assertions) && !report {
@@ -523,63 +538,135 @@ fn witness_oracle(world: &World, rt: &RtWorld) {
     let method = |id: MethodId| &rt.methods[id as usize];
     let name = |m: MethodId| {
         let mi = world.method(m);
-        format!("{}#{}", world.class(mi.owner).name, mi.name)
+        match mi.extension {
+            Some(e) => format!(
+                "{}#{} of {}",
+                world.class(mi.owner).name,
+                mi.name,
+                world.extension_label(e)
+            ),
+            None => format!("{}#{}", world.class(mi.owner).name, mi.name),
+        }
     };
-    let (mut ext_n, mut own_n, mut ext_bad, mut own_bad, mut ex_662) = (0, 0, 0, 0, 0);
-    for (c, r, w, ext) in world.witness_record() {
-        // (What runs for the key: the override row, `find_override`'s
-        // answer; only keys the rows have, a class whose values exist.)
+    // (The keys: every abstract key of the rows has a record entry (the
+    // rows panic otherwise), and every record entry for a class with
+    // rows is a key.)
+    for &(c, r, _) in &rt.witness_record {
+        if rt.class(c).kind == quarz_ir::RtClassKind::Module || !rt.in_witness_rows(&method, c, r) {
+            continue;
+        }
         if rt.witness_row(c, r).is_none() {
+            panic!(
+                "internal error: the witness record has `{}`'s `{}`, the rows do not",
+                world.class(c).name,
+                name(r)
+            );
+        }
+    }
+    let own = |c: ClassId, r: MethodId| {
+        world
+            .chosen_conformances(c)
+            .iter()
+            .any(|(src, m, _)| src.is_none() && *m == world.method(r).owner)
+    };
+    let (old_rows, old_witnesses) = rt.dispatch_rows();
+    // (Both tables: what a call through the module runs, and what a call
+    // by name runs: the witness only where nothing in the class's lookup
+    // overrides the requirement (the row is the requirement itself), else
+    // the row. `witness_rows` held only an extension's implementation
+    // before S2, and holds the record's witness now.)
+    let old_row = |c: ClassId, r: MethodId| {
+        old_rows
+            .binary_search_by_key(&(c, r), |(a, b, _)| (*a, *b))
+            .ok()
+            .map(|i| old_rows[i].2)
+    };
+    let pairs: Vec<(ClassId, MethodId, Option<MethodId>, Option<MethodId>)> = old_rows
+        .iter()
+        .map(|&(c, r, old)| (c, r, Some(old), rt.override_row(c, r)))
+        .chain(old_witnesses.iter().map(|&(c, r, old)| {
+            let by_name = |row: Option<MethodId>, w: Option<MethodId>| match row {
+                Some(m) if m == r => w,
+                _ => row,
+            };
+            (
+                c,
+                r,
+                by_name(old_row(c, r), old),
+                by_name(rt.override_row(c, r), rt.witness_row(c, r).flatten()),
+            )
+        }))
+        .collect();
+    let (mut n, mut bad, mut ex_662, mut ex_629) = (0, 0, 0, 0);
+    let mut differed: Vec<(ClassId, MethodId)> = Vec::new();
+    for (c, r, old, new) in pairs {
+        n += 1;
+        if new == old {
             continue;
         }
-        let row = rt.override_row(c, r).filter(|&m| m != r);
-        // (A recorded class or module method, resolved for the class as
-        // `find_override` resolves it.)
-        let expected = w.map(|w| {
-            if method(w).is_extension || method(w).is_abstract {
-                w
-            } else {
-                rt.find_override(&method, c, w).unwrap_or(w)
-            }
-        });
-        if ext.is_some() {
-            ext_n += 1;
+        let (old, new) = (old.unwrap_or(r), new.unwrap_or(r));
+        if new == old {
+            continue;
+        }
+        differed.push((c, r));
+        let ext_own = method(old).is_extension;
+        let family = if ext_own && !world.same_signature_at_run_time(old, r) {
+            Some(629)
+        } else if ext_own && own(c, r) {
+            Some(662)
         } else {
-            own_n += 1;
-        }
-        if row == expected {
-            continue;
-        }
-        let ext_of = |m: MethodId| world.method(m).extension;
-        let excluded = matches!(row, Some(b) if ext.is_none() && ext_of(b).is_some());
-        let kind = if ext.is_some() { "ext" } else { "own" };
+            None
+        };
         let line = format!(
-            "witness-oracle: [{kind}] {} {}: record {}, rows {}",
+            "witness-oracle: {} {}: rows {}, before S2 {}",
             world.class(c).name,
             name(r),
-            expected.map_or("none".to_string(), name),
-            row.map_or("none".to_string(), name)
+            name(new),
+            name(old)
         );
-        if excluded {
-            ex_662 += 1;
-        } else {
-            if ext.is_some() {
-                ext_bad += 1;
-            } else {
-                own_bad += 1;
-            }
-            if !report {
-                panic!("internal error: the witness record and the rows disagree: {line}");
+        match family {
+            Some(662) => ex_662 += 1,
+            Some(_) => ex_629 += 1,
+            None => {
+                bad += 1;
+                if !report {
+                    panic!("internal error: the rows changed outside S2's families: {line}");
+                }
             }
         }
         if report {
-            let tag = if excluded { "  [excluded: #662]" } else { "" };
+            let tag = family.map_or(String::new(), |f| format!("  [S2: #{f}]"));
             eprintln!("{line}{tag}");
+        }
+    }
+    let by_name_differs = |c: ClassId, r: MethodId| differed.contains(&(c, r));
+    // (#629 changes the witness row the safety net checks even where a
+    // call by name never reaches it: the rescan's overload of another
+    // signature, which the net refused, gives way to the record's witness.
+    // Counted on the raw rows; nothing that runs changes there.)
+    for &(c, r, old) in &old_witnesses {
+        let Some(o) = old else { continue };
+        let new = rt.witness_row(c, r).flatten();
+        if new != Some(o)
+            && method(o).is_extension
+            && !world.same_signature_at_run_time(o, r)
+            && !(by_name_differs(c, r))
+        {
+            ex_629 += 1;
+            if report {
+                eprintln!(
+                    "witness-oracle: {} {}: witness row {}, before S2 {}  [S2: #629]",
+                    world.class(c).name,
+                    name(r),
+                    new.map_or("none".to_string(), name),
+                    name(o)
+                );
+            }
         }
     }
     if report {
         eprintln!(
-            "witness-oracle: summary  ext {ext_bad}/{ext_n} disagree, own {own_bad}/{own_n} disagree, excluded #662 {ex_662}"
+            "witness-oracle: summary  {bad}/{n} differ outside S2's families, #662 {ex_662}, #629 {ex_629}"
         );
     }
 }
