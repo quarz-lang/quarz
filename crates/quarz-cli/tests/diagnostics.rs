@@ -2642,6 +2642,25 @@ fn a_modules_new_reaching_a_runtime_built_class_is_reported_at_the_extension() {
 }
 
 #[test]
+fn an_overload_of_another_parameter_type_is_no_implementation() {
+    // The decision of 2026-11-14 on #536, (e1'): a method of the name that
+    // takes the requirement's calls by arity only (`B#m(x: Int)` for
+    // `M#m(x: String)`) is no witness of a class's own conformance; with no
+    // other, the class must implement it. (Main took it by arity and
+    // refused it as an override: "`m` takes Int for `x` but `M#m`, which it
+    // overrides, is given String".)
+    let out = common::diagnostics(
+        "module M\n  abstract def m(x: String) -> String\nend\nclass B\n  def initialize; end\n  def m(x: Int) -> String = \"B\"\nend\nclass K < B\n  include M\n  def initialize; super; end\nend\n",
+    )
+    .join("\n");
+    assert!(
+        out.contains("8:1: error: `K` must implement `m` (abstract in `M`)"),
+        "{out}"
+    );
+    assert_eq!(out.matches("error:").count(), 1, "{out}");
+}
+
+#[test]
 fn the_class_relative_override_pairs_are_checked() {
     // #536 step 1: a later-included module's method over an earlier one's,
     // a superclass's method implementing an included module's abstract

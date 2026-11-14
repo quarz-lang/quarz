@@ -1,0 +1,52 @@
+# A class's own conformance takes its witness by the witness record's
+# rule 3 (`World::own_witness`, the decision of 2026-11-14 on #536, (e1')):
+# the first method in the class's dispatch by name that the override table
+# pairs with the requirement or that takes its place by type. A method of
+# the name taking the calls by arity only (an overload of another
+# parameter type) is no witness.
+# 1. `K < B` includes `M` itself; `B#m(x: Int)` comes first in `K`'s
+#    dispatch, `E#m(x: Object)` (B's include) takes `M#m(x: String)`'s
+#    place by type: it is the witness (fuzz gen1 seed 1948; main refused
+#    the program, taking `B#m` by arity).
+# 2. `K2 < B2` includes `M2`; a top-level unconditional extension of `K2`
+#    includes `N2`, whose `m(x: String)` is in `K2`'s dispatch by name: the
+#    witness (fuzz gen2 seed 2469; main refused it likewise).
+module M
+  abstract def m(x: String) -> String
+  def mm -> String = m("s") + "!"
+end
+module E
+  def m(x: Object) -> String = "Ew"
+end
+class B
+  include E
+  def initialize; end
+  def m(x: Int) -> String = "Bo#{x + 1}"
+end
+class K < B
+  include M
+  def initialize; super; end
+end
+def via(v: M) -> String = v.mm
+puts via(K.new), K.new.m(1)
+
+module M2
+  abstract def m(x: String) -> String
+  def mm -> String = m("s") + "!"
+end
+module N2
+  def m(x: String) -> String = "N"
+end
+class B2
+  def initialize; end
+  def m(x: Int) -> String = "Bo#{x + 1}"
+end
+class K2 < B2
+  include M2
+  def initialize; super; end
+end
+extension K2
+  include N2
+end
+def via2(v: M2) -> String = v.mm
+puts via2(K2.new), K2.new.m(1)

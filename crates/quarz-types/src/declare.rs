@@ -4482,6 +4482,43 @@ impl<'ast> Declarer<'ast> {
                                     found_impls.push((i, *mid, *anc));
                                 }
                             }
+                            // The class's own conformance (a module it has on
+                            // its own side, or an abstract superclass): the
+                            // witness record's rule 3, `World::own_witness`
+                            // (the override table's pair, or a method taking
+                            // the calls by type, its result included, seen
+                            // with the class's arguments); none, by arity
+                            // only, is no implementation (the decision of
+                            // 2026-11-14 on #536).
+                            Some(i)
+                                if self.world.class(*anc).kind != ClassKind::Module
+                                    || chosen
+                                        .iter()
+                                        .any(|(src, k, _)| src.is_none() && k == anc) =>
+                            {
+                                match self.world.own_witness(id, *mid) {
+                                    None => missing.push((m.name.clone(), *anc)),
+                                    Some(j) => {
+                                        let further = ancestors
+                                            .iter()
+                                            .position(|a| *a == self.world.method(j).owner)
+                                            > ancestors.iter().position(|a| a == anc);
+                                        if j != i || further {
+                                            impls.push((id, *mid, j));
+                                            inherited_impls.push((j, *mid, *anc));
+                                        }
+                                    }
+                                }
+                            }
+                            // (For a conformance an extension makes, the
+                            // two arms below still start from
+                            // `implementation`, the first candidate by
+                            // arity; the S1 oracle and the two-witness
+                            // assertion are what show they agree with R0's
+                            // witness by type on accepted programs. #536 step
+                            // 3's S3 deletes both arms and
+                            // `implementation_by_signature`, the record's
+                            // rule 4 replacing them.)
                             // A concrete method further up the chain than
                             // the abstract one (`A#<=>` for `Comparable`
                             // included in `C < A`): the runtime passes over

@@ -1506,10 +1506,10 @@ impl World {
     ///    name (`resolution(C, …, View::Lookup)`) that the override table
     ///    pairs with `r`, or that takes `r`'s calls by type, its result
     ///    included (a concrete method further up, the declarer's
-    ///    `inherited_impls`); else one that takes them by arity only, as
-    ///    the declarer records it, for the safety net to judge in the
-    ///    class's frame. (Step 1's relation; rule A: an extension's own
-    ///    method is never it.)
+    ///    `inherited_impls`); else none. (Step 1's relation; rule A: an
+    ///    extension's own method is never it. A method taking the calls by
+    ///    arity only is no witness: the arity-only last resort is dropped,
+    ///    the decision of 2026-11-14 on #536.)
     /// 4. **An extension's conformance:** the extension's own method that
     ///    takes `r`'s calls by type, its result included; else the witness
     ///    R0 recorded for its target (`ext_impls`): the first in the order
@@ -1575,17 +1575,6 @@ impl World {
                             })
                             .map(|(k, _)| *k),
                     };
-                    let (amin, amax) = rm.positional_arity();
-                    let arity = |i: MethodId| {
-                        let im = self.method(i);
-                        let (cmin, cmax) = im.positional_arity();
-                        !im.is_abstract
-                            && im.singleton == rm.singleton
-                            && cmin <= amin
-                            && cmax >= amax
-                            && im.block.is_some() == rm.block.is_some()
-                            && im.keywords_accept(rm)
-                    };
                     // (Below the conformance's class, a method replaces the
                     // witness only if the override table pairs it with the
                     // requirement under the class's declaration view:
@@ -1633,44 +1622,80 @@ impl World {
                                         .map(|(_, _, i)| *i)
                                 })
                         }
-                        // (The class's own conformance: the override table's
-                        // answer, step 1's relation: the first on its own
-                        // side whose method replaces the requirement.)
-                        // (Or, by signature, a concrete method further up that
-                        // the table does not pair, as the declarer records
-                        // it, `inherited_impls`: `B2#m` for `C2 < B2;
-                        // include M2[Int]`.)
-                        None => lookup
-                            .iter()
-                            .find_map(|(k, kargs)| {
-                                let ks = self.class_subst(*k, kargs);
-                                self.class(*k).methods.get(&rm.name).and_then(|ids| {
-                                    ids.iter().copied().find(|&i| {
-                                        let im = self.method(i);
-                                        im.owner == *k
-                                            && !im.is_abstract
-                                            && (self.overrides(i).contains(&r) || by_type(i, &ks))
-                                    })
-                                })
-                            })
-                            // (Else one that takes the calls by arity only, as the
-                            // declarer records it: the net judges it in the
-                            // class's frame, as R0's last candidate.)
-                            .or_else(|| {
-                                lookup.iter().find_map(|(k, _)| {
-                                    self.class(*k).methods.get(&rm.name).and_then(|ids| {
-                                        ids.iter()
-                                            .copied()
-                                            .find(|&i| self.method(i).owner == *k && arity(i))
-                                    })
-                                })
-                            }),
+                        // (The class's own conformance: `own_witness`.)
+                        None => self.own_witness_in(&lookup, r, &rsubst, &paired_here),
                     });
                     out.push((c, r, w, src.map(|(e, _)| e)));
                 }
             }
         }
         out
+    }
+
+    /// The witness of requirement `r` (an abstract instance method of a
+    /// module, or of an abstract superclass) for class `c`'s own conformance
+    /// to its owner (the witness
+    /// record's rule 3, which the declarer records, #536 step 3): the first
+    /// method in `c`'s dispatch by name (`View::Lookup`) that the override
+    /// table pairs with `r` (`overrides`, or `c`'s own include pairs,
+    /// `include_overrides_of`), or that takes `r`'s calls by type (a
+    /// method's own type parameters standing for `r`'s), its result
+    /// included, each seen with the class's own arguments for its owner
+    /// (a concrete method further up: `B2#m` for `C2 < B2; include
+    /// M2[Int]`). None: nothing implements it (a method taking the calls
+    /// by arity only is no witness, the decision of 2026-11-14 on #536).
+    pub fn own_witness(&self, c: ClassId, r: MethodId) -> Option<MethodId> {
+        let m = self.method(r).owner;
+        let lookup = self.resolution(c, &self.own_args(c), View::Lookup);
+        let margs = lookup
+            .iter()
+            .find(|(k, _)| *k == m)
+            .map(|(_, a)| a.clone())
+            .unwrap_or_default();
+        let paired: Vec<MethodId> = self
+            .include_overrides_of(c)
+            .into_iter()
+            .filter(|io| io.overridden == r)
+            .map(|io| io.by)
+            .collect();
+        self.own_witness_in(&lookup, r, &self.class_subst(m, &margs), &paired)
+    }
+
+    /// `own_witness` in `lookup`, `c`'s dispatch by name, with `rsubst`,
+    /// the module's arguments there, and `paired`, the methods `c`'s own
+    /// include pairs put over `r` (`include_overrides_of`).
+    fn own_witness_in(
+        &self,
+        lookup: &[(ClassId, Vec<Type>)],
+        r: MethodId,
+        rsubst: &HashMap<TypeParamId, Type>,
+        paired: &[MethodId],
+    ) -> Option<MethodId> {
+        let rm = self.method(r);
+        lookup.iter().find_map(|(k, kargs)| {
+            let ks = self.class_subst(*k, kargs);
+            self.class(*k).methods.get(&rm.name).and_then(|ids| {
+                ids.iter().copied().find(|&i| {
+                    let im = self.method(i);
+                    // (A method's own type parameters stand for the
+                    // requirement's, in order, as an override's do,
+                    // `Declarer::check_implementation`.)
+                    let mut ks = ks.clone();
+                    if im.type_params.len() == rm.type_params.len() {
+                        for (p, q) in im.type_params.iter().zip(&rm.type_params) {
+                            ks.insert(p.id, Type::Param(q.id));
+                        }
+                    }
+                    im.owner == *k
+                        && !im.is_abstract
+                        && (self.overrides(i).contains(&r)
+                            || paired.contains(&i)
+                            || (i != r
+                                && !im.singleton
+                                && self.takes_place_of(im, &ks, rm, rsubst)))
+                })
+            })
+        })
     }
 
     /// The conformance that holds for class `c`, one per module (the
