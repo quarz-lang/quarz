@@ -2677,9 +2677,6 @@ impl Interp {
             }
         }
         let cid = self.class_of(recv);
-        if cid == m.owner {
-            return Ok(mid);
-        }
         let slot = self.program.vslots[mid as usize];
         if slot == u32::MAX {
             // Nothing overrides it: the method is the one.
@@ -2691,7 +2688,8 @@ impl Interp {
                 return Ok(hit - 1);
             }
         }
-        let found = self.override_for(cid, mid);
+        let method = |id: MethodId| self.program.method(id);
+        let found = self.program.world.dispatch_target(&method, cid, mid);
         if let Some(cell) = self.vtable.borrow_mut().get_mut(at) {
             *cell = found + 1;
         }
@@ -2805,28 +2803,6 @@ impl Interp {
     /// class side, in lookup order (`RtWorld::class_side_modules`).
     fn class_side_modules(&self, cid: ClassId, c: ClassId) -> Vec<ClassId> {
         self.program.world.class_side_modules(cid, c)
-    }
-
-    /// What runs for module method `mid` on a value of class `cid`
-    /// (`resolve_dynamic`): the row of `RtWorld::override_rows` for a key
-    /// `RtWorld::in_witness_rows` admits (none there is an internal
-    /// error), else `RtWorld::find_override` (a method a class declares,
-    /// resolved here once per class and slot); `mid` itself when nothing
-    /// overrides it.
-    fn override_for(&self, cid: ClassId, mid: MethodId) -> MethodId {
-        let world = &self.program.world;
-        let method = |id: MethodId| self.program.method(id);
-        if world.in_witness_rows(&method, cid, mid) {
-            world.override_row(cid, mid).unwrap_or_else(|| {
-                panic!(
-                    "internal error: no override row for `{}` on `{}`",
-                    self.program.method(mid).name,
-                    world.class(cid).name
-                )
-            })
-        } else {
-            world.find_override(&method, cid, mid).unwrap_or(mid)
-        }
     }
 
     /// The witness of abstract method `abs` for class `cid` that a call by
