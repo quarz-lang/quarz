@@ -130,6 +130,11 @@ fn http_server_across_workers() {
 }
 
 #[test]
+fn http_server_shut_down_before_its_accept_loop_starts() {
+    prints_its_out("http_early_shutdown.qz");
+}
+
+#[test]
 fn readers_sharing_a_socket_wake_each_other() {
     prints_its_out("shared_readers.qz");
 }

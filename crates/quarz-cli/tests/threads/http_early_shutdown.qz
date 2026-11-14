@@ -1,0 +1,12 @@
+# A shutdown right after `serve` starts, on four workers: the accept loop's
+# task may not have started yet when it is cancelled (it then never runs
+# its block), and `serve` still returns normally (#691).
+require "http"
+
+5.times do |_|
+  server = HTTP::Server.new(HTTP.handler { |req| HTTP::Server::Response.text("ok") }, host: "127.0.0.1", port: 0)
+  t = Task.spawn { server.serve; "returned" }
+  Task.yield
+  server.shutdown
+  puts t.await
+end
