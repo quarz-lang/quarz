@@ -5393,6 +5393,26 @@ impl<'ast> Declarer<'ast> {
                                 continue;
                             }
                         }
+                        // An extension of a module cannot include (rule B,
+                        // the user's decision of 2026-11-13): refused here,
+                        // and the module is kept out of the extension's
+                        // includes, so that no conformance, witness or row
+                        // ever has a module target (#536 step 3's S3).
+                        if self.world.class(tid).kind == ClassKind::Module {
+                            if let Type::Class(mid, _) = &ty {
+                                let (tname, mname) = (
+                                    self.world.class(tid).name.clone(),
+                                    self.world.class(*mid).name.clone(),
+                                );
+                                self.error(
+                                    format!(
+                                        "an extension of the module `{tname}` cannot include `{mname}`: include it in `{tname}` itself, or in the classes (or extend them)"
+                                    ),
+                                    e.def.target.span,
+                                );
+                            }
+                            continue;
+                        }
                         self.ext_includes
                             .push((e.id, ty.clone(), t.span, self.file));
                         self.world.extensions[e.id as usize].includes.push(ty);

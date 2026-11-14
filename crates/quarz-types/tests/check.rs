@@ -5892,10 +5892,16 @@ fn a_classs_own_method_over_a_conditional_extensions_module_is_checked() {
 #[test]
 fn a_conditional_extensions_pairs_where_the_bound_may_hold() {
     let em = "module EM\n  def m(x: Int) -> String = \"module\"\nend\n";
-    // A module target: the class's own method over the module the
-    // module's conditional extension includes.
+    // A module target cannot include (rule B): refused by rule B alone,
+    // the module kept out of the extension's includes (#536 step 3's S3).
+    // A class target's conditional extension: the subclass's own method
+    // over the module it includes.
     err(
         &format!("{em}module N[T]\nend\nextension N[T <: Int]\n  include EM\nend\nclass Box[T]\n  include N[T]\n  def initialize; end\n  def m(x: Int) -> Int = 5\nend"),
+        "an extension of the module `N` cannot include `EM`",
+    );
+    err(
+        &format!("{em}class NB[T]\nend\nextension NB[T <: Int]\n  include EM\nend\nclass Box[T] < NB[T]\n  def initialize; end\n  def m(x: Int) -> Int = 5\nend"),
         "`m` returns Int but `EM#m`, which it overrides, returns String",
     );
     // A bound failing for concrete arguments: no pair.
@@ -5917,8 +5923,9 @@ fn refused_until_the_exact_may_hold() {
     let want = "`m` returns Int but `EM#m`, which it overrides, returns String";
     // `Array[U] <: Int` for no `U`, a superclass's arguments.
     err(&format!("{em}class Box[T]\n  def initialize; end\nend\nextension Box[T <: Int]\n  include EM\nend\nclass Sub[U] < Box[Array[U]]\n  def initialize; end\n  def m(x: Int) -> Int = 5\nend"), want);
-    // The same, a module's.
-    err(&format!("{em}module N[T]\nend\nextension N[T <: Int]\n  include EM\nend\nclass Box[T]\n  include N[Array[T]]\n  def initialize; end\n  def m(x: Int) -> Int = 5\nend"), want);
+    // (A module's: refused by rule B alone since #536 step 3's S3, the
+    // module target kept out of the extension's includes.)
+    err(&format!("{em}module N[T]\nend\nextension N[T <: Int]\n  include EM\nend\nclass Box[T]\n  include N[Array[T]]\n  def initialize; end\n  def m(x: Int) -> Int = 5\nend"), "an extension of the module `N` cannot include `EM`");
     // `Sink[U] <: Sink[Int]` needs `Int <: U`, which `U <: String` rules out.
     err(&format!("{em}class Sink[in T]\n  def initialize; end\nend\nclass Box[T]\n  def initialize; end\nend\nextension Box[T <: Sink[Int]]\n  include EM\nend\nclass Sub[U <: String] < Box[Sink[U]]\n  def initialize; end\n  def m(x: Int) -> Int = 5\nend"), want);
 }
