@@ -88,7 +88,7 @@ Two checks back this up, since QIR carries no types to check again:
 
 We adopt **reference counting (RC) + in-place updates via uniqueness + cycle collection restricted to mutable objects**.
 
-Today values are reference counted without atomic operations, and updates copy unless the reference is unique (§9). The shared bit with atomic counting and general reuse described below are not implemented: values cross to another thread only by copying (`Task.blocking`). Cycles are collected.
+Today values are reference counted, and updates copy unless the reference is unique (§9). A value that crosses to another task is marked shared, and only shared counts are updated atomically (`rc.rs`; §9 and [04-concurrency.md](04-concurrency.md) §7). A value crosses to `Task.blocking`'s helper thread by being copied, since that thread runs a program of its own ([03-data-model.md](03-data-model.md) §5). The general reuse described below is not implemented. Cycles are collected.
 
 ### Why Reference Counting
 

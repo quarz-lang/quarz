@@ -1,0 +1,183 @@
+# Object#shareable? over docs/03 §5's kinds: immediates and strings,
+# collections of Shareable and of non-Shareable elements, nested ones,
+# builders, generic data and enums by their arguments, classes with and
+# without the promise, Atom, Channel, Task, procedures, and a deep value
+# (the walk keeps no native stack).
+require "test"
+
+class ShareableTestCounter
+  var @n: Int = 0
+  def bump -> Int
+    @n += 1
+    @n
+  end
+end
+
+class ShareableTestPlain
+  @v: Int
+  def initialize(@v: Int)
+  end
+end
+
+class ShareableTestPromised
+  include Shareable
+  @v: Int
+  def initialize(@v: Int)
+  end
+end
+
+class ShareableTestError < StandardError
+end
+
+data ShareableTestPoint = (x: Float, y: Float)
+data ShareableTestBox[T] = (v: T)
+data ShareableTestOps = (f: shareable (Int) -> Int)
+data ShareableTestHolder = (c: ShareableTestCounter)
+
+# Deliberately not Shareable, though their fields hold only Ints.
+data ShareableTestToken(n: Int)
+  include Unshareable
+end
+
+data ShareableTestGenToken[T](v: T)
+  include Unshareable
+end
+
+module ShareableTestLocal
+  include Unshareable
+end
+
+data ShareableTestViaModule[T](v: T)
+  include ShareableTestLocal
+end
+
+enum ShareableTestLocalEnum
+  include Unshareable
+  variant One(n: Int)
+  variant Two
+end
+
+enum ShareableTestTree[T]
+  variant Leaf(v: T)
+  variant Node(l: ShareableTestTree[T], r: ShareableTestTree[T])
+  variant Empty
+end
+
+class ShareableTest < Test::Case
+  def test_immediates_and_strings
+    assert_true(nil.shareable?)
+    assert_true(true.shareable?)
+    assert_true(1.shareable?)
+    big: Integer = 2
+    100.times { |_| big = big * 2 }
+    assert_true(big.shareable?)
+    assert_true(1.5.shareable?)
+    assert_true(:sym.shareable?)
+    assert_true("short".shareable?)
+    assert_true("a string longer than fourteen bytes".shareable?)
+    assert_true(b"bytes".shareable?)
+    assert_true(1.second.shareable?)
+    assert_true(Time.now.shareable?)
+    assert_true(/re/.shareable?)
+    assert_true(Int.shareable?)
+  end
+
+  def test_collections_by_their_elements
+    assert_true([1, 2, 3].shareable?)
+    assert_true([1.5, 2.5].shareable?)
+    assert_true(["a", :b, nil].shareable?)
+    assert_true({"k" => [1], "j" => [2]}.shareable?)
+    assert_true(Set[1, 2].shareable?)
+    assert_true((1..3).shareable?)
+    assert_true([1, "a"].shareable?)
+    assert_true(Array[Int].new.shareable?)
+    assert_false([ShareableTestCounter.new].shareable?)
+    assert_false({"k" => ShareableTestCounter.new}.shareable?)
+    assert_false({ShareableTestPlain.new(1) => 1}.shareable?)
+    assert_false(Set[ShareableTestPlain.new(1)].shareable?)
+    # Nested: the one non-Shareable element deep down decides.
+    assert_true([[1, [2, [3]]], {"a" => [[:x]]}].shareable?)
+    assert_false([[1, [2, [ShareableTestCounter.new]]]].shareable?)
+  end
+
+  def test_builders
+    assert_false(Array::Builder[Int].new.shareable?)
+    assert_false(Hash::Builder[String, Int].new.shareable?)
+    assert_false(Set::Builder[Int].new.shareable?)
+    assert_false(String::Builder.new.shareable?)
+    assert_false(Bytes::Builder.new.shareable?)
+    assert_false([1, Array::Builder[Int].new].shareable?)
+  end
+
+  def test_data_and_enums
+    assert_true(ShareableTestPoint.new(1.0, 2.0).shareable?)
+    # A non-generic data type Shareable by its fields' types, a
+    # `shareable` procedure among them.
+    assert_true(ShareableTestOps.new(->(x: Int) { x + 1 }).shareable?)
+    assert_false(ShareableTestHolder.new(ShareableTestCounter.new).shareable?)
+    # Generic: by what the fields hold.
+    assert_true(ShareableTestBox[Int].new(1).shareable?)
+    assert_true(ShareableTestBox[Array[String]].new(["a"]).shareable?)
+    assert_false(ShareableTestBox[ShareableTestCounter].new(ShareableTestCounter.new).shareable?)
+    assert_false(ShareableTestBox[Array[ShareableTestCounter]].new([ShareableTestCounter.new]).shareable?)
+    assert_true(Result[Int, String].ok(42).shareable?)
+    assert_false(Result[ShareableTestCounter, String].ok(ShareableTestCounter.new).shareable?)
+    leaf = ShareableTestTree::Leaf[Int].new(1)
+    assert_true(ShareableTestTree::Node[Int].new(leaf, ShareableTestTree::Empty[Int].new).shareable?)
+    bad = ShareableTestTree::Leaf[ShareableTestCounter].new(ShareableTestCounter.new)
+    assert_false(ShareableTestTree::Node[ShareableTestCounter].new(bad, ShareableTestTree::Empty[ShareableTestCounter].new).shareable?)
+    assert_true(ShareableTestTree::Empty[ShareableTestCounter].new.shareable?)
+  end
+
+  def test_unshareable_data_and_enums
+    # `include Unshareable` makes the type not Shareable whatever its
+    # fields hold: the value answers false too.
+    assert_false(ShareableTestToken.new(1).shareable?)
+    assert_false(ShareableTestGenToken[Int].new(1).shareable?)
+    assert_false(ShareableTestViaModule[Int].new(1).shareable?)
+    assert_false(ShareableTestLocalEnum::One.new(1).shareable?)
+    assert_false(ShareableTestLocalEnum::Two.shareable?)
+    assert_false([ShareableTestToken.new(1)].shareable?)
+  end
+
+  def test_classes_by_their_promise
+    assert_true(ShareableTestPromised.new(1).shareable?)
+    # Immutable fields, but no promise: a subclass could add state.
+    assert_false(ShareableTestPlain.new(1).shareable?)
+    assert_false(ShareableTestCounter.new.shareable?)
+    assert_true(ShareableTestError.new("boom").shareable?)
+    assert_true(ArgumentError.new("bad").shareable?)
+  end
+
+  def test_concurrency_values
+    assert_true(Atom.new(1).shareable?)
+    assert_true(Channel[Int].new(capacity: 1).shareable?)
+    t = Task.spawn { 1 }
+    assert_true(t.shareable?)
+    t.await
+    assert_true(Task.scope { |s| s.shareable? })
+    assert_true([Atom.new(1), Channel[Int].new].shareable?)
+  end
+
+  def test_procedures_answer_false
+    # An approximation (#706): a `shareable` procedure answers false too.
+    f: shareable (Int) -> Int = ->(x: Int) { x + 1 }
+    assert_false(f.shareable?)
+    assert_false(->(x: Int) { x }.shareable?)
+    assert_false([1, ->(x: Int) { x }].shareable?)
+    assert_false(ShareableTestBox[shareable (Int) -> Int].new(f).shareable?)
+  end
+
+  def test_deep_and_shared_values
+    deep: Array[Object] = [1]
+    100_000.times { |_| deep = [deep] }
+    assert_true(deep.shareable?)
+    bad: Array[Object] = [ShareableTestCounter.new]
+    100_000.times { |_| bad = [bad] }
+    assert_false(bad.shareable?)
+    # The same array referred to 2^16 times: walked as a tree.
+    wide: Array[Object] = [1]
+    16.times { |_| wide = [wide, wide] }
+    assert_true(wide.shareable?)
+  end
+end

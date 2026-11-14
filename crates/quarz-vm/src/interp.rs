@@ -507,6 +507,12 @@ pub struct ExcClasses {
 /// Ids of runtime value classes.
 #[derive(Clone, Debug, Default)]
 pub struct RtClasses {
+    /// `Shareable`, whose membership `Object#shareable?` tests
+    /// (`transfer::Rule::Shareable`).
+    pub shareable: ClassId,
+    /// `Unshareable`: a type that includes it is never Shareable, whatever
+    /// its fields hold (`transfer::Rule::Shareable`).
+    pub unshareable: ClassId,
     pub selector: ClassId,
     pub enumerator: ClassId,
     pub io: ClassId,
@@ -1001,6 +1007,8 @@ impl Interp {
             system_stack: class_by_name("SystemStackError"),
         };
         let rt = RtClasses {
+            shareable: class_by_name("Shareable"),
+            unshareable: class_by_name("Unshareable"),
             selector: class_by_name("Channel::Selector"),
             enumerator: class_by_name("Enumerator"),
             io: class_by_name("IO"),
