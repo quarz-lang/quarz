@@ -1487,7 +1487,11 @@ impl<'ast> Declarer<'ast> {
                 // passed over. One filter on that order: a method the
                 // requirement itself overrides (the override table,
                 // `World::overrides`: `M.d` for `N.d` with `N` including
-                // `M`) is never its witness (#680's decision, option 1).
+                // `M`) is never its witness, and the walk goes on (#680's
+                // decision, option 1). A method of the name that takes the
+                // calls but not the requirement's place by type (another
+                // result) is not passed over: it is the witness and is
+                // refused as an override below (#669's decision (f2)).
                 let overridden = self.world.overrides(m);
                 let by = own.iter().copied().find(|&i| fits(self, i)).or_else(|| {
                     order.iter().copied().find_map(|c| {

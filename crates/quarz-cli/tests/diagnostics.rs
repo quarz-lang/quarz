@@ -495,6 +495,76 @@ end
 }
 
 #[test]
+fn a_first_candidate_of_another_type_is_refused() {
+    // #669's decision (f2): the first class method of the name in the
+    // class-side order with the extension active is the witness; one that
+    // does not take the requirement's place by type is refused as an
+    // override, not passed over. `K20` includes `O20` itself, whose `label`
+    // returns Int, before the extension's `R20.label -> String` (fuzz gen4
+    // seed 1895; main took `R20`'s default, `O20` being among the sources
+    // it took last). The instance side's mirror is refused alike.
+    let out = common::diagnostics(
+        r#"module R20
+  def self.label -> String = "20 default"
+end
+module O20
+  def self.label -> Int = 20
+end
+class B20
+  def initialize; end
+end
+class K20 < B20
+  include O20
+  def initialize; super; end
+end
+extension K20
+  include R20
+end
+def via20(t: Type[R20]) -> String = t.label
+x = K20.label
+p via20(K20), x
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains(
+            "14:11: error: `label` returns Int but `R20.label`, which it overrides, returns String"
+        ),
+        "{out}"
+    );
+    let out = common::diagnostics(
+        r#"module R
+  def label -> String = "R"
+  def mm -> String = label + "!"
+end
+module O
+  def label -> Int = 1
+end
+class B
+  def initialize; end
+end
+class K < B
+  include O
+  def initialize; super; end
+end
+extension K
+  include R
+end
+def via(v: R) -> String = v.label
+def imp(v: R) -> String = v.mm
+puts via(K.new), imp(K.new)
+x = K.new.label
+p x
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("error: `label` returns Int but `R#label`, which it overrides in `K`, which includes `O`, returns String"),
+        "{out}"
+    );
+}
+
+#[test]
 fn another_extensions_module_supplies_no_witness() {
     // #669's decision (y), with R0 and D: the class-side witness is looked
     // for in the class's order with this extension alone active, so a
