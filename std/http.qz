@@ -1736,19 +1736,6 @@ module HTTP
 
   # ----- the router -----------------------------------------------------------------
 
-  # :nodoc:
-  # A segment of a `Pattern`.
-  enum Segment
-    variant Literal(text: String)
-    variant Param(name: String)
-    variant Rest(name: String)
-  end
-
-  # :nodoc:
-  # (No longer used: `Routes` holds the routes. Goes with the wrappers
-  # below once bezel has switched, #380.)
-  data Route = (method: String, pattern: String, segments: Array[Segment], handler: Handler)
-
   # A route's path pattern: `/users/{id}`, `/files/{path...}`.
   #
   # A pattern starts with `/`, and `/` separates its segments:
@@ -1787,8 +1774,16 @@ module HTTP
     # Its segments, as `.parse` makes them from `source`. (`Pattern.new`
     # is public, as every `data` type's constructor is, and checks
     # nothing: a pattern is made with `.parse`.)
-    segments: Array[Segment]
+    segments: Array[Pattern::Segment]
   )
+    # :nodoc:
+    # A segment of a pattern.
+    enum Segment
+      variant Literal(text: String)
+      variant Param(name: String)
+      variant Rest(name: String)
+    end
+
     # The pattern written `source`. Raises `ArgumentError` when it does not
     # start with `/`, when `{name...}` is not its last segment, when a
     # parameter has no name (`{}`, `{...}`), or when two parameters have
@@ -2119,7 +2114,7 @@ module HTTP
     # Another router's routes under `prefix`.
     def mount(prefix: String, router: Router) -> Void
       pre = Pattern.parse(prefix)
-      raise ArgumentError, "a mount prefix has no {name...}" if pre.segments.any? { |s| s.is_a?(Segment::Rest) }
+      raise ArgumentError, "a mount prefix has no {name...}" if pre.segments.any? { |s| s.is_a?(Pattern::Segment::Rest) }
       router.routes.each do |method, pattern, handler|
         handle(method, prefix.delete_suffix("/") + pattern.source, handler)
       end
@@ -2140,29 +2135,6 @@ module HTTP
 
     # The router of the routes added so far.
     def to_router -> Router = Router.new(@routes, @fallback)
-  end
-
-  # :nodoc:
-  # (The five functions below are `Pattern`'s, for bezel until it has
-  # switched to `Pattern` and `Routes`; then they go, #380.)
-  def self.parse_pattern(pattern: String) -> Array[Segment] = Pattern.parse(pattern).segments
-
-  # :nodoc:
-  def self.path_segments(req: Server::Request) -> Array[String]? = req.path_segments
-
-  # :nodoc:
-  def self.match_segments(pattern: Array[Segment], path: Array[String]) -> Hash[String, String]?
-    Pattern.new("", pattern).match(path)
-  end
-
-  # :nodoc:
-  def self.specificity(segs: Array[Segment]) -> Array[Int] = Pattern.new("", segs).specificity
-
-  # :nodoc:
-  # (Its callers compare `specificity` first: then this is whether the
-  # two match the same paths.)
-  def self.same_literals?(a: Array[Segment], b: Array[Segment]) -> Bool
-    Pattern.new("", a).same_paths?(Pattern.new("", b))
   end
 
   # Serves HTTP on `host`:`port`, answering each request with the
