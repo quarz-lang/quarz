@@ -4510,6 +4510,15 @@ impl<'ast> Declarer<'ast> {
                                     }
                                 }
                             }
+                            // (For a conformance an extension makes, the
+                            // two arms below still start from
+                            // `implementation`, the first candidate by
+                            // arity; the S1 oracle and the two-witness
+                            // assertion are what show they agree with R0's
+                            // witness by type on accepted programs. #536 step
+                            // 3's S3 deletes both arms and
+                            // `implementation_by_signature`, the record's
+                            // rule 4 replacing them.)
                             // A concrete method further up the chain than
                             // the abstract one (`A#<=>` for `Comparable`
                             // included in `C < A`): the runtime passes over

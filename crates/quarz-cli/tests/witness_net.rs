@@ -401,12 +401,23 @@ fn the_witness_oracle_excludes_only_662() {
         s.contains("ext 0/") && s.contains("own 0/") && s.contains("excluded #662 0"),
         "{s}"
     );
+    // (A class's own conformance whose witness is a generic method, its
+    // own type parameters standing for the requirement's: the record's
+    // rule 3 finds it by type, with no arity resort, and agrees with the
+    // rows. The include-pair case of `own_witness` is
+    // `a_method_is_checked_in_each_receivers_frame`, refused by the net.)
+    let s = summary(GENERIC_OWN_ORACLE);
+    assert!(
+        s.contains("ext 0/") && s.contains("own 0/") && s.contains("excluded #662 0"),
+        "{s}"
+    );
     // (The same method of another result type: refused as an override.)
     refused(
         &R672_ORACLE.replace("def m -> String = \"E\"", "def m -> Int = 1"),
         &["`m` returns Int but `M#m`, which it overrides in `K`, which includes `E`"],
     );
 }
+const GENERIC_OWN_ORACLE: &str = "module M\n  abstract def h[T <: Comparable[T]](x: T, y: T) -> Bool\nend\nclass A\n  def initialize; end\n  def h[T <: Comparable[T]](x: T, y: T) -> Bool = x < y\nend\nclass C < A\n  include M\n  def initialize; super; end\nend\ndef via(v: M) -> Bool = v.h(1, 2)\nputs via(C.new)\n";
 const R672_ORACLE: &str = "module M\n  abstract def m -> String\nend\nmodule E\n  def m -> String = \"E\"\nend\nclass B\nend\nclass K < B\nend\nextension K\n  include E\nend\nmodule Sc\n  extension B\n    include M\n    def m -> String = \"x\"\n  end\n  def self.up(x: B) -> M = x\nend\ndef via(v: M) -> String = v.m\nputs via(Sc.up(B.new)), via(Sc.up(K.new))\n";
 const TOP_662_ORACLE: &str = "module M\n  abstract def m -> Int\nend\nclass A\n  def initialize; end\n  def m -> Int = 10\nend\nclass D < A\n  include M\n  def initialize; super; end\nend\nextension A\n  include M\n  def m -> Int = 100\nend\ndef via(v: M) -> Int = v.m\nputs via(D.new)\n";
 const R529_ORACLE: &str = "module PI\n  abstract def parse(s: String) -> Int\n  abstract def self.make(s: String) -> Int\nend\nmodule PS\n  abstract def parse(s: String) -> String\n  abstract def self.make(s: String) -> String\nend\nclass Box[T]\n  @v: T\n  def initialize(@v: T); end\nend\nextension Box[T <: Int]\n  include PI\n  def parse(s: String) -> Int = @v + s.to_i\n  def self.make(s: String) -> Int = 1\nend\nextension Box[T <: String]\n  include PS\n  def parse(s: String) -> String = @v + s\n  def self.make(s: String) -> String = \"two\"\nend\ndef ps(x: PS) -> String = x.parse(\"!\")\na: PS = Box[String].new(\"x\")\np a.parse(\"1\")\np ps(a)\n";

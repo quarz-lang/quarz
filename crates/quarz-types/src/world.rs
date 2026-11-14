@@ -1633,7 +1633,8 @@ impl World {
     }
 
     /// The witness of requirement `r` (an abstract instance method of a
-    /// module) for class `c`'s own conformance to its module (the witness
+    /// module, or of an abstract superclass) for class `c`'s own conformance
+    /// to its owner (the witness
     /// record's rule 3, which the declarer records, #536 step 3): the first
     /// method in `c`'s dispatch by name (`View::Lookup`) that the override
     /// table pairs with `r` (`overrides`, or `c`'s own include pairs,
