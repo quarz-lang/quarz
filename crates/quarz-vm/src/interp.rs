@@ -1267,9 +1267,6 @@ impl Interp {
 
     /// Run the main program as the root task. Returns the exit code.
     pub fn run(self: &std::rc::Rc<Interp>) -> i32 {
-        if cfg!(debug_assertions) && std::env::var_os("QUARZ_CHECK_SLOTS").is_some() {
-            self.check_class_object_slots();
-        }
         let me = self.clone();
         let body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
             let mut result = Ok(Value::Nil);
@@ -2669,21 +2666,6 @@ impl Interp {
         // (whose own class methods may stand in for a module's): the
         // method is the one.
         if self.program.vslots[mid as usize] == u32::MAX && !matches!(recv, Value::Class(_)) {
-            // (The slot set and the override table agree: an object's class
-            // runs the method itself, `RtWorld::dispatch_target`. #715, for
-            // one CI run; removed in the pull request's last commit.)
-            #[cfg(debug_assertions)]
-            if let Value::Object(o) = recv {
-                let method = |id: MethodId| self.program.method(id);
-                let found = self.program.world.dispatch_target(&method, o.class, mid);
-                assert!(
-                    found == mid,
-                    "internal error: `{}` has no virtual slot, but `{}` runs `{}` for it",
-                    m.name,
-                    self.program.world.class(o.class).name,
-                    self.program.method(found).name
-                );
-            }
             return Ok(mid);
         }
         if let Value::Class(cid) = recv {
@@ -2691,17 +2673,6 @@ impl Interp {
             // of its signature (the class's, a superclass's or an included
             // module's) overrides it.
             if let Some(found) = self.class_side_override(*cid, mid) {
-                // (The slot set covers this leg too: a method without a slot
-                // is replaced by no class method, or compiled code, which
-                // dispatches only flagged methods, would run it, #726.
-                // #715, for one CI run; removed in the last commit.)
-                debug_assert!(
-                    found == mid || m.overridden,
-                    "internal error: `{}` has no virtual slot, but the class object `{}` runs `{}` for it",
-                    m.name,
-                    self.program.world.class(*cid).name,
-                    self.program.method(found).name
-                );
                 return Ok(found);
             }
         }
@@ -2723,87 +2694,6 @@ impl Interp {
             *cell = found + 1;
         }
         Ok(found)
-    }
-
-    /// (Temporary, #715: removed in the pull request's last commit.) With
-    /// `QUARZ_CHECK_SLOTS`, the class-object leg of the slot set: for
-    /// every class and module as a class object, every instance method
-    /// without a slot of a class of class objects (`Type` and the classes
-    /// under it, `Meta::ClassDef`, `Cog`) or of their ancestors (`Object`'s
-    /// `to_s`, `==`, ...) must be replaced by no class method
-    /// (`class_side_override`). A failure is a line in the file
-    /// `QUARZ_ORACLE_LOG` names, else an internal error.
-    /// `QUARZ_CHECK_SLOTS_UNFLAG` (`Owner#name,...`) treats those methods
-    /// as having no slot, to show the check sees a missing one.
-    fn check_class_object_slots(&self) {
-        let world = &self.program.world;
-        let unflag: Vec<String> = std::env::var("QUARZ_CHECK_SLOTS_UNFLAG")
-            .map(|v| v.split(',').map(str::to_string).collect())
-            .unwrap_or_default();
-        let name = |id: MethodId| {
-            let m = self.program.method(id);
-            let sep = if m.singleton { "." } else { "#" };
-            format!("{}{sep}{}", world.class(m.owner).name, m.name)
-        };
-        let report = |line: String| match std::env::var_os("QUARZ_ORACLE_LOG") {
-            Some(path) => {
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                {
-                    let _ = writeln!(f, "{line}");
-                }
-            }
-            None => panic!("internal error: {line}"),
-        };
-        let type_ = world.builtin.class_;
-        let mut sides: Vec<ClassId> = Vec::new();
-        for (k, c) in world.classes.iter().enumerate() {
-            let k = k as ClassId;
-            if k == type_ || c.ancestors.contains(&type_) {
-                for a in &c.ancestors {
-                    if !sides.contains(a) {
-                        sides.push(*a);
-                    }
-                }
-            }
-        }
-        let mut methods: Vec<MethodId> = Vec::new();
-        for a in &sides {
-            for &mid in world.class(*a).methods.values().flatten() {
-                let m = self.program.method(mid);
-                if m.owner != *a || m.singleton || m.is_extension || m.is_abstract {
-                    continue;
-                }
-                if !m.overridden || unflag.contains(&name(mid)) {
-                    methods.push(mid);
-                }
-            }
-        }
-        let mut checked = 0usize;
-        for (k, c) in world.classes.iter().enumerate() {
-            if matches!(c.kind, quarz_ir::RtClassKind::Main) {
-                continue;
-            }
-            for &mid in &methods {
-                checked += 1;
-                if let Some(found) = self.class_side_override(k as ClassId, mid) {
-                    if found != mid {
-                        report(format!(
-                            "check slots: `{}` has no slot, but the class object `{}` runs `{}` for it",
-                            name(mid),
-                            c.name,
-                            name(found)
-                        ));
-                    }
-                }
-            }
-        }
-        if std::env::var_os("QUARZ_ORACLE_LOG").is_some() {
-            report(format!("check slots: {checked} class-object pairs checked"));
-        }
     }
 
     /// The implementation of `Type`'s method `mid` for the class object

@@ -67,108 +67,11 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
     rt
 }
 
-/// (Temporary, #715: removed in this pull request's last commit.) With
-/// `QUARZ_CHECK_SLOTS`, an exhaustive check of the slot set: for every
-/// class with values, every instance method of its ancestors without a
-/// slot must dispatch to itself (`dispatch_target`), and every class
-/// method without one must have no override (`class_method_override`).
-/// A failure is a line in the file `QUARZ_ORACLE_LOG` names, else an
-/// internal error. Not in CI's default path.
-fn slot_oracle(rt: &RtWorld, _world: &World) {
-    let log = std::env::var_os("QUARZ_ORACLE_LOG");
-    let report = |line: String, fatal: bool| match &log {
-        Some(path) => {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-            {
-                let _ = writeln!(f, "{line}");
-            }
-        }
-        None if fatal => panic!("internal error: {line}"),
-        None => {}
-    };
-    let name = |id: MethodId| {
-        let m = &rt.methods[id as usize];
-        let sep = if m.singleton { "." } else { "#" };
-        format!("{}{sep}{}", rt.class(m.owner).name, m.name)
-    };
-    if std::env::var_os("QUARZ_CHECK_SLOTS").is_none() {
-        return;
-    }
-    let method = |id: MethodId| &rt.methods[id as usize];
-    let mut checked = 0usize;
-    for (ci, c) in rt.classes.iter().enumerate() {
-        let cid = ci as quarz_ir::ClassId;
-        if matches!(
-            c.kind,
-            quarz_ir::RtClassKind::Module | quarz_ir::RtClassKind::Main
-        ) {
-            continue;
-        }
-        for &anc in &c.ancestors {
-            let a = rt.class(anc);
-            for &mid in a.methods.values().flatten() {
-                let m = method(mid);
-                if m.owner != anc
-                    || m.singleton
-                    || m.is_extension
-                    || method(mid).overridden
-                    || m.is_abstract
-                {
-                    continue;
-                }
-                checked += 1;
-                let found = rt.dispatch_target(&method, cid, mid);
-                if found != mid {
-                    report(
-                        format!(
-                            "check slots: `{}` has no slot, but `{}` runs `{}` for it",
-                            name(mid),
-                            c.name,
-                            name(found)
-                        ),
-                        true,
-                    );
-                }
-            }
-            for &mid in a.singleton_methods.values().flatten() {
-                let m = method(mid);
-                if m.owner != anc || m.is_extension || method(mid).overridden || m.is_abstract {
-                    continue;
-                }
-                checked += 1;
-                if let Some(found) = rt.class_method_override(&method, cid, mid) {
-                    report(
-                        format!(
-                            "check slots: `{}` has no slot, but `{}` runs `{}` for it",
-                            name(mid),
-                            c.name,
-                            name(found)
-                        ),
-                        true,
-                    );
-                }
-            }
-        }
-    }
-    report(format!("check slots: {checked} pairs checked"), false);
-}
-
 /// What the lowering adds to `declared`'s tables: the classes' fields and
 /// their defaults (the layouts), each method's function and whether it is
 /// overridden, the constants' functions and the quoted blocks' trees, the
 /// file names. Nothing `declared`'s rows read.
 pub fn fill(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<String>) {
-    fill_tables(rt, world, lw, file_names);
-    if cfg!(debug_assertions) {
-        slot_oracle(rt, world);
-    }
-}
-
-fn fill_tables(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<String>) {
     for (c, rc) in world.classes.iter().zip(rt.classes.iter_mut()) {
         let layout = &lw.layouts[c.id as usize];
         // A type with a parameter in it has no name of its own: a
