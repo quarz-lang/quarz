@@ -382,10 +382,7 @@ fn the_s2_oracle_excludes_only_662_and_629() {
     // (#662 with a top-level extension: `D < A` includes `M` itself, `A`
     // has its own `m` and a top-level extension of `A` its own `m` too.)
     let s = summary(TOP_662_ORACLE);
-    assert!(
-        s.contains(" 0/") && s.contains("#629 0") && !s.contains("#662 0"),
-        "{s}"
-    );
+    assert!(s.contains(" 0/") && s.contains("#662 2, #629 0"), "{s}");
     // (#672: below an extension's conformance, a top-level extension's
     // module in the subclass's dispatch by name gives the method the table
     // pairs with the requirement; the record walks that order too, with no

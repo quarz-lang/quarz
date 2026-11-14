@@ -325,6 +325,10 @@ impl Lowerer {
         // (The ids from `methods` on are given to other methods next.)
         self.overrides_cache.1.clear();
         self.bounded_cache.1.clear();
+        // (The failed input's record may be for a world of the sizes a
+        // later input reaches with other declarations: `record_key` holds
+        // within one program only.)
+        *self.record_memo.borrow_mut() = None;
         // (The failed input's, which may refer to the methods forgotten;
         // an earlier input's still wait for a final lowering when it
         // had nothing to run, declarations only.)
@@ -1791,6 +1795,14 @@ fn rows_errors(
 /// methods and extensions.
 /// What the witness record reads, by size: the world's classes,
 /// methods and extensions, and R0's and the class side's witnesses.
+/// Within one program it changes whenever the record could: classes and
+/// modules are not reopened (a new include needs a new class or
+/// extension), and a `static` statement's generation only adds
+/// (`StaticHost::add_generated` pushes a new method, refusing a name the
+/// class has, so no signature changes in place; `add_generated_field` adds
+/// fields and `set_generated_captures` a body's captures, which the record
+/// does not read). Across a REPL input that is rolled back it does not
+/// hold: `Lowerer::forget` drops the memo.
 fn record_key(world: &World) -> [usize; 5] {
     let [c, m, e] = world_size(world);
     [c, m, e, world.ext_impls.len(), world.class_ext_impls.len()]
