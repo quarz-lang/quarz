@@ -1943,7 +1943,7 @@ module HTTP
       # The route's value, and the parameters its pattern matched.
       variant Match(value: U, params: Hash[String, String])
       # Only other methods have a route for the path: those methods,
-      # sorted, as a 405's `Allow` lists them.
+      # sorted, as a 405's Allow header lists them.
       variant NotAllowed(allow: Array[String])
       # No route matches the path.
       variant NotFound
