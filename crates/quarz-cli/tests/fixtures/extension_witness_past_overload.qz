@@ -1,0 +1,51 @@
+# #679's decision (k2): for a conformance an extension makes, the witness
+# is R0's, chosen by type for the target (the record's rule 4); the
+# declarer no longer starts from the first method by arity, so an overload
+# of the class taking other arguments no longer hides the extension's own
+# method ("must implement", a false refusal: fuzz gen1 3478, 3975, probes
+# `review3/b5`, `b6`). Expected output from the rule: through `PI` the
+# extension's `parse(s: String) -> Int` runs, for the target and for a
+# subclass (rule 4: the extension whose target is nearest up the chain);
+# by name, the overload a call's arguments pick. Axes: an unconditional
+# top-level extension (Box), a conditional one on a generic class (GBox),
+# a subclass receiver (SubBox). VM and compiled (the build tests).
+module PI
+  abstract def parse(s: String) -> Int
+  def twice(s: String) -> Int = parse(s) * 2
+end
+
+class Box
+  def initialize; end
+  def parse(s: Int) -> String = "n#{s + 1}"
+end
+
+extension Box
+  include PI
+  def parse(s: String) -> Int = 1 + s.to_i
+end
+
+class SubBox < Box
+  def initialize; super; end
+end
+
+class GBox[T]
+  @v: T
+  def initialize(@v: T); end
+  def parse(s: Int) -> String = "g#{s + 1}"
+end
+
+extension GBox[T <: Int]
+  include PI
+  def parse(s: String) -> Int = @v + s.to_i
+end
+
+def pi(x: PI) -> Int = x.twice("4")
+
+p pi(Box.new)
+p pi(SubBox.new)
+p pi(GBox[Int].new(1))
+p Box.new.parse(3)
+p Box.new.parse("3")
+p SubBox.new.parse(3)
+p GBox[Int].new(2).parse(3)
+p GBox[Int].new(2).parse("3")

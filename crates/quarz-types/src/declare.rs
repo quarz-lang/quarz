@@ -2679,42 +2679,6 @@ impl<'ast> Declarer<'ast> {
         self.check_override_pair(mid, o, &subst, &mine_subst, None);
     }
 
-    /// The method that implements the abstract `abs` (of the ancestor
-    /// `anc`) for class `id` by signature: the first, up the ancestors, that
-    /// takes every call `abs` takes there (`World::takes_calls_of`), or of
-    /// the same signature for the runtime (a method's own type parameters).
-    fn implementation_by_signature(
-        &self,
-        typed: &[(ClassId, Vec<Type>)],
-        anc: ClassId,
-        abs: MethodId,
-    ) -> Option<MethodId> {
-        let (_, aargs) = typed.iter().find(|(c, _)| *c == anc)?;
-        let asubst = self.world.class_subst(anc, aargs);
-        let a = self.world.method(abs);
-        for (k, kargs) in typed {
-            let Some(ids) = self.world.class(*k).methods.get(&a.name) else {
-                continue;
-            };
-            let ksubst = self.world.class_subst(*k, kargs);
-            for &j in ids {
-                let jm = self.world.method(j);
-                if jm.is_abstract || jm.singleton != a.singleton {
-                    continue;
-                }
-                let fits = if jm.type_params.is_empty() && a.type_params.is_empty() {
-                    self.world.takes_calls_of(jm, &ksubst, a, &asubst)
-                } else {
-                    self.same_signature_at_run_time(j, abs)
-                };
-                if fits {
-                    return Some(j);
-                }
-            }
-        }
-        None
-    }
-
     /// `check_implementation` for `mid`, a method of `owner` seen from the
     /// class through `oargs` (its owner's arguments there).
     #[allow(clippy::too_many_arguments)]
@@ -4452,7 +4416,7 @@ impl<'ast> Declarer<'ast> {
             let mut found_impls: Vec<(MethodId, MethodId, ClassId)> = Vec::new();
             let mut inherited_impls: Vec<(MethodId, MethodId, ClassId)> = Vec::new();
             // (The ancestors with their arguments, once for every abstract
-            // method: `implementation_by_signature`.)
+            // method.)
             let own_args: Vec<Type> = class
                 .type_params
                 .iter()
@@ -4536,40 +4500,16 @@ impl<'ast> Declarer<'ast> {
                                     }
                                 }
                             }
-                            // (For a conformance an extension makes, the
-                            // two arms below still start from
-                            // `implementation`, the first candidate by
-                            // arity; the S1 oracle and the two-witness
-                            // assertion are what show they agree with R0's
-                            // witness by type on accepted programs. #536 step
-                            // 3's S3 deletes both arms and
-                            // `implementation_by_signature`, the record's
-                            // rule 4 replacing them.)
-                            // A concrete method further up the chain than
-                            // the abstract one (`A#<=>` for `Comparable`
-                            // included in `C < A`): the runtime passes over
-                            // the abstract one to it (`World::ext_impls`).
-                            Some(i)
-                                if ancestors
-                                    .iter()
-                                    .position(|a| *a == self.world.method(i).owner)
-                                    > ancestors.iter().position(|a| a == anc) =>
-                            {
-                                impls.push((id, *mid, i));
-                                inherited_impls.push((i, *mid, *anc));
-                            }
-                            // Implemented by signature, as the runtime finds
-                            // it: a method of the name taking other arguments
-                            // is an overload, and one of the signature may
-                            // come further up (all seen from this class).
-                            Some(i) => match self.implementation_by_signature(&typed, *anc, *mid) {
-                                None => missing.push((m.name.clone(), *anc)),
-                                Some(j) if j != i => {
-                                    impls.push((id, *mid, j));
-                                    inherited_impls.push((j, *mid, *anc));
-                                }
-                                Some(_) => {}
-                            },
+                            // A conformance an extension makes: its witness
+                            // is R0's, chosen by type for the extension's
+                            // target and recorded there
+                            // (`check_extension_completes`, `World::ext_impls`),
+                            // which the witness record's rule 4 reads; the
+                            // declarer chooses none for the class (#679's
+                            // decision (k2), the user's of 2026-11-14). (The
+                            // first candidate by arity, `i`, is not it: an
+                            // overload of another signature came first.)
+                            Some(_) => {}
                         }
                     }
                 }
