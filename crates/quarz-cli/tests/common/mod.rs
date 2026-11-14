@@ -26,7 +26,26 @@ pub fn lower(src: &str) -> quarz_ir::Module {
 /// recorded witnesses (#632, #557), so its tests make the rows so.
 #[allow(dead_code)]
 pub fn lower_with_no_witness(src: &str, class: &str, module: &str, name: &str) -> quarz_ir::Module {
-    let mut m = lower(src);
+    // (R0's recorded witness goes before the lowering, so that the record,
+    // the rows and what the lowering's passes read from them, devirt's
+    // resolution included, all say none.)
+    let (mut checked, files) = check(src);
+    {
+        let w = &mut checked.world;
+        let cid = w
+            .classes
+            .iter()
+            .position(|c| c.name == class)
+            .expect("the class");
+        let mid = w
+            .methods
+            .iter()
+            .position(|x| x.name == name && w.classes[x.owner as usize].name == module)
+            .expect("the method");
+        w.ext_impls
+            .retain(|e| !(e.0 as usize == cid && e.1 as usize == mid));
+    }
+    let mut m = quarz_cli::lower(&checked, &files);
     let w = &mut m.world;
     let cid = w
         .classes
@@ -48,7 +67,6 @@ pub fn lower_with_no_witness(src: &str, class: &str, module: &str, name: &str) -
             row.2 = None;
         }
     }
-    w.ext_impls.retain(|e| !(e.0 == cid && e.1 == mid));
     // (The rows read the witness record, and shake makes them again from
     // it, #536 step 3's S2: the record's entry goes too.)
     for row in w.witness_record.iter_mut() {

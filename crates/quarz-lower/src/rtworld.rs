@@ -136,7 +136,7 @@ pub fn fill(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<Strin
 }
 
 /// The runtime's tables the declarations alone decide, with the rows over
-/// them (`rescan_extensions`, `build_witness_rows`): the classes'
+/// them (`build_witness_rows`): the classes'
 /// ancestors, lookup, class side and methods, the methods' signatures and
 /// override table, the extensions and their witnesses. Built once per
 /// program after its check (`Lowerer::declare`, where the safety net
@@ -480,34 +480,11 @@ pub fn declared_with(
         methods,
         consts: Vec::new(),
         extensions,
-        ext_impls: {
-            // One witness per (class, requirement): the declarer records
-            // one where a class's own conformance is checked and R0 one
-            // where an extension's is (#632); were they two methods,
-            // `find_override` would take whichever came first.
-            #[cfg(debug_assertions)]
-            for (k, &(c, a, i)) in world.ext_impls.iter().enumerate() {
-                if let Some(&(_, _, j)) = world.ext_impls[..k]
-                    .iter()
-                    .find(|(c2, a2, j)| *c2 == c && *a2 == a && *j != i)
-                {
-                    panic!(
-                        "internal error: two witnesses recorded for `{}`'s `{}`: `{}` and `{}`",
-                        world.class(c).name,
-                        world.method(a).name,
-                        world.method(j).name,
-                        world.method(i).name
-                    );
-                }
-            }
-            world.ext_impls.clone()
-        },
         class_ext_impls: world
             .class_ext_impls
             .iter()
             .map(|w| (w.class, w.method, w.by))
             .collect(),
-        ext_rescan: Vec::new(),
         // (The checker's witness record, which the abstract keys of the
         // rows read, #536 step 3's S2.)
         witness_record: record,
@@ -521,9 +498,6 @@ pub fn declared_with(
         file_names: Vec::new(),
         file_mains,
     };
-    // (The scan of the extensions the interpreter made at run time, made
-    // once: `RtWorld::ext_rescan`.)
-    rt.rescan_extensions();
     rt.build_witness_rows();
     rt
 }

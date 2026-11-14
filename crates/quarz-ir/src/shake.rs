@@ -710,11 +710,9 @@ pub fn shake(module: &mut Module) -> usize {
     for e in &mut module.world.extensions {
         keep(&mut e.methods);
     }
-    // (The extensions and methods changed: the table of the scan over them
-    // and the witness rows are made again, so that they are what the
-    // runtime's walks over this world give and name no method dropped
-    // here.)
-    module.world.rescan_extensions();
+    // (The extensions and methods changed: the witness rows are made
+    // again, so that they are what the runtime's walks over this world give
+    // and name no method dropped here.)
     module.world.build_witness_rows();
     // (The rows read the witness record, #536 step 3's S2: for a class
     // that may have instances and a requirement shake keeps (its name is
