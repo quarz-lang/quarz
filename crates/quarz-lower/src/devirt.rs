@@ -41,9 +41,7 @@ fn receivers(world: &RtWorld, mid: MethodId) -> Option<Vec<(ClassId, MethodId)>>
         if cid != m.owner && !c.ancestors.contains(&m.owner) {
             continue;
         }
-        if let Some(impl_) = resolve(world, cid, mid)? {
-            out.push((cid, impl_));
-        }
+        out.push((cid, resolve(world, cid, mid)?));
         if out.len() > MAX_CLASSES {
             return None;
         }
@@ -51,98 +49,27 @@ fn receivers(world: &RtWorld, mid: MethodId) -> Option<Vec<(ClassId, MethodId)>>
     (!out.is_empty()).then_some(out)
 }
 
-/// The method class `cid` runs for `m`: `Ok(None)` when it has none
-/// (an abstract one, so the class has no instances), `Err` when the
-/// answer is not simple (an extension, overloads, a native).
-fn resolve(world: &RtWorld, cid: ClassId, mid: MethodId) -> Option<Option<MethodId>> {
+/// The method class `cid` runs for `mid`, as dispatch has it
+/// (`RtWorld::dispatch_target`, for an object of exactly `cid`, which is
+/// what the split's `ClassIs` tests): `None` when it is not simple (an
+/// extension's method, an abstract one, a synthesized body, defaults or
+/// another shape, a native), so the site keeps its dispatch.
+fn resolve(world: &RtWorld, cid: ClassId, mid: MethodId) -> Option<MethodId> {
     let m = &world.methods[mid as usize];
-    let class = &world.classes[cid as usize];
-    // A module's requirement: what runs is the witness row (the record,
-    // #536 step 3), which may be an extension's conformance's witness that
-    // the walk below would not find: that method when it is simple, else
-    // the call stays dispatched.
     let method = |id: MethodId| &world.methods[id as usize];
-    if m.is_abstract && world.in_witness_rows(&method, cid, mid) {
-        // (Every key `in_witness_rows` admits has a row: a missing one is
-        // an internal error, as at run time, `Interp::witness_for`; a row
-        // with no witness keeps the dispatch.)
-        let w = world.witness_row(cid, mid).unwrap_or_else(|| {
-            panic!(
-                "internal error: no witness row for `{}` on `{}`",
-                m.name, class.name
-            )
-        })?;
-        let c = method(w);
-        let simple = !c.is_extension
-            && !c.is_abstract
-            && c.synth == RtSynth::None
-            && c.params.len() == m.params.len()
-            && c.has_block == m.has_block
-            && c.params
-                .iter()
-                .all(|p| p.kind == RtParamKind::Positional && !p.has_default)
-            && c.func.is_some()
-            && c.native_key.is_none();
-        return simple.then_some(Some(w));
-    }
-    let chain: Vec<ClassId> = if class.ancestors.first() == Some(&cid) {
-        class.ancestors.clone()
-    } else {
-        std::iter::once(cid)
-            .chain(class.ancestors.iter().copied())
-            .collect()
-    };
-    for anc in chain {
-        // A file's top-level `def`s are functions: none is a method here.
-        if world.classes[anc as usize].kind == RtClassKind::Main {
-            continue;
-        }
-        if world.extensions.iter().any(|e| {
-            e.target == anc
-                && e.methods.contains_key(&m.name)
-                && world.extension_dispatches(e, m.owner)
-        }) {
-            return None;
-        }
-        let Some(ids) = world.classes[anc as usize].methods.get(&m.name) else {
-            continue;
-        };
-        let matching: Vec<MethodId> = ids
+    let w = world.dispatch_target(&method, cid, mid);
+    let c = method(w);
+    let simple = !c.is_extension
+        && !c.is_abstract
+        && c.synth == RtSynth::None
+        && c.params.len() == m.params.len()
+        && c.has_block == m.has_block
+        && c.params
             .iter()
-            .copied()
-            .filter(|id| {
-                let c = &world.methods[*id as usize];
-                c.synth == RtSynth::None
-                    && c.params.len() == m.params.len()
-                    && c.has_block == m.has_block
-                    && c.params
-                        .iter()
-                        .all(|p| p.kind == RtParamKind::Positional && !p.has_default)
-                    // The method itself, or what the override table says
-                    // replaces it (`RtMethod::overrides`, and for this
-                    // class the module-over-ancestor pairs,
-                    // `RtWorld::include_overrides`, #536): any other of the
-                    // name is an overload.
-                    && (*id == mid
-                        || c.overrides.contains(&mid)
-                        || world.include_overrides.iter().any(|(k, o, by)| {
-                            *o == mid && *by == *id && (*k == cid || class.ancestors.contains(k))
-                        }))
-            })
-            .collect();
-        let [one] = matching.as_slice() else {
-            return None;
-        };
-        let c = &world.methods[*one as usize];
-        if c.is_abstract {
-            return Some(None);
-        }
-        if c.func.is_none() || c.native_key.is_some() {
-            return None;
-        }
-        return Some(Some(*one));
-    }
-    None
+            .all(|p| p.kind == RtParamKind::Positional && !p.has_default)
+        && c.func.is_some()
+        && c.native_key.is_none();
+    simple.then_some(w)
 }
 
 struct Site {

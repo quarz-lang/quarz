@@ -2666,6 +2666,21 @@ impl Interp {
         // (whose own class methods may stand in for a module's): the
         // method is the one.
         if self.program.vslots[mid as usize] == u32::MAX && !matches!(recv, Value::Class(_)) {
+            // (The slot rule and the override table agree: an object's
+            // class runs the method itself, `RtWorld::dispatch_target`.
+            // #536 step 3's S3, for one CI run.)
+            #[cfg(debug_assertions)]
+            if let Value::Object(o) = recv {
+                let method = |id: MethodId| self.program.method(id);
+                let found = self.program.world.dispatch_target(&method, o.class, mid);
+                assert!(
+                    found == mid,
+                    "internal error: `{}` has no virtual slot, but `{}` runs `{}` for it",
+                    m.name,
+                    self.program.world.class(o.class).name,
+                    self.program.method(found).name
+                );
+            }
             return Ok(mid);
         }
         if let Value::Class(cid) = recv {
@@ -2677,9 +2692,6 @@ impl Interp {
             }
         }
         let cid = self.class_of(recv);
-        if cid == m.owner {
-            return Ok(mid);
-        }
         let slot = self.program.vslots[mid as usize];
         if slot == u32::MAX {
             // Nothing overrides it: the method is the one.
@@ -2691,7 +2703,8 @@ impl Interp {
                 return Ok(hit - 1);
             }
         }
-        let found = self.override_for(cid, mid);
+        let method = |id: MethodId| self.program.method(id);
+        let found = self.program.world.dispatch_target(&method, cid, mid);
         if let Some(cell) = self.vtable.borrow_mut().get_mut(at) {
             *cell = found + 1;
         }
@@ -2805,28 +2818,6 @@ impl Interp {
     /// class side, in lookup order (`RtWorld::class_side_modules`).
     fn class_side_modules(&self, cid: ClassId, c: ClassId) -> Vec<ClassId> {
         self.program.world.class_side_modules(cid, c)
-    }
-
-    /// What runs for module method `mid` on a value of class `cid`
-    /// (`resolve_dynamic`): the row of `RtWorld::override_rows` for a key
-    /// `RtWorld::in_witness_rows` admits (none there is an internal
-    /// error), else `RtWorld::find_override` (a method a class declares,
-    /// resolved here once per class and slot); `mid` itself when nothing
-    /// overrides it.
-    fn override_for(&self, cid: ClassId, mid: MethodId) -> MethodId {
-        let world = &self.program.world;
-        let method = |id: MethodId| self.program.method(id);
-        if world.in_witness_rows(&method, cid, mid) {
-            world.override_row(cid, mid).unwrap_or_else(|| {
-                panic!(
-                    "internal error: no override row for `{}` on `{}`",
-                    self.program.method(mid).name,
-                    world.class(cid).name
-                )
-            })
-        } else {
-            world.find_override(&method, cid, mid).unwrap_or(mid)
-        }
     }
 
     /// The witness of abstract method `abs` for class `cid` that a call by

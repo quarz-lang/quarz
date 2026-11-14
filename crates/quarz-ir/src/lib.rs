@@ -1797,6 +1797,40 @@ impl RtWorld {
                 .any(|m| *m == owner || self.classes[*m as usize].ancestors.contains(&owner))
     }
 
+    /// What a dynamic call of `mid` runs on a `Value::Object` receiver of
+    /// class `cid`: the method itself on its owner's own instances; the
+    /// row of `override_rows` for a key `in_witness_rows` admits (a
+    /// module's method, its requirements' rows the witness record's; none
+    /// there is an internal error); else `find_override` (an abstract
+    /// class's requirement, a class's method), `mid` itself when nothing
+    /// overrides it. The tail of `Interp::resolve_dynamic` for an object
+    /// (its cache keeps the answer per class and slot), and what
+    /// `quarz_lower::devirt` devirtualizes to, which tests the receiver
+    /// with `Inst::ClassIs`, an object of exactly `cid`: class methods,
+    /// extension methods, class objects and native values never reach it
+    /// outside `resolve_dynamic`.
+    pub fn dispatch_target<'m>(
+        &self,
+        method: &dyn Fn(MethodId) -> &'m RtMethod,
+        cid: ClassId,
+        mid: MethodId,
+    ) -> MethodId {
+        if cid == method(mid).owner {
+            return mid;
+        }
+        if self.in_witness_rows(method, cid, mid) {
+            self.override_row(cid, mid).unwrap_or_else(|| {
+                panic!(
+                    "internal error: no override row for `{}` on `{}`",
+                    method(mid).name,
+                    self.class(cid).name
+                )
+            })
+        } else {
+            self.find_override(method, cid, mid).unwrap_or(mid)
+        }
+    }
+
     /// A method of `cid` (or of an ancestor before the owner of `mid`)
     /// that overrides `mid`: same name, and the same signature when the
     /// name is overloaded (the override table, `RtMethod::overrides`, and
