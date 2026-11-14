@@ -63,7 +63,15 @@ fn resolve(world: &RtWorld, cid: ClassId, mid: MethodId) -> Option<Option<Method
     // the call stays dispatched.
     let method = |id: MethodId| &world.methods[id as usize];
     if m.is_abstract && world.in_witness_rows(&method, cid, mid) {
-        let w = world.witness_row(cid, mid)??;
+        // (Every key `in_witness_rows` admits has a row: a missing one is
+        // an internal error, as at run time, `Interp::witness_for`; a row
+        // with no witness keeps the dispatch.)
+        let w = world.witness_row(cid, mid).unwrap_or_else(|| {
+            panic!(
+                "internal error: no witness row for `{}` on `{}`",
+                m.name, class.name
+            )
+        })?;
         let c = method(w);
         let simple = !c.is_extension
             && !c.is_abstract

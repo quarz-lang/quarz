@@ -19,16 +19,16 @@ pub fn lower(src: &str) -> quarz_ir::Module {
     quarz_cli::lower(&checked, &files)
 }
 
-/// `lower`, then class `class`'s rows for module method `module#name`
-/// pointed at that method itself, as though nothing implemented it: the
-/// run time reaches the abstract method (#630's arm). No program the
-/// checker accepts reaches it since the safety net's error stage and R0's
-/// recorded witnesses (#632, #557), so its tests make the rows so.
+/// `lower`, with R0's recorded witness of module method `module#name`
+/// for class `class` dropped from the checker's world first: the witness
+/// record's rule 4 then finds none (the extension has no method of the
+/// name), so the record, the witness and override rows, and devirt's
+/// reading of them all say none, and the run time reaches the abstract
+/// method (#630's arm). No program the checker accepts reaches it since
+/// the safety net's error stage and R0's recorded witnesses (#632, #557),
+/// so its tests make the world so.
 #[allow(dead_code)]
 pub fn lower_with_no_witness(src: &str, class: &str, module: &str, name: &str) -> quarz_ir::Module {
-    // (R0's recorded witness goes before the lowering, so that the record,
-    // the rows and what the lowering's passes read from them, devirt's
-    // resolution included, all say none.)
     let (mut checked, files) = check(src);
     {
         let w = &mut checked.world;
@@ -45,36 +45,7 @@ pub fn lower_with_no_witness(src: &str, class: &str, module: &str, name: &str) -
         w.ext_impls
             .retain(|e| !(e.0 as usize == cid && e.1 as usize == mid));
     }
-    let mut m = quarz_cli::lower(&checked, &files);
-    let w = &mut m.world;
-    let cid = w
-        .classes
-        .iter()
-        .position(|c| c.name == class)
-        .expect("the class") as quarz_ir::ClassId;
-    let mid = w
-        .methods
-        .iter()
-        .position(|x| x.name == name && w.classes[x.owner as usize].name == module)
-        .expect("the method") as quarz_ir::MethodId;
-    for row in w.override_rows.iter_mut() {
-        if row.0 == cid && row.1 == mid {
-            row.2 = mid;
-        }
-    }
-    for row in w.witness_rows.iter_mut() {
-        if row.0 == cid && row.1 == mid {
-            row.2 = None;
-        }
-    }
-    // (The rows read the witness record, and shake makes them again from
-    // it, #536 step 3's S2: the record's entry goes too.)
-    for row in w.witness_record.iter_mut() {
-        if row.0 == cid && row.1 == mid {
-            row.2 = None;
-        }
-    }
-    m
+    quarz_cli::lower(&checked, &files)
 }
 
 /// Type-check a program, with the sources to lower it from. Panics on
