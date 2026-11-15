@@ -494,7 +494,144 @@ pub fn declared_with(
         file_mains,
     };
     rt.build_witness_rows();
+    if cfg!(debug_assertions) {
+        class_target_oracle(world, &rt, &table);
+    }
     rt
+}
+
+/// The oracle of #681's PR 1 (option (a), log-only, debug builds): for
+/// every (class object, method) a call may dispatch on, compares
+/// `World::class_method_target` with what the runtime answers today
+/// (`RtWorld::class_method_override` for a class method,
+/// `RtWorld::class_side_override` for an instance method run on a class
+/// object), and, for a class method, the checker's composite
+/// (`witness_for`, else `World::class_side_dispatch`). Every difference,
+/// and the key counts and the shipped world's size, is a line in the file
+/// `QUARZ_ORACLE_LOG` names.
+fn class_target_oracle(world: &World, rt: &RtWorld, table: &[Vec<MethodId>]) {
+    use std::io::Write;
+    let Some(path) = std::env::var_os("QUARZ_ORACLE_LOG") else {
+        return;
+    };
+    let method = |id: MethodId| &rt.methods[id as usize];
+    let overrides = |m: MethodId| table[m as usize].clone();
+    let name = |m: MethodId| {
+        let mi = world.method(m);
+        let sep = if mi.singleton { "." } else { "#" };
+        format!("{}{sep}{}", world.class(mi.owner).name, mi.name)
+    };
+    let mut lines: Vec<String> = Vec::new();
+    let (mut module_keys, mut class_keys, mut type_keys) = (0usize, 0usize, 0usize);
+    let type_classes: Vec<ClassId> = world
+        .classes
+        .iter()
+        .filter(|k| k.id == world.builtin.class_ || world.class_is_a(k.id, world.builtin.class_))
+        .map(|k| k.id)
+        .collect();
+    for c in &world.classes {
+        if c.kind == ClassKind::Main {
+            continue;
+        }
+        let cid = c.id;
+        let mut owners: Vec<ClassId> = vec![cid];
+        owners.extend(rt.classes[cid as usize].ancestors.iter().copied());
+        owners.dedup();
+        // Class methods: a module's or a class's among `cid`'s ancestors.
+        for &o in &owners {
+            for &b in world.class(o).singleton_methods.values().flatten() {
+                if world.method(b).owner != o {
+                    continue;
+                }
+                if world.class(o).kind == ClassKind::Module {
+                    module_keys += 1;
+                } else {
+                    class_keys += 1;
+                }
+                let w = world.class_method_target(&overrides, cid, b);
+                let r = rt.class_method_override(&method, cid, b).unwrap_or(b);
+                if w != r {
+                    lines.push(format!(
+                        "rt {} {} world={} rt={}",
+                        c.name,
+                        name(b),
+                        name(w),
+                        name(r)
+                    ));
+                }
+                let wf = world.class_side_order(cid).into_iter().find_map(|k| {
+                    world
+                        .class_ext_impls
+                        .iter()
+                        .find(|x| x.class == k && x.method == b)
+                        .map(|x| x.by)
+                });
+                let comp = wf
+                    .or_else(|| world.class_side_dispatch(cid, b))
+                    .unwrap_or(b);
+                if comp != r {
+                    lines.push(format!(
+                        "composite {} {} composite={} rt={}",
+                        c.name,
+                        name(b),
+                        name(comp),
+                        name(r)
+                    ));
+                }
+            }
+        }
+        // Instance methods run on the class object: those of `Type`'s
+        // classes and their ancestors named as a class method of `cid`'s
+        // class side.
+        let side_names: std::collections::BTreeSet<&str> = world
+            .class_side_order(cid)
+            .into_iter()
+            .flat_map(|k| world.class(k).singleton_methods.keys().map(|n| n.as_str()))
+            .collect();
+        let mut seen: Vec<MethodId> = Vec::new();
+        for &t in &type_classes {
+            for a in world.ancestor_ids(t) {
+                for (n, ids) in &world.class(a).methods {
+                    if !side_names.contains(n.as_str()) {
+                        continue;
+                    }
+                    for &b in ids {
+                        let bi = world.method(b);
+                        if bi.owner != a || bi.extension.is_some() || seen.contains(&b) {
+                            continue;
+                        }
+                        seen.push(b);
+                        type_keys += 1;
+                        let w = world.class_method_target(&overrides, cid, b);
+                        let r = rt.class_side_override(&method, cid, b).unwrap_or(b);
+                        if w != r {
+                            lines.push(format!(
+                                "rt-type {} {} world={} rt={}",
+                                c.name,
+                                name(b),
+                                name(w),
+                                name(r)
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    lines.push(format!(
+        "size module_keys={module_keys} class_keys={class_keys} type_keys={type_keys} rows_now={} bytes_now={}",
+        rt.class_override_rows.len(),
+        quarz_ir::encoded_world_len(rt)
+    ));
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        for l in lines {
+            let _ = writeln!(f, "{l}");
+        }
+    }
 }
 
 /// Whether a positional parameter of `m` follows the one named `name`.

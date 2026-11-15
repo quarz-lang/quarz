@@ -4024,6 +4024,128 @@ impl World {
         None
     }
 
+    /// What a call of method `b` on the class object `c` runs (#681,
+    /// option (a)): the one answer the runtime ships
+    /// (`RtWorld::class_override_rows`) and the checker reads. `b` itself
+    /// when nothing takes its place. `overrides` is the override table
+    /// (`World::overrides`, or `override_table` where the lowering has it).
+    ///
+    /// - A class method `b` (a module's or a class's):
+    ///   - a module's that `c` does not include itself (its conformance is
+    ///     an extension's): the recorded witness, the nearest up `c`'s
+    ///     class side (`class_ext_impls`), run as is (#504); else `b`;
+    ///   - otherwise the class-side walk from `c`: each class's own class
+    ///     method of `b`'s name that `overrides` pairs with `b` (an abstract
+    ///     one passed over), then the include pairs
+    ///     (`class_include_overrides_of`), then the modules the class brings
+    ///     (`class_side_modules`, the last first) up to `b`'s owner; up to
+    ///     `b`'s owner (which stops it unless `b` is abstract).
+    /// - An instance method `b` (`Type`'s, `Object`'s, ... run on a class
+    ///   object): a class method of `c`'s class side that is `b` or
+    ///   overrides it (not abstract), the class's own first, then its
+    ///   modules', then its superclass's; of a class's own, the lowest one
+    ///   below it on the way that overrides what was reached.
+    pub fn class_method_target(
+        &self,
+        overrides: &dyn Fn(MethodId) -> Vec<MethodId>,
+        c: ClassId,
+        b: MethodId,
+    ) -> MethodId {
+        let bi = self.method(b);
+        let superclass = |k: ClassId| match &self.class(k).superclass {
+            Some(Type::Class(s, _)) => Some(*s),
+            _ => None,
+        };
+        if !bi.singleton {
+            let accepts = |id: MethodId| {
+                !self.method(id).is_abstract && (id == b || overrides(id).contains(&b))
+            };
+            let mut below: Vec<MethodId> = Vec::new();
+            let mut cur = Some(c);
+            while let Some(k) = cur {
+                let class = self.class(k);
+                if let Some(ids) = class.singleton_methods.get(&bi.name) {
+                    if let Some(id) = ids.iter().copied().find(|id| accepts(*id)) {
+                        let mut reached = vec![id];
+                        let mut lowest = id;
+                        for &l in below.iter().rev() {
+                            if overrides(l).iter().any(|o| reached.contains(o)) {
+                                reached.push(l);
+                                lowest = l;
+                            }
+                        }
+                        return lowest;
+                    }
+                    below.extend(ids.iter().copied().filter(|&id| self.method(id).owner == k));
+                }
+                for module in self.class_side_modules(c, k) {
+                    if let Some(ids) = self.class(module).singleton_methods.get(&bi.name) {
+                        if let Some(id) = ids
+                            .iter()
+                            .copied()
+                            .find(|&id| self.method(id).owner == module && accepts(id))
+                        {
+                            return id;
+                        }
+                    }
+                }
+                cur = superclass(k);
+            }
+            return b;
+        }
+        let replaces = |id: MethodId| !self.method(id).is_abstract && overrides(id).contains(&b);
+        let side = self.class_side_order(c);
+        if self.class(bi.owner).kind == ClassKind::Module && !side.contains(&bi.owner) {
+            return side
+                .iter()
+                .find_map(|k| {
+                    self.class_ext_impls
+                        .iter()
+                        .find(|w| w.class == *k && w.method == b)
+                        .map(|w| w.by)
+                })
+                .unwrap_or(b);
+        }
+        let mut cur = Some(c);
+        while let Some(k) = cur {
+            if k == bi.owner && !bi.is_abstract {
+                return b;
+            }
+            let class = self.class(k);
+            if let Some(ids) = class.singleton_methods.get(&bi.name) {
+                if let Some(id) = ids.iter().copied().find(|&id| replaces(id)) {
+                    return id;
+                }
+            }
+            if let Some(e) = self
+                .class_include_overrides_of(k)
+                .into_iter()
+                .find(|e| e.overridden == b)
+            {
+                return e.by;
+            }
+            for module in self.class_side_modules(c, k) {
+                if module == bi.owner {
+                    if bi.is_abstract {
+                        continue;
+                    }
+                    return b;
+                }
+                if let Some(ids) = self.class(module).singleton_methods.get(&bi.name) {
+                    if let Some(id) = ids
+                        .iter()
+                        .copied()
+                        .find(|&id| self.method(id).owner == module && replaces(id))
+                    {
+                        return id;
+                    }
+                }
+            }
+            cur = superclass(k);
+        }
+        b
+    }
+
     /// The class method that each of `methods` is or overrides (an
     /// ancestor's of the same signature; class methods, none an
     /// extension's), the most derived such one: `Kind.k` for `Kind.k` and

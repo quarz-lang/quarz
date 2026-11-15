@@ -2439,6 +2439,14 @@ pub fn encode(module: &Module) -> Vec<u8> {
     bincode::serde::encode_to_vec(module, bincode_config()).expect("serializing QIR")
 }
 
+/// The size of `world` as a compiled program ships it (#681's oracle:
+/// what the extended `class_override_rows` would add).
+pub fn encoded_world_len(world: &RtWorld) -> usize {
+    bincode::serde::encode_to_vec(world, bincode_config())
+        .expect("serializing a world")
+        .len()
+}
+
 pub fn encode_image(image: &Image) -> Vec<u8> {
     bincode::serde::encode_to_vec(image, bincode_config()).expect("serializing a program")
 }
