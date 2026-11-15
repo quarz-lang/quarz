@@ -1786,6 +1786,28 @@ impl Checker {
         })
     }
 
+    /// The class methods named `name` of the modules `sid` conforms to
+    /// through an extension (`World::conformances`) and does not include
+    /// itself: the requirements whose witness record
+    /// (`World::class_witness_record`) may name a class method of that
+    /// name.
+    fn ext_conformed_class_methods(&self, sid: ClassId, name: &str) -> Vec<MethodId> {
+        let mut out: Vec<MethodId> = Vec::new();
+        for (src, k, _) in self.world.conformances(sid) {
+            if src.is_none() || self.includes_itself(sid, k) {
+                continue;
+            }
+            if let Some(ids) = self.world.class(k).singleton_methods.get(name) {
+                for &r in ids {
+                    if self.world.method(r).owner == k && !out.contains(&r) {
+                        out.push(r);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// The class at which dispatch through `Type[M]` starts for class
     /// `sid` and a class method named `name`, when a fixed witness of that
     /// name (an extension's own, or a class's) runs for it: the class in
@@ -1973,12 +1995,23 @@ impl Checker {
                 // whose witness it is, as the runtime picks it
                 // (`runs_on`): no class method of the subclass excuses it
                 // (witnesses are fixed, #504).
-                let pinned = self.world.class_ext_impls.iter().any(|w| {
-                    w.by == method
-                        && w.by != w.method
-                        && !self.includes_itself(sid, self.world.method(w.method).owner)
-                        && self.runs_on(sid, w.method) == method
-                });
+                // (A requirement `r` of the name whose record for `sid`'s
+                // own side, `World::class_witness_record`, names `method`,
+                // which runs for it: a record of a class off `sid`'s
+                // chain, a sibling's, pins nothing, #768.)
+                let pinned = {
+                    let own = self.world.class_own_side(sid);
+                    self.ext_conformed_class_methods(sid, &mname)
+                        .into_iter()
+                        .any(|r| {
+                            r != method
+                                && self.runs_on(sid, r) == method
+                                && self
+                                    .world
+                                    .class_witness_record(&own, r)
+                                    .is_some_and(|(_, by)| by == method)
+                        })
+                };
                 // An extension's class method is bound statically (docs/01
                 // §7): a call of it runs it for every class it reaches,
                 // whatever class methods of its name they declare, so none
