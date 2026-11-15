@@ -2226,10 +2226,10 @@ impl<'ast> Declarer<'ast> {
     /// include brings gives with a body, when that module's method
     /// overrides an ancestor's (rule E, the user's decision of 2026-11-13,
     /// #603): calls typed through the module and through the ancestor
-    /// would otherwise run different methods (the extension's own through the module, the
-    /// module's through the ancestor). The module's method overrides an
-    /// ancestor's by the override table (`World::overrides`) or, for the
-    /// target, a pair of `World::include_overrides_of`.
+    /// would otherwise run different methods (the extension's own through
+    /// the module, the module's through the ancestor). The module's method
+    /// overrides an ancestor's by the override table (`World::overrides`)
+    /// or, for the target, a pair of `World::include_overrides_of`.
     fn check_extension_over_module_override(
         &mut self,
         ext: ExtensionId,
