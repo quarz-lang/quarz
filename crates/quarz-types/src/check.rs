@@ -4134,14 +4134,12 @@ impl Checker {
             {
                 true
             }
-            // `Meta::ClassDef[X]` to `Type[Y]`: `X` to `Y`.
+            // `Meta::ClassDef[X]` to `Type[Y]`: `X` to `Y`; a `Cog` as a
+            // `Type[Object]` (`World::type_instance`, #744).
             (Type::Class(..), Type::ClassObject(..) | Type::TypeOf(_))
-                if self.world.class_object_instance(actual).is_some() =>
+                if self.world.type_instance(actual).is_some() =>
             {
-                match (
-                    self.world.class_object_instance(actual),
-                    expected.instance_of(),
-                ) {
+                match (self.world.type_instance(actual), expected.instance_of()) {
                     (Some(a), Some(e)) => self.coerce(&a, &e),
                     _ => false,
                 }
@@ -8353,8 +8351,9 @@ impl Checker {
                 // never does. Only a class value (`Type[X]`): a member of a
                 // class type (`Meta::ClassDef[X]`) is decided against the
                 // target class by the branch below, as two classes are.
-                // (`Cog <: Type[Object]` is false in `World::is_subtype`,
-                // #744: the split does not rely on it.)
+                // (A `Type[Object]` or `Type` member is taken earlier, a
+                // `Cog` being a `Type[Object]`, #744, with the same sides;
+                // this one serves `Type[M]` and `Type[T]`.)
                 yes.push(tgt.clone());
                 no.push(m);
             } else if let (Type::Class(mid, _), Type::Class(tid, _)) = (&m, &tgt) {

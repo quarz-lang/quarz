@@ -2933,16 +2933,35 @@ fn in_cog_matches_the_class_values_a_cog_root_may_be() {
         "class Cl\nend\ndef f(t: Type[Cl]) -> String = case t\n  in Cog then t.name\n  else \"no\"\nend",
         "Cog never matches Type[Cl]",
     );
-    // The verdicts are as before: the arm's type still joins the
-    // `case`'s, and `Cog <: Type[Object]` stays false (#744).
+    // The arm's type still joins the `case`'s.
     err(
         "def f(t: Type[Object]) -> Int = case t\n  in Cog then \"a\"\n  else 2\nend",
         "its body has type String | Int",
     );
+    // A `Cog` is a `Type[Object]` (#744): returned, passed, in an array
+    // literal, as a `Type`; `Type[T]` from a `Cog` infers `T = Object`.
+    ok("def f(c: Cog) -> Type[Object] = c\ndef g(c: Cog) -> Type = c\ndef h(t: Type[Object]) -> String = t.name\ndef k(c: Cog) -> String = h(c)\ndef a(c: Cog) -> Array[Type[Object]] = [c]");
+    ok("def n[T](t: Type[T]) -> String = t.name\ndef k(c: Cog) -> String = n(c)");
+    // Not a `Type[Int]`, nor a `Type[M]` of a module (`Object <: M`
+    // fails: a root including `M` is one only as its own class object).
     err(
-        "def f(c: Cog) -> Type[Object] = c",
-        "returns Type[Object] but its body has type Cog",
+        "def f(c: Cog) -> Type[Int] = c",
+        "returns Type[Int] but its body has type Cog",
     );
+    err(
+        "module Mo\nend\ndef f(c: Cog) -> Type[Mo] = c",
+        "returns Type[Mo] but its body has type Cog",
+    );
+    // Its class methods, `Self` and `new` are not `Object`'s: it stands
+    // for no class (`class_object_instance`).
+    err(
+        "def f(c: Cog) -> Object = c.new",
+        "undefined method `new` for Cog",
+    );
+    // `case c in Type` over a `Cog`: the arm is a `Cog` (its methods), and
+    // nothing is left for `else`.
+    ok("def f(c: Cog) -> String = case c\n  in Type then c.version\n  else \"no\"\nend");
+    no_warnings("def f(c: Cog) -> String = case c\n  in Type then c.version\n  else \"no\"\nend");
     // The same split narrows `is_a?`: its then-branch is a `Cog` where a
     // cog root may arrive, no longer `Nothing`, which accepted anything
     // (#746, a soundness hole: an `Int` holding a `Cog`).

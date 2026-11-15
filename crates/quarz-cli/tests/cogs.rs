@@ -2391,6 +2391,21 @@ fn a_cogs_root_module_is_a_cog() {
         err.contains("main.qz:3:14: error: cannot assign Cog to `n` of type Int"),
         "{err}"
     );
+    // A `Cog` is a `Type[Object]` (#744): returned, passed, assigned and
+    // in an array as one, its methods those of the root (the manifest's
+    // name); `Type[T]` from it infers `T = Object`; and of overloads
+    // taking a `Type[Object]` and an `Object`, it takes the first, the
+    // more specific.
+    w.app(
+        &format!("GM = {{ git = \"{}\", tag = \"v1.1.0\" }}\n", w.url("lib")),
+        "def up(c: Cog) -> Type[Object] = c\ndef any(c: Cog) -> Type = c\ndef nm(t: Type[Object]) -> String = t.name\ndef gen[T](t: Type[T]) -> String = t.name\ndef pick(t: Type[Object]) -> String = \"type \" + t.name\ndef pick(o: Object) -> String = \"object\"\nc: Cog = GM\nputs up(c).name, any(c).name, nm(c), gen(c), pick(c)\nts: Array[Type[Object]] = [c, Int]\nputs ts.map { |t| t.name }.join(\",\")\n",
+    );
+    let expected =
+        "greet-more\ngreet-more\ngreet-more\ngreet-more\ntype greet-more\ngreet-more,Int\n";
+    assert_eq!(w.ok("app", &["run"]), expected);
+    w.ok("app", &["build", "-o", "app.bin"]);
+    let exe = Command::new(w.path("app/app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&exe.stdout), expected);
     // A script's `cog` is its file's; an application's test files read
     // the application's.
     w.write(
