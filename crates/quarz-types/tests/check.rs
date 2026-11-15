@@ -3697,6 +3697,71 @@ fn using_is_positional() {
     ok("module M\n  extension String\n    def shout -> String = upcase + \"!\"\n  end\n  K = 7\nend\nclass M::D\n  using M\n  def f -> String = \"a\".shout + K.to_s\nend");
 }
 
+/// #750: a body's value meets its declared type inside the body, where
+/// the body's `using`s are active (the accepted shapes are the fixture
+/// `using_in_a_body_converts_its_value`); a `using` whose scope ended
+/// before the value, or none, converts nothing.
+#[test]
+fn a_bodys_value_is_converted_where_its_usings_are() {
+    let d = "class V\n  def initialize; end\nend\nmodule Desc\n  extension V\n    include Comparable[V]\n    def <=>(other: V) -> Int = 0\n  end\nend\n";
+    ok(&format!(
+        "{d}def f(v: V) -> Comparable[V]\n  using Desc\n  v\nend"
+    ));
+    // A `static def`'s body, as any method's.
+    ok(&format!(
+        "{d}class C\n  static def self.gen(v: V) -> Comparable[V]\n    using Desc\n    v\n  end\nend"
+    ));
+    // A value that fits without the body's `using`s keeps its own type,
+    // as on main: what the caller reads of it is not widened to the
+    // expected type.
+    for kept in [
+        "y: Int | String = begin\n  using Desc\n  1\nend\nputs y + 1",
+        "x: Object = begin\n  using Desc\n  V.new\nend\nputs x.is_a?(V)\nz: V = x",
+        "def f(v: V, c: Bool) -> Object\n  r = if c\n    using Desc\n    v\n  else\n    v\n  end\n  q: V = r\n  q\nend",
+        // Where the expected type is a hint: an inference variable of a
+        // generic call, a block of `map` with no result type, overloads.
+        "def id[T](x: T) -> T = x\nr: V = id(begin\n  using Desc\n  V.new\nend)",
+        "r: Array[V] = [V.new].map do |v|\n  using Desc\n  v\nend",
+        "def o(x: Comparable[V]) -> String = \"cmp\"\ndef o(x: V) -> String = \"v\"\nputs o(begin\n  using Desc\n  V.new\nend)",
+        // A `using` at the file's top level or in a class body: the body
+        // activates nothing, as on main.
+        "using Desc\ndef f(v: V) -> Comparable[V]\n  v\nend",
+        "class C\n  using Desc\n  def self.f(v: V) -> Comparable[V]\n    v\n  end\nend",
+        // A lambda written in a body with a `using`: in the `using`'s
+        // scope, nested in it (docs/01 §7), its value converts as on main.
+        "def f(v: V) -> Comparable[V]\n  using Desc\n  g = ->() -> Comparable[V] do\n    v\n  end\n  g.call\nend",
+    ] {
+        ok(&format!("{d}{kept}"));
+    }
+    for (body, why) in [
+        // No `using`.
+        (
+            "def f(v: V) -> Comparable[V]\n  v\nend",
+            "method `f` returns Comparable[V] but its body has type V",
+        ),
+        // A `using` in an inner body, which ended before the value.
+        (
+            "def f(v: V) -> Comparable[V]\n  begin\n    using Desc\n  end\n  v\nend",
+            "method `f` returns Comparable[V] but its body has type V",
+        ),
+        (
+            "def f(v: V, c: Bool) -> Comparable[V]\n  if c\n    using Desc\n    1\n  end\n  v\nend",
+            "method `f` returns Comparable[V] but its body has type V",
+        ),
+        // A value the conformance does not cover.
+        (
+            "def f(v: V) -> Comparable[V]\n  using Desc\n  1\nend",
+            "method `f` returns Comparable[V] but its body has type Int",
+        ),
+        (
+            "f = ->(v: V) -> Comparable[V] do\n  v\nend",
+            "lambda returns V but Comparable[V] was expected",
+        ),
+    ] {
+        err(&format!("{d}{body}"), why);
+    }
+}
+
 #[test]
 fn a_literal_no_variable_holds_is_decided() {
     // An empty literal sent, or a join's empty branch, has no holder that

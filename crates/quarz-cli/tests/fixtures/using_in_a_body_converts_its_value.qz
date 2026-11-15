@@ -1,0 +1,112 @@
+# #750: a body's value meets the type declared for it where it is
+# written, inside the body, where the body's `using`s are active (docs/01
+# §7: a `using` holds for everything written in its scope; a value is
+# typed as a module where the extension that makes the conformance is
+# visible). Each shape below ends a body with a `V` that `Desc`'s
+# extension makes a `Comparable[V]`, its order reversed: `V.new(1)` comes
+# after `V.new(2)`.
+class V
+  @n: Int
+  def initialize(@n: Int)
+  end
+  def n -> Int = @n
+end
+
+module Desc
+  extension V
+    include Comparable[V]
+    def <=>(other: V) -> Int = other.n <=> n
+  end
+end
+
+def show(name: String, c: Comparable[V]) -> Void
+  puts "#{name} #{c < V.new(2)} #{c > V.new(2)}"
+end
+
+# A method's body.
+def method_body(v: V) -> Comparable[V]
+  using Desc
+  v
+end
+
+# Through a local.
+def through_local(v: V) -> Comparable[V]
+  using Desc
+  x = v
+  x
+end
+
+# `return`, as before.
+def returned(v: V) -> Comparable[V]
+  using Desc
+  return v
+end
+
+# A `begin` body, the method's value.
+def begin_body(v: V) -> Comparable[V]
+  begin
+    using Desc
+    v
+  end
+end
+
+# Each branch of an `if`, and of a `case`.
+def if_branches(v: V, c: Bool) -> Comparable[V]
+  if c
+    using Desc
+    v
+  else
+    using Desc
+    V.new(3)
+  end
+end
+
+def case_arms(v: V, k: Int) -> Comparable[V]
+  case k
+  when 1
+    using Desc
+    v
+  else
+    using Desc
+    V.new(3)
+  end
+end
+
+# `using M do ... end`, whose value is its body's.
+def using_block(v: V) -> Comparable[V]
+  using Desc do
+    v
+  end
+end
+
+show("method", method_body(V.new(1)))
+show("local", through_local(V.new(1)))
+show("return", returned(V.new(1)))
+show("begin", begin_body(V.new(1)))
+show("if", if_branches(V.new(1), true))
+show("if else", if_branches(V.new(1), false))
+show("case", case_arms(V.new(1), 1))
+show("case else", case_arms(V.new(1), 2))
+show("using do", using_block(V.new(1)))
+
+# A lambda's body.
+f = ->(v: V) -> Comparable[V] do
+  using Desc
+  v
+end
+show("lambda", f.call(V.new(1)))
+
+# A block with a result type.
+xs = [V.new(1), V.new(3)].map do |v: V| -> Comparable[V]
+  using Desc
+  v
+end
+show("block", xs[0])
+show("block 3", xs[1])
+
+# A typed local's `begin`.
+c: Comparable[V] = begin
+  using Desc
+  V.new(1)
+end
+show("typed local", c)
