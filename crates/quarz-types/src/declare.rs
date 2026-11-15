@@ -4898,6 +4898,19 @@ impl<'ast> Declarer<'ast> {
                     if !m.is_abstract {
                         continue;
                     }
+                    // Implemented: a class method of the name that takes
+                    // its calls by arity on the chain or in an included
+                    // module, in the declared view (an approximation that
+                    // #733 replaces with the instance side's answer: it
+                    // refuses more than that rule, not counting a top-level
+                    // extension's module, #672; with the condition below it
+                    // accepts nothing whose call does not run a method the
+                    // override table pairs with it, which the net checks),
+                    // and what a call of it on the class object runs
+                    // (`World::class_method_target`, which the witness net
+                    // checks) another method: a method of the name of
+                    // another parameter type is no implementation there,
+                    // and the class must implement it (#749).
                     let on_class = chain.iter().any(|cid| {
                         self.world
                             .class(*cid)
@@ -4912,7 +4925,10 @@ impl<'ast> Declarer<'ast> {
                             .get(&m.name)
                             .is_some_and(|ids| ids.iter().any(|i| self.implements(*i, abs)))
                     });
-                    if !on_class && !on_module && !class.is_abstract {
+                    let runs =
+                        self.world
+                            .class_method_target(&|k| self.world.overrides(k), id, abs);
+                    if ((!on_class && !on_module) || runs == abs) && !class.is_abstract {
                         missing.push((m.name.clone(), mid));
                     }
                 }
