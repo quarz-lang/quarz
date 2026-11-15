@@ -124,6 +124,9 @@ pub struct Declarer<'ast> {
     /// The modules extensions include, where (extension, module, span,
     /// file), checked once fields are known (`check_shareable_extensions`).
     ext_includes: Vec<(ExtensionId, Type, Span, u32)>,
+    /// A library cog's top-level includes (root, module, span, file),
+    /// checked once members are known (`check_cog_root_includes`).
+    root_includes: Vec<(ClassId, ClassId, Span, u32)>,
     /// While collecting a file of the application of a movement: its
     /// top-level names are hidden from library cogs.
     in_app: bool,
@@ -232,6 +235,7 @@ impl<'ast> Declarer<'ast> {
             units: Vec::new(),
             class_usings: HashMap::default(),
             ext_includes: Vec::new(),
+            root_includes: Vec::new(),
             in_app: false,
             deferred: Vec::new(),
             collecting: None,
@@ -1093,6 +1097,7 @@ impl<'ast> Declarer<'ast> {
         }
         let modules: Vec<ClassId> = pending.iter().map(|p| p.id).collect();
         self.check_module_static_defs(&modules);
+        self.check_cog_root_includes();
         self.mark_includer_methods(&modules);
         self.check_extensions_kept_blocks();
         self.check_extensions_overrides();
@@ -1194,6 +1199,72 @@ impl<'ast> Declarer<'ast> {
                 }
             }
         }
+    }
+
+    /// The class of `Cog`'s ancestors (`Cog`, `Type`, `Object`, ...) that
+    /// has an instance method named `name`: a library cog's root module is
+    /// a `Cog` (docs/10 §6), so neither a public function nor an included
+    /// module's class method may take such a name.
+    fn cog_method_owner(&self, name: &str) -> Option<ClassId> {
+        self.world
+            .ancestor_ids(self.world.builtin.cog)
+            .into_iter()
+            .find(|a| self.world.class(*a).methods.contains_key(name))
+    }
+
+    /// A library cog's top-level `include M` gives its root module the
+    /// class side `M` brings (`M`'s class methods and those of the modules
+    /// `M` includes): one named like a method of `Cog`, public or private,
+    /// would take the place of `Cog`'s on the root (`Lib.name`, a `Cog`
+    /// value's `name`), so the include is refused, once per such name
+    /// (#725). Other class methods (`Lib.extra`) stay.
+    fn check_cog_root_includes(&mut self) {
+        // (Each error is in its include's file; the checks after this one
+        // keep the current file.)
+        let saved = self.file;
+        for (root, module, span, file) in std::mem::take(&mut self.root_includes) {
+            let root_name = self.world.class(root).name.clone();
+            let module_name = self.world.class(module).name.clone();
+            let mut seen: HashSet<String> = HashSet::default();
+            for k in self.world.class_side_order(module) {
+                let class = self.world.class(k);
+                if class.kind != ClassKind::Module {
+                    continue;
+                }
+                let mut names: Vec<&String> = class
+                    .singleton_methods
+                    .iter()
+                    .filter(|(_, ids)| ids.iter().any(|m| self.world.method(*m).owner == k))
+                    .map(|(name, _)| name)
+                    .collect();
+                names.sort();
+                let mut found = Vec::new();
+                for name in names {
+                    if seen.insert(name.clone()) {
+                        if let Some(owner) = self.cog_method_owner(name) {
+                            found.push((name.clone(), self.world.class(owner).name.clone()));
+                        }
+                    }
+                }
+                let via = (k != module).then(|| class.name.clone());
+                for (name, owner) in found {
+                    let what = match &via {
+                        None => format!("its class method `{name}`"),
+                        Some(inner) => {
+                            format!("the class method `{name}` of `{inner}`, which it includes,")
+                        }
+                    };
+                    self.file = file;
+                    self.error(
+                        format!(
+                            "a cog's root cannot include `{module_name}`: {what} would take the place of `{owner}#{name}` (`{root_name}.{name}` is the `Cog`'s)"
+                        ),
+                        span,
+                    );
+                }
+            }
+        }
+        self.file = saved;
     }
 
     /// A module's macros are class methods (docs/14 §2): an instance-side
@@ -5368,6 +5439,9 @@ impl<'ast> Declarer<'ast> {
                                         );
                                     }
                                     MixinKind::Include | MixinKind::Extend => {
+                                        if matches!(p.def, PendingDef::CogRoot(_)) {
+                                            self.root_includes.push((id, *mid, t.span, self.file));
+                                        }
                                         self.world.class_mut(id).includes.push(ty)
                                     }
                                 }
@@ -5570,13 +5644,7 @@ impl<'ast> Declarer<'ast> {
                     // name, a `Cog`'s (docs/10 §6): a public function cannot
                     // take it.
                     if in_cog_file && vis == Visibility::Public {
-                        let cog = self.world.builtin.cog;
-                        let taken = self
-                            .world
-                            .ancestor_ids(cog)
-                            .into_iter()
-                            .find(|a| self.world.class(*a).methods.contains_key(&def.name));
-                        if let Some(owner) = taken {
+                        if let Some(owner) = self.cog_method_owner(&def.name) {
                             let module = self
                                 .world
                                 .class(self.world.cog_root(Some(id)).unwrap_or(id))

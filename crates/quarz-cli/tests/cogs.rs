@@ -2024,31 +2024,68 @@ fn a_dependencys_functions_at_compile_time() {
 }
 
 #[test]
-fn a_roots_included_class_methods_answer_through_cog() {
-    // #726: a library cog's root includes a module whose class methods
-    // take the place of `Cog`'s (`name`, `version`, `module_name`): a call
-    // through a `Cog` value runs the module's, compiled as on the VM
-    // (the slot comes from the override table, #715).
+fn a_cog_roots_include_cannot_replace_a_cog_method() {
+    // #725 (decided 2026-11-15, A): a library cog's top-level `include M`
+    // gives its root `M`'s class side; one named like a method of `Cog`
+    // would replace `Cog`'s through the key and any `Cog` value (#726 ran
+    // them, compiled as on the VM), so the include is refused, whatever
+    // the method's signature or visibility, once per such name.
     let w = World::new();
     w.write(
         "lib/Cog.toml",
         "[cog]\nname = \"lib\"\nversion = \"1.0.0\"\nmodule = \"Lib\"\n",
     );
+    w.write("lib/src/a.qz", "public def hello -> String = \"hi\"\n");
+    for (method, owner) in [
+        ("def self.name -> String = \"v\"", "Cog#name"),
+        ("def self.version -> String = \"v\"", "Cog#version"),
+        ("def self.module_name -> String = \"v\"", "Cog#module_name"),
+        ("def self.version -> Int = 3", "Cog#version"),
+        ("private def self.name -> String = \"v\"", "Cog#name"),
+        ("def self.inspect -> String = \"v\"", "Object#inspect"),
+    ] {
+        let name = owner.split('#').nth(1).unwrap();
+        w.write(
+            "lib/src/b.qz",
+            &format!("module Ver\n  {method}\n  def self.extra -> Int = 4\nend\ninclude Ver\n"),
+        );
+        let err = w.fails("lib", &["test"]);
+        let want = format!(
+            "b.qz:5:9: error: a cog's root cannot include `Lib::Ver`: its class method `{name}` would take the place of `{owner}` (`Lib.{name}` is the `Cog`'s)"
+        );
+        assert!(err.contains(&want), "{method}: {err}");
+        assert_eq!(err.matches("cannot include").count(), 1, "{err}");
+    }
+    // Through a module `M` includes, in another file than the include;
+    // one error per name.
     w.write(
-        "lib/src/a.qz",
-        "module Ver\n  def self.name -> String = \"ver-name\"\n  def self.version -> String = \"ver-version\"\n  def self.module_name -> String = \"ver-module\"\nend\ninclude Ver\npublic def hello -> String = \"hi\"\n",
+        "lib/src/b.qz",
+        "module Inner\n  def self.name -> String = \"i\"\n  def self.version -> String = \"i\"\nend\nmodule Ver\n  include Inner\n  def self.name -> String = \"v\"\nend\n",
     );
+    w.write("lib/src/c.qz", "\ninclude Ver\n");
+    let err = w.fails("lib", &["test"]);
+    assert!(
+        err.contains("c.qz:2:9: error: a cog's root cannot include `Lib::Ver`: its class method `name` would take the place of `Cog#name` (`Lib.name` is the `Cog`'s)"),
+        "{err}"
+    );
+    assert!(
+        err.contains("c.qz:2:9: error: a cog's root cannot include `Lib::Ver`: the class method `version` of `Lib::Inner`, which it includes, would take the place of `Cog#version` (`Lib.version` is the `Cog`'s)"),
+        "{err}"
+    );
+    assert_eq!(err.matches("cannot include").count(), 2, "{err}");
+    // A class including such a module, in the cog, is not its root.
+    w.write(
+        "lib/src/b.qz",
+        "module Ver\n  def self.name -> String = \"ver-name\"\nend\nclass A\n  include Ver\nend\npublic def an -> String = A.name\n",
+    );
+    std::fs::remove_file(w.path("lib/src/c.qz")).unwrap();
     w.commit("lib", Some("v1.0.0"));
     let dep = format!("L = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url("lib"));
     w.app(
         &dep,
-        "def n(c: Cog) -> String = c.name\ndef v(c: Cog) -> String = c.version\ndef m(c: Cog) -> String = c.module_name\ndef t(k: Type[Object]) -> String = k.name\nputs n(L), v(L), m(L), t(L)\n",
+        "def n(c: Cog) -> String = c.name\nputs L.an, n(L), L.name\n",
     );
-    let expected = "ver-name\nver-version\nver-module\nver-name\n";
-    assert_eq!(w.ok("app", &["run"]), expected);
-    w.ok("app", &["build", "-o", "app.bin"]);
-    let exe = Command::new(w.path("app/app.bin")).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&exe.stdout), expected);
+    assert_eq!(w.ok("app", &["run"]), "ver-name\nlib\nlib\n");
 }
 
 #[test]
@@ -2161,11 +2198,9 @@ fn a_cogs_public_functions() {
 }
 
 /// A cog root's top-level `include` gives its class object the module's
-/// class methods (#725 asks whether it should), and one named like a
-/// `Cog` method then runs in its place, through the key, a `Cog` and a
-/// `Type`, interpreted and compiled. Why the override table pairs a
-/// module's class methods with `Cog`'s (#723): one of another signature
-/// is refused.
+/// class methods other than `Cog`'s names (#725): `Lib.extra` runs the
+/// module's, while the key, a `Cog` and a `Type` still answer the
+/// manifest's name, interpreted and compiled.
 #[test]
 fn a_cog_roots_include_gives_it_class_methods() {
     let w = World::new();
@@ -2175,29 +2210,32 @@ fn a_cog_roots_include_gives_it_class_methods() {
     );
     w.write(
         "lib/src/lib.qz",
-        "module Ver\n  def self.extra -> Int = 4\n  def self.name -> String = \"ver-name\"\nend\ninclude Ver\n",
+        "module Ver\n  def self.extra -> Int = 4\nend\ninclude Ver\n",
     );
     w.commit("lib", Some("v1.0.0"));
     let dep = format!("Lib = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url("lib"));
     w.app(
         &dep,
-        "puts Lib.extra\nputs Lib.name\nx: Cog = Lib\nputs x.name\nputs x.version\nt: Type[Object] = Lib\nputs t.name\n",
+        "puts Lib.extra\nputs Lib.name\nx: Cog = Lib\nputs x.name\nputs x.version\nputs x.module_name\nt: Type[Object] = Lib\nputs t.name\n",
     );
-    let expected = "4\nver-name\nver-name\n1.0.0\nver-name\n";
+    let expected = "4\nlib\nlib\n1.0.0\nLib\nlib\n";
     assert_eq!(w.ok("app", &["run"]), expected);
     w.ok("app", &["build", "-o", "app.bin"]);
     let exe = Command::new(w.path("app/app.bin")).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&exe.stdout), expected);
-    // Of another signature, it would make `x.version` an Int.
-    w.write(
-        "lib/src/lib.qz",
-        "module Ver\n  def self.version -> Int = 3\nend\ninclude Ver\n",
+    // A dependent's own extension of the root may define `name` (the
+    // maintainer's decision (a) on #725): `Lib.name` is the extension's
+    // where it is active, lexically, while a `Cog`-typed call still
+    // answers the manifest's.
+    w.app(
+        &dep,
+        "extension Lib\n  def self.name -> String = \"x\"\nend\ndef n(c: Cog) -> String = c.name\nputs Lib.name\nputs n(Lib)\n",
     );
-    let err = w.fails("lib", &["test"]);
-    assert!(
-        err.contains("`version` returns Int but `Cog#version`, which it overrides, returns String"),
-        "{err}"
-    );
+    let expected = "x\nlib\n";
+    assert_eq!(w.ok("app", &["run"]), expected);
+    w.ok("app", &["build", "-o", "app.bin"]);
+    let exe = Command::new(w.path("app/app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&exe.stdout), expected);
 }
 
 #[test]
