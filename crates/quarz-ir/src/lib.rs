@@ -2175,6 +2175,66 @@ impl RtWorld {
         found
     }
 
+    /// The implementation of an instance method `mid` (`Type`'s, ...) for
+    /// the class object `cid`: a class method of the class (or a
+    /// superclass) of its signature, or of a module it includes (docs/01
+    /// §6); `None` when none (`Interp::class_side_override` caches it).
+    pub fn class_side_override<'m>(
+        &self,
+        method: &dyn Fn(MethodId) -> &'m RtMethod,
+        cid: ClassId,
+        mid: MethodId,
+    ) -> Option<MethodId> {
+        let m = method(mid);
+        // (Whether a class method replaces it: the override table alone,
+        // `World::overrides`, #536; any other of the name is an overload.)
+        let accepts = |c: MethodId| {
+            let cm = method(c);
+            !cm.is_abstract && (c == mid || cm.overrides.contains(&mid))
+        };
+        // Class methods of the name below the one found that it does not
+        // take (`D.k(x: Int = 0)`), the lowest first: one overriding a
+        // class method found (`B.k`, which overrides the module's) is the
+        // one, as a call of `B.k` would find (not one overriding a class
+        // method above the extending class, unchecked against the module's).
+        let mut below: Vec<MethodId> = Vec::new();
+        let mut cur = Some(cid);
+        while let Some(c) = cur {
+            let class = self.class(c);
+            if let Some(ids) = class.singleton_methods.get(&m.name) {
+                if let Some(id) = ids.iter().copied().find(|id| accepts(*id)) {
+                    let mut reached = vec![id];
+                    let mut lowest = id;
+                    for &b in below.iter().rev() {
+                        let bm = method(b);
+                        if bm.overrides.iter().any(|o| reached.contains(o)) {
+                            reached.push(b);
+                            lowest = b;
+                        }
+                    }
+                    return Some(lowest);
+                }
+                below.extend(ids.iter().copied().filter(|&id| method(id).owner == c));
+            }
+            // Then the class methods of the modules it includes, the last
+            // first (docs/01 §6).
+            for module in &self.class_side_modules(cid, c) {
+                let mc = self.class(*module);
+                if let Some(ids) = mc.singleton_methods.get(&m.name) {
+                    if let Some(id) = ids
+                        .iter()
+                        .copied()
+                        .find(|&id| method(id).owner == *module && accepts(id))
+                    {
+                        return Some(id);
+                    }
+                }
+            }
+            cur = class.superclass;
+        }
+        None
+    }
+
     /// Whether (class `cid`, class method `mid`) is a key of
     /// `class_override_rows`: `cid` a class (not a module, not a file's top
     /// level), `mid` a class method a module among `cid`'s ancestors

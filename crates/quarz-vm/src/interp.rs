@@ -2704,60 +2704,8 @@ impl Interp {
         if let Some(found) = self.class_dispatch_cache.borrow().get(&(cid, mid)) {
             return *found;
         }
-        let m = self.program.method(mid);
-        // (Whether a class method replaces it: the override table alone,
-        // `World::overrides`, #536; any other of the name is an overload.)
-        let accepts = |c: MethodId| {
-            let cm = self.program.method(c);
-            !cm.is_abstract && (c == mid || cm.overrides.contains(&mid))
-        };
-        let mut found = None;
-        // Class methods of the name below the one found that it does not
-        // take (`D.k(x: Int = 0)`), the lowest first: one overriding a
-        // class method found (`B.k`, which overrides the module's) is the
-        // one, as a call of `B.k` would find (not one overriding a class
-        // method above the extending class, unchecked against the module's).
-        let mut below: Vec<MethodId> = Vec::new();
-        let mut cur = Some(cid);
-        'chain: while let Some(c) = cur {
-            let class = self.program.world.class(c);
-            if let Some(ids) = class.singleton_methods.get(&m.name) {
-                if let Some(id) = ids.iter().copied().find(|id| accepts(*id)) {
-                    let mut reached = vec![id];
-                    let mut lowest = id;
-                    for &b in below.iter().rev() {
-                        let bm = self.program.method(b);
-                        if bm.overrides.iter().any(|o| reached.contains(o)) {
-                            reached.push(b);
-                            lowest = b;
-                        }
-                    }
-                    found = Some(lowest);
-                    break;
-                }
-                below.extend(
-                    ids.iter()
-                        .copied()
-                        .filter(|&id| self.program.method(id).owner == c),
-                );
-            }
-            // Then the class methods of the modules it includes, the last
-            // first (docs/01 §6).
-            for module in &self.class_side_modules(cid, c) {
-                let mc = self.program.world.class(*module);
-                if let Some(ids) = mc.singleton_methods.get(&m.name) {
-                    if let Some(id) = ids
-                        .iter()
-                        .copied()
-                        .find(|&id| self.program.method(id).owner == *module && accepts(id))
-                    {
-                        found = Some(id);
-                        break 'chain;
-                    }
-                }
-            }
-            cur = class.superclass;
-        }
+        let method = |id: MethodId| self.program.method(id);
+        let found = self.program.world.class_side_override(&method, cid, mid);
         self.class_dispatch_cache
             .borrow_mut()
             .insert((cid, mid), found);
@@ -2797,12 +2745,6 @@ impl Interp {
     /// with a witness for module class method `mid` (#504).
     fn has_class_witness(&self, cid: ClassId, mid: MethodId) -> bool {
         self.program.world.class_witness(cid, mid).is_some()
-    }
-
-    /// The modules class `c` (`cid` or a superclass of it) brings to `cid`'s
-    /// class side, in lookup order (`RtWorld::class_side_modules`).
-    fn class_side_modules(&self, cid: ClassId, c: ClassId) -> Vec<ClassId> {
-        self.program.world.class_side_modules(cid, c)
     }
 
     /// The witness of abstract method `abs` for class `cid` that a call by
