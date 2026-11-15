@@ -647,12 +647,10 @@ pub trait StaticHost {
     fn error_count(&self) -> usize;
     /// The errors reported after the first `n`, with their files.
     fn errors_after(&self, n: usize) -> Vec<(u32, Diagnostic)>;
-    /// The classes whose statements have not all run yet (the one
-    /// running included): the lowering reaches their methods, and their
-    /// descendants', only through a call that resolves to one.
-    fn pending_classes(&self) -> Vec<ClassId>;
     /// The `static` statements still to run (`World::static_stmts`
-    /// indices), the running one included.
+    /// indices), the running one included: the lowering reaches the
+    /// methods of their classes, and of the classes under them, only
+    /// through a call that resolves to one (the runner's `PendingCover`).
     fn pending_statements(&self) -> Vec<usize>;
     /// A member a statement generated (docs/14 §5): declared, or refused
     /// with the reason (a name the class has already).
@@ -694,6 +692,11 @@ pub struct StaticFailure {
 /// Runs a class body's `static` statement at compile time (the
 /// interpreter lives above this crate: `quarz-cli` provides one).
 pub trait StaticRunner {
+    /// The checker starts running statements or `static(...)`
+    /// expressions: until the next call, the classes and their headers do
+    /// not change (a run generates members only), so what the runner
+    /// keeps about the class graph holds until then.
+    fn begin(&mut self) {}
     fn run(
         &mut self,
         host: &mut dyn StaticHost,

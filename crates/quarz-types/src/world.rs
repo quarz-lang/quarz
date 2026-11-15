@@ -1143,12 +1143,32 @@ impl World {
     /// Whether `sub_id` is `sup_id` or inherits from / includes it
     /// (nominally, ignoring type arguments).
     pub fn class_is_a(&self, sub_id: ClassId, sup_id: ClassId) -> bool {
-        if sub_id == sup_id || sup_id == self.builtin.object {
+        if self.is_a_by_itself(sub_id).contains(&sup_id) {
             return true;
         }
         self.ancestors(sub_id, &[])
             .iter()
             .any(|(id, _)| *id == sup_id)
+    }
+
+    /// The classes `c` is, `class_is_a(c, k)` for each and only these
+    /// `k`: `c`, `Object` and its ancestors (`ancestors(c, &[])`, under
+    /// the extensions active now). Each once.
+    pub fn classes_it_is(&self, c: ClassId) -> Vec<ClassId> {
+        let mut out: Vec<ClassId> = Vec::new();
+        let ancestors = self.ancestors(c, &[]).into_iter().map(|(id, _)| id);
+        for id in self.is_a_by_itself(c).into_iter().chain(ancestors) {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        out
+    }
+
+    /// What every class `c` is whatever its ancestors (`class_is_a`,
+    /// `classes_it_is`): itself and `Object`.
+    fn is_a_by_itself(&self, c: ClassId) -> [ClassId; 2] {
+        [c, self.builtin.object]
     }
 
     /// The method resolution order of class `id` with `args` (#536 step
