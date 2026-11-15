@@ -3700,7 +3700,8 @@ fn using_is_positional() {
 /// #750: a body's value meets its declared type inside the body, where
 /// the body's `using`s are active (the accepted shapes are the fixture
 /// `using_in_a_body_converts_its_value`); a `using` whose scope ended
-/// before the value, or none, converts nothing.
+/// before the value, or none, converts nothing. An argument's body is
+/// converted at the call (#763).
 #[test]
 fn a_bodys_value_is_converted_where_its_usings_are() {
     let d = "class V\n  def initialize; end\nend\nmodule Desc\n  extension V\n    include Comparable[V]\n    def <=>(other: V) -> Int = 0\n  end\nend\n";
@@ -3730,6 +3731,11 @@ fn a_bodys_value_is_converted_where_its_usings_are() {
         // A lambda written in a body with a `using`: in the `using`'s
         // scope, nested in it (docs/01 §7), its value converts as on main.
         "def f(v: V) -> Comparable[V]\n  using Desc\n  g = ->() -> Comparable[V] do\n    v\n  end\n  g.call\nend",
+        // An argument's conversion is the call's (#763's decision (a)):
+        // `using` before the call, or a typed local outside it holding
+        // the body's value.
+        "def k(x: Comparable[V]) -> Bool = true\nusing Desc\nputs k(V.new)",
+        "def k(x: Comparable[V]) -> Bool = true\nc: Comparable[V] = begin\n  using Desc\n  V.new\nend\nputs k(c)",
     ] {
         ok(&format!("{d}{kept}"));
     }
@@ -3756,6 +3762,17 @@ fn a_bodys_value_is_converted_where_its_usings_are() {
         (
             "f = ->(v: V) -> Comparable[V] do\n  v\nend",
             "lambda returns V but Comparable[V] was expected",
+        ),
+        // An argument is converted to its parameter's type at the call,
+        // outside its body's `using` (#763's decision (a), docs/01 §7);
+        // a typed local inside the body reads as its value's type there.
+        (
+            "def k(x: Comparable[V]) -> Bool = true\nputs k(begin\n  using Desc\n  V.new\nend)",
+            "argument `x` of k(x: Comparable[V]) -> Bool expects Comparable[V] but found V",
+        ),
+        (
+            "def k(x: Comparable[V]) -> Bool = true\nputs k(begin\n  using Desc\n  c: Comparable[V] = V.new\n  c\nend)",
+            "argument `x` of k(x: Comparable[V]) -> Bool expects Comparable[V] but found V",
         ),
     ] {
         err(&format!("{d}{body}"), why);
