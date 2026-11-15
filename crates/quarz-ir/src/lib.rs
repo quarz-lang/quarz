@@ -1434,8 +1434,9 @@ pub struct RtClass {
     /// methods are this class's class methods, in lookup order (the class,
     /// the modules it brings itself, its superclass, the modules that one
     /// brings, ...): `World::resolution` in the declared view (an
-    /// extension's include brings witnesses, `class_ext_impls`, not class
-    /// methods, #504). The VM's class-side walks read it (#536 step 2).
+    /// extension's include brings witnesses, `World::class_ext_impls`, not
+    /// class methods, #504). The key set of `RtWorld::class_override_rows`
+    /// reads it (`in_class_override_rows`).
     pub class_side: Vec<ClassId>,
     /// Whether this class's values are made by the runtime, not by `new`
     /// (`World::built_by_runtime`, #535).
@@ -1549,8 +1550,8 @@ pub struct RtMethod {
     /// method the `Type` methods it replaces on its class object. The
     /// single source every reader takes (the interpreter's dispatch,
     /// devirtualization, the checker); with `RtWorld::include_overrides`
-    /// and `class_include_overrides` for a module's method in a class
-    /// including it.
+    /// for a module's method in a class including it (and, on the class
+    /// side, `RtWorld::class_override_rows`).
     #[serde(default)]
     pub overrides: Vec<MethodId>,
     /// For a native: the classes in its result and block types, whose
@@ -1720,11 +1721,6 @@ pub struct RtWorld {
     pub methods: Vec<RtMethod>,
     pub consts: Vec<RtConst>,
     pub extensions: Vec<RtExtension>,
-    /// (class, module's class method, its witness): what runs in place of
-    /// a module's class method for a class conforming to the module
-    /// through an extension (`World::class_ext_impls`, #504).
-    #[serde(default)]
-    pub class_ext_impls: Vec<(ClassId, MethodId, MethodId)>,
     /// The checker's witness record (`World::witness_record`, #536 step
     /// 3): (class, abstract module method, its witness), the witness as
     /// recorded, before its resolution for the receiver. Sorted. Every
@@ -1745,11 +1741,13 @@ pub struct RtWorld {
     /// `override_rows` resolves it. Sorted.
     #[serde(default)]
     pub witness_rows: Vec<(ClassId, MethodId, Option<MethodId>)>,
-    /// (class, module class method, what runs on the class object):
-    /// `class_method_override` for every key `in_class_override_rows`
-    /// admits, the method itself when nothing replaces it
-    /// (`build_witness_rows`). Sorted. The runtime reads it for those keys;
-    /// a key without a row is an internal error.
+    /// (class object, method, what a call of the method on it runs):
+    /// `World::class_method_target` for every key `in_class_override_rows`
+    /// admits, the method itself when nothing replaces it. Built by the
+    /// lowering (`quarz_lower::rtworld`), never from this world's tables,
+    /// and only filtered by `shake` (#681's option (a)). Sorted. The
+    /// runtime reads it for those keys (`Interp::class_method_override`,
+    /// `class_side_override`); a key without a row is an internal error.
     #[serde(default)]
     pub class_override_rows: Vec<(ClassId, MethodId, MethodId)>,
     /// (class, overridden, overriding): the class-relative part of the
@@ -1759,10 +1757,6 @@ pub struct RtWorld {
     /// module with what implements it later.
     #[serde(default)]
     pub include_overrides: Vec<(ClassId, MethodId, MethodId)>,
-    /// (class, overridden, overriding): the same on the class side
-    /// (`World::class_include_overrides`, #536).
-    #[serde(default)]
-    pub class_include_overrides: Vec<(ClassId, MethodId, MethodId)>,
     /// Top-level classes and modules by name.
     #[serde(serialize_with = "sorted")]
     pub top: HashMap<String, ClassId>,
@@ -1933,10 +1927,10 @@ impl RtWorld {
 
     /// Fill `override_rows` and `witness_rows` over every key
     /// `in_witness_rows` admits (the witness record's entry, or `find_override` for
-    /// each), and `class_override_rows` over every key
-    /// `in_class_override_rows` admits (`class_method_override`),
-    /// evaluated once. Called by `quarz_lower::rtworld::build` and at the
-    /// end of `shake`, never by the runtime.
+    /// each), evaluated once; keep the rows of `class_override_rows` whose
+    /// key `in_class_override_rows` still admits (the lowering builds them,
+    /// `shake` drops methods). Called by `quarz_lower::rtworld::build` and
+    /// at the end of `shake`, never by the runtime.
     pub fn build_witness_rows(&mut self) {
         let mut rows: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
         let mut witnesses: Vec<(ClassId, MethodId, Option<MethodId>)> = Vec::new();
@@ -1968,34 +1962,21 @@ impl RtWorld {
                 }
             }
         }
-        let mut class_rows: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
-        {
+        let class_rows: Vec<(ClassId, MethodId, MethodId)> = {
             let method = |id: MethodId| &self.methods[id as usize];
-            for (cid, c) in self.classes.iter().enumerate() {
-                let cid = cid as ClassId;
-                for anc in &c.ancestors {
-                    let a = self.class(*anc);
-                    if a.kind != RtClassKind::Module {
-                        continue;
-                    }
-                    for &mid in a.singleton_methods.values().flatten() {
-                        if method(mid).owner != *anc
-                            || !self.in_class_override_rows(&method, cid, mid)
-                        {
-                            continue;
-                        }
-                        let found = self.class_method_override(&method, cid, mid).unwrap_or(mid);
-                        class_rows.push((cid, mid, found));
-                    }
-                }
-            }
-        }
+            let owners = self.type_side_owners();
+            self.class_override_rows
+                .iter()
+                .copied()
+                .filter(|(c, m, _)| {
+                    self.in_class_override_rows_with(&method, Some(&owners), *c, *m)
+                })
+                .collect()
+        };
         rows.sort_unstable();
         rows.dedup();
         witnesses.sort_unstable();
         witnesses.dedup();
-        class_rows.sort_unstable();
-        class_rows.dedup();
         self.override_rows = rows;
         self.witness_rows = witnesses;
         self.class_override_rows = class_rows;
@@ -2047,156 +2028,80 @@ impl RtWorld {
             .map(|i| self.witness_rows[i].2)
     }
 
-    /// The witness of module class method `mid` for class `cid` (#504):
-    /// recorded for the nearest class up its superclass chain (an
-    /// extension's target, never a module: an extension of a module
-    /// includes nothing, rule B).
-    pub fn class_witness(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
-        let w = self;
-        // (`RtClass::class_side`, `World::class_side_order`: the checker's
-        // order.)
-        w.class(cid).class_side.iter().find_map(|k| {
-            w.class_ext_impls
-                .iter()
-                .find(|(x, o, _)| x == k && *o == mid)
-                .map(|(_, _, by)| *by)
-        })
-    }
-
-    /// Whether class `cid` or a superclass includes `module` itself (its
-    /// class methods are on `cid`'s class side, `RtClass::class_side`).
-    pub fn includes_on_class_side(&self, cid: ClassId, module: ClassId) -> bool {
-        self.class(cid).class_side.contains(&module)
-    }
-
-    /// The modules class `c` (`cid` or a superclass of it) brings to `cid`'s
-    /// class side, in lookup order: the entries after `c` in
-    /// `RtClass::class_side` up to the next class (#536 step 2).
-    pub fn class_side_modules(&self, cid: ClassId, c: ClassId) -> Vec<ClassId> {
-        let world = self;
-        let side = &world.class(cid).class_side;
-        // (`c` is `cid` or a class up its chain, always in it: a missing
-        // entry is an internal error, never an empty part.)
-        let at = side.iter().position(|k| *k == c).unwrap_or_else(|| {
-            panic!(
-                "internal error: `{}` is not on `{}`'s class side",
-                world.class(c).name,
-                world.class(cid).name
-            )
-        });
-        side[at + 1..]
-            .iter()
-            .copied()
-            .take_while(|k| world.class(*k).kind == RtClassKind::Module)
-            .collect()
-    }
-
-    /// The class method of `cid` (or of a superclass below the owner of
-    /// `mid`) that overrides the class method `mid`.
-    pub fn class_method_override<'m>(
-        &self,
-        method: &dyn Fn(MethodId) -> &'m RtMethod,
-        cid: ClassId,
-        mid: MethodId,
-    ) -> Option<MethodId> {
-        let m = method(mid);
-        // (An abstract one is passed over: an implementation after it in
-        // the lookup order, a superclass's or another module's, runs.)
-        // (Whether one replaces it: the override table alone, #536.)
-        let replaces = |id: MethodId| {
-            let im = method(id);
-            !im.is_abstract && im.overrides.contains(&mid)
-        };
-        let mut found = None;
-        // (A module's class method reaches only the classes that include the
-        // module themselves: an extension's include brings no class
-        // methods, #494. Elsewhere, through a `Type[M]` value holding such a
-        // class, the module's own runs.)
-        let module_owner = self.class(m.owner).kind == RtClassKind::Module;
-        if module_owner && !self.includes_on_class_side(cid, m.owner) {
-            // A class conforming through an extension: the witness its
-            // conformance recorded, the nearest up the chain (a subclass
-            // conforming on its own has its own), run as is (#504).
-            // (Fixed: the witness runs for the class and its subclasses
-            // alike; the module's default is the module's own.)
-            if let Some(by) = self.class_witness(cid, mid) {
-                found = (by != mid).then_some(by);
-            }
-            return found;
-        }
-        let mut cur = Some(cid);
-        'chain: while let Some(c) = cur {
-            if c == m.owner && !m.is_abstract {
-                break;
-            }
-            let class = self.class(c);
-            if let Some(ids) = class.singleton_methods.get(&m.name) {
-                if let Some(id) = ids.iter().copied().find(|&id| replaces(id)) {
-                    found = Some(id);
-                    break;
-                }
-            }
-            // A module's class method the class's includes put in its place
-            // (over a superclass's or an earlier-included module's, docs/01
-            // §6, `World::class_include_overrides`): before the walk below,
-            // which stops at the module that declares `mid`.
-            if let Some(&(_, _, by)) = self
-                .class_include_overrides
-                .iter()
-                .find(|(k, o, _)| *k == c && *o == mid)
-            {
-                found = Some(by);
-                break;
-            }
-            // A module's class method (`include`, docs/01 §6): the
-            // modules the class includes, the last first, up to the one
-            // that declares it.
-            for module in &self.class_side_modules(cid, c) {
-                if *module == m.owner {
-                    if m.is_abstract {
-                        continue;
-                    }
-                    break 'chain;
-                }
-                let mc = self.class(*module);
-                if let Some(ids) = mc.singleton_methods.get(&m.name) {
-                    if let Some(id) = ids
-                        .iter()
-                        .copied()
-                        .find(|&id| method(id).owner == *module && replaces(id))
-                    {
-                        found = Some(id);
-                        break 'chain;
-                    }
-                }
-            }
-            cur = class.superclass;
-        }
-        found
-    }
-
-    /// Whether (class `cid`, class method `mid`) is a key of
-    /// `class_override_rows`: `cid` a class (not a module, not a file's top
-    /// level), `mid` a class method a module among `cid`'s ancestors
-    /// declares. The one definition of the key set: the rows are built over
-    /// it, and a lookup of a key in it finds a row or is an internal error.
+    /// Whether (class object `cid`, method `mid`) is a key of
+    /// `class_override_rows`: the one definition of the key set. The rows
+    /// are built over it (`quarz_lower::rtworld`), `shake` keeps the rows it
+    /// still admits, and a lookup of a key in it finds a row or is an
+    /// internal error. `cid` a class or a module (not a file's top level),
+    /// and `mid`
+    /// - a class method of `cid` or of an ancestor (`RtClass::ancestors`,
+    ///   every conformance: a module an extension brings too), in its
+    ///   owner's table; or
+    /// - an instance method of `Type` or of an ancestor of a subclass of
+    ///   it (`Type#name`, `Object#to_s`, ..., run on a class object), not an
+    ///   extension's, whose name a class method on `cid`'s class side
+    ///   (`RtClass::class_side`) has. One no class method there is named
+    ///   like is outside the set: nothing on the class object can take its
+    ///   place, so a call of it runs it, without a row.
     pub fn in_class_override_rows<'m>(
         &self,
         method: &dyn Fn(MethodId) -> &'m RtMethod,
         cid: ClassId,
         mid: MethodId,
     ) -> bool {
+        self.in_class_override_rows_with(method, None, cid, mid)
+    }
+
+    /// `in_class_override_rows`, with `type_side_owners` computed once by
+    /// a caller that asks for many keys (`None`: computed here when
+    /// needed).
+    pub fn in_class_override_rows_with<'m>(
+        &self,
+        method: &dyn Fn(MethodId) -> &'m RtMethod,
+        type_side_owners: Option<&[ClassId]>,
+        cid: ClassId,
+        mid: MethodId,
+    ) -> bool {
         let c = self.class(cid);
         let m = method(mid);
-        !matches!(c.kind, RtClassKind::Module | RtClassKind::Main)
-            && m.singleton
-            && self.class(m.owner).kind == RtClassKind::Module
-            && c.ancestors.contains(&m.owner)
-            && self
-                .class(m.owner)
-                .singleton_methods
-                .get(&m.name)
-                .is_some_and(|ids| ids.contains(&mid))
+        if c.kind == RtClassKind::Main {
+            return false;
+        }
+        if m.singleton {
+            return (m.owner == cid || c.ancestors.contains(&m.owner))
+                && self
+                    .class(m.owner)
+                    .singleton_methods
+                    .get(&m.name)
+                    .is_some_and(|ids| ids.contains(&mid));
+        }
+        // (The cheap tests first: the name on the class side, then the
+        // owner among `Type`'s classes.)
+        !m.is_extension
+            && c.class_side
+                .iter()
+                .any(|k| self.class(*k).singleton_methods.contains_key(&m.name))
+            && match type_side_owners {
+                Some(owners) => owners.binary_search(&m.owner).is_ok(),
+                None => self.type_side_owners().binary_search(&m.owner).is_ok(),
+            }
+    }
+
+    /// The classes whose instance methods a class object answers: `Type`,
+    /// its subclasses, and their ancestors, sorted (the instance branch of
+    /// `in_class_override_rows`, and the candidates of the rows' builder).
+    pub fn type_side_owners(&self) -> Vec<ClassId> {
+        let class_ = self.builtin.class_;
+        let mut out: Vec<ClassId> = Vec::new();
+        for (t, k) in self.classes.iter().enumerate() {
+            if t as ClassId == class_ || k.ancestors.contains(&class_) {
+                out.push(t as ClassId);
+                out.extend(k.ancestors.iter().copied());
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// Every witness row as a line (`kind class method answer`, by id),

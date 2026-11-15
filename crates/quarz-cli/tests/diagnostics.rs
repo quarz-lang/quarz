@@ -495,6 +495,185 @@ end
 }
 
 #[test]
+fn an_abstract_class_including_the_module_itself_is_checked_for_what_runs() {
+    // #748: `B` includes `M` itself below `A`'s extension's conformance, so
+    // a call of `M.make` on `B` runs `B.make` (its own side's walk), not
+    // the extension's recorded `A.make`; `check_abstract_type_args` reads
+    // what runs (`World::class_method_target`, #681's option (a)), which
+    // builds `self`: passing the abstract `B` as `Type[T]` is refused.
+    let out = common::diagnostics(
+        r#"module M
+  abstract def self.make -> Self
+end
+module N
+  include M
+end
+class A
+  def initialize; end
+end
+extension A
+  include N
+  def self.make -> Self = raise "ext"
+end
+abstract class B < A
+  include M
+  def self.make -> Self
+    puts "B.make runs"
+    new
+  end
+end
+def g[T <: M](t: Type[T]) -> String = t.make.class.name
+puts g(B)
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("22:8: error: cannot pass the abstract class `B` itself as `Type[T]`: `T`'s class method `make` calls `new` on its receiver, and through it would run as `B.make`; pass a concrete subclass"),
+        "{out}"
+    );
+    assert_eq!(out.matches("error:").count(), 1, "{out}");
+}
+
+#[test]
+fn the_constructor_walk_reads_what_runs_with_fixed_witnesses() {
+    // The constructor walk reads `World::class_method_target` (#681's
+    // option (a)) and answers as before it: a module's default witness
+    // that calls `new` runs for a subclass conforming through an
+    // extension (top-level, scoped, conditional), and a `super` chain
+    // from a class's own witness reaches `new` with the subclass for
+    // `self`. (The last `p3n` shape, a subclass's own `make` without
+    // `super`, stays refused while witnesses are fixed; #681 resolves the
+    // witness for the receiver.)
+    let out = common::diagnostics(
+        r#"module M
+  def self.make -> Self = new
+end
+class F
+  def initialize; end
+end
+extension F
+  include M
+end
+class S < F
+  @x: Int
+  def initialize(@x: Int); end
+  def self.make -> Self = super
+  def x -> Int = @x
+end
+def f(t: Type[M]) -> String = t.make.class.name
+def g[T <: M](t: Type[T]) -> String = t.make.class.name
+puts f(S), g(S), S.make.class.name
+"#,
+    )
+    .join("\n");
+    assert!(out.contains("12:3: error: `S#initialize` does not take the arguments of `new` in `M.make`, which runs for `S` through its conformance by an extension"), "{out}");
+    let out = common::diagnostics(
+        r#"module M
+  def self.make -> Self = new
+end
+class F
+  def initialize; end
+end
+module X
+  extension F
+    include M
+  end
+  class S < F
+    @x: Int
+    def initialize(@x: Int); end
+    def self.make -> Self = super
+    def x -> Int = @x
+  end
+  def self.f(t: Type[M]) -> String = t.make.class.name
+  def self.run -> Void
+    puts f(S), S.make.class.name
+  end
+end
+X.run
+"#,
+    )
+    .join("\n");
+    assert!(out.contains("13:5: error: `X::S#initialize` does not take the arguments of `new` in `M.make`, which runs for `X::S` through its conformance by an extension"), "{out}");
+    let out = common::diagnostics(
+        r#"module M
+  def self.make -> Self = new
+end
+class F[T]
+  def initialize; end
+end
+extension F[T <: Int]
+  include M
+end
+class S < F[Int]
+  @x: Int
+  def initialize(@x: Int); end
+  def self.make -> Self = super
+  def x -> Int = @x
+end
+def f(t: Type[M]) -> String = t.make.class.name
+puts f(S), S.make.class.name
+"#,
+    )
+    .join("\n");
+    assert!(out.contains("12:3: error: `S#initialize` does not take the arguments of `new` in `M.make`, which runs for `S` through its conformance by an extension"), "{out}");
+    let out = common::diagnostics(
+        r#"module M
+  def self.make -> Self = new
+end
+class F
+  def initialize; end
+end
+module X
+  extension F
+    include M
+  end
+  def self.f(t: Type[M]) -> String = t.make.class.name
+  def self.run -> Void
+    puts f(S)
+  end
+end
+class S < F
+  @x: Int
+  def initialize(@x: Int); end
+  def self.make -> Self = new(1)
+  def x -> Int = @x
+end
+X.run
+"#,
+    )
+    .join("\n");
+    assert!(out.contains("18:3: error: `S#initialize` does not take the arguments of `new` in `M.make`, which runs for `S` through its conformance by an extension"), "{out}");
+    let out = common::diagnostics(
+        r#"module M
+  def self.make -> Self = new
+end
+class Base
+  def initialize; end
+  def self.make -> Self = new
+end
+class F < Base
+  def initialize; end
+  def self.make -> Self = super
+end
+extension F
+  include M
+end
+class S < F
+  @x: Int
+  def initialize(@x: Int); end
+  def self.make -> Self = super
+  def x -> Int = @x
+end
+def f(t: Type[M]) -> String = t.make.class.name
+def g[T <: M](t: Type[T]) -> String = t.make.class.name
+puts f(S), g(S), S.make.class.name
+"#,
+    )
+    .join("\n");
+    assert!(out.contains("10:27: error: `super` in `F.make` runs `new` in `M.make` with `S` for `self`, but `S#initialize` does not take its arguments"), "{out}");
+}
+
+#[test]
 fn a_first_candidate_of_another_type_is_refused() {
     // #669's decision (f2): the first class method of the name in the
     // class-side order with the extension active is the witness; one that

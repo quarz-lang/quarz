@@ -475,11 +475,6 @@ pub fn declared_with(
         methods,
         consts: Vec::new(),
         extensions,
-        class_ext_impls: world
-            .class_ext_impls
-            .iter()
-            .map(|w| (w.class, w.method, w.by))
-            .collect(),
         // (The checker's witness record, which the abstract keys of the
         // rows read, #536 step 3's S2.)
         witness_record: record,
@@ -487,14 +482,76 @@ pub fn declared_with(
         witness_rows: Vec::new(),
         class_override_rows: Vec::new(),
         include_overrides: world.include_overrides(),
-        class_include_overrides: world.class_include_overrides(),
         top,
         builtin,
         file_names: Vec::new(),
         file_mains,
     };
+    rt.class_override_rows = class_override_rows(world, &rt, &table);
     rt.build_witness_rows();
     rt
+}
+
+/// The rows of `RtWorld::class_override_rows`: for every key
+/// `RtWorld::in_class_override_rows` admits, what a call of the method on
+/// the class object runs, by `World::class_method_target` over the
+/// override table the methods ship (`table`). The candidates are the class
+/// methods of each class object's ancestors and the instance methods of
+/// `Type`'s classes named like a class method of its class side; the
+/// predicate decides which are keys.
+fn class_override_rows(
+    world: &World,
+    rt: &RtWorld,
+    table: &[Vec<MethodId>],
+) -> Vec<(ClassId, MethodId, MethodId)> {
+    let method = |id: MethodId| &rt.methods[id as usize];
+    let overrides = |m: MethodId| table[m as usize].clone();
+    let type_owners = rt.type_side_owners();
+    let mut rows: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
+    for (cid, c) in rt.classes.iter().enumerate() {
+        let cid = cid as ClassId;
+        if c.kind == RtClassKind::Main {
+            continue;
+        }
+        let mut cands: Vec<MethodId> = Vec::new();
+        for &o in std::iter::once(&cid).chain(c.ancestors.iter()) {
+            cands.extend(rt.class(o).singleton_methods.values().flatten().copied());
+        }
+        // (`Type`'s classes' instance methods named like a class method on
+        // the class side: each name looked up in their tables.)
+        for name in c
+            .class_side
+            .iter()
+            .flat_map(|k| rt.class(*k).singleton_methods.keys())
+        {
+            for &t in &type_owners {
+                if let Some(ids) = rt.class(t).methods.get(name) {
+                    cands.extend(ids.iter().copied().filter(|&m| method(m).owner == t));
+                }
+            }
+        }
+        cands.sort_unstable();
+        cands.dedup();
+        for b in cands {
+            if rt.in_class_override_rows_with(&method, Some(&type_owners), cid, b) {
+                rows.push((cid, b, world.class_method_target(&overrides, cid, b)));
+            } else {
+                // (Outside the set a call runs the method itself: the
+                // function must agree, or the key set and the function
+                // have drifted apart.)
+                debug_assert_eq!(
+                    world.class_method_target(&overrides, cid, b),
+                    b,
+                    "internal error: `{}` on `{}` is outside the class override rows, \
+                     but class_method_target replaces it",
+                    rt.methods[b as usize].name,
+                    c.name
+                );
+            }
+        }
+    }
+    rows.sort_unstable();
+    rows
 }
 
 /// Whether a positional parameter of `m` follows the one named `name`.

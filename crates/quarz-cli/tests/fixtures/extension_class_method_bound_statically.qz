@@ -1,0 +1,48 @@
+# An extension's class method is bound statically (docs/01 §7), on the
+# class side too: a subclass's class method of its name, its own or one
+# an include brings, does not take its place for a call through the
+# extended class's `Type`, global or under `using` (#747:
+# such a method is never `overridden`, so the call never asks for a row
+# of `RtWorld::class_override_rows`). A call on the subclass itself finds
+# the subclass's own. Cells: a global and a scoped extension; the
+# subclass's own class method and an included module's; the extended
+# class and the subclass through a `Type[...]` parameter. Skipped: a scoped
+# extension's method where it is not active (no call of it checks there).
+module M
+  def self.k -> String = "M.k"
+end
+
+class G
+  def initialize; end
+end
+extension G
+  def self.k -> String = "ext G.k"
+end
+class GOwn < G
+  def self.k -> String = "GOwn.k"
+end
+class GInc < G
+  include M
+end
+def g(t: Type[G]) -> String = t.k
+puts "#{G.k} #{GOwn.k} #{GInc.k}"
+puts "#{g(G)} #{g(GOwn)} #{g(GInc)}"
+
+class S
+  def initialize; end
+end
+module SX
+  extension S
+    def self.k -> String = "SX S.k"
+  end
+end
+class SOwn < S
+  def self.k -> String = "SOwn.k"
+end
+class SInc < S
+  include M
+end
+using SX
+def s(t: Type[S]) -> String = t.k
+puts "#{S.k} #{SOwn.k} #{SInc.k}"
+puts "#{s(S)} #{s(SOwn)} #{s(SInc)}"
