@@ -10,6 +10,8 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::rc::Rc;
 
 use quarz_ir::{shake, ClassId, FuncId, MethodId, RtClassKind, RtWorld};
@@ -111,44 +113,48 @@ pub struct Runner {
     cover: Option<PendingCover>,
 }
 
-/// The classes pending `static` statements cover (#717): those a
-/// statement's class is, by `World::class_is_a` (its class and the
-/// classes under it), whose members it may still add to. Built once per
-/// `StaticRunner::begin`, while the class graph does not change, and kept
-/// as statements finish: `Lowerer::static_skip` and the refusals' labels
-/// (`reflect_refusal`) read it, rather than every class being tested
-/// against every pending statement in each round.
+/// The classes pending `static` statements cover (#717): for each
+/// statement's class, the classes that are one (`World::classes_it_is`,
+/// `class_is_a`'s own rule: its class and the classes under it), whose
+/// members it may still add to. Kept as statements finish:
+/// `Lowerer::static_skip` and the refusals' labels (`reflect_refusal`)
+/// read it, rather than every class being tested against every pending
+/// statement in each round.
+///
+/// What it was built from does not change between two
+/// `StaticRunner::begin`s: a run generates members only, never a class or
+/// a header. It is built again all the same when the classes, the
+/// statements or the active extensions (which `classes_it_is` asks under)
+/// differ from those it was built for. Each `cover()` call is in
+/// `Runner::lower` or `note_pending`, after the checker has restored the
+/// active set `check_static_stmt` changed, so that set is the phase's
+/// throughout; the check costs a comparison.
 struct PendingCover {
+    /// What it was built for: the number of classes, and the extensions
+    /// active then.
+    classes: usize,
+    active: Vec<quarz_types::ExtensionId>,
     /// Whether each statement (by index into `World::static_stmts`) was
     /// pending when last seen.
     pending: Vec<bool>,
     /// Each statement's label, as a refusal names it.
     labels: Vec<Rc<str>>,
     /// The classes under each statement's class.
-    under: Rc<HashMap<ClassId, std::collections::HashSet<ClassId>>>,
+    under: Rc<FxHashMap<ClassId, FxHashSet<ClassId>>>,
     /// Per class, how many pending statements cover it.
-    count: HashMap<ClassId, u32>,
+    count: FxHashMap<ClassId, u32>,
     /// The classes some pending statement covers (`count` above zero).
-    skip: rustc_hash::FxHashSet<ClassId>,
+    skip: FxHashSet<ClassId>,
 }
 
 impl PendingCover {
     fn build(world: &World, pending: &[usize]) -> PendingCover {
-        let stmt_classes: std::collections::HashSet<ClassId> =
-            world.static_stmts.iter().map(|s| s.class).collect();
-        // (`class_is_a(c, p)`: `c` is `p`, `p` is `Object`, or `p` is
-        // among `c`'s ancestors.)
-        let mut under: HashMap<ClassId, std::collections::HashSet<ClassId>> = HashMap::new();
+        let stmt_classes: FxHashSet<ClassId> = world.static_stmts.iter().map(|s| s.class).collect();
+        let mut under: FxHashMap<ClassId, FxHashSet<ClassId>> = FxHashMap::default();
         for c in &world.classes {
-            if stmt_classes.contains(&c.id) {
-                under.entry(c.id).or_default().insert(c.id);
-            }
-            if stmt_classes.contains(&world.builtin.object) {
-                under.entry(world.builtin.object).or_default().insert(c.id);
-            }
-            for a in world.ancestor_ids(c.id) {
-                if stmt_classes.contains(&a) {
-                    under.entry(a).or_default().insert(c.id);
+            for k in world.classes_it_is(c.id) {
+                if stmt_classes.contains(&k) {
+                    under.entry(k).or_default().insert(c.id);
                 }
             }
         }
@@ -164,11 +170,13 @@ impl PendingCover {
             })
             .collect();
         let mut cover = PendingCover {
+            classes: world.classes.len(),
+            active: world.active_extensions.borrow().clone(),
             pending: vec![false; world.static_stmts.len()],
             labels,
             under: Rc::new(under),
-            count: HashMap::new(),
-            skip: Default::default(),
+            count: FxHashMap::default(),
+            skip: FxHashSet::default(),
         };
         cover.update(world, pending);
         cover
@@ -217,8 +225,8 @@ impl PendingCover {
     }
 }
 
-/// TEMPORARY (#717's oracle, removed before the pull request leaves
-/// draft): the cover against the computation it replaces, after every
+/// TEMPORARY (#717's oracle: CI runs once with it, then the pull
+/// request's last commit removes it): the cover against the computation it replaces, after every
 /// update, in debug builds or with `QUARZ_VERIFY_STATIC_TABLES` set to a
 /// file the rounds compared are counted into.
 mod verify_cover {
@@ -235,7 +243,7 @@ mod verify_cover {
         let world = host.world();
         // `static_skip` as it was computed.
         let pending = host.pending_classes();
-        let skip: rustc_hash::FxHashSet<ClassId> = world
+        let skip: FxHashSet<ClassId> = world
             .classes
             .iter()
             .filter(|c| pending.iter().any(|&p| world.class_is_a(c.id, p)))
@@ -289,7 +297,7 @@ mod verify_cover {
 #[derive(Default)]
 struct PendingView {
     statements: Vec<(ClassId, Rc<str>)>,
-    under: Rc<HashMap<ClassId, std::collections::HashSet<ClassId>>>,
+    under: Rc<FxHashMap<ClassId, FxHashSet<ClassId>>>,
 }
 
 impl PendingView {
@@ -1335,7 +1343,13 @@ impl Runner {
         let world = host.world();
         let pending = host.pending_statements();
         match &mut self.cover {
-            Some(c) if c.pending.len() == world.static_stmts.len() => c.update(world, &pending),
+            Some(c)
+                if c.pending.len() == world.static_stmts.len()
+                    && c.classes == world.classes.len()
+                    && *world.active_extensions.borrow() == c.active =>
+            {
+                c.update(world, &pending)
+            }
             _ => self.cover = Some(PendingCover::build(world, &pending)),
         }
         let cover = self.cover.as_ref().expect("built");
