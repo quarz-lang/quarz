@@ -113,6 +113,13 @@ fn a_quoted_block_leaves_no_reference_behind() {
 }
 
 #[test]
+fn a_collection_owned_by_a_task_is_updated_in_place() {
+    // docs/04 §4's count table: updated through a channel by the task
+    // that owns it, never shared.
+    check("task_owned.qz", 0);
+}
+
+#[test]
 fn a_field_read_through_a_handle_copies_nothing() {
     // docs/14 §5: `ref.get(self)` is the field read `@items` is.
     check("handles.qz", 0);

@@ -123,6 +123,42 @@ STATS = Atom.new({ requests: 0, errors: 0 })
 STATS.update { |s| s.put(:requests, s[:requests] + 1) }
 ```
 
+**When to use an `Atom`.** An `Atom` suits small values and values that change rarely: a counter, a configuration, a small registry. Each `update` of a collection copies it, in O(n) (#756), so a large collection that changes often belongs to one task instead. The task keeps it in a local variable, receives requests on a `Channel`, and answers a lookup on a reply channel the request carries (the actor of §5). Its reference is unique there, so every update is in place ([03-data-model.md](03-data-model.md) §2):
+
+```crystal
+enum CountReq
+  variant Add(name: String, n: Int)
+  variant Get(name: String, reply: Channel[Int])
+  variant Stop
+end
+
+def count_table(inbox: Channel[CountReq]) -> Void
+  counts: Hash[String, Int] = {}
+  inbox.each do |req|
+    case req
+    in CountReq::Add(name:, n:)
+      counts = counts.put(name, counts.fetch(name, 0) + n)   # unique here: in place
+    in CountReq::Get(name:, reply:)
+      reply.send(counts.fetch(name, 0))
+    in CountReq::Stop
+      break
+    end
+  end
+end
+
+Task.scope do |scope|
+  inbox = Channel[CountReq].new(capacity: 64)
+  scope.spawn { count_table(inbox) }
+  10_000.times { |i| inbox.send(CountReq::Add.new("k#{i % 1000}", 1)) }
+  reply = Channel[Int].new
+  inbox.send(CountReq::Get.new("k7", reply))
+  puts reply.receive          # => 10
+  inbox.send(CountReq::Stop)
+end
+```
+
+Its 10,000 updates copy nothing, where the same counts kept in an `Atom[Hash[String, Int]]` copy the hash at each `update` (`QUARZ_COUNT_COPIES=1` prints the count, interpreted and compiled). What it costs: a read is a message round trip through the owning task, and the code is longer than an `update` block.
+
 ## 5. Actors and Erlang-style Design
 
 An Erlang process + mailbox can be expressed as a task + a single channel. If the message type is an `enum`, the combination of `receive` and `case/in` gets exhaustiveness checking.
