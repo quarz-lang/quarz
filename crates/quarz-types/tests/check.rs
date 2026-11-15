@@ -2909,6 +2909,83 @@ fn class_values_in_tests_and_patterns() {
     );
 }
 
+#[test]
+fn in_cog_matches_the_class_values_a_cog_root_may_be() {
+    // A cog root is a module, and its class object a `Cog`: `in Cog`
+    // over a `Type`, a `Type[Object]`, a `Type[M]` of a module or a
+    // `Type[T]` may match, with no warning (#735); the arm is a `Cog`.
+    no_warnings(
+        "def f(t: Type[Object]) -> String = case t\n  in Cog then t.version\n  else \"no\"\nend",
+    );
+    no_warnings(
+        "def f(t: Type) -> String = case t\n  in Cog then t.module_name\n  else \"no\"\nend",
+    );
+    no_warnings("module Mo\nend\ndef f(t: Type[Mo]) -> String = case t\n  in Cog then t.name\n  else \"no\"\nend");
+    no_warnings(
+        "def f[T](t: Type[T]) -> String = case t\n  in Cog then t.name\n  else \"no\"\nend",
+    );
+    // A class's class object never is one.
+    warns(
+        "def f(t: Type[Int]) -> String = case t\n  in Cog then t.name\n  else \"no\"\nend",
+        "Cog never matches Type[Int]",
+    );
+    warns(
+        "class Cl\nend\ndef f(t: Type[Cl]) -> String = case t\n  in Cog then t.name\n  else \"no\"\nend",
+        "Cog never matches Type[Cl]",
+    );
+    // The verdicts are as before: the arm's type still joins the
+    // `case`'s, and `Cog <: Type[Object]` stays false (#744).
+    err(
+        "def f(t: Type[Object]) -> Int = case t\n  in Cog then \"a\"\n  else 2\nend",
+        "its body has type String | Int",
+    );
+    err(
+        "def f(c: Cog) -> Type[Object] = c",
+        "returns Type[Object] but its body has type Cog",
+    );
+    // The same split narrows `is_a?`: its then-branch is a `Cog` where a
+    // cog root may arrive, no longer `Nothing`, which accepted anything
+    // (#746, a soundness hole: an `Int` holding a `Cog`).
+    for t in ["Type[Object]", "Type[Mo]", "Type[T]"] {
+        let src = format!("module Mo\nend\ndef f[T](t: {t}) -> Int\n  if t.is_a?(Cog)\n    n: Int = t\n    1\n  else\n    2\n  end\nend");
+        err(&src, "cannot assign Cog to `n` of type Int");
+        let src = format!("module Mo\nend\ndef f[T](t: {t}) -> String\n  if t.is_a?(Cog)\n    t.version\n  else\n    \"no\"\n  end\nend");
+        no_warnings(&src);
+        // `in Cog`'s arm was a `Cog` already (as a dead arm): the same
+        // error, only the warning gone.
+        let src = format!("module Mo\nend\ndef f[T](t: {t}) -> Int = case t\n  in Cog then\n    n: Int = t\n    1\n  else 2\nend");
+        err(&src, "cannot assign Cog to `n` of type Int");
+    }
+    // A class's class object is never a `Cog`: the then-branch stays
+    // `Nothing`, which is right there, as on main.
+    ok("def f(t: Type[Int]) -> Int\n  if t.is_a?(Cog)\n    n: Int = t\n    1\n  else\n    2\n  end\nend");
+    ok("class Cl\nend\ndef f(t: Type[Cl]) -> Int\n  if t.is_a?(Cog)\n    n: Int = t\n    1\n  else\n    2\n  end\nend");
+    // A class value is not a `Meta::ClassDef` (a static def's `self`):
+    // unchanged by #735, the warning kept for every class value.
+    for t in ["Type[Object]", "Type[Mo]", "Type[T]", "Type[Int]"] {
+        let src = format!("module Mo\nend\ndef f[T](t: {t}) -> Int = case t\n  in Meta::ClassDef then 1\n  else 2\nend");
+        warns(&src, "Meta::ClassDef never matches");
+    }
+    // `is_a?(Meta::ClassDef[Object])` stays refused (its argument is not
+    // testable); where the value may be a class value of a module or a
+    // parameter, its then-branch is now that type, not `Nothing`.
+    err(
+        "module Mo\nend\ndef f(t: Type[Mo]) -> Int\n  if t.is_a?(Meta::ClassDef[Object])\n    n: Int = t\n    1\n  else\n    2\n  end\nend",
+        "cannot assign Meta::ClassDef[Object] to `n` of type Int",
+    );
+    // Two classes are decided as such (finding of #745's review): a
+    // static def's `self` under `in Cog`, and a `Cog` under
+    // `in Meta::ClassDef`, keep their warning.
+    warns(
+        "class K\n  static def self.mk -> Void\n    x = case self\n      in Cog then 1\n      else 2\n    end\n  end\nend",
+        "Cog never matches Meta::ClassDef[K]",
+    );
+    warns(
+        "def f(c: Cog) -> Int = case c\n  in Meta::ClassDef then 1\n  else 2\nend",
+        "Meta::ClassDef never matches Cog",
+    );
+}
+
 /// `static def` and class bodies' `static` statements (docs/14): what
 /// the checker accepts and rejects; running them is quarz-cli's.
 #[test]

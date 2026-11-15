@@ -8340,9 +8340,26 @@ impl Checker {
                 yes.push(tgt);
                 no.push(m);
             } else if matches!(&tgt, Type::ClassObject(tid, _) if self.class_value_may_be(&m, *tid))
+                || matches!(&tgt, Type::Class(tid, _)
+                if matches!(m, Type::ClassObject(..) | Type::TypeOf(_))
+                    && *tid != self.world.builtin.class_
+                    && self.world.class_is_a(*tid, self.world.builtin.class_)
+                    && (self.class_value_may_be(&m, *tid)
+                        || self.world.is_subtype(
+                            &Type::type_of(Type::class(self.world.builtin.object)),
+                            &m,
+                        )))
             {
                 // A class value that may be of the class: a `Type[M]` of a
-                // module, a `Type[T]`, a `Cog` (a `Type` subclass).
+                // module, a `Type[T]`, a `Cog` (a `Type` subclass). Or one
+                // that may be of a subclass of `Type` (`in Cog`): a
+                // `Type[Object]`, a `Type[M]` of a module, a `Type[T]` may
+                // hold a cog root, a module (#735); a `Type[C]` of a class
+                // never does. Only a class value (`Type[X]`): a member of a
+                // class type (`Meta::ClassDef[X]`) is decided against the
+                // target class by the branch below, as two classes are.
+                // (`Cog <: Type[Object]` is false in `World::is_subtype`,
+                // #744: the split does not rely on it.)
                 yes.push(tgt.clone());
                 no.push(m);
             } else if let (Type::Class(mid, _), Type::Class(tid, _)) = (&m, &tgt) {
