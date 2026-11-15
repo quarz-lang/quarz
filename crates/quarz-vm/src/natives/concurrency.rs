@@ -57,9 +57,11 @@ pub(crate) fn captured_slots(interp: &Interp, fid: FuncId) -> std::rc::Rc<Vec<Ve
 /// keeps the block from assigning them and requires their values to be
 /// Shareable, so a copy of the frames of the chain, sharing the values,
 /// is all it takes.) Only the variables the block reads are copied: the
-/// others, of whatever type, stay with this task.
+/// others, of whatever type, stay with this task; so do its creator's
+/// `self` and method block when its body uses neither (#706). The copy
+/// is a shareable procedure (`Closure::shareable`), whatever its body.
 fn snapshot(interp: &Interp, b: &Value) -> Value {
-    let block = copy_captures(interp, b);
+    let block = copy_captures(interp, b, true);
     // The block and what it captures pass to the new task.
     block.share();
     block
@@ -68,12 +70,9 @@ fn snapshot(interp: &Interp, b: &Value) -> Value {
 /// The block reading copies of the variables it captures, as they are
 /// now: `snapshot` without making them shared (a quoted block's closure,
 /// docs/14 §6, whose values need not be Shareable and stay with this
-/// task).
-fn copy_captures(interp: &Interp, b: &Value) -> Value {
+/// task), and flagged as shareable when `shareable` is.
+fn copy_captures(interp: &Interp, b: &Value, shareable: bool) -> Value {
     let Value::Proc(c) = b else {
-        return b.clone();
-    };
-    let (ClosureBody::Func(f), Some(frame)) = (&c.body, &c.frame) else {
         return b.clone();
     };
     fn copy(frame: &Rc<Frame>, depth: usize, caps: &[Vec<u32>]) -> Rc<Frame> {
@@ -91,21 +90,40 @@ fn copy_captures(interp: &Interp, b: &Value) -> Value {
         }
         Frame::from_slots(slots, parent)
     }
-    let caps = captured_slots(interp, *f);
+    let (frame, unused) = match &c.body {
+        ClosureBody::Func(f) => {
+            let unused = interp.funcs.borrow()[*f as usize].facts.unused;
+            let frame = c.frame.as_ref().and_then(|frame| {
+                let caps = captured_slots(interp, *f);
+                (!caps.is_empty()).then(|| copy(frame, 0, &caps))
+            });
+            (frame, unused)
+        }
+        // (A native's block is never a shareable procedure's.)
+        ClosureBody::Native(_) => return b.clone(),
+        // `&:name`, `obj.:name`: nothing of a frame's to copy.
+        _ if !shareable => return b.clone(),
+        _ => (None, quarz_ir::Unused::default()),
+    };
     Value::Proc(Rc::new(Closure {
-        body: ClosureBody::Func(*f),
-        frame: if caps.is_empty() {
-            None
+        body: c.body.clone(),
+        frame,
+        self_val: if unused.self_val {
+            Value::Nil
         } else {
-            Some(copy(frame, 0, &caps))
+            c.self_val.clone()
         },
-        self_val: c.self_val.clone(),
         destructure: c.destructure,
         is_lambda: c.is_lambda,
         tag: c.tag,
-        method_block: c.method_block.clone(),
+        method_block: if unused.method_block {
+            None
+        } else {
+            c.method_block.clone()
+        },
         method_tag: c.method_tag,
         file: c.file,
+        shareable,
     }))
 }
 
@@ -118,7 +136,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     // A shareable procedure copies what it captures when it is made.
     native!(m, "Proc#__copy_captures", |i, r, _| Ok(snapshot(i, r)));
     // A quoted block's closure: a snapshot, not shared (docs/14 §6).
-    native!(m, "Proc#__snapshot", |i, r, _| Ok(copy_captures(i, r)));
+    native!(m, "Proc#__snapshot", |i, r, _| Ok(copy_captures(i, r, false)));
     native!(m, "Kernel#sleep", |i, _, a| {
         i.sleep(duration(i, a.arg(0))?)?;
         Ok(Value::Nil)

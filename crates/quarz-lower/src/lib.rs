@@ -607,6 +607,7 @@ impl Lowerer {
             }],
             inlined: Vec::new(),
             takes: Vec::new(),
+            unused: Default::default(),
         }
     }
 
@@ -1645,10 +1646,62 @@ pub fn lower_checked_with(mut lw: Lowerer, checked: &Checked, files: &[SourceFil
         quarz_ir::live::own_dying_receivers(f, &in_place);
     }
     check(&functions, verify::Stage::Moves);
+    oracle706(&functions);
     Module {
         world: delta.world,
         functions,
         units: delta.units,
+    }
+}
+
+// TEMPORARY oracle for #706 (removed before the pull request leaves
+// draft): a function the checker says leaves `self` / the method block
+// unused must not read them, nor may the blocks made inside it.
+fn oracle706(functions: &[Function]) {
+    let Some(path) = std::env::var_os("QUARZ_ORACLE706") else {
+        return;
+    };
+    use quarz_ir::{CallKind, Inst};
+    let mut out = String::new();
+    for (i, f) in functions.iter().enumerate() {
+        if !f.unused.self_val && !f.unused.method_block {
+            continue;
+        }
+        let mut work = vec![i];
+        let mut seen = std::collections::HashSet::new();
+        while let Some(g) = work.pop() {
+            if !seen.insert(g) {
+                continue;
+            }
+            let Some(h) = functions.get(g) else { continue };
+            for inst in h.blocks.iter().flat_map(|b| &b.insts) {
+                let (s, b, what) = match inst {
+                    Inst::SelfRef { .. } => (true, false, "SelfRef".to_string()),
+                    Inst::BlockParam { .. } => (false, true, "BlockParam".to_string()),
+                    Inst::Call { kind: CallKind::Yield, .. } => (false, true, "Yield".to_string()),
+                    Inst::Call { kind, recv: None, .. } => match kind {
+                        CallKind::Function(_) | CallKind::Raise => (false, false, String::new()),
+                        k => (true, false, format!("implicit-recv {k:?}")),
+                    },
+                    Inst::MakeBlock { func, .. } => {
+                        work.push(*func as usize);
+                        (false, false, String::new())
+                    }
+                    _ => (false, false, String::new()),
+                };
+                if (s && f.unused.self_val) || (b && f.unused.method_block) {
+                    out.push_str(&format!("MISMATCH {} (in {}): {what}\n", f.name, h.name));
+                }
+            }
+        }
+        out.push_str(&format!(
+            "CHECKED {} self_unused={} block_unused={}\n",
+            f.name, f.unused.self_val, f.unused.method_block
+        ));
+    }
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = file.write_all(out.as_bytes());
     }
 }
 

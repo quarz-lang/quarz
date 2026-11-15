@@ -254,6 +254,7 @@ pub(crate) fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> 
         for_loops: set!(for_loops),
         logical_calls: map!(logical_calls),
         shareable_procs: set!(shareable_procs),
+        proc_uses: map!(proc_uses),
         self_new: set!(self_new),
         not_dispatch: map!(not_dispatch),
         not_builtin: set!(not_builtin),
@@ -383,6 +384,11 @@ pub(crate) fn merge_output(out: &mut Output, o: Output) {
     out.for_loops.extend(o.for_loops);
     out.logical_calls.extend(o.logical_calls);
     out.shareable_procs.extend(o.shareable_procs);
+    for (id, u) in o.proc_uses {
+        let e = out.proc_uses.entry(id).or_default();
+        e.uses_self |= u.uses_self;
+        e.uses_block |= u.uses_block;
+    }
     out.self_new.extend(o.self_new);
     out.not_dispatch.extend(o.not_dispatch);
     out.not_builtin.extend(o.not_builtin);

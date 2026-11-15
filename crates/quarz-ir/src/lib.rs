@@ -97,6 +97,19 @@ pub struct Function {
     /// #478).
     #[serde(default)]
     pub takes: Vec<u32>,
+    /// For a task's block or a shareable procedure: whether its body,
+    /// and the blocks inside it, leave its creator's `self` and method
+    /// block unused (the checker's `Output::proc_uses`). The copy made to
+    /// run elsewhere then keeps neither (#706).
+    #[serde(default)]
+    pub unused: Unused,
+}
+
+/// `Function::unused`: what of its creator a block's body never reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Unused {
+    pub self_val: bool,
+    pub method_block: bool,
 }
 
 /// A function without its body (`Function::split`): what the runtime
@@ -129,6 +142,9 @@ pub struct FrameFacts {
     /// `Function::takes`.
     #[serde(default)]
     pub takes: Vec<u32>,
+    /// `Function::unused`.
+    #[serde(default)]
+    pub unused: Unused,
 }
 
 /// The bit that marks a line number as an index into `Function::inlined`.
@@ -159,6 +175,7 @@ impl Function {
             blocks: Vec::new(),
             inlined: Vec::new(),
             takes: Vec::new(),
+            unused: Unused::default(),
         }
     }
 
@@ -188,6 +205,7 @@ impl Function {
     pub fn split(self) -> (FuncInfo, Vec<Block>) {
         let mut facts = self.frame_facts();
         facts.takes = self.takes;
+        facts.unused = self.unused;
         let info = FuncInfo {
             name: self.name,
             kind: self.kind,

@@ -591,6 +591,7 @@ pub fn empty_function(name: String, kind: FuncKind, file: u32, arity: i32) -> Fu
         }],
         inlined: Vec::new(),
         takes: Vec::new(),
+        unused: Default::default(),
     }
 }
 

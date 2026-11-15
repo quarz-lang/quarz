@@ -639,6 +639,14 @@ impl<'a> FnBuilder<'a> {
         b.is_lambda = is_lambda;
         b.own_self = own_self;
         b.owner = Some(SelfOwner::Block(call_id));
+        // A task's block or a shareable procedure: what its copy need not
+        // keep of its creator (#706).
+        if let Some(u) = self.out.proc_uses.get(&call_id) {
+            b.func.unused = quarz_ir::Unused {
+                self_val: !u.uses_self,
+                method_block: !u.uses_block,
+            };
+        }
         b.func.param_kinds = params
             .iter()
             .map(|p| match p.kind {
@@ -2734,7 +2742,9 @@ impl<'a> FnBuilder<'a> {
                                 discard,
                                 among,
                             });
-                            dst
+                            // Where a shareable procedure is expected: one
+                            // (`Closure::shareable`), #706.
+                            self.share_proc(e.id, dst)
                         }
                         _ => self.expr(e),
                     });

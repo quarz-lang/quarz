@@ -84,6 +84,15 @@ pub enum ConstTarget {
 /// The type parameters of a method's call, bound (`Output::type_args`).
 pub type TypeArgs = Vec<(TypeParamId, Type)>;
 
+/// `Output::proc_uses`: whether a task's block or a shareable procedure
+/// uses its creator's `self`, and its creator's method block (`yield`,
+/// or `super` passing it on).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProcUses {
+    pub uses_self: bool,
+    pub uses_block: bool,
+}
+
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Output {
     pub node_types: FxHashMap<NodeId, Type>,
@@ -271,6 +280,15 @@ pub struct Output {
     /// procedures: lowering copies what they capture when it makes them,
     /// as `spawn` does, so that they no longer read the creator's frame.
     pub shareable_procs: rustc_hash::FxHashSet<NodeId>,
+    /// What the body of a task's block or of a shareable procedure (by
+    /// its call's id for a block, its own for a lambda), or a block
+    /// inside it, uses of its creator besides the variables it captures:
+    /// `self` and the method's block. The copy that runs elsewhere
+    /// (`spawn`'s, `__copy_captures`') keeps each only when it is used,
+    /// so a `self` of a non-Shareable class that the body never touches
+    /// is not held (docs/03 §5, #706). Only ever set, never cleared: a
+    /// block checked again only adds uses, an error towards keeping.
+    pub proc_uses: FxHashMap<NodeId, ProcUses>,
     /// `new` called on the receiver in a class method: it builds an
     /// instance of the class the method is called on.
     pub self_new: rustc_hash::FxHashSet<NodeId>,
@@ -577,6 +595,9 @@ struct Env {
     /// What that frame is, for diagnostics: a task block, or the body of
     /// a shareable procedure (which copies what it captures the same way).
     task_shareable_proc: bool,
+    /// Every task block and shareable procedure being checked, outermost
+    /// first: its frame and its key in `Output::proc_uses`.
+    task_procs: Vec<(usize, NodeId)>,
     /// The frame of the innermost block given to `def_method` (docs/14
     /// §5), which becomes a method's body: it captures by value too, and
     /// cannot leave the enclosing method or use its `self`.
@@ -1242,6 +1263,7 @@ impl Checker {
             decl_scope: None,
             task_frame: None,
             task_shareable_proc: false,
+            task_procs: Vec::new(),
             reassigned: None,
             late_assigned: Rc::default(),
             never_narrow: Rc::default(),
@@ -3396,6 +3418,7 @@ impl Checker {
             decl_scope: None,
             task_frame: None,
             task_shareable_proc: false,
+            task_procs: Vec::new(),
             reassigned: None,
             late_assigned: Rc::default(),
             never_narrow: Rc::default(),
@@ -11954,6 +11977,16 @@ impl Checker {
     /// reads like a captured variable.
     fn bind_outer_self(&mut self, expr: &Expr, k: usize) {
         let owner_frame = self.env.receivers[k].outer_frame;
+        // The hidden slot is filled where that `self` is: by a task block
+        // or shareable procedure at or around its frame, from the `self`
+        // it holds (counted for any `k`: an error towards keeping it).
+        let ids: Vec<NodeId> = (self.env.task_procs.iter())
+            .filter(|(tf, _)| *tf <= owner_frame)
+            .map(|(_, id)| *id)
+            .collect();
+        for id in ids {
+            self.out.proc_uses.entry(id).or_default().uses_self = true;
+        }
         if k == 0 && self.in_function() {
             let name = match &expr.kind {
                 ExprKind::Call(c) => c.name.clone(),
@@ -14557,7 +14590,7 @@ impl Checker {
                             }
                             return Err(msg);
                         }
-                        let Type::Proc(_, params, ret, _, kws) = resolved else {
+                        let Type::Proc(_, params, ret, sym_shareable, kws) = resolved else {
                             return Err("invalid block type".to_string());
                         };
                         if !kws.is_empty() {
@@ -14880,6 +14913,13 @@ impl Checker {
                         self.out
                             .block_pass
                             .insert(e.id, BlockPass::Symbol(name.clone(), mid, discard));
+                        // Given where a shareable procedure is expected, it
+                        // is one, made as a block literal there is (it
+                        // captures nothing; a task's method copies its block
+                        // itself), #706.
+                        if sym_shareable && !Self::runs_block_in_task(&self.world, m) {
+                            self.out.shareable_procs.insert(e.id);
+                        }
                         self.note_static_call(e, mid);
                         for k in union_methods {
                             if k != mid {
@@ -15610,6 +15650,10 @@ impl Checker {
             self.env.task_frame = Some(self.env.frames.len() - 1);
             self.env.task_shareable_proc = shareable;
         }
+        let copied = is_task || shareable;
+        if copied {
+            self.enter_task_proc(call_id);
+        }
         if in_static {
             self.env.static_frame = self.env.task_frame;
         }
@@ -15885,6 +15929,9 @@ impl Checker {
         }
         (self.env.loop_depth, self.env.loop_exits) = saved_loop;
         (self.env.task_frame, self.env.task_shareable_proc) = saved_task_frame;
+        if copied {
+            self.env.task_procs.pop();
+        }
         self.env.static_frame = saved_static;
         (
             self.env.lifted_frame,
@@ -16097,21 +16144,54 @@ impl Checker {
     /// `spawn` (or `Task.blocking`) block, captured by it (and not the
     /// receiver of a block run with `instance_exec` inside the task).
     fn self_crosses_task(&self) -> bool {
-        match self.env.task_frame {
-            // A block with a receiver, at the task block or inside it:
-            // its `self` is the receiver given at each call (a shareable
-            // `T.() -> R` block's, a block given to `def_method`, the
-            // block of `static(...)`'s call when its parameter takes
-            // one), not captured. A call that falls through to the
-            // enclosing `self` is checked where it binds it
-            // (`bind_outer_self`).
-            Some(tf) => !self.env.receivers.iter().any(|r| r.outer_frame + 1 >= tf),
-            None => false,
+        self.env.task_frame.is_some_and(|tf| self.self_crosses(tf))
+    }
+
+    /// Whether `self` here is the one of the code around the block whose
+    /// frame is `tf`. A block with a receiver, at that block or inside
+    /// it: its `self` is the receiver given at each call (a shareable
+    /// `T.() -> R` block's, a block given to `def_method`, the block of
+    /// `static(...)`'s call when its parameter takes one), not captured.
+    /// A call that falls through to the enclosing `self` is checked where
+    /// it binds it (`bind_outer_self`).
+    fn self_crosses(&self, tf: usize) -> bool {
+        !self.env.receivers.iter().any(|r| r.outer_frame + 1 >= tf)
+    }
+
+    /// Start checking the body of a task block or shareable procedure
+    /// whose frame is the innermost one (`Output::proc_uses`).
+    fn enter_task_proc(&mut self, id: NodeId) {
+        self.env.task_procs.push((self.env.frames.len() - 1, id));
+        self.out.proc_uses.entry(id).or_default();
+    }
+
+    /// Record a use of `self` here by each task block or shareable
+    /// procedure that captures it.
+    fn note_task_self_use(&mut self) {
+        let ids: Vec<NodeId> = (self.env.task_procs.iter())
+            .filter(|(tf, _)| self.self_crosses(*tf))
+            .map(|(_, id)| *id)
+            .collect();
+        for id in ids {
+            self.out.proc_uses.entry(id).or_default().uses_self = true;
+        }
+    }
+
+    /// Record a use of the method's `self` (`super`'s, which is the
+    /// method's whatever the receivers around) and of its block (`yield`,
+    /// `super` passing it on) by every task block and shareable
+    /// procedure around.
+    fn note_method_use(&mut self, uses_self: bool, uses_block: bool) {
+        for (_, id) in self.env.task_procs.clone() {
+            let u = self.out.proc_uses.entry(id).or_default();
+            u.uses_self |= uses_self;
+            u.uses_block |= uses_block;
         }
     }
 
     /// A task block captures `self` like a variable: it must be Shareable.
     fn check_task_self(&mut self, what: &str, span: Span) {
+        self.note_task_self_use();
         if !self.self_crosses_task() {
             return;
         }
@@ -16220,6 +16300,7 @@ impl Checker {
             self.out.shareable_procs.insert(id);
             self.env.task_frame = Some(self.env.frames.len() - 1);
             self.env.task_shareable_proc = true;
+            self.enter_task_proc(id);
         }
         // `->(x: Int) -> R { }`: the declared result, else the expected
         // one, else inferred from the body.
@@ -16308,6 +16389,9 @@ impl Checker {
             );
         }
         (self.env.task_frame, self.env.task_shareable_proc) = saved_task_frame;
+        if shareable {
+            self.env.task_procs.pop();
+        }
         (self.env.loop_depth, self.env.loop_exits) = saved_loop;
         let frame = self.env.frames.pop().unwrap();
         self.env.in_rescue = saved_rescue;
@@ -16332,6 +16416,7 @@ impl Checker {
     }
 
     fn check_yield(&mut self, expr: &Expr, args: &[Arg]) -> Type {
+        self.note_method_use(false, true);
         // (The method's block, outside the block of `static(...)`.)
         if self.env.static_frame.is_some() {
             self.error(
@@ -16713,6 +16798,9 @@ impl Checker {
             );
             return Type::Nothing;
         }
+        // The method's `self`, and its block when none is written (passed
+        // on as it is).
+        self.note_method_use(true, block.is_none());
         // (The method's `self`, outside the block of `static(...)`.)
         if self.env.static_frame.is_some() {
             self.error(

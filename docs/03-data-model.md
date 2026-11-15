@@ -203,9 +203,10 @@ To pass a mutable object to another task, convert it to an immutable value. A Bu
   - a collection, tuple or range is Shareable when every element is;
   - a `data` value or enum variant when its type is Shareable by its fields, or, for a generic one, when what its fields hold is;
   - an instance of a class when the class includes `Shareable`;
-  - `Atom`, `Channel`, `Task` and exceptions are; builders are not.
+  - `Atom`, `Channel`, `Task` and exceptions are; builders are not;
+  - a `shareable` procedure (a block or lambda written where one is expected, an `&:name` given there, a task's block) when what it holds is: the values it captured, and its creator's `self` and method block when its body uses them. Its copy keeps neither when the body does not, so a `shareable` lambda written in a method of a non-Shareable class that does not use `self` answers by its captures alone, as `Task.spawn` accepts such a block (#706). Any other procedure is not, whatever it captures.
 
-  It answers true for every value whose type is Shareable, except a procedure: a closure does not record whether it is a `shareable` one, so every procedure answers false (an approximation that errs only towards false, #706). It may answer true where the type is not, which is what it is for: `[1, 2]` held as an `Array[Object]` is Shareable, and `Box[Int]` answers true although `is_a?(Shareable)` cannot be asked of it.
+  It answers true for every value whose type is Shareable. It may answer true where the type is not, which is what it is for: `[1, 2]` held as an `Array[Object]` is Shareable, and `Box[Int]` answers true although `is_a?(Shareable)` cannot be asked of it.
 - **Copyable to a helper thread** is what `Task.blocking` needs, checked at run time when the block is sent. The helper thread runs a program of its own, made from the caller's program image (`transfer::run_on_thread` loads it with its own symbols, constants and scheduler). So a value crosses by being copied there and copied back, never shared, and a value that belongs to the caller's program cannot cross: a `Channel`, `Atom`, `Task` or scope (its waiters are the caller's tasks), an IO handle, a `MatchData`, and an instance of a class with `deinitialize` (the copy would be released twice). These are refused with `ArgumentError` even though they are Shareable. That check and `shareable?` are one walk over the value with two rules (`transfer::walk`).
 
 ## 6. Equality and Identity

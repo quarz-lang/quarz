@@ -3643,6 +3643,7 @@ impl Interp {
             method_block: None,
             method_tag: tag,
             file: 0,
+            shareable: false,
         }))
     }
 

@@ -1,8 +1,9 @@
 # Object#shareable? over docs/03 §5's kinds: immediates and strings,
 # collections of Shareable and of non-Shareable elements, nested ones,
 # builders, generic data and enums by their arguments, classes with and
-# without the promise, Atom, Channel, Task, procedures, and a deep value
-# (the walk keeps no native stack).
+# without the promise, Atom, Channel, Task, procedures (a `shareable` one
+# by what it holds, #706), and a deep value (the walk keeps no native
+# stack).
 require "test"
 
 class ShareableTestCounter
@@ -23,6 +24,38 @@ class ShareableTestPromised
   include Shareable
   @v: Int
   def initialize(@v: Int)
+  end
+
+  # A `shareable` procedure that uses `self`, a Shareable one.
+  def adder -> shareable (Int) -> Int = ->(x: Int) { x + @v }
+end
+
+# Not Shareable: its `shareable` procedures that do not use `self` hold
+# no `self` (#706).
+class ShareableTestMaker
+  var @n: Int = 0
+
+  def plain -> shareable (Int) -> Int = ->(x: Int) { x + 1 }
+
+  def capturing(k: Int) -> shareable (Int) -> Int = ->(x: Int) { x + k }
+
+  def nested -> shareable () -> Bool = -> { [1, 2].map { |x| x + 1 }.size == 2 }
+
+  def given(&blk: shareable (Int) -> Int) -> Bool = blk.shareable?
+
+  def given_plain(&blk: (Int) -> Int) -> Bool = blk.shareable?
+
+  def symbol_given(&blk: shareable (Int) -> String) -> Bool = blk.shareable?
+
+  def symbol_plain(&blk: (Int) -> String) -> Bool = blk.shareable?
+
+  # A `shareable` procedure yielding to a `shareable` method block holds
+  # that block, a shareable procedure too.
+  def yielding(&blk: shareable (Int) -> Int) -> shareable () -> Int = -> { yield 1 }
+
+  def bump -> Int
+    @n += 1
+    @n
   end
 end
 
@@ -159,13 +192,48 @@ class ShareableTest < Test::Case
     assert_true([Atom.new(1), Channel[Int].new].shareable?)
   end
 
-  def test_procedures_answer_false
-    # An approximation (#706): a `shareable` procedure answers false too.
+  def test_procedures
+    # A `shareable` procedure answers by what it holds (#706).
     f: shareable (Int) -> Int = ->(x: Int) { x + 1 }
-    assert_false(f.shareable?)
+    assert_true(f.shareable?)
+    assert_true(ShareableTestBox[shareable (Int) -> Int].new(f).shareable?)
+    assert_true([1, f].shareable?)
+    k = [1, 2]
+    g: shareable () -> Int = -> { k.size }
+    assert_true(g.shareable?)
+    # Any other procedure answers false, whatever it captures.
     assert_false(->(x: Int) { x }.shareable?)
     assert_false([1, ->(x: Int) { x }].shareable?)
-    assert_false(ShareableTestBox[shareable (Int) -> Int].new(f).shareable?)
+    c = ShareableTestCounter.new
+    assert_false(c.:bump.shareable?)
+  end
+
+  def test_procedures_and_self
+    # One that uses a Shareable `self` holds it.
+    assert_true(ShareableTestPromised.new(2).adder.shareable?)
+    # One made in a method of a non-Shareable class holds no `self` when
+    # it does not use it, as `Task.spawn` takes such a block.
+    m = ShareableTestMaker.new
+    assert_true(m.plain.shareable?)
+    assert_true(m.capturing(3).shareable?)
+    assert_equal(5, m.capturing(3).call(2))
+    assert_true(m.nested.shareable?)
+    assert_true(m.nested.call)
+  end
+
+  def test_blocks_and_symbols
+    m = ShareableTestMaker.new
+    assert_true(m.given { |x| x + 1 })
+    assert_false(m.given_plain { |x| x + 1 })
+    f: shareable (Int) -> Int = ->(x: Int) { x * 2 }
+    assert_true(m.given(&f))
+    # `&:name` where a `shareable` procedure is expected is one: it
+    # captures nothing.
+    assert_true(m.symbol_given(&:to_s))
+    assert_false(m.symbol_plain(&:to_s))
+    y = m.yielding { |x| x + 41 }
+    assert_true(y.shareable?)
+    assert_equal(42, y.call)
   end
 
   def test_deep_and_shared_values
