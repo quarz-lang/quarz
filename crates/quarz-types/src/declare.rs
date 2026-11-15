@@ -4635,6 +4635,47 @@ impl<'ast> Declarer<'ast> {
                             } else {
                                 (self.world.own_witness(id, *mid), None)
                             };
+                        // The class's own conformance, witnessed by `j`,
+                        // with an active extension's method of the shape
+                        // on an ancestor strictly before `j`'s owner:
+                        // refused by rule A, as main's walk by arity
+                        // refused it (the user's decision of 2026-11-15
+                        // on #720, recorded on #536). A call through the
+                        // module dispatches to the class side's method
+                        // (the witness, a subclass's over an extension of
+                        // a superclass, which takes no part in dispatch),
+                        // while a call typed by the class binds
+                        // statically to the extension's method; main's
+                        // verdict is kept while that picture holds. This
+                        // is the by-type form of main's order-dependent
+                        // rule: it refuses every program main refused for
+                        // it, and also a few main refused for another
+                        // reason only (its walk stopped at an overload
+                        // taking the calls by arity), the direction of
+                        // more refusals. An extension of the witness's
+                        // owner itself (the same position) is not refused
+                        // here, as on main.
+                        // (Neither an extension's own method, for the
+                        // conformance it makes, nor an extension's
+                        // conformance, which R0 checked.)
+                        let rule_a = match witness {
+                            Some(j)
+                                if own_side.contains(anc)
+                                    && by_conformance.is_none()
+                                    && self.world.method(j).extension.is_none() =>
+                            {
+                                self.taken_extension(&ancestors, *mid, Some(j))
+                            }
+                            _ => None,
+                        };
+                        if let Some(e) = rule_a {
+                            by_extension.push((
+                                m.name.clone(),
+                                *anc,
+                                self.world.extension_label(e),
+                            ));
+                            continue;
+                        }
                         match witness {
                             // An extension's method (active where the class
                             // is declared) of the name would have been taken
@@ -4671,40 +4712,6 @@ impl<'ast> Declarer<'ast> {
                             // a method of the target's side or of the
                             // extension's modules: R0 checked it by type.
                             Some(_) if by_conformance.is_some() => {}
-                            // The class's own conformance, witnessed by `j`,
-                            // with an active extension's method of the shape
-                            // on an ancestor strictly before `j`'s owner:
-                            // refused by rule A, as main's walk by arity
-                            // refused it (the user's decision of 2026-11-15
-                            // on #720, recorded on #536). A call through the
-                            // module dispatches to the class side's method
-                            // (the witness, a subclass's over an extension of
-                            // a superclass, which takes no part in dispatch),
-                            // while a call typed by the class binds
-                            // statically to the extension's method; main's
-                            // verdict is kept while that picture holds. This
-                            // is the by-type form of main's order-dependent
-                            // rule: it refuses every program main refused for
-                            // it, and also a few main refused for another
-                            // reason only (its walk stopped at an overload
-                            // taking the calls by arity), the direction of
-                            // more refusals. An extension of the witness's
-                            // owner itself (the same position) is not refused
-                            // here, as on main.
-                            Some(j)
-                                if own_side.contains(anc)
-                                    && self
-                                        .taken_extension(&ancestors, *mid, Some(j))
-                                        .is_some() =>
-                            {
-                                if let Some(e) = self.taken_extension(&ancestors, *mid, Some(j)) {
-                                    by_extension.push((
-                                        m.name.clone(),
-                                        *anc,
-                                        self.world.extension_label(e),
-                                    ));
-                                }
-                            }
                             // An abstract class's `abstract def` hides what
                             // is above it (#687's option 1, re-abstraction,
                             // the maintainer's decision of 2026-11-14): a
@@ -4722,16 +4729,7 @@ impl<'ast> Declarer<'ast> {
                                         .position(|k| *k == self.world.method(j).owner)
                                         > lookup.iter().position(|k| k == anc) =>
                             {
-                                // (Rule A's message, as when there is none,
-                                // if an extension's method would be taken.)
-                                match self.taken_extension(&ancestors, *mid, Some(j)) {
-                                    Some(e) if own_side.contains(anc) => by_extension.push((
-                                        m.name.clone(),
-                                        *anc,
-                                        self.world.extension_label(e),
-                                    )),
-                                    _ => hidden.push((m.name.clone(), *anc, j)),
-                                }
+                                hidden.push((m.name.clone(), *anc, j));
                             }
                             // The class's own conformance: a witness the
                             // override table does not pair with the
