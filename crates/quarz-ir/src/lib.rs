@@ -103,6 +103,12 @@ pub struct Function {
     /// run elsewhere then keeps neither (#706).
     #[serde(default)]
     pub unused: Unused,
+    /// A block whose `self` is the receiver given at each call (a block
+    /// with a receiver, one given to `instance_exec`), never its
+    /// creator's: what it, or a block inside it, reads as `self` is not
+    /// what `unused` speaks of (`verify`).
+    #[serde(default)]
+    pub self_given: bool,
 }
 
 /// `Function::unused`: what of its creator a block's body never reads.
@@ -176,6 +182,7 @@ impl Function {
             inlined: Vec::new(),
             takes: Vec::new(),
             unused: Unused::default(),
+            self_given: false,
         }
     }
 

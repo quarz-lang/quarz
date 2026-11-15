@@ -190,6 +190,46 @@ fn lowered_functions_pass_the_checks() {
     }
 }
 
+/// The copy of a shareable procedure that uses neither its creator's
+/// `self` nor its method block drops them (`Function::unused`, #706): a
+/// read of either there is found.
+#[test]
+fn a_read_of_what_a_blocks_copy_drops_is_found() {
+    const SRC: &str = "class C\n  var @n: Int = 0\n  def make(&blk: shareable (Int) -> Int) -> shareable () -> Int = -> { [1].map { |x| x + 1 }.sum }\nend\np C.new.make { |x| x }.call\n";
+    let found = |inst: fn(u32) -> Inst| -> String {
+        let mut module = common::lower(SRC);
+        let by_name = |name: &str| {
+            (module.functions.iter())
+                .position(|f| f.name == name)
+                .unwrap_or_else(|| panic!("no {name}"))
+        };
+        let lambda = by_name("lambda in C#make");
+        let unused = module.functions[lambda].unused;
+        assert!(unused.self_val && unused.method_block, "{unused:?}");
+        // As lowered, it passes.
+        quarz_lower::verify::check(&module.functions, &module.world, Stage::Moves);
+        // A read into a register of its own.
+        let f = &mut module.functions[lambda];
+        let dst = f.nregs;
+        f.nregs += 1;
+        f.blocks[0].insts.insert(0, inst(dst));
+        let line = f.blocks[0].lines.first().copied().unwrap_or(0);
+        f.blocks[0].lines.insert(0, line);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            quarz_lower::verify::check(&module.functions, &module.world, Stage::Moves)
+        }));
+        let err = r.expect_err("the read is found");
+        (err.downcast_ref::<String>().cloned()).unwrap_or_default()
+    };
+    let err = found(|dst| Inst::SelfRef { dst });
+    assert!(
+        err.contains("reads `self`, which the copy of this block drops"),
+        "{err}"
+    );
+    let err = found(|dst| Inst::BlockParam { dst });
+    assert!(err.contains("reads the method's block"), "{err}");
+}
+
 fn first_inst(f: &mut quarz_ir::Function, pick: impl Fn(&Inst) -> bool) -> &mut Inst {
     f.blocks
         .iter_mut()

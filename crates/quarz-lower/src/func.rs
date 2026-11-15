@@ -611,6 +611,14 @@ impl<'a> FnBuilder<'a> {
                     self.node_type(call_id),
                     Some(quarz_types::Type::Proc(None, ..))
                 ));
+        // Its `self` is the receiver given at each call, never its
+        // creator's (`Function::self_given`).
+        let self_given = !self.self_is_methods(call_id)
+            || (is_lambda
+                && matches!(
+                    self.node_type(call_id),
+                    Some(quarz_types::Type::Proc(Some(_), ..))
+                ));
         let id = self.lw.alloc_func();
         let name = format!(
             "{} in {}",
@@ -639,6 +647,7 @@ impl<'a> FnBuilder<'a> {
         b.is_lambda = is_lambda;
         b.own_self = own_self;
         b.owner = Some(SelfOwner::Block(call_id));
+        b.func.self_given = self_given;
         // A task's block or a shareable procedure: what its copy need not
         // keep of its creator (#706).
         if let Some(u) = self.out.proc_uses.get(&call_id) {
