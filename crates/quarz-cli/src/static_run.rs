@@ -225,74 +225,6 @@ impl PendingCover {
     }
 }
 
-/// TEMPORARY (#717's oracle: CI runs once with it, then the pull
-/// request's last commit removes it): the cover against the computation it replaces, after every
-/// update, in debug builds or with `QUARZ_VERIFY_STATIC_TABLES` set to a
-/// file the rounds compared are counted into.
-mod verify_cover {
-    use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static ROUNDS: AtomicUsize = AtomicUsize::new(0);
-
-    pub(super) fn enabled() -> bool {
-        cfg!(debug_assertions) || std::env::var_os("QUARZ_VERIFY_STATIC_TABLES").is_some()
-    }
-
-    pub(super) fn check(host: &dyn StaticHost, cover: &PendingCover) {
-        let world = host.world();
-        // `static_skip` as it was computed.
-        let pending = host.pending_classes();
-        let skip: FxHashSet<ClassId> = world
-            .classes
-            .iter()
-            .filter(|c| pending.iter().any(|&p| world.class_is_a(c.id, p)))
-            .map(|c| c.id)
-            .collect();
-        assert!(
-            skip == cover.skip,
-            "#717 oracle: static_skip differs: fresh {skip:?}, kept {:?}",
-            cover.skip
-        );
-        // The labels as `note_pending` wrote them.
-        let mut labels: HashMap<ClassId, Vec<String>> = HashMap::new();
-        for i in host.pending_statements() {
-            let s = &world.static_stmts[i];
-            let call = match &s.expr.kind {
-                quarz_syntax::ast::ExprKind::Call(c) => c.name.clone(),
-                _ => "static".to_string(),
-            };
-            let label = format!("`{call}` in `{}`", world.class(s.class).name);
-            for c in &world.classes {
-                if world.class_is_a(c.id, s.class) {
-                    let ls = labels.entry(c.id).or_default();
-                    if !ls.contains(&label) {
-                        ls.push(label.clone());
-                    }
-                }
-            }
-        }
-        let view = cover.view(world);
-        for c in &world.classes {
-            let fresh = labels.get(&c.id).cloned().unwrap_or_default();
-            let kept = view.labels(c.id);
-            assert!(
-                fresh == kept,
-                "#717 oracle: labels of `{}` differ: fresh {fresh:?}, kept {kept:?}",
-                c.name
-            );
-        }
-        let n = ROUNDS.fetch_add(1, Ordering::Relaxed) + 1;
-        if let Some(path) = std::env::var_os("QUARZ_VERIFY_STATIC_TABLES") {
-            // (The last count of a process is its total.)
-            let _ = std::fs::write(
-                format!("{}.{}", path.to_string_lossy(), std::process::id()),
-                n.to_string(),
-            );
-        }
-    }
-}
-
 /// The pending statements as a run sees them (`PendingCover::view`).
 #[derive(Default)]
 struct PendingView {
@@ -1352,11 +1284,7 @@ impl Runner {
             }
             _ => self.cover = Some(PendingCover::build(world, &pending)),
         }
-        let cover = self.cover.as_ref().expect("built");
-        if verify_cover::enabled() {
-            verify_cover::check(host, cover);
-        }
-        cover
+        self.cover.as_ref().expect("built")
     }
 
     /// A runner continuing `lowerer` (whose `done` holds every function

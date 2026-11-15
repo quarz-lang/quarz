@@ -3003,7 +3003,7 @@ impl Checker {
         for (i, stmt) in stmts {
             // Done once it ran: until then its class, and the classes
             // under it, may still get members from it
-            // (`pending_statement_classes`).
+            // (`StaticHost::pending_statements`).
             let errors_before = self.error_count();
             if let Some(callee) = self.check_static_stmt(&stmt) {
                 if let Some(r) = runner.as_deref_mut() {
@@ -3182,20 +3182,6 @@ impl Checker {
                 }
             }
         }
-    }
-
-    /// The classes whose `static` statements have not all run yet: their
-    /// members, and their descendants', may still be generated, so a
-    /// compile-time run does not check their bodies ahead of a call
-    /// that resolves to one (docs/14 §6).
-    pub fn pending_statement_classes(&self) -> Vec<ClassId> {
-        let mut out: Vec<ClassId> = Vec::new();
-        for (i, stmt) in self.world.static_stmts.iter().enumerate() {
-            if !self.static_done.get(i).copied().unwrap_or(false) && !out.contains(&stmt.class) {
-                out.push(stmt.class);
-            }
-        }
-        out
     }
 
     /// How a class reaches a module's macro (docs/14 §2): any `include`
@@ -18397,9 +18383,6 @@ impl crate::StaticHost for Checker {
             .skip(n)
             .cloned()
             .collect()
-    }
-    fn pending_classes(&self) -> Vec<ClassId> {
-        self.pending_statement_classes()
     }
     fn pending_statements(&self) -> Vec<usize> {
         (0..self.world.static_stmts.len())
