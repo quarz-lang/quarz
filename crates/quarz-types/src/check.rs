@@ -1776,14 +1776,13 @@ impl Checker {
     }
 
     /// Whether class `sid` conforms to module `m` through an extension's
-    /// include (recorded witnesses, for the class or a superclass: an
-    /// extension of a module includes nothing, rule B), whatever extensions
-    /// are active.
+    /// include (`World::conformances`: an extension of the class or of what
+    /// it includes, a superclass's included, whatever extensions are
+    /// active), under the bound filter `extension_may_reach`.
     fn conforms_by_extension(&self, sid: ClassId, m: ClassId) -> bool {
-        self.world.class_ext_impls.iter().any(|w| {
-            self.extension_may_reach(w.ext, sid)
-                && self.world.ancestor_ids(w.module).contains(&m)
-                && self.world.superclass_chain(sid).contains(&w.class)
+        self.world.conformances(sid).into_iter().any(|(src, k, _)| {
+            src.is_some_and(|(e, _)| self.extension_may_reach(e, sid))
+                && (k == m || self.world.ancestor_ids(k).contains(&m))
         })
     }
 
@@ -1798,6 +1797,12 @@ impl Checker {
         // (Of several witnesses of the name, for different modules, the
         // highest: below it some witness may run instead of the class's
         // own.)
+        // (A scan of every record, not `World::class_witness_record`, which
+        // gives the nearest class per requirement: when one requirement is
+        // recorded at two classes of `sid`'s chain with the same witness (a
+        // subclass's extension conforms again, #517), the scan takes the
+        // higher, so no class between the two counts. The nearest gave the
+        // same verdicts on every program measured; #766.)
         let chain = self.world.superclass_chain(sid);
         let floors: Vec<(ClassId, MethodId)> = self
             .world
