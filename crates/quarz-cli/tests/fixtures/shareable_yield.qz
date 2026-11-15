@@ -1,0 +1,18 @@
+# `yield` from a task block or a shareable procedure runs the method's
+# block, which must then be `shareable` (#739): its captures are
+# Shareable, and it may run on the task.
+def twice_in_tasks(&blk: shareable (Int) -> Int) -> Int
+  a = Task.spawn { yield 1 }
+  b = Task.spawn { yield 2 }
+  a.await + b.await
+end
+
+def later(&blk: shareable () -> String) -> shareable () -> String
+  -> { yield + "!" }
+end
+
+base = 10
+p twice_in_tasks { |x| x + base }
+h = later { "hi" }
+p h.call
+p Task.spawn { h.call }.await
