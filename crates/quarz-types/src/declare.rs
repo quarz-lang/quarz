@@ -1118,7 +1118,7 @@ impl<'ast> Declarer<'ast> {
     /// `C` or a class under it. (A module without type parameters has
     /// `self: Meta::ClassDef[Self]`, which holds anywhere.)
     fn check_static_mixins(&mut self, p: &PendingClass<'ast>) {
-        for expr in p.body {
+        for expr in self.mixin_body(p) {
             let ExprKind::Mixin {
                 kind: MixinKind::Include,
                 types,
@@ -4462,7 +4462,7 @@ impl<'ast> Declarer<'ast> {
     fn check_conformance(&mut self, p: &PendingClass<'ast>) {
         let mut included: Vec<(ClassId, Vec<Type>, Span)> = Vec::new();
         // Namespace modules used as mixins.
-        for expr in p.body {
+        for expr in self.mixin_body(p) {
             let ExprKind::Mixin {
                 kind: MixinKind::Include,
                 types,
@@ -5219,6 +5219,19 @@ impl<'ast> Declarer<'ast> {
             nested(&self.world, self.world.builtin.bytes, "MatchData");
     }
 
+    /// The body whose includes, `extend`s and fields a pending declaration
+    /// takes. A library cog's file is pending twice, as its own top level
+    /// (`Main`) and as the root module's body (`CogRoot`): the root takes
+    /// them, and the file's `main` none, so that each is resolved and
+    /// reported once (#729).
+    fn mixin_body(&self, p: &PendingClass<'ast>) -> &'ast [Expr] {
+        if matches!(p.def, PendingDef::Main) && self.world.cog_root(Some(p.id)).is_some() {
+            &[]
+        } else {
+            p.body
+        }
+    }
+
     fn class_scope(&self, id: ClassId) -> TypeScope {
         let class = self.world.class(id);
         let params: Vec<(String, TypeParamId)> = class
@@ -5404,7 +5417,7 @@ impl<'ast> Declarer<'ast> {
             }
         }
         // Body-level items that affect the header: includes and fields.
-        for expr in p.body {
+        for expr in self.mixin_body(p) {
             match &expr.kind {
                 ExprKind::Mixin {
                     kind: MixinKind::Extend,

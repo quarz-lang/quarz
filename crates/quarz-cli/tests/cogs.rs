@@ -2238,6 +2238,66 @@ fn a_cog_roots_include_gives_it_class_methods() {
     assert_eq!(String::from_utf8_lossy(&exe.stdout), expected);
 }
 
+/// A library cog's file is both its own top level and the root module's
+/// body: its includes, `extend`s and fields are the root's, and each
+/// diagnostic about them is reported once (#729).
+#[test]
+fn a_cog_files_mixins_are_reported_once() {
+    let w = World::new();
+    w.write(
+        "lib/Cog.toml",
+        "[cog]\nname = \"lib\"\nversion = \"1.0.0\"\nmodule = \"Lib\"\n",
+    );
+    for (source, message) in [
+        (
+            "module Ver\n  def self.extra -> Int = 4\nend\nextend Ver\n",
+            "a.qz:4:1: error: `extend` is not supported",
+        ),
+        ("include Nope\n", "a.qz:1:9: error: unknown constant `Nope`"),
+        (
+            "class C\nend\ninclude C\n",
+            "a.qz:3:9: error: only modules can be included",
+        ),
+        (
+            "include Kernel\n",
+            "a.qz:1:9: error: `Kernel` holds functions, not methods",
+        ),
+        (
+            "include Comparable\n",
+            "a.qz:1:9: error: `Comparable` takes 1 type argument(s), 0 given",
+        ),
+        (
+            "@x: Int = 1\n",
+            "a.qz:1:1: error: fields can only be declared in classes",
+        ),
+        (
+            "module G[T]\n  static def self.mk -> Int = 1\nend\nclass D\nend\ninclude G[D]\n",
+            "a.qz:6:9: error: `Lib::G` has `static def self.` macros typed by its first type parameter, which run on the class including it: include it in that class",
+        ),
+    ] {
+        w.write("lib/src/a.qz", source);
+        let err = w.fails("lib", &["test"]);
+        assert_eq!(err.matches(message).count(), 1, "{source}: {err}");
+        assert_eq!(err.matches(": error: ").count(), 1, "{source}: {err}");
+    }
+    // A warning, and what the include gives the root: constants, inside
+    // the cog and through it, its class methods and its instance side.
+    w.write(
+        "lib/src/a.qz",
+        "module Ns\n  class Inner\n  end\nend\ninclude Ns\nmodule M\n  K = 10\n  class In\n    def to_s -> String = \"in\"\n  end\n  def hi -> String = \"hi from M\"\n  def self.extra -> Int = 4\nend\ninclude M\npublic def via_k -> Int = K\npublic def via_in -> String = In.new.to_s\npublic def via_cog -> Int = cog.extra\nclass Box\n  def k -> Int = K\nend\npublic def box_k -> Int = Box.new.k\n",
+    );
+    w.commit("lib", Some("v1.0.0"));
+    let dep = format!("L = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url("lib"));
+    w.app(
+        &dep,
+        "class A\n  include L\nend\nputs L.via_k, L.via_in, L.via_cog, L.box_k, L.extra, L::K, L::In.new.to_s, A.new.hi\n",
+    );
+    let out = w.quarz("app", &["run"]);
+    assert_eq!(out.stdout, "10\nin\n4\n10\n4\n10\nin\nhi from M\n");
+    let warning = "a.qz:5:9: warning: `Lib::Ns` has no methods, so including it adds nothing";
+    assert_eq!(out.stderr.matches(warning).count(), 1, "{}", out.stderr);
+}
+
 #[test]
 fn a_cog_is_a_dependency_or_a_dev_dependency() {
     let w = World::new();
