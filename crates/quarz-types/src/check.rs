@@ -1493,8 +1493,10 @@ impl Checker {
             // runtime reads (#681's option (a); the record where the class
             // conforms through an extension, else its class-side walk, an
             // abstract method passed over to what implements it, #748).
+            // The bound's methods over its own side (a module's two orders
+            // are equal: an extension of a module includes nothing, rule B).
             let mut bound_methods: Vec<MethodId> = Vec::new();
-            for a in self.world.class_side_order(bound) {
+            for a in self.world.class_own_side(bound) {
                 let mut ids: Vec<MethodId> = self
                     .world
                     .class(a)
@@ -1769,9 +1771,8 @@ impl Checker {
     /// (its own includes, through what they include): the module's class
     /// methods then go by ordinary dispatch, not by witnesses (#504).
     fn includes_itself(&self, sid: ClassId, m: ClassId) -> bool {
-        // (`World::class_side_order`: the class side dispatch walks.)
-        self.world.class(m).kind == ClassKind::Module
-            && self.world.class_side_order(sid).contains(&m)
+        // (`World::class_own_side`: what the class includes itself.)
+        self.world.class(m).kind == ClassKind::Module && self.world.class_own_side(sid).contains(&m)
     }
 
     /// Whether class `sid` conforms to module `m` through an extension's
@@ -1892,7 +1893,11 @@ impl Checker {
                 let ext = &self.world.extensions[e as usize];
                 (ext.file, ext.span)
             }
-            None => at_class(self.world.class_side_owner(sid, cid).unwrap_or(sid)),
+            None => at_class(
+                self.world
+                    .class_side_owner(&self.world.class_own_side(sid), cid)
+                    .unwrap_or(sid),
+            ),
         }
     }
 
@@ -1985,14 +1990,24 @@ impl Checker {
                 let floor = self.witness_floor(sid, &mname);
                 // (The witness of an extension's conformance takes the
                 // module's place, #504; a default is the module's own.)
-                // (`runs_on` gives the recorded witness here: `sid` does
-                // not include the module itself.)
+                // (`runs_on`: the recorded witness, or a class method below
+                // its class that takes its place, #681's (c), whose `super`
+                // reaches the recorded witness, statically: both are on the
+                // way.)
                 if let Some(by) = via_extension
                     .then(|| self.runs_on(sid, method))
                     .filter(|&b| b != method)
                 {
                     overrides = true;
                     chain.push(by);
+                    let own = self.world.class_own_side(sid);
+                    if let Some((_, w)) = self
+                        .world
+                        .class_witness_record(&own, method)
+                        .filter(|&(_, w)| w != by && w != method)
+                    {
+                        chain.push(w);
+                    }
                 }
                 let mut cur = Some(sid);
                 while let Some(c) = cur {
@@ -2055,9 +2070,14 @@ impl Checker {
                             chain.push(with_super.unwrap_or(ids[0]));
                         }
                     }
-                    // (Above the class that includes the module, the module's
-                    // class method comes first.)
-                    if module_site && self.world.class_side_owner(sid, cid) == Some(c) {
+                    // (Above the class whose part of the dispatch order has
+                    // the module, the module's class method comes first.)
+                    if module_site
+                        && self
+                            .world
+                            .class_side_owner(&self.world.class_dispatch_order(sid), cid)
+                            == Some(c)
+                    {
                         past_module = true;
                     }
                     cur = class.superclass.as_ref().and_then(|t| match t {

@@ -276,7 +276,7 @@ pub fn errors(
             (ext.file, ext.span)
         };
         let at_class = (c.file, c.span);
-        let chain = world.class_side_order(r.class);
+        let chain = world.class_own_side(r.class);
         let place = match source {
             Some(e) if own(Decl::Extension(e)) => at_ext(e),
             None if own(Decl::Class(r.class)) => at_class,

@@ -6075,9 +6075,13 @@ fn a_classs_own_method_over_a_conditional_extensions_module_is_checked() {
         "module EM\n  def m(x: Int) -> String = \"module\"\nend\nclass Box[T]\n  def initialize; end\n  def m(x: Int) -> Int = 5\nend\nextension Box[T <: Int]\n  include EM\nend",
         "`m` returns Int but `EM#m`, which it overrides, returns String",
     );
-    // An extension's include brings no class method onto the class object
-    // (#494): no pair with `Meta::ClassDef`'s.
-    ok("module M\n  def self.method_ref[P](name: Symbol) -> Meta::Method[M, P] = raise ArgumentError.new(\"no\")\nend\nclass D\n  def initialize; end\nend\nextension D\n  include M\nend");
+    // A top-level unconditional extension's include puts the module's
+    // class methods on the class object's dispatch (#681), over
+    // `Meta::ClassDef`'s: paired, and checked in `D`.
+    err(
+        "module M\n  def self.method_ref[P](name: Symbol) -> Meta::Method[M, P] = raise ArgumentError.new(\"no\")\nend\nclass D\n  def initialize; end\nend\nextension D\n  include M\nend",
+        "`method_ref` returns Meta::Method[M, P] but `Meta::ClassDef#method_ref`, which it overrides in `D`, which includes `M`, returns Meta::Method[D, P]",
+    );
 }
 
 #[test]

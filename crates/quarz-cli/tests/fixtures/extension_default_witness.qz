@@ -1,8 +1,7 @@
 # A module's default is the witness of a conformance through an
-# extension when neither the extension nor the class has one, fixed as the
-# others (#504): through `Type[M]` it runs for the class's subclasses too,
-# though their own class method (or a module's they include) answers a
-# call on the class itself.
+# extension when neither the extension nor the class has one, resolved
+# for the receiver (#681): through `Type[M]` a subclass's own class method
+# takes its place, as on the instance side (`D`).
 module M
   def self.describe -> String = "M"
 end
@@ -17,7 +16,9 @@ end
 def h(t: Type[M]) -> String = t.describe
 puts D.describe, h(D), h(C)
 
-# A module a subclass includes does not take the witness's place either.
+# A module a subclass includes does not take the witness's place: the
+# class side's include pairs do not look at a module that comes through
+# a superclass (`over_superclass_modules`, #733 decides).
 module M2
   def self.describe -> String = "M2"
 end

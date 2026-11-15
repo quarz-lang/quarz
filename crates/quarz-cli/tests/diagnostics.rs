@@ -535,15 +535,17 @@ puts g(B)
 }
 
 #[test]
-fn the_constructor_walk_reads_what_runs_with_fixed_witnesses() {
-    // The constructor walk reads `World::class_method_target` (#681's
-    // option (a)) and answers as before it: a module's default witness
-    // that calls `new` runs for a subclass conforming through an
-    // extension (top-level, scoped, conditional), and a `super` chain
-    // from a class's own witness reaches `new` with the subclass for
-    // `self`. (The last `p3n` shape, a subclass's own `make` without
-    // `super`, stays refused while witnesses are fixed; #681 resolves the
-    // witness for the receiver.)
+fn the_constructor_walk_reads_what_runs() {
+    // The constructor walk reads `World::class_method_target` (#681): a
+    // subclass's own class method below the class a witness is recorded
+    // for takes the witness's place, and a `super` in it reaches the
+    // witness, statically. So a `super` chain from the subclass's own
+    // `make` reaches a module's default witness's `new` with the subclass
+    // for `self` (top-level, scoped, conditional extension; a class's own
+    // witness whose `super` goes on), and is refused there; the subclass's
+    // own `make` without `super` (`p3n`) runs instead of the witness, whose
+    // `new` it does not reach: accepted (the user's decision on #681,
+    // 2026-11-15).
     let out = common::diagnostics(
         r#"module M
   def self.make -> Self = new
@@ -566,7 +568,7 @@ puts f(S), g(S), S.make.class.name
 "#,
     )
     .join("\n");
-    assert!(out.contains("12:3: error: `S#initialize` does not take the arguments of `new` in `M.make`, which runs for `S` through its conformance by an extension"), "{out}");
+    assert!(out.contains("13:27: error: `super` in `S.make` runs `new` in `M.make` with `S` for `self`, but `S#initialize` does not take its arguments"), "{out}");
     let out = common::diagnostics(
         r#"module M
   def self.make -> Self = new
@@ -593,7 +595,7 @@ X.run
 "#,
     )
     .join("\n");
-    assert!(out.contains("13:5: error: `X::S#initialize` does not take the arguments of `new` in `M.make`, which runs for `X::S` through its conformance by an extension"), "{out}");
+    assert!(out.contains("14:29: error: `super` in `X::S.make` runs `new` in `M.make` with `X::S` for `self`, but `X::S#initialize` does not take its arguments"), "{out}");
     let out = common::diagnostics(
         r#"module M
   def self.make -> Self = new
@@ -615,7 +617,7 @@ puts f(S), S.make.class.name
 "#,
     )
     .join("\n");
-    assert!(out.contains("12:3: error: `S#initialize` does not take the arguments of `new` in `M.make`, which runs for `S` through its conformance by an extension"), "{out}");
+    assert!(out.contains("13:27: error: `super` in `S.make` runs `new` in `M.make` with `S` for `self`, but `S#initialize` does not take its arguments"), "{out}");
     let out = common::diagnostics(
         r#"module M
   def self.make -> Self = new
@@ -642,7 +644,7 @@ X.run
 "#,
     )
     .join("\n");
-    assert!(out.contains("18:3: error: `S#initialize` does not take the arguments of `new` in `M.make`, which runs for `S` through its conformance by an extension"), "{out}");
+    assert!(!out.contains("error:"), "{out}");
     let out = common::diagnostics(
         r#"module M
   def self.make -> Self = new
@@ -670,7 +672,200 @@ puts f(S), g(S), S.make.class.name
 "#,
     )
     .join("\n");
-    assert!(out.contains("10:27: error: `super` in `F.make` runs `new` in `M.make` with `S` for `self`, but `S#initialize` does not take its arguments"), "{out}");
+    assert!(out.contains("18:27: error: `super` in `S.make` runs `new` in `M.make` with `S` for `self`, but `S#initialize` does not take its arguments"), "{out}");
+}
+
+#[test]
+fn a_super_in_the_class_method_over_a_witness_reaches_the_witness() {
+    // #681's (c): `S.make` takes the extension's witness's place through
+    // `Type[M]`, and its `super` reaches the extension's own `make`
+    // statically (`Checker::check_super`), not `M.make`'s `new`: the
+    // constructor walk puts the recorded witness after `S.make` on its
+    // chain, so the witness (which raises, calling no `new`) excuses it.
+    // Top-level (`p1`) and scoped (`p2`) extension.
+    for src in [
+        r#"module M
+  def self.make -> Self = new
+end
+class F
+  def initialize; end
+end
+extension F
+  include M
+  def self.make -> Self = raise "ext"
+end
+class S < F
+  @x: Int
+  def initialize(@x: Int); end
+  def self.make -> Self = super
+  def x -> Int = @x
+end
+def f(t: Type[M]) -> String
+  t.make.class.name
+rescue
+  "raised"
+end
+def g[T <: M](t: Type[T]) -> String
+  t.make.class.name
+rescue
+  "raised"
+end
+def h -> String
+  S.make.class.name
+rescue
+  "raised"
+end
+puts f(S), g(S), h
+"#,
+        r#"module M
+  def self.make -> Self = new
+end
+class F
+  def initialize; end
+end
+module X
+  extension F
+    include M
+    def self.make -> Self = raise "ext"
+  end
+  class S < F
+    @x: Int
+    def initialize(@x: Int); end
+    def self.make -> Self = super
+    def x -> Int = @x
+  end
+  def self.f(t: Type[M]) -> String
+    t.make.class.name
+  rescue
+    "raised"
+  end
+  def self.g[T <: M](t: Type[T]) -> String
+    t.make.class.name
+  rescue
+    "raised"
+  end
+  def self.h -> String
+    S.make.class.name
+  rescue
+    "raised"
+  end
+  def self.run -> Void
+    puts f(S), g(S), h
+  end
+end
+X.run
+"#,
+    ] {
+        let out = common::diagnostics(src).join("\n");
+        assert!(!out.contains("error:"), "{out}");
+    }
+}
+
+#[test]
+fn an_abstract_class_method_over_a_witness_is_checked_for_what_runs() {
+    // #681's (c), #748's shape: the abstract `A`'s own `make` takes the
+    // extension's witness's place for `A`, and builds `new`: passing `A`
+    // itself as `Type[T]` is refused (`check_abstract_type_args` reads
+    // `World::class_method_target`). Top-level (`q1b`) and scoped (`q2b`)
+    // extension.
+    for (src, at) in [
+        (
+            r#"module M
+  abstract def self.make -> Self
+end
+class F
+  def initialize; end
+end
+extension F
+  include M
+  def self.make -> Self = raise "ext"
+end
+abstract class A < F
+  def self.make -> Self
+    puts "A.make runs"
+    new
+  end
+end
+def g[T <: M](t: Type[T]) -> String = t.make.class.name
+puts g(A)
+"#,
+            "18:8",
+        ),
+        (
+            r#"module M
+  abstract def self.make -> Self
+end
+class F
+  def initialize; end
+end
+abstract class A < F
+  def self.make -> Self
+    puts "A.make runs"
+    new
+  end
+end
+module X
+  extension F
+    include M
+    def self.make -> Self = raise "ext"
+  end
+  def self.g[T <: M](t: Type[T]) -> String = t.make.class.name
+  def self.run -> Void
+    puts g(A)
+  end
+end
+X.run
+"#,
+            "20:12",
+        ),
+    ] {
+        let out = common::diagnostics(src).join("\n");
+        assert!(
+            out.contains(&format!(
+                "{at}: error: cannot pass the abstract class `A` itself as `Type[T]`"
+            )),
+            "{out}"
+        );
+        assert_eq!(out.matches("error:").count(), 1, "{out}");
+    }
+}
+
+#[test]
+fn a_subclass_class_method_over_a_scoped_extensions_witness_is_checked() {
+    // #681: the witness is resolved for the receiver, so a subclass's own
+    // class method takes a scoped extension's witness's place through
+    // `Type[Named]`; it is checked as an override of the module's method
+    // wherever the extension is, as on the instance side (`View::Override`).
+    let out = common::diagnostics(
+        r#"module Named
+  abstract def self.label -> String
+end
+class B
+  def initialize; end
+end
+class S < B
+  def initialize; end
+  def self.label -> Int = 3
+end
+module Sc
+  extension B
+    include Named
+    def self.label -> String = "ext"
+  end
+  def self.v(t: Type[Named]) -> String = t.label
+  def self.go -> String = v(B) + " " + v(S)
+end
+puts Sc.go
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains(
+            "9:3: error: `label` returns Int but `Named.label`, which it overrides, returns String"
+        ),
+        "{out}"
+    );
+    assert_eq!(out.matches("error:").count(), 1, "{out}");
 }
 
 #[test]
@@ -1902,14 +2097,18 @@ end
 }
 
 #[test]
-fn a_super_in_a_fixed_witness_is_checked_for_new() {
-    // #514's review: a fixed witness runs for `Sub` through `Type[M]`, so
-    // `Sub`'s own `make` does not excuse the `new` the witness's `super`
-    // reaches (`C.make`'s, or the extension's own).
-    for (src, want) in [
+fn a_subclass_own_class_method_takes_a_witnesss_place_for_new() {
+    // #514's review pinned these refused while witnesses were fixed: the
+    // witness ran for `Sub` through `Type[M]`, and its `super` reached a
+    // `new` that `Sub#initialize` does not take. Since #681's (c) `Sub`'s
+    // own `make` (no `super`) takes the witness's place (a class's own
+    // witness with a `super` chain, or the extension's own), so that `new`
+    // is not reached with `Sub` for `self`: accepted, and each prints 2
+    // (the user's decision on #681, 2026-11-15).
+    for src in [
         // (Two witnesses of `make` for two modules: the higher one's
         // `super`, whichever extension comes first.)
-        (r#"module M1
+        r#"module M1
   abstract def self.make -> Self
 end
 module M2
@@ -1941,8 +2140,8 @@ class Sub < C
 end
 def f(t: Type[M2]) -> M2 = t.make
 puts f(X.t).as(Sub).x + 1
-"#, "`super` in `Mid.make` runs `new` in `Base.make` with `Sub` for `self`"),
-        (r#"module M
+"#,
+        r#"module M
   abstract def self.make -> Self
 end
 class Base
@@ -1965,8 +2164,8 @@ class Sub < C
 end
 def f(t: Type[M]) -> M = t.make
 puts f(X.t).as(Sub).x + 1
-"#, "`super` in `C.make` runs `new` in `Base.make` with `Sub` for `self`, but `Sub#initialize` does not take its arguments"),
-        (r#"module M
+"#,
+        r#"module M
   abstract def self.make -> Self
 end
 class C
@@ -1987,10 +2186,10 @@ class Sub < C
 end
 def f(t: Type[M]) -> M = t.make
 puts f(X.t).as(Sub).x + 1
-"#, "`Sub#initialize` does not take the arguments of `new` in `C.make`"),
+"#,
     ] {
         let out = common::diagnostics(src).join("\n");
-        assert!(out.contains(want), "{out}");
+        assert!(!out.contains("error:"), "{out}");
     }
 }
 

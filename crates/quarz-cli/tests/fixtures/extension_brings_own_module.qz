@@ -1,10 +1,9 @@
 # An extension's include of `N`, which brings `M` that the class has by a
-# superclass's own include (#504): for `M` the class's own conformance
-# holds, so `Type[M]` and `T <: M` go by ordinary dispatch (`M.d`, or
-# `Base2.d`); for `N` the extension's witnesses apply: `N.d` for both,
-# the module's default, which the class-side order with the extension
-# active reaches before the superclass (`Base`'s `M`, `Base2.d`; #669's
-# decision (y)).
+# superclass's own include: a top-level unconditional extension's modules
+# are on the class side's dispatch, after the class's own includes and
+# before its superclass, as on the instance side (#681). So `Type[M]`,
+# `T <: M` and `Type[N]` all run `N.d`, over `Base`'s `M.d` and
+# `Base2.d`.
 module M
   def self.d -> String = "M"
 end

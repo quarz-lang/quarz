@@ -1,9 +1,8 @@
-# Witnesses are fixed (#504): a conformance through an extension binds
-# each class method of the module to its witness, which runs through
-# `Type[P]` and `T <: P` for the class and its subclasses alike; a
-# subclass's own `def self.parse` is its own class method (`Sub.parse`)
-# but not a witness. A subclass that wants its own conforms on its own,
-# here by its own extension, whose witnesses apply to it and below.
+# A conformance through an extension binds each class method of the
+# module to its witness, resolved for the receiver (#681): a subclass's
+# own `def self.parse` takes the witness's place through `Type[P]` and
+# `T <: P`, as on the instance side (`Sub`). A subclass's own extension
+# gives its own witnesses, which apply to it and below (`Own`, `Below`).
 module P
   abstract def self.parse(s: String) -> Self
   def self.again(s: String) -> Self = parse(s)

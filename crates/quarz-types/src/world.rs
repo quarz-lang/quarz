@@ -1352,13 +1352,13 @@ impl World {
         self.ancestors_memo.map.get_mut().clear();
     }
 
-    /// The modules class `id` itself brings to its resolution order (not
-    /// those its superclass brings already), in the declared view
-    /// (`View::Declared`): those its own `include`s bring, whose abstract
-    /// class methods the class must implement (an extension's are
-    /// required at the extension, #504).
+    /// The modules class `id` itself brings to its class side's dispatch
+    /// order (not those its superclass brings already), in the lookup view
+    /// (`View::Lookup`, `class_dispatch_order`): its own `include`s' and
+    /// the top-level unconditional extensions' modules, whose class
+    /// methods may take a superclass's place (#681).
     pub fn class_modules_included(&self, id: ClassId, args: &[Type]) -> Vec<(ClassId, Vec<Type>)> {
-        Self::own_modules(self, id, self.resolution(id, args, View::Declared))
+        Self::own_modules(self, id, self.resolution(id, args, View::Lookup))
     }
 
     /// Whether a run-time test "a value of class `c` is an `m`" is answered
@@ -1476,8 +1476,24 @@ impl World {
         self.with_active(vec![ext], || self.resolution(target, &[], View::Static))
     }
 
-    pub fn class_side_order(&self, c: ClassId) -> Vec<ClassId> {
+    /// What class `c` includes itself on its class side, along its chain
+    /// (`View::Declared`): where its class-side conformances'
+    /// requirements are asked of it, which extensions' includes count
+    /// (rule B), and whether a module's class method goes by dispatch on
+    /// it or by the recorded witness (`class_method_target`, #681).
+    pub fn class_own_side(&self, c: ClassId) -> Vec<ClassId> {
         self.resolution(c, &[], View::Declared)
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect()
+    }
+
+    /// What a call on the class object `c` runs through (`View::Lookup`):
+    /// its own includes and the modules of the top-level unconditional
+    /// extensions, as the instance side's dispatch by name
+    /// (`lookup_ancestors`). Shipped as `RtClass::class_side`. (#681.)
+    pub fn class_dispatch_order(&self, c: ClassId) -> Vec<ClassId> {
+        self.resolution(c, &[], View::Lookup)
             .into_iter()
             .map(|(k, _)| k)
             .collect()
@@ -1485,8 +1501,8 @@ impl World {
 
     /// The modules class `cur` (`c` or a superclass of it) brings to `c`'s
     /// class side, in lookup order: the entries after `cur` in `side`,
-    /// `class_side_order(c)` (computed once by the caller's walk), up to
-    /// the next class.
+    /// `class_dispatch_order(c)` (computed once by the caller's walk), up
+    /// to the next class.
     fn class_side_modules(&self, side: &[ClassId], c: ClassId, cur: ClassId) -> Vec<ClassId> {
         // (`cur` is `c` or a class up its chain, always in it: a missing
         // entry is an internal error, never an empty part.)
@@ -1504,11 +1520,12 @@ impl World {
             .collect()
     }
 
-    /// The class of `c`'s superclass chain whose part of
-    /// `class_side_order(c)` holds `k`: `k` itself, or the class that
-    /// brings module `k` (an own include, or one an include brings).
-    pub fn class_side_owner(&self, c: ClassId, k: ClassId) -> Option<ClassId> {
-        let side = self.class_side_order(c);
+    /// The class of a superclass chain whose part of `side` holds `k`:
+    /// `k` itself, or the class that brings module `k`. `side` is a
+    /// class's `class_own_side` (an own include, or one an include
+    /// brings) or its `class_dispatch_order` (also a top-level
+    /// unconditional extension's module, #681).
+    pub fn class_side_owner(&self, side: &[ClassId], k: ClassId) -> Option<ClassId> {
         let at = side.iter().position(|x| *x == k)?;
         side[..=at]
             .iter()
@@ -1812,7 +1829,7 @@ impl World {
             .filter(|(m, _)| self.class(*m).kind == ClassKind::Module)
             .map(|(m, a)| (None, m, a))
             .collect();
-        let sources = self.class_side_order(c);
+        let sources = self.class_own_side(c);
         for (k, e) in self.extensions.iter().enumerate() {
             if !sources.contains(&e.target) {
                 continue;
@@ -2159,12 +2176,10 @@ impl World {
     /// Every test of the side in the body, in one list (nothing else
     /// differs):
     /// - **order:** `own_ancestors` (`View::Override`) on the instance
-    ///   side, the declared view (`View::Declared`) on the class side,
+    ///   side, the dispatch order (`View::Lookup`, #681) on the class side,
     ///   and what the superclass brings (`inherited`) in the same view;
-    ///   and the instance side's early gate `ext_includes` (a class whose
-    ///   only includes are an extension's has pairs), which matters only
-    ///   for an order holding extensions' modules (#681 puts them on the
-    ///   class side's order: the gate must apply there then);
+    ///   both sides' early gate `ext_includes` (a class whose only
+    ///   includes are an extension's has pairs);
     /// - **table:** `methods` or `singleton_methods` (`table`, and
     ///   `replaced_before`'s side argument);
     /// - **exclusions:** on the class side, a candidate that is an
@@ -2177,27 +2192,25 @@ impl World {
         let instance = side == Side::Instance;
         let mut out: Vec<IncludeOverride> = Vec::new();
         let c = self.class(id);
-        // (Only a class or module with includes of its own, or, on the
-        // instance side, one an extension's include makes conform, has
-        // pairs: what its superclass includes is the superclass's. A
-        // module too: its own includes' pairs hold in every class
-        // including it, #536; it has no superclass.)
-        let ext_includes = instance
-            && self
-                .extensions
-                .iter()
-                .any(|e| e.target == id && !e.includes.is_empty());
+        // (Only a class or module with includes of its own, or one an
+        // extension's include makes conform, has pairs: what its
+        // superclass includes is the superclass's. A module too: its own
+        // includes' pairs hold in every class including it, #536; it has
+        // no superclass.)
+        let ext_includes = self
+            .extensions
+            .iter()
+            .any(|e| e.target == id && !e.includes.is_empty());
         if c.includes.is_empty() && !ext_includes {
             return out;
         }
         // (What the superclass brings, in the side's view: the instance
         // side's every conformance (`walked_ids`), the class side's
-        // declared view, where an extension's include brings no class
-        // methods, #504.)
+        // dispatch order, #681.)
         let inherited = match &c.superclass {
             Some(Type::Class(sup, _)) if instance => self.walked_ids(*sup),
             Some(Type::Class(sup, sargs)) => self
-                .resolution(*sup, sargs, View::Declared)
+                .resolution(*sup, sargs, View::Lookup)
                 .into_iter()
                 .map(|(k, _)| k)
                 .collect(),
@@ -2207,13 +2220,13 @@ impl World {
         // The side's order, from the class itself: the instance side's
         // `own_ancestors` (`View::Override`, with the conditional
         // extensions' modules, their bound assumed, docs/01 §7); the class
-        // side's declared view (an extension's include brings no class
-        // methods, #504).
+        // side's dispatch order (the top-level unconditional extensions'
+        // modules with the own includes, #681).
         let own = self.own_args(id);
         let order = if instance {
             self.own_ancestors(id)
         } else {
-            self.resolution(id, &own, View::Declared)
+            self.resolution(id, &own, View::Lookup)
         };
         // The candidate set, the one place the two sides differ (#732):
         // after a module, the instance side looks at every later entry
@@ -3932,7 +3945,7 @@ impl World {
                         // chain or a module it includes itself, and what a
                         // call of it on `c` runs, `class_method_target`.)
                         let on_side = if self.class(bi.owner).kind == ClassKind::Module {
-                            self.class_side_order(c).contains(&bi.owner)
+                            self.class_own_side(c).contains(&bi.owner)
                         } else {
                             self.superclass_chain(c).contains(&bi.owner)
                         };
@@ -3977,15 +3990,16 @@ impl World {
     /// (`World::overrides`, or `override_table` where the lowering has it).
     ///
     /// - A class method `b` (a module's or a class's):
-    ///   - a module's that `c` does not include itself (its conformance is
-    ///     an extension's): the recorded witness, the nearest up `c`'s
-    ///     class side (`class_ext_impls`), run as is (#504); else `b`;
-    ///   - otherwise the class-side walk from `c`: each class's own class
-    ///     method of `b`'s name that `overrides` pairs with `b` (an abstract
-    ///     one passed over), then the include pairs
-    ///     (`class_include_overrides_of`), then the modules the class brings
-    ///     (`class_side_modules`, the last first) up to `b`'s owner; up to
-    ///     `b`'s owner (which stops it unless `b` is abstract).
+    ///   - a module's that `c` does not include itself (`class_own_side`:
+    ///     its conformance is an extension's, any, #681's (c)): the witness
+    ///     recorded for the nearest class up `c`'s chain (`class_ext_impls`),
+    ///     or, below that class, a class's own class method the override
+    ///     table pairs with `b`, the lowest; an extension's own witness runs
+    ///     as is, any other is resolved for `c` by the walk below. With no
+    ///     record, `b`, unless a top-level unconditional extension put the
+    ///     module on `c`'s dispatch order: then the walk;
+    ///   - otherwise the class-side walk from `c` (`class_side_walk`) over
+    ///     its dispatch order (`class_dispatch_order`, #681).
     /// - An instance method `b` (`Type`'s, `Object`'s, ... run on a class
     ///   object): a class method of `c`'s class side that is `b` or
     ///   overrides it (not abstract), the class's own first, then its
@@ -3998,7 +4012,7 @@ impl World {
         b: MethodId,
     ) -> MethodId {
         let bi = self.method(b);
-        let side = self.class_side_order(c);
+        let side = self.class_dispatch_order(c);
         let superclass = |k: ClassId| match &self.class(k).superclass {
             Some(Type::Class(s, _)) => Some(*s),
             _ => None,
@@ -4040,18 +4054,92 @@ impl World {
             }
             return b;
         }
-        let replaces = |id: MethodId| !self.method(id).is_abstract && overrides(id).contains(&b);
-        if self.class(bi.owner).kind == ClassKind::Module && !side.contains(&bi.owner) {
-            return side
-                .iter()
-                .find_map(|k| {
-                    self.class_ext_impls
-                        .iter()
-                        .find(|w| w.class == *k && w.method == b)
-                        .map(|w| w.by)
-                })
-                .unwrap_or(b);
+        let own = self.class_own_side(c);
+        if self.class(bi.owner).kind == ClassKind::Module && !own.contains(&bi.owner) {
+            // `c` conforms to `b`'s module through an extension (top-level,
+            // scoped or conditional, #681's (c)), or not at all: the witness
+            // recorded for the nearest class up `c`'s chain.
+            if let Some((k, by)) = self.class_witness_record(&own, b) {
+                let at = own.iter().position(|x| *x == k).unwrap_or(0);
+                // Below the class the witness is recorded for, a class's own
+                // class method the override table pairs with `b` takes its
+                // place, the lowest first, as the instance side's rule 2 (an
+                // extension's own method takes no part in dispatch); it is
+                // resolved for `c` as any witness.
+                let below = own[..at]
+                    .iter()
+                    .filter(|k| self.class(**k).kind != ClassKind::Module)
+                    .find_map(|k| {
+                        self.class(*k)
+                            .singleton_methods
+                            .get(&bi.name)?
+                            .iter()
+                            .copied()
+                            .find(|&id| {
+                                let im = self.method(id);
+                                im.owner == *k
+                                    && !im.is_abstract
+                                    && im.extension.is_none()
+                                    && overrides(id).contains(&b)
+                            })
+                    });
+                if let Some(by) = below {
+                    return self.class_side_walk(overrides, &side, c, by);
+                }
+                // An extension's own witness runs as is; a class's is
+                // resolved for `c` (a subclass's own class method, a module
+                // its class includes over it).
+                if self.method(by).extension.is_some() {
+                    return by;
+                }
+                return self.class_side_walk(overrides, &side, c, by);
+            }
+            // No record: the module's own, unless a top-level unconditional
+            // extension put the module on `c`'s dispatch order, where the
+            // walk finds what runs.
+            if !side.contains(&bi.owner) {
+                return b;
+            }
         }
+        self.class_side_walk(overrides, &side, c, b)
+    }
+
+    /// The witness of module class method `b` recorded for the nearest
+    /// class up a class's chain (`own`, its `class_own_side`;
+    /// `class_ext_impls`, #504), with that class: what a call of `b` on the
+    /// class starts from where it conforms through an extension
+    /// (`class_method_target`), and what a `super` in a class method below
+    /// it that takes its place reaches (the inherited-constructor walk).
+    pub fn class_witness_record(
+        &self,
+        own: &[ClassId],
+        b: MethodId,
+    ) -> Option<(ClassId, MethodId)> {
+        own.iter().find_map(|k| {
+            self.class_ext_impls
+                .iter()
+                .find(|w| w.class == *k && w.method == b)
+                .map(|w| (*k, w.by))
+        })
+    }
+
+    /// `class_method_target`'s walk of class `c`'s class side for what
+    /// replaces class method `b` (`b` itself when nothing does): each
+    /// class's own class method of `b`'s name that `overrides` pairs with
+    /// `b` (an abstract one passed over), then the include pairs
+    /// (`class_include_overrides_of`), then the modules the class brings
+    /// (`class_side_modules` over `side`, `class_dispatch_order(c)`, the
+    /// last first); up to `b`'s owner, which stops it unless `b` is
+    /// abstract.
+    fn class_side_walk(
+        &self,
+        overrides: &dyn Fn(MethodId) -> Vec<MethodId>,
+        side: &[ClassId],
+        c: ClassId,
+        b: MethodId,
+    ) -> MethodId {
+        let bi = self.method(b);
+        let replaces = |id: MethodId| !self.method(id).is_abstract && overrides(id).contains(&b);
         let mut cur = Some(c);
         while let Some(k) = cur {
             if k == bi.owner && !bi.is_abstract {
@@ -4070,7 +4158,7 @@ impl World {
             {
                 return e.by;
             }
-            for module in self.class_side_modules(&side, c, k) {
+            for module in self.class_side_modules(side, c, k) {
                 if module == bi.owner {
                     if bi.is_abstract {
                         continue;
@@ -4087,7 +4175,10 @@ impl World {
                     }
                 }
             }
-            cur = superclass(k);
+            cur = match &class.superclass {
+                Some(Type::Class(s, _)) => Some(*s),
+                _ => None,
+            };
         }
         b
     }

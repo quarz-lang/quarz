@@ -1458,10 +1458,10 @@ pub struct RtClass {
     /// Class-side dispatch: the classes and modules whose `def self.`
     /// methods are this class's class methods, in lookup order (the class,
     /// the modules it brings itself, its superclass, the modules that one
-    /// brings, ...): `World::resolution` in the declared view (an
-    /// extension's include brings witnesses, `World::class_ext_impls`, not
-    /// class methods, #504). The key set of `RtWorld::class_override_rows`
-    /// reads it (`in_class_override_rows`).
+    /// brings, ...), with the modules of the top-level unconditional
+    /// extensions after the class's own (`World::class_dispatch_order`,
+    /// `View::Lookup`, the instance side's lookup order; #681). The key set
+    /// of `RtWorld::class_override_rows` reads it (`in_class_override_rows`).
     pub class_side: Vec<ClassId>,
     /// Whether this class's values are made by the runtime, not by `new`
     /// (`World::built_by_runtime`, #535).
