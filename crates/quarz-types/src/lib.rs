@@ -694,6 +694,11 @@ pub struct StaticFailure {
 /// Runs a class body's `static` statement at compile time (the
 /// interpreter lives above this crate: `quarz-cli` provides one).
 pub trait StaticRunner {
+    /// The checker starts running statements or `static(...)`
+    /// expressions: until the next call, the classes and their headers do
+    /// not change (a run generates members only), so what the runner
+    /// keeps about the class graph holds until then.
+    fn begin(&mut self) {}
     fn run(
         &mut self,
         host: &mut dyn StaticHost,

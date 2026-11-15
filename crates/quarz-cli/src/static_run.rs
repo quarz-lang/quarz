@@ -106,6 +106,206 @@ pub struct Runner {
     /// The statement values and class-end hooks the statements of the
     /// classes not ended yet registered (docs/14 §5).
     ends: Rc<RefCell<ClassEnds>>,
+    /// Which classes the pending statements cover, since the checker's
+    /// last `begin` (#717).
+    cover: Option<PendingCover>,
+}
+
+/// The classes pending `static` statements cover (#717): those a
+/// statement's class is, by `World::class_is_a` (its class and the
+/// classes under it), whose members it may still add to. Built once per
+/// `StaticRunner::begin`, while the class graph does not change, and kept
+/// as statements finish: `Lowerer::static_skip` and the refusals' labels
+/// (`reflect_refusal`) read it, rather than every class being tested
+/// against every pending statement in each round.
+struct PendingCover {
+    /// Whether each statement (by index into `World::static_stmts`) was
+    /// pending when last seen.
+    pending: Vec<bool>,
+    /// Each statement's label, as a refusal names it.
+    labels: Vec<Rc<str>>,
+    /// The classes under each statement's class.
+    under: Rc<HashMap<ClassId, std::collections::HashSet<ClassId>>>,
+    /// Per class, how many pending statements cover it.
+    count: HashMap<ClassId, u32>,
+    /// The classes some pending statement covers (`count` above zero).
+    skip: rustc_hash::FxHashSet<ClassId>,
+}
+
+impl PendingCover {
+    fn build(world: &World, pending: &[usize]) -> PendingCover {
+        let stmt_classes: std::collections::HashSet<ClassId> =
+            world.static_stmts.iter().map(|s| s.class).collect();
+        // (`class_is_a(c, p)`: `c` is `p`, `p` is `Object`, or `p` is
+        // among `c`'s ancestors.)
+        let mut under: HashMap<ClassId, std::collections::HashSet<ClassId>> = HashMap::new();
+        for c in &world.classes {
+            if stmt_classes.contains(&c.id) {
+                under.entry(c.id).or_default().insert(c.id);
+            }
+            if stmt_classes.contains(&world.builtin.object) {
+                under.entry(world.builtin.object).or_default().insert(c.id);
+            }
+            for a in world.ancestor_ids(c.id) {
+                if stmt_classes.contains(&a) {
+                    under.entry(a).or_default().insert(c.id);
+                }
+            }
+        }
+        let labels = world
+            .static_stmts
+            .iter()
+            .map(|s| {
+                let call = match &s.expr.kind {
+                    quarz_syntax::ast::ExprKind::Call(c) => c.name.clone(),
+                    _ => "static".to_string(),
+                };
+                Rc::from(format!("`{call}` in `{}`", world.class(s.class).name))
+            })
+            .collect();
+        let mut cover = PendingCover {
+            pending: vec![false; world.static_stmts.len()],
+            labels,
+            under: Rc::new(under),
+            count: HashMap::new(),
+            skip: Default::default(),
+        };
+        cover.update(world, pending);
+        cover
+    }
+
+    /// Bring it to the statements pending now.
+    fn update(&mut self, world: &World, pending: &[usize]) {
+        let mut now = vec![false; self.pending.len()];
+        for &i in pending {
+            now[i] = true;
+        }
+        for (i, (&was, &is)) in self.pending.iter().zip(&now).enumerate() {
+            if was == is {
+                continue;
+            }
+            let class = world.static_stmts[i].class;
+            for &c in self.under.get(&class).into_iter().flatten() {
+                let n = self.count.entry(c).or_insert(0);
+                if is {
+                    *n += 1;
+                    self.skip.insert(c);
+                } else {
+                    *n -= 1;
+                    if *n == 0 {
+                        self.skip.remove(&c);
+                    }
+                }
+            }
+        }
+        self.pending = now;
+    }
+
+    /// What a run's refusals read: the pending statements, in order, with
+    /// the classes each covers.
+    fn view(&self, world: &World) -> PendingView {
+        PendingView {
+            statements: self
+                .pending
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| **p)
+                .map(|(i, _)| (world.static_stmts[i].class, self.labels[i].clone()))
+                .collect(),
+            under: self.under.clone(),
+        }
+    }
+}
+
+/// TEMPORARY (#717's oracle, removed before the pull request leaves
+/// draft): the cover against the computation it replaces, after every
+/// update, in debug builds or with `QUARZ_VERIFY_STATIC_TABLES` set to a
+/// file the rounds compared are counted into.
+mod verify_cover {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static ROUNDS: AtomicUsize = AtomicUsize::new(0);
+
+    pub(super) fn enabled() -> bool {
+        cfg!(debug_assertions) || std::env::var_os("QUARZ_VERIFY_STATIC_TABLES").is_some()
+    }
+
+    pub(super) fn check(host: &dyn StaticHost, cover: &PendingCover) {
+        let world = host.world();
+        // `static_skip` as it was computed.
+        let pending = host.pending_classes();
+        let skip: rustc_hash::FxHashSet<ClassId> = world
+            .classes
+            .iter()
+            .filter(|c| pending.iter().any(|&p| world.class_is_a(c.id, p)))
+            .map(|c| c.id)
+            .collect();
+        assert!(
+            skip == cover.skip,
+            "#717 oracle: static_skip differs: fresh {skip:?}, kept {:?}",
+            cover.skip
+        );
+        // The labels as `note_pending` wrote them.
+        let mut labels: HashMap<ClassId, Vec<String>> = HashMap::new();
+        for i in host.pending_statements() {
+            let s = &world.static_stmts[i];
+            let call = match &s.expr.kind {
+                quarz_syntax::ast::ExprKind::Call(c) => c.name.clone(),
+                _ => "static".to_string(),
+            };
+            let label = format!("`{call}` in `{}`", world.class(s.class).name);
+            for c in &world.classes {
+                if world.class_is_a(c.id, s.class) {
+                    let ls = labels.entry(c.id).or_default();
+                    if !ls.contains(&label) {
+                        ls.push(label.clone());
+                    }
+                }
+            }
+        }
+        let view = cover.view(world);
+        for c in &world.classes {
+            let fresh = labels.get(&c.id).cloned().unwrap_or_default();
+            let kept = view.labels(c.id);
+            assert!(
+                fresh == kept,
+                "#717 oracle: labels of `{}` differ: fresh {fresh:?}, kept {kept:?}",
+                c.name
+            );
+        }
+        let n = ROUNDS.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Some(path) = std::env::var_os("QUARZ_VERIFY_STATIC_TABLES") {
+            // (The last count of a process is its total.)
+            let _ = std::fs::write(
+                format!("{}.{}", path.to_string_lossy(), std::process::id()),
+                n.to_string(),
+            );
+        }
+    }
+}
+
+/// The pending statements as a run sees them (`PendingCover::view`).
+#[derive(Default)]
+struct PendingView {
+    statements: Vec<(ClassId, Rc<str>)>,
+    under: Rc<HashMap<ClassId, std::collections::HashSet<ClassId>>>,
+}
+
+impl PendingView {
+    /// The labels of the pending statements covering `class`, in
+    /// statement order, each once.
+    fn labels(&self, class: ClassId) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for (p, label) in &self.statements {
+            if self.under.get(p).is_some_and(|u| u.contains(&class))
+                && !out.iter().any(|l| l.as_str() == &**label)
+            {
+                out.push(label.to_string());
+            }
+        }
+        out
+    }
 }
 
 /// What the statements of the classes whose bodies have not ended yet
@@ -1125,7 +1325,24 @@ impl Runner {
             prepared: false,
             keep_consts: 0,
             ends: Default::default(),
+            cover: None,
         }
+    }
+
+    /// The cover brought to the statements pending now, built on the
+    /// first use since `begin` (or once the statements are more).
+    fn cover(&mut self, host: &dyn StaticHost) -> &PendingCover {
+        let world = host.world();
+        let pending = host.pending_statements();
+        match &mut self.cover {
+            Some(c) if c.pending.len() == world.static_stmts.len() => c.update(world, &pending),
+            _ => self.cover = Some(PendingCover::build(world, &pending)),
+        }
+        let cover = self.cover.as_ref().expect("built");
+        if verify_cover::enabled() {
+            verify_cover::check(host, cover);
+        }
+        cover
     }
 
     /// A runner continuing `lowerer` (whose `done` holds every function
@@ -1163,14 +1380,8 @@ impl Runner {
         loop {
             // The classes whose statements are still to run, with their
             // descendants: not reached by name (`Lowerer::static_skip`).
-            let world = host.world();
-            let pending = host.pending_classes();
-            self.lowerer.static_skip = world
-                .classes
-                .iter()
-                .filter(|c| pending.iter().any(|&p| world.class_is_a(c.id, p)))
-                .map(|c| c.id)
-                .collect();
+            let skip = self.cover(host).skip.clone();
+            self.lowerer.static_skip = skip;
             let round = self.lowerer.lower_static(
                 host.world(),
                 host.output(),
@@ -1902,24 +2113,9 @@ impl Runner {
 
     /// The classes whose statements are still to run, as a message names
     /// them, for `reflect_refusal` (docs/14 §8).
-    fn note_pending(&self, host: &dyn StaticHost, reflect: &mut WorldReflect) {
-        let world = host.world();
-        for i in host.pending_statements() {
-            let s = &world.static_stmts[i];
-            let call = match &s.expr.kind {
-                quarz_syntax::ast::ExprKind::Call(c) => c.name.clone(),
-                _ => "static".to_string(),
-            };
-            let label = format!("`{call}` in `{}`", world.class(s.class).name);
-            for c in &world.classes {
-                if world.class_is_a(c.id, s.class) {
-                    let labels = reflect.pending.entry(c.id).or_default();
-                    if !labels.contains(&label) {
-                        labels.push(label.clone());
-                    }
-                }
-            }
-        }
+    fn note_pending(&mut self, host: &dyn StaticHost, reflect: &mut WorldReflect) {
+        let view = self.cover(host).view(host.world());
+        reflect.pending = view;
     }
 
     /// An interpreter for a compile-time run, on the shared state, with
@@ -2052,6 +2248,9 @@ impl Runner {
 }
 
 impl StaticRunner for Runner {
+    fn begin(&mut self) {
+        self.cover = None;
+    }
     fn run(
         &mut self,
         host: &mut dyn StaticHost,
@@ -2129,9 +2328,9 @@ struct WorldReflect {
     generated: RefCell<Vec<Pending>>,
     /// The `doc` given, for the next generation.
     doc: RefCell<Option<String>>,
-    /// The classes whose `static` statements, or an ancestor's, are still
-    /// to run, with those statements as a message names them.
-    pending: HashMap<ClassId, Vec<String>>,
+    /// The statements still to run, with the classes each covers (its
+    /// class and those under it), as a message names them.
+    pending: PendingView,
     /// How many `static(...)` runs inside this compile-time run are under
     /// way (docs/14 §8).
     in_static: std::cell::Cell<u32>,
@@ -2871,7 +3070,7 @@ impl WorldReflect {
             methods,
             generated: RefCell::new(Vec::new()),
             doc: RefCell::new(None),
-            pending: HashMap::new(),
+            pending: PendingView::default(),
             in_static: std::cell::Cell::new(0),
             refused: RefCell::new(None),
             ends: Default::default(),
@@ -3062,7 +3261,10 @@ impl Reflect for WorldReflect {
         if self.in_static.get() == 0 {
             return None;
         }
-        let statements = self.pending.get(&class)?;
+        let statements = self.pending.labels(class);
+        if statements.is_empty() {
+            return None;
+        }
         let why = format!(
             "`static(...)` in a compile-time run reflects on a class whose `static` statements have not all run ({}): the program's value, computed when they have, could differ (docs/14 §8)",
             statements.join(", ")

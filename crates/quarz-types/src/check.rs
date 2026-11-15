@@ -2987,6 +2987,9 @@ impl Checker {
         if self.static_done.len() < total {
             self.static_done.resize(total, false);
         }
+        if let Some(r) = runner.as_deref_mut() {
+            r.begin();
+        }
         let mut stmts = Vec::new();
         for (i, stmt) in self.world.static_stmts.iter().enumerate() {
             if !self.static_done[i] && in_files(stmt.file) {
@@ -3145,6 +3148,11 @@ impl Checker {
             .map(|(id, (file, class, e))| (*id, *file, *class, e.clone()))
             .collect();
         todo.sort_by_key(|(id, ..)| *id);
+        if !todo.is_empty() {
+            if let Some(r) = runner.as_deref_mut() {
+                r.begin();
+            }
+        }
         for (id, file, class, e) in todo {
             let Some(CallTarget::Method { method }) = self.out.calls.get(&e.id).cloned() else {
                 continue;
