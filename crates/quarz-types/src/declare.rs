@@ -110,6 +110,10 @@ pub struct Declarer<'ast> {
     /// While `check_std_overrides_of_extension_modules` checks a std
     /// class's own method: the error names it (`as Int#hash`).
     override_as_std: bool,
+    /// While an include pair is reported away from its overriding method
+    /// (at the extension that makes it, in another file or cog): the error
+    /// names the method with its owner (`Mlib::M#m`), #683.
+    override_named: bool,
     /// While `check_override_pair` compares with `Self` opaque: the
     /// overriding class (for the hint to write `Self`).
     self_opaque_class: Option<ClassId>,
@@ -223,6 +227,7 @@ impl<'ast> Declarer<'ast> {
             override_span: None,
             override_span_always: false,
             override_as_std: false,
+            override_named: false,
             self_opaque_class: None,
             units: Vec::new(),
             class_usings: HashMap::default(),
@@ -2966,7 +2971,15 @@ impl<'ast> Declarer<'ast> {
                         };
                         // (A failing pair is reported once: at the module
                         // itself, or at the first includer.)
-                        if !self.check_override_pair(mid, o, &subst, &mine_subst, within) {
+                        if !self.check_override_pair_made(
+                            id,
+                            mid,
+                            o,
+                            x,
+                            &subst,
+                            &mine_subst,
+                            within,
+                        ) {
                             self.override_pairs.insert((mid, o));
                             self.refused_pairs.insert((mid, o));
                             break;
@@ -3323,7 +3336,7 @@ impl<'ast> Declarer<'ast> {
         mine_subst.insert(SELF_PARAM, own);
         let within = Some(self.world.class(id).name.clone());
         self.override_span = Some(self.world.class(id).span);
-        let ok = self.check_override_pair(by, o, &subst, &mine_subst, within);
+        let ok = self.check_override_pair_made(id, by, o, io.module, &subst, &mine_subst, within);
         self.override_span = None;
         // (A refused pair is not reported again by the other passes over
         // the table, as before.)
@@ -3331,6 +3344,58 @@ impl<'ast> Declarer<'ast> {
             self.override_pairs.insert((by, o));
             self.refused_pairs.insert((by, o));
         }
+    }
+
+    /// `check_override_pair` for `by` over `o` in class `id`, where `by`
+    /// comes from `module`'s include. A pair an extension's include makes
+    /// (of `module`, or of `o`'s owner) from another file or cog than `by`
+    /// (an application's extension of a library's class over the library's
+    /// modules) is reported at that extension, which the user wrote, naming
+    /// the method with its owner, as `Checker::reach_source` does for the
+    /// constructor rule (#683). Otherwise as `check_override_pair`.
+    #[allow(clippy::too_many_arguments)]
+    fn check_override_pair_made(
+        &mut self,
+        id: ClassId,
+        by: MethodId,
+        o: MethodId,
+        module: ClassId,
+        subst: &HashMap<TypeParamId, Type>,
+        mine_subst: &HashMap<TypeParamId, Type>,
+        within: Option<String>,
+    ) -> bool {
+        let conf = self.world.conformances(id);
+        let made_by = |k: ClassId| {
+            conf.iter()
+                .find(|(_, x, _)| *x == k)
+                .and_then(|(src, _, _)| src.map(|(e, _)| e))
+        };
+        let away = made_by(module)
+            .or_else(|| made_by(self.world.method(o).owner))
+            .map(|e| &self.world.extensions[e as usize])
+            .filter(|e| e.file != self.world.method(by).file)
+            .map(|e| (e.file, e.span));
+        let Some((file, span)) = away else {
+            return self.check_override_pair(by, o, subst, mine_subst, within);
+        };
+        let saved = (
+            self.file,
+            self.override_span,
+            self.override_span_always,
+            self.override_named,
+        );
+        self.file = file;
+        self.override_span = Some(span);
+        self.override_span_always = true;
+        self.override_named = true;
+        let ok = self.check_override_pair(by, o, subst, mine_subst, within);
+        (
+            self.file,
+            self.override_span,
+            self.override_span_always,
+            self.override_named,
+        ) = saved;
+        ok
     }
 
     /// `check_override_pair` for the overrides class `id`'s includes make
@@ -3484,6 +3549,14 @@ impl<'ast> Declarer<'ast> {
             None => String::new(),
         };
         let mname = m.name.clone();
+        // (The overriding method as the error's subject: with its owner when
+        // reported away from it, `override_named`.)
+        let lead = if self.override_named {
+            let msep = if m.singleton { "." } else { "#" };
+            format!("{}{msep}{mname}", self.world.class(m.owner).name)
+        } else {
+            mname.clone()
+        };
         // (A prelude method's own span is in no file of the program.)
         let span = match self.override_span {
             Some(class) if m.file == 0 || self.override_span_always => class,
@@ -3520,7 +3593,7 @@ impl<'ast> Declarer<'ast> {
             if named && p.kind == ParamKind::Positional && p.name != q.name {
                 self.error(
                     format!(
-                        "`{mname}` renames parameter `{}` to `{}`; callers of `{owner}{}{mname}`, which it overrides{context}, may pass it as `{}:`",
+                        "`{lead}` renames parameter `{}` to `{}`; callers of `{owner}{}{mname}`, which it overrides{context}, may pass it as `{}:`",
                         p.name, q.name, if om.singleton { "." } else { "#" }, p.name
                     ),
                     span,
@@ -3549,7 +3622,7 @@ impl<'ast> Declarer<'ast> {
                 });
                 let message = match (narrowed, lower_narrowed) {
                     (Some(c), _) => format!(
-                        "`{mname}` bounds its type parameter `{}` by {}, but `{owner}{sep}{mname}`, which it overrides{context}, admits {}: an override's type parameters take what the method it overrides does",
+                        "`{lead}` bounds its type parameter `{}` by {}, but `{owner}{sep}{mname}`, which it overrides{context}, admits {}: an override's type parameters take what the method it overrides does",
                         q.name,
                         self.world.type_name(&c),
                         match theirs.as_slice() {
@@ -3558,7 +3631,7 @@ impl<'ast> Declarer<'ast> {
                         }
                     ),
                     (None, Some(l)) => format!(
-                        "`{mname}` gives its type parameter `{}` the lower bound {}, but `{owner}{sep}{mname}`, which it overrides{context}, admits types below it: an override's type parameters take what the method it overrides does",
+                        "`{lead}` gives its type parameter `{}` the lower bound {}, but `{owner}{sep}{mname}`, which it overrides{context}, admits types below it: an override's type parameters take what the method it overrides does",
                         q.name,
                         self.world.type_name(&l),
                     ),
@@ -3592,7 +3665,7 @@ impl<'ast> Declarer<'ast> {
                     (self.world.type_name(&mine), self.world.type_name(&theirs));
                 self.error(
                     format!(
-                        "`{mname}` takes {mine_s} for `{}` but `{owner}{sep}{mname}`, which it overrides{context}, is given {theirs_s}: an override takes what the method it overrides does",
+                        "`{lead}` takes {mine_s} for `{}` but `{owner}{sep}{mname}`, which it overrides{context}, is given {theirs_s}: an override takes what the method it overrides does",
                         q.name
                     ),
                     span,
@@ -3623,7 +3696,7 @@ impl<'ast> Declarer<'ast> {
                 let hint = self.write_self_hint(&theirs, &mine);
                 self.error(
                     format!(
-                        "`{mname}` takes a block of type {mine_s} but `{owner}{sep}{mname}`, which it overrides{context}, is given one of type {theirs_s}{hint}"
+                        "`{lead}` takes a block of type {mine_s} but `{owner}{sep}{mname}`, which it overrides{context}, is given one of type {theirs_s}{hint}"
                     ),
                     span,
                 );
@@ -3632,7 +3705,7 @@ impl<'ast> Declarer<'ast> {
             if om.block_optional && !m.block_optional {
                 self.error(
                     format!(
-                        "`{mname}` requires a block but `{owner}{sep}{mname}`, which it overrides{context}, may be called without one: make it optional"
+                        "`{lead}` requires a block but `{owner}{sep}{mname}`, which it overrides{context}, may be called without one: make it optional"
                     ),
                     span,
                 );
@@ -3653,7 +3726,7 @@ impl<'ast> Declarer<'ast> {
             };
             self.error(
                 format!(
-                    "`{mname}` returns {mine_s} but `{owner}{sep}{mname}`, which it overrides{context}, returns {theirs_s}{hint}"
+                    "`{lead}` returns {mine_s} but `{owner}{sep}{mname}`, which it overrides{context}, returns {theirs_s}{hint}"
                 ),
                 span,
             );

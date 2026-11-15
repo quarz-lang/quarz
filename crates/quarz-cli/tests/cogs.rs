@@ -742,6 +742,50 @@ fn a_librarys_top_level_extension_include_overrides() {
 }
 
 #[test]
+fn an_include_pair_an_applications_extension_makes_is_reported_there() {
+    // #683: an application's extension of a library's class includes two
+    // of the library's modules, one's method overriding the other's with
+    // another result. The library checks on its own; the error is at the
+    // application's extension, which makes the pair, naming the method.
+    let w = World::new();
+    w.write(
+        "mlib/Cog.toml",
+        "[cog]\nname = \"mlib\"\nversion = \"1.0.0\"\nmodule = \"Mlib\"\n",
+    );
+    w.write(
+        "mlib/src/m.qz",
+        "module M\n  def m -> Int = 1\nend\nmodule N\n  def m -> String = \"N\"\n  def nn -> String = m + \"!\"\nend\nclass K\n  def initialize; end\nend\n",
+    );
+    w.commit("mlib", Some("v1.0.0"));
+    w.ok("mlib", &["check"]);
+    let dep = format!(
+        "Mlib = {{ git = \"{}\", tag = \"v1.0.0\" }}\n",
+        w.url("mlib")
+    );
+    w.app(
+        &dep,
+        "extension Mlib::K\n  include Mlib::N\n  include Mlib::M\nend\nputs 1\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("src/main.qz:1:1: error: `Mlib::M#m` returns Int but `Mlib::N#m`, which it overrides in `Mlib::K`, which includes `Mlib::M`, returns String"),
+        "{err}"
+    );
+    assert!(!err.contains("m.qz"), "{err}");
+    // The same pair made in the file that declares the methods is
+    // reported at the overriding method, as before.
+    w.app(
+        "",
+        "module M\n  def m -> Int = 1\nend\nmodule N\n  def m -> String = \"N\"\n  def nn -> String = m + \"!\"\nend\nclass K\n  def initialize; end\nend\nextension K\n  include N\n  include M\nend\nputs 1\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("src/main.qz:2:3: error: `m` returns Int but `N#m`, which it overrides in `K`, which includes `M`, returns String"),
+        "{err}"
+    );
+}
+
+#[test]
 fn top_level_defs_are_cog_wide() {
     let w = World::new();
     w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
