@@ -3095,9 +3095,10 @@ impl World {
             {
                 true
             }
-            // `Meta::ClassDef[X]` is a `Type[X]`.
+            // `Meta::ClassDef[X]` is a `Type[X]`, a `Cog` a `Type[Object]`
+            // (#744).
             (Type::Class(..), Type::ClassObject(..) | Type::TypeOf(_)) => {
-                match (self.class_object_instance(sub), sup.instance_of()) {
+                match (self.type_instance(sub), sup.instance_of()) {
                     (Some(a), Some(b)) => self.is_subtype(&a, &b),
                     _ => false,
                 }
@@ -4693,15 +4694,31 @@ impl World {
     /// A constant whose initializer is a constant path naming a class or
     /// module (`Short = Some::Long::Name`) stands for that class in
     /// constant paths and types; any other member is returned unchanged.
-    /// For an instance type of a subclass of `Type` (`Meta::ClassDef[X]`,
-    /// docs/14), the class it stands for: `X`. `None` for other types.
+    /// For a `Meta::ClassDef[X]` (a static def's `self`, docs/14), the
+    /// class it stands for: `X`; `None` for other types. Read by method
+    /// lookup (`X`'s class methods first), `Self` in a class method called
+    /// on it, and `new` on it (constructing `X`). Not for `Cog`, the other
+    /// subclass of `Type`: a `Cog` is a `Type[Object]` (`type_instance`),
+    /// but it stands for no class whose class methods, `Self` or `new` a
+    /// call on it could take (a cog root is a module: its value would get
+    /// `Object`'s, and `c.new` would check as `Object.new`, #744).
     pub fn class_object_instance(&self, t: &Type) -> Option<Type> {
+        match t {
+            Type::Class(id, _) if *id == self.builtin.meta_classdef => self.type_instance(t),
+            _ => None,
+        }
+    }
+
+    /// For an instance type of a subclass of `Type` (`Meta::ClassDef[X]`,
+    /// `Cog`), the argument of its `Type` ancestor: what its values are
+    /// class objects of (`X`; `Object` for `Cog < Type[Object]`). `None`
+    /// for other types. The subtyping relation reads it
+    /// (`is_subtype`, `Checker::coerce`): such a value is a `Type[that]`.
+    pub fn type_instance(&self, t: &Type) -> Option<Type> {
         let Type::Class(id, args) = t else {
             return None;
         };
-        // `Meta::ClassDef` is the one subclass of `Type` (the declarer
-        // refuses others), so this is a comparison, not an ancestor walk.
-        if *id != self.builtin.meta_classdef {
+        if *id == self.builtin.class_ || !self.class_is_a(*id, self.builtin.class_) {
             return None;
         }
         self.ancestors(*id, args)
