@@ -3707,6 +3707,32 @@ fn a_bodys_value_is_converted_where_its_usings_are() {
     ok(&format!(
         "{d}def f(v: V) -> Comparable[V]\n  using Desc\n  v\nend"
     ));
+    // A `static def`'s body, as any method's.
+    ok(&format!(
+        "{d}class C\n  static def self.gen(v: V) -> Comparable[V]\n    using Desc\n    v\n  end\nend"
+    ));
+    // A value that fits without the body's `using`s keeps its own type,
+    // as on main: what the caller reads of it is not widened to the
+    // expected type.
+    for kept in [
+        "y: Int | String = begin\n  using Desc\n  1\nend\nputs y + 1",
+        "x: Object = begin\n  using Desc\n  V.new\nend\nputs x.is_a?(V)\nz: V = x",
+        "def f(v: V, c: Bool) -> Object\n  r = if c\n    using Desc\n    v\n  else\n    v\n  end\n  q: V = r\n  q\nend",
+        // Where the expected type is a hint: an inference variable of a
+        // generic call, a block of `map` with no result type, overloads.
+        "def id[T](x: T) -> T = x\nr: V = id(begin\n  using Desc\n  V.new\nend)",
+        "r: Array[V] = [V.new].map do |v|\n  using Desc\n  v\nend",
+        "def o(x: Comparable[V]) -> String = \"cmp\"\ndef o(x: V) -> String = \"v\"\nputs o(begin\n  using Desc\n  V.new\nend)",
+        // A `using` at the file's top level or in a class body: the body
+        // activates nothing, as on main.
+        "using Desc\ndef f(v: V) -> Comparable[V]\n  v\nend",
+        "class C\n  using Desc\n  def self.f(v: V) -> Comparable[V]\n    v\n  end\nend",
+        // A lambda written in a body with a `using`: in the `using`'s
+        // scope, nested in it (docs/01 §7), its value converts as on main.
+        "def f(v: V) -> Comparable[V]\n  using Desc\n  g = ->() -> Comparable[V] do\n    v\n  end\n  g.call\nend",
+    ] {
+        ok(&format!("{d}{kept}"));
+    }
     for (body, why) in [
         // No `using`.
         (

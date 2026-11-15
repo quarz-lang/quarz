@@ -6597,15 +6597,25 @@ impl Checker {
         }
         // The body's value meets the type expected of it inside the body,
         // where its `using`s are active, as a `return` of it would: a
-        // conformance one of them brings converts it (#750). Converted, it
-        // has that type; else the caller reports it, as before.
+        // conformance one of them brings converts it (#750). Only such a
+        // value takes the expected type: one that fits without the body's
+        // `using`s (the same `coerce`, asked with them set aside, and
+        // undone) keeps its own, which the caller coerces as before, and
+        // one that fits in neither way is the caller's to report.
         if self.world.active_extensions.get_mut().len() > active_len {
             if let Some(exp) = expected.filter(|_| !result.is_nothing()) {
+                let mine = self.world.active_extensions.get_mut().split_off(active_len);
                 let saved = self.infer.save();
-                if self.coerce(&result, exp) {
-                    result = exp.clone();
-                } else {
-                    self.infer.restore(saved);
+                let without = self.coerce(&result, exp);
+                self.infer.restore(saved);
+                self.world.active_extensions.get_mut().extend(mine);
+                if !without {
+                    let saved = self.infer.save();
+                    if self.coerce(&result, exp) {
+                        result = exp.clone();
+                    } else {
+                        self.infer.restore(saved);
+                    }
                 }
             }
         }
