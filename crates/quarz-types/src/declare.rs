@@ -3352,7 +3352,8 @@ impl<'ast> Declarer<'ast> {
     /// (an application's extension of a library's class over the library's
     /// modules) is reported at that extension, which the user wrote, naming
     /// the method with its owner, as `Checker::reach_source` does for the
-    /// constructor rule (#683). Otherwise as `check_override_pair`.
+    /// constructor rule (#683). Otherwise (a prelude method included) as
+    /// `check_override_pair`.
     #[allow(clippy::too_many_arguments)]
     fn check_override_pair_made(
         &mut self,
@@ -3370,10 +3371,13 @@ impl<'ast> Declarer<'ast> {
                 .find(|(_, x, _)| *x == k)
                 .and_then(|(src, _, _)| src.map(|(e, _)| e))
         };
+        // (A prelude method has its own place, the class whose include
+        // brings it, `override_span`, and its own wording.)
+        let by_file = self.world.method(by).file;
         let away = made_by(module)
             .or_else(|| made_by(self.world.method(o).owner))
             .map(|e| &self.world.extensions[e as usize])
-            .filter(|e| e.file != self.world.method(by).file)
+            .filter(|e| by_file != 0 && e.file != by_file)
             .map(|e| (e.file, e.span));
         let Some((file, span)) = away else {
             return self.check_override_pair(by, o, subst, mine_subst, within);
