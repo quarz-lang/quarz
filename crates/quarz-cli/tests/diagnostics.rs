@@ -1121,6 +1121,78 @@ g(Sub)
 }
 
 #[test]
+fn a_siblings_extension_does_not_pin_the_inherited_new() {
+    // #768: `Q.make` runs for `R` through `Type[M]` below `P`'s record
+    // (#681's (c)) and by inheritance; the sibling `X`'s extension records
+    // `Q.make` as `X`'s witness, which says nothing about `R`, so the
+    // message is the one without `extension X`.
+    let out = common::diagnostics(
+        r#"module M
+  abstract def self.make -> Self
+end
+class P
+  def initialize; end
+  def self.make -> Self = new
+end
+class Q < P
+  def self.make -> Self = new
+end
+class R < Q
+  @x: Int
+  def initialize(@x: Int); end
+end
+class X < Q
+end
+extension P
+  include M
+end
+extension X
+  include M
+end
+def f(t: Type[M]) -> String = t.make.class.name
+puts f(R) + " " + f(X)
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("error: `R#initialize` does not take the arguments of `new` in `Q.make`, which `R` inherits: keep the parameters of `P#initialize`, their names and whether they are optional (adding only optional ones), or override `self.make` in `R`"),
+        "{out}"
+    );
+    assert_eq!(out.matches("error:").count(), 1, "{out}");
+}
+
+#[test]
+fn a_siblings_extension_leaves_the_inherited_new_running() {
+    // #768: the same classes, with `R` taking `new`'s arguments, run.
+    common::expect(
+        r#"module M
+  abstract def self.make -> Self
+end
+class P
+  def initialize; end
+  def self.make -> Self = new
+end
+class Q < P
+  def self.make -> Self = new
+end
+class R < Q
+end
+class X < Q
+end
+extension P
+  include M
+end
+extension X
+  include M
+end
+def f(t: Type[M]) -> String = t.make.class.name
+puts f(R) + " " + f(X)
+"#,
+        "R X\n",
+    );
+}
+
+#[test]
 fn a_superclass_extensions_conformance_fixes_a_generic_modules_arguments() {
     // #504: witnesses are found up the superclass chain, so a subclass's
     // extension cannot conform to the module with other arguments.
