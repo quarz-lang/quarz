@@ -1484,10 +1484,10 @@ impl World {
     }
 
     /// The modules class `cur` (`c` or a superclass of it) brings to `c`'s
-    /// class side, in lookup order: the entries after `cur` in
-    /// `class_side_order(c)` up to the next class (`Interp`'s twin).
-    pub fn class_side_modules(&self, c: ClassId, cur: ClassId) -> Vec<ClassId> {
-        let side = self.class_side_order(c);
+    /// class side, in lookup order: the entries after `cur` in `side`,
+    /// `class_side_order(c)` (computed once by the caller's walk), up to
+    /// the next class.
+    fn class_side_modules(&self, side: &[ClassId], c: ClassId, cur: ClassId) -> Vec<ClassId> {
         // (`cur` is `c` or a class up its chain, always in it: a missing
         // entry is an internal error, never an empty part.)
         let at = side.iter().position(|k| *k == cur).unwrap_or_else(|| {
@@ -3997,6 +3997,7 @@ impl World {
         b: MethodId,
     ) -> MethodId {
         let bi = self.method(b);
+        let side = self.class_side_order(c);
         let superclass = |k: ClassId| match &self.class(k).superclass {
             Some(Type::Class(s, _)) => Some(*s),
             _ => None,
@@ -4023,7 +4024,7 @@ impl World {
                     }
                     below.extend(ids.iter().copied().filter(|&id| self.method(id).owner == k));
                 }
-                for module in self.class_side_modules(c, k) {
+                for module in self.class_side_modules(&side, c, k) {
                     if let Some(ids) = self.class(module).singleton_methods.get(&bi.name) {
                         if let Some(id) = ids
                             .iter()
@@ -4039,7 +4040,6 @@ impl World {
             return b;
         }
         let replaces = |id: MethodId| !self.method(id).is_abstract && overrides(id).contains(&b);
-        let side = self.class_side_order(c);
         if self.class(bi.owner).kind == ClassKind::Module && !side.contains(&bi.owner) {
             return side
                 .iter()
@@ -4069,7 +4069,7 @@ impl World {
             {
                 return e.by;
             }
-            for module in self.class_side_modules(c, k) {
+            for module in self.class_side_modules(&side, c, k) {
                 if module == bi.owner {
                     if bi.is_abstract {
                         continue;
