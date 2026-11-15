@@ -99,7 +99,9 @@ fn copy_captures(interp: &Interp, b: &Value, shareable: bool) -> Value {
             });
             (frame, unused)
         }
-        // (A native's block is never a shareable procedure's.)
+        // A native's block is never given where a shareable procedure
+        // is expected: left unflagged, it answers false to `shareable?`,
+        // the direction an error may take.
         ClosureBody::Native(_) => return b.clone(),
         // `&:name`, `obj.:name`: nothing of a frame's to copy.
         _ if !shareable => return b.clone(),
@@ -136,7 +138,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     // A shareable procedure copies what it captures when it is made.
     native!(m, "Proc#__copy_captures", |i, r, _| Ok(snapshot(i, r)));
     // A quoted block's closure: a snapshot, not shared (docs/14 §6).
-    native!(m, "Proc#__snapshot", |i, r, _| Ok(copy_captures(i, r, false)));
+    native!(m, "Proc#__snapshot", |i, r, _| Ok(copy_captures(
+        i, r, false
+    )));
     native!(m, "Kernel#sleep", |i, _, a| {
         i.sleep(duration(i, a.arg(0))?)?;
         Ok(Value::Nil)

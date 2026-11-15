@@ -100,8 +100,8 @@ class Object
   #
   # A `shareable` procedure (one made where a `shareable` procedure is
   # expected) answers by what it holds: the values it captured, and its
-  # creator's `self` and method block when its body uses them (#706); any
-  # other procedure answers false, whatever it captures.
+  # creator's `self` and method block when its body uses them; any other
+  # procedure answers false, whatever it captures.
   #
   # ```
   # [1, "a", :b].shareable?                       # => true

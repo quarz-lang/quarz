@@ -1678,9 +1678,16 @@ fn oracle706(functions: &[Function]) {
                 let (s, b, what) = match inst {
                     Inst::SelfRef { .. } => (true, false, "SelfRef".to_string()),
                     Inst::BlockParam { .. } => (false, true, "BlockParam".to_string()),
-                    Inst::Call { kind: CallKind::Yield, .. } => (false, true, "Yield".to_string()),
-                    Inst::Call { kind, recv: None, .. } => match kind {
-                        CallKind::Function(_) | CallKind::Raise => (false, false, String::new()),
+                    Inst::Call {
+                        kind: CallKind::Yield,
+                        ..
+                    } => (false, true, "Yield".to_string()),
+                    Inst::Call {
+                        kind, recv: None, ..
+                    } => match kind {
+                        CallKind::Function(_) | CallKind::Raise | CallKind::Construct { .. } => {
+                            (false, false, String::new())
+                        }
                         k => (true, false, format!("implicit-recv {k:?}")),
                     },
                     Inst::MakeBlock { func, .. } => {
@@ -1700,7 +1707,11 @@ fn oracle706(functions: &[Function]) {
         ));
     }
     use std::io::Write;
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let _ = file.write_all(out.as_bytes());
     }
 }

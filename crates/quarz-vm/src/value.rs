@@ -1878,6 +1878,11 @@ impl std::fmt::Debug for ClosureBody {
     }
 }
 
+// The `shareable` flag sits in the padding: a closure keeps its size
+// (#706).
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<Closure>() == 136);
+
 /// A block, lambda or procedure value.
 #[derive(Debug)]
 pub struct Closure {
