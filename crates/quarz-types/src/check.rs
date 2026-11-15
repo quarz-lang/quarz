@@ -9368,7 +9368,7 @@ impl Checker {
                 }
                 let names: Vec<String> = std::iter::once(winner)
                     .chain(rivals)
-                    .map(|k| self.signature(&self.world.method(k).clone()))
+                    .map(|k| self.world.method_signature(&self.world.method(k).clone()))
                     .collect();
                 self.error(
                     format!(
@@ -11104,7 +11104,7 @@ impl Checker {
                     } else {
                         let sigs: Vec<String> = cands
                             .iter()
-                            .map(|(m, _)| self.signature(self.world.method(*m)))
+                            .map(|(m, _)| self.world.method_signature(self.world.method(*m)))
                             .collect();
                         format!(
                             "; the functions `{name}` take other arguments: {}",
@@ -12855,7 +12855,7 @@ impl Checker {
             if w == k {
                 return t;
             }
-            let sig = self.signature(self.world.method(k));
+            let sig = self.world.method_signature(self.world.method(k));
             let message = match bound {
                 Some(b) => format!(
                     "which overload this call takes depends on a conditional extension's bound not yet known here, which {sig} needs: {b}"
@@ -12962,9 +12962,9 @@ impl Checker {
             }
             if m.block.is_some() != block_given && !(m.block_optional && !block_given) {
                 failures.push(if m.block.is_some() {
-                    format!("{} requires a block", self.signature(&m))
+                    format!("{} requires a block", self.world.method_signature(&m))
                 } else {
-                    format!("{} does not take a block", self.signature(&m))
+                    format!("{} does not take a block", self.world.method_signature(&m))
                 });
                 continue;
             }
@@ -12985,7 +12985,7 @@ impl Checker {
             if !call.type_args.is_empty() && call.type_args.len() != m.type_params.len() {
                 failures.push(format!(
                     "{} takes {} type argument(s)",
-                    self.signature(&m),
+                    self.world.method_signature(&m),
                     m.type_params.len()
                 ));
                 continue;
@@ -13033,7 +13033,8 @@ impl Checker {
                             self.infer.restore(saved_infer);
                             self.truncate_diagnostics(saved_diags);
                             self.discard_tables(saved_diags_tables);
-                            failures.push(format!("{}: {message}", self.signature(&m)));
+                            failures
+                                .push(format!("{}: {message}", self.world.method_signature(&m)));
                             block_failed.push((*mid, class_subst.clone()));
                             continue;
                         }
@@ -13120,7 +13121,10 @@ impl Checker {
                         self.infer.restore(saved_infer);
                         self.truncate_diagnostics(saved_diags);
                         self.discard_tables(saved_diags_tables);
-                        failures.push(format!("{}: type bounds not satisfied", self.signature(&m)));
+                        failures.push(format!(
+                            "{}: type bounds not satisfied",
+                            self.world.method_signature(&m)
+                        ));
                         continue;
                     }
                     if single {
@@ -13265,7 +13269,7 @@ impl Checker {
             } else if !rivals.is_empty() {
                 let mut names: Vec<String> = std::iter::once(winner)
                     .chain(rivals)
-                    .map(|m| self.signature(self.world.method(m)))
+                    .map(|m| self.world.method_signature(self.world.method(m)))
                     .collect();
                 names.dedup();
                 self.error(
@@ -14090,35 +14094,6 @@ impl Checker {
         parts.join(", ")
     }
 
-    pub fn signature(&self, m: &MethodInfo) -> String {
-        let mut parts: Vec<String> = m
-            .params
-            .iter()
-            .map(|p| {
-                let prefix = match p.kind {
-                    ParamKind::Rest => "*",
-                    ParamKind::KeywordRest => "**",
-                    _ => "",
-                };
-                let default = if p.default.is_some() { " = ..." } else { "" };
-                // `*values: T` is declared with the element type and
-                // held as `Array[T]` (`**opts: T` as `Hash[Symbol, T]`).
-                let ty = match (&p.kind, &p.ty) {
-                    (ParamKind::Rest, Type::Class(_, args)) if args.len() == 1 => &args[0],
-                    (ParamKind::KeywordRest, Type::Class(_, args)) if args.len() == 2 => &args[1],
-                    _ => &p.ty,
-                };
-                format!("{prefix}{}: {}{default}", p.name, self.world.type_name(ty))
-            })
-            .collect();
-        if let Some((name, t)) = &m.block {
-            let name = if name == "&" { "" } else { name.as_str() };
-            parts.push(format!("&{name}: {}", self.world.type_name(t)));
-        }
-        let ret = self.world.type_name(&m.ret);
-        format!("{}({}) -> {}", m.name, parts.join(", "), ret)
-    }
-
     /// Expressions whose type depends on the expected type.
     /// The type a lower-bounded method type parameter `param` takes: its
     /// bound joined with the types the arguments give it, as far as
@@ -14386,7 +14361,7 @@ impl Checker {
                     } else {
                         return Err(format!(
                             "{} takes {} positional argument(s)",
-                            self.signature(m),
+                            self.world.method_signature(m),
                             positional.len()
                         ));
                     }
@@ -14396,7 +14371,7 @@ impl Checker {
                     let Some(ri) = rest else {
                         return Err(format!(
                             "{} does not take a variable number of arguments",
-                            self.signature(m)
+                            self.world.method_signature(m)
                         ));
                     };
                     bound.entry(ri).or_default().push(MatchedArg {
@@ -14458,7 +14433,7 @@ impl Checker {
                             None => {
                                 return Err(format!(
                                     "{} has no parameter `{name}`",
-                                    self.signature(m)
+                                    self.world.method_signature(m)
                                 ))
                             }
                         },
@@ -14466,7 +14441,10 @@ impl Checker {
                 }
                 Arg::DoubleSplat(e) => {
                     let Some(ki) = kwrest else {
-                        return Err(format!("{} does not take `**`", self.signature(m)));
+                        return Err(format!(
+                            "{} does not take `**`",
+                            self.world.method_signature(m)
+                        ));
                     };
                     bound.entry(ki).or_default().push(MatchedArg {
                         param_ty: m.params[ki].ty.subst(subst),
@@ -14488,7 +14466,7 @@ impl Checker {
                 _ => {
                     return Err(format!(
                         "{} is missing the argument `{}`",
-                        self.signature(m),
+                        self.world.method_signature(m),
                         p.name
                     ))
                 }
@@ -14508,7 +14486,7 @@ impl Checker {
                     let msg = format!(
                         "argument `{}` of {} expects {} but found {}{}",
                         p.name,
-                        self.signature(m),
+                        self.world.method_signature(m),
                         self.name(&expected_ty),
                         self.name(&actual),
                         self.bound_note(),

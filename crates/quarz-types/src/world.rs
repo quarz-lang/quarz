@@ -1063,6 +1063,36 @@ impl World {
 
     // ----- names -----------------------------------------------------------
 
+    /// A method's signature as diagnostics print it: `name(x: T, &b: P) -> R`.
+    pub fn method_signature(&self, m: &MethodInfo) -> String {
+        let mut parts: Vec<String> = m
+            .params
+            .iter()
+            .map(|p| {
+                let prefix = match p.kind {
+                    ParamKind::Rest => "*",
+                    ParamKind::KeywordRest => "**",
+                    _ => "",
+                };
+                let default = if p.default.is_some() { " = ..." } else { "" };
+                // `*values: T` is declared with the element type and
+                // held as `Array[T]` (`**opts: T` as `Hash[Symbol, T]`).
+                let ty = match (&p.kind, &p.ty) {
+                    (ParamKind::Rest, Type::Class(_, args)) if args.len() == 1 => &args[0],
+                    (ParamKind::KeywordRest, Type::Class(_, args)) if args.len() == 2 => &args[1],
+                    _ => &p.ty,
+                };
+                format!("{prefix}{}: {}{default}", p.name, self.type_name(ty))
+            })
+            .collect();
+        if let Some((name, t)) = &m.block {
+            let name = if name == "&" { "" } else { name.as_str() };
+            parts.push(format!("&{name}: {}", self.type_name(t)));
+        }
+        let ret = self.type_name(&m.ret);
+        format!("{}({}) -> {}", m.name, parts.join(", "), ret)
+    }
+
     pub fn type_name(&self, t: &Type) -> String {
         match t {
             Type::Nothing => "Nothing".to_string(),
