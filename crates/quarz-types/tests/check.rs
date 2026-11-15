@@ -1528,6 +1528,64 @@ fn shareable_procedures() {
 }
 
 #[test]
+fn a_yield_from_a_task_or_shareable_procedure_needs_a_shareable_block() {
+    // `yield` runs the method's block, a capture as `blk.call` is: from a
+    // block that may run on another task, only a `shareable` one (#739).
+    let fix = "declare it `&blk: shareable () -> Int` to let it";
+    for (body, what) in [
+        ("Task.spawn { yield }.await", "a `Task.spawn` block"),
+        ("Task.blocking { yield }", "a `Task.spawn` block"),
+        (
+            "h: shareable () -> Int = -> { yield }\n  h.call",
+            "a shareable procedure",
+        ),
+        (
+            "Task.spawn { r = 0\n    [1].each { |_x| r = yield }\n    r }.await",
+            "a `Task.spawn` block",
+        ),
+    ] {
+        err(
+            &format!("def outer(&blk: () -> Int) -> Int\n  {body}\nend\np outer {{ 7 }}\n"),
+            &format!(
+                "`yield` in {what} runs the method's block, which is not shareable and cannot be captured by {what}; {fix}"
+            ),
+        );
+    }
+    // A shareable block passed on: the block of a shareable parameter.
+    err(
+        "def run(&h: shareable () -> Int) -> Int = h.call\ndef outer(&blk: () -> Int) -> Int = run { yield }\np outer { 7 }\n",
+        &format!(
+            "`yield` in a shareable procedure runs the method's block, which is not shareable and cannot be captured by a shareable procedure; {fix}"
+        ),
+    );
+    // The issue's: a lambda returned, then called from another task.
+    err(
+        "def outer(&blk: () -> Int) -> shareable () -> Int\n  -> { yield }\nend\nh = outer { 1 }\np Task.spawn { h.call }.await\n",
+        "`yield` in a shareable procedure runs the method's block",
+    );
+    // An anonymous block: named first, as in any closure that may run
+    // later (one error).
+    err(
+        "def outer(&: () -> Int) -> Int\n  Task.spawn { yield }.await\nend\np outer { 7 }\n",
+        "`yield` in a closure that may run later",
+    );
+    // Even a `shareable` anonymous one: it is not kept past the call.
+    err(
+        "def outer(&: shareable () -> Int) -> shareable () -> Int\n  -> { yield }\nend\np outer { 7 }.call\n",
+        "`yield` in a closure that may run later",
+    );
+    err(
+        "def outer(&: shareable () -> Int) -> Int\n  Task.spawn { yield }.await\nend\np outer { 7 }\n",
+        "`yield` in a closure that may run later",
+    );
+    // A `shareable` block: `yield` is its capture, as `blk.call` is.
+    ok("def outer(&blk: shareable () -> Int) -> Int\n  Task.spawn { yield }.await + Task.blocking { yield }\nend\np outer { 7 }\n");
+    ok("def outer(&blk: shareable (Int) -> Int) -> shareable () -> Int\n  -> { yield 2 }\nend\np outer { |x| x * 3 }.call\n");
+    // Outside such a block, as before.
+    ok("def outer(&blk: () -> Int) -> Int\n  [1].map { |_x| yield }.sum\nend\np outer { 7 }\n");
+}
+
+#[test]
 fn narrowing_after_while() {
     // The loop ends with its condition false: `w` is not nil after it.
     ok("def f -> Int\n  w: Int? = nil\n  i = 0\n  while w.nil?\n    i += 1\n    w = i if i > 2\n  end\n  w\nend");

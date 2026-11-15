@@ -5004,6 +5004,33 @@ impl Checker {
         }
     }
 
+    /// `yield` from a task block or a shareable procedure to a method
+    /// block that is not `shareable` (#739): what to declare instead.
+    fn refuse_task_yield(&mut self, span: Span) {
+        let what = self.task_capture_name();
+        let declared = self
+            .env
+            .method
+            .and_then(|m| self.world.method(m).block.clone());
+        let fix = match (&declared, &self.env.block_type) {
+            (Some((name, _)), Some(Type::Proc(rc, ps, r, _, kws))) => {
+                let shared = Type::Proc(rc.clone(), ps.clone(), r.clone(), true, kws.clone());
+                let name = if name == "&" { "" } else { name.as_str() };
+                format!(
+                    "; declare it `&{name}: {}` to let it",
+                    self.world.type_name(&shared)
+                )
+            }
+            _ => String::new(),
+        };
+        self.error(
+            format!(
+                "`yield` in {what} runs the method's block, which is not shareable and cannot be captured by {what}{fix}"
+            ),
+            span,
+        );
+    }
+
     /// Whether a value of type `t` may be baked into a generated method
     /// (docs/14 §5): what has a literal or is immutable data. `Object`, a
     /// type parameter and a module type may hold such a value; the
@@ -16306,6 +16333,22 @@ impl Checker {
                 "`yield` in a block given to `def_method`: the generated method has no block to yield to",
                 expr.span,
             );
+        }
+        // The method's block, from a task block or a shareable procedure
+        // (or a block inside one), which may run on another task: a
+        // capture as `blk.call` is, so only a `shareable` block (#739).
+        // (The method's frame is the outermost; `static(...)`'s and
+        // `def_method`'s blocks refuse `yield` above.)
+        // (An anonymous block is refused in any closure that may run
+        // later, below, which these are.)
+        let anonymous_late = self.in_late_closure() && self.lookup_var("&").is_some();
+        if self.env.static_frame.is_none()
+            && self.env.lifted_frame.is_none()
+            && !anonymous_late
+            && self.captured_across_task(self.env.frames.len() - 1)
+            && !matches!(&self.env.block_type, Some(Type::Proc(_, _, _, true, _)))
+        {
+            self.refuse_task_yield(expr.span);
         }
         // The method's anonymous block runs only while the method does.
         if self.in_late_closure() && self.lookup_var("&").is_some() {
