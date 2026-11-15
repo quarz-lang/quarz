@@ -4286,22 +4286,18 @@ fn class_methods_override_types_methods() {
         "which it overrides in `A`, which includes `M`",
     );
     ok("extension Object\n  def describe -> String = \"obj\"\nend\nclass A\n  def self.describe -> Int = 3\nend");
-    // `Cog`'s methods are paired only with a module's class methods
-    // (#723): a class object with class methods is a `Cog` only as a cog
-    // root, which includes modules, never classes. A class's, whatever
-    // its kind or an extension's of it, takes no `Cog` method's place.
+    // No class method takes a `Cog` method's place (#730): a class
+    // object is a `Cog` only as a cog root, whose class side never holds
+    // one of a `Cog` method's name (#725 refuses the root's include of
+    // such a module, and an extension of a root includes nothing). A
+    // class's, whatever its kind or an extension's of it, is not paired.
     ok("class C\n  def initialize; end\n  def self.version -> Int = 3\n  def self.module_name -> Int = 4\nend");
     ok("abstract class A\n  def self.version -> Int = 1\nend\ndata P(x: Int)\n  def self.module_name -> Int = 2\nend\nenum E\n  variant V(x: Int)\n  def self.version -> Int = 5\nend\nclass D\nend\nextension D\n  def self.version -> Int = 6\nend");
-    // A module's is checked against them: a root including it would run
-    // it as a `Cog`'s (cogs.rs, a_cog_roots_include_gives_it_class_methods).
-    err(
-        "module M\n  def self.version -> Int = 3\nend",
-        "`version` returns Int but `Cog#version`, which it overrides, returns String",
-    );
-    err(
-        "module M\n  def self.module_name -> Int = 3\nend",
-        "`module_name` returns Int but `Cog#module_name`, which it overrides, returns String",
-    );
+    // Nor a module's: no root may include it (cogs.rs,
+    // a_cog_roots_include_cannot_replace_a_cog_method), so it runs only on
+    // the class objects of the classes and modules including it.
+    ok("module M\n  def self.version -> Int = 3\nend\nclass A\n  include M\nend\nn: Int = A.version");
+    ok("module M\n  def self.module_name -> Int = 3\nend\nmodule W\n  include M\nend\nn: Int = W.module_name");
 }
 
 #[test]

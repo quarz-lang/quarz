@@ -2236,6 +2236,22 @@ fn a_cog_roots_include_gives_it_class_methods() {
     w.ok("app", &["build", "-o", "app.bin"]);
     let exe = Command::new(w.path("app/app.bin")).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&exe.stdout), expected);
+    // Nor can a dependent's extension of the root include a module with
+    // such a class method: an extension of a module includes nothing
+    // (rule B), so no class method reaches a root's class side that way
+    // and none takes a `Cog` method's place (#730), whatever its type.
+    for version in ["Int = 3", "String = \"v\""] {
+        w.app(
+            &dep,
+            &format!("module Ver\n  def self.version -> {version}\nend\nextension Lib\n  include Ver\nend\nx: Cog = Lib\nputs x.version\n"),
+        );
+        let err = w.fails("app", &["run"]);
+        assert!(
+            err.contains("error: an extension of the module `Lib` cannot include `Ver`"),
+            "{version}: {err}"
+        );
+        assert!(!err.contains("Cog#version"), "{version}: {err}");
+    }
 }
 
 /// A library cog's file is both its own top level and the root module's

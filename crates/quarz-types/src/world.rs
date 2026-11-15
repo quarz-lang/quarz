@@ -3698,19 +3698,38 @@ impl World {
         self.group_extensions(self.class(c).file)
     }
 
-    /// `Type` and its subclasses (`Meta::ClassDef`, `Cog`), the classes of
-    /// class objects, each with its ancestors in its own type parameter
-    /// (the class, substituted for it per class method). `overrides_with`
-    /// pairs `Cog` only with a module's class methods.
+    /// The classes of class objects whose methods a class method may
+    /// replace: `Type` first, then its subclasses but `Cog`
+    /// (`Meta::ClassDef`, a static def's `self`). Not `Cog`: its values
+    /// are cog roots, whose class side never holds a class method of a
+    /// `Cog` method's name (a root's include of such a module is refused,
+    /// and an extension of a root includes nothing, #725, #730), so no
+    /// class method takes a `Cog` method's place. The override table
+    /// (`type_classes`) and the declarer's class-side check both read it.
+    pub(crate) fn replaceable_type_classes(&self) -> Vec<ClassId> {
+        let class_ = self.builtin.class_;
+        let mut ks: Vec<ClassId> = self
+            .classes
+            .iter()
+            .filter(|k| k.id == class_ || self.class_is_a(k.id, class_))
+            .map(|k| k.id)
+            .filter(|k| *k != self.builtin.cog)
+            .collect();
+        ks.sort_by_key(|k| *k != class_);
+        ks
+    }
+
+    /// `replaceable_type_classes`, each with its ancestors in its own type
+    /// parameter (the class, substituted for it per class method).
     #[allow(clippy::type_complexity)]
     fn type_classes(&self) -> Vec<(Option<TypeParamId>, Vec<(ClassId, Vec<Type>)>)> {
-        self.classes
-            .iter()
-            .filter(|k| k.id == self.builtin.class_ || self.class_is_a(k.id, self.builtin.class_))
-            .map(|k| {
+        self.replaceable_type_classes()
+            .into_iter()
+            .map(|id| {
+                let k = self.class(id);
                 let param = (k.type_params.len() == 1).then(|| k.type_params[0].id);
                 let args: Vec<Type> = param.iter().map(|p| Type::Param(*p)).collect();
-                (param, self.ancestors(k.id, &args))
+                (param, self.ancestors(id, &args))
             })
             .collect()
     }
@@ -3751,21 +3770,8 @@ impl World {
             let class_ty = Type::Class(mi.owner, own);
             // `Type` and `Meta::ClassDef` are paired with every class
             // method: every class object is a `Type`, and a static def's
-            // `self` a `Meta::ClassDef`. `Cog` only with a module's (an
-            // extension's of a module included): a `Cog` is a library
-            // cog's root module, whose class object has the class methods
-            // of the modules it includes (docs/10 §6), and a root includes
-            // modules only, as modules do; a class (an abstract one, a
-            // `data` type, an enum) is never a root nor included by one.
-            // (An approximation: a module no root includes is checked
-            // against `Cog`'s methods too, refusing more than the exact
-            // rule; #725 decides whether a root may include such a
-            // module at all.)
-            let cog_side = self.class(mi.owner).kind == ClassKind::Module;
+            // `self` a `Meta::ClassDef` (`Cog` is not in `type_classes`).
             for (param, ancs) in type_classes {
-                if !cog_side && ancs.iter().any(|(anc, _)| *anc == self.builtin.cog) {
-                    continue;
-                }
                 let subst: HashMap<TypeParamId, Type> =
                     param.iter().map(|p| (*p, class_ty.clone())).collect();
                 for (anc, aargs) in ancs {
