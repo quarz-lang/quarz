@@ -1,0 +1,23 @@
+# A module's class method named like a method of `Cog`, of another
+# signature, is no override of it (#730): only a cog root is a `Cog`, and
+# no root may include such a module (#725), so it runs on the class
+# objects of what includes it, directly and through a module.
+module Ver
+  def self.version -> Int = 3
+end
+class A
+  include Ver
+end
+puts A.version
+
+module Names
+  def self.module_name -> Int = 4
+end
+module W
+  include Names
+end
+class B
+  include W
+end
+puts B.module_name
+puts W.module_name + 1
