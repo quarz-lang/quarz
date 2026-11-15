@@ -1993,7 +1993,12 @@ impl Checker {
                 // (`runs_on`: the recorded witness, or a class method below
                 // its class that takes its place, #681's (c), whose `super`
                 // reaches the recorded witness, statically: both are on the
-                // way.)
+                // way. Pushing the witness checks nothing by itself: the
+                // site's `new` is reached with `sid` for `self` only when
+                // every link of `chain` has a `super` (the checks below
+                // test `first_super` on each), so a method below without
+                // `super` (`p3n`) stops the chain there, and the witness's
+                // `new` is not reached.)
                 if let Some(by) = via_extension
                     .then(|| self.runs_on(sid, method))
                     .filter(|&b| b != method)
