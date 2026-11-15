@@ -1,0 +1,95 @@
+# #732: the class side's include pairs come from the instance side's
+# builder (`World::include_overrides_on`), so each cell answers as its
+# instance-side mirror (written next to it) does. Expected output derived
+# from the rules: a module's method a class (or module) includes later
+# takes the place of an earlier-included module's, and of a superclass's,
+# unless something before it in the order (the class's own method, or an
+# own module whose method overrides it) already does.
+# Cells skipped: generic targets and extensions' modules (the class side
+# takes no extension's module before #681).
+
+# A1, target a module: `N` includes `R` and then `O`; `O.label` takes
+# `R.label`'s place on `N`'s class side, through `Type[R]` too.
+module R1
+  def self.label -> String = "R1"
+end
+module O1
+  def self.label -> String = "O1"
+end
+module N1
+  include R1
+  include O1
+end
+def a1(t: Type[R1]) -> String = t.label
+puts "A1 " + a1(N1) + " " + N1.label
+# (Mirror: instance methods, a class including N.)
+module IR1
+  def label -> String = "R1"
+end
+module IO1
+  def label -> String = "O1"
+end
+module IN1
+  include IR1
+  include IO1
+end
+class IC1
+  include IN1
+  def initialize; end
+end
+def ia1(t: IR1) -> String = t.label
+puts "A1 mirror " + ia1(IC1.new) + " " + IC1.new.label
+
+# A2, target a class including that module.
+class K2
+  include N1
+end
+puts "A2 " + a1(K2) + " " + K2.label
+
+# B1, the class's own class method implements the module's abstract one,
+# before the superclass's.
+module R3
+  abstract def self.label -> String
+end
+class Base3
+  def self.label -> String = "Base3"
+end
+class Num3 < Base3
+  include R3
+  def self.label -> String = "Num3"
+end
+def b1(t: Type[R3]) -> String = t.label
+puts "B1 " + b1(Num3)
+module IR3
+  abstract def label -> String
+end
+class IBase3
+  def initialize; end
+  def label -> String = "Base3"
+end
+class INum3 < IBase3
+  include IR3
+  def initialize; end
+  def label -> String = "Num3"
+end
+def ib1(t: IR3) -> String = t.label
+puts "B1 mirror " + ib1(INum3.new)
+
+# B2, an own module's method implements it, before the superclass's.
+module O4
+  include R3
+  def self.label -> String = "O4"
+end
+class K4 < Base3
+  include O4
+end
+puts "B2 " + b1(K4) + " " + K4.label
+module IO4
+  include IR3
+  def label -> String = "O4"
+end
+class IK4 < IBase3
+  include IO4
+  def initialize; end
+end
+puts "B2 mirror " + ib1(IK4.new) + " " + IK4.new.label
