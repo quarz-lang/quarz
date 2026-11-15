@@ -217,15 +217,17 @@ impl Shake<'_> {
         // (The modules whose class methods it has are among them.)
         let mut act: Vec<ClassId> = class.ancestors.clone();
         act.push(c);
-        // (And the owners of the witnesses of its conformances through
-        // extensions, or its superclasses': `N.d` for `M.d` when an
-        // extension includes `N`, which may be no ancestor here, #504.)
+        // (And the owners of what its class-side calls run, the rows of
+        // `class_override_rows` for it (`World::class_method_target`): the
+        // witnesses of its conformances through extensions, or its
+        // superclasses' (`N.d` for `M.d` when an extension includes `N`,
+        // which may be no ancestor here, #504).)
         let witnesses: Vec<ClassId> = self
             .module
             .world
-            .class_ext_impls
+            .class_override_rows
             .iter()
-            .filter(|(k, _, _)| act.contains(k))
+            .filter(|(k, _, _)| *k == c)
             .map(|(_, _, by)| self.module.world.methods[*by as usize].owner)
             .collect();
         act.extend(witnesses);

@@ -2633,10 +2633,14 @@ impl Interp {
             // called on decides.
             return match recv {
                 Value::Class(cid) if m.overridden && *cid != m.owner => {
-                    // (Or a class conforming through an extension, with a
-                    // witness up its chain, #504.)
-                    if !self.program.world.class(*cid).ancestors.contains(&m.owner)
-                        && !self.has_class_witness(*cid, mid)
+                    // (A key of `RtWorld::class_override_rows`: `cid` has
+                    // the owner among its ancestors, every conformance, an
+                    // extension's too, #504.)
+                    let method = |id: MethodId| self.program.method(id);
+                    if !self
+                        .program
+                        .world
+                        .in_class_override_rows(&method, *cid, mid)
                     {
                         let what = format!(
                             "{} given to a call of `{}.{}`, a class no check saw",
@@ -2698,29 +2702,16 @@ impl Interp {
 
     /// The implementation of `Type`'s method `mid` for the class object
     /// `cid`: a class method of the class (or a superclass) of its
-    /// signature, or of a module it includes (docs/01 §6); `mid` itself
-    /// when none.
+    /// signature, or of a module it includes (docs/01 §6), as the row of
+    /// `RtWorld::class_override_rows` gives it (`World::class_method_target`);
+    /// `None` for `mid` itself.
     fn class_side_override(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
         if let Some(found) = self.class_dispatch_cache.borrow().get(&(cid, mid)) {
             return *found;
         }
-        let method = |id: MethodId| self.program.method(id);
-        let found = self.program.world.class_side_override(&method, cid, mid);
-        self.class_dispatch_cache
-            .borrow_mut()
-            .insert((cid, mid), found);
-        found
-    }
-
-    /// The class method of `cid` (or of a superclass below the owner of
-    /// `mid`) that overrides the class method `mid`: the row of
-    /// `RtWorld::class_override_rows` for a key
-    /// `RtWorld::in_class_override_rows` admits (none there is an internal
-    /// error), else `RtWorld::class_method_override`; cached per class.
-    fn class_method_override(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
-        if let Some(found) = self.class_method_cache.borrow().get(&(cid, mid)) {
-            return *found;
-        }
+        // (The row for a key, `RtWorld::in_class_override_rows`: a method
+        // outside the set has nothing on the class object to take its
+        // place, #681's option (a).)
         let world = &self.program.world;
         let method = |id: MethodId| self.program.method(id);
         let found = if world.in_class_override_rows(&method, cid, mid) {
@@ -2733,18 +2724,36 @@ impl Interp {
             });
             (by != mid).then_some(by)
         } else {
-            world.class_method_override(&method, cid, mid)
+            None
         };
-        self.class_method_cache
+        self.class_dispatch_cache
             .borrow_mut()
             .insert((cid, mid), found);
         found
     }
 
-    /// Whether class `cid` or a superclass conforms through an extension
-    /// with a witness for module class method `mid` (#504).
-    fn has_class_witness(&self, cid: ClassId, mid: MethodId) -> bool {
-        self.program.world.class_witness(cid, mid).is_some()
+    /// The class method of `cid` (or of a superclass below the owner of
+    /// `mid`) that overrides the class method `mid`: the row of
+    /// `RtWorld::class_override_rows` (`World::class_method_target`, #681's
+    /// option (a)). The call is a key (`resolve_dynamic` checks it): no row
+    /// is an internal error. Cached per class.
+    fn class_method_override(&self, cid: ClassId, mid: MethodId) -> Option<MethodId> {
+        if let Some(found) = self.class_method_cache.borrow().get(&(cid, mid)) {
+            return *found;
+        }
+        let world = &self.program.world;
+        let by = world.class_override_row(cid, mid).unwrap_or_else(|| {
+            panic!(
+                "internal error: no class override row for `{}` on `{}`",
+                self.program.method(mid).name,
+                world.class(cid).name
+            )
+        });
+        let found = (by != mid).then_some(by);
+        self.class_method_cache
+            .borrow_mut()
+            .insert((cid, mid), found);
+        found
     }
 
     /// The witness of abstract method `abs` for class `cid` that a call by

@@ -493,6 +493,7 @@ pub fn declared_with(
         file_names: Vec::new(),
         file_mains,
     };
+    rt.class_override_rows = class_override_rows(world, &rt, &table);
     rt.build_witness_rows();
     if cfg!(debug_assertions) {
         class_target_oracle(world, &rt, &table);
@@ -500,13 +501,74 @@ pub fn declared_with(
     rt
 }
 
+/// The rows of `RtWorld::class_override_rows`: for every key
+/// `RtWorld::in_class_override_rows` admits, what a call of the method on
+/// the class object runs, by `World::class_method_target` over the
+/// override table the methods ship (`table`). The candidates are the class
+/// methods of each class object's ancestors and the instance methods of
+/// `Type`'s classes named like a class method of its class side; the
+/// predicate decides which are keys.
+fn class_override_rows(
+    world: &World,
+    rt: &RtWorld,
+    table: &[Vec<MethodId>],
+) -> Vec<(ClassId, MethodId, MethodId)> {
+    let method = |id: MethodId| &rt.methods[id as usize];
+    let overrides = |m: MethodId| table[m as usize].clone();
+    let type_owners: Vec<ClassId> = {
+        let mut v: Vec<ClassId> = Vec::new();
+        for k in &world.classes {
+            if k.id == world.builtin.class_ || world.class_is_a(k.id, world.builtin.class_) {
+                v.push(k.id);
+                v.extend(rt.classes[k.id as usize].ancestors.iter().copied());
+            }
+        }
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+    let mut rows: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
+    for (cid, c) in rt.classes.iter().enumerate() {
+        let cid = cid as ClassId;
+        if c.kind == RtClassKind::Main {
+            continue;
+        }
+        let mut cands: Vec<MethodId> = Vec::new();
+        for &o in std::iter::once(&cid).chain(c.ancestors.iter()) {
+            cands.extend(rt.class(o).singleton_methods.values().flatten().copied());
+        }
+        let names: std::collections::BTreeSet<&str> = c
+            .class_side
+            .iter()
+            .flat_map(|k| rt.class(*k).singleton_methods.keys().map(|n| n.as_str()))
+            .collect();
+        for &t in &type_owners {
+            for (n, ids) in &rt.class(t).methods {
+                if names.contains(n.as_str()) {
+                    cands.extend(ids.iter().copied().filter(|&m| method(m).owner == t));
+                }
+            }
+        }
+        cands.sort_unstable();
+        cands.dedup();
+        for b in cands {
+            if rt.in_class_override_rows(&method, cid, b) {
+                rows.push((cid, b, world.class_method_target(&overrides, cid, b)));
+            }
+        }
+    }
+    rows.sort_unstable();
+    rows
+}
+
 /// The oracle of #681's PR 1 (option (a), log-only, debug builds): for
 /// every (class object, method) a call may dispatch on, compares
 /// `World::class_method_target` with what the runtime answers today
 /// (`RtWorld::class_method_override` for a class method,
 /// `RtWorld::class_side_override` for an instance method run on a class
-/// object), and, for a class method, the checker's composite
-/// (`witness_for`, else `World::class_side_dispatch`). Every difference,
+/// object). (The checker's composite, `witness_for` else
+/// `class_side_dispatch`, compared in the first run, is gone: the checker
+/// reads `class_method_target` too.) Every difference,
 /// and the key counts and the shipped world's size, is a line in the file
 /// `QUARZ_ORACLE_LOG` names.
 fn class_target_oracle(world: &World, rt: &RtWorld, table: &[Vec<MethodId>]) {
@@ -522,6 +584,23 @@ fn class_target_oracle(world: &World, rt: &RtWorld, table: &[Vec<MethodId>]) {
         format!("{}{sep}{}", world.class(mi.owner).name, mi.name)
     };
     let mut lines: Vec<String> = Vec::new();
+    // (The shipped row for a key, or `World::class_method_target` where
+    // the key is outside the set, which then answers the method itself.)
+    let missing = std::cell::RefCell::new(Vec::new());
+    let row_or_missing = |cid: ClassId, b: MethodId| {
+        if rt.in_class_override_rows(&method, cid, b) {
+            rt.class_override_row(cid, b).unwrap_or_else(|| {
+                missing.borrow_mut().push((cid, b));
+                b
+            })
+        } else {
+            let w = world.class_method_target(&overrides, cid, b);
+            if w != b {
+                missing.borrow_mut().push((cid, b));
+            }
+            b
+        }
+    };
     let (mut module_keys, mut class_keys, mut type_keys) = (0usize, 0usize, 0usize);
     let type_classes: Vec<ClassId> = world
         .classes
@@ -548,7 +627,7 @@ fn class_target_oracle(world: &World, rt: &RtWorld, table: &[Vec<MethodId>]) {
                 } else {
                     class_keys += 1;
                 }
-                let w = world.class_method_target(&overrides, cid, b);
+                let w = row_or_missing(cid, b);
                 let r = rt.class_method_override(&method, cid, b).unwrap_or(b);
                 if w != r {
                     lines.push(format!(
@@ -556,25 +635,6 @@ fn class_target_oracle(world: &World, rt: &RtWorld, table: &[Vec<MethodId>]) {
                         c.name,
                         name(b),
                         name(w),
-                        name(r)
-                    ));
-                }
-                let wf = world.class_side_order(cid).into_iter().find_map(|k| {
-                    world
-                        .class_ext_impls
-                        .iter()
-                        .find(|x| x.class == k && x.method == b)
-                        .map(|x| x.by)
-                });
-                let comp = wf
-                    .or_else(|| world.class_side_dispatch(cid, b))
-                    .unwrap_or(b);
-                if comp != r {
-                    lines.push(format!(
-                        "composite {} {} composite={} rt={}",
-                        c.name,
-                        name(b),
-                        name(comp),
                         name(r)
                     ));
                 }
@@ -602,7 +662,7 @@ fn class_target_oracle(world: &World, rt: &RtWorld, table: &[Vec<MethodId>]) {
                         }
                         seen.push(b);
                         type_keys += 1;
-                        let w = world.class_method_target(&overrides, cid, b);
+                        let w = row_or_missing(cid, b);
                         let r = rt.class_side_override(&method, cid, b).unwrap_or(b);
                         if w != r {
                             lines.push(format!(
@@ -617,6 +677,9 @@ fn class_target_oracle(world: &World, rt: &RtWorld, table: &[Vec<MethodId>]) {
                 }
             }
         }
+    }
+    for (cid, b) in missing.into_inner() {
+        lines.push(format!("missing {} {}", world.class(cid).name, name(b)));
     }
     lines.push(format!(
         "size module_keys={module_keys} class_keys={class_keys} type_keys={type_keys} rows_now={} bytes_now={}",

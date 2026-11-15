@@ -1,7 +1,8 @@
 //! The safety net over the witness rows the runtime reads (report-only):
 //! every row (class `C`, requirement `req`,
 //! what runs `by`) of `RtWorld::override_rows`, `witness_rows` and
-//! `class_override_rows` is checked as an override for `C` itself, by the
+//! `class_override_rows` (a module's class method on a class) is checked
+//! as an override for `C` itself, by the
 //! declarer's one pair check (`Declarer::check_override_pair`), with `C`'s
 //! own instantiation of `req`'s module and of `by`'s owner (or, for an
 //! extension's method, of the extension's target, `World::extension_subst`).
@@ -18,6 +19,7 @@
 use crate::declare::Declarer;
 use crate::types::{ClassId, ExtensionId, MethodId, Type};
 use crate::world::{View, World};
+use crate::ClassKind;
 use crate::FileDiagnostic;
 use quarz_syntax::Diagnostic;
 
@@ -78,7 +80,23 @@ pub fn check(
                 .iter()
                 .filter_map(|(c, r, w)| w.map(|w| ("witness", *c, *r, w))),
         )
-        .chain(class_rows.iter().map(|(c, r, b)| ("class", *c, *r, *b)));
+        // (Of the class side's rows, those of a module's class method on a
+        // class: the requirements a conformance asks of the class. The
+        // other rows, #681's option (a), are a class's own class methods
+        // and `Type`'s methods on a class object, whose pairs the declarer
+        // checks as overrides, and a module object's, which is no
+        // conformance.)
+        .chain(
+            class_rows
+                .iter()
+                .filter(|(c, r, _)| {
+                    let rm = world.method(*r);
+                    rm.singleton
+                        && world.class(rm.owner).kind == ClassKind::Module
+                        && world.class(*c).kind != ClassKind::Module
+                })
+                .map(|(c, r, b)| ("class", *c, *r, *b)),
+        );
     rows.map(|(table, class, req, by)| Checked {
         table,
         class,

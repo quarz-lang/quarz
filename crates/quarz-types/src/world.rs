@@ -3927,8 +3927,17 @@ impl World {
                 bi.extension.is_none()
                     && bi.singleton
                     && entries.iter().all(|&(c, k)| {
+                        // (`b` on `c`'s class side, its owner a class of its
+                        // chain or a module it includes itself, and what a
+                        // call of it on `c` runs, `class_method_target`.)
+                        let on_side = if self.class(bi.owner).kind == ClassKind::Module {
+                            self.class_side_order(c).contains(&bi.owner)
+                        } else {
+                            self.superclass_chain(c).contains(&bi.owner)
+                        };
                         self.same_signature(self.method(k), bi)
-                            && self.class_side_dispatch(c, b) == Some(k)
+                            && on_side
+                            && self.class_method_target(&|m| self.overrides(m), c, b) == k
                     })
             })
     }
@@ -3956,70 +3965,6 @@ impl World {
                 Type::Param(q) => Some(*q),
                 _ => None,
             }));
-        }
-        None
-    }
-
-    /// What a call of class method `b` (a class's or a module's) on the
-    /// class object `c` runs, as the runtime finds it: the class's own
-    /// class method of `b`'s signature, then one of a module it includes
-    /// (the last first), then the superclass's; `None` where `b` is not
-    /// on `c`'s class side.
-    pub fn class_side_dispatch(&self, c: ClassId, b: MethodId) -> Option<MethodId> {
-        let bi = self.method(b);
-        // (Whether one replaces `b`: the override table, #536.)
-        let hit = |m: MethodId| m == b || self.overrides(m).contains(&b);
-        let in_module = self.class(bi.owner).kind == ClassKind::Module;
-        let chain = self.superclass_chain(c);
-        // (A class's class method is looked for below its owner only, a
-        // module's in a class including the module.)
-        if !in_module && !chain.contains(&bi.owner)
-            || in_module && !self.class_side_order(c).contains(&bi.owner)
-        {
-            return None;
-        }
-        // (An abstract `b` is passed over: what comes after it runs, as the
-        // runtime finds it.)
-        for cur in chain {
-            if cur == bi.owner && !bi.is_abstract {
-                return Some(b);
-            }
-            let class = self.class(cur);
-            if let Some(ids) = class.singleton_methods.get(&bi.name) {
-                if let Some(&m) = ids.iter().find(|&&m| {
-                    let mi = self.method(m);
-                    mi.owner == cur && !mi.is_abstract && hit(m)
-                }) {
-                    return Some(m);
-                }
-            }
-            // (A module's class method the class's includes put in `b`'s
-            // place, before the walk below, as the runtime.)
-            if let Some(e) = self
-                .class_include_overrides_of(cur)
-                .into_iter()
-                .find(|e| e.overridden == b)
-            {
-                return Some(e.by);
-            }
-            // (As the runtime: the class's own includes, #504; its part of
-            // `class_side_order`, `RtClass::class_side`.)
-            for module in self.class_side_modules(c, cur) {
-                if module == bi.owner {
-                    if bi.is_abstract {
-                        continue;
-                    }
-                    return Some(b);
-                }
-                if let Some(ids) = self.class(module).singleton_methods.get(&bi.name) {
-                    if let Some(&f) = ids.iter().find(|&&f| {
-                        let fi = self.method(f);
-                        fi.owner == module && !fi.is_abstract && hit(f)
-                    }) {
-                        return Some(f);
-                    }
-                }
-            }
         }
         None
     }

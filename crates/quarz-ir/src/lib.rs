@@ -1745,11 +1745,13 @@ pub struct RtWorld {
     /// `override_rows` resolves it. Sorted.
     #[serde(default)]
     pub witness_rows: Vec<(ClassId, MethodId, Option<MethodId>)>,
-    /// (class, module class method, what runs on the class object):
-    /// `class_method_override` for every key `in_class_override_rows`
-    /// admits, the method itself when nothing replaces it
-    /// (`build_witness_rows`). Sorted. The runtime reads it for those keys;
-    /// a key without a row is an internal error.
+    /// (class object, method, what a call of the method on it runs):
+    /// `World::class_method_target` for every key `in_class_override_rows`
+    /// admits, the method itself when nothing replaces it. Built by the
+    /// lowering (`quarz_lower::rtworld`), never from this world's tables,
+    /// and only filtered by `shake` (#681's option (a)). Sorted. The
+    /// runtime reads it for those keys (`Interp::class_method_override`,
+    /// `class_side_override`); a key without a row is an internal error.
     #[serde(default)]
     pub class_override_rows: Vec<(ClassId, MethodId, MethodId)>,
     /// (class, overridden, overriding): the class-relative part of the
@@ -1933,10 +1935,10 @@ impl RtWorld {
 
     /// Fill `override_rows` and `witness_rows` over every key
     /// `in_witness_rows` admits (the witness record's entry, or `find_override` for
-    /// each), and `class_override_rows` over every key
-    /// `in_class_override_rows` admits (`class_method_override`),
-    /// evaluated once. Called by `quarz_lower::rtworld::build` and at the
-    /// end of `shake`, never by the runtime.
+    /// each), evaluated once; keep the rows of `class_override_rows` whose
+    /// key `in_class_override_rows` still admits (the lowering builds them,
+    /// `shake` drops methods). Called by `quarz_lower::rtworld::build` and
+    /// at the end of `shake`, never by the runtime.
     pub fn build_witness_rows(&mut self) {
         let mut rows: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
         let mut witnesses: Vec<(ClassId, MethodId, Option<MethodId>)> = Vec::new();
@@ -1968,34 +1970,18 @@ impl RtWorld {
                 }
             }
         }
-        let mut class_rows: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
-        {
+        let class_rows: Vec<(ClassId, MethodId, MethodId)> = {
             let method = |id: MethodId| &self.methods[id as usize];
-            for (cid, c) in self.classes.iter().enumerate() {
-                let cid = cid as ClassId;
-                for anc in &c.ancestors {
-                    let a = self.class(*anc);
-                    if a.kind != RtClassKind::Module {
-                        continue;
-                    }
-                    for &mid in a.singleton_methods.values().flatten() {
-                        if method(mid).owner != *anc
-                            || !self.in_class_override_rows(&method, cid, mid)
-                        {
-                            continue;
-                        }
-                        let found = self.class_method_override(&method, cid, mid).unwrap_or(mid);
-                        class_rows.push((cid, mid, found));
-                    }
-                }
-            }
-        }
+            self.class_override_rows
+                .iter()
+                .copied()
+                .filter(|(c, m, _)| self.in_class_override_rows(&method, *c, *m))
+                .collect()
+        };
         rows.sort_unstable();
         rows.dedup();
         witnesses.sort_unstable();
         witnesses.dedup();
-        class_rows.sort_unstable();
-        class_rows.dedup();
         self.override_rows = rows;
         self.witness_rows = witnesses;
         self.class_override_rows = class_rows;
@@ -2092,7 +2078,9 @@ impl RtWorld {
     }
 
     /// The class method of `cid` (or of a superclass below the owner of
-    /// `mid`) that overrides the class method `mid`.
+    /// `mid`) that overrides the class method `mid`. (Main's run-time walk,
+    /// read only by #681's oracle since the rows come from
+    /// `World::class_method_target`; it goes with the oracle.)
     pub fn class_method_override<'m>(
         &self,
         method: &dyn Fn(MethodId) -> &'m RtMethod,
@@ -2178,7 +2166,9 @@ impl RtWorld {
     /// The implementation of an instance method `mid` (`Type`'s, ...) for
     /// the class object `cid`: a class method of the class (or a
     /// superclass) of its signature, or of a module it includes (docs/01
-    /// §6); `None` when none (`Interp::class_side_override` caches it).
+    /// §6); `None` when none. (Main's run-time walk, read only by #681's
+    /// oracle since the rows come from `World::class_method_target`; it
+    /// goes with the oracle.)
     pub fn class_side_override<'m>(
         &self,
         method: &dyn Fn(MethodId) -> &'m RtMethod,
@@ -2235,11 +2225,21 @@ impl RtWorld {
         None
     }
 
-    /// Whether (class `cid`, class method `mid`) is a key of
-    /// `class_override_rows`: `cid` a class (not a module, not a file's top
-    /// level), `mid` a class method a module among `cid`'s ancestors
-    /// declares. The one definition of the key set: the rows are built over
-    /// it, and a lookup of a key in it finds a row or is an internal error.
+    /// Whether (class object `cid`, method `mid`) is a key of
+    /// `class_override_rows`: the one definition of the key set. The rows
+    /// are built over it (`quarz_lower::rtworld`), `shake` keeps the rows it
+    /// still admits, and a lookup of a key in it finds a row or is an
+    /// internal error. `cid` a class or a module (not a file's top level),
+    /// and `mid`
+    /// - a class method of `cid` or of an ancestor (`RtClass::ancestors`,
+    ///   every conformance: a module an extension brings too), in its
+    ///   owner's table; or
+    /// - an instance method of `Type` or of an ancestor of a subclass of
+    ///   it (`Type#name`, `Object#to_s`, ..., run on a class object), not an
+    ///   extension's, whose name a class method on `cid`'s class side
+    ///   (`RtClass::class_side`) has. One no class method there is named
+    ///   like is outside the set: nothing on the class object can take its
+    ///   place, so a call of it runs it, without a row.
     pub fn in_class_override_rows<'m>(
         &self,
         method: &dyn Fn(MethodId) -> &'m RtMethod,
@@ -2248,15 +2248,26 @@ impl RtWorld {
     ) -> bool {
         let c = self.class(cid);
         let m = method(mid);
-        !matches!(c.kind, RtClassKind::Module | RtClassKind::Main)
-            && m.singleton
-            && self.class(m.owner).kind == RtClassKind::Module
-            && c.ancestors.contains(&m.owner)
-            && self
-                .class(m.owner)
-                .singleton_methods
-                .get(&m.name)
-                .is_some_and(|ids| ids.contains(&mid))
+        if c.kind == RtClassKind::Main {
+            return false;
+        }
+        if m.singleton {
+            return (m.owner == cid || c.ancestors.contains(&m.owner))
+                && self
+                    .class(m.owner)
+                    .singleton_methods
+                    .get(&m.name)
+                    .is_some_and(|ids| ids.contains(&mid));
+        }
+        let class_ = self.builtin.class_;
+        !m.is_extension
+            && self.classes.iter().enumerate().any(|(t, k)| {
+                (t as ClassId == class_ || k.ancestors.contains(&class_))
+                    && (t as ClassId == m.owner || k.ancestors.contains(&m.owner))
+            })
+            && c.class_side
+                .iter()
+                .any(|k| self.class(*k).singleton_methods.contains_key(&m.name))
     }
 
     /// Every witness row as a line (`kind class method answer`, by id),

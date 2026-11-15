@@ -1467,11 +1467,10 @@ impl Checker {
         let saved = self.env.file;
         for (cid, bound, param, span, file) in std::mem::take(&mut self.abstract_type_args) {
             // What `t.m` runs on the class written, for each class method
-            // `m` of the bound: the witness its conformance recorded
-            // (`witness_for`), else the class-side dispatch
-            // (`World::class_side_dispatch`, over `class_side_order`, what
-            // `Interp::class_side_override` walks: an abstract method passed
-            // over to what implements it), else `m` (#536 step 2).
+            // `m` of the bound: `World::class_method_target`, the rows the
+            // runtime reads (#681's option (a); the record where the class
+            // conforms through an extension, else its class-side walk, an
+            // abstract method passed over to what implements it, #748).
             let mut bound_methods: Vec<MethodId> = Vec::new();
             for a in self.world.class_side_order(bound) {
                 let mut ids: Vec<MethodId> = self
@@ -1489,9 +1488,8 @@ impl Checker {
             let module = self.world.class(cid).kind == ClassKind::Module;
             let found = bound_methods.iter().find_map(|&bm| {
                 let runs = self
-                    .witness_for(cid, bm)
-                    .or_else(|| self.world.class_side_dispatch(cid, bm))
-                    .unwrap_or(bm);
+                    .world
+                    .class_method_target(&|m| self.world.overrides(m), cid, bm);
                 let mi = self.world.method(runs);
                 let why = if module {
                     mi.needs_includer.clone()?
@@ -1787,7 +1785,7 @@ impl Checker {
                 if w.by == w.method
                     || mm.name != name
                     || self.includes_itself(sid, mm.owner)
-                    || self.witness_for(sid, w.method) != Some(w.by)
+                    || self.runs_on(sid, w.method) != w.by
                 {
                     return None;
                 }
@@ -1838,19 +1836,14 @@ impl Checker {
             || self.world.extension_bounds_hold(e, &targs)
     }
 
-    /// The witness the runtime runs for module class method `mid` on class
-    /// `sid` (`Interp::class_witness`): recorded for the nearest class up
-    /// the chain (an extension's target, never a module, rule B).
-    fn witness_for(&self, sid: ClassId, mid: MethodId) -> Option<MethodId> {
-        let at = |k: ClassId| {
-            self.world
-                .class_ext_impls
-                .iter()
-                .find(|w| w.class == k && w.method == mid)
-                .map(|w| w.by)
-        };
-        // (`World::class_side_order`, the runtime's order too.)
-        self.world.class_side_order(sid).into_iter().find_map(at)
+    /// What a call of class method `mid` on the class object `sid` runs:
+    /// `World::class_method_target` over the override table, the rows the
+    /// runtime reads (#681's option (a)). Where `sid` conforms to `mid`'s
+    /// module through an extension only (`!includes_itself`), the witness
+    /// recorded for the nearest class up the chain, or `mid` itself.
+    fn runs_on(&self, sid: ClassId, mid: MethodId) -> MethodId {
+        self.world
+            .class_method_target(&|m| self.world.overrides(m), sid, mid)
     }
 
     /// Where class `sid` comes to reach a method of `cid` (a module it
@@ -1946,13 +1939,13 @@ impl Checker {
                 // A class method that is a witness of an extension's
                 // conformance runs, through `Type[M]`, for every subclass
                 // whose witness it is, as the runtime picks it
-                // (`witness_for`): no class method of the subclass excuses
-                // it (witnesses are fixed, #504).
+                // (`runs_on`): no class method of the subclass excuses it
+                // (witnesses are fixed, #504).
                 let pinned = self.world.class_ext_impls.iter().any(|w| {
                     w.by == method
                         && w.by != w.method
                         && !self.includes_itself(sid, self.world.method(w.method).owner)
-                        && self.witness_for(sid, w.method) == Some(method)
+                        && self.runs_on(sid, w.method) == method
                 });
                 // An extension's class method is bound statically (docs/01
                 // §7): a call of it runs it for every class it reaches,
@@ -1970,9 +1963,11 @@ impl Checker {
                 let floor = self.witness_floor(sid, &mname);
                 // (The witness of an extension's conformance takes the
                 // module's place, #504; a default is the module's own.)
-                if let Some(by) = self
-                    .witness_for(sid, method)
-                    .filter(|&b| via_extension && b != method)
+                // (`runs_on` gives the recorded witness here: `sid` does
+                // not include the module itself.)
+                if let Some(by) = via_extension
+                    .then(|| self.runs_on(sid, method))
+                    .filter(|&b| b != method)
                 {
                     overrides = true;
                     chain.push(by);
