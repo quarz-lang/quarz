@@ -1029,6 +1029,31 @@ fn a_later_extensions_witness_gives_way_to_an_earlier_subclasss_own_make() {
 }
 
 #[test]
+fn an_earlier_inputs_class_method_implements_a_later_includers_requirement() {
+    // #749: a superclass's class method declared in an earlier input than
+    // the class including the module implements its abstract class method
+    // when the override table pairs them; one of another parameter type
+    // does not, and the includer's input is refused with "must implement",
+    // as in a program.
+    let (out, _) = values(&[
+        "class B; def self.make(x: Int) -> String = \"b\"; end",
+        "class P; def self.make(x: String) -> String = \"p\"; end",
+        "module M; abstract def self.make(x: Int) -> String; end",
+        "class C1 < B; include M; end",
+        "class C2 < P; include M; end",
+        "def f(t: Type[M]) -> String = t.make(1)",
+        "f(C1)",
+    ]);
+    assert_eq!(out[3], "", "{out:?}");
+    assert!(
+        out[4].contains("`C2` must implement `self.make` (abstract in the included module `M`)"),
+        "{out:?}"
+    );
+    assert!(!out[4].contains("internal error"), "{out:?}");
+    assert_eq!(out[6], "=> \"b\"", "{out:?}");
+}
+
+#[test]
 fn a_later_inputs_class_under_a_re_abstraction_is_refused() {
     // #687's option 1: an abstract class declared in one input hides its
     // superclass's `m`; a concrete subclass in a later input must

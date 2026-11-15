@@ -3062,6 +3062,109 @@ fn an_overload_of_another_parameter_type_is_no_implementation() {
 }
 
 #[test]
+fn a_class_method_of_another_parameter_type_is_no_implementation() {
+    // #749: the class side's twin. A class method of the name that takes
+    // an abstract class method's calls by arity only is not what a call
+    // through the module runs (`World::class_method_target`): the class
+    // must implement it, said as such. (Main took it by arity, and the
+    // witness net then refused the class through its internal error.)
+    // The rest is main's declared-view scan, which #733 replaces with the
+    // instance side's answer: the extension cells below pin its verdicts,
+    // for #733 to change knowingly.
+    let head = "module M\n  abstract def self.make(x: Int) -> String\nend\n";
+    let must = "error: `C1` must implement `self.make` (abstract in the included module `M`)";
+    for (case, body) in [
+        // Its own, of another parameter type.
+        (
+            "own",
+            "class C1\n  include M\n  def self.make(x: String) -> String = \"c\"\nend\n",
+        ),
+        // Its own, of another arity.
+        (
+            "arity",
+            "class C1\n  include M\n  def self.make(x: Int, y: Int) -> String = \"c\"\nend\n",
+        ),
+        // A superclass's.
+        (
+            "superclass",
+            "class B\n  def self.make(x: String) -> String = \"b\"\nend\nclass C1 < B\n  include M\nend\n",
+        ),
+        // Through a module that includes `M`.
+        (
+            "module",
+            "module K\n  include M\nend\nclass C1\n  include K\n  def self.make(x: String) -> String = \"c\"\nend\n",
+        ),
+        // A superclass's, declared below the includer: every class's
+        // members are declared before the check runs, and the override
+        // table (`World::overrides`) is asked of them then.
+        (
+            "superclass below",
+            "class C1 < B\n  include M\nend\nclass B\n  def self.make(x: String) -> String = \"b\"\nend\n",
+        ),
+        // An extension's own class method is no implementation of a
+        // requirement of the class's own side (rule A), as on main: a
+        // top-level extension of the class, of a superclass, a scoped one
+        // under `using`, and an extension of a module a top-level
+        // extension includes.
+        (
+            "extension of the class",
+            "class C1\n  include M\nend\nextension C1\n  def self.make(x: Int) -> String = \"e\"\nend\n",
+        ),
+        (
+            "extension of a superclass",
+            "class B\nend\nclass C1 < B\n  include M\nend\nextension B\n  def self.make(x: Int) -> String = \"e\"\nend\n",
+        ),
+        (
+            "scoped extension",
+            "class C1\n  include M\nend\nmodule X\n  extension C1\n    def self.make(x: Int) -> String = \"e\"\n  end\nend\nusing X\n",
+        ),
+        // Nor, in the declared view, a top-level extension's module,
+        // which the class object's dispatch reaches (#681) and which the
+        // instance side's own conformance counts (#672): #733's.
+        (
+            "a top-level extension's module",
+            "module E\n  def self.make(x: Int) -> String = \"e\"\nend\nclass C1\n  include M\nend\nextension C1\n  include E\nend\n",
+        ),
+        (
+            "extension of an extension's module",
+            "module N\nend\nclass C1\n  include M\nend\nextension C1\n  include N\nend\nextension N\n  def self.make(x: Int) -> String = \"n\"\nend\n",
+        ),
+    ] {
+        let out = common::diagnostics(&format!("{head}{body}")).join("\n");
+        assert!(out.contains(must), "{case}: {out}");
+        assert_eq!(out.matches("error:").count(), 1, "{case}: {out}");
+    }
+    // Fuzz 7303 (#760's review), refused as on main: `S` includes `R`
+    // through `O`; a top-level extension of its superclass `B` includes
+    // `N`, which gives `label`, and defines its own. Its instance mirror is
+    // refused by rule A and #603; #733 decides the class side's.
+    let out = common::diagnostics(
+        "module R\n  abstract def self.label -> String\nend\nmodule O\n  include R\nend\nmodule N\n  include R\n  def self.label -> String = \"N\"\nend\nmodule E\n  def self.label -> String = \"E\"\nend\nclass B\nend\nclass K < B\nend\nclass S < K\n  include O\nend\nextension B\n  include E\n  include N\n  def self.label -> String = \"ext\"\nend\ndef via(t: Type[R]) -> String = t.label\nputs via(S)\n",
+    )
+    .join("\n");
+    assert!(
+        out.contains(
+            "error: `S` must implement `self.label` (abstract in the included module `R`)"
+        ),
+        "{out}"
+    );
+    assert_eq!(out.matches("error:").count(), 1, "{out}");
+    // What a call through `M` runs implements it: a wider parameter, a
+    // superclass's of the same signature, another module's.
+    let call = "def f(t: Type[M]) -> String = t.make(1)\nputs f(C1)\n";
+    for body in [
+        "class C1\n  include M\n  def self.make(x: Object) -> String = \"c\"\nend\n",
+        "class B\n  def self.make(x: Int) -> String = \"b\"\nend\nclass C1 < B\n  include M\nend\n",
+        "module N\n  def self.make(x: Int) -> String = \"n\"\nend\nclass C1\n  include M\n  include N\nend\n",
+        // A superclass's, declared below the includer.
+        "class C1 < B\n  include M\nend\nclass B\n  def self.make(x: Int) -> String = \"b\"\nend\n",
+    ] {
+        let out = common::diagnostics(&format!("{head}{body}{call}")).join("\n");
+        assert!(!out.contains("error:"), "{body}: {out}");
+    }
+}
+
+#[test]
 fn a_requirement_hidden_by_re_abstraction() {
     // #687's option 1 (the maintainer's decision of 2026-11-14): an
     // abstract class's `abstract def` hides what is above it in the
