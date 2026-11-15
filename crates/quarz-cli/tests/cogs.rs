@@ -2379,6 +2379,18 @@ fn a_cogs_root_module_is_a_cog() {
     w.ok("app", &["build", "-o", "app.bin"]);
     let exe = Command::new(w.path("app/app.bin")).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&exe.stdout), expected);
+    // `is_a?(Cog)` narrows to a `Cog`, not to `Nothing`: an `Int` cannot
+    // be given the root (#746; it ran into "undefined method `+` for
+    // Cog").
+    w.app(
+        &format!("GM = {{ git = \"{}\", tag = \"v1.1.0\" }}\n", w.url("lib")),
+        "def f(t: Type[Object]) -> Int\n  if t.is_a?(Cog)\n    n: Int = t\n    n + 1\n  else\n    0\n  end\nend\nputs f(Int)\nputs f(GM)\n",
+    );
+    let err = w.fails("app", &["run"]);
+    assert!(
+        err.contains("main.qz:3:14: error: cannot assign Cog to `n` of type Int"),
+        "{err}"
+    );
     // A script's `cog` is its file's; an application's test files read
     // the application's.
     w.write(
