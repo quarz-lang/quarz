@@ -1569,11 +1569,20 @@ fn a_yield_from_a_task_or_shareable_procedure_needs_a_shareable_block() {
         "def outer(&: () -> Int) -> Int\n  Task.spawn { yield }.await\nend\np outer { 7 }\n",
         "`yield` in a closure that may run later",
     );
+    // Even a `shareable` anonymous one: it is not kept past the call.
+    err(
+        "def outer(&: shareable () -> Int) -> shareable () -> Int\n  -> { yield }\nend\np outer { 7 }.call\n",
+        "`yield` in a closure that may run later",
+    );
+    err(
+        "def outer(&: shareable () -> Int) -> Int\n  Task.spawn { yield }.await\nend\np outer { 7 }\n",
+        "`yield` in a closure that may run later",
+    );
     // A `shareable` block: `yield` is its capture, as `blk.call` is.
     ok("def outer(&blk: shareable () -> Int) -> Int\n  Task.spawn { yield }.await + Task.blocking { yield }\nend\np outer { 7 }\n");
     ok("def outer(&blk: shareable (Int) -> Int) -> shareable () -> Int\n  -> { yield 2 }\nend\np outer { |x| x * 3 }.call\n");
     // Outside such a block, as before.
-    ok("def outer(&blk: () -> Int) -> Int\n  [1].map { |_x| yield }.first\nend\np outer { 7 }\n");
+    ok("def outer(&blk: () -> Int) -> Int\n  [1].map { |_x| yield }.sum\nend\np outer { 7 }\n");
 }
 
 #[test]
