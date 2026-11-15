@@ -10848,6 +10848,9 @@ impl Checker {
                 // `def self.build = new`: the instance is of the class the
                 // method is called on (a subclass, perhaps).
                 if implicit_self && builds {
+                    // (It reads `self`, the class: a task's block or a
+                    // shareable procedure around keeps it, #706.)
+                    self.note_task_self_use();
                     if let (Some(m), Some(CallTarget::Constructor { init, .. })) =
                         (self.env.method, self.out.calls.get(&expr.id).cloned())
                     {

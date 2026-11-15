@@ -96,6 +96,79 @@ enum ShareableTestTree[T]
   variant Empty
 end
 
+# Uses of `self` and of the method's block that are not a written
+# `self` (#706): each kept by the copy, so the procedure runs as written.
+class ShareableTestUses[T]
+  include Shareable
+  @n: Int
+
+  def initialize(@n: Int)
+  end
+
+  def n -> Int = @n
+
+  # The class's type parameter.
+  def typed -> shareable () -> Int = -> { Array[T].new.size + 1 }
+
+  # A named `shareable` method block, read without `yield`.
+  def named(&blk: shareable (Int) -> Int) -> shareable () -> Int = -> { blk.call(1) }
+
+  # A nested block using `self`.
+  def nested -> shareable () -> Int = -> { [1, 2].map { |x| x + n }.sum }
+
+  # A block with a receiver whose call falls through to this `self`.
+  def through -> shareable () -> Int = -> { 1.instance_exec { self + n } }
+
+  def spawned -> Int = Task.spawn { [1].map { |x| x + n }.sum }.await
+end
+
+class ShareableTestBase
+  include Shareable
+
+  def m(x: Int, &blk: shareable (Int) -> Int) -> Int = blk.call(x)
+
+  def k -> Int = 5
+
+  # `new` in a class method builds the receiver's class.
+  def self.maker -> shareable () -> ShareableTestBase = -> { new }
+
+  def self.spawned -> String = Task.spawn { new.class.name }.await
+end
+
+class ShareableTestDerived < ShareableTestBase
+  include Shareable
+
+  # `super` passing the method's block on, and with a block of its own.
+  def m(x: Int, &blk: shareable (Int) -> Int) -> Int
+    f: shareable () -> Int = -> { super }
+    g: shareable () -> Int = -> { super(x) { |y| y * 100 } }
+    f.call + g.call
+  end
+
+  def k -> Int
+    f: shareable () -> Int = -> { super + 1 }
+    f.call
+  end
+end
+
+# Two overloads, one taking a `shareable` block: a block whose body uses a
+# non-Shareable `self` takes the other, and runs with the live `self`.
+class ShareableTestOverloads
+  def run(&b: shareable (Int) -> Int) -> Int = b.call(1)
+  def run(&b: (Int, Int) -> Int) -> Int = b.call(1, 2)
+end
+
+class ShareableTestOverloadUser
+  var @n: Int = 10
+
+  def go -> Int
+    @n += 1
+    r = ShareableTestOverloads.new.run { |a, b| a + b + @n }
+    @n += 100
+    r + @n
+  end
+end
+
 class ShareableTest < Test::Case
   def test_immediates_and_strings
     assert_true(nil.shareable?)
@@ -234,6 +307,22 @@ class ShareableTest < Test::Case
     y = m.yielding { |x| x + 41 }
     assert_true(y.shareable?)
     assert_equal(42, y.call)
+  end
+
+  def test_uses_that_are_not_a_written_self
+    u = ShareableTestUses[Int].new(10)
+    assert_equal(1, u.typed.call)
+    assert_true(u.typed.shareable?)
+    assert_equal(42, u.named { |x| x + 41 }.call)
+    assert_equal(23, u.nested.call)
+    assert_equal(11, u.through.call)
+    assert_equal(11, u.spawned)
+    assert_equal(2 + 100, ShareableTestDerived.new.m(1) { |y| y + 1 })
+    assert_equal(6, ShareableTestDerived.new.k)
+    assert_equal("ShareableTestDerived", ShareableTestDerived.maker.call.class.name)
+    assert_equal("ShareableTestDerived", ShareableTestDerived.spawned)
+    assert_true(ShareableTestDerived.maker.shareable?)
+    assert_equal(14 + 111, ShareableTestOverloadUser.new.go)
   end
 
   def test_deep_and_shared_values
