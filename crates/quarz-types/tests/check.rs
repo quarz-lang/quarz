@@ -2909,6 +2909,42 @@ fn class_values_in_tests_and_patterns() {
     );
 }
 
+#[test]
+fn in_cog_matches_the_class_values_a_cog_root_may_be() {
+    // A cog root is a module, and its class object a `Cog`: `in Cog`
+    // over a `Type`, a `Type[Object]`, a `Type[M]` of a module or a
+    // `Type[T]` may match, with no warning (#735); the arm is a `Cog`.
+    no_warnings(
+        "def f(t: Type[Object]) -> String = case t\n  in Cog then t.version\n  else \"no\"\nend",
+    );
+    no_warnings(
+        "def f(t: Type) -> String = case t\n  in Cog then t.module_name\n  else \"no\"\nend",
+    );
+    no_warnings("module Mo\nend\ndef f(t: Type[Mo]) -> String = case t\n  in Cog then t.name\n  else \"no\"\nend");
+    no_warnings(
+        "def f[T](t: Type[T]) -> String = case t\n  in Cog then t.name\n  else \"no\"\nend",
+    );
+    // A class's class object never is one.
+    warns(
+        "def f(t: Type[Int]) -> String = case t\n  in Cog then t.name\n  else \"no\"\nend",
+        "Cog never matches Type[Int]",
+    );
+    warns(
+        "class Cl\nend\ndef f(t: Type[Cl]) -> String = case t\n  in Cog then t.name\n  else \"no\"\nend",
+        "Cog never matches Type[Cl]",
+    );
+    // The verdicts are as before: the arm's type still joins the
+    // `case`'s, and `Cog <: Type[Object]` stays false (#744).
+    err(
+        "def f(t: Type[Object]) -> Int = case t\n  in Cog then \"a\"\n  else 2\nend",
+        "its body has type String | Int",
+    );
+    err(
+        "def f(c: Cog) -> Type[Object] = c",
+        "returns Type[Object] but its body has type Cog",
+    );
+}
+
 /// `static def` and class bodies' `static` statements (docs/14): what
 /// the checker accepts and rejects; running them is quarz-cli's.
 #[test]

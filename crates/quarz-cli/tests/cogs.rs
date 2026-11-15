@@ -2365,6 +2365,20 @@ fn a_cogs_root_module_is_a_cog() {
     w.ok("app", &["build", "-o", "app.bin"]);
     let exe = Command::new(w.path("app/app.bin")).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&exe.stdout), expected);
+    // `in Cog` over a `Type[Object]` or a `Type`: it matches the root, so
+    // no "never matches" warning (#735).
+    w.app(
+        &format!("GM = {{ git = \"{}\", tag = \"v1.1.0\" }}\n", w.url("lib")),
+        "def pick(t: Type[Object]) -> String = case t\n  in Cog then \"cog \" + t.name + \" \" + t.version\n  else \"not a cog\"\nend\ndef plain(t: Type) -> String = case t\n  in Cog then \"cog \" + t.module_name\n  else \"other\"\nend\nputs pick(GM), pick(Int), plain(GM), plain(Int)\n",
+    );
+    let out = w.quarz("app", &["run"]);
+    assert!(out.ok, "{}", out.stderr);
+    assert!(!out.stderr.contains("warning"), "{}", out.stderr);
+    let expected = "cog greet-more 1.1.0\nnot a cog\ncog GreetMore\nother\n";
+    assert_eq!(out.stdout, expected);
+    w.ok("app", &["build", "-o", "app.bin"]);
+    let exe = Command::new(w.path("app/app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&exe.stdout), expected);
     // A script's `cog` is its file's; an application's test files read
     // the application's.
     w.write(
