@@ -108,7 +108,7 @@ Today values are reference counted, and updates copy unless the reference is uni
 
 ### Rejected Alternatives
 
-- **Generational tracing GC (Go/Erlang/Ruby)**: fast allocation and no counting overhead, but loses points 1–3 above. Without in-place updates of immutable values, the cost of persistent data structures is paid every time.
+- **Generational tracing GC (Go/Erlang/Ruby)**: fast allocation and no counting overhead, but loses points 1–3 above. Without counts there is no uniqueness to see, so an update of an immutable value could never be made in place: every update would copy, or the collections would have to be persistent structures, slower for lookup and indexing.
 - **Atomic RC at all times (Swift)**: simple, but the cost of atomic operations applies everywhere. The Lean 4 approach of "atomic only for shared subgraphs" fits Quarz, where task boundaries are explicit.
 
 ## 6. Native Code Generation
@@ -140,7 +140,7 @@ Listing what the Quarz implementation needs from the start, the decisive factor 
 | Scheduler, channels | Written in-house (`sched.rs`): worker threads with a run queue each, channels under a spin lock (§9; work stealing is planned, #338) |
 | Asynchronous IO | For sockets, epoll used directly on Linux (each socket registered once, edge-triggered) and `polling` (kqueue) elsewhere. Helper threads for whole-file, directory and metadata operations, name resolution, `connect`, child processes, and for filling or flushing the buffers of open `File`s and standard input. Writes to standard output and standard error are synchronous |
 | Bignums, regular expressions, Unicode | `num-bigint` (or `rug`), `regex`, `unicode-*` |
-| Persistent vector / HAMT | Written in-house, since in-place updates rely on RC uniqueness; `im`/`rpds` serve as references (planned: today collections are copy-on-write vectors and `indexmap` maps) |
+| Collections | Copy-on-write vectors and `indexmap` maps and sets, updated in place when unique (in-place updates rely on RC uniqueness) |
 | AST and type processing | `enum` and pattern matching |
 | Native back end | LLVM through textual IR compiled by `clang` |
 

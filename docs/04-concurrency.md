@@ -115,7 +115,7 @@ registry.update { |h| h.put(name, ch) }
 
 - Keep the `update` block pure, without side effects (it may be re-executed).
 - `compare_and_set(expected, replacement)` compares by identity, as Java's `AtomicReference`, Swift's atomic references and Clojure's `compare-and-set!` do: it replaces the value only if it is still the one `expected` is, which is the value read (`get`) before computing the replacement. An equal value made apart does not count, except for those compared by their contents: a number of the same class and value (`1` is not `1.0`), a string, a symbol, `Bytes`, a `Time` instant, a `Duration`, `nil`, a boolean. Since the identity of other immutable values carries no meaning otherwise (03-data-model.md §6), keep the value read and pass it back: one that went through a field holding a small `data` type by value is rebuilt there, and is not the one read. No `==` runs: a comparison under the atom's lock runs no Quarz code.
-- Updates to persistent data structures are cheap thanks to structural sharing, so even with a large `Hash` in an `Atom`, `update` is O(log n). (Currently collections are not persistent structures, see [03-data-model.md](03-data-model.md) §2: an update in an `Atom` copies the hash, O(n).)
+- `update` on an `Atom` holding a collection copies it each time, in O(n): the atom keeps the value it holds while the block computes the next one (to compare when it stores it), so the value the block is given is never the only reference, and collections are flat structures, not persistent ones ([03-data-model.md](03-data-model.md) §2). A large collection that changes often costs that copy per update.
 - Putting an `Atom` in a constant gives you a replacement for Ruby's class variables and global variables.
 
 ```crystal
