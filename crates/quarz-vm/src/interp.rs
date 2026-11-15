@@ -2633,6 +2633,10 @@ impl Interp {
             // called on decides.
             return match recv {
                 Value::Class(cid) if m.overridden && *cid != m.owner => {
+                    // (The cache holds keys only: a hit needs no check.)
+                    if let Some(found) = self.class_method_cache.borrow().get(&(*cid, mid)) {
+                        return Ok(found.unwrap_or(mid));
+                    }
                     // (A key of `RtWorld::class_override_rows`: `cid` has
                     // the owner among its ancestors, every conformance, an
                     // extension's too, #504.)

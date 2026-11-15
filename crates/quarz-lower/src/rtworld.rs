@@ -506,18 +506,7 @@ fn class_override_rows(
 ) -> Vec<(ClassId, MethodId, MethodId)> {
     let method = |id: MethodId| &rt.methods[id as usize];
     let overrides = |m: MethodId| table[m as usize].clone();
-    let type_owners: Vec<ClassId> = {
-        let mut v: Vec<ClassId> = Vec::new();
-        for k in &world.classes {
-            if k.id == world.builtin.class_ || world.class_is_a(k.id, world.builtin.class_) {
-                v.push(k.id);
-                v.extend(rt.classes[k.id as usize].ancestors.iter().copied());
-            }
-        }
-        v.sort_unstable();
-        v.dedup();
-        v
-    };
+    let type_owners = rt.type_side_owners();
     let mut rows: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
     for (cid, c) in rt.classes.iter().enumerate() {
         let cid = cid as ClassId;
@@ -528,14 +517,15 @@ fn class_override_rows(
         for &o in std::iter::once(&cid).chain(c.ancestors.iter()) {
             cands.extend(rt.class(o).singleton_methods.values().flatten().copied());
         }
-        let names: std::collections::BTreeSet<&str> = c
+        // (`Type`'s classes' instance methods named like a class method on
+        // the class side: each name looked up in their tables.)
+        for name in c
             .class_side
             .iter()
-            .flat_map(|k| rt.class(*k).singleton_methods.keys().map(|n| n.as_str()))
-            .collect();
-        for &t in &type_owners {
-            for (n, ids) in &rt.class(t).methods {
-                if names.contains(n.as_str()) {
+            .flat_map(|k| rt.class(*k).singleton_methods.keys())
+        {
+            for &t in &type_owners {
+                if let Some(ids) = rt.class(t).methods.get(name) {
                     cands.extend(ids.iter().copied().filter(|&m| method(m).owner == t));
                 }
             }
@@ -543,8 +533,20 @@ fn class_override_rows(
         cands.sort_unstable();
         cands.dedup();
         for b in cands {
-            if rt.in_class_override_rows(&method, cid, b) {
+            if rt.in_class_override_rows_with(&method, Some(&type_owners), cid, b) {
                 rows.push((cid, b, world.class_method_target(&overrides, cid, b)));
+            } else {
+                // (Outside the set a call runs the method itself: the
+                // function must agree, or the key set and the function
+                // have drifted apart.)
+                debug_assert_eq!(
+                    world.class_method_target(&overrides, cid, b),
+                    b,
+                    "internal error: `{}` on `{}` is outside the class override rows, \
+                     but class_method_target replaces it",
+                    rt.methods[b as usize].name,
+                    c.name
+                );
             }
         }
     }

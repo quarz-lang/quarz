@@ -1964,10 +1964,13 @@ impl RtWorld {
         }
         let class_rows: Vec<(ClassId, MethodId, MethodId)> = {
             let method = |id: MethodId| &self.methods[id as usize];
+            let owners = self.type_side_owners();
             self.class_override_rows
                 .iter()
                 .copied()
-                .filter(|(c, m, _)| self.in_class_override_rows(&method, *c, *m))
+                .filter(|(c, m, _)| {
+                    self.in_class_override_rows_with(&method, Some(&owners), *c, *m)
+                })
                 .collect()
         };
         rows.sort_unstable();
@@ -2046,6 +2049,19 @@ impl RtWorld {
         cid: ClassId,
         mid: MethodId,
     ) -> bool {
+        self.in_class_override_rows_with(method, None, cid, mid)
+    }
+
+    /// `in_class_override_rows`, with `type_side_owners` computed once by
+    /// a caller that asks for many keys (`None`: computed here when
+    /// needed).
+    pub fn in_class_override_rows_with<'m>(
+        &self,
+        method: &dyn Fn(MethodId) -> &'m RtMethod,
+        type_side_owners: Option<&[ClassId]>,
+        cid: ClassId,
+        mid: MethodId,
+    ) -> bool {
         let c = self.class(cid);
         let m = method(mid);
         if c.kind == RtClassKind::Main {
@@ -2059,15 +2075,33 @@ impl RtWorld {
                     .get(&m.name)
                     .is_some_and(|ids| ids.contains(&mid));
         }
-        let class_ = self.builtin.class_;
+        // (The cheap tests first: the name on the class side, then the
+        // owner among `Type`'s classes.)
         !m.is_extension
-            && self.classes.iter().enumerate().any(|(t, k)| {
-                (t as ClassId == class_ || k.ancestors.contains(&class_))
-                    && (t as ClassId == m.owner || k.ancestors.contains(&m.owner))
-            })
             && c.class_side
                 .iter()
                 .any(|k| self.class(*k).singleton_methods.contains_key(&m.name))
+            && match type_side_owners {
+                Some(owners) => owners.binary_search(&m.owner).is_ok(),
+                None => self.type_side_owners().binary_search(&m.owner).is_ok(),
+            }
+    }
+
+    /// The classes whose instance methods a class object answers: `Type`,
+    /// its subclasses, and their ancestors, sorted (the instance branch of
+    /// `in_class_override_rows`, and the candidates of the rows' builder).
+    pub fn type_side_owners(&self) -> Vec<ClassId> {
+        let class_ = self.builtin.class_;
+        let mut out: Vec<ClassId> = Vec::new();
+        for (t, k) in self.classes.iter().enumerate() {
+            if t as ClassId == class_ || k.ancestors.contains(&class_) {
+                out.push(t as ClassId);
+                out.extend(k.ancestors.iter().copied());
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     /// Every witness row as a line (`kind class method answer`, by id),
