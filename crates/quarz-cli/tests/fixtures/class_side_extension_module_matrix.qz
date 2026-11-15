@@ -1,0 +1,159 @@
+# #681: a top-level unconditional extension's modules are on the class
+# side's dispatch, after the class's own includes and before its
+# superclass, as on the instance side; a module's class method that comes
+# only through an extension is answered by the witness record, resolved
+# for the receiver (a subclass's own class method takes its place).
+# Expected output derived from these rules, each cell with the instance
+# side's answer for the same shape.
+# Cells skipped: another cog (cogs.rs), a conditional extension (its
+# witness is recorded as a scoped one's).
+module M
+  def self.d -> String = "M"
+end
+module N
+  include M
+  def self.d -> String = "N"
+end
+module O
+  include M
+  def self.d -> String = "O"
+end
+def vm(t: Type[M]) -> String = t.d
+def vn(t: Type[N]) -> String = t.d
+def gm[T <: M](t: Type[T]) -> String = t.d
+
+# C1, target a class: the extension's module before the class's own
+# nothing: N.
+class C1
+end
+extension C1
+  include N
+end
+puts "C1 " + C1.d + " " + vm(C1) + " " + vn(C1) + " " + gm(C1)
+
+# C2, target a superclass, called on a subclass: N, through the chain.
+class B2
+end
+class C2 < B2
+end
+extension B2
+  include N
+end
+puts "C2 " + C2.d + " " + vm(C2) + " " + vn(C2) + " " + gm(C2)
+
+# C3, a subclass's own class method takes the extension's module's place:
+# S3 everywhere.
+class B3
+end
+class C3 < B3
+  def self.d -> String = "S3"
+end
+extension B3
+  include N
+end
+puts "C3 " + C3.d + " " + vm(C3) + " " + vn(C3) + " " + gm(C3)
+
+# C4, the class includes O itself and the extension brings N: the own
+# include comes first, O (N and O are unrelated).
+class C4
+  include O
+end
+extension C4
+  include N
+end
+puts "C4 " + C4.d + " " + vm(C4) + " " + vn(C4) + " " + gm(C4)
+
+# C5, the superclass includes M itself; the extension of the subclass
+# brings N, before the superclass: N.
+class B5
+  include M
+end
+class C5 < B5
+end
+extension C5
+  include N
+end
+puts "C5 " + C5.d + " " + vm(C5) + " " + vn(C5) + " " + gm(C5)
+
+# C6, an abstract class target: N.
+abstract class C6
+end
+extension C6
+  include N
+end
+puts "C6 " + C6.d + " " + vm(C6) + " " + vn(C6)
+
+# C7, a generic class target: N.
+class C7[T]
+end
+extension C7[T]
+  include N
+end
+puts "C7 " + C7.d + " " + vm(C7) + " " + vn(C7)
+
+# C8, an abstract class method implemented by the extension's module: NA.
+module RA
+  abstract def self.a -> String
+end
+module NA
+  include RA
+  def self.a -> String = "NA"
+end
+class C8
+end
+extension C8
+  include NA
+end
+def va(t: Type[RA]) -> String = t.a
+puts "C8 " + C8.a + " " + va(C8)
+
+# C9, a scoped extension: inside its scope the witness (N), and a
+# subclass's own class method over it (S9).
+class C9
+end
+class D9 < C9
+  def self.d -> String = "S9"
+end
+module X9
+  extension C9
+    include N
+  end
+  def self.run -> Void
+    puts "C9 " + vm(C9) + " " + vn(C9) + " " + vm(D9) + " " + vn(D9)
+  end
+end
+X9.run
+
+# Instance mirrors of C3 and C4.
+module IM
+  def d -> String = "M"
+end
+module IN
+  include IM
+  def d -> String = "N"
+end
+module IOm
+  include IM
+  def d -> String = "O"
+end
+class IB3
+  def initialize; end
+end
+class IC3 < IB3
+  def initialize; end
+  def d -> String = "S3"
+end
+extension IB3
+  include IN
+end
+class IC4
+  include IOm
+  def initialize; end
+end
+extension IC4
+  include IN
+end
+def ivm(x: IM) -> String = x.d
+def ivn(x: IN) -> String = x.d
+puts "C3 mirror " + IC3.new.d + " " + ivm(IC3.new) + " " + ivn(IC3.new)
+puts "C4 mirror " + IC4.new.d + " " + ivm(IC4.new) + " " + ivn(IC4.new)

@@ -1,12 +1,12 @@
 # What a call of a module's class method runs on a subclass conforming
-# through an extension (`World::class_method_target`, #681's option (a)),
-# with witnesses fixed as today: through `Type[M]` and `T <: M` the
-# extension's own witness (which raises here); directly, the subclass's
-# own class method, whose `super` is resolved statically to the
-# extension's method (`Checker::check_super`), never to the module's
+# through an extension (`World::class_method_target`, #681's (c)): the
+# subclass's own class method below the class the witness is recorded for
+# takes the witness's place, through `Type[M]` and `T <: M` as directly;
+# its `super` is resolved statically to the extension's method
+# (`Checker::check_super`, which raises here), never to the module's
 # `new`. Cells: the extension top-level (1), scoped (2), and the
-# subclass's own `make` without `super` (3). Expected output derived from
-# these rules.
+# subclass's own `make` without `super` (3), which builds the subclass.
+# Expected output derived from these rules.
 module M1
   def self.make -> Self = new
 end

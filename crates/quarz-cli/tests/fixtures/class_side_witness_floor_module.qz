@@ -3,8 +3,9 @@
 # first in `C`'s class-side dispatch; it has no `super`, so `Base.make`
 # (and its `new`) never runs for `Sub` through `Type[M]`, and `Sub`'s
 # `initialize` need not take `Base#initialize`'s arguments. Through
-# `Type[M]`, `Sub` runs the witness (`N.make`, which raises); directly,
-# its own `make`.
+# `Type[M]` and directly, `Sub` runs its own `make`: the witness is
+# resolved for the receiver, and `Sub`'s own class method takes its
+# place, as on the instance side (#681).
 module M
   abstract def self.make -> Self
 end

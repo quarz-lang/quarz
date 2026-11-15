@@ -1250,7 +1250,7 @@ impl<'ast> Declarer<'ast> {
             let root_name = self.world.class(root).name.clone();
             let module_name = self.world.class(module).name.clone();
             let mut seen: HashSet<String> = HashSet::default();
-            for k in self.world.class_side_order(module) {
+            for k in self.world.class_own_side(module) {
                 let class = self.world.class(k);
                 if class.kind != ClassKind::Module {
                     continue;
@@ -2931,12 +2931,11 @@ impl<'ast> Declarer<'ast> {
         // (With the conditional extensions' modules, their bounds assumed:
         // the class's own methods override theirs, docs/01 §7.)
         let ancestors: Vec<(ClassId, Vec<Type>)> = self.world.own_ancestors(id);
-        let class_side: Vec<ClassId> = self
-            .world
-            .ancestors(id, &args)
-            .into_iter()
-            .map(|(c, _)| c)
-            .collect();
+        // (The class side's methods are checked over the same ancestors,
+        // every extension's modules: a module's class method reaches a
+        // subclass through the witness record wherever its extension is,
+        // scoped and conditional ones included, #681.)
+        let class_side: Vec<ClassId> = ancestors.iter().map(|(c, _)| *c).collect();
         // What the superclass brings, it checked itself.
         let inherited: HashSet<ClassId> = match &class.superclass {
             Some(Type::Class(sup, _)) => self.world.ancestor_ids(*sup).into_iter().collect(),
@@ -3329,8 +3328,10 @@ impl<'ast> Declarer<'ast> {
             .filter(|m| self.world.method(**m).owner == id)
             .map(|m| (*m, None))
             .collect();
-        // (Only its own includes: an extension's include puts no class
-        // method on the class object, #494.)
+        // (The modules on its class side's dispatch order: its own
+        // includes' and the top-level unconditional extensions' modules,
+        // whose class methods may take a superclass's place, #681; a
+        // scoped or conditional extension's put none there.)
         for (anc, _) in self.world.class_modules_included(id, &args) {
             let mc = self.world.class(anc);
             mine.extend(
@@ -4843,8 +4844,12 @@ impl<'ast> Declarer<'ast> {
             // (`Interp::class_method_override`), in order: each class's own
             // class methods, then the modules it includes (the last first,
             // each with what it includes), then its superclass's.
-            // (`World::class_side_order` with the modules' arguments: the
-            // declared resolution order, which `RtClass::class_side` ships.)
+            // (`World::class_own_side` with the modules' arguments, the
+            // declared view: the requirements of the modules the class
+            // includes itself; an extension's modules' are completed at the
+            // extension, #504. Where a top-level extension's module comes
+            // before the implementation found here, its method is paired
+            // with the abstract one by the class-side include pairs, #681.)
             let order: Vec<(ClassId, Option<Vec<Type>>)> = self
                 .world
                 .resolution(id, &[], View::Declared)

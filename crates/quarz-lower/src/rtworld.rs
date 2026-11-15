@@ -240,13 +240,9 @@ pub fn declared_with(
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
-                // (The declared view: an extension's conformance brings
-                // witnesses, `class_ext_impls`, not dispatch, #504.)
-                class_side: world
-                    .resolution(c.id, &[], quarz_types::world::View::Declared)
-                    .into_iter()
-                    .map(|(m, _)| m)
-                    .collect(),
+                // (The dispatch order: the top-level unconditional
+                // extensions' modules with the own includes, #681.)
+                class_side: world.class_dispatch_order(c.id),
                 built_by_runtime: world.built_by_runtime(c.id),
                 members,
                 variants: c.variants.clone(),
