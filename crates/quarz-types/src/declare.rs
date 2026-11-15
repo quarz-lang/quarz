@@ -2222,11 +2222,11 @@ impl<'ast> Declarer<'ast> {
         }
     }
 
-    /// An extension does not define a method that a module its include
-    /// brings gives with a body, when that module's method overrides an
-    /// ancestor's (rule E, the user's decision of 2026-11-13, #603): calls
-    /// typed through the module and through the ancestor would otherwise
-    /// run different methods (the extension's own through the module, the
+    /// An extension does not define an instance method that a module its
+    /// include brings gives with a body, when that module's method
+    /// overrides an ancestor's (rule E, the user's decision of 2026-11-13,
+    /// #603): calls typed through the module and through the ancestor
+    /// would otherwise run different methods (the extension's own through the module, the
     /// module's through the ancestor). The module's method overrides an
     /// ancestor's by the override table (`World::overrides`) or, for the
     /// target, a pair of `World::include_overrides_of`.
@@ -2252,10 +2252,14 @@ impl<'ast> Declarer<'ast> {
             .into_iter()
             .map(|io| io.by)
             .collect();
+        // (The extension's instance methods only: it keeps both sides in
+        // one table, #590, and a class method of the name runs in no
+        // instance method's place, #770.)
         let names: Vec<String> = self.world.extensions[ext as usize]
             .methods
-            .keys()
-            .cloned()
+            .iter()
+            .filter(|(_, ids)| ids.iter().any(|&i| !self.world.method(i).singleton))
+            .map(|(n, _)| n.clone())
             .collect();
         let mut found: Vec<(String, String)> = Vec::new();
         for name in names {
