@@ -12,13 +12,13 @@ The following types are **immutable**. There are no methods that modify a value;
 
 | Type | Implementation | Main "update" operations (return a new value) |
 |---|---|---|
-| `String` | Flat UTF-8 byte sequence (large concatenations temporarily use a rope) | `+`, `*`, `sub`, `gsub`, `upcase`, `strip`, `insert`… |
-| `Array[T]` | Persistent vector with 32-way branching (RRB-Tree). Up to 32 elements fit in a single node | `push`, `pop`, `shift`, `unshift`, `set`, `insert`, `delete_at`, `+`, `map`, `select`, `sort`, `concat`… |
-| `Hash[K, V]` | HAMT + a persistent vector that preserves insertion order. Up to 8 elements use a linear array | `put`, `delete`, `merge`, `update`, `select`, `transform_values`… |
-| `Set[T]` | HAMT | `add`, `delete`, `\|`, `&`, `-`… |
+| `String` | Flat UTF-8 byte sequence (at most 14 bytes inside the value itself) | `+`, `*`, `sub`, `gsub`, `upcase`, `strip`, `insert`… |
+| `Array[T]` | Flat vector (an array of only `Int`s or only `Float`s stores machine words) | `push`, `pop`, `shift`, `unshift`, `set`, `insert`, `delete_at`, `+`, `map`, `select`, `sort`, `concat`… |
+| `Hash[K, V]` | Hash table that keeps insertion order (one whose keys and values are all `Int` is stored unboxed) | `put`, `delete`, `merge`, `update`, `select`, `transform_values`… |
+| `Set[T]` | Hash set that keeps insertion order | `add`, `delete`, `\|`, `&`, `-`… |
 | `Range[T]`, `Tuple`, `Symbol`, numbers, `Bool`, `Nil`, `Regexp` | | |
 
-The Implementation column is the design. Currently `Array` is a flat vector (an array of only `Int`s or only `Float`s stores machine words), `Hash` an insertion-ordered hash table (one whose keys and values are all `Int` is stored unboxed), `Set` an insertion-ordered hash set, and `String` a flat UTF-8 string (at most 14 bytes inside the value itself; no rope). An update is in place when the reference is unique, as below, and otherwise copies the whole collection, in O(n).
+These flat structures are the design, not a stage on the way to persistent ones. An update is in place when the reference is unique, as below, and otherwise copies the whole collection, in O(n). The unique case is the common one, and flat storage serves it best: a lookup or an index touches one contiguous block, and compiled code reads an element directly. Persistent collections, which share structure between versions so that updating a shared value costs O(log n) (an insertion-ordered persistent map being an intricate structure), may be added later as separate types where the sharing is the point, if a use shows the need; nothing is planned.
 
 ```crystal
 a = [1, 2, 3]
@@ -40,7 +40,7 @@ arr = arr.push(4)    # OK
 
 ### Complexity and "update in place when unique"
 
-With the persistent structures of the design, an update would be `O(log32 n)`, effectively constant in practice; today an update of a shared collection copies it, in O(n). In either case, since Quarz's memory management is reference counting ([05-execution.md](05-execution.md) §5), if there is only one reference to `arr` at the point of `arr.push(4)`, the **original array's storage is updated in place** instead of creating a new array.
+An update of a shared collection copies it, in O(n). Since Quarz's memory management is reference counting ([05-execution.md](05-execution.md) §5), if there is only one reference to `arr` at the point of `arr.push(4)`, the **original array's storage is updated in place** instead of creating a new array.
 
 ```crystal
 def collect(n: Int) -> Array[Int]
@@ -59,7 +59,7 @@ ys: Array[Int] = []
 n.times { |i| ys = add(ys, i) }   # ys moves into add, xs.push updates it in place
 ```
 
-This is the same technique as "functional but in-place" in Lean 4 / Koka, and it lets straightforward Ruby-style loops run about as fast as with a mutable array. If the reference is shared, it automatically falls back to copying (only the nodes on the path; currently the whole collection), so the semantics always remain immutable.
+This is the same technique as "functional but in-place" in Lean 4 / Koka, and it lets straightforward Ruby-style loops run about as fast as with a mutable array. If the reference is shared, it automatically falls back to copying the collection, so the semantics always remain immutable.
 
 ## 3. Builders (Mutable, Task-Local)
 
