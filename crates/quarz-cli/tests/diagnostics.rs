@@ -4051,6 +4051,119 @@ fn an_extension_completes_the_conformance_it_makes() {
 }
 
 #[test]
+fn a_near_miss_in_a_conforming_extension_is_said_once() {
+    // #751 (option (a)): an extension's own method of an abstract
+    // requirement's name that takes its calls by arity but not by type in
+    // its parameters is another overload, not an override: the one error
+    // says the requirement is missing and names it (on the instance side
+    // R0's, on the class side the extension's must-implement). A method of
+    // the requirement's parameters with another result takes its calls:
+    // it stays refused as an override, beside R0's error, as before.
+    let cells = [
+        (
+            "module M\n  abstract def greet(x: Int) -> String\nend\nclass C1\nend\nextension C1\n  include M\n  def greet(x: String) -> String = \"s\"\nend\n",
+            "6:11: error: this extension includes `M` but nothing here implements `greet` (`greet(x: String) -> String` here does not take the place of `M#greet(x: Int) -> String`: another overload): define it in the extension or in `C1`",
+        ),
+        (
+            "module M\n  abstract def self.make(x: Int) -> String\nend\nclass C1\nend\nextension C1\n  include M\n  def self.make(x: String) -> String = \"s\"\nend\n",
+            "6:11: error: `C1` must implement `self.make` (abstract in `M`, which this extension includes; `make(x: String) -> String` here does not take the place of `M.make(x: Int) -> String`: another overload): define `def self.make` in the extension or in `C1`",
+        ),
+    ];
+    for (src, want) in cells {
+        let out = common::diagnostics(src).join("\n");
+        assert!(out.contains(want), "{src}\n{out}");
+        assert_eq!(out.matches("error:").count(), 1, "{src}\n{out}");
+        assert!(!out.contains("which it overrides"), "{src}\n{out}");
+    }
+    // A generic module: the near miss of `M[T]#greet(x: T)` is named, a
+    // method taking `T` implements it; on both sides. A parameter and a
+    // result both differing: another overload, one error. Two near misses:
+    // both named, one error.
+    let near = "here does not take the place of";
+    let both = "here do not take the place of";
+    for (src, want) in [
+        (
+            "module M[T]\n  abstract def greet(x: T) -> String\nend\nclass Box[T]\n  def initialize; end\nend\nextension Box[T]\n  include M[T]\n  def greet(x: String) -> String = \"s\"\nend\n",
+            near,
+        ),
+        (
+            "module M[T]\n  abstract def self.make(x: T) -> String\nend\nclass Box[T]\nend\nextension Box[T]\n  include M[T]\n  def self.make(x: String) -> String = \"s\"\nend\n",
+            near,
+        ),
+        (
+            "module M\n  abstract def greet(x: Int) -> String\nend\nclass C1\nend\nextension C1\n  include M\n  def greet(x: String) -> Int = 1\nend\n",
+            "`greet(x: String) -> Int` here does not take the place of `M#greet(x: Int) -> String`: another overload",
+        ),
+        (
+            "module M\n  abstract def self.make(x: Int) -> String\nend\nclass C1\nend\nextension C1\n  include M\n  def self.make(x: String) -> Int = 1\nend\n",
+            "`make(x: String) -> Int` here does not take the place of `M.make(x: Int) -> String`: another overload",
+        ),
+        (
+            "module M\n  abstract def greet(x: Int) -> String\nend\nclass C1\nend\nextension C1\n  include M\n  def greet(x: String) -> String = \"s\"\n  def greet(x: Bool) -> String = \"b\"\nend\n",
+            both,
+        ),
+        (
+            "module M\n  abstract def self.make(x: Int) -> String\nend\nclass C1\nend\nextension C1\n  include M\n  def self.make(x: String) -> String = \"s\"\n  def self.make(x: Bool) -> String = \"b\"\nend\n",
+            both,
+        ),
+    ] {
+        let out = common::diagnostics(src).join("\n");
+        assert!(out.contains(want), "{src}\n{out}");
+        assert_eq!(out.matches("error:").count(), 1, "{src}\n{out}");
+    }
+    for ok in [
+        "module M[T]\n  abstract def greet(x: T) -> String\nend\nclass Box[T]\n  def initialize; end\nend\nextension Box[T]\n  include M[T]\n  def greet(x: T) -> String = \"t\"\nend\n",
+        "module M[T]\n  abstract def self.make(x: T) -> String\nend\nclass Box[T]\nend\nextension Box[T]\n  include M[T]\n  def self.make(x: T) -> String = \"t\"\nend\n",
+        // A method of the class implements it on the instance side; the
+        // extension's near miss is another overload there.
+        "module M\n  abstract def greet(x: Int) -> String\nend\nclass C1\n  def initialize; end\n  def greet(x: Int) -> String = \"c\"\nend\nextension C1\n  include M\n  def greet(x: String) -> String = \"s\"\nend\n",
+    ] {
+        let out = common::diagnostics(ok).join("\n");
+        assert!(!out.contains("error:"), "{ok}\n{out}");
+    }
+    // On the class side, the extension's own method is the witness before
+    // the class's (#669): with a class method of the name that fits, the
+    // near miss is refused as an override, as on main.
+    let out = common::diagnostics(
+        "module M\n  abstract def self.make(x: Int) -> String\nend\nclass C1\n  def self.make(x: Int) -> String = \"c\"\nend\nextension C1\n  include M\n  def self.make(x: String) -> String = \"s\"\nend\n",
+    )
+    .join("\n");
+    assert!(
+        out.contains("`make` takes String for `x` but `M.make`, which it overrides, is given Int"),
+        "{out}"
+    );
+    assert_eq!(out.matches("error:").count(), 1, "{out}");
+    // Where the class side's check does not give its named error (it
+    // refuses the include first), the near miss left to it is checked as
+    // before (`check_class_near_misses_said`): main's override error, never
+    // none.
+    for src in [
+        // A module with `static def`s: the include is refused.
+        "module M\n  abstract def self.make(x: Int) -> String\n  static def self.s -> Void\n  end\nend\nclass C\nend\nextension C\n  include M\n  def self.make(x: String) -> String = \"e\"\nend\n",
+        // A second extension's include of the same module is refused.
+        "module M\n  abstract def self.make(x: Int) -> String\nend\nclass C\nend\nextension C\n  include M\n  def self.make(x: String) -> String = \"e1\"\nend\nextension C\n  include M\n  def self.make(x: Bool) -> String = \"e2\"\nend\n",
+    ] {
+        let out = common::diagnostics(src).join("\n");
+        assert!(
+            out.contains("which it overrides, is given Int: an override takes what the method it overrides does"),
+            "{src}\n{out}"
+        );
+    }
+    let out = common::diagnostics(
+        "module M\n  abstract def greet(x: Int) -> String\nend\nclass C1\nend\nextension C1\n  include M\n  def greet(x: Int) -> Int = 1\nend\n",
+    )
+    .join("\n");
+    assert!(
+        out.contains("this extension includes `M` but nothing here implements `greet`: define it"),
+        "{out}"
+    );
+    assert!(
+        out.contains("`greet` returns Int but `M#greet`, which it overrides, returns String"),
+        "{out}"
+    );
+}
+
+#[test]
 fn a_requirement_r0_refused_is_not_reported_again_at_the_classes() {
     // R0's error at the extension says it once; the target and the classes
     // under it do not repeat "must implement" for the same requirement.

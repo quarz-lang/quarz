@@ -1054,6 +1054,34 @@ fn an_earlier_inputs_class_method_implements_a_later_includers_requirement() {
 }
 
 #[test]
+fn an_inputs_near_miss_in_a_conforming_extension_leaves_the_next_input_working() {
+    // #751: an input whose extension has a near miss of an abstract method
+    // is refused with the one "nothing here implements" error naming it;
+    // a later input that implements it is accepted and runs.
+    let (out, _) = values(&[
+        "module M; abstract def greet(x: Int) -> String; end",
+        "class C1; def initialize; end; end",
+        "extension C1; include M; def greet(x: String) -> String = \"s\"; end",
+        "class C2; def initialize; end; end",
+        "extension C2; include M; def greet(x: Int) -> String = \"c2\"; end",
+        "def f(m: M) -> String = m.greet(1)",
+        "f(C2.new)",
+    ]);
+    assert!(
+        out[2].contains("nothing here implements `greet` (`greet(x: String) -> String` here does not take the place of `M#greet(x: Int) -> String`: another overload)"),
+        "{out:?}"
+    );
+    assert_eq!(
+        out[2].matches("nothing here implements").count(),
+        1,
+        "{out:?}"
+    );
+    assert!(!out[2].contains("which it overrides"), "{out:?}");
+    assert_eq!(out[4], "", "{out:?}");
+    assert_eq!(out[6], "=> \"c2\"", "{out:?}");
+}
+
+#[test]
 fn a_later_inputs_class_under_a_re_abstraction_is_refused() {
     // #687's option 1: an abstract class declared in one input hides its
     // superclass's `m`; a concrete subclass in a later input must

@@ -102,6 +102,19 @@ pub struct Declarer<'ast> {
     /// requirement again (`check_conformance_of`). Diagnostic only; a pair
     /// missing from it means a duplicate error, never a lost one.
     r0_refused: HashSet<(ExtensionId, MethodId)>,
+    /// Of those, the extension's own methods of the requirement's name
+    /// that take its calls by shape but not by type in their parameters
+    /// (another overload): R0's error names them, and the extensions'
+    /// override check does not refuse them again as overrides (#751).
+    r0_near: HashSet<(ExtensionId, MethodId, MethodId)>,
+    /// The class-side pairs (extension's method, requirement, its owner,
+    /// the owner's arguments, `Self`) the extensions' override check left
+    /// to `check_extension_class_side`'s named "must implement" (#751),
+    /// with their extension; and the (extension, requirement) pairs that
+    /// error was given for. A pair left without its error is checked as
+    /// main checked it, after both (`check_class_near_misses_said`).
+    class_near_left: Vec<(MethodId, MethodId, ClassId, Vec<Type>, Type, ExtensionId)>,
+    class_near_said: HashSet<(ExtensionId, MethodId)>,
     /// The pairs a check refused (reported once, at the module or the
     /// first class including it): not reported again in another class's
     /// frame. Only refusals: a pair that passed for one class is still
@@ -237,6 +250,9 @@ impl<'ast> Declarer<'ast> {
             frame_checked: HashSet::default(),
             conformance_checked: Vec::new(),
             r0_refused: HashSet::default(),
+            r0_near: HashSet::default(),
+            class_near_left: Vec::new(),
+            class_near_said: HashSet::default(),
             refused_pairs: HashSet::default(),
             type_classes: None,
             override_span: None,
@@ -1133,6 +1149,7 @@ impl<'ast> Declarer<'ast> {
             self.file = e.file;
             self.check_extension_static(e);
         }
+        self.check_class_near_misses_said();
     }
 
     /// A generic module with `static def self.` macros (docs/14 §2) is
@@ -1528,7 +1545,7 @@ impl<'ast> Declarer<'ast> {
             .map(|p| Type::Param(p.id))
             .collect();
         let instance = Type::Class(target, target_args);
-        let mut missing: Vec<(String, String)> = Vec::new();
+        let mut missing: Vec<(String, String, String)> = Vec::new();
         // (The class's class-side order where the extension is declared,
         // with it active: what a direct call there runs, #669.)
         let order: Vec<ClassId> = self
@@ -1673,6 +1690,27 @@ impl<'ast> Declarer<'ast> {
                         if !self.world.class_ext_impls.contains(&w) {
                             self.world.class_ext_impls.push(w);
                         }
+                        // The extension's own methods that take an
+                        // abstract requirement's calls by arity only, with
+                        // nothing else to implement it, are other overloads:
+                        // the requirement is missing, said so with them
+                        // named, not as an override (#751). (Refused either
+                        // way; the extensions' override check leaves them
+                        // to this error.)
+                        let near = if info.is_abstract {
+                            self.class_near_misses(ext, m, &aargs)
+                        } else {
+                            Vec::new()
+                        };
+                        if near.contains(&i) {
+                            self.class_near_said.insert((ext, m));
+                            missing.push((
+                                info.name.clone(),
+                                self.world.class(anc).name.clone(),
+                                format!("; {}", self.near_misses(&near, m)),
+                            ));
+                            continue;
+                        }
                         // (Checked as an override, seen from the class.)
                         // (At the extension, unless its own method.)
                         self.override_span = Some(span);
@@ -1748,7 +1786,11 @@ impl<'ast> Declarer<'ast> {
                         self.override_span_always = false;
                     }
                     None if info.is_abstract => {
-                        missing.push((info.name.clone(), self.world.class(anc).name.clone()));
+                        missing.push((
+                            info.name.clone(),
+                            self.world.class(anc).name.clone(),
+                            String::new(),
+                        ));
                     }
                     None => {}
                 }
@@ -1757,10 +1799,10 @@ impl<'ast> Declarer<'ast> {
         missing.sort();
         missing.dedup();
         let cname = self.world.class(target).name.clone();
-        for (name, owner) in missing {
+        for (name, owner, near) in missing {
             self.error(
                 format!(
-                    "`{cname}` must implement `self.{name}` (abstract in `{owner}`, which this extension includes): define `def self.{name}` in the extension or in `{cname}`"
+                    "`{cname}` must implement `self.{name}` (abstract in `{owner}`, which this extension includes{near}): define `def self.{name}` in the extension or in `{cname}`"
                 ),
                 span,
             );
@@ -2022,7 +2064,7 @@ impl<'ast> Declarer<'ast> {
         let typed = self.world.ancestors_with_no_extensions(target);
         let ext_info = self.world.extensions[ext as usize].clone();
         let ext_subst = self.world.extension_subst(&ext_info, &own_args);
-        let mut missing: Vec<(String, String)> = Vec::new();
+        let mut missing: Vec<(String, String, Vec<MethodId>, MethodId)> = Vec::new();
         for m in &mine {
             let rsubst = self.world.class_subst(*m, &args_in_conf(*m));
             let abstracts: Vec<MethodId> = self
@@ -2138,17 +2180,42 @@ impl<'ast> Declarer<'ast> {
                 }
                 if !(by_ext || by_mods || by_own) {
                     self.r0_refused.insert((ext, r));
-                    missing.push((rm.name.clone(), self.world.class(*m).name.clone()));
+                    let near: Vec<MethodId> = ext_info
+                        .methods
+                        .get(&rm.name)
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .filter(|&i| {
+                            self.implements(i, r)
+                                && !self.world.takes_calls_of(
+                                    self.world.method(i),
+                                    &ext_subst,
+                                    &rm,
+                                    &rsubst,
+                                )
+                        })
+                        .collect();
+                    for &i in &near {
+                        self.r0_near.insert((ext, r, i));
+                    }
+                    missing.push((rm.name.clone(), self.world.class(*m).name.clone(), near, r));
                 }
             }
         }
         missing.sort();
         missing.dedup();
         let tname = self.world.class(target).name.clone();
-        for (name, owner) in missing {
+        for (name, owner, near, r) in missing {
+            let near = self.near_misses(&near, r);
+            let near = if near.is_empty() {
+                near
+            } else {
+                format!(" ({near})")
+            };
             self.error(
                 format!(
-                    "this extension includes `{owner}` but nothing here implements `{name}`: define it in the extension or in `{tname}` (an extension completes the conformance it makes)"
+                    "this extension includes `{owner}` but nothing here implements `{name}`{near}: define it in the extension or in `{tname}` (an extension completes the conformance it makes)"
                 ),
                 span,
             );
@@ -2646,6 +2713,7 @@ impl<'ast> Declarer<'ast> {
     /// conformance (`check_conformance_of`).
     fn check_extensions_overrides(&mut self) {
         let mut pairs: Vec<(MethodId, MethodId, ClassId, Vec<Type>, Type)> = Vec::new();
+        let mut left: Vec<(MethodId, MethodId, ClassId, Vec<Type>, Type, ExtensionId)> = Vec::new();
         for (ei, e) in self.world.extensions.iter().enumerate() {
             let dispatches = |owner: ClassId| {
                 e.always_active
@@ -2704,13 +2772,40 @@ impl<'ast> Declarer<'ast> {
                                     choice.is_none_or(|w| self.implements(w, o)),
                                     "R0's choice for an extension takes the requirement's calls by type but not by shape"
                                 );
+                                // (Not a method a missing requirement's error
+                                // names as another overload, R0's on the
+                                // instance side, `check_extension_class_side`'s
+                                // on the class side, #751: its program is
+                                // refused there.)
                                 match choice {
                                     Some(w) => w == mid,
-                                    None => self.implements(mid, o),
+                                    None => {
+                                        !self.r0_near.contains(&(ext, o, mid))
+                                            && self.implements(mid, o)
+                                    }
                                 }
                             } else {
                                 self.overrides_at_run_time(mid, o, *a, aargs)
                             };
+                            // (On the class side, left to the named error,
+                            // and checked as before if it is not given.)
+                            let ext = ei as ExtensionId;
+                            if replaces
+                                && m.singleton
+                                && self.world.method(o).is_abstract
+                                && !owned
+                                && self.class_near_misses(ext, o, aargs).contains(&mid)
+                            {
+                                left.push((
+                                    mid,
+                                    o,
+                                    *a,
+                                    aargs.clone(),
+                                    Type::Class(e.target, e.target_args.clone()),
+                                    ext,
+                                ));
+                                continue;
+                            }
                             if replaces {
                                 pairs.push((
                                     mid,
@@ -2725,6 +2820,7 @@ impl<'ast> Declarer<'ast> {
                 }
             }
         }
+        self.class_near_left.extend(left);
         for (mid, o, a, aargs, own) in pairs {
             self.check_implementation(mid, o, a, &aargs, own);
         }
@@ -5081,6 +5177,104 @@ impl<'ast> Declarer<'ast> {
             }
         }
         false
+    }
+
+    /// Each class-side pair the extensions' override check left to
+    /// `check_extension_class_side`'s named "must implement" (#751) whose
+    /// error that check did not give is checked as the override check
+    /// checks any (`check_implementation`), with main's error: whatever
+    /// `class_near_misses` answers, a pair it passes over is refused by
+    /// one error or the other, never by none.
+    fn check_class_near_misses_said(&mut self) {
+        let file = self.file;
+        for (mid, o, a, aargs, own, ext) in std::mem::take(&mut self.class_near_left) {
+            if !self.class_near_said.contains(&(ext, o)) {
+                self.file = self.world.method(mid).file;
+                self.check_implementation(mid, o, a, &aargs, own);
+            }
+        }
+        self.file = file;
+    }
+
+    /// The extension `ext`'s own class methods that take abstract class
+    /// method `r`'s calls by shape (`implements`) but not by type in their
+    /// parameters (`World::takes_calls_of`, `aargs` being `r`'s module's
+    /// arguments in the extension's parameters), when nothing else would
+    /// implement it: none of the extension's own methods of the name takes
+    /// its calls by type, and no other class method of the name is in the
+    /// class side's order with the extension active (`class_side_with`).
+    /// Empty otherwise. `check_extension_class_side` says them in its
+    /// "must implement" error; the extensions' override check leaves them
+    /// to it (#751), and `check_class_near_misses_said` checks any it
+    /// leaves without that error as before. So this only chooses between
+    /// two messages, never a verdict: "nothing else would implement it" is
+    /// an approximation by name (a class method of the name elsewhere,
+    /// whatever its signature, keeps main's override error).
+    fn class_near_misses(&self, ext: ExtensionId, r: MethodId, aargs: &[Type]) -> Vec<MethodId> {
+        let rm = self.world.method(r);
+        let rsubst = self.world.class_subst(rm.owner, aargs);
+        let none = HashMap::default();
+        let own: Vec<MethodId> = self.world.extensions[ext as usize]
+            .methods
+            .get(&rm.name)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|&i| self.world.method(i).singleton)
+            .collect();
+        let takes = |i: MethodId| {
+            self.world
+                .takes_calls_of(self.world.method(i), &none, rm, &rsubst)
+        };
+        if own.iter().any(|&i| takes(i)) {
+            return Vec::new();
+        }
+        let elsewhere = self.world.class_side_with(ext).iter().any(|(k, _)| {
+            *k != rm.owner
+                && self
+                    .world
+                    .class(*k)
+                    .singleton_methods
+                    .get(&rm.name)
+                    .is_some_and(|ids| {
+                        ids.iter().any(|&i| {
+                            let im = self.world.method(i);
+                            im.owner == *k && !im.is_abstract && im.extension.is_none()
+                        })
+                    })
+        });
+        if elsewhere {
+            return Vec::new();
+        }
+        own.into_iter().filter(|&i| self.implements(i, r)).collect()
+    }
+
+    /// The note a "nothing implements it" error gives for `near`, an
+    /// extension's own methods of requirement `r`'s name and side that
+    /// take its calls by shape (`implements`) but not by type in their
+    /// parameters (`World::takes_calls_of`): another overload, not its
+    /// implementation (#751). The caller puts it in parentheses.
+    fn near_misses(&self, near: &[MethodId], r: MethodId) -> String {
+        if near.is_empty() {
+            return String::new();
+        }
+        let rm = self.world.method(r);
+        let sigs: Vec<String> = near
+            .iter()
+            .map(|&i| format!("`{}`", self.world.method_signature(self.world.method(i))))
+            .collect();
+        let sep = if rm.singleton { "." } else { "#" };
+        let owner = &self.world.class(rm.owner).name;
+        let (verb, what) = if sigs.len() == 1 {
+            ("does", "another overload")
+        } else {
+            ("do", "other overloads")
+        };
+        format!(
+            "{} here {verb} not take the place of `{owner}{sep}{}`: {what}",
+            sigs.join(", "),
+            self.world.method_signature(rm)
+        )
     }
 
     /// A concrete method of the same name whose arity covers the abstract
