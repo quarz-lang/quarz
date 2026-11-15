@@ -107,9 +107,9 @@ pub struct Declarer<'ast> {
     /// frame. Only refusals: a pair that passed for one class is still
     /// checked for the next (#688).
     refused_pairs: HashSet<(MethodId, MethodId)>,
-    /// `Type` and its subclasses (`Meta::ClassDef`), `Type` first, each
-    /// with whether it takes the class as its argument: the classes a class
-    /// object is an instance of (`check_class_side_overrides`), found once.
+    /// `World::replaceable_type_classes` (`Type` first, then
+    /// `Meta::ClassDef`; not `Cog`), each with whether it takes the class
+    /// as its argument (`check_class_side_overrides`), found once.
     type_classes: Option<Vec<(ClassId, bool)>>,
     /// Where an override error about a prelude method is reported (the
     /// class whose include brings it: `check_include_overrides`).
@@ -3289,20 +3289,18 @@ impl<'ast> Declarer<'ast> {
             .map(|p| Type::Param(p.id))
             .collect();
         let own = Type::Class(id, args.clone());
-        // (The classes a class object is an instance of, with the class as
-        // their argument: `Type[C]`, `Meta::ClassDef[C]`; `Type` first, so a
-        // method found through it is checked with `Type[C]` as `Self`'s
-        // side.)
+        // (The classes of class objects whose methods a class method may
+        // replace, with the class as their argument: `Type[C]`,
+        // `Meta::ClassDef[C]`, not `Cog`, `World::replaceable_type_classes`;
+        // `Type` first, so a method found through it is checked with
+        // `Type[C]` as `Self`'s side.)
         if self.type_classes.is_none() {
-            let class_ = self.world.builtin.class_;
-            let mut ks: Vec<(ClassId, bool)> = self
+            let ks: Vec<(ClassId, bool)> = self
                 .world
-                .classes
-                .iter()
-                .filter(|k| k.id == class_ || self.world.class_is_a(k.id, class_))
-                .map(|k| (k.id, k.type_params.len() == 1))
+                .replaceable_type_classes()
+                .into_iter()
+                .map(|k| (k, self.world.class(k).type_params.len() == 1))
                 .collect();
-            ks.sort_by_key(|(k, _)| *k != class_);
             self.type_classes = Some(ks);
         }
         let ons: Vec<Type> = self

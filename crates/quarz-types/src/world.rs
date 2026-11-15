@@ -3698,24 +3698,38 @@ impl World {
         self.group_extensions(self.class(c).file)
     }
 
-    /// `Type` and its subclasses but `Cog` (`Meta::ClassDef`), the classes
-    /// of class objects whose methods a class method may replace, each
-    /// with its ancestors in its own type parameter (the class,
-    /// substituted for it per class method). Not `Cog`: its values are
-    /// cog roots, whose class side never holds a class method of a `Cog`
-    /// method's name (a root's include of such a module is refused, and
-    /// an extension of a root includes nothing, #725, #730), so no class
-    /// method takes a `Cog` method's place.
+    /// The classes of class objects whose methods a class method may
+    /// replace: `Type` first, then its subclasses but `Cog`
+    /// (`Meta::ClassDef`, a static def's `self`). Not `Cog`: its values
+    /// are cog roots, whose class side never holds a class method of a
+    /// `Cog` method's name (a root's include of such a module is refused,
+    /// and an extension of a root includes nothing, #725, #730), so no
+    /// class method takes a `Cog` method's place. The override table
+    /// (`type_classes`) and the declarer's class-side check both read it.
+    pub fn replaceable_type_classes(&self) -> Vec<ClassId> {
+        let class_ = self.builtin.class_;
+        let mut ks: Vec<ClassId> = self
+            .classes
+            .iter()
+            .filter(|k| k.id == class_ || self.class_is_a(k.id, class_))
+            .map(|k| k.id)
+            .filter(|k| *k != self.builtin.cog)
+            .collect();
+        ks.sort_by_key(|k| *k != class_);
+        ks
+    }
+
+    /// `replaceable_type_classes`, each with its ancestors in its own type
+    /// parameter (the class, substituted for it per class method).
     #[allow(clippy::type_complexity)]
     fn type_classes(&self) -> Vec<(Option<TypeParamId>, Vec<(ClassId, Vec<Type>)>)> {
-        self.classes
-            .iter()
-            .filter(|k| k.id == self.builtin.class_ || self.class_is_a(k.id, self.builtin.class_))
-            .filter(|k| k.id != self.builtin.cog)
-            .map(|k| {
+        self.replaceable_type_classes()
+            .into_iter()
+            .map(|id| {
+                let k = self.class(id);
                 let param = (k.type_params.len() == 1).then(|| k.type_params[0].id);
                 let args: Vec<Type> = param.iter().map(|p| Type::Param(*p)).collect();
-                (param, self.ancestors(k.id, &args))
+                (param, self.ancestors(id, &args))
             })
             .collect()
     }
