@@ -3415,8 +3415,9 @@ impl<'ast> Declarer<'ast> {
             })
             .collect();
         // Its own class methods, then those of the modules it includes
-        // (`Interp::class_side_override` finds those too), each module's
-        // reported once, naming the class.
+        // (a call on the class object reaches those too, by
+        // `World::class_method_target`'s rows), each module's reported
+        // once, naming the class.
         let mut mine: Vec<(MethodId, Option<String>)> = class
             .singleton_methods
             .values()
@@ -4936,10 +4937,11 @@ impl<'ast> Declarer<'ast> {
         // with the modules of their whole chain).
         if class.kind != ClassKind::Module {
             let chain = self.world.superclass_chain(id);
-            // Where the runtime looks for a method of the class object
-            // (`Interp::class_method_override`), in order: each class's own
-            // class methods, then the modules it includes (the last first,
-            // each with what it includes), then its superclass's.
+            // The class's own side, in order: each class's own class
+            // methods, then the modules it includes (the last first, each
+            // with what it includes), then its superclass's. (What a call
+            // on the class object runs is `World::class_method_target`'s
+            // answer, which the runtime reads from the rows it ships.)
             // (`World::class_own_side` with the modules' arguments, the
             // declared view: the requirements of the modules the class
             // includes itself; an extension's modules' are completed at the
