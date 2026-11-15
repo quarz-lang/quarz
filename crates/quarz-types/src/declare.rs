@@ -107,6 +107,14 @@ pub struct Declarer<'ast> {
     /// (another overload): R0's error names them, and the extensions'
     /// override check does not refuse them again as overrides (#751).
     r0_near: HashSet<(ExtensionId, MethodId, MethodId)>,
+    /// The class-side pairs (extension's method, requirement, its owner,
+    /// the owner's arguments, `Self`) the extensions' override check left
+    /// to `check_extension_class_side`'s named "must implement" (#751),
+    /// with their extension; and the (extension, requirement) pairs that
+    /// error was given for. A pair left without its error is checked as
+    /// main checked it, after both (`check_class_near_misses_said`).
+    class_near_left: Vec<(MethodId, MethodId, ClassId, Vec<Type>, Type, ExtensionId)>,
+    class_near_said: HashSet<(ExtensionId, MethodId)>,
     /// The pairs a check refused (reported once, at the module or the
     /// first class including it): not reported again in another class's
     /// frame. Only refusals: a pair that passed for one class is still
@@ -243,6 +251,8 @@ impl<'ast> Declarer<'ast> {
             conformance_checked: Vec::new(),
             r0_refused: HashSet::default(),
             r0_near: HashSet::default(),
+            class_near_left: Vec::new(),
+            class_near_said: HashSet::default(),
             refused_pairs: HashSet::default(),
             type_classes: None,
             override_span: None,
@@ -1139,6 +1149,7 @@ impl<'ast> Declarer<'ast> {
             self.file = e.file;
             self.check_extension_static(e);
         }
+        self.check_class_near_misses_said();
     }
 
     /// A generic module with `static def self.` macros (docs/14 §2) is
@@ -1692,6 +1703,7 @@ impl<'ast> Declarer<'ast> {
                             Vec::new()
                         };
                         if near.contains(&i) {
+                            self.class_near_said.insert((ext, m));
                             missing.push((
                                 info.name.clone(),
                                 self.world.class(anc).name.clone(),
@@ -2701,6 +2713,7 @@ impl<'ast> Declarer<'ast> {
     /// conformance (`check_conformance_of`).
     fn check_extensions_overrides(&mut self) {
         let mut pairs: Vec<(MethodId, MethodId, ClassId, Vec<Type>, Type)> = Vec::new();
+        let mut left: Vec<(MethodId, MethodId, ClassId, Vec<Type>, Type, ExtensionId)> = Vec::new();
         for (ei, e) in self.world.extensions.iter().enumerate() {
             let dispatches = |owner: ClassId| {
                 e.always_active
@@ -2768,16 +2781,31 @@ impl<'ast> Declarer<'ast> {
                                     Some(w) => w == mid,
                                     None => {
                                         !self.r0_near.contains(&(ext, o, mid))
-                                            && !(m.singleton
-                                                && self
-                                                    .class_near_misses(ext, o, aargs)
-                                                    .contains(&mid))
                                             && self.implements(mid, o)
                                     }
                                 }
                             } else {
                                 self.overrides_at_run_time(mid, o, *a, aargs)
                             };
+                            // (On the class side, left to the named error,
+                            // and checked as before if it is not given.)
+                            let ext = ei as ExtensionId;
+                            if replaces
+                                && m.singleton
+                                && self.world.method(o).is_abstract
+                                && !owned
+                                && self.class_near_misses(ext, o, aargs).contains(&mid)
+                            {
+                                left.push((
+                                    mid,
+                                    o,
+                                    *a,
+                                    aargs.clone(),
+                                    Type::Class(e.target, e.target_args.clone()),
+                                    ext,
+                                ));
+                                continue;
+                            }
                             if replaces {
                                 pairs.push((
                                     mid,
@@ -2792,6 +2820,7 @@ impl<'ast> Declarer<'ast> {
                 }
             }
         }
+        self.class_near_left.extend(left);
         for (mid, o, a, aargs, own) in pairs {
             self.check_implementation(mid, o, a, &aargs, own);
         }
@@ -5150,6 +5179,23 @@ impl<'ast> Declarer<'ast> {
         false
     }
 
+    /// Each class-side pair the extensions' override check left to
+    /// `check_extension_class_side`'s named "must implement" (#751) whose
+    /// error that check did not give is checked as the override check
+    /// checks any (`check_implementation`), with main's error: whatever
+    /// `class_near_misses` answers, a pair it passes over is refused by
+    /// one error or the other, never by none.
+    fn check_class_near_misses_said(&mut self) {
+        let file = self.file;
+        for (mid, o, a, aargs, own, ext) in std::mem::take(&mut self.class_near_left) {
+            if !self.class_near_said.contains(&(ext, o)) {
+                self.file = self.world.method(mid).file;
+                self.check_implementation(mid, o, a, &aargs, own);
+            }
+        }
+        self.file = file;
+    }
+
     /// The extension `ext`'s own class methods that take abstract class
     /// method `r`'s calls by shape (`implements`) but not by type in their
     /// parameters (`World::takes_calls_of`, `aargs` being `r`'s module's
@@ -5159,7 +5205,11 @@ impl<'ast> Declarer<'ast> {
     /// class side's order with the extension active (`class_side_with`).
     /// Empty otherwise. `check_extension_class_side` says them in its
     /// "must implement" error; the extensions' override check leaves them
-    /// to it (#751).
+    /// to it (#751), and `check_class_near_misses_said` checks any it
+    /// leaves without that error as before. So this only chooses between
+    /// two messages, never a verdict: "nothing else would implement it" is
+    /// an approximation by name (a class method of the name elsewhere,
+    /// whatever its signature, keeps main's override error).
     fn class_near_misses(&self, ext: ExtensionId, r: MethodId, aargs: &[Type]) -> Vec<MethodId> {
         let rm = self.world.method(r);
         let rsubst = self.world.class_subst(rm.owner, aargs);

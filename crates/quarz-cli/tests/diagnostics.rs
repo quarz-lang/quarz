@@ -4133,6 +4133,22 @@ fn a_near_miss_in_a_conforming_extension_is_said_once() {
         "{out}"
     );
     assert_eq!(out.matches("error:").count(), 1, "{out}");
+    // Where the class side's check does not give its named error (it
+    // refuses the include first), the near miss left to it is checked as
+    // before (`check_class_near_misses_said`): main's override error, never
+    // none.
+    for src in [
+        // A module with `static def`s: the include is refused.
+        "module M\n  abstract def self.make(x: Int) -> String\n  static def self.s -> Void\n  end\nend\nclass C\nend\nextension C\n  include M\n  def self.make(x: String) -> String = \"e\"\nend\n",
+        // A second extension's include of the same module is refused.
+        "module M\n  abstract def self.make(x: Int) -> String\nend\nclass C\nend\nextension C\n  include M\n  def self.make(x: String) -> String = \"e1\"\nend\nextension C\n  include M\n  def self.make(x: Bool) -> String = \"e2\"\nend\n",
+    ] {
+        let out = common::diagnostics(src).join("\n");
+        assert!(
+            out.contains("which it overrides, is given Int: an override takes what the method it overrides does"),
+            "{src}\n{out}"
+        );
+    }
     let out = common::diagnostics(
         "module M\n  abstract def greet(x: Int) -> String\nend\nclass C1\nend\nextension C1\n  include M\n  def greet(x: Int) -> Int = 1\nend\n",
     )
