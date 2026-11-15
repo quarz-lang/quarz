@@ -985,22 +985,47 @@ fn a_failed_input_keeps_what_an_earlier_declarations_only_input_lowered() {
 }
 
 #[test]
-fn a_later_extension_pins_an_earlier_witness_for_an_earlier_class() {
-    // #514's review: `extension Q; include M` makes `P.make` the witness
-    // of `M.make` for `R`, declared in an earlier input, whose
-    // `initialize` does not take `P.make`'s `new` arguments: refused as in
-    // a program.
+fn an_earlier_class_without_its_own_make_is_refused_before_the_extension() {
+    // #514's review, with `R` given no `make` of its own: `R` inherits
+    // `P.make`, whose `new` its `initialize` does not take, so its own
+    // input is refused, as in a program, before `extension Q; include M`
+    // makes `P.make` the witness of `M.make` (with its own `make`, see
+    // the next test).
+    let (out, _) = values(&[
+        "class P; def initialize; end; def self.make -> Self = new; end",
+        "class Q < P; end",
+        "class R < Q; @x: Int; def initialize(@x: Int); end; def x -> Int = @x; end",
+        "module M; abstract def self.make -> Self; end",
+        "extension Q; include M; end",
+    ]);
+    assert!(
+        out[2].contains(
+            "`R#initialize` does not take the arguments of `new` in `P.make`, which `R` inherits"
+        ),
+        "{out:?}"
+    );
+    assert_eq!(out[4], "", "{out:?}");
+}
+
+#[test]
+fn a_later_extensions_witness_gives_way_to_an_earlier_subclasss_own_make() {
+    // #681's (c) (the user's decision, 2026-11-15): `R`, declared in an
+    // earlier input, has its own `make`, which takes the place of the
+    // witness `P.make` (recorded for `Q` by a later input's extension) for
+    // `R`: its `new(1)` fits, and `P.make`'s `new` is not reached with `R`
+    // for `self`. Accepted, as in a program; through `Type[M]`, `Q` runs
+    // the witness and `R` its own.
     let (out, _) = values(&[
         "class P; def initialize; end; def self.make -> Self = new; end",
         "class Q < P; end",
         "class R < Q; @x: Int; def initialize(@x: Int); end; def self.make -> Self = new(1); def x -> Int = @x; end",
         "module M; abstract def self.make -> Self; end",
         "extension Q; include M; end",
+        "def f(t: Type[M]) -> String = t.make.class.name",
+        "f(Q) + \",\" + f(R) + \",\" + R.make.x.to_s",
     ]);
-    assert!(
-        out[4].contains("`R#initialize` does not take the arguments of `new` in `P.make`"),
-        "{out:?}"
-    );
+    assert_eq!(out[4], "", "{out:?}");
+    assert_eq!(out[6], "=> \"Q,R,1\"", "{out:?}");
 }
 
 #[test]
