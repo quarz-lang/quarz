@@ -1,0 +1,59 @@
+# An abstract class including a module with an abstract class method
+# (#759, decided 2026-11-16): accepted, its concrete subclasses implement
+# it; a call of the abstract class method on the abstract class itself,
+# by any path, raises the run-time `TypeError` an abstract class's own
+# abstract class method raises (#510, #486).
+module M
+  abstract def self.x -> String
+  def self.y -> String = "y:" + x
+end
+
+abstract class A
+  include M
+  def self.z -> String = x
+  def self.w -> String = self.y
+end
+
+class B < A
+  def self.x -> String = "b"
+end
+
+puts B.x
+puts B.x + B.y + B.z + B.w
+def f(t: Type[M]) -> String = t.x
+def h(t: Type[A]) -> String = t.y
+puts f(B)
+puts h(B)
+ts: Array[Type[M]] = [B, A]
+ts.each do |t|
+  begin
+    puts t.x
+  rescue TypeError => e
+    puts "TypeError: #{e.message}"
+  end
+end
+begin
+  puts f(A)
+rescue TypeError => e
+  puts "TypeError: #{e.message}"
+end
+begin
+  puts h(A)
+rescue TypeError => e
+  puts "TypeError: #{e.message}"
+end
+begin
+  puts A.z
+rescue TypeError => e
+  puts "TypeError: #{e.message}"
+end
+begin
+  puts A.w
+rescue TypeError => e
+  puts "TypeError: #{e.message}"
+end
+begin
+  puts A.x
+rescue TypeError => e
+  puts "TypeError: #{e.message}"
+end
