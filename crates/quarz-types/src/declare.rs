@@ -4642,7 +4642,7 @@ impl<'ast> Declarer<'ast> {
                             // method never is its implementation (rule A,
                             // the user's decision of 2026-11-13), said so.
                             None if own_side.contains(anc) => {
-                                match self.taken_extension(&ancestors, *mid) {
+                                match self.taken_extension(&ancestors, *mid, None) {
                                     Some(e) => by_extension.push((
                                         m.name.clone(),
                                         *anc,
@@ -4671,6 +4671,40 @@ impl<'ast> Declarer<'ast> {
                             // a method of the target's side or of the
                             // extension's modules: R0 checked it by type.
                             Some(_) if by_conformance.is_some() => {}
+                            // The class's own conformance, witnessed by `j`,
+                            // with an active extension's method of the shape
+                            // on an ancestor strictly before `j`'s owner:
+                            // refused by rule A, as main's walk by arity
+                            // refused it (the user's decision of 2026-11-15
+                            // on #720, recorded on #536). A call through the
+                            // module dispatches to the class side's method
+                            // (the witness, a subclass's over an extension of
+                            // a superclass, which takes no part in dispatch),
+                            // while a call typed by the class binds
+                            // statically to the extension's method; main's
+                            // verdict is kept while that picture holds. This
+                            // is the by-type form of main's order-dependent
+                            // rule: it refuses every program main refused for
+                            // it, and also a few main refused for another
+                            // reason only (its walk stopped at an overload
+                            // taking the calls by arity), the direction of
+                            // more refusals. An extension of the witness's
+                            // owner itself (the same position) is not refused
+                            // here, as on main.
+                            Some(j)
+                                if own_side.contains(anc)
+                                    && self
+                                        .taken_extension(&ancestors, *mid, Some(j))
+                                        .is_some() =>
+                            {
+                                if let Some(e) = self.taken_extension(&ancestors, *mid, Some(j)) {
+                                    by_extension.push((
+                                        m.name.clone(),
+                                        *anc,
+                                        self.world.extension_label(e),
+                                    ));
+                                }
+                            }
                             // An abstract class's `abstract def` hides what
                             // is above it (#687's option 1, re-abstraction,
                             // the maintainer's decision of 2026-11-14): a
@@ -4690,7 +4724,7 @@ impl<'ast> Declarer<'ast> {
                             {
                                 // (Rule A's message, as when there is none,
                                 // if an extension's method would be taken.)
-                                match self.taken_extension(&ancestors, *mid) {
+                                match self.taken_extension(&ancestors, *mid, Some(j)) {
                                     Some(e) if own_side.contains(anc) => by_extension.push((
                                         m.name.clone(),
                                         *anc,
@@ -4970,16 +5004,32 @@ impl<'ast> Declarer<'ast> {
         }
     }
 
-    /// For rule A's message only (the verdict is the record's): an active
-    /// extension of one of `ancestors` with a method that takes the calls of
-    /// requirement `r` by shape (`implements`), which could be taken for its
-    /// implementation on the class's own side, where an extension's method
-    /// never is one.
-    fn taken_extension(&self, ancestors: &[ClassId], r: MethodId) -> Option<ExtensionId> {
+    /// Rule A's extension: an active extension of one of `ancestors` with a
+    /// method that takes the calls of requirement `r` by shape
+    /// (`implements`), which could be taken for its implementation on the
+    /// class's own side, where an extension's method never is one. With a
+    /// witness `before`, only one whose target comes strictly before the
+    /// witness's owner in `ancestors` (`check_conformance_of`'s order rule).
+    fn taken_extension(
+        &self,
+        ancestors: &[ClassId],
+        r: MethodId,
+        before: Option<MethodId>,
+    ) -> Option<ExtensionId> {
         let name = &self.world.method(r).name;
+        let limit = before.map(|j| {
+            let owner = self.world.method(j).owner;
+            ancestors
+                .iter()
+                .position(|a| *a == owner)
+                .unwrap_or(ancestors.len())
+        });
         self.world.active_extension_ids().into_iter().find(|&e| {
             let x = &self.world.extensions[e as usize];
-            ancestors.contains(&x.target)
+            ancestors
+                .iter()
+                .position(|a| *a == x.target)
+                .is_some_and(|tp| limit.is_none_or(|l| tp < l))
                 && x.methods
                     .get(name)
                     .is_some_and(|ids| ids.iter().any(|&i| self.implements(i, r)))

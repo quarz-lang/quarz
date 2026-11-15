@@ -3587,6 +3587,12 @@ fn an_own_includes_requirement_is_implemented_on_the_class_side() {
         format!("{named}class K[T]\n  include Named\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension K[T <: Int]\n  def label -> String = \"int#{{v + 1}}\"\nend\n"),
         // An extension of a superclass (#608).
         "module M\n  abstract def get -> Int\nend\nclass Base[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension Base[T]\n  def get -> T = v\nend\nclass A < Base[Int]\n  include M\n  def initialize; super(1); end\nend\n".to_string(),
+        // A superclass's method is the witness by type, and the class's own
+        // extension (before it) has a method of the shape: refused as on
+        // main (the user's decision of 2026-11-15 on #720), whatever that
+        // method returns.
+        "module M\n  abstract def m -> Int\nend\nclass G\n  def m -> Int = 1\nend\nclass A < G\n  include M\nend\nextension A\n  def m -> Int = 2\nend\n".to_string(),
+        "module M\n  abstract def m -> Int\nend\nclass G\n  def m -> Int = 1\nend\nclass A < G\n  include M\nend\nextension A\n  def m -> String = \"s\"\nend\n".to_string(),
     ];
     for src in &refused {
         let out = common::diagnostics(src).join("\n");
