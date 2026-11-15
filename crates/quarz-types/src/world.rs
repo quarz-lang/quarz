@@ -2142,12 +2142,12 @@ impl World {
     /// (`declaration_view`, #606).
     pub fn include_overrides_of(&self, id: ClassId) -> Vec<IncludeOverride> {
         self.with_active(self.declaration_view(id), || {
-            // (Oracle, #732: the old builder answers until the switch;
-            // the new one is compared with it.)
+            // (Oracle, #732, until the last commit: the old builder is
+            // compared with the new one, which answers.)
             let old = self.include_overrides_here_old(id);
             let new = self.include_overrides_on(id, Side::Instance);
             self.include_pairs_oracle(id, "instance", &new, &old);
-            old
+            new
         })
     }
 
@@ -2712,12 +2712,12 @@ impl World {
     /// view (`declaration_view`, #606).
     pub fn class_include_overrides_of(&self, id: ClassId) -> Vec<IncludeOverride> {
         self.with_active(self.declaration_view(id), || {
-            // (Oracle, #732: the old builder answers until the switch;
-            // the new one is compared with it.)
+            // (Oracle, #732, until the last commit: the old builder is
+            // compared with the new one, which answers.)
             let old = self.class_include_overrides_here_old(id);
             let new = self.include_overrides_on(id, Side::Class);
             self.include_pairs_oracle(id, "class", &new, &old);
-            old
+            new
         })
     }
 

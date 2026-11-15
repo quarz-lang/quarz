@@ -565,6 +565,29 @@ p x
 }
 
 #[test]
+fn a_modules_own_include_pair_is_checked_at_the_module_on_both_sides() {
+    // #732, shape A (the user's approval of 2026-11-15): a module's own
+    // includes pair on its class side as on its instance side, and the
+    // pair is checked at the module, whether or not a class includes it.
+    let class_side = common::diagnostics(
+        "module R\n  def self.label -> String = \"R\"\nend\nmodule O\n  def self.label -> Int = 1\nend\nmodule N\n  include R\n  include O\nend\nputs 1\n",
+    )
+    .join("\n");
+    assert!(
+        class_side.contains("error: `label` returns Int but `R.label`, which it overrides in `N`, which includes `O`, returns String"),
+        "{class_side}"
+    );
+    let instance_side = common::diagnostics(
+        "module R\n  def label -> String = \"R\"\nend\nmodule O\n  def label -> Int = 1\nend\nmodule N\n  include R\n  include O\nend\nputs 1\n",
+    )
+    .join("\n");
+    assert!(
+        instance_side.contains("error: `label` returns Int but `R#label`, which it overrides in `N`, which includes `O`, returns String"),
+        "{instance_side}"
+    );
+}
+
+#[test]
 fn another_extensions_module_supplies_no_witness() {
     // #669's decision (y), with R0 and D: the class-side witness is looked
     // for in the class's order with this extension alone active, so a
