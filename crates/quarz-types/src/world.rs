@@ -2227,6 +2227,23 @@ impl World {
     /// it later. One walk for both sides; a side supplies its order, its
     /// method table and its exclusions (`Side`), and the candidate set
     /// below.
+    ///
+    /// Every test of the side in the body, in one list (nothing else
+    /// differs):
+    /// - **order:** `own_ancestors` (`View::Override`) on the instance
+    ///   side, the declared view (`View::Declared`) on the class side;
+    ///   and the instance side's early gate `ext_includes` (a class whose
+    ///   only includes are an extension's has pairs), which matters only
+    ///   for an order holding extensions' modules (#681 puts them on the
+    ///   class side's order: the gate must apply there then);
+    /// - **table:** `methods` or `singleton_methods` (`table`, and
+    ///   `replaced_before`'s side argument);
+    /// - **exclusions:** on the class side, a candidate that is an
+    ///   extension's, synthesized, or `new` (`excluded`), and a module's
+    ///   class method that is an extension's (`mine`); on the instance
+    ///   side, the module's always-active (prelude) extensions' methods
+    ///   added to its own (`mine`);
+    /// - **candidate set:** `over_superclass_modules`, below.
     fn include_overrides_on(&self, id: ClassId, side: Side) -> Vec<IncludeOverride> {
         let instance = side == Side::Instance;
         let mut out: Vec<IncludeOverride> = Vec::new();
