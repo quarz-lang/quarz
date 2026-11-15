@@ -3706,7 +3706,7 @@ impl World {
     /// and an extension of a root includes nothing, #725, #730), so no
     /// class method takes a `Cog` method's place. The override table
     /// (`type_classes`) and the declarer's class-side check both read it.
-    pub fn replaceable_type_classes(&self) -> Vec<ClassId> {
+    pub(crate) fn replaceable_type_classes(&self) -> Vec<ClassId> {
         let class_ = self.builtin.class_;
         let mut ks: Vec<ClassId> = self
             .classes
