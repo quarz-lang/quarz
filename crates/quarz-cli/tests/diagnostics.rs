@@ -4380,6 +4380,21 @@ fn an_extension_does_not_redefine_a_module_method_that_overrides() {
     )
     .join("\n");
     assert!(!out.contains("error:"), "{out}");
+    // A name on the other side runs in no such method's place (#770): an
+    // extension's class method of the name of the module's instance
+    // method, and its instance method of the name of the module's class
+    // method. `K.new.label` dispatches through the top-level extension's
+    // `N` before `B`; `K.label` is the extension's own, bound statically
+    // where it is active; through the reverse, `K.label` finds `N`'s
+    // before `B`'s, and `K.new.label` the extension's own.
+    common::expect(
+        "module R\n  def label -> String = \"R\"\nend\nclass B\n  def label -> String = \"B\"\nend\nmodule N\n  include R\n  def label -> String = \"N\"\nend\nclass K < B\nend\nextension K\n  include N\n  def self.label -> String = \"ext\"\nend\nputs K.new.label\nputs K.label\n",
+        "N\next\n",
+    );
+    common::expect(
+        "class B\n  def initialize; end\n  def self.label -> String = \"B\"\nend\nmodule N\n  def self.label -> String = \"N\"\nend\nclass K < B\n  def initialize; end\nend\nextension K\n  include N\n  def label -> String = \"ext\"\nend\nputs K.label\nputs K.new.label\n",
+        "N\next\n",
+    );
 }
 
 #[test]
