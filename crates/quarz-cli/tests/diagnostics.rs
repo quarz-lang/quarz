@@ -3499,6 +3499,10 @@ fn an_extension_completes_the_conformance_it_makes() {
         format!("{named}module Giver\n  def label -> String = \"g\"\nend\nclass B\n  def initialize; end\nend\nmodule S1\n  extension B\n    include Named\n  end\nend\nmodule S2\n  extension B\n    include Giver\n  end\nend\n"),
         // An `abstract def` on the target of another signature only.
         format!("{named}abstract class B\n  abstract def label(x: Int) -> String\nend\nclass C < B\n  def initialize; end\n  def label(x: Int) -> String = \"c\"\nend\nextension B\n  include Named\nend\n"),
+        // A prelude class (no conformance check of its own): nothing, or
+        // only an overload of another arity, implements it.
+        format!("{named}extension Int\n  include Named\nend\n"),
+        format!("{named}extension Int\n  include Named\n  def label(x: Int) -> String = \"i\"\nend\n"),
         // Only an overload of another parameter type.
         "module M\n  abstract def m(x: String) -> String\nend\nmodule N\n  def m(x: Int) -> String = \"n\"\nend\nclass B\n  def initialize; end\nend\nextension B\n  include M\n  include N\nend\n".to_string(),
     ];
@@ -3543,6 +3547,33 @@ fn an_extension_completes_the_conformance_it_makes() {
 }
 
 #[test]
+fn a_requirement_r0_refused_is_not_reported_again_at_the_classes() {
+    // R0's error at the extension says it once; the target and the classes
+    // under it do not repeat "must implement" for the same requirement.
+    let named = "module Named\n  abstract def label -> String\nend\n";
+    let out = common::diagnostics(&format!(
+        "{named}class B\n  def initialize; end\nend\nclass C < B\n  def initialize; end\nend\nextension B\n  include Named\nend\n"
+    ))
+    .join("\n");
+    assert!(
+        out.contains("this extension includes `Named` but nothing here implements `label`"),
+        "{out}"
+    );
+    assert!(!out.contains("must implement"), "{out}");
+    // An `abstract def` of the target completes it for R0, which leaves it
+    // to the concrete classes: one that lacks it is told so.
+    let out = common::diagnostics(&format!(
+        "{named}abstract class B\n  abstract def label -> String\nend\nclass C < B\n  def initialize; end\nend\nextension B\n  include Named\nend\n"
+    ))
+    .join("\n");
+    assert!(!out.contains("nothing here implements"), "{out}");
+    assert!(
+        out.contains("`C` must implement `label` (abstract in `Named`)"),
+        "{out}"
+    );
+}
+
+#[test]
 fn an_own_includes_requirement_is_implemented_on_the_class_side() {
     // Rule A (the user's decision, 2026-11-13): an abstract method from a
     // class's own side (a module it includes itself, or a superclass) is
@@ -3556,6 +3587,12 @@ fn an_own_includes_requirement_is_implemented_on_the_class_side() {
         format!("{named}class K[T]\n  include Named\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension K[T <: Int]\n  def label -> String = \"int#{{v + 1}}\"\nend\n"),
         // An extension of a superclass (#608).
         "module M\n  abstract def get -> Int\nend\nclass Base[T]\n  @v: T\n  def initialize(@v: T); end\n  def v -> T = @v\nend\nextension Base[T]\n  def get -> T = v\nend\nclass A < Base[Int]\n  include M\n  def initialize; super(1); end\nend\n".to_string(),
+        // A superclass's method is the witness by type, and the class's own
+        // extension (before it) has a method of the shape: refused as on
+        // main (the user's decision of 2026-11-15 on #720), whatever that
+        // method returns.
+        "module M\n  abstract def m -> Int\nend\nclass G\n  def m -> Int = 1\nend\nclass A < G\n  include M\nend\nextension A\n  def m -> Int = 2\nend\n".to_string(),
+        "module M\n  abstract def m -> Int\nend\nclass G\n  def m -> Int = 1\nend\nclass A < G\n  include M\nend\nextension A\n  def m -> String = \"s\"\nend\n".to_string(),
     ];
     for src in &refused {
         let out = common::diagnostics(src).join("\n");

@@ -669,10 +669,22 @@ pub struct World {
     /// ran, not when they are declared: one of their ancestors has
     /// statements, which may generate the implementations (docs/14 §5).
     pub conformance_deferred: Vec<ClassId>,
-    /// Abstract methods an extension's method implements for a class
-    /// (class, abstract method, implementation), found where the class is
-    /// declared: conformance holds wherever the value goes.
+    /// The witnesses R0 records for the conformances extensions make
+    /// (target class, abstract method, implementation:
+    /// `Declarer::check_extension_completes`), a method of the target's
+    /// side or of the extension's modules, chosen by type; the witness
+    /// record's rule 4 reads them. Conformance holds wherever the value
+    /// goes.
     pub ext_impls: Vec<(ClassId, MethodId, MethodId)>,
+    /// R0's choice for each (extension, requirement) it completes
+    /// (`Declarer::check_extension_completes`): the extension's own method
+    /// that takes the requirement's calls by type, else the witness it
+    /// records for the target (`ext_impls`). Kept with the world (the
+    /// prelude's too): what the extension's methods are checked against
+    /// (#536 step 3, item 2's (ii)). No `serde(default)`: an encoding
+    /// without it (the prelude's, made by another build) fails to decode
+    /// rather than read as "R0 has no choice".
+    pub ext_choices: Vec<(ExtensionId, MethodId, MethodId)>,
     /// The class-side witnesses of extensions' conformances (#504): for a
     /// class that conforms to a module through an extension's `include`,
     /// each class method of the module that the extension's own `def
@@ -1528,12 +1540,22 @@ impl World {
     pub fn witness_record(
         &self,
     ) -> Vec<(ClassId, MethodId, Option<MethodId>, Option<ExtensionId>)> {
-        let mut out = Vec::new();
         let n = self.classes.len() as ClassId;
-        for c in 0..n {
+        (0..n).flat_map(|c| self.witnesses_of(c)).collect()
+    }
+
+    /// The witness record's entries of class `c` (`witness_record`'s rules
+    /// for one class; the record is their concatenation over the classes).
+    /// A module or a file's top level has none.
+    pub fn witnesses_of(
+        &self,
+        c: ClassId,
+    ) -> Vec<(ClassId, MethodId, Option<MethodId>, Option<ExtensionId>)> {
+        let mut out = Vec::new();
+        {
             let kind = self.class(c).kind;
             if matches!(kind, ClassKind::Module | ClassKind::Main) {
-                continue;
+                return out;
             }
             // (The class's dispatch by name: its own side and the modules
             // of the top-level unconditional extensions, which take part in
@@ -1542,7 +1564,7 @@ impl World {
             // not computed.)
             let conformances = self.conformances(c);
             if conformances.is_empty() {
-                continue;
+                return out;
             }
             let lookup = self.resolution(c, &self.own_args(c), View::Lookup);
             // (The class's own include pairs, once per class, when a

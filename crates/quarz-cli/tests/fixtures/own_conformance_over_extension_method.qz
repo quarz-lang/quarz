@@ -12,6 +12,11 @@
 #    `D < A` includes `M` itself: through `M` on a `D`, `A`'s own `m` runs
 #    (10), not the extension's (100); on an `A`, the extension's
 #    conformance runs its own (100).
+# 3. `D3 < C3 < A3`, `D3` includes `M3` itself, `C3#m` is the witness,
+#    and a top-level extension of `A3`, above `C3`, defines its own `m`:
+#    accepted (the extension's target comes after the witness's owner, the
+#    user's decision of 2026-11-15 on #720). Through `M3`, on a `D3` and on
+#    a `C3`, `C3#m` runs (30); on an `A3`, the extension's (101).
 module M
   abstract def m -> String
 end
@@ -54,3 +59,27 @@ extension A2
 end
 def via2(v: M2) -> Int = v.m
 puts via2(D2.new), via2(A2.new)
+
+module M3
+  abstract def m -> Int
+end
+class A3
+  def initialize; end
+  def m -> Int = 10
+end
+class C3 < A3
+  def initialize; super; end
+  def m -> Int = 30
+end
+class D3 < C3
+  include M3
+  def initialize; super; end
+end
+extension A3
+  def m -> Int = 101
+end
+def via3(v: M3) -> Int = v.m
+def d3(x: D3) -> Int = x.m
+def c3(x: C3) -> Int = x.m
+def a3(x: A3) -> Int = x.m
+puts via3(D3.new), d3(D3.new), c3(C3.new), a3(A3.new)
