@@ -1,0 +1,46 @@
+# A task's block (or a shareable procedure) holds its creator's `self`
+# only when its body uses it (docs/03 §5, #706): an object with
+# `deinitialize` whose method spawns a task that does not use `self` is
+# released at its last use, before the task runs; one whose task uses
+# `self` is released when the task has finished and dropped its block.
+class Quiet
+  include Shareable
+
+  def deinitialize
+    puts "Quiet released"
+  end
+
+  def go -> Task[Int]
+    Task.spawn do
+      puts "Quiet's task"
+      1
+    end
+  end
+end
+
+class Loud
+  include Shareable
+  @n: Int
+
+  def initialize(@n: Int)
+  end
+
+  def deinitialize
+    puts "Loud released"
+  end
+
+  def go -> Task[Int]
+    Task.spawn do
+      puts "Loud's task"
+      @n
+    end
+  end
+end
+
+t = Quiet.new.go
+puts "spawned"
+puts t.await
+u = Loud.new(2).go
+puts "spawned"
+puts u.await
+puts "end"

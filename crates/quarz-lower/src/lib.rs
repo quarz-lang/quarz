@@ -607,6 +607,8 @@ impl Lowerer {
             }],
             inlined: Vec::new(),
             takes: Vec::new(),
+            unused: Default::default(),
+            self_given: false,
         }
     }
 

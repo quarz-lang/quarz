@@ -1,8 +1,9 @@
 # Object#shareable? over docs/03 §5's kinds: immediates and strings,
 # collections of Shareable and of non-Shareable elements, nested ones,
 # builders, generic data and enums by their arguments, classes with and
-# without the promise, Atom, Channel, Task, procedures, and a deep value
-# (the walk keeps no native stack).
+# without the promise, Atom, Channel, Task, procedures (a `shareable` one
+# by what it holds, #706), and a deep value (the walk keeps no native
+# stack).
 require "test"
 
 class ShareableTestCounter
@@ -23,6 +24,38 @@ class ShareableTestPromised
   include Shareable
   @v: Int
   def initialize(@v: Int)
+  end
+
+  # A `shareable` procedure that uses `self`, a Shareable one.
+  def adder -> shareable (Int) -> Int = ->(x: Int) { x + @v }
+end
+
+# Not Shareable: its `shareable` procedures that do not use `self` hold
+# no `self` (#706).
+class ShareableTestMaker
+  var @n: Int = 0
+
+  def plain -> shareable (Int) -> Int = ->(x: Int) { x + 1 }
+
+  def capturing(k: Int) -> shareable (Int) -> Int = ->(x: Int) { x + k }
+
+  def nested -> shareable () -> Bool = -> { [1, 2].map { |x| x + 1 }.size == 2 }
+
+  def given(&blk: shareable (Int) -> Int) -> Bool = blk.shareable?
+
+  def given_plain(&blk: (Int) -> Int) -> Bool = blk.shareable?
+
+  def symbol_given(&blk: shareable (Int) -> String) -> Bool = blk.shareable?
+
+  def symbol_plain(&blk: (Int) -> String) -> Bool = blk.shareable?
+
+  # A `shareable` procedure yielding to a `shareable` method block holds
+  # that block, a shareable procedure too.
+  def yielding(&blk: shareable (Int) -> Int) -> shareable () -> Int = -> { yield 1 }
+
+  def bump -> Int
+    @n += 1
+    @n
   end
 end
 
@@ -61,6 +94,79 @@ enum ShareableTestTree[T]
   variant Leaf(v: T)
   variant Node(l: ShareableTestTree[T], r: ShareableTestTree[T])
   variant Empty
+end
+
+# Uses of `self` and of the method's block that are not a written
+# `self` (#706): each kept by the copy, so the procedure runs as written.
+class ShareableTestUses[T]
+  include Shareable
+  @n: Int
+
+  def initialize(@n: Int)
+  end
+
+  def n -> Int = @n
+
+  # The class's type parameter.
+  def typed -> shareable () -> Int = -> { Array[T].new.size + 1 }
+
+  # A named `shareable` method block, read without `yield`.
+  def named(&blk: shareable (Int) -> Int) -> shareable () -> Int = -> { blk.call(1) }
+
+  # A nested block using `self`.
+  def nested -> shareable () -> Int = -> { [1, 2].map { |x| x + n }.sum }
+
+  # A block with a receiver whose call falls through to this `self`.
+  def through -> shareable () -> Int = -> { 1.instance_exec { self + n } }
+
+  def spawned -> Int = Task.spawn { [1].map { |x| x + n }.sum }.await
+end
+
+class ShareableTestBase
+  include Shareable
+
+  def m(x: Int, &blk: shareable (Int) -> Int) -> Int = blk.call(x)
+
+  def k -> Int = 5
+
+  # `new` in a class method builds the receiver's class.
+  def self.maker -> shareable () -> ShareableTestBase = -> { new }
+
+  def self.spawned -> String = Task.spawn { new.class.name }.await
+end
+
+class ShareableTestDerived < ShareableTestBase
+  include Shareable
+
+  # `super` passing the method's block on, and with a block of its own.
+  def m(x: Int, &blk: shareable (Int) -> Int) -> Int
+    f: shareable () -> Int = -> { super }
+    g: shareable () -> Int = -> { super(x) { |y| y * 100 } }
+    f.call + g.call
+  end
+
+  def k -> Int
+    f: shareable () -> Int = -> { super + 1 }
+    f.call
+  end
+end
+
+# Two overloads, one taking a `shareable` block: a block whose body uses a
+# non-Shareable `self` takes the other, and runs with the live `self`.
+class ShareableTestOverloads
+  def run(&b: shareable (Int) -> Int) -> Int = b.call(1)
+  def run(&b: (Int, Int) -> Int) -> Int = b.call(1, 2)
+end
+
+class ShareableTestOverloadUser
+  var @n: Int = 10
+
+  def go -> Int
+    @n += 1
+    r = ShareableTestOverloads.new.run { |a, b| a + b + @n }
+    @n += 100
+    r + @n
+  end
 end
 
 class ShareableTest < Test::Case
@@ -159,13 +265,64 @@ class ShareableTest < Test::Case
     assert_true([Atom.new(1), Channel[Int].new].shareable?)
   end
 
-  def test_procedures_answer_false
-    # An approximation (#706): a `shareable` procedure answers false too.
+  def test_procedures
+    # A `shareable` procedure answers by what it holds (#706).
     f: shareable (Int) -> Int = ->(x: Int) { x + 1 }
-    assert_false(f.shareable?)
+    assert_true(f.shareable?)
+    assert_true(ShareableTestBox[shareable (Int) -> Int].new(f).shareable?)
+    assert_true([1, f].shareable?)
+    k = [1, 2]
+    g: shareable () -> Int = -> { k.size }
+    assert_true(g.shareable?)
+    # Any other procedure answers false, whatever it captures.
     assert_false(->(x: Int) { x }.shareable?)
     assert_false([1, ->(x: Int) { x }].shareable?)
-    assert_false(ShareableTestBox[shareable (Int) -> Int].new(f).shareable?)
+    c = ShareableTestCounter.new
+    assert_false(c.:bump.shareable?)
+  end
+
+  def test_procedures_and_self
+    # One that uses a Shareable `self` holds it.
+    assert_true(ShareableTestPromised.new(2).adder.shareable?)
+    # One made in a method of a non-Shareable class holds no `self` when
+    # it does not use it, as `Task.spawn` takes such a block.
+    m = ShareableTestMaker.new
+    assert_true(m.plain.shareable?)
+    assert_true(m.capturing(3).shareable?)
+    assert_equal(5, m.capturing(3).call(2))
+    assert_true(m.nested.shareable?)
+    assert_true(m.nested.call)
+  end
+
+  def test_blocks_and_symbols
+    m = ShareableTestMaker.new
+    assert_true(m.given { |x| x + 1 })
+    assert_false(m.given_plain { |x| x + 1 })
+    f: shareable (Int) -> Int = ->(x: Int) { x * 2 }
+    assert_true(m.given(&f))
+    # `&:name` where a `shareable` procedure is expected is one: it
+    # captures nothing.
+    assert_true(m.symbol_given(&:to_s))
+    assert_false(m.symbol_plain(&:to_s))
+    y = m.yielding { |x| x + 41 }
+    assert_true(y.shareable?)
+    assert_equal(42, y.call)
+  end
+
+  def test_uses_that_are_not_a_written_self
+    u = ShareableTestUses[Int].new(10)
+    assert_equal(1, u.typed.call)
+    assert_true(u.typed.shareable?)
+    assert_equal(42, u.named { |x| x + 41 }.call)
+    assert_equal(23, u.nested.call)
+    assert_equal(11, u.through.call)
+    assert_equal(11, u.spawned)
+    assert_equal(2 + 100, ShareableTestDerived.new.m(1) { |y| y + 1 })
+    assert_equal(6, ShareableTestDerived.new.k)
+    assert_equal("ShareableTestDerived", ShareableTestDerived.maker.call.class.name)
+    assert_equal("ShareableTestDerived", ShareableTestDerived.spawned)
+    assert_true(ShareableTestDerived.maker.shareable?)
+    assert_equal(14 + 111, ShareableTestOverloadUser.new.go)
   end
 
   def test_deep_and_shared_values

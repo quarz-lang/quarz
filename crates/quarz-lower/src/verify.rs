@@ -104,7 +104,108 @@ pub fn check_from(functions: &[Function], base: FuncId, world: &RtWorld, stage: 
                 v.what
             );
         }
+        if stage == Stage::Moves {
+            if let Some((g, block, inst, what)) = unused_read(functions, base, f, world) {
+                let mut dump = String::new();
+                quarz_ir::dump::dump_function(&mut dump, id as u32, f);
+                panic!(
+                    "QIR verifier: {} after {}: {g} block {block} inst {inst} reads {what}, which the copy of this block drops (`Function::unused`: a use the checker's `proc_uses` missed)\n{dump}",
+                    f.name,
+                    stage.name(),
+                );
+            }
+        }
     }
+}
+
+/// Whether a call without a receiver reads the caller's `self` at run
+/// time. The runtime takes `self` as the receiver of every such call
+/// (`ops.rs`, `ffi.rs`); these kinds never read it, so the copy of a block
+/// that dropped `self` (`Function::unused`) may make them. A new call kind
+/// is classified here.
+fn receiverless_reads_self(kind: &CallKind, world: &RtWorld) -> bool {
+    match kind {
+        // A built-in `Kernel` function: its natives take no receiver.
+        CallKind::Function(_) => false,
+        // A top-level `def`, a method of a file's main pseudo-class: a
+        // function has no `self` (docs/01 §9). Any other method: on `self`.
+        CallKind::Method(m) => {
+            let owner = world.methods[*m as usize].owner;
+            world.classes[owner as usize].kind != quarz_ir::RtClassKind::Main
+        }
+        // `raise(...)`: its arguments only.
+        CallKind::Raise => false,
+        // `Class.new(...)` names its class: `CallOp::Construct` and the
+        // generator's (tag 2) never read the receiver the runtime cloned.
+        CallKind::Construct { .. } => false,
+        // `yield` reads the method's block, not `self` (`unused_read`
+        // checks that one).
+        CallKind::Yield => false,
+        // A call by name, `super`, `new` in a class method: on `self`.
+        CallKind::Send(_) | CallKind::Super(_) | CallKind::ConstructRecv { .. } => true,
+        // These always have a receiver; were one missing, `self`.
+        CallKind::ProcCall | CallKind::InstanceExec => true,
+    }
+}
+
+/// The first read, in `f` or in a block it makes at any depth, of what
+/// the copy of `f`'s block drops (`Function::unused`, #706): `self` (a
+/// `SelfRef`, a receiverless call that reads it; not in a block whose
+/// `self` is the receiver given at each call, `Function::self_given`) or
+/// the method's block (a `BlockParam`, which a `super` passing it on
+/// makes, or a `yield`). Such a read would see `nil`.
+fn unused_read(
+    functions: &[Function],
+    base: FuncId,
+    f: &Function,
+    world: &RtWorld,
+) -> Option<(String, usize, usize, &'static str)> {
+    let unused = f.unused;
+    if !unused.self_val && !unused.method_block {
+        return None;
+    }
+    // (A function, and whether `self` there is still the creator's.)
+    let mut work = vec![(f, !f.self_given)];
+    let mut seen: HashSet<(*const Function, bool)> = HashSet::default();
+    while let Some((g, creators_self)) = work.pop() {
+        if !seen.insert((g as *const Function, creators_self)) {
+            continue;
+        }
+        for (bi, b) in g.blocks.iter().enumerate() {
+            for (ii, inst) in b.insts.iter().enumerate() {
+                let (reads_self, reads_block) = match inst {
+                    Inst::SelfRef { .. } => (true, false),
+                    Inst::BlockParam { .. } => (false, true),
+                    Inst::Call {
+                        kind: CallKind::Yield,
+                        ..
+                    } => (false, true),
+                    Inst::Call {
+                        kind, recv: None, ..
+                    } => (receiverless_reads_self(kind, world), false),
+                    Inst::MakeBlock { func, .. } => {
+                        // (A block's function is lowered with its maker's,
+                        // in the same REPL round.)
+                        if let Some(h) = (*func as usize)
+                            .checked_sub(base as usize)
+                            .and_then(|i| functions.get(i))
+                        {
+                            work.push((h, creators_self && !h.self_given));
+                        }
+                        (false, false)
+                    }
+                    _ => (false, false),
+                };
+                if reads_self && creators_self && unused.self_val {
+                    return Some((g.name.clone(), bi, ii, "`self`"));
+                }
+                if reads_block && unused.method_block {
+                    return Some((g.name.clone(), bi, ii, "the method's block"));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// The invariants `f` breaks after `stage` (`nfuncs` functions in all).

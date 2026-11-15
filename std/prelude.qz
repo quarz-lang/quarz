@@ -98,9 +98,10 @@ class Object
   # is a compile error on a collection, a tuple or a generic `data` value
   # ("cannot be checked at run time").
   #
-  # A procedure answers false, a `shareable` one too: the value does not
-  # record which it is (an approximation, wrong only towards false,
-  # #706).
+  # A `shareable` procedure (one made where a `shareable` procedure is
+  # expected) answers by what it holds: the values it captured, and its
+  # creator's `self` and method block when its body uses them; any other
+  # procedure answers false, whatever it captures.
   #
   # ```
   # [1, "a", :b].shareable?                       # => true

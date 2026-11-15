@@ -1838,6 +1838,7 @@ pub type MethodCache = Cell<Option<(ClassId, usize, MethodId)>>;
 
 /// The body a closure runs: a QIR function, a method reference
 /// (`&:name`), or a native function.
+#[derive(Clone)]
 pub enum ClosureBody {
     Func(FuncId),
     /// `&:name`: call `name` on the first argument. The cache holds the
@@ -1877,6 +1878,11 @@ impl std::fmt::Debug for ClosureBody {
     }
 }
 
+// The `shareable` flag sits in the padding: a closure keeps its size
+// (#706).
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<Closure>() == 136);
+
 /// A block, lambda or procedure value.
 #[derive(Debug)]
 pub struct Closure {
@@ -1893,6 +1899,11 @@ pub struct Closure {
     pub method_tag: u64,
     /// Source file index (for `__FILE__`).
     pub file: u32,
+    /// Made where a `shareable` procedure is expected (`spawn`'s copy,
+    /// `__copy_captures`): `Object#shareable?` then answers by what it
+    /// holds (`transfer::Rule::Shareable`), any other procedure being
+    /// false (#706).
+    pub shareable: bool,
 }
 
 #[derive(Debug)]

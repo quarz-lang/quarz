@@ -177,6 +177,7 @@ struct ProcNode {
     method_block: Option<Ix>,
     method_tag: u64,
     file: u32,
+    shareable: bool,
 }
 
 #[derive(Debug)]
@@ -485,6 +486,7 @@ fn export_value(
                 method_block,
                 method_tag: c.method_tag,
                 file: c.file,
+                shareable: c.shareable,
             }))
         }
         _ => return Err(not_transferable(interp, &v)),
@@ -575,9 +577,11 @@ pub enum Rule {
     /// It is Shareable (docs/03 §5), as `Object#shareable?` answers: a
     /// built-in collection, a tuple, a range, and a `data` value or enum
     /// variant without the `Shareable` marker (a generic one) by their
-    /// parts, but never one whose type includes `Unshareable`; a procedure never (an approximation that errs only towards
-    /// false: the value does not record whether it is a `shareable` one,
-    /// #706); any other value by whether its class is a `Shareable` (the
+    /// parts, but never one whose type includes `Unshareable`; a
+    /// shareable procedure (`Closure::shareable`) by what it holds (the
+    /// captures it copied, a method reference's receiver, its creator's
+    /// `self` and method block when its body uses them, #706), any other
+    /// procedure never; any other value by whether its class is a `Shareable` (the
     /// membership `is_a?` reads: the marker a class's include, or the
     /// lowering for a `data` type Shareable by its fields, puts in its
     /// ancestors).
@@ -668,7 +672,21 @@ fn shareable_parts(interp: &Interp, v: &Value, work: &mut Vec<Value>) -> bool {
             work.push(r.lo.clone());
             work.push(r.hi.clone());
         }
-        Value::Proc(_) => return false,
+        Value::Proc(c) => {
+            if !c.shareable {
+                return false;
+            }
+            if let ClosureBody::BoundMethod { recv, .. } = &c.body {
+                work.push(recv.clone());
+            }
+            let mut frame = c.frame.as_ref();
+            while let Some(f) = frame {
+                work.extend(f.slots().iter().cloned());
+                frame = f.parent.as_ref();
+            }
+            work.push(c.self_val.clone());
+            work.extend(c.method_block.iter().cloned());
+        }
         Value::Object(o) => {
             // A type that includes `Unshareable` (directly or through a
             // module) is not Shareable whatever its fields hold: its values
@@ -984,6 +1002,7 @@ fn import_node(interp: &Interp, node: Node, built: &mut [Option<Built>]) -> Valu
                 method_block,
                 method_tag,
                 file,
+                shareable,
             } = *c;
             Value::Proc(Rc::new(Closure {
                 body: match body {
@@ -1009,6 +1028,7 @@ fn import_node(interp: &Interp, node: Node, built: &mut [Option<Built>]) -> Valu
                 method_block: method_block.map(|b| value(built, b)),
                 method_tag,
                 file,
+                shareable,
             }))
         }
     }

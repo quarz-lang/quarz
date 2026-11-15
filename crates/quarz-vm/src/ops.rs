@@ -520,6 +520,7 @@ impl Interp {
             method_block: (!act.block.is_nil()).then(|| act.block.clone()),
             method_tag: if is_lambda { tag } else { act.method_tag },
             file: act.file,
+            shareable: false,
         }));
     }
 
@@ -549,6 +550,7 @@ impl Interp {
             method_block: None,
             method_tag: tag,
             file: act.file,
+            shareable: false,
         }));
     }
 
@@ -581,6 +583,7 @@ impl Interp {
             method_block: None,
             method_tag: tag,
             file: act.file,
+            shareable: false,
         }));
     }
 
