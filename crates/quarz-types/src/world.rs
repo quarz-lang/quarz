@@ -2231,7 +2231,8 @@ impl World {
     /// Every test of the side in the body, in one list (nothing else
     /// differs):
     /// - **order:** `own_ancestors` (`View::Override`) on the instance
-    ///   side, the declared view (`View::Declared`) on the class side;
+    ///   side, the declared view (`View::Declared`) on the class side,
+    ///   and what the superclass brings (`inherited`) in the same view;
     ///   and the instance side's early gate `ext_includes` (a class whose
     ///   only includes are an extension's has pairs), which matters only
     ///   for an order holding extensions' modules (#681 puts them on the
@@ -2261,8 +2262,17 @@ impl World {
         if c.includes.is_empty() && !ext_includes {
             return out;
         }
+        // (What the superclass brings, in the side's view: the instance
+        // side's every conformance (`walked_ids`), the class side's
+        // declared view, where an extension's include brings no class
+        // methods, #504.)
         let inherited = match &c.superclass {
-            Some(Type::Class(sup, _)) => self.walked_ids(*sup),
+            Some(Type::Class(sup, _)) if instance => self.walked_ids(*sup),
+            Some(Type::Class(sup, sargs)) => self
+                .resolution(*sup, sargs, View::Declared)
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect(),
             _ if c.kind == ClassKind::Module => Vec::new(),
             _ => return out,
         };
