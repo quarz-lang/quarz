@@ -535,6 +535,34 @@ puts g(B)
 }
 
 #[test]
+fn an_abstract_includers_concrete_subclass_implements_the_class_method() {
+    // #759: an abstract class including a module with an abstract class
+    // method is accepted (no witness-net internal error); a concrete
+    // subclass without the class method is refused at compile time, by the
+    // declarer's "must implement", and only by it.
+    let out = common::diagnostics(
+        r#"module M
+  abstract def self.x -> String
+end
+abstract class A
+  include M
+end
+class C < A
+end
+def f(t: Type[M]) -> String = t.x
+puts f(C)
+"#,
+    )
+    .join("\n");
+    assert!(
+        out.contains("error: `C` must implement `self.x` (abstract in the included module `M`)"),
+        "{out}"
+    );
+    assert!(!out.contains("internal error"), "{out}");
+    assert_eq!(out.matches("error:").count(), 1, "{out}");
+}
+
+#[test]
 fn the_constructor_walk_reads_what_runs() {
     // The constructor walk reads `World::class_method_target` (#681): a
     // subclass's own class method below the class a witness is recorded

@@ -204,12 +204,15 @@ pub enum Decl {
 /// A row with no frame (`Verdict::NoFrame`: the net could not check it)
 /// is an error too, an internal one, placed like the others.
 ///
-/// Rule: an instance-side row of an abstract class is not checked for
-/// no-impl: it has no instances, and each concrete subclass has its own
-/// row (its `abstract def` of the name is what R0 accepts). Only no-impl is
-/// exempt: a refused row of an abstract class is an error like any other,
-/// and so is a class-side row with no implementation (a class method is
-/// called on the abstract class itself, #509).
+/// Rule: a row of an abstract class is not checked for no-impl, on either
+/// table: each concrete subclass has its own row (its `abstract def` of
+/// the name is what R0 accepts). On the instance tables it has no
+/// instances; on the class table its class object may still be called,
+/// and a call of an abstract class method on it raises the run-time
+/// `TypeError` an abstract class's own abstract class method raises
+/// (#510, #486, decided 2026-11-10; #759's decision of 2026-11-16). Only
+/// no-impl is exempt: a refused row of an abstract class is an error like
+/// any other.
 pub fn errors(
     world: &World,
     checked: &[Checked],
@@ -229,12 +232,11 @@ pub fn errors(
             // check: it refuses the program.)
             Verdict::NoFrame => Some(String::new()),
             Verdict::Refused { reason, .. } => Some(reason.clone()),
-            // (An abstract class has no instances: its instance-side rows
-            // are never reached, its subclasses' are checked for them, and
-            // its own `abstract def` of the name is what R0 accepts.)
-            Verdict::NoImplementation if r.table != "class" && world.class(r.class).is_abstract => {
-                continue
-            }
+            // (An abstract class's rows: its subclasses' are checked for
+            // them, and its own `abstract def` of the name is what R0
+            // accepts; on the class table, a call on the abstract class
+            // itself raises at run time, #510.)
+            Verdict::NoImplementation if world.class(r.class).is_abstract => continue,
             Verdict::NoImplementation => None,
         };
         if seen.contains(&(r.class, r.req, r.by)) {
