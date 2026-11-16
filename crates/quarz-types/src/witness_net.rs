@@ -213,6 +213,13 @@ pub enum Decl {
 /// (#510, #486, decided 2026-11-10; #759's decision of 2026-11-16). Only
 /// no-impl is exempt: a refused row of an abstract class is an error like
 /// any other.
+///
+/// Rule: a row of a class whose conformance is deferred past its
+/// statements (`World::conformance_deferred`, docs/14 §5) is not checked
+/// for no-impl either: the compile-time rounds before its last statement
+/// run with the implementation still to be generated (#801). The deferred
+/// conformance check refuses the class if none comes, and the final net
+/// checks its rows then, the list being empty by that time.
 pub fn errors(
     world: &World,
     checked: &[Checked],
@@ -237,6 +244,11 @@ pub fn errors(
             // accepts; on the class table, a call on the abstract class
             // itself raises at run time, #510.)
             Verdict::NoImplementation if world.class(r.class).is_abstract => continue,
+            // (A class whose conformance waits for its statements, docs/14
+            // §5: one about to run may generate what it lacks. Its rows
+            // are checked once the deferred conformance was, by the final
+            // net, `Lowerer::declare`, #801.)
+            Verdict::NoImplementation if world.conformance_deferred.contains(&r.class) => continue,
             Verdict::NoImplementation => None,
         };
         if seen.contains(&(r.class, r.req, r.by)) {
