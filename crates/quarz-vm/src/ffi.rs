@@ -650,7 +650,7 @@ pub unsafe extern "C" fn qz_call_static(
     let mid = mid & !STATIC_FUNCTION;
     let declared = rt.program.method(mid);
     // (`m`: the method the call runs, looked up once.)
-    let (mid, m) = if !function && declared.overridden {
+    let (mid, m) = if !function && declared.dispatch() != quarz_ir::Dispatch::Static {
         let recv_ref: &Value = if recv == u32::MAX {
             &act.self_val
         } else {

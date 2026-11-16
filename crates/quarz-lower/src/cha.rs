@@ -63,7 +63,7 @@ fn rewrite_in(f: &mut Function, world: &RtWorld, has_subclass: &[bool]) {
                         lines.push(line);
                         continue;
                     };
-                    if method.overridden {
+                    if method.dispatch() != Dispatch::Static {
                         insts.push(inst);
                         lines.push(line);
                         continue;

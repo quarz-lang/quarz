@@ -111,7 +111,7 @@ fn site(inst: &Inst, eligible: &[bool], methods: &[RtMethod]) -> Option<Site> {
         && !m.is_abstract
         && !m.has_block
         && m.native_key.is_none()
-        && (!m.overridden || m.is_extension)
+        && m.dispatch() == Dispatch::Static
         && m.params.len() == args.len()
         && m.params
             .iter()

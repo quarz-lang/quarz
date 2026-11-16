@@ -125,6 +125,7 @@ pub fn fill(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<Strin
     }
     for (m, rm) in world.methods.iter().zip(rt.methods.iter_mut()) {
         rm.overridden |= lw.overridden.contains(&m.id);
+        assert!(!(rm.overridden && rm.is_extension), "an extension's method `{}` is never overridden: the checker refuses an abstract one (#534), the table has none (`RtMethod::dispatch`)", m.name);
         rm.func = lw.method_funcs.get(m.id as usize).copied().flatten();
     }
     rt.consts = world

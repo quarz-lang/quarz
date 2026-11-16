@@ -1600,7 +1600,37 @@ fn no_shape() -> u32 {
     NO_SHAPE
 }
 
+/// How a call resolved to a method finds what runs (#536 step 4,
+/// `RtMethod::dispatch`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dispatch {
+    /// Nothing may run in its place: the method itself.
+    Static,
+    /// An instance method something may replace: resolved on the
+    /// receiver's class (a virtual slot).
+    Virtual,
+    /// A class method something may replace: resolved on the class object
+    /// it is called on.
+    ClassSide,
+}
+
 impl RtMethod {
+    /// How a call resolved to this method finds what runs (#536 step 4):
+    /// the one predicate every site reads, from `overridden` (the
+    /// override table's, `World::overridden_methods`, and abstract
+    /// methods) and the side. An extension's method is never `overridden`
+    /// (`rtworld::fill` asserts it), so it is `Static`. Whether a static
+    /// target has a body to call directly (`native_key`, `synth`, `func`)
+    /// is the call site's question, not this one's.
+    pub fn dispatch(&self) -> Dispatch {
+        debug_assert!(!(self.overridden && self.is_extension), "{}", self.name);
+        match (self.overridden, self.singleton) {
+            (false, _) => Dispatch::Static,
+            (true, false) => Dispatch::Virtual,
+            (true, true) => Dispatch::ClassSide,
+        }
+    }
+
     /// A method's positional shape: its number of parameters and whether
     /// it takes a block, when every parameter is positional; `NO_SHAPE`
     /// otherwise (a rest, keywords).
