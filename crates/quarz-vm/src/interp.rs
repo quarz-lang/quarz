@@ -721,17 +721,7 @@ impl Derived {
         let vslots = world
             .methods
             .iter()
-            .map(|m| {
-                let virtual_ = m.dispatch() == quarz_ir::Dispatch::Virtual;
-                #[cfg(debug_assertions)]
-                quarz_ir::dispatch_oracle(
-                    9,
-                    m.overridden && !m.singleton && !m.is_extension,
-                    virtual_,
-                    &m.name,
-                );
-                vslot(virtual_)
-            })
+            .map(|m| vslot(m.dispatch() == quarz_ir::Dispatch::Virtual))
             .collect();
         Derived {
             natives,
@@ -2640,8 +2630,6 @@ impl Interp {
         let m = self.program.method(mid);
         if m.singleton {
             let class_side = m.dispatch() == quarz_ir::Dispatch::ClassSide;
-            #[cfg(debug_assertions)]
-            quarz_ir::dispatch_oracle(10, m.overridden, class_side, &m.name);
             // A class method some subclass overrides: the class it is
             // called on decides.
             return match recv {

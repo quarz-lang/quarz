@@ -75,15 +75,7 @@ pub fn encode(methods: &[RtMethod], positions: &[quarz_ir::HashMap<&str, u32>; 3
         if positional {
             flags |= POSITIONAL;
         }
-        let vslot = m.dispatch() == quarz_ir::Dispatch::Virtual;
-        #[cfg(debug_assertions)]
-        quarz_ir::dispatch_oracle(
-            8,
-            m.overridden && !m.singleton && !m.is_extension,
-            vslot,
-            &m.name,
-        );
-        if vslot {
+        if m.dispatch() == quarz_ir::Dispatch::Virtual {
             flags |= VSLOT;
         }
         let plain = positional

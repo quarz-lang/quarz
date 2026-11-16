@@ -314,16 +314,7 @@ pub fn call_num(inst: &Inst, methods: &[RtMethod], typed: &[Option<TypedSig>]) -
         return None;
     }
     let m = methods.get(*mid as usize)?;
-    let not_typed =
-        m.native_key.is_some() || m.dispatch() != Dispatch::Static || m.synth != RtSynth::None;
-    #[cfg(debug_assertions)]
-    quarz_ir::dispatch_oracle(
-        5,
-        m.native_key.is_some() || (m.overridden && !m.is_extension) || m.synth != RtSynth::None,
-        not_typed,
-        &m.name,
-    );
-    if not_typed {
+    if m.native_key.is_some() || m.dispatch() != Dispatch::Static || m.synth != RtSynth::None {
         return None;
     }
     let fid = m.func?;

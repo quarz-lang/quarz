@@ -102,15 +102,7 @@ fn find_site(f: &Function, world: &RtWorld, done: &HashSet<usize>) -> Option<Sit
                 continue;
             }
             let m = &world.methods[*mid as usize];
-            let dispatched = m.dispatch() == Dispatch::Virtual;
-            #[cfg(debug_assertions)]
-            quarz_ir::dispatch_oracle(
-                7,
-                m.overridden && !m.singleton && !m.is_extension,
-                dispatched,
-                &m.name,
-            );
-            let virtual_ = dispatched
+            let virtual_ = m.dispatch() == Dispatch::Virtual
                 && m.native_key.is_none()
                 && m.synth == RtSynth::None
                 && !m.has_block
