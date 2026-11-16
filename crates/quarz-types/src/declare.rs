@@ -4940,38 +4940,27 @@ impl<'ast> Declarer<'ast> {
         // instance side (an abstract one's concrete subclasses are checked
         // with the modules of their whole chain).
         if class.kind != ClassKind::Module {
-            let chain = self.world.superclass_chain(id);
-            // The class's own side, in order: each class's own class
-            // methods, then the modules it includes (the last first, each
-            // with what it includes), then its superclass's. (What a call
-            // on the class object runs is `World::class_method_target`'s
-            // answer, which the runtime reads from the rows it ships.)
-            // (`World::class_own_side` with the modules' arguments, the
-            // declared view: the requirements of the modules the class
-            // includes itself; an extension's modules' are completed at the
-            // extension, #504. Where a top-level extension's module comes
-            // before the implementation found here, its method is paired
-            // with the abstract one by the class-side include pairs, #681.)
-            let order: Vec<(ClassId, Option<Vec<Type>>)> = self
+            // The modules whose class methods the class answers for, with
+            // their arguments: those of its own side (`World::class_own_side`
+            // with the modules' arguments, the declared view), the modules
+            // it and its superclasses include themselves; an extension's
+            // modules' are completed at the extension, #504. What runs for
+            // each is `World::class_method_target`, below: the class side's
+            // twin of the instance side's witness (`own_witness_in` over
+            // `View::Lookup`), the answer the witness net and the runtime
+            // read (#733).
+            let modules: Vec<(ClassId, Vec<Type>)> = self
                 .world
                 .resolution(id, &[], View::Declared)
                 .into_iter()
-                .map(|(c, a)| {
-                    let module = self.world.class(c).kind == ClassKind::Module;
-                    (c, module.then_some(a))
-                })
+                .filter(|(c, _)| self.world.class(*c).kind == ClassKind::Module)
                 .collect();
-            let extended: Vec<ClassId> = order
-                .iter()
-                .filter(|(_, a)| a.is_some())
-                .map(|(c, _)| *c)
-                .collect();
+            // (The class object's dispatch order, where rule A's order
+            // check places an extension's target and the witness's owner.)
+            let dispatch = self.world.class_dispatch_order(id);
             let mut missing: Vec<(String, ClassId)> = Vec::new();
+            let mut by_extension: Vec<(String, ClassId, String)> = Vec::new();
             let mut class_impls: Vec<(MethodId, MethodId, ClassId, Vec<Type>)> = Vec::new();
-            let modules: Vec<(ClassId, Vec<Type>)> = order
-                .iter()
-                .filter_map(|(c, a)| Some((*c, a.clone()?)))
-                .collect();
             for (mid, margs) in modules {
                 let ids: Vec<MethodId> = self
                     .world
@@ -4984,53 +4973,36 @@ impl<'ast> Declarer<'ast> {
                     .collect();
                 for abs in ids {
                     let m = self.world.method(abs);
-                    // What runs in its place: the first method found in
-                    // that order taking the same arguments.
-                    let found = order.iter().find_map(|(c, _)| {
-                        let k = self.world.class(*c);
-                        k.singleton_methods.get(&m.name)?.iter().copied().find(|i| {
-                            // (An abstract one is passed over, its own too.)
-                            !self.world.method(*i).is_abstract
-                                && (*i == abs || self.same_signature_at_run_time(*i, abs))
-                        })
-                    });
-                    if let Some(i) = found.filter(|i| *i != abs) {
-                        class_impls.push((i, abs, mid, margs.clone()));
-                    }
-                    if !m.is_abstract {
-                        continue;
-                    }
-                    // Implemented: a class method of the name that takes
-                    // its calls by arity on the chain or in an included
-                    // module, in the declared view (an approximation that
-                    // #733 replaces with the instance side's answer: it
-                    // refuses more than that rule, not counting a top-level
-                    // extension's module, #672; with the condition below it
-                    // accepts nothing whose call does not run a method the
-                    // override table pairs with it, which the net checks),
-                    // and what a call of it on the class object runs
-                    // (`World::class_method_target`, which the witness net
-                    // checks) another method: a method of the name of
-                    // another parameter type is no implementation there,
-                    // and the class must implement it (#749).
-                    let on_class = chain.iter().any(|cid| {
-                        self.world
-                            .class(*cid)
-                            .singleton_methods
-                            .get(&m.name)
-                            .is_some_and(|ids| ids.iter().any(|i| self.implements(*i, abs)))
-                    });
-                    let on_module = extended.iter().any(|other| {
-                        self.world
-                            .class(*other)
-                            .singleton_methods
-                            .get(&m.name)
-                            .is_some_and(|ids| ids.iter().any(|i| self.implements(*i, abs)))
-                    });
+                    // What a call of it on the class object runs: one the
+                    // override table pairs with it, of the class's chain, a
+                    // module it includes or a top-level extension's module
+                    // (its own side, as the instance side's witness reads,
+                    // #672), else itself.
                     let runs =
                         self.world
                             .class_method_target(&|k| self.world.overrides(k), id, abs);
-                    if ((!on_class && !on_module) || runs == abs) && !class.is_abstract {
+                    // Rule A's order check, as on the instance side: the
+                    // class's own conformance, implemented by `runs`, with
+                    // an active extension's class method of the shape on an
+                    // ancestor strictly before `runs`'s owner in the class
+                    // object's dispatch order (`taken_extension`, whose
+                    // `implements` keeps to the requirement's side).
+                    let rule_a = if m.is_abstract
+                        && !class.is_abstract
+                        && runs != abs
+                        && self.world.method(runs).extension.is_none()
+                    {
+                        self.taken_extension(&dispatch, abs, Some(runs))
+                    } else {
+                        None
+                    };
+                    if let Some(e) = rule_a {
+                        by_extension.push((m.name.clone(), mid, self.world.extension_label(e)));
+                        continue;
+                    }
+                    if runs != abs {
+                        class_impls.push((runs, abs, mid, margs.clone()));
+                    } else if m.is_abstract && !class.is_abstract {
                         missing.push((m.name.clone(), mid));
                     }
                 }
@@ -5047,6 +5019,18 @@ impl<'ast> Declarer<'ast> {
                     class.span,
                 );
             }
+            by_extension.sort();
+            by_extension.dedup();
+            for (name, owner, ext) in by_extension {
+                let owner = self.world.class(owner).name.clone();
+                self.error(
+                    format!(
+                        "`{}` has `{owner}.{name}` from the module `{owner}` it includes itself, so it is implemented in `{}` (its own class methods, includes or superclasses), not by {ext}'s method",
+                        class.name, class.name
+                    ),
+                    class.span,
+                );
+            }
             // (What runs in place of an included module's class method must
             // take and return what that one declares.)
             let own_args: Vec<Type> = class
@@ -5054,10 +5038,26 @@ impl<'ast> Declarer<'ast> {
                 .iter()
                 .map(|p| Type::Param(p.id))
                 .collect();
+            // (Each seen from the class, as on the instance side: the
+            // requirement's module and what runs's owner with their
+            // arguments in the class's own parameters, along the class
+            // object's dispatch order, where `runs` was found.)
+            let typed = self.world.resolution(id, &own_args, View::Lookup);
             for (i, abs, module, margs) in class_impls {
-                if self.world.method(i).file != 0 {
+                // (A pair another check reported is not reported again, as
+                // `check_implementation` skips it.)
+                if self.world.method(i).file != 0 && !self.override_pairs.contains(&(i, abs)) {
                     let own = Type::Class(id, own_args.clone());
-                    self.check_implementation(i, abs, module, &margs, own);
+                    let aargs = typed
+                        .iter()
+                        .find(|(c, _)| *c == module)
+                        .map_or(margs, |(_, a)| a.clone());
+                    let owner = self.world.method(i).owner;
+                    let iargs = typed
+                        .iter()
+                        .find(|(c, _)| *c == owner)
+                        .map(|(_, a)| a.clone());
+                    self.check_implementation_seen(i, abs, module, &aargs, own, owner, iargs);
                 }
             }
         }
