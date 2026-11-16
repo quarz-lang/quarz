@@ -4272,6 +4272,13 @@ fn r0s_refusal_names_the_nearest_candidate() {
         out.contains("error: this extension includes `M` but nothing here implements `get` (`G#get() -> String` does not take the place of `M#get() -> Int`: it returns String for `B`)"),
         "{out}"
     );
+    // A method of the name another extension's module gives, which R0's
+    // search does not take (#555): not named, the error as before.
+    let out = msg("module M\n  abstract def get -> Int\nend\nmodule G\n  def get -> Int = 7\nend\nclass B\n  def initialize; end\nend\nextension B\n  include G\nend\nmodule X\n  extension B\n    include M\n  end\nend\n");
+    assert!(
+        out.contains("error: this extension includes `M` but nothing here implements `get`: define it in the extension or in `B`"),
+        "{out}"
+    );
     // No method of the name: the error as before.
     let out = msg("module M\n  abstract def get -> Int\nend\nclass B\n  def initialize; end\nend\nextension B\n  include M\nend\n");
     assert!(

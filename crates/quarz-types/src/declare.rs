@@ -2199,11 +2199,17 @@ impl<'ast> Declarer<'ast> {
                         self.r0_near.insert((ext, r, i));
                     }
                     // (Without such an overload of the extension's own, the
-                    // nearest candidate of the name and side, the first in
-                    // the order R0 searches after the extension: its
-                    // modules, then the target's own side, #682. Why it
-                    // fails is the conjunct of `takes_place_of` that does:
-                    // its calls (`takes_calls_of`), else its result.)
+                    // nearest candidate of the name and side, #682: the
+                    // first method of the name in this extension's modules,
+                    // then on the target's own side, each seen through the
+                    // substitutions R0's search uses above. For the wording
+                    // only: it decides no verdict, and it may name a
+                    // method R0's search would not reach first (its order
+                    // with this extension active is `View::Static`'s),
+                    // the error then naming another candidate than the
+                    // nearest. It is named only when `takes_place_of`
+                    // refuses it, with the conjunct that fails: its calls
+                    // (`takes_calls_of`), else its result.)
                     let nearest = if near.is_empty() {
                         ext_mods
                             .iter()
@@ -2220,25 +2226,36 @@ impl<'ast> Declarer<'ast> {
                     } else {
                         None
                     };
-                    let nearest = nearest.map_or(String::new(), |(i, ks)| {
-                        let im = self.world.method(i);
-                        let why = if self.world.takes_calls_of(im, &ks, &rm, &rsubst) {
+                    let nearest = nearest
+                        .filter(|(i, ks)| {
+                            !self
+                                .world
+                                .takes_place_of(self.world.method(*i), ks, &rm, &rsubst)
+                        })
+                        .map_or(String::new(), |(i, ks)| {
+                            let im = self.world.method(i);
+                            let why = if !self.world.takes_calls_of(im, &ks, &rm, &rsubst) {
+                                ": it does not take every call".to_string()
+                            } else if !self
+                                .world
+                                .is_subtype(&im.ret.subst(&ks), &rm.ret.subst(&rsubst))
+                            {
+                                format!(
+                                    ": it returns {} for `{}`",
+                                    self.world.type_name(&im.ret.subst(&ks)),
+                                    self.world.class(target).name
+                                )
+                            } else {
+                                String::new()
+                            };
                             format!(
-                                "it returns {} for `{}`",
-                                self.world.type_name(&im.ret.subst(&ks)),
-                                self.world.class(target).name
+                                "`{}#{}` does not take the place of `{}#{}`{why}",
+                                self.world.class(im.owner).name,
+                                self.world.method_signature(im),
+                                self.world.class(*m).name,
+                                self.world.method_signature(&rm)
                             )
-                        } else {
-                            "it does not take every call".to_string()
-                        };
-                        format!(
-                            "`{}#{}` does not take the place of `{}#{}`: {why}",
-                            self.world.class(im.owner).name,
-                            self.world.method_signature(im),
-                            self.world.class(*m).name,
-                            self.world.method_signature(&rm)
-                        )
-                    });
+                        });
                     missing.push((
                         rm.name.clone(),
                         self.world.class(*m).name.clone(),
