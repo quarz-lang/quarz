@@ -94,7 +94,7 @@ fn refused(src: &str, wants: &[&str]) {
 fn a_refused_row_is_an_error_at_the_extension() {
     refused(
         T2C,
-        &["main.qz:18:11: error: this extension includes `M` but nothing here implements `get`: define it in the extension or in `B`"],
+        &["main.qz:18:11: error: this extension includes `M` but nothing here implements `get` (`Base#get() -> T` does not take the place of `M#get() -> Int`: it returns String for `B`): define it in the extension or in `B`"],
     );
 }
 const T2C: &str = "module M\n  abstract def get -> Int\nend\nclass Base[T]\n  @v: T\n  def initialize(@v: T); end\n  def get -> T = @v\nend\nclass A < Base[Int]\n  def initialize; super(1); end\nend\nclass B < Base[String]\n  def initialize; super(\"s\"); end\nend\nextension A\n  include M\nend\nextension B\n  include M\nend\ndef via(m: M) -> Int = m.get + 1\nputs via(A.new)\nputs via(B.new)\n";
@@ -135,7 +135,7 @@ fn another_modules_witness_has_a_row_checked_per_class() {
     assert_eq!(code, Some(0), "{err}");
     refused(
         &format!("{base}class K4\n  def initialize; end\n  def held -> String = \"s\"\nend\nmodule S4\n  extension K4\n    include Holds[String]\n    include Num\n  end\nend\nputs 1\n"),
-        &["error: this extension includes `Num` but nothing here implements `get`: define it in the extension or in `K4`"],
+        &["error: this extension includes `Num` but nothing here implements `get` (`Holds#get() -> T` does not take the place of `Num#get() -> Int`: it returns String for `K4`): define it in the extension or in `K4`"],
     );
 }
 
@@ -150,7 +150,7 @@ fn an_inherited_witness_has_a_row_checked_per_class() {
     assert_eq!(code, Some(0), "{err}");
     refused(
         &format!("{base}class B < Base[String]\n  def initialize; super(\"s\"); end\nend\nmodule SB\n  extension B\n    include M\n  end\nend\nputs 1\n"),
-        &["error: this extension includes `M` but nothing here implements `get`: define it in the extension or in `B`"],
+        &["error: this extension includes `M` but nothing here implements `get` (`Base#get() -> T` does not take the place of `M#get() -> Int`: it returns String for `B`): define it in the extension or in `B`"],
     );
 }
 
@@ -275,7 +275,7 @@ fn rows_with_no_implementation_by_kind() {
 fn a_refused_row_of_an_abstract_class_is_an_error() {
     refused(
         "module M\n  abstract def get -> Int\nend\nclass Base[T]\n  @v: T\n  def initialize(@v: T); end\n  def get -> T = @v\nend\nclass A2 < Base[Int]\n  def initialize; super(1); end\nend\nextension A2\n  include M\nend\nabstract class B2 < Base[String]\n  def initialize; super(\"s\"); end\nend\nextension B2\n  include M\nend\nputs 1\n",
-        &["main.qz:18:11: error: this extension includes `M` but nothing here implements `get`: define it in the extension or in `B2`"],
+        &["main.qz:18:11: error: this extension includes `M` but nothing here implements `get` (`Base#get() -> T` does not take the place of `M#get() -> Int`: it returns String for `B2`): define it in the extension or in `B2`"],
     );
 }
 

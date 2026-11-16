@@ -4247,6 +4247,47 @@ fn an_extension_completes_the_conformance_it_makes() {
 }
 
 #[test]
+fn r0s_refusal_names_the_nearest_candidate() {
+    // #682: with no overload of the extension's own (#751's note), R0's
+    // refusal names the nearest method of the requirement's name and side,
+    // the first in the order R0 searches after the extension (its modules,
+    // then the target's own side), and the conjunct of `takes_place_of` it
+    // fails: its result, seen from the target, or its calls.
+    let msg = |src: &str| common::diagnostics(src).join("\n");
+    // A superclass's, by its result (the issue's reproducer).
+    let out = msg("module M\n  abstract def get -> Int\nend\nclass Base[T]\n  @v: T\n  def initialize(@v: T); end\n  def get -> T = @v\nend\nclass B < Base[String]\n  def initialize; super(\"s\"); end\nend\nextension B\n  include M\nend\n");
+    assert!(
+        out.contains("error: this extension includes `M` but nothing here implements `get` (`Base#get() -> T` does not take the place of `M#get() -> Int`: it returns String for `B`): define it in the extension or in `B`"),
+        "{out}"
+    );
+    // The class's own, by a parameter.
+    let out = msg("module M\n  abstract def put(x: Int) -> Int\nend\nclass B\n  def initialize; end\n  def put(x: String) -> Int = 1\nend\nextension B\n  include M\nend\n");
+    assert!(
+        out.contains("error: this extension includes `M` but nothing here implements `put` (`B#put(x: String) -> Int` does not take the place of `M#put(x: Int) -> Int`: it does not take every call)"),
+        "{out}"
+    );
+    // A module the extension includes.
+    let out = msg("module M\n  abstract def get -> Int\nend\nmodule G\n  def get -> String = \"g\"\nend\nclass B\n  def initialize; end\nend\nextension B\n  include G\n  include M\nend\n");
+    assert!(
+        out.contains("error: this extension includes `M` but nothing here implements `get` (`G#get() -> String` does not take the place of `M#get() -> Int`: it returns String for `B`)"),
+        "{out}"
+    );
+    // A method of the name another extension's module gives, which R0's
+    // search does not take (#555): not named, the error as before.
+    let out = msg("module M\n  abstract def get -> Int\nend\nmodule G\n  def get -> Int = 7\nend\nclass B\n  def initialize; end\nend\nextension B\n  include G\nend\nmodule X\n  extension B\n    include M\n  end\nend\n");
+    assert!(
+        out.contains("error: this extension includes `M` but nothing here implements `get`: define it in the extension or in `B`"),
+        "{out}"
+    );
+    // No method of the name: the error as before.
+    let out = msg("module M\n  abstract def get -> Int\nend\nclass B\n  def initialize; end\nend\nextension B\n  include M\nend\n");
+    assert!(
+        out.contains("error: this extension includes `M` but nothing here implements `get`: define it in the extension or in `B`"),
+        "{out}"
+    );
+}
+
+#[test]
 fn a_near_miss_in_a_conforming_extension_is_said_once() {
     // #751 (option (a)): an extension's own method of an abstract
     // requirement's name that takes its calls by arity but not by type in
