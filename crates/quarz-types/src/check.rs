@@ -17830,6 +17830,15 @@ impl Checker {
                 self.unverifiable(&tm),
                 unverifiable,
             );
+            #[cfg(debug_assertions)]
+            crate::testable::oracle(
+                "checker pair",
+                (
+                    crate::testable::old_run_time_test(&self.world, &tm),
+                    !crate::testable::old_unverifiable(&self.world, &tm),
+                ),
+                crate::testable::seen(&self.world, &tm),
+            );
             if !unverifiable {
                 continue;
             }

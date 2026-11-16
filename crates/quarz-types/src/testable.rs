@@ -23,7 +23,9 @@ fn elements_checked(world: &World, id: crate::ClassId) -> bool {
 }
 
 /// The run-time test of the class alone (no elements): for a type the
-/// static type already decides, and for a union dispatch's members.
+/// static type already decides, and for a union dispatch's members. It is
+/// another test, not another encoding of `seen`'s: where the static type
+/// decides the answer, the class is all a test needs to see.
 pub fn rt_type(t: &Type) -> RtType {
     match t {
         Type::Nothing => RtType::Nothing,
@@ -38,23 +40,86 @@ pub fn rt_type(t: &Type) -> RtType {
     }
 }
 
-/// The run-time test of `t` for `as`/`is_a?` where the static type does
-/// not decide it: with the elements of built-in collections and tuples
-/// checked too (`xs.as(Array[String])`), and a class value of a class
-/// without type parameters tested for the class (`Type[Model]`). The
-/// checker refuses the rest (`unverifiable`).
-pub fn run_time_test(world: &World, t: &Type) -> RtType {
+/// What the run-time test of `t` checks, and whether that is all of `t`
+/// (#536 step 7): one traversal, so that the checker vouches for exactly
+/// what the test checks. Each arm emits the test of its part and says
+/// whether that test sees the part whole:
+/// - a built-in collection (`elements_checked`): its elements' tests when
+///   one of them checks something (an `Object`, a type parameter or an
+///   inference variable checks nothing), complete when every element is;
+/// - another class: its class; complete when each argument is `Object`
+///   where the parameter admits it (a value of the class is then one);
+/// - a class value of a class without type parameters: the class or a
+///   subclass (`Type[Model]`), complete; of a generic class, incomplete
+///   (a class value carries no arguments); `Type[Object]`: any class value;
+/// - a union or a tuple: its members', complete when each is;
+/// - a procedure: a procedure, incomplete (its parameters are not seen);
+/// - a type parameter, or a class value of one: anything, incomplete (not
+///   known at run time);
+/// - an inference variable or `Void`: anything, complete (nothing to see);
+///   `Nothing`: nothing.
+pub fn seen(world: &World, t: &Type) -> (RtType, bool) {
     match t {
-        Type::Class(id, args)
-            if elements_checked(world, *id) && args.iter().any(|a| !trivial(world, a)) =>
-        {
-            RtType::Elems(*id, args.iter().map(|a| run_time_test(world, a)).collect())
+        Type::Class(id, args) if elements_checked(world, *id) => {
+            let elems: Vec<(RtType, bool)> = args.iter().map(|a| seen(world, a)).collect();
+            let complete = elems.iter().all(|(_, c)| *c);
+            let test = if args.iter().any(|a| !trivial(world, a)) {
+                RtType::Elems(*id, elems.into_iter().map(|(t, _)| t).collect())
+            } else {
+                RtType::Class(*id)
+            };
+            (test, complete)
         }
-        Type::ClassObject(id, _) if *id != world.builtin.object => RtType::ClassOf(*id),
-        Type::Union(ms) => RtType::Union(ms.iter().map(|m| run_time_test(world, m)).collect()),
-        Type::Tuple(ts) => RtType::Tuple(ts.iter().map(|m| run_time_test(world, m)).collect()),
-        _ => rt_type(t),
+        Type::Class(id, args) => {
+            let object = |a: &Type| matches!(a, Type::Class(o, _) if *o == world.builtin.object);
+            let complete = args
+                .iter()
+                .enumerate()
+                .all(|(i, a)| object(a) && world.param_admits_object(*id, i));
+            (RtType::Class(*id), complete)
+        }
+        Type::ClassObject(id, _) => {
+            let test = if *id == world.builtin.object {
+                RtType::ClassObject
+            } else {
+                RtType::ClassOf(*id)
+            };
+            (test, world.class(*id).type_params.is_empty())
+        }
+        Type::Union(ms) => {
+            let parts: Vec<(RtType, bool)> = ms.iter().map(|m| seen(world, m)).collect();
+            let complete = parts.iter().all(|(_, c)| *c);
+            (
+                RtType::Union(parts.into_iter().map(|(t, _)| t).collect()),
+                complete,
+            )
+        }
+        Type::Tuple(ts) => {
+            let parts: Vec<(RtType, bool)> = ts.iter().map(|m| seen(world, m)).collect();
+            let complete = parts.iter().all(|(_, c)| *c);
+            (
+                RtType::Tuple(parts.into_iter().map(|(t, _)| t).collect()),
+                complete,
+            )
+        }
+        Type::Proc(..) => (RtType::Proc, false),
+        Type::Param(_) => (RtType::Any, false),
+        Type::TypeOf(_) => (RtType::ClassObject, false),
+        Type::Var(_) | Type::Void => (RtType::Any, true),
+        Type::Nothing => (RtType::Nothing, true),
     }
+}
+
+/// The run-time test of `t` for `as`/`is_a?` where the static type does
+/// not decide it (`seen`'s test).
+pub fn run_time_test(world: &World, t: &Type) -> RtType {
+    seen(world, t).0
+}
+
+/// Whether the run-time test of `t` leaves part of it unchecked (`seen`'s
+/// completeness, negated): the checker refuses a test it cannot vouch for.
+pub fn unverifiable(world: &World, t: &Type) -> bool {
+    !seen(world, t).1
 }
 
 /// An element type that needs no check: anything (`Object`), or what the
@@ -64,39 +129,50 @@ fn trivial(world: &World, t: &Type) -> bool {
         || matches!(t, Type::Class(id, _) if *id == world.builtin.object)
 }
 
-/// Whether the run-time test of `t` leaves part of it unchecked: a type
-/// parameter as an argument (the elements' `T` is not known at run time),
-/// or arguments of a class other than the built-in collections (whose
-/// elements are checked), except `Object` for a covariant parameter.
-pub fn unverifiable(world: &World, t: &Type) -> bool {
+/// The previous two recursions, for the oracle and the shape test (#536
+/// step 7, commit 1 only).
+#[doc(hidden)]
+pub fn old_run_time_test(world: &World, t: &Type) -> RtType {
+    match t {
+        Type::Class(id, args)
+            if elements_checked(world, *id) && args.iter().any(|a| !trivial(world, a)) =>
+        {
+            RtType::Elems(
+                *id,
+                args.iter().map(|a| old_run_time_test(world, a)).collect(),
+            )
+        }
+        Type::ClassObject(id, _) if *id != world.builtin.object => RtType::ClassOf(*id),
+        Type::Union(ms) => RtType::Union(ms.iter().map(|m| old_run_time_test(world, m)).collect()),
+        Type::Tuple(ts) => RtType::Tuple(ts.iter().map(|m| old_run_time_test(world, m)).collect()),
+        _ => rt_type(t),
+    }
+}
+
+#[doc(hidden)]
+pub fn old_unverifiable(world: &World, t: &Type) -> bool {
     let object = |a: &Type| matches!(a, Type::Class(id, _) if *id == world.builtin.object);
     match t {
         Type::Class(id, args) if elements_checked(world, *id) => args
             .iter()
-            .any(|a| !object(a) && unverifiable_arg(world, a)),
+            .any(|a| !object(a) && old_unverifiable_arg(world, a)),
         Type::Class(id, args) => args
             .iter()
             .enumerate()
             .any(|(i, a)| !(object(a) && world.param_admits_object(*id, i))),
-        // A class value is tested for its class (`Type[Model]`: a class
-        // `<= Model`), not for type arguments, which it does not carry:
-        // a generic class (`Type[Box[Int]]`) is refused.
         Type::ClassObject(id, _) => !world.class(*id).type_params.is_empty(),
-        Type::Tuple(ts) | Type::Union(ts) => ts.iter().any(|m| unverifiable(world, m)),
+        Type::Tuple(ts) | Type::Union(ts) => ts.iter().any(|m| old_unverifiable(world, m)),
         Type::Proc(..) => true,
-        // A type parameter is not known at run time (`o.as(T)`).
         Type::Param(_) | Type::TypeOf(_) => true,
         Type::Nothing | Type::Void | Type::Var(_) => false,
     }
 }
 
-/// `unverifiable` for a type argument or element type: a type parameter
-/// there is not known at run time.
-fn unverifiable_arg(world: &World, t: &Type) -> bool {
+fn old_unverifiable_arg(world: &World, t: &Type) -> bool {
     match t {
         Type::Param(_) => true,
-        Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(|m| unverifiable_arg(world, m)),
-        _ => unverifiable(world, t),
+        Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(|m| old_unverifiable_arg(world, m)),
+        _ => old_unverifiable(world, t),
     }
 }
 
