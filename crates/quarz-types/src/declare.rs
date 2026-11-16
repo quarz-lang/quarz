@@ -1607,11 +1607,13 @@ impl<'ast> Declarer<'ast> {
                 // the module's arguments substituted (`d(x: Int)` for
                 // `M[Int]`'s `d(x: T)`); an abstract one is checked as an
                 // override below.
+                // (The one pairing rule, `World::replaces_seen`, with both
+                // sides seen from the target.)
                 let fits = |this: &Self, i: MethodId| {
                     if !this.implements(i, m) {
                         return false;
                     }
-                    if info.is_abstract || this.same_signature_at_run_time(i, m) {
+                    if info.is_abstract {
                         return true;
                     }
                     let im = this.world.method(i);
@@ -1625,7 +1627,7 @@ impl<'ast> Declarer<'ast> {
                             .unwrap_or_default();
                         (isubst, this.world.class_subst(anc, &aargs_t))
                     };
-                    this.world.takes_calls_of(im, &isubst, &info, &msubst)
+                    this.world.replaces_seen(i, &isubst, m, &msubst)
                 };
                 // The extension's own, else the first in the class's
                 // class-side order with the extension active
@@ -3716,11 +3718,6 @@ impl<'ast> Declarer<'ast> {
     fn overrides_at_run_time(&self, m: MethodId, o: MethodId, a: ClassId, aargs: &[Type]) -> bool {
         self.world.method(m).singleton == self.world.method(o).singleton
             && self.replaces_at_run_time(m, o, a, aargs)
-    }
-
-    /// The interpreter's `same_signature` (`World::same_signature_at_run_time`).
-    fn same_signature_at_run_time(&self, m: MethodId, o: MethodId) -> bool {
-        self.world.same_signature_at_run_time(m, o)
     }
 
     /// Whether `p` and `q` are the same keyword parameter: by name, or both
