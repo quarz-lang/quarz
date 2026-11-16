@@ -1221,6 +1221,36 @@ puts f(R) + " " + f(X)
 }
 
 #[test]
+fn a_generic_extensions_class_side_witness_is_seen_through_its_arguments() {
+    // #775: a witness that another include of the same extension brings
+    // (`E[...]`'s `self.label` for `R[...]`'s) is checked seen through its
+    // module's arguments in the target's parameters, as one the include's
+    // own modules bring. (The generic case, `E[U]` and `R[U]`, is the
+    // matrix fixture `class_own_conformance_matrix`'s generic `ext_sup`
+    // cells.) Concrete arguments fit and run.
+    common::expect(
+        "module R[T]\n  abstract def self.label(x: T) -> String\nend\nmodule E[T]\n  def self.label(x: T) -> String = \"E\"\nend\nclass B[U]\n  def initialize; end\nend\nextension B[U]\n  include E[Int]\n  include R[Int]\nend\ndef f(t: Type[R[Int]]) -> String = t.label(1)\nputs f(B[Int])\n",
+        "E\n",
+    );
+    // One that does not take the requirement's calls stays refused: `E`
+    // over another argument, and a non-generic `E` of `Int` for `R[U]`.
+    for (src, msg) in [
+        (
+            "module R[T]\n  abstract def self.label(x: T) -> String\nend\nmodule E[T]\n  def self.label(x: T) -> String = \"E\"\nend\nclass B[U]\n  def initialize; end\nend\nextension B[U]\n  include E[String]\n  include R[U]\nend\ndef f(t: Type[R[Int]]) -> String = t.label(1)\nputs f(B[Int])\n",
+            "error: `label` takes String for `x` but `R.label`, which it overrides, is given U: an override takes what the method it overrides does",
+        ),
+        (
+            "module R[T]\n  abstract def self.label(x: T) -> String\nend\nmodule E\n  def self.label(x: Int) -> String = \"E\"\nend\nclass B[U]\n  def initialize; end\nend\nextension B[U]\n  include E\n  include R[U]\nend\ndef f(t: Type[R[Int]]) -> String = t.label(1)\nputs f(B[Int])\n",
+            "error: `label` takes Int for `x` but `R.label`, which it overrides, is given U: an override takes what the method it overrides does",
+        ),
+    ] {
+        let out = common::diagnostics(src).join("\n");
+        assert!(out.contains(msg), "{src}\n{out}");
+        assert_eq!(out.matches("error:").count(), 1, "{src}\n{out}");
+    }
+}
+
+#[test]
 fn a_superclass_extensions_conformance_fixes_a_generic_modules_arguments() {
     // #504: witnesses are found up the superclass chain, so a subclass's
     // extension cannot conform to the module with other arguments.
