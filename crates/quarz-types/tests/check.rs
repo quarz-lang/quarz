@@ -6475,10 +6475,56 @@ fn a_row_with_no_frame_is_an_error() {
         by: method(k),
         verdict: Verdict::NoFrame,
     };
-    let diags = errors(&world, &[row], &|_| true);
+    let diags = errors(&world, &[row], &|_| true, false);
     assert_eq!(diags.len(), 1, "{diags:?}");
     assert_eq!(
         diags[0].1.message,
         "internal error: no frame to check `K`'s row for `M#m` in (what runs: `K#m`); please report"
+    );
+}
+
+/// #801: a row with no implementation of a class whose conformance is
+/// deferred past its statements is skipped by a compile-time round's net
+/// only; the final net reports it, so a class left in
+/// `World::conformance_deferred` (by a bug: the deferred check empties
+/// it) is still refused.
+#[test]
+fn only_a_rounds_net_skips_a_deferred_class() {
+    use quarz_types::witness_net::{errors, Checked as Row, Verdict};
+    let prelude = parse(PRELUDE_SOURCE);
+    let src = "module M\n  abstract def m -> Int\nend\nclass K\n  include M\n  def initialize; end\n  def m -> Int = 1\nend\n";
+    let base = unit_base(0);
+    let parsed = parse_with_bases(src, base, base);
+    let (checked, _) = check(&prelude.program, &parsed.program);
+    let mut world = checked.expect("checks").world;
+    let class = |world: &quarz_types::World, n: &str| {
+        world
+            .classes
+            .iter()
+            .position(|c| c.name == n)
+            .expect("class") as u32
+    };
+    let (k, m) = (class(&world, "K"), class(&world, "M"));
+    let req = world
+        .methods
+        .iter()
+        .position(|x| x.owner == m && x.name == "m")
+        .expect("method") as u32;
+    let row = Row {
+        table: "override",
+        class: k,
+        req,
+        by: req,
+        verdict: Verdict::NoImplementation,
+    };
+    // (The forced state: `K` still in the deferred list.)
+    world.conformance_deferred.push(k);
+    let round = errors(&world, std::slice::from_ref(&row), &|_| true, true);
+    assert!(round.is_empty(), "{round:?}");
+    let last = errors(&world, &[row], &|_| true, false);
+    assert_eq!(last.len(), 1, "{last:?}");
+    assert_eq!(
+        last[0].1.message,
+        "`K`'s conformance to `M` has no implementation of `M#m` (internal error: the checker accepted it)"
     );
 }

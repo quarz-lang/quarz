@@ -390,7 +390,7 @@ impl Lowerer {
         own: &dyn Fn(quarz_types::witness_net::Decl) -> bool,
     ) -> Vec<quarz_types::FileDiagnostic> {
         let rt = rtworld::declared(world, out);
-        let errors = rows_errors(world, &rt, own);
+        let errors = rows_errors(world, &rt, own, false);
         if errors.is_empty() {
             self.declared = Some((rt, world_size(world)));
         }
@@ -1670,7 +1670,7 @@ pub fn net_errors(
     out: &Output,
     own: &dyn Fn(quarz_types::witness_net::Decl) -> bool,
 ) -> Vec<quarz_types::FileDiagnostic> {
-    rows_errors(world, &rtworld::declared(world, out), own)
+    rows_errors(world, &rtworld::declared(world, out), own, false)
 }
 
 /// The safety net's errors over the rows of tables already built (a
@@ -1680,15 +1680,17 @@ pub fn rows_net(
     rt: &quarz_ir::RtWorld,
     own: &dyn Fn(quarz_types::witness_net::Decl) -> bool,
 ) -> Vec<quarz_types::FileDiagnostic> {
-    rows_errors(world, rt, own)
+    rows_errors(world, rt, own, true)
 }
 
 /// The net over `rt`'s rows: the report `QUARZ_WITNESS_NET` asks for, and
-/// the errors.
+/// the errors (`round`: a compile-time round's net,
+/// `quarz_types::witness_net::errors`).
 fn rows_errors(
     world: &World,
     rt: &quarz_ir::RtWorld,
     own: &dyn Fn(quarz_types::witness_net::Decl) -> bool,
+    round: bool,
 ) -> Vec<quarz_types::FileDiagnostic> {
     witness_net(world, rt);
     let checked = quarz_types::witness_net::check(
@@ -1697,7 +1699,7 @@ fn rows_errors(
         &rt.witness_rows,
         &rt.class_override_rows,
     );
-    quarz_types::witness_net::errors(world, &checked, own)
+    quarz_types::witness_net::errors(world, &checked, own, round)
 }
 
 /// What the witness record reads, by size: the world's classes,
