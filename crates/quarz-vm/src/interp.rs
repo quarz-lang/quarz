@@ -2975,10 +2975,12 @@ impl Interp {
         let slot = self.program.vslots[req as usize];
         if slot != u32::MAX {
             let at = cid as usize * self.program.nvslots + slot as usize;
-            if let Some(&hit) = self.vtable.borrow().get(at) {
-                if hit != 0 {
-                    return self.invoke(hit - 1, recv.clone(), args, Vec::new(), block);
-                }
+            // (The cell copied out, so that the borrow ends before the
+            // call: a dispatch inside the method may fill another cell,
+            // #790.)
+            let hit = self.vtable.borrow().get(at).copied().unwrap_or(0);
+            if hit != 0 {
+                return self.invoke(hit - 1, recv.clone(), args, Vec::new(), block);
             }
         }
         let method = |id: MethodId| self.program.method(id);
