@@ -1038,7 +1038,10 @@ fn opt_level() -> Result<&'static str, String> {
 /// Compile a module to the object file `object`.
 pub fn compile(module: &Module, object: &Path) -> Result<(), String> {
     let opt = opt_level()?;
+    // (`find_clang` runs `clang --version`: a process of its own.)
+    let start = std::time::Instant::now();
     let (clang, major) = find_clang()?;
+    crate::report("clang_version", start, &[]);
     let opaque = major >= 15;
     let start = std::time::Instant::now();
     let ir = emit(module, opaque)?;

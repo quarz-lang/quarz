@@ -288,8 +288,8 @@ fn aot_opt_levels() {
 }
 
 /// #785: `QUARZ_BUILD_TIMINGS=1` makes `quarz build` print one line per
-/// stage on standard error (no values asserted: they are times), and
-/// changes nothing it builds; without it, nothing is printed.
+/// stage on standard error, `total` last (no values asserted: they are
+/// times), and changes nothing it builds; without it, nothing is printed.
 #[test]
 fn build_timings_print_every_stage_and_change_nothing() {
     let path = fixture("control_flow.qz");
@@ -325,7 +325,17 @@ fn build_timings_print_every_stage_and_change_nothing() {
     let err = String::from_utf8_lossy(&timed.stderr);
     let lines: Vec<&str> = err.lines().collect();
     let stages = [
-        "parse", "check", "declare", "lower", "shake", "emit", "clang", "link", "strip",
+        "parse",
+        "check",
+        "declare",
+        "lower",
+        "shake",
+        "clang_version",
+        "emit",
+        "clang",
+        "link",
+        "strip",
+        "total",
     ];
     for (line, stage) in lines.iter().zip(stages) {
         assert!(
@@ -339,10 +349,10 @@ fn build_timings_print_every_stage_and_change_nothing() {
         "{err}"
     );
     assert!(
-        lines[5].contains(" bytes=") && lines[5].contains(" functions="),
+        lines[6].contains(" bytes=") && lines[6].contains(" functions="),
         "{err}"
     );
-    assert!(lines[6].contains(" level="), "{err}");
+    assert!(lines[7].contains(" level="), "{err}");
 }
 
 /// #630, compiled: an abstract method reached at run time is a violation

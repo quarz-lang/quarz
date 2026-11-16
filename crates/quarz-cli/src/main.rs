@@ -415,10 +415,15 @@ fn ir_file(target: &Target) -> ExitCode {
 }
 
 fn build_file(target: &Target, out: &std::path::Path) -> ExitCode {
+    // (`total`, last: the whole build's wall time, against which the
+    // stages' sum shows what no stage holds, #785.)
+    let start = std::time::Instant::now();
     let Some((checked, files, lowerer)) = load_and_check_timed(target, false, true) else {
         return ExitCode::FAILURE;
     };
-    match quarz_cli::build_with(checked, &files, lowerer, out) {
+    let built = quarz_cli::build_with(checked, &files, lowerer, out);
+    quarz_aot::report("total", start, &[]);
+    match built {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("quarz: {e}");
