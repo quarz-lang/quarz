@@ -1,0 +1,19 @@
+# Calls compiled code makes through the runtime's `qz_op_call` (#536 step
+# 8a): a `Kernel` function with a splat or keywords (`CallKind::Function`,
+# its own operand tag, decoded as `CallOp::Function`), beside a `super`
+# with a splat (`CallKind::Super`). Interpreted and compiled alike.
+class Base
+  def show(*xs: Int) -> String = "base #{xs.join(" ")}"
+end
+class Sub < Base
+  def show(*xs: Int) -> String
+    ys = xs.map { |x| x + 1 }
+    "sub " + super(*ys)
+  end
+end
+xs = [1, 2, 3]
+puts(*xs)
+print(*["a", "b", "\n"])
+p(*[4, 5])
+puts Sub.new.show(6, 7, 8)
+warn("to stderr")

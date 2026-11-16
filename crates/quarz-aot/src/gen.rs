@@ -3003,10 +3003,12 @@ impl<B: Builder> Gen<'_, B> {
                     CallKind::ConstructRecv { class, init } => (3, *class, opt(*init), ""),
                     CallKind::ProcCall => (4, 0, 0, ""),
                     CallKind::Yield => (5, 0, 0, ""),
-                    // (Invoked as is, as `super` is.)
-                    CallKind::Super(m) | CallKind::Function(m) => (6, *m, 0, ""),
+                    CallKind::Super(m) => (6, *m, 0, ""),
                     CallKind::Raise => (7, 0, 0, ""),
                     CallKind::InstanceExec => (8, 0, 0, ""),
+                    // (A function's call: as `CallOp::Function`, which a
+                    // native with a by-reference version takes directly.)
+                    CallKind::Function(m) => (9, *m, 0, ""),
                 };
                 let mut desc = vec![
                     *dst,
