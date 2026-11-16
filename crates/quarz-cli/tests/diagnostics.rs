@@ -4545,6 +4545,15 @@ fn an_extension_does_not_redefine_a_module_method_that_overrides() {
     )
     .join("\n");
     assert!(!out.contains("error:"), "{out}");
+    // Rule E is the instance side's (#761, the user's decision of
+    // 2026-11-16). On the class side, an extension's own class method is
+    // the witness of every class method of its name that its includes
+    // bring. Where the class reaches the ancestor's class method on its
+    // own side (`B` includes `O`, which includes `R`), `Type[R]` runs
+    // `B.label` and `Type[N]` the extension's: accepted, deliberately.
+    // (The kind where the same method runs through every type,
+    // `witness_matrix_class`'s `sub_own_ext/nmod` cells, runs there.)
+    common::expect("module R\n  abstract def self.label -> String\nend\nmodule N\n  include R\n  def self.label -> String = \"N\"\nend\nmodule O\n  include R\nend\nclass B\n  include O\n  def self.label -> String = \"B\"\nend\nextension B\n  include N\n  def self.label -> String = \"ext\"\nend\ndef via(t: Type[R]) -> String = t.label\ndef vn(t: Type[N]) -> String = t.label\nputs via(B) + \" \" + vn(B)\n", "B ext\n");
     // A name on the other side runs in no such method's place (#770): an
     // extension's class method of the name of the module's instance
     // method, and its instance method of the name of the module's class
