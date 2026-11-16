@@ -153,6 +153,21 @@ fn values<K, V>(t: &mut HashMap<K, V>, f: impl FnMut(&mut V)) {
     t.values_mut().for_each(f);
 }
 
+impl Remap for quarz_ir::RtType {
+    fn remap(&mut self, m: &IdMap) {
+        use quarz_ir::RtType;
+        match self {
+            RtType::Class(c) | RtType::ClassOf(c) => class(m, c),
+            RtType::Elems(c, ts) => {
+                class(m, c);
+                ts.iter_mut().for_each(|t| t.remap(m));
+            }
+            RtType::Union(ts) | RtType::Tuple(ts) => ts.iter_mut().for_each(|t| t.remap(m)),
+            RtType::Nothing | RtType::ClassObject | RtType::Proc | RtType::Any => {}
+        }
+    }
+}
+
 impl Remap for Output {
     fn remap(&mut self, m: &IdMap) {
         values(&mut self.node_types, |t| t.remap(m));
@@ -226,6 +241,7 @@ impl Remap for Output {
             self.usable_on_entry.insert(k);
         }
         values(&mut self.pattern_classes, |c| class(m, c));
+        values(&mut self.run_time_tests, |t| t.remap(m));
         values(&mut self.block_pass, |b| b.remap(m));
         values(&mut self.rescue_classes, |cs| {
             for c in cs {

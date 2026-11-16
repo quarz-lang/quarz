@@ -2242,6 +2242,14 @@ fn checks_the_types_it_cannot_take_on_trust() {
         "def obj(v: Object) -> Object = v\ndef f[T](o: Object, z: T) -> T = o.as(T)",
         "cannot check at run time that a value of type Object is a T",
     );
+    // `when T` tests the class alone and narrows by the class
+    // (`Array[Object]`), where `is_a?` checks the elements and narrows to
+    // the type (#536 step 7; fixtures/when_type_arguments).
+    err(
+        "def f(x: Object) -> Int\n  case x\n  when Array[Int]\n    x.sum\n  else\n    -1\n  end\nend",
+        "no overload of `sum` on Array[Object] matches ()",
+    );
+    ok("def f(x: Object) -> Int\n  x.is_a?(Array[Int]) ? x.sum : -1\nend");
     err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T <: Addable[T]] = (x: T)\ndef f[U](u: U) -> U = Acc[U].new(u).x", "type argument U for `T` of `Acc` must be Addable[U]");
     // Bounds are checked in annotations too.
     err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T <: Addable[T]] = (x: T)\nclass Other\nend\np Acc.new(Other.new)", "type argument Other for `T` of `Acc` must be Addable[Other]");

@@ -3954,11 +3954,23 @@ impl<'a> FnBuilder<'a> {
     /// The run-time type of an `as`/`is_a?` test: with elements checked
     /// where the value may be of the class without being of the type.
     fn test_type(&self, e: &Expr, ty: &Type) -> RtType {
-        if self.out.element_tests.contains(&e.id) {
-            crate::rtworld::rt_type_checked(self.world, ty)
-        } else {
-            rt_type(ty)
-        }
+        // (The checker's record, `testable::run_time_test`; a site it did
+        // not record is decided by its static type: the class alone.)
+        let test = match self.out.run_time_tests.get(&e.id) {
+            Some(t) => t.clone(),
+            None => quarz_types::testable::rt_type(ty),
+        };
+        #[cfg(debug_assertions)]
+        quarz_types::testable::oracle(
+            "lowering test_type",
+            if self.out.element_tests.contains(&e.id) {
+                crate::rtworld::rt_type_checked(self.world, ty)
+            } else {
+                rt_type(ty)
+            },
+            test.clone(),
+        );
+        test
     }
 
     fn call_value(

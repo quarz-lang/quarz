@@ -183,6 +183,10 @@ pub struct Output {
     /// `as`/`as?`/`is_a?` calls whose run-time test must check elements:
     /// the value may be of the class without being of the type.
     pub element_tests: rustc_hash::FxHashSet<NodeId>,
+    /// The run-time test of an `as`/`is_a?`/`as?` whose static type does
+    /// not decide it (`testable::run_time_test`, #536 step 7): what the
+    /// lowering emits there.
+    pub run_time_tests: rustc_hash::FxHashMap<NodeId, quarz_ir::RtType>,
     /// `x.foo!(args)` calls that are sugar for `x = x.foo(args)` (the
     /// receiver's type has no `foo!`): the call targets `foo` and its
     /// result is stored into the receiver, a local or a field.
@@ -17719,6 +17723,10 @@ impl Checker {
         });
         if checked {
             self.out.element_tests.insert(expr.id);
+            self.out.run_time_tests.insert(
+                expr.id,
+                crate::testable::run_time_test(&self.world, &target),
+            );
         }
         match call.name.as_str() {
             "is_a?" => {
@@ -17808,7 +17816,21 @@ impl Checker {
         }
         self.record_runtime_test(&rt, target, &format!("`{op}`"));
         for tm in target.members() {
-            if !self.unverifiable(&tm) {
+            let unverifiable = crate::testable::unverifiable(&self.world, &tm);
+            #[cfg(debug_assertions)]
+            crate::testable::oracle(
+                match op {
+                    "is_a?" => "checker is_a?",
+                    "as" => "checker as",
+                    "as?" => "checker as?",
+                    "when" => "checker when",
+                    "rescue" => "checker rescue",
+                    _ => "checker other",
+                },
+                self.unverifiable(&tm),
+                unverifiable,
+            );
+            if !unverifiable {
                 continue;
             }
             for m in rt.members() {
