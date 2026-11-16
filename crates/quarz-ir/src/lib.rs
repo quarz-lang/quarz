@@ -1558,11 +1558,13 @@ pub struct RtMethod {
     pub is_extension: bool,
     /// Another method of the owner has the same name.
     pub overloaded: bool,
-    /// Some descendant of the owner (or an extension on one) declares a
-    /// method of this name, so dynamic dispatch may pick it instead: a
-    /// name-based superset of the override table (`overrides`), deciding
-    /// only whether a call dispatches at all; #536 step 4 derives it from
-    /// one dispatch predicate.
+    /// Something may run in this method's place at run time, so a call of
+    /// it dispatches on the receiver: a method the override table says
+    /// another overrides, one an include pair replaces, a module's class
+    /// method an extension's witness replaces (`World::overridden_methods`,
+    /// #715), or an abstract method. Never an extension's method, which is
+    /// bound statically (docs/01 §7). #536 step 4 reads it through one
+    /// dispatch predicate.
     pub overridden: bool,
     pub fast_op: Option<FastOp>,
     pub file: u32,
@@ -1614,36 +1616,6 @@ impl RtMethod {
     /// the same shape, positional only (`shape_of`).
     pub fn same_shape(&self, other: &RtMethod) -> bool {
         self.shape != NO_SHAPE && self.shape == other.shape
-    }
-
-    /// Whether this method takes every keyword call `other` takes (as an
-    /// override or an implementation of it must, docs/01 §3): each of
-    /// `other`'s keywords by name, optional where it is, a `**rest` where
-    /// it has one, and no other keyword it requires (one with a default
-    /// only beside no `**rest`).
-    pub fn keywords_accept(&self, other: &RtMethod) -> bool {
-        let kw = |m: &RtMethod| -> Vec<(String, bool)> {
-            m.params
-                .iter()
-                .filter(|p| p.kind == RtParamKind::KeywordOnly)
-                .map(|p| (p.name.clone(), p.has_default))
-                .collect()
-        };
-        let rest = |m: &RtMethod| m.params.iter().any(|p| p.kind == RtParamKind::KeywordRest);
-        let (mine, theirs) = (kw(self), kw(other));
-        // (Each by name: a `**rest` taking one in place of a keyword, or
-        // the other's `**rest` feeding a keyword of this one, would let a
-        // value of another type through.)
-        theirs
-            .iter()
-            .all(|(n, optional)| match mine.iter().find(|(m, _)| m == n) {
-                Some((_, o)) => *o || !optional,
-                None => false,
-            })
-            && mine.iter().all(|(n, optional)| {
-                theirs.iter().any(|(t, _)| t == n) || (*optional && !rest(other))
-            })
-            && rest(other) == rest(self)
     }
 
     /// The parameters given by position (and `*rest`), in order.

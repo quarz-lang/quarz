@@ -218,7 +218,7 @@ impl MethodInfo {
     /// override or an implementation of it must, docs/01 §3): each of
     /// `other`'s keywords by name, optional where it is, a `**rest` where
     /// it has one, and no other keyword it requires (one with a default
-    /// only beside no `**rest`) (`RtMethod::keywords_accept`).
+    /// only beside no `**rest`).
     pub fn keywords_accept(&self, other: &MethodInfo) -> bool {
         let kw = |m: &MethodInfo| -> Vec<(String, bool)> {
             m.params
