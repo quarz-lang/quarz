@@ -2063,7 +2063,7 @@ impl<'ast> Declarer<'ast> {
         let typed = self.world.ancestors_with_no_extensions(target);
         let ext_info = self.world.extensions[ext as usize].clone();
         let ext_subst = self.world.extension_subst(&ext_info, &own_args);
-        let mut missing: Vec<(String, String, Vec<MethodId>, MethodId)> = Vec::new();
+        let mut missing: Vec<(String, String, Vec<MethodId>, MethodId, String)> = Vec::new();
         for m in &mine {
             let rsubst = self.world.class_subst(*m, &args_in_conf(*m));
             let abstracts: Vec<MethodId> = self
@@ -2198,19 +2198,68 @@ impl<'ast> Declarer<'ast> {
                     for &i in &near {
                         self.r0_near.insert((ext, r, i));
                     }
-                    missing.push((rm.name.clone(), self.world.class(*m).name.clone(), near, r));
+                    // (Without such an overload of the extension's own, the
+                    // nearest candidate of the name and side, the first in
+                    // the order R0 searches after the extension: its
+                    // modules, then the target's own side, #682. Why it
+                    // fails is the conjunct of `takes_place_of` that does:
+                    // its calls (`takes_calls_of`), else its result.)
+                    let nearest = if near.is_empty() {
+                        ext_mods
+                            .iter()
+                            .map(|k| (*k, args_in_conf(*k)))
+                            .chain(typed.iter().cloned())
+                            .find_map(|(k, kargs)| {
+                                let ids = self.world.class(k).methods.get(&rm.name)?;
+                                let i = ids.iter().copied().find(|&i| {
+                                    let im = self.world.method(i);
+                                    im.owner == k && i != r && !im.is_abstract && !im.singleton
+                                })?;
+                                Some((i, self.world.class_subst(k, &kargs)))
+                            })
+                    } else {
+                        None
+                    };
+                    let nearest = nearest.map_or(String::new(), |(i, ks)| {
+                        let im = self.world.method(i);
+                        let why = if self.world.takes_calls_of(im, &ks, &rm, &rsubst) {
+                            format!(
+                                "it returns {} for `{}`",
+                                self.world.type_name(&im.ret.subst(&ks)),
+                                self.world.class(target).name
+                            )
+                        } else {
+                            "it does not take every call".to_string()
+                        };
+                        format!(
+                            "`{}#{}` does not take the place of `{}#{}`: {why}",
+                            self.world.class(im.owner).name,
+                            self.world.method_signature(im),
+                            self.world.class(*m).name,
+                            self.world.method_signature(&rm)
+                        )
+                    });
+                    missing.push((
+                        rm.name.clone(),
+                        self.world.class(*m).name.clone(),
+                        near,
+                        r,
+                        nearest,
+                    ));
                 }
             }
         }
         missing.sort();
         missing.dedup();
         let tname = self.world.class(target).name.clone();
-        for (name, owner, near, r) in missing {
+        for (name, owner, near, r, nearest) in missing {
             let near = self.near_misses(&near, r);
-            let near = if near.is_empty() {
-                near
-            } else {
+            let near = if !near.is_empty() {
                 format!(" ({near})")
+            } else if !nearest.is_empty() {
+                format!(" ({nearest})")
+            } else {
+                near
             };
             self.error(
                 format!(
