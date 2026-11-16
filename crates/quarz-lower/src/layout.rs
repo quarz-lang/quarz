@@ -1,12 +1,12 @@
 //! Object layouts: where each declared field of a class lives among the
 //! object's physical fields. A field whose type is a small immutable
 //! data type (`data Vec2 = (x: Float, y: Float)`: fields that are all
-//! `Int`/`Float`/`Bool` or such data, no type parameters, no `==`, `!=` or
-//! `hash` of the program's, `World::user_method`) is stored *by value*: its data class's physical fields are
-//! laid out in place, so storing a `Vec2` into the field copies two
-//! words and reading the field builds a `Vec2` only when the value is
-//! used as one (a read whose only use is its fields never allocates,
-//! thanks to scalar replacement).
+//! `Int`/`Float`/`Bool` or such data, no type parameters, no `==`, `!=`
+//! or `hash` of the program's, `World::user_method`) is stored *by
+//! value*: its data class's physical fields are laid out in place, so
+//! storing a `Vec2` into the field copies two words and reading the field
+//! builds a `Vec2` only when the value is used as one (a read whose only
+//! use is its fields never allocates, thanks to scalar replacement).
 
 use quarz_ir::{ClassId, MethodId};
 use quarz_types::{ClassKind, Synth, Type, World};
@@ -99,6 +99,31 @@ fn ensure(world: &World, cid: ClassId, memo: &mut Vec<Option<Layout>>, stack: &m
     memo[cid as usize] = Some(Layout { ivars, slots, init });
 }
 
+/// What a change of the world did to the layouts that existed: the first
+/// class of `before` (by id) that `after` lays out otherwise, with the
+/// first of its declared fields placed otherwise (another first physical
+/// field, or another `data` type held in place there; past the shorter
+/// list when only the number of fields or of physical fields differs).
+/// A class `after` adds is not compared. The checks that a layout cannot
+/// change under code lowered with it (#809: a later unit's declarations)
+/// call it on the layouts before and after.
+pub fn first_change(before: &[Layout], after: &[Layout]) -> Option<(ClassId, usize)> {
+    for (id, (b, a)) in before.iter().zip(after).enumerate() {
+        let differs = b
+            .ivars
+            .iter()
+            .zip(&a.ivars)
+            .position(|(x, y)| x.name != y.name || x.slot != y.slot || x.flat != y.flat);
+        if let Some(i) = differs {
+            return Some((id as ClassId, i));
+        }
+        if b.ivars.len() != a.ivars.len() || b.slots.len() != a.slots.len() {
+            return Some((id as ClassId, b.ivars.len().min(a.ivars.len())));
+        }
+    }
+    None
+}
+
 fn is_scalar(world: &World, ty: &Type) -> bool {
     let b = &world.builtin;
     matches!(ty, Type::Class(id, args) if args.is_empty() && (*id == b.int || *id == b.float || *id == b.bool_))
@@ -122,7 +147,10 @@ fn flat_class(world: &World, ty: &Type, stack: &[ClassId]) -> Option<ClassId> {
     // runtime's lookup finds (`World::user_method`): the type's own, a
     // module's it includes, or one an unconditional extension includes;
     // not an extension's own method, which is resolved statically where
-    // it is visible and takes no part in dispatch (#809).
+    // it is visible and takes no part in dispatch (#809). A method of the
+    // name that a comparison or a hash does not call (`hash(seed: Int)`,
+    // an abstract `==` the built-in one meets) does not count, as it did
+    // when the type's own table was read: such a type is held in place.
     // (`equal?` is identity and cannot be redefined; `eql?` is not Quarz's.)
     const OWN: [(&str, usize); 3] = [("==", 1), ("!=", 1), ("hash", 0)];
     if OWN

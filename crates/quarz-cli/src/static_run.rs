@@ -20,8 +20,8 @@ use quarz_syntax::ast::{ParamKind, Visibility};
 use quarz_syntax::{Diagnostic, SourceFile, Span};
 use quarz_types::declare::SELF_PARAM;
 use quarz_types::{
-    Baked, Checked, FieldInfo, Generated, MethodInfo, ParamInfo, StaticFailure, StaticHost,
-    StaticRunner, StaticStmt, Synth, Type, TypeParamId, World,
+    Baked, Checked, FieldInfo, Generated, LayoutChange, MethodInfo, ParamInfo, StaticFailure,
+    StaticHost, StaticRunner, StaticStmt, Synth, Type, TypeParamId, World,
 };
 use quarz_vm::interp::{Interp, SharedState, StaticEnd};
 use quarz_vm::natives::{compile_time_allowed, compile_time_denied_class, compile_time_only};
@@ -111,6 +111,10 @@ pub struct Runner {
     /// Which classes the pending statements cover, since the checker's
     /// last `begin` (#717).
     cover: Option<PendingCover>,
+    /// The layouts before a later unit's declarations
+    /// (`StaticRunner::later_unit`), until they are compared with those
+    /// after.
+    later_before: Option<Vec<quarz_lower::layout::Layout>>,
 }
 
 /// The classes pending `static` statements cover (#717): for each
@@ -1266,6 +1270,7 @@ impl Runner {
             keep_consts: 0,
             ends: Default::default(),
             cover: None,
+            later_before: None,
         }
     }
 
@@ -2257,6 +2262,22 @@ impl StaticRunner for Runner {
             self.files.resize(i + 1, SourceFile::new("", ""));
         }
         self.files[i] = file;
+    }
+
+    fn later_unit(&mut self, world: &World, after: bool) -> Option<LayoutChange> {
+        let now = quarz_lower::layout::compute(world);
+        if !after {
+            self.later_before = Some(now);
+            return None;
+        }
+        let before = self.later_before.take()?;
+        let (class, index) = quarz_lower::layout::first_change(&before, &now)?;
+        let ivar = before[class as usize].ivars.get(index);
+        Some(LayoutChange {
+            holder: class,
+            field: ivar.map(|v| v.name.clone()).unwrap_or_default(),
+            data: ivar.and_then(|v| v.flat),
+        })
     }
 }
 

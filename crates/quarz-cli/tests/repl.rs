@@ -1197,6 +1197,44 @@ fn a_later_unconditional_extension_that_breaks_a_test_is_refused() {
 }
 
 #[test]
+fn a_later_extension_that_would_change_a_layout_is_refused() {
+    // #809 (E1): `D` is held in place in `E`, which an earlier input
+    // lowered and made a value of. A later unconditional extension whose
+    // include gives `D` an `==` would hold `D` by reference: refused at
+    // its input, which leaves no trace. `D` still compares by its fields,
+    // `E` reads and writes as before, and the value made before is intact.
+    // A file required at the prompt is refused the same way.
+    let dir = std::env::temp_dir().join(format!("quarz-repl-809-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let ext = dir.join("ext.qz");
+    std::fs::write(&ext, "extension D\n  include Loose\nend\n").unwrap();
+    let require = format!("require_relative \"{}\"", ext.with_extension("").display());
+    let (out, _) = values(&[
+        "data D = (x: Int)",
+        "data E = (d: D, n: Int)",
+        "def mk(a: Int) -> E = E.new(D.new(a), 3)",
+        "old = mk(1)",
+        "module Loose; def ==(other: Object) -> Bool = true; def hash -> Int = 0; end",
+        "extension D; include Loose; end",
+        &require,
+        "D.new(1) == D.new(2)",
+        "Set[D.new(1), D.new(2)].size",
+        "old.d.x",
+        "old == mk(2)",
+        "mk(5).d.x",
+    ]);
+    let refusal = "error: `include Loose` in `extension D` would make `D` compared and hashed by `Loose#==`, but `D` is already stored in place in the field `@d` of `E`: declare the extension in the program's files, so that it is seen before `E` is laid out";
+    assert!(out[5].contains(refusal), "{out:?}");
+    assert!(out[6].contains(refusal), "{out:?}");
+    assert_eq!(
+        &out[7..],
+        ["=> false", "=> 2", "=> 1", "=> false", "=> 5"],
+        "{out:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn an_input_that_makes_a_refused_row_is_refused() {
     // The safety net's error stage (#536, #642): an input whose extension
     // makes a row the net refuses is refused there, and the session goes

@@ -321,6 +321,11 @@ impl Session {
                 )?);
             }
         }
+        // A later unit cannot change a layout code was lowered with (#809).
+        let first_extension = self.checker.world.extensions.len();
+        if let Some(r) = runner.as_deref_mut() {
+            r.later_unit(&self.checker.world, false);
+        }
         let world = std::mem::take(&mut self.checker.world);
         let mut declarer = declare::Declarer::with_world(world);
         if name.starts_with("<std:") {
@@ -337,6 +342,17 @@ impl Session {
             .collect();
         self.checker.world = std::mem::take(&mut declarer.world);
         self.checker.world.freeze_ancestors(true);
+        if let Some(change) = runner
+            .as_deref_mut()
+            .and_then(|r| r.later_unit(&self.checker.world, true))
+        {
+            diagnostics.push(layout_change_error(
+                &self.checker.world,
+                &change,
+                first_extension,
+                false,
+            ));
+        }
         self.checker.add_file_main(file, main);
         self.loaded.push((file, name.clone(), main));
         // (Before its `static` statements run, as in `feed`.)
@@ -495,6 +511,11 @@ impl Session {
         base: u32,
         mut runner: Option<&mut (dyn StaticRunner + '_)>,
     ) -> Result<Vec<Expr>, Vec<FileDiagnostic>> {
+        // A later unit cannot change a layout code was lowered with (#809).
+        let first_extension = self.checker.world.extensions.len();
+        if let Some(r) = runner.as_deref_mut() {
+            r.later_unit(&self.checker.world, false);
+        }
         let world = std::mem::take(&mut self.checker.world);
         let mut declarer = declare::Declarer::with_world(world);
         declarer.collect_into_unit(program, 1, self.main);
@@ -507,6 +528,17 @@ impl Session {
             .collect();
         self.checker.world = std::mem::take(&mut declarer.world);
         self.checker.world.freeze_ancestors(true);
+        if let Some(change) = runner
+            .as_deref_mut()
+            .and_then(|r| r.later_unit(&self.checker.world, true))
+        {
+            diagnostics.push(layout_change_error(
+                &self.checker.world,
+                &change,
+                first_extension,
+                false,
+            ));
+        }
         diagnostics.extend(self.function_duplicates(1));
         if diagnostics.iter().any(|(_, d)| d.is_error()) {
             // Its statements do not run, now or with a later input.
@@ -690,6 +722,15 @@ pub struct StaticFailure {
     pub notes: Vec<String>,
 }
 
+/// What a later unit's declarations did to a layout that existed
+/// (`StaticRunner::later_unit`): class `holder`'s declared field `field`,
+/// which held the `data` type `data` in place before (#809).
+pub struct LayoutChange {
+    pub holder: ClassId,
+    pub field: String,
+    pub data: Option<ClassId>,
+}
+
 /// Runs a class body's `static` statement at compile time (the
 /// interpreter lives above this crate: `quarz-cli` provides one).
 pub trait StaticRunner {
@@ -735,6 +776,102 @@ pub trait StaticRunner {
     /// A source file loaded while checking (a file the REPL requires),
     /// for the line numbers of what is lowered from it.
     fn add_file(&mut self, _index: u32, _file: SourceFile) {}
+    /// A unit declared after others were checked (a REPL input, a file
+    /// required at the prompt, `check_with_extra`'s extra units: the doc
+    /// examples and the test runner): called with `after` false before its
+    /// declarations, and true once its headers are resolved, before any of
+    /// its statements runs. Then it gives the first field of a class that
+    /// existed whose layout the declarations changed: an error (#809), as
+    /// what was lowered or made with the old layout keeps it. A later unit
+    /// adds classes, extensions and functions only, so that can only be a
+    /// `data` type a late extension's include gives an `==`, `!=` or
+    /// `hash` (`World::user_method`).
+    fn later_unit(&mut self, _world: &World, _after: bool) -> Option<LayoutChange> {
+        None
+    }
+}
+
+/// The error for a later unit's `change` (`StaticRunner::later_unit`), at
+/// the first extension declared since `first_extension` whose include
+/// brings the `data` type the method it is now compared or hashed by; in
+/// a doc example (`example`), with that example's remedy.
+fn layout_change_error(
+    world: &World,
+    change: &LayoutChange,
+    first_extension: usize,
+    example: bool,
+) -> FileDiagnostic {
+    let holder = world.class(change.holder);
+    // The field's declaring class: the first up the chain that has it.
+    let declarer = world
+        .superclass_chain(change.holder)
+        .into_iter()
+        .find(|c| {
+            world
+                .class(*c)
+                .fields
+                .iter()
+                .any(|f| f.name == change.field)
+        })
+        .unwrap_or(change.holder);
+    let declarer = world.class(declarer);
+    let found = change.data.and_then(|d| {
+        let (name, m) = [("==", 1), ("!=", 1), ("hash", 0)]
+            .into_iter()
+            .find_map(|(n, argc)| world.user_method(d, n, argc).map(|m| (n, m)))?;
+        let owner = world.method(m).owner;
+        world.extensions[first_extension.min(world.extensions.len())..]
+            .iter()
+            .find_map(|e| {
+                e.includes.iter().find_map(|t| match t {
+                    Type::Class(module, _)
+                        if world
+                            .ancestors(*module, &[])
+                            .iter()
+                            .any(|(a, _)| *a == owner) =>
+                    {
+                        Some((e, *module))
+                    }
+                    _ => None,
+                })
+            })
+            .map(|(e, module)| (d, name, owner, e, module))
+    });
+    match found {
+        Some((d, name, owner, e, module)) => {
+            let d = &world.class(d).name;
+            let remedy = if example {
+                "an extension that changes how a `data` type is compared must be declared in the program, not in an example".to_string()
+            } else {
+                format!(
+                    "declare the extension in the program's files, so that it is seen before `{}` is laid out",
+                    holder.name
+                )
+            };
+            let message = format!(
+                "`include {}` in `extension {}` would make `{d}` compared and hashed by `{}#{name}`, but `{d}` is already stored in place in the field `@{}` of `{}`: {remedy}",
+                world.class(module).name,
+                world.class(e.target).name,
+                world.class(owner).name,
+                change.field,
+                declarer.name,
+            );
+            (e.file, Diagnostic::error(message, e.span))
+        }
+        None => {
+            let span = declarer
+                .fields
+                .iter()
+                .find(|f| f.name == change.field)
+                .map(|f| f.span)
+                .unwrap_or(declarer.span);
+            let message = format!(
+                "internal error: a later declaration changed how the field `@{}` of `{}` is laid out, by no extension's include; please report",
+                change.field, declarer.name
+            );
+            (declarer.file, Diagnostic::error(message, span))
+        }
+    }
 }
 
 /// The prelude declared and checked (every method body, so that a
@@ -1238,7 +1375,12 @@ pub fn check_with_extra(
                     }
                     if !diagnostics.iter().any(|(_, d)| d.is_error()) {
                         // Declared together, so that one (the runner) may
-                        // name another's classes (an example's).
+                        // name another's classes (an example's). They cannot
+                        // change a layout the statements' runs used (#809).
+                        let first_extension = checker.world.extensions.len();
+                        if let Some(r) = runner.as_deref_mut() {
+                            r.later_unit(&checker.world, false);
+                        }
                         let world = std::mem::take(&mut checker.world);
                         let mut declarer = declare::Declarer::with_world(world);
                         for (k, (s, p)) in sources.iter().zip(&parsed).enumerate() {
@@ -1264,6 +1406,25 @@ pub fn check_with_extra(
                         }
                         checker.world = std::mem::take(&mut declarer.world);
                         checker.world.freeze_ancestors(true);
+                        if let Some(change) = runner
+                            .as_deref_mut()
+                            .and_then(|r| r.later_unit(&checker.world, true))
+                        {
+                            // (An example's extension, or the runner's.)
+                            let example =
+                                checker.world.extensions[first_extension..].iter().any(|e| {
+                                    let k = e.file.wrapping_sub(first) as usize;
+                                    sources
+                                        .get(k)
+                                        .is_some_and(|s| s.source.name.starts_with("<doc:"))
+                                });
+                            diagnostics.push(layout_change_error(
+                                &checker.world,
+                                &change,
+                                first_extension,
+                                example,
+                            ));
+                        }
                         for (file, main, _) in &bodies {
                             checker.add_file_main(*file, *main);
                         }

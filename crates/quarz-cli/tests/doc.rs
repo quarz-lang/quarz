@@ -311,6 +311,38 @@ fn a_library_example_names_the_module() {
     );
 }
 
+/// #809 (E1): an example is declared after the program (an extra unit of
+/// `quarz test`): its extension may not change how a `data` type the
+/// program holds in place is laid out. Refused at the example, with its
+/// own remedy; the same extension in the program's file is accepted.
+#[test]
+fn an_examples_extension_that_would_change_a_layout_is_refused() {
+    let d = Dir::new();
+    let lib = "module Loose\n  def ==(other: Object) -> Bool = true\n  def hash -> Int = 0\nend\ndata D = (x: Int)\ndata E = (d: D, n: Int)\n# Doubling.\n#\n# ```\n# extension D\n#   include Loose\n# end\n# Lib.twice(2)   # => 4\n# ```\nmodule Lib\n  def self.twice(x: Int) -> Int = x * 2\nend\n";
+    d.write("lib.qz", lib);
+    d.write("lib_test.qz", "require_relative \"lib\"\n\nclass LibTest < Test::Case\n  def test_e\n    assert_equal(true, E.new(D.new(1), 3) == E.new(D.new(2), 3))\n  end\nend\n");
+    let out = quarz_in(&d.0, &["test", "lib_test.qz"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("lib.qz:10: error: `include Loose` in `extension D` would make `D` compared and hashed by `Loose#==`, but `D` is already stored in place in the field `@d` of `E`: an extension that changes how a `data` type is compared must be declared in the program, not in an example"),
+        "{}",
+        stderr(&out)
+    );
+    // In the program, the extension is seen before `E` is laid out.
+    d.write(
+        "lib.qz",
+        &lib.replace("# extension D\n#   include Loose\n# end\n", "")
+            .replace("data E = ", "extension D\n  include Loose\nend\ndata E = "),
+    );
+    let out = quarz_in(&d.0, &["test", "lib_test.qz"]);
+    assert!(
+        stdout(&out).contains("2 tests, 2 assertions, 0 failures"),
+        "{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+}
+
 #[test]
 fn a_scripts_examples() {
     let d = Dir::new();
