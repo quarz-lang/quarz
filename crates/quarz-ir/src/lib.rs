@@ -1959,33 +1959,10 @@ impl RtWorld {
     pub fn build_witness_rows(&mut self) {
         let mut rows: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
         let mut witnesses: Vec<(ClassId, MethodId, Option<MethodId>)> = Vec::new();
-        {
-            let method = |id: MethodId| &self.methods[id as usize];
-            for (cid, c) in self.classes.iter().enumerate() {
-                let cid = cid as ClassId;
-                for anc in &c.ancestors {
-                    let a = self.class(*anc);
-                    if a.kind != RtClassKind::Module {
-                        continue;
-                    }
-                    for &mid in a.methods.values().flatten() {
-                        if method(mid).owner != *anc || !self.in_witness_rows(&method, cid, mid) {
-                            continue;
-                        }
-                        // (An abstract method: the record's witness, resolved
-                        // for the class, #536 step 3's S2; a key the record
-                        // lacks is an internal error.)
-                        if method(mid).is_abstract {
-                            let w = self.recorded_witness(&method, cid, mid);
-                            rows.push((cid, mid, w.unwrap_or(mid)));
-                            witnesses.push((cid, mid, w));
-                            continue;
-                        }
-                        let found = self.find_override(&method, cid, mid).unwrap_or(mid);
-                        rows.push((cid, mid, found));
-                    }
-                }
-            }
+        for cid in 0..self.classes.len() as ClassId {
+            let (r, w) = self.witness_rows_of(cid);
+            rows.extend(r);
+            witnesses.extend(w);
         }
         let class_rows: Vec<(ClassId, MethodId, MethodId)> = {
             let method = |id: MethodId| &self.methods[id as usize];
@@ -2005,6 +1982,45 @@ impl RtWorld {
         self.override_rows = rows;
         self.witness_rows = witnesses;
         self.class_override_rows = class_rows;
+    }
+
+    /// The rows of `override_rows` and `witness_rows` whose class is `cid`
+    /// (`build_witness_rows`' body for one class), unsorted: every key
+    /// `in_witness_rows` admits among the methods of `cid`'s modules.
+    #[allow(clippy::type_complexity)]
+    pub fn witness_rows_of(
+        &self,
+        cid: ClassId,
+    ) -> (
+        Vec<(ClassId, MethodId, MethodId)>,
+        Vec<(ClassId, MethodId, Option<MethodId>)>,
+    ) {
+        let mut rows: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
+        let mut witnesses: Vec<(ClassId, MethodId, Option<MethodId>)> = Vec::new();
+        let method = |id: MethodId| &self.methods[id as usize];
+        for anc in &self.class(cid).ancestors {
+            let a = self.class(*anc);
+            if a.kind != RtClassKind::Module {
+                continue;
+            }
+            for &mid in a.methods.values().flatten() {
+                if method(mid).owner != *anc || !self.in_witness_rows(&method, cid, mid) {
+                    continue;
+                }
+                // (An abstract method: the record's witness, resolved for
+                // the class, #536 step 3's S2; a key the record lacks is an
+                // internal error.)
+                if method(mid).is_abstract {
+                    let w = self.recorded_witness(&method, cid, mid);
+                    rows.push((cid, mid, w.unwrap_or(mid)));
+                    witnesses.push((cid, mid, w));
+                    continue;
+                }
+                let found = self.find_override(&method, cid, mid).unwrap_or(mid);
+                rows.push((cid, mid, found));
+            }
+        }
+        (rows, witnesses)
     }
 
     /// The witness of abstract method `abs` for class `cid` by the record

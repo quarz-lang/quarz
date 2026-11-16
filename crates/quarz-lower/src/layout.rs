@@ -40,9 +40,16 @@ pub fn compute(world: &World) -> Vec<Layout> {
     let n = world.classes.len();
     let mut memo: Vec<Option<Layout>> = vec![None; n];
     for id in 0..n {
-        ensure(world, id as ClassId, &mut memo, &mut Vec::new());
+        of(world, id as ClassId, &mut memo);
     }
     memo.into_iter().map(|l| l.unwrap_or_default()).collect()
+}
+
+/// Class `cid`'s layout into `memo` (by class id), with those of the
+/// `data` types it holds by value, which it reads from `memo` when there
+/// already: `compute`'s step for one class.
+pub fn of(world: &World, cid: ClassId, memo: &mut Vec<Option<Layout>>) {
+    ensure(world, cid, memo, &mut Vec::new());
 }
 
 fn ensure(world: &World, cid: ClassId, memo: &mut Vec<Option<Layout>>, stack: &mut Vec<ClassId>) {

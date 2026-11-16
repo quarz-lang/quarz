@@ -2946,64 +2946,70 @@ fn free_param(t: &Type, own: &[TypeParamId]) -> Option<TypeParamId> {
     }
 }
 
+/// Class `id`'s rows of the reflection (`WorldReflect::snapshot`): its
+/// fields, inherited first, and its public instance methods.
+fn reflect_rows(world: &World, id: ClassId) -> (Vec<ReflectField>, Vec<ReflectMethod>) {
+    let class = world.class(id);
+    let fs: Vec<ReflectField> = world
+        .all_fields(class.id)
+        .into_iter()
+        .map(|(f, _)| ReflectField {
+            name: f.name.clone(),
+            ty: erase(world, &f.ty),
+            mutable: f.mutable,
+            default: f.has_default(),
+        })
+        .collect();
+    // The public instance methods, of the class, its superclasses
+    // and the modules they include, the most derived definition of
+    // each signature, in declaration order (method ids are given
+    // in it). `initialize` is not a method of the instances.
+    let mut seen: Vec<(String, Vec<ClassId>)> = Vec::new();
+    let mut ms: Vec<(MethodId, ReflectMethod)> = Vec::new();
+    for (anc, _) in world.ancestors(class.id, &[]) {
+        let mut ids: Vec<MethodId> = world
+            .class(anc)
+            .methods
+            .values()
+            .flat_map(|v| v.iter().copied())
+            .collect();
+        ids.sort_unstable();
+        for mid in ids {
+            let m = world.method(mid);
+            if m.visibility != quarz_syntax::ast::Visibility::Public || m.name == "initialize" {
+                continue;
+            }
+            let key = (
+                m.name.clone(),
+                m.params.iter().map(|p| erase(world, &p.ty)).collect(),
+            );
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            ms.push((
+                mid,
+                ReflectMethod {
+                    name: m.name.clone(),
+                    params: m.params.iter().map(|p| reflect_param(world, p)).collect(),
+                    ret: erase(world, &m.ret),
+                    is_static: m.is_static,
+                },
+            ));
+        }
+    }
+    ms.sort_by_key(|(mid, _)| *mid);
+    let ms: Vec<ReflectMethod> = ms.into_iter().map(|(_, m)| m).collect();
+    (fs, ms)
+}
+
 impl WorldReflect {
     fn snapshot(world: &World) -> WorldReflect {
         let mut fields = HashMap::new();
         let mut methods = HashMap::new();
         for class in &world.classes {
-            let fs: Vec<ReflectField> = world
-                .all_fields(class.id)
-                .into_iter()
-                .map(|(f, _)| ReflectField {
-                    name: f.name.clone(),
-                    ty: erase(world, &f.ty),
-                    mutable: f.mutable,
-                    default: f.has_default(),
-                })
-                .collect();
+            let (fs, ms) = reflect_rows(world, class.id);
             fields.insert(class.id, vec![Rc::from(fs)]);
-            // The public instance methods, of the class, its superclasses
-            // and the modules they include, the most derived definition of
-            // each signature, in declaration order (method ids are given
-            // in it). `initialize` is not a method of the instances.
-            let mut seen: Vec<(String, Vec<ClassId>)> = Vec::new();
-            let mut ms: Vec<(MethodId, ReflectMethod)> = Vec::new();
-            for (anc, _) in world.ancestors(class.id, &[]) {
-                let mut ids: Vec<MethodId> = world
-                    .class(anc)
-                    .methods
-                    .values()
-                    .flat_map(|v| v.iter().copied())
-                    .collect();
-                ids.sort_unstable();
-                for mid in ids {
-                    let m = world.method(mid);
-                    if m.visibility != quarz_syntax::ast::Visibility::Public
-                        || m.name == "initialize"
-                    {
-                        continue;
-                    }
-                    let key = (
-                        m.name.clone(),
-                        m.params.iter().map(|p| erase(world, &p.ty)).collect(),
-                    );
-                    if seen.contains(&key) {
-                        continue;
-                    }
-                    seen.push(key);
-                    ms.push((
-                        mid,
-                        ReflectMethod {
-                            name: m.name.clone(),
-                            params: m.params.iter().map(|p| reflect_param(world, p)).collect(),
-                            ret: erase(world, &m.ret),
-                            is_static: m.is_static,
-                        },
-                    ));
-                }
-            }
-            ms.sort_by_key(|(mid, _)| *mid);
-            let ms: Vec<ReflectMethod> = ms.into_iter().map(|(_, m)| m).collect();
             methods.insert(class.id, vec![Rc::from(ms)]);
         }
         WorldReflect {
