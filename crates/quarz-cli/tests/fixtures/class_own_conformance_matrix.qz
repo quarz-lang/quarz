@@ -16,10 +16,6 @@
 #   (diagnostics.rs, a_class_method_of_another_parameter_type_is_no_implementation)
 # - another cog's extension: a library never adds to a class from outside
 #   it (10-cogs.md), so its modules are not on the class's dispatch
-# - a superclass's include of `E`, and a superclass's top-level extension
-#   including `E` but not `R`: the class side's include pairs do not look
-#   at a superclass's modules yet, #733's candidate set (its PR 2 adds
-#   these cells)
 # - an extension of the included module `O`: an extension of a module
 #   includes nothing (#609)
 # - module target: a module has no class object to call
@@ -168,17 +164,15 @@ module E7
 end
 class B7
   def initialize; end
+  include E7
 end
 class X7 < B7
   include O7
   def initialize; end
 end
-extension X7
-  include E7
-end
 def f7(t: Type[R7]) -> String = t.label
 def g7[T <: R7](t: Type[T]) -> String = t.label
-puts "class/ext/none: #{f7(X7)} #{g7(X7)} #{X7.label}"
+puts "class/sup_inc/none: #{f7(X7)} #{g7(X7)} #{X7.label}"
 module R8
   abstract def self.label -> String
 end
@@ -190,20 +184,18 @@ module E8
 end
 class B8
   def initialize; end
+  include E8
 end
 class X8 < B8
   include O8
   def initialize; end
-end
-extension X8
-  include E8
 end
 class D8 < X8
   def initialize; end
 end
 def f8(t: Type[R8]) -> String = t.label
 def g8[T <: R8](t: Type[T]) -> String = t.label
-puts "class/ext/sub/none: #{f8(D8)} #{g8(D8)} #{D8.label}"
+puts "class/sup_inc/sub/none: #{f8(D8)} #{g8(D8)} #{D8.label}"
 module R9
   abstract def self.label -> String
 end
@@ -220,13 +212,12 @@ class X9 < B9
   include O9
   def initialize; end
 end
-extension B9
+extension X9
   include E9
-  include R9
 end
 def f9(t: Type[R9]) -> String = t.label
 def g9[T <: R9](t: Type[T]) -> String = t.label
-puts "class/ext_sup/none: #{f9(X9)} #{g9(X9)} #{X9.label}"
+puts "class/ext/none: #{f9(X9)} #{g9(X9)} #{X9.label}"
 module R10
   abstract def self.label -> String
 end
@@ -243,102 +234,111 @@ class X10 < B10
   include O10
   def initialize; end
 end
-extension B10
+extension X10
   include E10
-  include R10
 end
 class D10 < X10
   def initialize; end
 end
 def f10(t: Type[R10]) -> String = t.label
 def g10[T <: R10](t: Type[T]) -> String = t.label
-puts "class/ext_sup/sub/none: #{f10(D10)} #{g10(D10)} #{D10.label}"
-module R11[T]
-  abstract def self.label(x: T) -> String
+puts "class/ext/sub/none: #{f10(D10)} #{g10(D10)} #{D10.label}"
+module R11
+  abstract def self.label -> String
 end
-module O11[T]
-  include R11[T]
+module O11
+  include R11
 end
 module E11
-  def self.label(x: Int) -> String = "E"
+  def self.label -> String = "E"
 end
 class B11
   def initialize; end
 end
 class X11 < B11
-  include O11[Int]
+  include O11
   def initialize; end
-  def self.label(x: Int) -> String = "own"
 end
-def f11(t: Type[R11[Int]]) -> String = t.label(1)
-def g11[T <: R11[Int]](t: Type[T]) -> String = t.label(1)
-puts "class/own/concrete: #{f11(X11)} #{g11(X11)} #{X11.label(1)}"
-module R12[T]
-  abstract def self.label(x: T) -> String
+extension B11
+  include E11
+  include R11
 end
-module O12[T]
-  include R12[T]
+def f11(t: Type[R11]) -> String = t.label
+def g11[T <: R11](t: Type[T]) -> String = t.label
+puts "class/ext_sup/none: #{f11(X11)} #{g11(X11)} #{X11.label}"
+module R12
+  abstract def self.label -> String
+end
+module O12
+  include R12
 end
 module E12
-  def self.label(x: Int) -> String = "E"
+  def self.label -> String = "E"
 end
 class B12
   def initialize; end
 end
 class X12 < B12
-  include O12[Int]
+  include O12
   def initialize; end
-  def self.label(x: Int) -> String = "own"
+end
+extension B12
+  include E12
+  include R12
 end
 class D12 < X12
   def initialize; end
 end
-def f12(t: Type[R12[Int]]) -> String = t.label(1)
-def g12[T <: R12[Int]](t: Type[T]) -> String = t.label(1)
-puts "class/own/sub/concrete: #{f12(D12)} #{g12(D12)} #{D12.label(1)}"
-module R13[T]
-  abstract def self.label(x: T) -> String
+def f12(t: Type[R12]) -> String = t.label
+def g12[T <: R12](t: Type[T]) -> String = t.label
+puts "class/ext_sup/sub/none: #{f12(D12)} #{g12(D12)} #{D12.label}"
+module R13
+  abstract def self.label -> String
 end
-module O13[T]
-  include R13[T]
+module O13
+  include R13
 end
 module E13
-  def self.label(x: Int) -> String = "E"
+  def self.label -> String = "E"
 end
 class B13
   def initialize; end
 end
 class X13 < B13
-  include O13[Int]
+  include O13
   def initialize; end
+end
+extension B13
   include E13
 end
-def f13(t: Type[R13[Int]]) -> String = t.label(1)
-def g13[T <: R13[Int]](t: Type[T]) -> String = t.label(1)
-puts "class/own_inc/concrete: #{f13(X13)} #{g13(X13)} #{X13.label(1)}"
-module R14[T]
-  abstract def self.label(x: T) -> String
+def f13(t: Type[R13]) -> String = t.label
+def g13[T <: R13](t: Type[T]) -> String = t.label
+puts "class/ext_sup_nor/none: #{f13(X13)} #{g13(X13)} #{X13.label}"
+module R14
+  abstract def self.label -> String
 end
-module O14[T]
-  include R14[T]
+module O14
+  include R14
 end
 module E14
-  def self.label(x: Int) -> String = "E"
+  def self.label -> String = "E"
 end
 class B14
   def initialize; end
 end
 class X14 < B14
-  include O14[Int]
+  include O14
   def initialize; end
+end
+extension B14
   include E14
 end
 class D14 < X14
   def initialize; end
 end
-def f14(t: Type[R14[Int]]) -> String = t.label(1)
-def g14[T <: R14[Int]](t: Type[T]) -> String = t.label(1)
-puts "class/own_inc/sub/concrete: #{f14(D14)} #{g14(D14)} #{D14.label(1)}"
+def f14(t: Type[R14]) -> String = t.label
+def g14[T <: R14](t: Type[T]) -> String = t.label
+puts "class/ext_sup_nor/sub/none: #{f14(D14)} #{g14(D14)} #{D14.label}"
 module R15[T]
   abstract def self.label(x: T) -> String
 end
@@ -350,15 +350,15 @@ module E15
 end
 class B15
   def initialize; end
-  def self.label(x: Int) -> String = "B"
 end
 class X15 < B15
   include O15[Int]
   def initialize; end
+  def self.label(x: Int) -> String = "own"
 end
 def f15(t: Type[R15[Int]]) -> String = t.label(1)
 def g15[T <: R15[Int]](t: Type[T]) -> String = t.label(1)
-puts "class/sup/concrete: #{f15(X15)} #{g15(X15)} #{X15.label(1)}"
+puts "class/own/concrete: #{f15(X15)} #{g15(X15)} #{X15.label(1)}"
 module R16[T]
   abstract def self.label(x: T) -> String
 end
@@ -370,18 +370,18 @@ module E16
 end
 class B16
   def initialize; end
-  def self.label(x: Int) -> String = "B"
 end
 class X16 < B16
   include O16[Int]
   def initialize; end
+  def self.label(x: Int) -> String = "own"
 end
 class D16 < X16
   def initialize; end
 end
 def f16(t: Type[R16[Int]]) -> String = t.label(1)
 def g16[T <: R16[Int]](t: Type[T]) -> String = t.label(1)
-puts "class/sup/sub/concrete: #{f16(D16)} #{g16(D16)} #{D16.label(1)}"
+puts "class/own/sub/concrete: #{f16(D16)} #{g16(D16)} #{D16.label(1)}"
 module R17[T]
   abstract def self.label(x: T) -> String
 end
@@ -397,13 +397,11 @@ end
 class X17 < B17
   include O17[Int]
   def initialize; end
-end
-extension X17
   include E17
 end
 def f17(t: Type[R17[Int]]) -> String = t.label(1)
 def g17[T <: R17[Int]](t: Type[T]) -> String = t.label(1)
-puts "class/ext/concrete: #{f17(X17)} #{g17(X17)} #{X17.label(1)}"
+puts "class/own_inc/concrete: #{f17(X17)} #{g17(X17)} #{X17.label(1)}"
 module R18[T]
   abstract def self.label(x: T) -> String
 end
@@ -419,8 +417,6 @@ end
 class X18 < B18
   include O18[Int]
   def initialize; end
-end
-extension X18
   include E18
 end
 class D18 < X18
@@ -428,7 +424,7 @@ class D18 < X18
 end
 def f18(t: Type[R18[Int]]) -> String = t.label(1)
 def g18[T <: R18[Int]](t: Type[T]) -> String = t.label(1)
-puts "class/ext/sub/concrete: #{f18(D18)} #{g18(D18)} #{D18.label(1)}"
+puts "class/own_inc/sub/concrete: #{f18(D18)} #{g18(D18)} #{D18.label(1)}"
 module R19[T]
   abstract def self.label(x: T) -> String
 end
@@ -440,18 +436,15 @@ module E19
 end
 class B19
   def initialize; end
+  def self.label(x: Int) -> String = "B"
 end
 class X19 < B19
   include O19[Int]
   def initialize; end
 end
-extension B19
-  include E19
-  include R19[Int]
-end
 def f19(t: Type[R19[Int]]) -> String = t.label(1)
 def g19[T <: R19[Int]](t: Type[T]) -> String = t.label(1)
-puts "class/ext_sup/concrete: #{f19(X19)} #{g19(X19)} #{X19.label(1)}"
+puts "class/sup/concrete: #{f19(X19)} #{g19(X19)} #{X19.label(1)}"
 module R20[T]
   abstract def self.label(x: T) -> String
 end
@@ -463,197 +456,204 @@ module E20
 end
 class B20
   def initialize; end
+  def self.label(x: Int) -> String = "B"
 end
 class X20 < B20
   include O20[Int]
   def initialize; end
-end
-extension B20
-  include E20
-  include R20[Int]
 end
 class D20 < X20
   def initialize; end
 end
 def f20(t: Type[R20[Int]]) -> String = t.label(1)
 def g20[T <: R20[Int]](t: Type[T]) -> String = t.label(1)
-puts "class/ext_sup/sub/concrete: #{f20(D20)} #{g20(D20)} #{D20.label(1)}"
+puts "class/sup/sub/concrete: #{f20(D20)} #{g20(D20)} #{D20.label(1)}"
 module R21[T]
   abstract def self.label(x: T) -> String
 end
 module O21[T]
   include R21[T]
 end
-module E21[T]
-  def self.label(x: T) -> String = "E"
+module E21
+  def self.label(x: Int) -> String = "E"
 end
-class B21[U]
+class B21
   def initialize; end
+  include E21
 end
-class X21[U] < B21[U]
-  include O21[U]
+class X21 < B21
+  include O21[Int]
   def initialize; end
-  def self.label(x: U) -> String = "own"
 end
 def f21(t: Type[R21[Int]]) -> String = t.label(1)
 def g21[T <: R21[Int]](t: Type[T]) -> String = t.label(1)
-puts "generic/own/param: #{f21(X21[Int])} #{g21(X21[Int])} #{X21[Int].label(1)}"
+puts "class/sup_inc/concrete: #{f21(X21)} #{g21(X21)} #{X21.label(1)}"
 module R22[T]
   abstract def self.label(x: T) -> String
 end
 module O22[T]
   include R22[T]
 end
-module E22[T]
-  def self.label(x: T) -> String = "E"
+module E22
+  def self.label(x: Int) -> String = "E"
 end
-class B22[U]
+class B22
+  def initialize; end
+  include E22
+end
+class X22 < B22
+  include O22[Int]
   def initialize; end
 end
-class X22[U] < B22[U]
-  include O22[U]
-  def initialize; end
-  def self.label(x: U) -> String = "own"
-end
-class D22[U] < X22[U]
+class D22 < X22
   def initialize; end
 end
 def f22(t: Type[R22[Int]]) -> String = t.label(1)
 def g22[T <: R22[Int]](t: Type[T]) -> String = t.label(1)
-puts "generic/own/sub/param: #{f22(D22[Int])} #{g22(D22[Int])} #{D22[Int].label(1)}"
+puts "class/sup_inc/sub/concrete: #{f22(D22)} #{g22(D22)} #{D22.label(1)}"
 module R23[T]
   abstract def self.label(x: T) -> String
 end
 module O23[T]
   include R23[T]
 end
-module E23[T]
-  def self.label(x: T) -> String = "E"
+module E23
+  def self.label(x: Int) -> String = "E"
 end
-class B23[U]
+class B23
   def initialize; end
 end
-class X23[U] < B23[U]
-  include O23[U]
+class X23 < B23
+  include O23[Int]
   def initialize; end
-  include E23[U]
+end
+extension X23
+  include E23
 end
 def f23(t: Type[R23[Int]]) -> String = t.label(1)
 def g23[T <: R23[Int]](t: Type[T]) -> String = t.label(1)
-puts "generic/own_inc/param: #{f23(X23[Int])} #{g23(X23[Int])} #{X23[Int].label(1)}"
+puts "class/ext/concrete: #{f23(X23)} #{g23(X23)} #{X23.label(1)}"
 module R24[T]
   abstract def self.label(x: T) -> String
 end
 module O24[T]
   include R24[T]
 end
-module E24[T]
-  def self.label(x: T) -> String = "E"
+module E24
+  def self.label(x: Int) -> String = "E"
 end
-class B24[U]
+class B24
   def initialize; end
 end
-class X24[U] < B24[U]
-  include O24[U]
+class X24 < B24
+  include O24[Int]
   def initialize; end
-  include E24[U]
 end
-class D24[U] < X24[U]
+extension X24
+  include E24
+end
+class D24 < X24
   def initialize; end
 end
 def f24(t: Type[R24[Int]]) -> String = t.label(1)
 def g24[T <: R24[Int]](t: Type[T]) -> String = t.label(1)
-puts "generic/own_inc/sub/param: #{f24(D24[Int])} #{g24(D24[Int])} #{D24[Int].label(1)}"
+puts "class/ext/sub/concrete: #{f24(D24)} #{g24(D24)} #{D24.label(1)}"
 module R25[T]
   abstract def self.label(x: T) -> String
 end
 module O25[T]
   include R25[T]
 end
-module E25[T]
-  def self.label(x: T) -> String = "E"
+module E25
+  def self.label(x: Int) -> String = "E"
 end
-class B25[U]
+class B25
   def initialize; end
-  def self.label(x: U) -> String = "B"
 end
-class X25[U] < B25[U]
-  include O25[U]
+class X25 < B25
+  include O25[Int]
   def initialize; end
+end
+extension B25
+  include E25
+  include R25[Int]
 end
 def f25(t: Type[R25[Int]]) -> String = t.label(1)
 def g25[T <: R25[Int]](t: Type[T]) -> String = t.label(1)
-puts "generic/sup/param: #{f25(X25[Int])} #{g25(X25[Int])} #{X25[Int].label(1)}"
+puts "class/ext_sup/concrete: #{f25(X25)} #{g25(X25)} #{X25.label(1)}"
 module R26[T]
   abstract def self.label(x: T) -> String
 end
 module O26[T]
   include R26[T]
 end
-module E26[T]
-  def self.label(x: T) -> String = "E"
+module E26
+  def self.label(x: Int) -> String = "E"
 end
-class B26[U]
-  def initialize; end
-  def self.label(x: U) -> String = "B"
-end
-class X26[U] < B26[U]
-  include O26[U]
+class B26
   def initialize; end
 end
-class D26[U] < X26[U]
+class X26 < B26
+  include O26[Int]
+  def initialize; end
+end
+extension B26
+  include E26
+  include R26[Int]
+end
+class D26 < X26
   def initialize; end
 end
 def f26(t: Type[R26[Int]]) -> String = t.label(1)
 def g26[T <: R26[Int]](t: Type[T]) -> String = t.label(1)
-puts "generic/sup/sub/param: #{f26(D26[Int])} #{g26(D26[Int])} #{D26[Int].label(1)}"
+puts "class/ext_sup/sub/concrete: #{f26(D26)} #{g26(D26)} #{D26.label(1)}"
 module R27[T]
   abstract def self.label(x: T) -> String
 end
 module O27[T]
   include R27[T]
 end
-module E27[T]
-  def self.label(x: T) -> String = "E"
+module E27
+  def self.label(x: Int) -> String = "E"
 end
-class B27[U]
+class B27
   def initialize; end
 end
-class X27[U] < B27[U]
-  include O27[U]
+class X27 < B27
+  include O27[Int]
   def initialize; end
 end
-extension X27[U]
-  include E27[U]
+extension B27
+  include E27
 end
 def f27(t: Type[R27[Int]]) -> String = t.label(1)
 def g27[T <: R27[Int]](t: Type[T]) -> String = t.label(1)
-puts "generic/ext/param: #{f27(X27[Int])} #{g27(X27[Int])} #{X27[Int].label(1)}"
+puts "class/ext_sup_nor/concrete: #{f27(X27)} #{g27(X27)} #{X27.label(1)}"
 module R28[T]
   abstract def self.label(x: T) -> String
 end
 module O28[T]
   include R28[T]
 end
-module E28[T]
-  def self.label(x: T) -> String = "E"
+module E28
+  def self.label(x: Int) -> String = "E"
 end
-class B28[U]
+class B28
   def initialize; end
 end
-class X28[U] < B28[U]
-  include O28[U]
+class X28 < B28
+  include O28[Int]
   def initialize; end
 end
-extension X28[U]
-  include E28[U]
+extension B28
+  include E28
 end
-class D28[U] < X28[U]
+class D28 < X28
   def initialize; end
 end
 def f28(t: Type[R28[Int]]) -> String = t.label(1)
 def g28[T <: R28[Int]](t: Type[T]) -> String = t.label(1)
-puts "generic/ext/sub/param: #{f28(D28[Int])} #{g28(D28[Int])} #{D28[Int].label(1)}"
+puts "class/ext_sup_nor/sub/concrete: #{f28(D28)} #{g28(D28)} #{D28.label(1)}"
 module R29[T]
   abstract def self.label(x: T) -> String
 end
@@ -669,14 +669,11 @@ end
 class X29[U] < B29[U]
   include O29[U]
   def initialize; end
-end
-extension B29[U]
-  include E29[U]
-  include R29[U]
+  def self.label(x: U) -> String = "own"
 end
 def f29(t: Type[R29[Int]]) -> String = t.label(1)
 def g29[T <: R29[Int]](t: Type[T]) -> String = t.label(1)
-puts "generic/ext_sup/param: #{f29(X29[Int])} #{g29(X29[Int])} #{X29[Int].label(1)}"
+puts "generic/own/param: #{f29(X29[Int])} #{g29(X29[Int])} #{X29[Int].label(1)}"
 module R30[T]
   abstract def self.label(x: T) -> String
 end
@@ -692,254 +689,619 @@ end
 class X30[U] < B30[U]
   include O30[U]
   def initialize; end
-end
-extension B30[U]
-  include E30[U]
-  include R30[U]
+  def self.label(x: U) -> String = "own"
 end
 class D30[U] < X30[U]
   def initialize; end
 end
 def f30(t: Type[R30[Int]]) -> String = t.label(1)
 def g30[T <: R30[Int]](t: Type[T]) -> String = t.label(1)
-puts "generic/ext_sup/sub/param: #{f30(D30[Int])} #{g30(D30[Int])} #{D30[Int].label(1)}"
-module R31
-  abstract def self.label -> String
+puts "generic/own/sub/param: #{f30(D30[Int])} #{g30(D30[Int])} #{D30[Int].label(1)}"
+module R31[T]
+  abstract def self.label(x: T) -> String
 end
-module O31
-  include R31
+module O31[T]
+  include R31[T]
 end
-module E31
-  def self.label -> String = "E"
+module E31[T]
+  def self.label(x: T) -> String = "E"
 end
-class B31
+class B31[U]
   def initialize; end
 end
-abstract class X31 < B31
-  include O31
+class X31[U] < B31[U]
+  include O31[U]
   def initialize; end
-  def self.label -> String = "own"
+  include E31[U]
 end
-class D31 < X31
-  def initialize; end
+def f31(t: Type[R31[Int]]) -> String = t.label(1)
+def g31[T <: R31[Int]](t: Type[T]) -> String = t.label(1)
+puts "generic/own_inc/param: #{f31(X31[Int])} #{g31(X31[Int])} #{X31[Int].label(1)}"
+module R32[T]
+  abstract def self.label(x: T) -> String
 end
-def f31(t: Type[R31]) -> String = t.label
-def g31[T <: R31](t: Type[T]) -> String = t.label
-puts "abstract/own/none: #{f31(D31)} #{g31(D31)} #{D31.label}"
-module R32
-  abstract def self.label -> String
+module O32[T]
+  include R32[T]
 end
-module O32
-  include R32
+module E32[T]
+  def self.label(x: T) -> String = "E"
 end
-module E32
-  def self.label -> String = "E"
-end
-class B32
+class B32[U]
   def initialize; end
 end
-abstract class X32 < B32
-  include O32
+class X32[U] < B32[U]
+  include O32[U]
   def initialize; end
-  include E32
+  include E32[U]
 end
-class D32 < X32
-  def initialize; end
-end
-def f32(t: Type[R32]) -> String = t.label
-def g32[T <: R32](t: Type[T]) -> String = t.label
-puts "abstract/own_inc/none: #{f32(D32)} #{g32(D32)} #{D32.label}"
-module R33
-  abstract def self.label -> String
-end
-module O33
-  include R33
-end
-module E33
-  def self.label -> String = "E"
-end
-class B33
-  def initialize; end
-  def self.label -> String = "B"
-end
-abstract class X33 < B33
-  include O33
+class D32[U] < X32[U]
   def initialize; end
 end
-class D33 < X33
+def f32(t: Type[R32[Int]]) -> String = t.label(1)
+def g32[T <: R32[Int]](t: Type[T]) -> String = t.label(1)
+puts "generic/own_inc/sub/param: #{f32(D32[Int])} #{g32(D32[Int])} #{D32[Int].label(1)}"
+module R33[T]
+  abstract def self.label(x: T) -> String
+end
+module O33[T]
+  include R33[T]
+end
+module E33[T]
+  def self.label(x: T) -> String = "E"
+end
+class B33[U]
+  def initialize; end
+  def self.label(x: U) -> String = "B"
+end
+class X33[U] < B33[U]
+  include O33[U]
   def initialize; end
 end
-def f33(t: Type[R33]) -> String = t.label
-def g33[T <: R33](t: Type[T]) -> String = t.label
-puts "abstract/sup/none: #{f33(D33)} #{g33(D33)} #{D33.label}"
-module R34
-  abstract def self.label -> String
+def f33(t: Type[R33[Int]]) -> String = t.label(1)
+def g33[T <: R33[Int]](t: Type[T]) -> String = t.label(1)
+puts "generic/sup/param: #{f33(X33[Int])} #{g33(X33[Int])} #{X33[Int].label(1)}"
+module R34[T]
+  abstract def self.label(x: T) -> String
 end
-module O34
-  include R34
+module O34[T]
+  include R34[T]
 end
-module E34
-  def self.label -> String = "E"
+module E34[T]
+  def self.label(x: T) -> String = "E"
 end
-class B34
+class B34[U]
+  def initialize; end
+  def self.label(x: U) -> String = "B"
+end
+class X34[U] < B34[U]
+  include O34[U]
   def initialize; end
 end
-abstract class X34 < B34
-  include O34
+class D34[U] < X34[U]
   def initialize; end
 end
-extension X34
-  include E34
+def f34(t: Type[R34[Int]]) -> String = t.label(1)
+def g34[T <: R34[Int]](t: Type[T]) -> String = t.label(1)
+puts "generic/sup/sub/param: #{f34(D34[Int])} #{g34(D34[Int])} #{D34[Int].label(1)}"
+module R35[T]
+  abstract def self.label(x: T) -> String
 end
-class D34 < X34
+module O35[T]
+  include R35[T]
+end
+module E35[T]
+  def self.label(x: T) -> String = "E"
+end
+class B35[U]
+  def initialize; end
+  include E35[U]
+end
+class X35[U] < B35[U]
+  include O35[U]
   def initialize; end
 end
-def f34(t: Type[R34]) -> String = t.label
-def g34[T <: R34](t: Type[T]) -> String = t.label
-puts "abstract/ext/none: #{f34(D34)} #{g34(D34)} #{D34.label}"
-module R35
-  abstract def self.label -> String
-end
-module O35
-  include R35
-end
-module E35
-  def self.label -> String = "E"
-end
-class B35
-  def initialize; end
-end
-abstract class X35 < B35
-  include O35
-  def initialize; end
-end
-extension B35
-  include E35
-  include R35
-end
-class D35 < X35
-  def initialize; end
-end
-def f35(t: Type[R35]) -> String = t.label
-def g35[T <: R35](t: Type[T]) -> String = t.label
-puts "abstract/ext_sup/none: #{f35(D35)} #{g35(D35)} #{D35.label}"
+def f35(t: Type[R35[Int]]) -> String = t.label(1)
+def g35[T <: R35[Int]](t: Type[T]) -> String = t.label(1)
+puts "generic/sup_inc/param: #{f35(X35[Int])} #{g35(X35[Int])} #{X35[Int].label(1)}"
 module R36[T]
   abstract def self.label(x: T) -> String
 end
 module O36[T]
   include R36[T]
 end
-module E36
-  def self.label(x: Int) -> String = "E"
+module E36[T]
+  def self.label(x: T) -> String = "E"
 end
-class B36
+class B36[U]
+  def initialize; end
+  include E36[U]
+end
+class X36[U] < B36[U]
+  include O36[U]
   def initialize; end
 end
-abstract class X36 < B36
-  include O36[Int]
-  def initialize; end
-  def self.label(x: Int) -> String = "own"
-end
-class D36 < X36
+class D36[U] < X36[U]
   def initialize; end
 end
 def f36(t: Type[R36[Int]]) -> String = t.label(1)
 def g36[T <: R36[Int]](t: Type[T]) -> String = t.label(1)
-puts "abstract/own/concrete: #{f36(D36)} #{g36(D36)} #{D36.label(1)}"
+puts "generic/sup_inc/sub/param: #{f36(D36[Int])} #{g36(D36[Int])} #{D36[Int].label(1)}"
 module R37[T]
   abstract def self.label(x: T) -> String
 end
 module O37[T]
   include R37[T]
 end
-module E37
-  def self.label(x: Int) -> String = "E"
+module E37[T]
+  def self.label(x: T) -> String = "E"
 end
-class B37
+class B37[U]
   def initialize; end
 end
-abstract class X37 < B37
-  include O37[Int]
+class X37[U] < B37[U]
+  include O37[U]
   def initialize; end
-  include E37
 end
-class D37 < X37
-  def initialize; end
+extension X37[U]
+  include E37[U]
 end
 def f37(t: Type[R37[Int]]) -> String = t.label(1)
 def g37[T <: R37[Int]](t: Type[T]) -> String = t.label(1)
-puts "abstract/own_inc/concrete: #{f37(D37)} #{g37(D37)} #{D37.label(1)}"
+puts "generic/ext/param: #{f37(X37[Int])} #{g37(X37[Int])} #{X37[Int].label(1)}"
 module R38[T]
   abstract def self.label(x: T) -> String
 end
 module O38[T]
   include R38[T]
 end
-module E38
-  def self.label(x: Int) -> String = "E"
+module E38[T]
+  def self.label(x: T) -> String = "E"
 end
-class B38
-  def initialize; end
-  def self.label(x: Int) -> String = "B"
-end
-abstract class X38 < B38
-  include O38[Int]
+class B38[U]
   def initialize; end
 end
-class D38 < X38
+class X38[U] < B38[U]
+  include O38[U]
+  def initialize; end
+end
+extension X38[U]
+  include E38[U]
+end
+class D38[U] < X38[U]
   def initialize; end
 end
 def f38(t: Type[R38[Int]]) -> String = t.label(1)
 def g38[T <: R38[Int]](t: Type[T]) -> String = t.label(1)
-puts "abstract/sup/concrete: #{f38(D38)} #{g38(D38)} #{D38.label(1)}"
+puts "generic/ext/sub/param: #{f38(D38[Int])} #{g38(D38[Int])} #{D38[Int].label(1)}"
 module R39[T]
   abstract def self.label(x: T) -> String
 end
 module O39[T]
   include R39[T]
 end
-module E39
-  def self.label(x: Int) -> String = "E"
+module E39[T]
+  def self.label(x: T) -> String = "E"
 end
-class B39
+class B39[U]
   def initialize; end
 end
-abstract class X39 < B39
-  include O39[Int]
+class X39[U] < B39[U]
+  include O39[U]
   def initialize; end
 end
-extension X39
-  include E39
-end
-class D39 < X39
-  def initialize; end
+extension B39[U]
+  include E39[U]
+  include R39[U]
 end
 def f39(t: Type[R39[Int]]) -> String = t.label(1)
 def g39[T <: R39[Int]](t: Type[T]) -> String = t.label(1)
-puts "abstract/ext/concrete: #{f39(D39)} #{g39(D39)} #{D39.label(1)}"
+puts "generic/ext_sup/param: #{f39(X39[Int])} #{g39(X39[Int])} #{X39[Int].label(1)}"
 module R40[T]
   abstract def self.label(x: T) -> String
 end
 module O40[T]
   include R40[T]
 end
-module E40
-  def self.label(x: Int) -> String = "E"
+module E40[T]
+  def self.label(x: T) -> String = "E"
 end
-class B40
+class B40[U]
   def initialize; end
 end
-abstract class X40 < B40
-  include O40[Int]
+class X40[U] < B40[U]
+  include O40[U]
   def initialize; end
 end
-extension B40
-  include E40
-  include R40[Int]
+extension B40[U]
+  include E40[U]
+  include R40[U]
 end
-class D40 < X40
+class D40[U] < X40[U]
   def initialize; end
 end
 def f40(t: Type[R40[Int]]) -> String = t.label(1)
 def g40[T <: R40[Int]](t: Type[T]) -> String = t.label(1)
-puts "abstract/ext_sup/concrete: #{f40(D40)} #{g40(D40)} #{D40.label(1)}"
+puts "generic/ext_sup/sub/param: #{f40(D40[Int])} #{g40(D40[Int])} #{D40[Int].label(1)}"
+module R41[T]
+  abstract def self.label(x: T) -> String
+end
+module O41[T]
+  include R41[T]
+end
+module E41[T]
+  def self.label(x: T) -> String = "E"
+end
+class B41[U]
+  def initialize; end
+end
+class X41[U] < B41[U]
+  include O41[U]
+  def initialize; end
+end
+extension B41[U]
+  include E41[U]
+end
+def f41(t: Type[R41[Int]]) -> String = t.label(1)
+def g41[T <: R41[Int]](t: Type[T]) -> String = t.label(1)
+puts "generic/ext_sup_nor/param: #{f41(X41[Int])} #{g41(X41[Int])} #{X41[Int].label(1)}"
+module R42[T]
+  abstract def self.label(x: T) -> String
+end
+module O42[T]
+  include R42[T]
+end
+module E42[T]
+  def self.label(x: T) -> String = "E"
+end
+class B42[U]
+  def initialize; end
+end
+class X42[U] < B42[U]
+  include O42[U]
+  def initialize; end
+end
+extension B42[U]
+  include E42[U]
+end
+class D42[U] < X42[U]
+  def initialize; end
+end
+def f42(t: Type[R42[Int]]) -> String = t.label(1)
+def g42[T <: R42[Int]](t: Type[T]) -> String = t.label(1)
+puts "generic/ext_sup_nor/sub/param: #{f42(D42[Int])} #{g42(D42[Int])} #{D42[Int].label(1)}"
+module R43
+  abstract def self.label -> String
+end
+module O43
+  include R43
+end
+module E43
+  def self.label -> String = "E"
+end
+class B43
+  def initialize; end
+end
+abstract class X43 < B43
+  include O43
+  def initialize; end
+  def self.label -> String = "own"
+end
+class D43 < X43
+  def initialize; end
+end
+def f43(t: Type[R43]) -> String = t.label
+def g43[T <: R43](t: Type[T]) -> String = t.label
+puts "abstract/own/none: #{f43(D43)} #{g43(D43)} #{D43.label}"
+module R44
+  abstract def self.label -> String
+end
+module O44
+  include R44
+end
+module E44
+  def self.label -> String = "E"
+end
+class B44
+  def initialize; end
+end
+abstract class X44 < B44
+  include O44
+  def initialize; end
+  include E44
+end
+class D44 < X44
+  def initialize; end
+end
+def f44(t: Type[R44]) -> String = t.label
+def g44[T <: R44](t: Type[T]) -> String = t.label
+puts "abstract/own_inc/none: #{f44(D44)} #{g44(D44)} #{D44.label}"
+module R45
+  abstract def self.label -> String
+end
+module O45
+  include R45
+end
+module E45
+  def self.label -> String = "E"
+end
+class B45
+  def initialize; end
+  def self.label -> String = "B"
+end
+abstract class X45 < B45
+  include O45
+  def initialize; end
+end
+class D45 < X45
+  def initialize; end
+end
+def f45(t: Type[R45]) -> String = t.label
+def g45[T <: R45](t: Type[T]) -> String = t.label
+puts "abstract/sup/none: #{f45(D45)} #{g45(D45)} #{D45.label}"
+module R46
+  abstract def self.label -> String
+end
+module O46
+  include R46
+end
+module E46
+  def self.label -> String = "E"
+end
+class B46
+  def initialize; end
+  include E46
+end
+abstract class X46 < B46
+  include O46
+  def initialize; end
+end
+class D46 < X46
+  def initialize; end
+end
+def f46(t: Type[R46]) -> String = t.label
+def g46[T <: R46](t: Type[T]) -> String = t.label
+puts "abstract/sup_inc/none: #{f46(D46)} #{g46(D46)} #{D46.label}"
+module R47
+  abstract def self.label -> String
+end
+module O47
+  include R47
+end
+module E47
+  def self.label -> String = "E"
+end
+class B47
+  def initialize; end
+end
+abstract class X47 < B47
+  include O47
+  def initialize; end
+end
+extension X47
+  include E47
+end
+class D47 < X47
+  def initialize; end
+end
+def f47(t: Type[R47]) -> String = t.label
+def g47[T <: R47](t: Type[T]) -> String = t.label
+puts "abstract/ext/none: #{f47(D47)} #{g47(D47)} #{D47.label}"
+module R48
+  abstract def self.label -> String
+end
+module O48
+  include R48
+end
+module E48
+  def self.label -> String = "E"
+end
+class B48
+  def initialize; end
+end
+abstract class X48 < B48
+  include O48
+  def initialize; end
+end
+extension B48
+  include E48
+  include R48
+end
+class D48 < X48
+  def initialize; end
+end
+def f48(t: Type[R48]) -> String = t.label
+def g48[T <: R48](t: Type[T]) -> String = t.label
+puts "abstract/ext_sup/none: #{f48(D48)} #{g48(D48)} #{D48.label}"
+module R49
+  abstract def self.label -> String
+end
+module O49
+  include R49
+end
+module E49
+  def self.label -> String = "E"
+end
+class B49
+  def initialize; end
+end
+abstract class X49 < B49
+  include O49
+  def initialize; end
+end
+extension B49
+  include E49
+end
+class D49 < X49
+  def initialize; end
+end
+def f49(t: Type[R49]) -> String = t.label
+def g49[T <: R49](t: Type[T]) -> String = t.label
+puts "abstract/ext_sup_nor/none: #{f49(D49)} #{g49(D49)} #{D49.label}"
+module R50[T]
+  abstract def self.label(x: T) -> String
+end
+module O50[T]
+  include R50[T]
+end
+module E50
+  def self.label(x: Int) -> String = "E"
+end
+class B50
+  def initialize; end
+end
+abstract class X50 < B50
+  include O50[Int]
+  def initialize; end
+  def self.label(x: Int) -> String = "own"
+end
+class D50 < X50
+  def initialize; end
+end
+def f50(t: Type[R50[Int]]) -> String = t.label(1)
+def g50[T <: R50[Int]](t: Type[T]) -> String = t.label(1)
+puts "abstract/own/concrete: #{f50(D50)} #{g50(D50)} #{D50.label(1)}"
+module R51[T]
+  abstract def self.label(x: T) -> String
+end
+module O51[T]
+  include R51[T]
+end
+module E51
+  def self.label(x: Int) -> String = "E"
+end
+class B51
+  def initialize; end
+end
+abstract class X51 < B51
+  include O51[Int]
+  def initialize; end
+  include E51
+end
+class D51 < X51
+  def initialize; end
+end
+def f51(t: Type[R51[Int]]) -> String = t.label(1)
+def g51[T <: R51[Int]](t: Type[T]) -> String = t.label(1)
+puts "abstract/own_inc/concrete: #{f51(D51)} #{g51(D51)} #{D51.label(1)}"
+module R52[T]
+  abstract def self.label(x: T) -> String
+end
+module O52[T]
+  include R52[T]
+end
+module E52
+  def self.label(x: Int) -> String = "E"
+end
+class B52
+  def initialize; end
+  def self.label(x: Int) -> String = "B"
+end
+abstract class X52 < B52
+  include O52[Int]
+  def initialize; end
+end
+class D52 < X52
+  def initialize; end
+end
+def f52(t: Type[R52[Int]]) -> String = t.label(1)
+def g52[T <: R52[Int]](t: Type[T]) -> String = t.label(1)
+puts "abstract/sup/concrete: #{f52(D52)} #{g52(D52)} #{D52.label(1)}"
+module R53[T]
+  abstract def self.label(x: T) -> String
+end
+module O53[T]
+  include R53[T]
+end
+module E53
+  def self.label(x: Int) -> String = "E"
+end
+class B53
+  def initialize; end
+  include E53
+end
+abstract class X53 < B53
+  include O53[Int]
+  def initialize; end
+end
+class D53 < X53
+  def initialize; end
+end
+def f53(t: Type[R53[Int]]) -> String = t.label(1)
+def g53[T <: R53[Int]](t: Type[T]) -> String = t.label(1)
+puts "abstract/sup_inc/concrete: #{f53(D53)} #{g53(D53)} #{D53.label(1)}"
+module R54[T]
+  abstract def self.label(x: T) -> String
+end
+module O54[T]
+  include R54[T]
+end
+module E54
+  def self.label(x: Int) -> String = "E"
+end
+class B54
+  def initialize; end
+end
+abstract class X54 < B54
+  include O54[Int]
+  def initialize; end
+end
+extension X54
+  include E54
+end
+class D54 < X54
+  def initialize; end
+end
+def f54(t: Type[R54[Int]]) -> String = t.label(1)
+def g54[T <: R54[Int]](t: Type[T]) -> String = t.label(1)
+puts "abstract/ext/concrete: #{f54(D54)} #{g54(D54)} #{D54.label(1)}"
+module R55[T]
+  abstract def self.label(x: T) -> String
+end
+module O55[T]
+  include R55[T]
+end
+module E55
+  def self.label(x: Int) -> String = "E"
+end
+class B55
+  def initialize; end
+end
+abstract class X55 < B55
+  include O55[Int]
+  def initialize; end
+end
+extension B55
+  include E55
+  include R55[Int]
+end
+class D55 < X55
+  def initialize; end
+end
+def f55(t: Type[R55[Int]]) -> String = t.label(1)
+def g55[T <: R55[Int]](t: Type[T]) -> String = t.label(1)
+puts "abstract/ext_sup/concrete: #{f55(D55)} #{g55(D55)} #{D55.label(1)}"
+module R56[T]
+  abstract def self.label(x: T) -> String
+end
+module O56[T]
+  include R56[T]
+end
+module E56
+  def self.label(x: Int) -> String = "E"
+end
+class B56
+  def initialize; end
+end
+abstract class X56 < B56
+  include O56[Int]
+  def initialize; end
+end
+extension B56
+  include E56
+end
+class D56 < X56
+  def initialize; end
+end
+def f56(t: Type[R56[Int]]) -> String = t.label(1)
+def g56[T <: R56[Int]](t: Type[T]) -> String = t.label(1)
+puts "abstract/ext_sup_nor/concrete: #{f56(D56)} #{g56(D56)} #{D56.label(1)}"
