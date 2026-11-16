@@ -42,6 +42,33 @@ const OBJECT_FIELDS_PTR_OFF: i32 = 16;
 
 const STATUS_RAISE: i64 = 1;
 
+// #536 step 8b, commit 1: these copies equal `quarz_vm::layout`'s single
+// definitions, and so do the operand tags of `CallKind` written below
+// (`qz_op_call`'s descriptor); the next commit reads layout's and deletes
+// the copies and this.
+const _: () = {
+    assert!(VALUE_SIZE as usize == L::VALUE_SIZE);
+    assert!(BOOL_OFF as usize == L::BOOL_OFF);
+    assert!(CLASS_OFF as usize == L::CLASS_OFF);
+    assert!(ACT_BUF_SIZE as usize == L::ACT_BUF_SIZE);
+    assert!(NEEDS_DROP_FROM as u64 == L::NEEDS_DROP_FROM);
+    assert!(STATUS_DONE as u32 == L::STATUS_DONE);
+    assert!(STATUS_BOXED as u32 == L::STATUS_BOXED);
+    assert!(STATUS_RAISE as u32 == L::STATUS_RAISE);
+    assert!(TAG_NIL as u8 == L::TAG_NIL);
+    assert!(TAG_BOOL as u8 == L::TAG_BOOL);
+    assert!(TAG_INT as u8 == L::TAG_INT);
+    assert!(TAG_FLOAT as u8 == L::TAG_FLOAT);
+    assert!(TAG_CLASS as u8 == L::TAG_CLASS);
+    assert!(TAG_ARRAY as u8 == L::TAG_ARRAY);
+    assert!(TAG_OBJECT as u8 == L::TAG_OBJECT);
+    assert!(OBJECT_FIELDS_PTR_OFF as usize == L::OBJECT_FIELDS_PTR_OFF);
+    assert!(L::CALL_METHOD == 0 && L::CALL_SEND == 1 && L::CALL_CONSTRUCT == 2);
+    assert!(L::CALL_CONSTRUCT_RECV == 3 && L::CALL_PROC == 4 && L::CALL_YIELD == 5);
+    assert!(L::CALL_SUPER == 6 && L::CALL_RAISE == 7 && L::CALL_INSTANCE_EXEC == 8);
+    assert!(L::CALL_FUNCTION == 9);
+};
+
 /// The runtime's entries for the instructions compiled code does not do
 /// inline (`quarz_vm::ffi_ops`), one per kind: each takes the
 /// interpreter, the activation, the function, the line and the

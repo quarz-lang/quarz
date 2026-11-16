@@ -15,13 +15,10 @@ use crate::interp::{CompiledFn, Flow, Interp, SharedState};
 use crate::value::{HashData, Value};
 use crate::vm::Activation;
 
-pub const STATUS_OK: u32 = 0;
-pub const STATUS_RAISE: u32 = 1;
-pub const STATUS_BREAK: u32 = 2;
-pub const STATUS_NEXT: u32 = 3;
-pub const STATUS_RETURN: u32 = 4;
-pub const STATUS_RETRY: u32 = 5;
-pub const STATUS_EXIT: u32 = 6;
+pub use crate::layout::{
+    STATUS_BREAK, STATUS_DONE, STATUS_EXIT, STATUS_NEXT, STATUS_OK, STATUS_RAISE, STATUS_RETRY,
+    STATUS_RETURN,
+};
 
 pub fn flow_status(flow: &Flow) -> u32 {
     match flow {
@@ -69,11 +66,7 @@ impl Interp {
     }
 }
 
-/// Size of the buffer compiled code reserves for an `Activation` it
-/// builds itself (`qz_enter`); checked against the real size below.
-pub const ACT_BUF_SIZE: usize = 320;
-const _: () = assert!(std::mem::size_of::<Activation>() <= ACT_BUF_SIZE);
-const _: () = assert!(std::mem::align_of::<Activation>() <= 16);
+pub use crate::layout::ACT_BUF_SIZE;
 
 /// `regs[dst] = *src` for a reference-counted value (the inline path
 /// copies the others).
@@ -208,10 +201,6 @@ pub unsafe extern "C" fn qz_enter(
     let _ = mid;
     STATUS_OK
 }
-
-/// The status `qz_enter_virtual` returns when it ran the whole call
-/// itself (the result is in `regs[dst]`, the argument area is empty).
-pub const STATUS_DONE: u32 = 7;
 
 /// Enter a call to `mid` resolved on the receiver's class: when the
 /// method the class runs has a compiled body taking the parameters the

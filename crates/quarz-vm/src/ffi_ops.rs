@@ -16,6 +16,17 @@ use quarz_ir::{FastOp, HashItem, Reg, RtType, StrPiece, Term, VarLoc};
 use smallvec::SmallVec;
 
 use crate::ffi::STATUS_OK;
+
+// #536 step 8b, commit 1: the tags `qz_op_call` decodes below equal
+// `layout`'s single definitions (the next commit reads them and deletes
+// this).
+const _: () = {
+    use crate::layout as L;
+    assert!(L::CALL_METHOD == 0 && L::CALL_SEND == 1 && L::CALL_CONSTRUCT == 2);
+    assert!(L::CALL_CONSTRUCT_RECV == 3 && L::CALL_PROC == 4 && L::CALL_YIELD == 5);
+    assert!(L::CALL_SUPER == 6 && L::CALL_RAISE == 7 && L::CALL_INSTANCE_EXEC == 8);
+    assert!(L::CALL_FUNCTION == 9);
+};
 use crate::interp::{Flow, Interp};
 use crate::ops::{CallOp, CallOps, OwnedOps};
 use crate::value::Value;
