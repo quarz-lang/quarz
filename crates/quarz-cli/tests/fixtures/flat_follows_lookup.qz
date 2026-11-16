@@ -1,0 +1,62 @@
+# A `data` type is held in place in a field only while nothing of the
+# program's compares or hashes it: its `==`, `!=` and `hash` are what the
+# runtime's lookup finds (`World::user_method`, #809), its own, a module's
+# it includes, or a module's an unconditional extension includes; not an
+# extension's own method, nor a scoped extension's module, which take no
+# part in dispatch. A holder compares and hashes its fields by them.
+# Cells: a module's `==`/`hash` (`D`); one an unconditional extension's
+# include brings (`D2`); a module's abstract `==` only, met by the
+# built-in one (`F`); a module's `!=` only (`H`); an extension's own `==`
+# (`K`); a scoped extension's module (`D3`). Each with a `data` holder,
+# compared and hashed. VM and compiled (tests/build.rs).
+module Loose
+  def ==(other: Object) -> Bool = true
+  def hash -> Int = 0
+end
+
+data D(x: Int)
+  include Loose
+end
+data E = (d: D, n: Int)
+puts "D: #{D.new(1) == D.new(2)} #{E.new(D.new(1), 3) == E.new(D.new(2), 3)} #{E.new(D.new(1), 3) != E.new(D.new(2), 3)} #{Set[E.new(D.new(1), 3), E.new(D.new(2), 3)].size}"
+
+data D2 = (x: Int)
+extension D2
+  include Loose
+end
+data E2 = (d: D2, n: Int)
+puts "D2: #{D2.new(1) == D2.new(2)} #{E2.new(D2.new(1), 3) == E2.new(D2.new(2), 3)} #{Set[E2.new(D2.new(1), 3), E2.new(D2.new(2), 3)].size}"
+
+module Req
+  abstract def ==(other: Object) -> Bool
+end
+data F(x: Int)
+  include Req
+end
+data G = (f: F, n: Int)
+puts "F: #{F.new(1) == F.new(2)} #{G.new(F.new(1), 3) == G.new(F.new(2), 3)} #{G.new(F.new(1), 3) == G.new(F.new(1), 3)}"
+
+module NotEq
+  def !=(other: Object) -> Bool = false
+end
+data H(x: Int)
+  include NotEq
+end
+data I = (h: H, n: Int)
+puts "H: #{H.new(1) != H.new(2)} #{I.new(H.new(1), 3) == I.new(H.new(2), 3)} #{I.new(H.new(1), 3) == I.new(H.new(1), 3)}"
+
+data K = (x: Int)
+extension K
+  def ==(other: Object) -> Bool = true
+end
+data L = (k: K, n: Int)
+puts "K: #{K.new(1) == K.new(2)} #{L.new(K.new(1), 3) == L.new(K.new(2), 3)} #{Set[L.new(K.new(1), 3), L.new(K.new(2), 3)].size}"
+
+data D3 = (x: Int)
+module Scoped
+  extension D3
+    include Loose
+  end
+end
+data E3 = (d: D3, n: Int)
+puts "D3: #{E3.new(D3.new(1), 3) == E3.new(D3.new(2), 3)} #{Set[E3.new(D3.new(1), 3), E3.new(D3.new(2), 3)].size}"

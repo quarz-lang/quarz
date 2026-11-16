@@ -3470,6 +3470,64 @@ impl World {
             .collect()
     }
 
+    /// The instance method a value of class `cid` runs for `name`, called
+    /// with `argc` positional arguments and no block, when it is the
+    /// program's own: written or generated in a class or module, not a
+    /// native. `None` when the runtime's lookup finds a native (the
+    /// built-in one) or nothing. The lookup is the runtime's along
+    /// `lookup_ancestors` (`RtClass::lookup`, `Interp::find_method`): the
+    /// class's own table, the modules it includes, those an unconditional
+    /// extension includes. An extension's own method is looked past, not
+    /// stopped at: it is resolved statically where it is visible and
+    /// takes no part in dispatch, nor in what keys compare by (docs/01
+    /// §7). (The runtime's lookup also tries the prelude's extensions
+    /// first; none of them defines `==`, `!=` or `hash`.) An abstract
+    /// method found stands for the one implementing it for `cid`
+    /// (`witnesses_of`). What a value is compared and hashed by
+    /// (`key_methods`) and whether a field holds a `data` type in place
+    /// (`quarz_lower::layout`) are decided by it.
+    pub fn user_method(&self, cid: ClassId, name: &str, argc: usize) -> Option<MethodId> {
+        let fits = |m: &MethodInfo| {
+            let (min, max) = m.positional_arity();
+            !m.singleton && m.extension.is_none() && min <= argc && argc <= max && m.block.is_none()
+        };
+        let mut found = None;
+        'outer: for anc in self.lookup_ancestors(cid) {
+            // (A file's top-level `def`s are functions, docs/01 §1.)
+            if self.class(anc).kind == ClassKind::Main {
+                continue;
+            }
+            for id in self.class(anc).methods.get(name).into_iter().flatten() {
+                if fits(self.method(*id)) {
+                    found = Some(*id);
+                    break 'outer;
+                }
+            }
+        }
+        let mut m = found?;
+        if self.method(m).is_abstract {
+            if let Some(w) = self
+                .witnesses_of(cid)
+                .into_iter()
+                .find(|(_, r, _, _)| *r == m)
+                .and_then(|(_, _, w, _)| w)
+            {
+                m = w;
+            }
+        }
+        let info = self.method(m);
+        (!info.is_native && info.extension.is_none() && !info.is_abstract).then_some(m)
+    }
+
+    /// The `==` and `hash` a value of class `cid` is compared and hashed
+    /// by, where they are not the built-in ones (`user_method`).
+    pub fn key_methods(&self, cid: ClassId) -> (Option<MethodId>, Option<MethodId>) {
+        (
+            self.user_method(cid, "==", 1),
+            self.user_method(cid, "hash", 0),
+        )
+    }
+
     /// Every extension with includes, not the ones active where this is
     /// asked: conformance holds everywhere, and the override table must not
     /// depend on which file was checked last, or on a warm cache.

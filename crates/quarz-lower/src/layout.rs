@@ -1,8 +1,8 @@
 //! Object layouts: where each declared field of a class lives among the
 //! object's physical fields. A field whose type is a small immutable
 //! data type (`data Vec2 = (x: Float, y: Float)`: fields that are all
-//! `Int`/`Float`/`Bool` or such data, no type parameters, no user
-//! equality) is stored *by value*: its data class's physical fields are
+//! `Int`/`Float`/`Bool` or such data, no type parameters, no `==`, `!=` or
+//! `hash` of the program's, `World::user_method`) is stored *by value*: its data class's physical fields are
 //! laid out in place, so storing a `Vec2` into the field copies two
 //! words and reading the field builds a `Vec2` only when the value is
 //! used as one (a read whose only use is its fields never allocates,
@@ -117,14 +117,18 @@ fn flat_class(world: &World, ty: &Type, stack: &[ClassId]) -> Option<ClassId> {
         return None;
     }
     // Equality, hashing and identity of the containing object are
-    // structural over the physical fields: a data type with its own
-    // notion of equality keeps its box.
+    // structural over the physical fields: a data type compared or hashed
+    // by methods of the program's keeps its box. Those are what the
+    // runtime's lookup finds (`World::user_method`): the type's own, a
+    // module's it includes, or one an unconditional extension includes;
+    // not an extension's own method, which is resolved statically where
+    // it is visible and takes no part in dispatch (#809).
     // (`equal?` is identity and cannot be redefined; `eql?` is not Quarz's.)
-    const OWN: [&str; 3] = ["==", "!=", "hash"];
-    // Decided where the type is defined: an extension's `==` is resolved
-    // statically where it is visible and takes no part in dispatch (a
-    // `Hash` compares with the type's own), so it changes nothing here.
-    if OWN.iter().any(|n| c.methods.contains_key(*n)) {
+    const OWN: [(&str, usize); 3] = [("==", 1), ("!=", 1), ("hash", 0)];
+    if OWN
+        .iter()
+        .any(|(n, argc)| world.user_method(*d, n, *argc).is_some())
+    {
         return None;
     }
     // A read rebuilds the value with the generated `initialize`: one of
