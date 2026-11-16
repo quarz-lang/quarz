@@ -3330,6 +3330,37 @@ fn a_class_method_of_another_parameter_type_is_no_implementation() {
 }
 
 #[test]
+fn the_class_sides_include_pairs_reach_a_superclasss_modules() {
+    // #733's piece 4 (approved 2026-11-16): the class side's include pairs
+    // take the instance side's candidate set, a superclass's modules
+    // included. A subclass's own include takes the place of a superclass's
+    // include's class method through `Type[M]` (#733's reproducer: main
+    // printed `X M M`), as on the instance side.
+    common::expect("module M\n  def self.d -> String = \"M\"\nend\nmodule X\n  def self.d -> String = \"X\"\nend\nclass Num\n  include M\nend\nclass Sub2 < Num\n  include X\nend\ndef f(t: Type[M]) -> String = t.d\nputs Sub2.d + \" \" + f(Sub2) + \" \" + f(Num)\n", "X X M\n");
+    // So a pair forms over a superclass's module's class method, checked
+    // as an override: of another result, refused (fuzz 1473's minimal
+    // form; main ran it and printed `N 1 N`), at the extension's module,
+    // as its instance mirror is.
+    let out = common::diagnostics("module O\n  def self.label -> Int = 1\nend\nmodule N\n  def self.label -> String = \"N\"\nend\nclass B\n  include O\nend\nclass S < B\nend\nextension S\n  include N\nend\ndef vn(t: Type[N]) -> String = t.label\ndef vo(t: Type[O]) -> String = t.label.to_s\nputs vn(S) + \" \" + vo(S) + \" \" + S.label.to_s\n").join("\n");
+    assert!(
+        out.contains(
+            "error: `label` returns String but `O.label`, which it overrides, returns Int"
+        ),
+        "{out}"
+    );
+    assert_eq!(out.matches("error:").count(), 1, "{out}");
+    // And a superclass's module's class method now replaces an abstract
+    // one that a subclass's extension's module brings: of another result,
+    // refused (fuzz 1138's minimal form; main printed `ext 1 ext`).
+    let out = common::diagnostics("module R\n  abstract def self.label -> String\nend\nmodule O\n  def self.label -> Int = 1\nend\nmodule N\n  include R\nend\nclass K\n  include O\nend\nclass S < K\nend\nextension S\n  include N\n  def self.label -> String = \"ext\"\nend\ndef via(t: Type[R]) -> String = t.label\ndef vo(t: Type[O]) -> String = t.label.to_s\nputs via(S) + \" \" + vo(S) + \" \" + S.label\n").join("\n");
+    assert!(
+        out.contains("error: `label` returns Int but `R.label`, which it overrides in `S`, which includes `O`, returns String"),
+        "{out}"
+    );
+    assert_eq!(out.matches("error:").count(), 1, "{out}");
+}
+
+#[test]
 fn a_requirement_hidden_by_re_abstraction() {
     // #687's option 1 (the maintainer's decision of 2026-11-14): an
     // abstract class's `abstract def` hides what is above it in the
