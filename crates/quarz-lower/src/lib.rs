@@ -70,9 +70,11 @@ pub struct Lowerer {
     /// completed by each round (`rtworld::fill`). Built again when the
     /// class graph changes.
     kept: Option<kept::Kept>,
-    /// Whether the safety net ran over the kept tables (`declare`): the
-    /// next `lower` reports them otherwise (`QUARZ_WITNESS_NET`).
-    netted: bool,
+    /// The kept tables' epoch the safety net ran over every row at
+    /// (`declare`): the next `lower` ships those rows, which must not have
+    /// changed since; without it, `lower` reports them
+    /// (`QUARZ_WITNESS_NET`).
+    netted: Option<u64>,
     /// The classes some field default of which was left for a later
     /// static round (its expression not checked yet, or its function
     /// dropped), and the kept tables' epoch the last round's defaults were
@@ -333,7 +335,7 @@ impl Lowerer {
         // (The kept tables may be for a world of the sizes a later input
         // reaches with other declarations.)
         self.kept = None;
-        self.netted = false;
+        self.netted = None;
         self.defaults_waiting.clear();
         // (The failed input's, which may refer to the methods forgotten;
         // an earlier input's still wait for a final lowering when it
@@ -396,9 +398,9 @@ impl Lowerer {
         own: &dyn Fn(quarz_types::witness_net::Decl) -> bool,
     ) -> Vec<quarz_types::FileDiagnostic> {
         self.sync_tables(world, out);
-        let rt = &self.kept.as_ref().expect("synced above").rt;
-        let errors = rows_errors(world, rt, own, false);
-        self.netted = errors.is_empty();
+        let kept = self.kept.as_ref().expect("synced above");
+        let errors = rows_errors(world, &kept.rt, own, false);
+        self.netted = errors.is_empty().then(|| kept.epoch());
         errors
     }
 
@@ -560,12 +562,20 @@ impl Lowerer {
             .map(|f| f.expect("function lowered"))
             .collect();
         let file_names = self.files.iter().map(|f| f.name.clone()).collect();
-        let mut rt = self.kept.as_ref().expect("synced above").rt.clone();
-        // (The safety net's report, when `declare` did not run it over
-        // these tables.)
-        if !std::mem::take(&mut self.netted) {
-            witness_net(world, &rt);
+        let kept = self.kept.as_ref().expect("synced above");
+        match self.netted.take() {
+            // (The net ran over every row in `declare`: nothing may have
+            // been built again since, or rows would reach the runtime
+            // unchecked. Nothing declares or generates between the check
+            // and the lowering.)
+            Some(epoch) => assert!(
+                kept.changed_since(epoch).is_some_and(|cs| cs.is_empty()),
+                "internal error: the tables changed between the safety net and the lowering"
+            ),
+            // (The safety net's report, when `declare` did not run it.)
+            None => witness_net(world, &kept.rt),
         }
+        let mut rt = kept.rt.clone();
         rtworld::fill(&mut rt, world, self, file_names);
         Delta {
             world: rt,

@@ -2045,6 +2045,40 @@ puts N.name, O.name, nm(N), nm(Gen)
 }
 
 #[test]
+fn constructor_choices_made_after_the_statements() {
+    // Row 1's `inherited_inits`: the checker records which `initialize`
+    // `B.make`'s inherited `new` runs (`check_inherited_constructors`)
+    // after the file's statements ran, with no event; the kept class rows
+    // follow it (`Kept::inherited`). Before, `B`'s row kept none (the
+    // oracle's panic), as no event reached `B`.
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class Z < Gen
+  nothing
+end
+class A
+  @x: Int
+  def initialize(@x: Int)
+  end
+  def x -> Int = @x
+  def self.make -> Self = new(1)
+end
+class B < A
+  def initialize(x: Int)
+    super(x * 10)
+  end
+end
+puts A.make.x, B.make.x
+"#,
+    );
+    run_both(&d.0, &app, "1\n10\n");
+}
+
+#[test]
 fn a_statement_that_generates_nothing_rebuilds_nothing() {
     // Row 6 of §5: rounds whose statements generate nothing rebuild no
     // class's rows (each sync's line in `QUARZ_STATIC_TABLES_STATS`).

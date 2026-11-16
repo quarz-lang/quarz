@@ -9,11 +9,16 @@
 //!
 //! What each event reaches is the table on #717 ("M2 note, refreshed"):
 //!
-//! - **D(X)**: the classes whose run-time ancestors (`World::
-//!   runtime_ancestors`, every extension's include) hold `X`, `X` itself
-//!   too. The widest view: the override view (`own_ancestors`), the
-//!   dispatch order (`View::Lookup`) and the static view are within it,
-//!   which debug builds assert when they build it.
+//! - **D(X)**: the classes whose ancestors hold `X` in any view a row
+//!   reads (`ancestor_views`: the run-time ancestors, every extension's
+//!   include; the override view, `own_ancestors`, which also has the
+//!   modules of conditional extensions with their bounds assumed; the
+//!   lookup and dispatch orders; the static view), closed transitively
+//!   (an ancestor's ancestors in any view are the class's: a subclass of
+//!   `Box[T]` with arguments a conditional extension's bound refuses still
+//!   reads the rows of `Box`'s methods, which read that extension's
+//!   module), `X` itself too. So a class outside D(X) reads no row of a
+//!   class inside it.
 //! - **H(X)**: the classes holding a field whose type names `X`
 //!   (`ClassInfo::fields`, own or inherited, so with their D), and the
 //!   holders of those that are `data` types, enums or variants (held in
@@ -35,20 +40,30 @@ use rustc_hash::FxHashSet as HashSet;
 use crate::layout::{self, Layout};
 use crate::rtworld;
 
-/// What the kept tables were built for: the class graph. Classes and
-/// modules are not reopened, and a new include needs a new class or
-/// extension, so the counts tell a graph change.
+/// What the kept tables were built for: the class graph and the
+/// declarations. Classes and modules are not reopened, and a new include
+/// needs a new class or extension, so the counts tell a graph change; a
+/// method declared rather than generated (a REPL input's function, which
+/// goes into an existing class, the file's top level) changes the count of
+/// methods no `StaticEvent::Method` added.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct GraphKey {
     classes: usize,
     extensions: usize,
+    declared_methods: usize,
 }
 
 impl GraphKey {
     fn of(world: &World) -> GraphKey {
+        let generated = world
+            .static_events
+            .iter()
+            .filter(|e| matches!(e, StaticEvent::Method(_)))
+            .count();
         GraphKey {
             classes: world.classes.len(),
             extensions: world.extensions.len(),
+            declared_methods: world.methods.len().saturating_sub(generated),
         }
     }
 }
@@ -62,6 +77,12 @@ pub(crate) struct Kept {
     methods: usize,
     ext_impls: usize,
     class_ext_impls: usize,
+    /// The checker's constructor choices the class rows were made with
+    /// (`Output::inherited_inits`, which `class_row` reads): written by
+    /// the check of a `new` site's class (`Checker::
+    /// check_inherited_constructors`, after a file's statements), with no
+    /// event, so compared at each sync.
+    inherited: Vec<(ClassId, Option<MethodId>, MethodId)>,
     /// The declared tables, assembled (`rtworld::declared`'s value).
     pub(crate) rt: RtWorld,
     /// The override table, by method (`World::overrides`).
@@ -117,6 +138,7 @@ pub(crate) struct SyncStats {
     pub witnesses: bool,
     pub fields: bool,
     pub news: bool,
+    pub inits: bool,
 }
 
 /// The names a `data` type's flatness reads (`layout::flat_class`): a
@@ -151,6 +173,7 @@ impl Kept {
             methods: world.methods.len(),
             ext_impls: world.ext_impls.len(),
             class_ext_impls: world.class_ext_impls.len(),
+            inherited: out.inherited_inits.clone(),
             rt,
             table,
             pairs,
@@ -178,10 +201,12 @@ impl Kept {
         if epoch == 0 || self.log.first().is_none_or(|(e, _)| *e > epoch + 1) {
             return None;
         }
+        // (From the newest back: a reader asks for the syncs since its own
+        // last one, a few entries.)
         let mut out: Vec<ClassId> = Vec::new();
-        for (e, cs) in &self.log {
+        for (e, cs) in self.log.iter().rev() {
             if *e <= epoch {
-                continue;
+                break;
             }
             out.extend(cs.as_ref()?.iter().copied());
         }
@@ -289,6 +314,26 @@ impl Kept {
             stats.witnesses = true;
             dirty.extend(self.graph.below(w.class));
         }
+        // Constructor choices changed since (no event: see `inherited`):
+        // the class rows of their classes.
+        if out.inherited_inits != self.inherited {
+            stats.inits = true;
+            for e in out
+                .inherited_inits
+                .iter()
+                .filter(|e| !self.inherited.contains(e))
+            {
+                dirty.push(e.0);
+            }
+            for e in self
+                .inherited
+                .iter()
+                .filter(|e| !out.inherited_inits.contains(e))
+            {
+                dirty.push(e.0);
+            }
+            self.inherited = out.inherited_inits.clone();
+        }
         for m in self.methods..world.methods.len() {
             let owner = world.method(m as MethodId).owner;
             self.graph.owned[owner as usize].push(m as MethodId);
@@ -392,11 +437,12 @@ impl Graph {
     fn build(world: &World, rt: &RtWorld) -> Graph {
         let n = world.classes.len();
         let mut below: Vec<Vec<ClassId>> = (0..n as ClassId).map(|c| vec![c]).collect();
+        let direct: Vec<Vec<ClassId>> = (0..n as ClassId)
+            .map(|c| ancestor_views(world, c))
+            .collect();
+        let views = transitive(&direct);
         for c in 0..n as ClassId {
-            let ancs = world.runtime_ancestors(c);
-            #[cfg(debug_assertions)]
-            assert_views_within(world, c, &ancs);
-            for (a, _) in ancs {
+            for &a in &views[c as usize] {
                 if a != c && !below[a as usize].contains(&c) {
                     below[a as usize].push(c);
                 }
@@ -489,34 +535,70 @@ fn heads(world: &World) -> Vec<(Option<Type>, Vec<Type>)> {
         .collect()
 }
 
-/// Debug builds: the views the rows read are within the run-time view D
-/// is made from.
-#[cfg(debug_assertions)]
-fn assert_views_within(world: &World, c: ClassId, runtime: &[(ClassId, Vec<Type>)]) {
-    let within = |view: &str, ks: Vec<ClassId>| {
-        for k in ks {
-            assert!(
-                k == c || runtime.iter().any(|(r, _)| *r == k),
-                "internal error: `{}` is in `{}`'s {view} ancestors but not its run-time ones (#717)",
-                world.class(k).name,
-                world.class(c).name
-            );
+/// Class `c`'s ancestors in every view a kept row reads, sorted: what
+/// D is the inversion of (#717). The run-time ancestors (`RtClass::
+/// ancestors`), the override view (`World::own_ancestors`: the override
+/// table, the include pairs, the safety net's frames), the lookup and
+/// dispatch orders (`RtClass::lookup`, `class_side`, the witness record)
+/// and the static view (`World::ancestors`, the reflection).
+fn ancestor_views(world: &World, c: ClassId) -> Vec<ClassId> {
+    let mut out: Vec<ClassId> = world
+        .runtime_ancestors(c)
+        .into_iter()
+        .chain(world.own_ancestors(c))
+        .chain(world.ancestors(c, &[]))
+        .map(|(k, _)| k)
+        .chain(world.lookup_ancestors(c))
+        .chain(world.class_dispatch_order(c))
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Each class's ancestors in `direct`, with their ancestors', and so on:
+/// the transitive closure (the ancestry has no cycle), sorted.
+fn transitive(direct: &[Vec<ClassId>]) -> Vec<Vec<ClassId>> {
+    let n = direct.len();
+    let mut done: Vec<Option<Vec<ClassId>>> = vec![None; n];
+    // (A class on the way: not entered again, should the declarer ever
+    // let a cycle through.)
+    let mut on_way: Vec<bool> = vec![false; n];
+    for start in 0..n {
+        // (Depth first, each class's closure after its ancestors'.)
+        let mut stack: Vec<(usize, bool)> = vec![(start, false)];
+        while let Some((c, expanded)) = stack.pop() {
+            if done[c].is_some() {
+                continue;
+            }
+            if !expanded {
+                if on_way[c] {
+                    continue;
+                }
+                on_way[c] = true;
+                stack.push((c, true));
+                for &a in &direct[c] {
+                    if a as usize != c && done[a as usize].is_none() && !on_way[a as usize] {
+                        stack.push((a as usize, false));
+                    }
+                }
+                continue;
+            }
+            let mut all: Vec<ClassId> = direct[c].clone();
+            for &a in &direct[c] {
+                if a as usize != c {
+                    if let Some(more) = &done[a as usize] {
+                        all.extend(more.iter().copied());
+                    }
+                }
+            }
+            all.sort_unstable();
+            all.dedup();
+            on_way[c] = false;
+            done[c] = Some(all);
         }
-    };
-    within(
-        "override",
-        world.own_ancestors(c).into_iter().map(|(k, _)| k).collect(),
-    );
-    within("lookup", world.lookup_ancestors(c));
-    within("dispatch", world.class_dispatch_order(c));
-    within(
-        "static",
-        world
-            .ancestors(c, &[])
-            .into_iter()
-            .map(|(k, _)| k)
-            .collect(),
-    );
+    }
+    done.into_iter().map(|v| v.unwrap_or_default()).collect()
 }
 
 fn is_data(world: &World, c: ClassId) -> bool {
@@ -694,7 +776,7 @@ pub(crate) fn record_stats(s: &SyncStats) {
     };
     use std::io::Write;
     let line = format!(
-        "sync full={} classes={} methods={} events={} type_side={} holders={} data_eq={} witnesses={} fields={} news={} verified={}\n",
+        "sync full={} classes={} methods={} events={} type_side={} holders={} data_eq={} witnesses={} fields={} news={} inits={} verified={}\n",
         s.full as u8,
         s.classes,
         s.methods,
@@ -705,6 +787,7 @@ pub(crate) fn record_stats(s: &SyncStats) {
         s.witnesses as u8,
         s.fields as u8,
         s.news as u8,
+        s.inits as u8,
         verify_enabled() as u8,
     );
     if let Ok(mut f) = std::fs::OpenOptions::new()
