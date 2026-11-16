@@ -3211,10 +3211,13 @@ impl World {
         })
     }
 
-    /// The interpreter's `same_signature` (with the same block presence):
-    /// what replaces a method on the class side
-    /// (`Interp::class_side_override`).
-    pub fn same_signature_at_run_time(&self, m: MethodId, o: MethodId) -> bool {
+    /// The second disjunct of the one pairing rule (`replaces_seen`): the
+    /// same signature, a type mentioning a method's own type parameter,
+    /// `Self` or an inference variable matching any (`same_at_run_time`),
+    /// with the same block presence and the keywords `o` takes. Only the
+    /// rule reads it (#716); a reader asks `replaces_seen`, or the
+    /// override table (`overrides`), not this.
+    fn same_signature_by_type_params(&self, m: MethodId, o: MethodId) -> bool {
         let (m, om) = (self.method(m), self.method(o));
         let (ps, qs) = (om.positional_params(), m.positional_params());
         // (The shape first, cheap: the types, by name, only for a match.)
@@ -3296,8 +3299,8 @@ impl World {
     /// kind), `m`'s extra ones optional or rest; a block exactly when `o`
     /// has one, of a type at least as wide; every keyword call `o` takes
     /// (`MethodInfo::keywords_accept`), each shared keyword at least as
-    /// wide; or the same signature for the runtime
-    /// (`same_signature_at_run_time`: a type mentioning a method's own
+    /// wide; or the same signature
+    /// (`same_signature_by_type_params`: a type mentioning a method's own
     /// type parameter, `Self` or an inference variable matches). Result
     /// types are not part of it: a pair is then checked as an override
     /// (`check_override_pair`).
@@ -3309,7 +3312,8 @@ impl World {
     /// module's method in a class including it: `msubst` its arguments
     /// there; `osubst` the overridden one's owner's, with the method type
     /// parameters renamed by the caller): the widening rule
-    /// (`takes_calls_of`) or the same signature for the runtime.
+    /// (`takes_calls_of`) or the same signature
+    /// (`same_signature_by_type_params`).
     pub fn replaces_seen(
         &self,
         m: MethodId,
@@ -3318,7 +3322,7 @@ impl World {
         osubst: &HashMap<TypeParamId, Type>,
     ) -> bool {
         let (mi, oi) = (self.method(m), self.method(o));
-        self.takes_calls_of(mi, msubst, oi, osubst) || self.same_signature_at_run_time(m, o)
+        self.takes_calls_of(mi, msubst, oi, osubst) || self.same_signature_by_type_params(m, o)
     }
 
     /// Whether a method of one of `earlier` (ancestors before a module in a

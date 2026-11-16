@@ -2093,7 +2093,7 @@ impl Checker {
                         *f == c
                             && !past_module
                             && self.world.method(*by).owner != c
-                            && (self.replaces_at_run_time(*by, site.id)
+                            && (self.world.overrides(*by).contains(&site.id)
                                 || self
                                     .world
                                     .class_include_overrides_of(c)
@@ -2104,7 +2104,10 @@ impl Checker {
                         chain.push(by);
                     }
                     if let Some(ids) = table.get(&mname).filter(|_| !past_module && !below_floor) {
-                        if ids.iter().any(|&o| self.replaces_at_run_time(o, site.id)) {
+                        if ids
+                            .iter()
+                            .any(|&o| self.world.overrides(o).contains(&site.id))
+                        {
                             overrides = true;
                             let with_super = ids
                                 .iter()
@@ -2267,12 +2270,6 @@ impl Checker {
                 }
             }
         }
-    }
-
-    /// Whether class method `o` takes the place of `site` for its class at
-    /// run time: the override table (`World::overrides`).
-    fn replaces_at_run_time(&self, o: MethodId, site: MethodId) -> bool {
-        self.world.overrides(o).contains(&site)
     }
 
     /// Where the first `super` in `m`'s body is, if any.
