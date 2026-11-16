@@ -166,146 +166,159 @@ pub fn declared_with(
     let classes: Vec<RtClass> = world
         .classes
         .iter()
-        .map(|c| {
-            let members = c
-                .members
-                .iter()
-                .filter_map(|(name, m)| match m {
-                    Member::Class(id) => Some((name.clone(), *id)),
-                    _ => None,
-                })
-                .collect();
-            RtClass {
-                name: c.name.clone(),
-                kind: match c.kind {
-                    ClassKind::Class => RtClassKind::Class,
-                    ClassKind::Module => RtClassKind::Module,
-                    ClassKind::Data => RtClassKind::Data,
-                    ClassKind::Enum => RtClassKind::Enum,
-                    ClassKind::Variant => RtClassKind::Variant,
-                    ClassKind::Main => RtClassKind::Main,
-                },
-                superclass: match &c.superclass {
-                    Some(Type::Class(id, _)) => Some(*id),
-                    _ => None,
-                },
-                ancestors: {
-                    // (Every extension's include, whichever are active
-                    // where the lowering runs, #554.)
-                    let mut a: Vec<ClassId> = world
-                        .runtime_ancestors(c.id)
-                        .into_iter()
-                        .map(|(id, _)| id)
-                        .collect();
-                    // A non-generic `data` type or enum Shareable by its
-                    // fields is a `Shareable` at run time too (docs/03).
-                    let marker = world.builtin.shareable;
-                    if c.type_params.is_empty()
-                        && !a.contains(&marker)
-                        && world.derived_shareable(c.id, &[])
-                    {
-                        a.push(marker);
-                    }
-                    a
-                },
-                // (Dispatch by name: without the modules of scoped and
-                // conditional extensions, docs/01 §7; the marker as above.)
-                lookup: {
-                    let mut l = world.lookup_ancestors(c.id);
-                    let marker = world.builtin.shareable;
-                    if c.type_params.is_empty()
-                        && !l.contains(&marker)
-                        && world.derived_shareable(c.id, &[])
-                    {
-                        l.push(marker);
-                    }
-                    l
-                },
-                fields: Vec::new(),
-                ivars: Vec::new(),
-                module_init: !world.has_fields_to_assign(c.id, true),
-                inherited_inits: out
-                    .inherited_inits
-                    .iter()
-                    .filter(|(sub, _, _)| *sub == c.id)
-                    .map(|(_, init, chosen)| (*init, *chosen))
-                    .collect(),
-                methods: c
-                    .methods
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect(),
-                singleton_methods: c
-                    .singleton_methods
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect(),
-                // (The dispatch order: the top-level unconditional
-                // extensions' modules with the own includes, #681.)
-                class_side: world.class_dispatch_order(c.id),
-                built_by_runtime: world.built_by_runtime(c.id),
-                members,
-                variants: c.variants.clone(),
-                variant_of: c.variant_of,
-                structural: matches!(c.kind, ClassKind::Data | ClassKind::Variant),
-                // (A file's top-level `def`s are functions, not its
-                // object's `==`.)
-                declares_eq_hash: c.kind != ClassKind::Main
-                    && ["==", "hash"].iter().any(|n| {
-                        c.methods.get(*n).is_some_and(|ms| {
-                            ms.iter().any(|m| {
-                                let m = world.method(*m);
-                                !m.singleton && !m.is_native && m.body.is_some()
-                            })
-                        })
-                    }),
-                is_exception: world.is_exception_class(c.id),
-                is_abstract: c.is_abstract,
-                objects: world.instances_are_objects(c.id),
-                file: c.file,
-                cog: c.cog.map(|i| {
-                    let info = &world.cogs[i as usize];
-                    (info.name.clone(), info.version.clone())
-                }),
-            }
-        })
+        .map(|c| class_row(world, out, c.id))
         .collect();
     // (The override table, once, #536.)
     let table = world.override_table();
     let methods: Vec<RtMethod> = world
         .methods
         .iter()
-        .map(|m| {
-            let owner = world.class(m.owner);
-            let overloaded = owner.methods.get(&m.name).is_some_and(|ids| ids.len() > 1);
-            // An abstract method is always dispatched dynamically: its
-            // implementation may be a class method of a class that
-            // includes the module, which the class hierarchy walk does not see.
-            // A class method is dispatched on the class it is called on
-            // (`Circle.describe` runs `Circle.label` for an implicit
-            // `label` in `Shape.describe`).
-            // (`fill` adds the lowering's overridden methods.)
-            let overridden = m.is_abstract;
-            let synth = match &m.synth {
-                Synth::None => RtSynth::None,
-                Synth::FieldGet(name) => {
-                    RtSynth::FieldGet(world.field_index(m.owner, name).unwrap_or(0) as u32)
-                }
-                Synth::FieldSet(name) => {
-                    RtSynth::FieldSet(world.field_index(m.owner, name).unwrap_or(0) as u32)
-                }
-                Synth::DataInit => RtSynth::DataInit,
-                Synth::DataWith => RtSynth::DataWith,
-                Synth::DataToH => RtSynth::DataToH,
-            };
-            let fast_op = if m.is_native
-                && (m.owner == world.builtin.int || m.owner == world.builtin.float)
+        .map(|m| method_row(world, m.id, &table[m.id as usize]))
+        .collect();
+    declared_rest(world, classes, methods, &table, record)
+}
+
+/// Class `id`'s row of `RtWorld::classes`, as the declarations decide it
+/// (`declared_with`; the lowering's fields are left empty for `fill`).
+pub fn class_row(world: &World, out: &types::Output, id: ClassId) -> RtClass {
+    let c = world.class(id);
+    let members = c
+        .members
+        .iter()
+        .filter_map(|(name, m)| match m {
+            Member::Class(id) => Some((name.clone(), *id)),
+            _ => None,
+        })
+        .collect();
+    RtClass {
+        name: c.name.clone(),
+        kind: match c.kind {
+            ClassKind::Class => RtClassKind::Class,
+            ClassKind::Module => RtClassKind::Module,
+            ClassKind::Data => RtClassKind::Data,
+            ClassKind::Enum => RtClassKind::Enum,
+            ClassKind::Variant => RtClassKind::Variant,
+            ClassKind::Main => RtClassKind::Main,
+        },
+        superclass: match &c.superclass {
+            Some(Type::Class(id, _)) => Some(*id),
+            _ => None,
+        },
+        ancestors: {
+            // (Every extension's include, whichever are active
+            // where the lowering runs, #554.)
+            let mut a: Vec<ClassId> = world
+                .runtime_ancestors(c.id)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            // A non-generic `data` type or enum Shareable by its
+            // fields is a `Shareable` at run time too (docs/03).
+            let marker = world.builtin.shareable;
+            if c.type_params.is_empty()
+                && !a.contains(&marker)
+                && world.derived_shareable(c.id, &[])
             {
-                FastOp::from_name(&m.name)
-            } else {
-                None
-            };
-            RtMethod {
+                a.push(marker);
+            }
+            a
+        },
+        // (Dispatch by name: without the modules of scoped and
+        // conditional extensions, docs/01 §7; the marker as above.)
+        lookup: {
+            let mut l = world.lookup_ancestors(c.id);
+            let marker = world.builtin.shareable;
+            if c.type_params.is_empty()
+                && !l.contains(&marker)
+                && world.derived_shareable(c.id, &[])
+            {
+                l.push(marker);
+            }
+            l
+        },
+        fields: Vec::new(),
+        ivars: Vec::new(),
+        module_init: !world.has_fields_to_assign(c.id, true),
+        inherited_inits: out
+            .inherited_inits
+            .iter()
+            .filter(|(sub, _, _)| *sub == c.id)
+            .map(|(_, init, chosen)| (*init, *chosen))
+            .collect(),
+        methods: c
+            .methods
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+        singleton_methods: c
+            .singleton_methods
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+        // (The dispatch order: the top-level unconditional
+        // extensions' modules with the own includes, #681.)
+        class_side: world.class_dispatch_order(c.id),
+        built_by_runtime: world.built_by_runtime(c.id),
+        members,
+        variants: c.variants.clone(),
+        variant_of: c.variant_of,
+        structural: matches!(c.kind, ClassKind::Data | ClassKind::Variant),
+        // (A file's top-level `def`s are functions, not its
+        // object's `==`.)
+        declares_eq_hash: c.kind != ClassKind::Main
+            && ["==", "hash"].iter().any(|n| {
+                c.methods.get(*n).is_some_and(|ms| {
+                    ms.iter().any(|m| {
+                        let m = world.method(*m);
+                        !m.singleton && !m.is_native && m.body.is_some()
+                    })
+                })
+            }),
+        is_exception: world.is_exception_class(c.id),
+        is_abstract: c.is_abstract,
+        objects: world.instances_are_objects(c.id),
+        file: c.file,
+        cog: c.cog.map(|i| {
+            let info = &world.cogs[i as usize];
+            (info.name.clone(), info.version.clone())
+        }),
+    }
+}
+
+/// Method `id`'s row of `RtWorld::methods`, with its override table entry
+/// `overrides` (`World::overrides`, a row of `override_table`); `func`
+/// and the lowering's `overridden` are left for `fill`.
+pub fn method_row(world: &World, id: MethodId, overrides: &[MethodId]) -> RtMethod {
+    let m = world.method(id);
+    let owner = world.class(m.owner);
+    let overloaded = owner.methods.get(&m.name).is_some_and(|ids| ids.len() > 1);
+    // An abstract method is always dispatched dynamically: its
+    // implementation may be a class method of a class that
+    // includes the module, which the class hierarchy walk does not see.
+    // A class method is dispatched on the class it is called on
+    // (`Circle.describe` runs `Circle.label` for an implicit
+    // `label` in `Shape.describe`).
+    // (`fill` adds the lowering's overridden methods.)
+    let overridden = m.is_abstract;
+    let synth = match &m.synth {
+        Synth::None => RtSynth::None,
+        Synth::FieldGet(name) => {
+            RtSynth::FieldGet(world.field_index(m.owner, name).unwrap_or(0) as u32)
+        }
+        Synth::FieldSet(name) => {
+            RtSynth::FieldSet(world.field_index(m.owner, name).unwrap_or(0) as u32)
+        }
+        Synth::DataInit => RtSynth::DataInit,
+        Synth::DataWith => RtSynth::DataWith,
+        Synth::DataToH => RtSynth::DataToH,
+    };
+    let fast_op = if m.is_native && (m.owner == world.builtin.int || m.owner == world.builtin.float)
+    {
+        FastOp::from_name(&m.name)
+    } else {
+        None
+    };
+    let mut row = RtMethod {
                 shape: NO_SHAPE,
                 name: m.name.clone(),
                 owner: m.owner,
@@ -360,7 +373,7 @@ pub fn declared_with(
                     Type::Param(_) | Type::Var(_) => None,
                     t => Some(world.type_name(&world.devoid(t))),
                 },
-                overrides: table[m.id as usize].clone(),
+                overrides: overrides.to_vec(),
                 makes: if m.is_native {
                     let mut out = Vec::new();
                     classes_in(&m.ret, &mut out);
@@ -374,13 +387,22 @@ pub fn declared_with(
                     Vec::new()
                 },
                 keyword_hash: m.generated.as_ref().is_some_and(|g| g.keywords),
-            }
-        })
-        .map(|mut m| {
-            m.shape = RtMethod::shape_of(&m.params, m.has_block);
-            m
-        })
-        .collect();
+            };
+    row.shape = RtMethod::shape_of(&row.params, row.has_block);
+    row
+}
+
+/// The rest of `declared_with` over the class and method rows: the
+/// extensions, the top-level names, the built-in ids, the file mains, the
+/// include pairs and the rows over them (`class_override_rows`,
+/// `RtWorld::build_witness_rows`).
+fn declared_rest(
+    world: &World,
+    classes: Vec<RtClass>,
+    methods: Vec<RtMethod>,
+    table: &[Vec<MethodId>],
+    record: Vec<(ClassId, MethodId, Option<MethodId>)>,
+) -> RtWorld {
     // Every extension is listed: the always-active ones (the prelude's)
     // take part in dispatch by name and come first; any other only
     // through the modules it makes its target conform to (a module method
@@ -483,7 +505,7 @@ pub fn declared_with(
         file_names: Vec::new(),
         file_mains,
     };
-    rt.class_override_rows = class_override_rows(world, &rt, &table);
+    rt.class_override_rows = class_override_rows(world, &rt, table);
     rt.build_witness_rows();
     rt
 }
@@ -500,50 +522,66 @@ fn class_override_rows(
     rt: &RtWorld,
     table: &[Vec<MethodId>],
 ) -> Vec<(ClassId, MethodId, MethodId)> {
-    let method = |id: MethodId| &rt.methods[id as usize];
-    let overrides = |m: MethodId| table[m as usize].clone();
     let type_owners = rt.type_side_owners();
     let mut rows: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
-    for (cid, c) in rt.classes.iter().enumerate() {
-        let cid = cid as ClassId;
-        if c.kind == RtClassKind::Main {
-            continue;
-        }
-        let mut cands: Vec<MethodId> = Vec::new();
-        for &o in std::iter::once(&cid).chain(c.ancestors.iter()) {
-            cands.extend(rt.class(o).singleton_methods.values().flatten().copied());
-        }
-        // (`Type`'s classes' instance methods named like a class method on
-        // the class side: each name looked up in their tables.)
-        for name in c
-            .class_side
-            .iter()
-            .flat_map(|k| rt.class(*k).singleton_methods.keys())
-        {
-            for &t in &type_owners {
-                if let Some(ids) = rt.class(t).methods.get(name) {
-                    cands.extend(ids.iter().copied().filter(|&m| method(m).owner == t));
-                }
+    for cid in 0..rt.classes.len() as ClassId {
+        rows.extend(class_override_rows_of(world, rt, table, &type_owners, cid));
+    }
+    rows.sort_unstable();
+    rows
+}
+
+/// The rows of `class_override_rows` whose class object is `cid`, with
+/// `type_owners` (`RtWorld::type_side_owners`) computed once by the
+/// caller. Sorted by method; none for a file's top level.
+pub fn class_override_rows_of(
+    world: &World,
+    rt: &RtWorld,
+    table: &[Vec<MethodId>],
+    type_owners: &[ClassId],
+    cid: ClassId,
+) -> Vec<(ClassId, MethodId, MethodId)> {
+    let method = |id: MethodId| &rt.methods[id as usize];
+    let overrides = |m: MethodId| table[m as usize].clone();
+    let mut rows: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
+    let c = rt.class(cid);
+    if c.kind == RtClassKind::Main {
+        return rows;
+    }
+    let mut cands: Vec<MethodId> = Vec::new();
+    for &o in std::iter::once(&cid).chain(c.ancestors.iter()) {
+        cands.extend(rt.class(o).singleton_methods.values().flatten().copied());
+    }
+    // (`Type`'s classes' instance methods named like a class method on
+    // the class side: each name looked up in their tables.)
+    for name in c
+        .class_side
+        .iter()
+        .flat_map(|k| rt.class(*k).singleton_methods.keys())
+    {
+        for &t in type_owners {
+            if let Some(ids) = rt.class(t).methods.get(name) {
+                cands.extend(ids.iter().copied().filter(|&m| method(m).owner == t));
             }
         }
-        cands.sort_unstable();
-        cands.dedup();
-        for b in cands {
-            if rt.in_class_override_rows_with(&method, Some(&type_owners), cid, b) {
-                rows.push((cid, b, world.class_method_target(&overrides, cid, b)));
-            } else {
-                // (Outside the set a call runs the method itself: the
-                // function must agree, or the key set and the function
-                // have drifted apart.)
-                debug_assert_eq!(
-                    world.class_method_target(&overrides, cid, b),
-                    b,
-                    "internal error: `{}` on `{}` is outside the class override rows, \
+    }
+    cands.sort_unstable();
+    cands.dedup();
+    for b in cands {
+        if rt.in_class_override_rows_with(&method, Some(type_owners), cid, b) {
+            rows.push((cid, b, world.class_method_target(&overrides, cid, b)));
+        } else {
+            // (Outside the set a call runs the method itself: the
+            // function must agree, or the key set and the function
+            // have drifted apart.)
+            debug_assert_eq!(
+                world.class_method_target(&overrides, cid, b),
+                b,
+                "internal error: `{}` on `{}` is outside the class override rows, \
                      but class_method_target replaces it",
-                    rt.methods[b as usize].name,
-                    c.name
-                );
-            }
+                rt.methods[b as usize].name,
+                c.name
+            );
         }
     }
     rows.sort_unstable();

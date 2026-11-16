@@ -917,6 +917,48 @@ impl Lowerer {
         self.set_func(id, f);
     }
 
+    /// The functions of class `cid`'s own field defaults whose
+    /// expressions are checked and not lowered yet (`field_default_funcs`):
+    /// a static round's step for one class.
+    fn lower_field_defaults_of(&mut self, world: &World, out: &Output, cid: ClassId) {
+        let class_info = world.class(cid);
+        let fields = world.all_fields(class_info.id);
+        let own = fields.len().saturating_sub(class_info.fields.len());
+        for (i, (field, _)) in fields.iter().enumerate().skip(own) {
+            if self.field_default_funcs.contains_key(&(class_info.id, i)) {
+                continue;
+            }
+            let name = format!("default of {}#@{}", class_info.name, field.name);
+            if let Some(baked) = &field.baked_default {
+                let id = self.alloc_func();
+                self.field_default_funcs.insert((class_info.id, i), id);
+                let f = self.baked_init(name, class_info.file, baked);
+                self.set_func(id, f);
+                continue;
+            }
+            let Some(default) = &field.default else {
+                continue;
+            };
+            if !out.node_types.contains_key(&default.id) {
+                continue;
+            }
+            let id = self.alloc_func();
+            self.field_default_funcs.insert((class_info.id, i), id);
+            let f = self.noting_fallback(FallbackOwner::FieldDefault(class_info.id, i), |lw| {
+                FnBuilder::init(
+                    lw,
+                    world,
+                    out,
+                    name,
+                    class_info.file,
+                    Some(class_info.id),
+                    default,
+                )
+            });
+            self.set_func(id, f);
+        }
+    }
+
     /// Lower a class body's `static` statement (docs/14) with what it
     /// reaches, for a compile-time run: the statement as an init function
     /// (its `self` the class), the `static def` it calls, and every method
@@ -952,41 +994,7 @@ impl Lowerer {
         // Field defaults whose expressions are checked (a construction
         // at compile time needs them).
         for class_info in &world.classes {
-            let fields = world.all_fields(class_info.id);
-            let own = fields.len().saturating_sub(class_info.fields.len());
-            for (i, (field, _)) in fields.iter().enumerate().skip(own) {
-                if self.field_default_funcs.contains_key(&(class_info.id, i)) {
-                    continue;
-                }
-                let name = format!("default of {}#@{}", class_info.name, field.name);
-                if let Some(baked) = &field.baked_default {
-                    let id = self.alloc_func();
-                    self.field_default_funcs.insert((class_info.id, i), id);
-                    let f = self.baked_init(name, class_info.file, baked);
-                    self.set_func(id, f);
-                    continue;
-                }
-                let Some(default) = &field.default else {
-                    continue;
-                };
-                if !out.node_types.contains_key(&default.id) {
-                    continue;
-                }
-                let id = self.alloc_func();
-                self.field_default_funcs.insert((class_info.id, i), id);
-                let f = self.noting_fallback(FallbackOwner::FieldDefault(class_info.id, i), |lw| {
-                    FnBuilder::init(
-                        lw,
-                        world,
-                        out,
-                        name,
-                        class_info.file,
-                        Some(class_info.id),
-                        default,
-                    )
-                });
-                self.set_func(id, f);
-            }
+            self.lower_field_defaults_of(world, out, class_info.id);
         }
         let stmt_func = match self.static_stmt_func {
             Some((id, f)) if id == stmt.id => f,
