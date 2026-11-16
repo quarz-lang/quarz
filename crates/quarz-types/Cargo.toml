@@ -11,4 +11,8 @@ repository.workspace = true
 serde = { version = "1", features = ["derive", "rc"] }
 bincode = { version = "2", default-features = false, features = ["serde", "std"] }
 quarz-syntax = { workspace = true }
+# Only for `RtType`, the run-time type test the checker decides and records
+# (`testable`, #536 step 7): the checker reads no runtime table, `RtWorld`
+# or instruction from it.
+quarz-ir = { workspace = true }
 rustc-hash = "2"

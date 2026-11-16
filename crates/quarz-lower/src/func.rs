@@ -10,8 +10,8 @@ use quarz_types::{CallTarget, ConstTarget, Output, SelfOwner, Type, VarRef, Worl
 
 use crate::capture::captured_slots;
 use crate::iter::{self, Kind, Shape, Source};
-use crate::rtworld::rt_type;
 use crate::{Lowerer, UnitInput};
+use quarz_types::testable::rt_type;
 
 mod quote;
 
@@ -3954,10 +3954,11 @@ impl<'a> FnBuilder<'a> {
     /// The run-time type of an `as`/`is_a?` test: with elements checked
     /// where the value may be of the class without being of the type.
     fn test_type(&self, e: &Expr, ty: &Type) -> RtType {
-        if self.out.element_tests.contains(&e.id) {
-            crate::rtworld::rt_type_checked(self.world, ty)
-        } else {
-            rt_type(ty)
+        // (The checker's record, `testable::run_time_test`; a site it did
+        // not record is decided by its static type: the class alone.)
+        match self.out.run_time_tests.get(&e.id) {
+            Some(t) => t.clone(),
+            None => rt_type(ty),
         }
     }
 

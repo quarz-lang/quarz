@@ -851,6 +851,7 @@ name = "quarz-types"
 version = "0.0.1"
 dependencies = [
  "bincode",
+ "quarz-ir",
  "quarz-syntax",
  "rustc-hash",
  "serde",

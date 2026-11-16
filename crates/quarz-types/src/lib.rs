@@ -15,6 +15,7 @@ pub mod json_decode;
 pub mod load;
 pub mod patterns;
 mod reloc;
+pub mod testable;
 pub mod types;
 mod unit;
 pub mod witness_net;

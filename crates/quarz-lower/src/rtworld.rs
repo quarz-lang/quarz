@@ -6,49 +6,6 @@ use quarz_types::{self as types, ClassKind, Member, Synth, Type, World};
 
 use crate::Lowerer;
 
-pub fn rt_type(t: &Type) -> RtType {
-    match t {
-        Type::Nothing => RtType::Nothing,
-        Type::Class(id, _) => RtType::Class(*id),
-        Type::ClassObject(_, _) | Type::TypeOf(_) => RtType::ClassObject,
-        Type::Union(ms) => RtType::Union(ms.iter().map(rt_type).collect()),
-        Type::Tuple(ts) => RtType::Tuple(vec![RtType::Any; ts.len()]),
-        Type::Proc(..) => RtType::Proc,
-        Type::Param(_) | Type::Var(_) => RtType::Any,
-        // Only a result (no value's type), so never tested.
-        Type::Void => RtType::Any,
-    }
-}
-
-/// `t` for `as`/`is_a?`: with the elements of built-in collections and
-/// tuples checked too (`xs.as(Array[String])`), which their values carry;
-/// the checker refuses other type arguments it cannot vouch for.
-pub fn rt_type_checked(world: &World, t: &Type) -> RtType {
-    let b = &world.builtin;
-    match t {
-        Type::Class(id, args)
-            if [b.array, b.set, b.hash, b.range].contains(id)
-                && args.iter().any(|a| !trivial(world, a)) =>
-        {
-            RtType::Elems(
-                *id,
-                args.iter().map(|a| rt_type_checked(world, a)).collect(),
-            )
-        }
-        // A class value of a class without type parameters: tested for
-        // the class (`Type[Model]`; the checker refuses a generic one).
-        Type::ClassObject(id, _) if *id != b.object => RtType::ClassOf(*id),
-        Type::Union(ms) => RtType::Union(ms.iter().map(|m| rt_type_checked(world, m)).collect()),
-        Type::Tuple(ts) => RtType::Tuple(ts.iter().map(|m| rt_type_checked(world, m)).collect()),
-        _ => rt_type(t),
-    }
-}
-
-fn trivial(world: &World, t: &Type) -> bool {
-    matches!(t, Type::Param(_) | Type::Var(_))
-        || matches!(t, Type::Class(id, _) if *id == world.builtin.object)
-}
-
 fn param_kind(k: ParamKind) -> RtParamKind {
     match k {
         ParamKind::Positional => RtParamKind::Positional,

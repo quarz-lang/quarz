@@ -182,7 +182,10 @@ pub struct Output {
     pub op_logical_calls: HashMap<NodeId, CallRecord>,
     /// `as`/`as?`/`is_a?` calls whose run-time test must check elements:
     /// the value may be of the class without being of the type.
-    pub element_tests: rustc_hash::FxHashSet<NodeId>,
+    /// The run-time test of an `as`/`is_a?`/`as?` whose static type does
+    /// not decide it (`testable::run_time_test`, #536 step 7): what the
+    /// lowering emits there.
+    pub run_time_tests: rustc_hash::FxHashMap<NodeId, quarz_ir::RtType>,
     /// `x.foo!(args)` calls that are sugar for `x = x.foo(args)` (the
     /// receiver's type has no `foo!`): the call targets `foo` and its
     /// result is stored into the receiver, a local or a field.
@@ -17718,7 +17721,10 @@ impl Checker {
                 .any(|t| self.may_be_of_class(m, t) && !self.world.is_subtype(m, t))
         });
         if checked {
-            self.out.element_tests.insert(expr.id);
+            self.out.run_time_tests.insert(
+                expr.id,
+                crate::testable::run_time_test(&self.world, &target),
+            );
         }
         match call.name.as_str() {
             "is_a?" => {
@@ -17808,7 +17814,7 @@ impl Checker {
         }
         self.record_runtime_test(&rt, target, &format!("`{op}`"));
         for tm in target.members() {
-            if !self.unverifiable(&tm) {
+            if !crate::testable::unverifiable(&self.world, &tm) {
                 continue;
             }
             for m in rt.members() {
@@ -18147,44 +18153,6 @@ impl Checker {
             Type::Param(_) => !self.world.is_shareable(t),
             Type::Union(ms) => ms.clone().iter().any(|m| self.shareable_by_args(m)),
             _ => false,
-        }
-    }
-
-    /// Whether the run-time test of `t` leaves part of it unchecked: a
-    /// type parameter as an argument (the elements' `T` is not known at
-    /// run time), or arguments of a class other than the built-in
-    /// collections (whose elements are checked), except `Object` for a
-    /// covariant parameter.
-    fn unverifiable(&self, t: &Type) -> bool {
-        let b = &self.world.builtin;
-        let object = |a: &Type| matches!(a, Type::Class(id, _) if *id == b.object);
-        match t {
-            Type::Class(id, args) if [b.array, b.set, b.hash, b.range].contains(id) => {
-                args.iter().any(|a| !object(a) && self.unverifiable_arg(a))
-            }
-            Type::Class(id, args) => args
-                .iter()
-                .enumerate()
-                .any(|(i, a)| !(object(a) && self.world.param_admits_object(*id, i))),
-            // A class value is tested for its class (`Type[Model]`: a class
-            // `<= Model`), not for type arguments, which it does not carry:
-            // a generic class (`Type[Box[Int]]`) is refused.
-            Type::ClassObject(id, _) => !self.world.class(*id).type_params.is_empty(),
-            Type::Tuple(ts) | Type::Union(ts) => ts.iter().any(|m| self.unverifiable(m)),
-            Type::Proc(..) => true,
-            // A type parameter is not known at run time (`o.as(T)`).
-            Type::Param(_) | Type::TypeOf(_) => true,
-            Type::Nothing | Type::Void | Type::Var(_) => false,
-        }
-    }
-
-    /// `unverifiable` for a type argument or element type: a type
-    /// parameter there is not known at run time.
-    fn unverifiable_arg(&self, t: &Type) -> bool {
-        match t {
-            Type::Param(_) => true,
-            Type::Union(ms) | Type::Tuple(ms) => ms.iter().any(|m| self.unverifiable_arg(m)),
-            _ => self.unverifiable(t),
         }
     }
 

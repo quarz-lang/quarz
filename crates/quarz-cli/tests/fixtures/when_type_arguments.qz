@@ -1,0 +1,25 @@
+# `when T` with type arguments tests the class alone, and narrows by the
+# class; `is_a?` and `as?` check the elements of the built-in collections
+# (#536 step 7, docs/02). Interpreted and compiled alike.
+def by_when(x: Object) -> String
+  case x
+  when Array[Int]
+    "array of #{x.size}"
+  else
+    "other"
+  end
+end
+def by_is_a(x: Object) -> String
+  x.is_a?(Array[Int]) ? "ints" : "not ints"
+end
+def by_as(x: Object) -> String
+  ys = x.as?(Hash[String, Int])
+  ys.nil? ? "no" : "yes #{ys.size}"
+end
+puts by_when([1, 2])
+puts by_when(["a"])
+puts by_when(1)
+puts by_is_a([1, 2])
+puts by_is_a(["a"])
+puts by_as({"a" => 1})
+puts by_as({"a" => "b"})

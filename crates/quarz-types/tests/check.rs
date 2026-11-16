@@ -2242,6 +2242,14 @@ fn checks_the_types_it_cannot_take_on_trust() {
         "def obj(v: Object) -> Object = v\ndef f[T](o: Object, z: T) -> T = o.as(T)",
         "cannot check at run time that a value of type Object is a T",
     );
+    // `when T` tests the class alone and narrows by the class
+    // (`Array[Object]`), where `is_a?` checks the elements and narrows to
+    // the type (#536 step 7; fixtures/when_type_arguments).
+    err(
+        "def f(x: Object) -> Int\n  case x\n  when Array[Int]\n    x.sum\n  else\n    -1\n  end\nend",
+        "no overload of `sum` on Array[Object] matches ()",
+    );
+    ok("def f(x: Object) -> Int\n  x.is_a?(Array[Int]) ? x.sum : -1\nend");
     err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T <: Addable[T]] = (x: T)\ndef f[U](u: U) -> U = Acc[U].new(u).x", "type argument U for `T` of `Acc` must be Addable[U]");
     // Bounds are checked in annotations too.
     err("module Addable[T]\n  abstract def add(o: T) -> T\nend\ndata Acc[T <: Addable[T]] = (x: T)\nclass Other\nend\np Acc.new(Other.new)", "type argument Other for `T` of `Acc` must be Addable[Other]");
@@ -6481,6 +6489,89 @@ fn a_row_with_no_frame_is_an_error() {
         diags[0].1.message,
         "internal error: no frame to check `K`'s row for `M#m` in (what runs: `K#m`); please report"
     );
+}
+
+/// #536 step 7: `testable::seen`, the run-time test of a type and whether
+/// it sees all of it, on representative shapes (the commit that made it
+/// one traversal compared every shape nested two deep with the previous
+/// two recursions): the built-in collections check their elements, another
+/// class only its class (whole when its arguments are `Object` where the
+/// parameter admits it), a class value its class (whole when not generic),
+/// tuples and unions their members; a type parameter is never seen.
+#[test]
+fn one_traversal_decides_a_run_time_test() {
+    use quarz_ir::RtType;
+    use quarz_types::testable::seen;
+    use quarz_types::Type;
+    let prelude = parse(PRELUDE_SOURCE);
+    let src = "class Box[T]\n  def initialize; end\nend\nclass Out[out T]\n  def initialize; end\nend\nclass Model\nend\n";
+    let base = unit_base(0);
+    let parsed = parse_with_bases(src, base, base);
+    let (checked, _) = check(&prelude.program, &parsed.program);
+    let world = checked.expect("checks").world;
+    let class = |n: &str| {
+        world
+            .classes
+            .iter()
+            .position(|c| c.name == n)
+            .unwrap_or_else(|| panic!("class {n}")) as u32
+    };
+    let (object, int, string, model) = (
+        class("Object"),
+        class("Int"),
+        class("String"),
+        class("Model"),
+    );
+    let (array, hash) = (class("Array"), class("Hash"));
+    let (bx, out) = (class("Box"), class("Out"));
+    let c = |id: u32, args: Vec<Type>| Type::Class(id, args);
+    let param = Type::Param(0);
+    let cases: Vec<(Type, RtType, bool)> = vec![
+        (
+            c(array, vec![c(int, vec![])]),
+            RtType::Elems(array, vec![RtType::Class(int)]),
+            true,
+        ),
+        (
+            c(array, vec![c(object, vec![])]),
+            RtType::Class(array),
+            true,
+        ),
+        (c(array, vec![param.clone()]), RtType::Class(array), false),
+        (
+            c(hash, vec![c(string, vec![]), c(int, vec![])]),
+            RtType::Elems(hash, vec![RtType::Class(string), RtType::Class(int)]),
+            true,
+        ),
+        (c(bx, vec![c(int, vec![])]), RtType::Class(bx), false),
+        (c(bx, vec![c(object, vec![])]), RtType::Class(bx), false),
+        (c(out, vec![c(object, vec![])]), RtType::Class(out), true),
+        (
+            Type::ClassObject(model, vec![]),
+            RtType::ClassOf(model),
+            true,
+        ),
+        (Type::ClassObject(bx, vec![]), RtType::ClassOf(bx), false),
+        (Type::ClassObject(object, vec![]), RtType::ClassObject, true),
+        (
+            Type::Tuple(vec![c(int, vec![]), c(array, vec![c(string, vec![])])]),
+            RtType::Tuple(vec![
+                RtType::Class(int),
+                RtType::Elems(array, vec![RtType::Class(string)]),
+            ]),
+            true,
+        ),
+        (
+            Type::Union(vec![c(int, vec![]), c(array, vec![param.clone()])]),
+            RtType::Union(vec![RtType::Class(int), RtType::Class(array)]),
+            false,
+        ),
+        (param.clone(), RtType::Any, false),
+        (Type::TypeOf(Box::new(param)), RtType::ClassObject, false),
+    ];
+    for (t, test, whole) in cases {
+        assert_eq!(seen(&world, &t), (test, whole), "{t:?}");
+    }
 }
 
 /// #801: a row with no implementation of a class whose conformance is
