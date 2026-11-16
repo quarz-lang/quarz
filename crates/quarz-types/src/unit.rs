@@ -220,7 +220,6 @@ pub(crate) fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> 
         ne_negated: map!(ne_negated),
         op_getter_tables: map!(op_getter_tables),
         op_logical_calls: map!(op_logical_calls),
-        element_tests: set!(element_tests),
         run_time_tests: map!(run_time_tests),
         bang_assign: set!(bang_assign),
         self_slots: out
@@ -359,7 +358,6 @@ pub(crate) fn merge_output(out: &mut Output, o: Output) {
     out.ne_negated.extend(o.ne_negated);
     out.op_getter_tables.extend(o.op_getter_tables);
     out.op_logical_calls.extend(o.op_logical_calls);
-    out.element_tests.extend(o.element_tests);
     out.run_time_tests.extend(o.run_time_tests);
     out.bang_assign.extend(o.bang_assign);
     out.self_slots.extend(o.self_slots);

@@ -6491,15 +6491,17 @@ fn a_row_with_no_frame_is_an_error() {
     );
 }
 
-/// #536 step 7: `testable::seen` is the previous two recursions in one
-/// traversal, over every type shape nested two deep (built-in collections,
-/// a generic class of an invariant and of a covariant parameter, tuples,
-/// unions, class values) with `Object`, a type parameter, an inference
-/// variable and concrete classes as leaves: its test is
-/// `rt_type_checked`'s, and its completeness `!unverifiable`'s.
+/// #536 step 7: `testable::seen`, the run-time test of a type and whether
+/// it sees all of it, on representative shapes (the commit that made it
+/// one traversal compared every shape nested two deep with the previous
+/// two recursions): the built-in collections check their elements, another
+/// class only its class (whole when its arguments are `Object` where the
+/// parameter admits it), a class value its class (whole when not generic),
+/// tuples and unions their members; a type parameter is never seen.
 #[test]
 fn one_traversal_decides_a_run_time_test() {
-    use quarz_types::testable::{old_run_time_test, old_unverifiable, seen};
+    use quarz_ir::RtType;
+    use quarz_types::testable::seen;
     use quarz_types::Type;
     let prelude = parse(PRELUDE_SOURCE);
     let src = "class Box[T]\n  def initialize; end\nend\nclass Out[out T]\n  def initialize; end\nend\nclass Model\nend\n";
@@ -6520,51 +6522,56 @@ fn one_traversal_decides_a_run_time_test() {
         class("String"),
         class("Model"),
     );
-    let (array, hash, set, range) = (class("Array"), class("Hash"), class("Set"), class("Range"));
+    let (array, hash) = (class("Array"), class("Hash"));
     let (bx, out) = (class("Box"), class("Out"));
     let c = |id: u32, args: Vec<Type>| Type::Class(id, args);
-    let leaves = vec![
-        c(object, vec![]),
-        c(int, vec![]),
-        c(model, vec![]),
-        Type::Param(0),
-        Type::Var(0),
-        Type::ClassObject(model, vec![]),
-        Type::ClassObject(object, vec![]),
-        Type::ClassObject(bx, vec![]),
-        Type::TypeOf(Box::new(Type::Param(0))),
-        Type::Nothing,
+    let param = Type::Param(0);
+    let cases: Vec<(Type, RtType, bool)> = vec![
+        (
+            c(array, vec![c(int, vec![])]),
+            RtType::Elems(array, vec![RtType::Class(int)]),
+            true,
+        ),
+        (
+            c(array, vec![c(object, vec![])]),
+            RtType::Class(array),
+            true,
+        ),
+        (c(array, vec![param.clone()]), RtType::Class(array), false),
+        (
+            c(hash, vec![c(string, vec![]), c(int, vec![])]),
+            RtType::Elems(hash, vec![RtType::Class(string), RtType::Class(int)]),
+            true,
+        ),
+        (c(bx, vec![c(int, vec![])]), RtType::Class(bx), false),
+        (c(bx, vec![c(object, vec![])]), RtType::Class(bx), false),
+        (c(out, vec![c(object, vec![])]), RtType::Class(out), true),
+        (
+            Type::ClassObject(model, vec![]),
+            RtType::ClassOf(model),
+            true,
+        ),
+        (Type::ClassObject(bx, vec![]), RtType::ClassOf(bx), false),
+        (Type::ClassObject(object, vec![]), RtType::ClassObject, true),
+        (
+            Type::Tuple(vec![c(int, vec![]), c(array, vec![c(string, vec![])])]),
+            RtType::Tuple(vec![
+                RtType::Class(int),
+                RtType::Elems(array, vec![RtType::Class(string)]),
+            ]),
+            true,
+        ),
+        (
+            Type::Union(vec![c(int, vec![]), c(array, vec![param.clone()])]),
+            RtType::Union(vec![RtType::Class(int), RtType::Class(array)]),
+            false,
+        ),
+        (param.clone(), RtType::Any, false),
+        (Type::TypeOf(Box::new(param)), RtType::ClassObject, false),
     ];
-    let wrap = |t: &Type| -> Vec<Type> {
-        vec![
-            c(array, vec![t.clone()]),
-            c(set, vec![t.clone()]),
-            c(range, vec![t.clone()]),
-            c(hash, vec![c(string, vec![]), t.clone()]),
-            c(hash, vec![t.clone(), c(object, vec![])]),
-            c(bx, vec![t.clone()]),
-            c(out, vec![t.clone()]),
-            Type::Tuple(vec![t.clone(), c(int, vec![])]),
-            Type::Union(vec![t.clone(), c(string, vec![])]),
-        ]
-    };
-    let mut shapes: Vec<Type> = leaves.clone();
-    let one: Vec<Type> = leaves.iter().flat_map(|l| wrap(l)).collect();
-    shapes.extend(one.iter().cloned());
-    shapes.extend(one.iter().flat_map(|t| wrap(t)));
-    let mut complete = 0;
-    for t in &shapes {
-        let (test, whole) = seen(&world, t);
-        assert_eq!(test, old_run_time_test(&world, t), "test of {t:?}");
-        assert_eq!(whole, !old_unverifiable(&world, t), "completeness of {t:?}");
-        complete += usize::from(whole);
+    for (t, test, whole) in cases {
+        assert_eq!(seen(&world, &t), (test, whole), "{t:?}");
     }
-    // (Both answers occur.)
-    assert!(
-        complete > 0 && complete < shapes.len(),
-        "{complete} of {}",
-        shapes.len()
-    );
 }
 
 /// #801: a row with no implementation of a class whose conformance is

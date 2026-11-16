@@ -10,8 +10,8 @@ use quarz_types::{CallTarget, ConstTarget, Output, SelfOwner, Type, VarRef, Worl
 
 use crate::capture::captured_slots;
 use crate::iter::{self, Kind, Shape, Source};
-use crate::rtworld::rt_type;
 use crate::{Lowerer, UnitInput};
+use quarz_types::testable::rt_type;
 
 mod quote;
 
@@ -3956,21 +3956,10 @@ impl<'a> FnBuilder<'a> {
     fn test_type(&self, e: &Expr, ty: &Type) -> RtType {
         // (The checker's record, `testable::run_time_test`; a site it did
         // not record is decided by its static type: the class alone.)
-        let test = match self.out.run_time_tests.get(&e.id) {
+        match self.out.run_time_tests.get(&e.id) {
             Some(t) => t.clone(),
-            None => quarz_types::testable::rt_type(ty),
-        };
-        #[cfg(debug_assertions)]
-        quarz_types::testable::oracle(
-            "lowering test_type",
-            if self.out.element_tests.contains(&e.id) {
-                crate::rtworld::rt_type_checked(self.world, ty)
-            } else {
-                rt_type(ty)
-            },
-            test.clone(),
-        );
-        test
+            None => rt_type(ty),
+        }
     }
 
     fn call_value(
