@@ -12,6 +12,10 @@ QUARZ_CACHE_DIR = { value = "target/quarz-cache", relative = true }
 # The interpreter checks the facts compiled code trusts, and the moves
 # (crates/quarz-vm/src/verify.rs), in every test and `cargo run`.
 QUARZ_VERIFY = "moves"
+# The tables the lowering keeps across a static phase's rounds are
+# compared with the tables built from nothing after every round (#717,
+# crates/quarz-lower/src/kept.rs): a difference is an internal error.
+QUARZ_VERIFY_STATIC_TABLES = "1"
 # clang compiles the tests' programs at -O0 (the default, and what users
 # get, is 2): the tests compile a few hundred programs and the optimizer
 # was most of their time. CI sets 2, so a bug only the optimizer shows is

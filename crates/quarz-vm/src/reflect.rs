@@ -11,6 +11,7 @@ use crate::value::Value;
 
 /// A field as `Meta::Field` shows it: the declared type's class (type
 /// arguments erased, `Object` for a type parameter or a union).
+#[derive(Debug, PartialEq)]
 pub struct ReflectField {
     pub name: String,
     pub ty: ClassId,
@@ -20,7 +21,7 @@ pub struct ReflectField {
 
 /// How a parameter is passed, as `Meta::ParamKind`'s variants are
 /// declared: `Required`, `Optional`, `Rest`, `Keyword`, `Block`.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ReflectKind {
     Required,
     Optional,
@@ -29,6 +30,7 @@ pub enum ReflectKind {
     Block,
 }
 
+#[derive(Debug, PartialEq)]
 pub struct ReflectParam {
     pub name: String,
     pub ty: ClassId,
@@ -36,6 +38,7 @@ pub struct ReflectParam {
 }
 
 /// A method's signature as `Meta::MethodSig` shows it.
+#[derive(Debug, PartialEq)]
 pub struct ReflectMethod {
     pub name: String,
     pub params: Vec<ReflectParam>,

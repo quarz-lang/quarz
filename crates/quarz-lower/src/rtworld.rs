@@ -16,14 +16,6 @@ fn param_kind(k: ParamKind) -> RtParamKind {
     }
 }
 
-/// The runtime's world for a lowering round: what the declarations decide
-/// (`declared`), then what the lowering made (`fill`).
-pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<String>) -> RtWorld {
-    let mut rt = declared_with(world, out, lw.witness_record(world));
-    fill(&mut rt, world, lw, file_names);
-    rt
-}
-
 /// What the lowering adds to `declared`'s tables: the classes' fields and
 /// their defaults (the layouts), each method's function and whether it is
 /// overridden, the constants' functions and the quoted blocks' trees, the
@@ -108,7 +100,7 @@ pub fn fill(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<Strin
 /// reads the rows) and completed by the lowering (`fill`); the lowering's
 /// fields are empty here.
 pub fn declared(world: &World, out: &types::Output) -> RtWorld {
-    declared_with(world, out, witness_record(world))
+    declared_with(world, out, witness_record(world)).0
 }
 
 /// The checker's witness record as the rows read it
@@ -125,14 +117,26 @@ pub fn witness_record(world: &World) -> Vec<(ClassId, MethodId, Option<MethodId>
     r
 }
 
-/// `declared` with the witness record already made (`Lowerer::
-/// witness_record` keeps it between the compile-time rounds of a world
-/// that has not changed).
+/// Class `c`'s entries of `witness_record` (`World::witnesses_of`), sorted:
+/// the record is their concatenation over the classes in order.
+pub fn witness_record_of(world: &World, c: ClassId) -> Vec<(ClassId, MethodId, Option<MethodId>)> {
+    let mut r: Vec<(ClassId, MethodId, Option<MethodId>)> = world
+        .witnesses_of(c)
+        .into_iter()
+        .map(|(c, r, w, _)| (c, r, w))
+        .collect();
+    r.sort_unstable();
+    r.dedup();
+    r
+}
+
+/// `declared` with the witness record already made, and the override
+/// table it built the method rows with (`World::override_table`).
 pub fn declared_with(
     world: &World,
     out: &types::Output,
     record: Vec<(ClassId, MethodId, Option<MethodId>)>,
-) -> RtWorld {
+) -> (RtWorld, Vec<Vec<MethodId>>) {
     let classes: Vec<RtClass> = world
         .classes
         .iter()
@@ -145,7 +149,8 @@ pub fn declared_with(
         .iter()
         .map(|m| method_row(world, m.id, &table[m.id as usize]))
         .collect();
-    declared_rest(world, classes, methods, &table, record)
+    let rt = declared_rest(world, classes, methods, &table, record);
+    (rt, table)
 }
 
 /// Class `id`'s row of `RtWorld::classes`, as the declarations decide it

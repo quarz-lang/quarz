@@ -1854,3 +1854,224 @@ end
     assert!(ok, "{err}");
     assert_eq!(err, "B\n");
 }
+
+// ----- #717: the tables kept across a static phase's rounds -----
+//
+// Each program below makes a `static` statement change what the kept
+// tables hold (the table on #717, "M2 note, refreshed", §5), and code after
+// it observes the change, interpreted and compiled. `cargo test` runs the
+// command with `QUARZ_VERIFY_STATIC_TABLES=1` (.cargo/config.toml), so
+// every round's kept tables are also compared with the tables built from
+// nothing.
+
+/// `quarz run` and the compiled program of `app` both print `expected`.
+fn run_both(d: &Path, app: &Path, expected: &str) {
+    let (ok, out, err) = quarz(d, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected, "{err}");
+    let exe = d.join("app-bin");
+    let (ok, _, err) = quarz(
+        d,
+        &["build", app.to_str().unwrap(), "-o", exe.to_str().unwrap()],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+}
+
+const KEPT_LIB: &str = r##"class Gen
+  static def self.gen_m -> Void
+    def_method(:m, override: true) { "B" }
+  end
+  static def self.gen_area -> Void
+    def_method(:area) { 5 }
+  end
+  static def self.gen_field -> Void
+    def_field(:hits, Int, 3, reader: true)
+  end
+  static def self.gen_name -> Void
+    def_class_method(:name) { "custom" }
+  end
+  static def self.nothing -> Void
+  end
+end
+module GenK
+  static def self.gen_k -> Void
+    def_method(:k) { 7 }
+  end
+end
+module M
+  include GenK
+end
+class Trigger
+  static def self.go -> Void
+    M.gen_k
+  end
+end
+"##;
+
+#[test]
+fn a_method_generated_between_an_override_and_its_target() {
+    // Rows 1–3: `C#m` overrides `A#m`; generating `B#m` between them
+    // puts it in `C#m`'s override row, and in the dispatch of `B` and `D`.
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class A < Gen
+  def m -> String = "A"
+end
+class B < A
+  gen_m
+end
+class C < B
+  def m -> String = "C" + super
+end
+class D < B
+end
+def show(a: A) -> String = a.m
+puts show(A.new), show(B.new), show(C.new), show(D.new)
+"#,
+    );
+    run_both(&d.0, &app, "A\nB\nCB\nB\n");
+}
+
+#[test]
+fn a_method_generated_into_a_module_with_includers() {
+    // Rows 4–6: `M#k` generated into a module two classes include and an
+    // extension makes a third conform to; `P`'s include now puts `M#k`
+    // over its superclass's `k` (an include pair that was not there). A
+    // module body takes no statement: `X`'s reaches `M` through the
+    // `static def` `M` has from `GenK`.
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class S
+  def k -> Int = 1
+end
+class P < S
+  include M
+end
+class Q
+  include M
+end
+class R
+end
+extension R
+  include M
+end
+class X < Trigger
+  go
+end
+def kk(m: M) -> Int = m.k
+puts kk(P.new), kk(Q.new), kk(R.new), P.new.k
+"#,
+    );
+    run_both(&d.0, &app, "7\n7\n7\n7\n");
+}
+
+// Rows 5 and 7 through a deferred conformance (the implementation a
+// class's statements generate, `World::conformance_deferred`) have no
+// fixture yet: such a program is refused on main (#801). Their rows are
+// rebuilt on every generation into the class all the same (D(X)).
+
+#[test]
+fn a_field_generated_into_a_superclass_with_subclasses() {
+    // Rows 1, 2, 8–10: a field into `F` moves the own fields of `G`, its
+    // subclass, and is laid out in `F`'s holder `H` (by reference: a
+    // class), whose reflection and layout are made again.
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class F < Gen
+  gen_field
+end
+class G < F
+  @g: Int
+  def initialize(@g: Int)
+  end
+  def g -> Int = @g
+end
+class H
+  @f: F
+  @n: Int
+  def initialize(@f: F, @n: Int)
+  end
+  def f -> F = @f
+  def n -> Int = @n
+end
+x = G.new(4)
+h = H.new(x, 6)
+puts x.hits, x.g, h.f.hits, h.n
+"#,
+    );
+    run_both(&d.0, &app, "3\n4\n3\n6\n");
+}
+
+#[test]
+fn a_class_method_that_takes_a_type_method_s_place() {
+    // Rows 3 and 7: `N.name` generated over `Type#name` (the override
+    // table pairs it with `Type`'s method; the class-side rows of `N` and
+    // its subclass take it). An instance method generated into a class of
+    // `Type`'s side (`Type`, `Object`, ... #717's T) has no fixture: those
+    // are the prelude's, no `static` statement runs in them, and another
+    // class's statement reaches a class only through a `static def` the
+    // class has, which they have none of.
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class N < Gen
+  gen_name
+end
+class O < N
+end
+def nm(t: Type[Object]) -> String = t.name
+puts N.name, O.name, nm(N), nm(Gen)
+"#,
+    );
+    run_both(&d.0, &app, "custom\ncustom\ncustom\nGen\n");
+}
+
+#[test]
+fn a_statement_that_generates_nothing_rebuilds_nothing() {
+    // Row 6 of §5: rounds whose statements generate nothing rebuild no
+    // class's rows (each sync's line in `QUARZ_STATIC_TABLES_STATS`).
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let mut src = String::from("require_relative \"lib\"\n");
+    for i in 0..20 {
+        src.push_str(&format!("class C{i} < Gen\n  nothing\nend\n"));
+    }
+    src.push_str("puts \"ok\"\n");
+    let app = write(&d.0, "app.qz", &src);
+    let stats = d.0.join("stats");
+    let (ok, out, err) = quarz(
+        &d.0,
+        &["run", app.to_str().unwrap()],
+        &[("QUARZ_STATIC_TABLES_STATS", stats.to_str().unwrap())],
+    );
+    assert!(ok, "{err}");
+    assert_eq!(out, "ok\n");
+    let lines = std::fs::read_to_string(&stats).unwrap();
+    let incremental: Vec<&str> = lines.lines().filter(|l| l.contains("full=0")).collect();
+    assert!(incremental.len() >= 20, "{lines}");
+    assert!(
+        incremental
+            .iter()
+            .filter(|l| l.contains("events=0"))
+            .all(|l| l.contains("classes=0 methods=0")),
+        "{lines}"
+    );
+}

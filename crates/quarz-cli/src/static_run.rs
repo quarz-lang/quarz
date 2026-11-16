@@ -115,6 +115,31 @@ pub struct Runner {
     /// (`StaticRunner::later_unit`), until they are compared with those
     /// after.
     later_before: Option<Vec<quarz_lower::layout::Layout>>,
+    /// The reflection's rows (`reflect_rows`, `unshareable_of`), kept
+    /// across statements and rebuilt for the classes the lowering's kept
+    /// tables rebuilt (#717).
+    reflect_kept: Option<ReflectKept>,
+    /// The safety net's verdicts by class, kept across rounds and checked
+    /// again for the classes whose rows were rebuilt (#717).
+    net_kept: Option<NetKept>,
+}
+
+/// `Runner::reflect_kept`.
+struct ReflectKept {
+    /// What they were made for: the class graph and the extensions active
+    /// (the static view the methods' rows read).
+    key: (usize, usize, Vec<quarz_types::ExtensionId>),
+    /// The lowering's tables' epoch they follow (`Lowerer::tables_epoch`).
+    epoch: u64,
+    fields: HashMap<ClassId, Rc<[ReflectField]>>,
+    methods: HashMap<ClassId, Rc<[ReflectMethod]>>,
+    unshareable: rustc_hash::FxHashMap<ClassId, String>,
+}
+
+/// `Runner::net_kept`.
+struct NetKept {
+    epoch: u64,
+    by_class: HashMap<ClassId, Vec<quarz_types::witness_net::Checked>>,
 }
 
 /// The classes pending `static` statements cover (#717): for each
@@ -1310,7 +1335,138 @@ impl Runner {
             ends: Default::default(),
             cover: None,
             later_before: None,
+            reflect_kept: None,
+            net_kept: None,
         }
+    }
+
+    /// The reflection of `world` for a run (`reflect_rows` and
+    /// `unshareable_of` of every class), from the rows kept since the last
+    /// run, those of the classes the lowering's tables rebuilt made again
+    /// (#717); compared with the rows made from nothing when the oracle
+    /// asks (`QUARZ_VERIFY_STATIC_TABLES`).
+    fn snapshot(&mut self, world: &World) -> WorldReflect {
+        let key = (
+            world.classes.len(),
+            world.extensions.len(),
+            world.active_extensions.borrow().clone(),
+        );
+        let changed = match &self.reflect_kept {
+            Some(k) if k.key == key => self.lowerer.tables_changed_since(world, k.epoch),
+            _ => None,
+        };
+        let epoch = self.lowerer.tables_epoch();
+        match (&mut self.reflect_kept, changed) {
+            (Some(k), Some(classes)) => {
+                for c in classes {
+                    let (fs, ms) = reflect_rows(world, c);
+                    k.fields.insert(c, Rc::from(fs));
+                    k.methods.insert(c, Rc::from(ms));
+                    match unshareable_of(world, c) {
+                        Some(why) => k.unshareable.insert(c, why),
+                        None => k.unshareable.remove(&c),
+                    };
+                }
+                k.epoch = epoch;
+            }
+            _ => {
+                let mut fields = HashMap::new();
+                let mut methods = HashMap::new();
+                for c in 0..world.classes.len() as ClassId {
+                    let (fs, ms) = reflect_rows(world, c);
+                    fields.insert(c, Rc::from(fs));
+                    methods.insert(c, Rc::from(ms));
+                }
+                self.reflect_kept = Some(ReflectKept {
+                    key,
+                    epoch,
+                    fields,
+                    methods,
+                    unshareable: unshareable_data(world),
+                });
+            }
+        }
+        let k = self.reflect_kept.as_ref().expect("made above");
+        if quarz_lower::verify_static_tables() {
+            for c in 0..world.classes.len() as ClassId {
+                let (fs, ms) = reflect_rows(world, c);
+                assert!(
+                    *k.fields[&c] == *fs && *k.methods[&c] == *ms,
+                    "internal error (QUARZ_VERIFY_STATIC_TABLES): the kept reflection of `{}` differs from the one made from nothing (#717)",
+                    world.class(c).name
+                );
+            }
+            assert!(
+                k.unshareable == unshareable_data(world),
+                "internal error (QUARZ_VERIFY_STATIC_TABLES): the kept unshareable data types differ (#717)"
+            );
+        }
+        WorldReflect::with_rows(
+            k.fields
+                .iter()
+                .map(|(c, f)| (*c, vec![f.clone()]))
+                .collect(),
+            k.methods
+                .iter()
+                .map(|(c, m)| (*c, vec![m.clone()]))
+                .collect(),
+            k.unshareable.clone(),
+        )
+    }
+
+    /// The safety net over a round's rows (`quarz_lower::rows_net_of`): the
+    /// rows of the classes the lowering's tables rebuilt since the last
+    /// round, the others' verdicts kept (a verdict is a function of the
+    /// row, #717); every row when the tables were built from nothing.
+    fn net(&mut self, world: &World, rt: &RtWorld) -> Vec<quarz_types::FileDiagnostic> {
+        let changed = self
+            .net_kept
+            .as_ref()
+            .and_then(|k| self.lowerer.tables_changed_since(world, k.epoch));
+        let own = |d| crate::own_in_app(world, d);
+        let (checked, errors) = quarz_lower::rows_net_of(world, rt, &own, changed.as_deref());
+        let epoch = self.lowerer.tables_epoch();
+        let kept = match (&mut self.net_kept, changed) {
+            (Some(k), Some(classes)) => {
+                for c in classes {
+                    k.by_class.remove(&c);
+                }
+                k.epoch = epoch;
+                k
+            }
+            (slot, _) => slot.insert(NetKept {
+                epoch,
+                by_class: HashMap::new(),
+            }),
+        };
+        for r in checked {
+            kept.by_class.entry(r.class).or_default().push(r);
+        }
+        if quarz_lower::verify_static_tables() {
+            let mut full: HashMap<ClassId, Vec<quarz_types::witness_net::Checked>> = HashMap::new();
+            for r in quarz_lower::rows_net_of(world, rt, &own, None).0 {
+                full.entry(r.class).or_default().push(r);
+            }
+            let key = |r: &quarz_types::witness_net::Checked| {
+                (r.table, r.req, r.by, format!("{:?}", r.verdict))
+            };
+            for c in full.keys().chain(kept.by_class.keys()) {
+                let a: Vec<_> = kept
+                    .by_class
+                    .get(c)
+                    .into_iter()
+                    .flatten()
+                    .map(key)
+                    .collect();
+                let b: Vec<_> = full.get(c).into_iter().flatten().map(key).collect();
+                assert!(
+                    a == b,
+                    "internal error (QUARZ_VERIFY_STATIC_TABLES): the kept net verdicts of `{}` differ: kept {a:?}, checked {b:?} (#717)",
+                    world.class(*c).name
+                );
+            }
+        }
+        errors
     }
 
     /// The cover brought to the statements pending now, built on the
@@ -1384,10 +1540,7 @@ impl Runner {
             // check fails then, so later rounds and the final net
             // (`Lowerer::declare`) report nothing again.
             if !self.net_refused {
-                let world = host.world();
-                let errors = quarz_lower::rows_net(world, &round.delta.world, &|d| {
-                    crate::own_in_app(world, d)
-                });
+                let errors = self.net(host.world(), &round.delta.world);
                 if !errors.is_empty() {
                     self.net_refused = true;
                     host.report_errors(errors);
@@ -2088,8 +2241,9 @@ impl Runner {
             stmt: as_statement.then(|| (stmt.clone(), callee)),
             hook_of: None,
         };
-        let mut reflect =
-            WorldReflect::snapshot(host.world()).with_ends(&*host, self.ends.clone(), context);
+        let mut reflect = self
+            .snapshot(host.world())
+            .with_ends(&*host, self.ends.clone(), context);
         self.note_pending(host, &mut reflect);
         let reflect = Rc::new(reflect);
         let interp = self.interp(&reflect);
@@ -2210,8 +2364,9 @@ impl Runner {
             stmt: None,
             hook_of: Some(last.class),
         };
-        let mut reflect =
-            WorldReflect::snapshot(host.world()).with_ends(&*host, self.ends.clone(), context);
+        let mut reflect = self
+            .snapshot(host.world())
+            .with_ends(&*host, self.ends.clone(), context);
         self.note_pending(host, &mut reflect);
         let reflect = Rc::new(reflect);
         let interp = self.interp(&reflect);
@@ -2439,10 +2594,17 @@ struct PendingGen {
 /// that is not): their values cannot be baked, so that every baked value
 /// is Shareable (docs/14 §5).
 fn unshareable_data(world: &World) -> rustc_hash::FxHashMap<ClassId, String> {
+    (0..world.classes.len() as ClassId)
+        .filter_map(|c| unshareable_of(world, c).map(|why| (c, why)))
+        .collect()
+}
+
+/// Class `id`'s entry of `unshareable_data`: why its values cannot be
+/// baked, for a `data` type or enum with a field that is not Shareable.
+fn unshareable_of(world: &World, id: ClassId) -> Option<String> {
     use quarz_types::ClassKind;
-    world
-        .classes
-        .iter()
+    Some(id)
+        .map(|id| world.class(id))
         .filter(|c| {
             matches!(
                 c.kind,
@@ -2475,9 +2637,8 @@ fn unshareable_data(world: &World) -> rustc_hash::FxHashMap<ClassId, String> {
                     c.name
                 ),
             };
-            (c.id, why)
+            why
         })
-        .collect()
 }
 
 /// `World::is_shareable` for a declared program, without its memo
@@ -3046,7 +3207,7 @@ fn free_param(t: &Type, own: &[TypeParamId]) -> Option<TypeParamId> {
     }
 }
 
-/// Class `id`'s rows of the reflection (`WorldReflect::snapshot`): its
+/// Class `id`'s rows of the reflection (`Runner::snapshot`): its
 /// fields, inherited first, and its public instance methods.
 fn reflect_rows(world: &World, id: ClassId) -> (Vec<ReflectField>, Vec<ReflectMethod>) {
     let class = world.class(id);
@@ -3104,16 +3265,14 @@ fn reflect_rows(world: &World, id: ClassId) -> (Vec<ReflectField>, Vec<ReflectMe
 }
 
 impl WorldReflect {
-    fn snapshot(world: &World) -> WorldReflect {
-        let mut fields = HashMap::new();
-        let mut methods = HashMap::new();
-        for class in &world.classes {
-            let (fs, ms) = reflect_rows(world, class.id);
-            fields.insert(class.id, vec![Rc::from(fs)]);
-            methods.insert(class.id, vec![Rc::from(ms)]);
-        }
+    /// A reflection over rows made already (`Runner::snapshot`).
+    fn with_rows(
+        fields: HashMap<ClassId, Vec<Rc<[ReflectField]>>>,
+        methods: HashMap<ClassId, Vec<Rc<[ReflectMethod]>>>,
+        unshareable: rustc_hash::FxHashMap<ClassId, String>,
+    ) -> WorldReflect {
         WorldReflect {
-            unshareable: unshareable_data(world),
+            unshareable,
             fields,
             methods,
             generated: RefCell::new(Vec::new()),
