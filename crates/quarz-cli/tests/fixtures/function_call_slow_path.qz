@@ -1,7 +1,9 @@
 # Calls compiled code makes through the runtime's `qz_op_call` (#536 step
-# 8a): a `Kernel` function with a splat or keywords (`CallKind::Function`,
-# its own operand tag, decoded as `CallOp::Function`), beside a `super`
-# with a splat (`CallKind::Super`). Interpreted and compiled alike.
+# 8a), with a splat, keywords or a block: a `Kernel` function and a class
+# method an active extension's module brings (#580), both
+# `CallKind::Function` (its own operand tag, decoded as
+# `CallOp::Function`); a program's own top-level function; a `super` with
+# a splat (`CallKind::Super`). Interpreted and compiled alike.
 class Base
   def show(*xs: Int) -> String = "base #{xs.join(" ")}"
 end
@@ -11,9 +13,34 @@ class Sub < Base
     "sub " + super(*ys)
   end
 end
+module Totals
+  def self.sum_of(*xs: Int, scale: Int = 1) -> Int = xs.sum * scale
+end
+class HolderBase
+  def self.sum_of(*xs: Int, scale: Int = 1) -> Int = -1
+end
+# Under `using Ext`, `Holder.sum_of` resolves lexically to the extension's
+# module's, before the superclass's (#580): a `CallKind::Function`.
+class Holder < HolderBase
+end
+module Ext
+  extension Holder
+    include Totals
+  end
+end
+using Ext
+def total(*xs: Int, scale: Int = 1) -> Int = xs.sum * scale
+def visit(*xs: Int, &blk: (Int) -> Void) -> Void
+  xs.each { |x| blk.call(x) }
+end
 xs = [1, 2, 3]
 puts(*xs)
 print(*["a", "b", "\n"])
 p(*[4, 5])
 puts Sub.new.show(6, 7, 8)
+puts total(*xs)
+puts total(4, 5, scale: 2)
+visit(*[6, 7]) { |x| puts x * 10 }
+puts Holder.sum_of(*xs)
+puts Holder.sum_of(1, 2, scale: 10)
 warn("to stderr")
