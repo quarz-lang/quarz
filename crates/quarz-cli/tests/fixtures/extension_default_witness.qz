@@ -16,9 +16,10 @@ end
 def h(t: Type[M]) -> String = t.describe
 puts D.describe, h(D), h(C)
 
-# A module a subclass includes does not take the witness's place: the
-# class side's include pairs do not look at a module that comes through
-# a superclass (`over_superclass_modules`, #733 decides).
+# A module a subclass includes does not take the place of a scoped
+# extension's module's default through `Type[M2]`: the class object's
+# dispatch order (#681) has no scoped extension's modules, so no include
+# pair forms on the class side (on the instance side it does, #778).
 module M2
   def self.describe -> String = "M2"
 end
@@ -40,3 +41,25 @@ class D2 < C2
   include Q2
 end
 X2.run
+
+# With the extension at the top level, its module is on the class object's
+# dispatch order: the class side's include pairs take the instance side's
+# candidate set (#733), so the subclass's own include (`Q3`) takes the
+# place of the superclass's extension's module's class method (`M3`) for
+# the subclass, as on the instance side.
+module M3
+  def self.describe -> String = "M3"
+end
+module Q3
+  def self.describe -> String = "Q3"
+end
+class C3
+end
+extension C3
+  include M3
+end
+def h3(t: Type[M3]) -> String = t.describe
+class D3 < C3
+  include Q3
+end
+puts h3(D3), D3.describe, h3(C3)

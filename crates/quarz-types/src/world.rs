@@ -2200,8 +2200,8 @@ impl World {
     /// method later in the side's order, each with how it is seen from the
     /// class; and a module's abstract method replaced by what implements
     /// it later. One walk for both sides; a side supplies its order, its
-    /// method table and its exclusions (`Side`), and the candidate set
-    /// below.
+    /// method table and its exclusions (`Side`); the candidate set is the
+    /// same on both (#733).
     ///
     /// Every test of the side in the body, in one list (nothing else
     /// differs):
@@ -2217,7 +2217,6 @@ impl World {
     ///   class method that is an extension's (`mine`); on the instance
     ///   side, the module's always-active (prelude) extensions' methods
     ///   added to its own (`mine`);
-    /// - **candidate set:** `over_superclass_modules`, below.
     fn include_overrides_on(&self, id: ClassId, side: Side) -> Vec<IncludeOverride> {
         let instance = side == Side::Instance;
         let mut out: Vec<IncludeOverride> = Vec::new();
@@ -2258,21 +2257,10 @@ impl World {
         } else {
             self.resolution(id, &own, View::Lookup)
         };
-        // The candidate set, the one place the two sides differ (#732):
-        // after a module, the instance side looks at every later entry
-        // outside the module's own ancestry (a superclass, a module
-        // included before it, and the modules that come through a
-        // superclass); the class side at the superclasses' own class
-        // methods and the class's own later modules only, not at a
-        // superclass's modules (so a module a subclass includes takes
-        // no superclass's module's class method's place there). #733
-        // decides whether the class side takes the instance side's set;
-        // then this goes, rather than being generalised.
-        let over_superclass_modules = instance;
-        let first_super = order
-            .iter()
-            .position(|(k, _)| *k != id && self.class(*k).kind != ClassKind::Module)
-            .unwrap_or(order.len());
+        // The candidate set, the same on both sides (#733): after a
+        // module, every later entry outside the module's own ancestry (a
+        // superclass, a module included before it, and the modules that
+        // come through a superclass).
         let table = |k: ClassId| {
             let kc = self.class(k);
             if instance {
@@ -2295,14 +2283,8 @@ impl World {
             let x_own = self.walked_ids(x);
             order[xpos + 1..]
                 .iter()
-                .enumerate()
-                .filter(|(i, (k, _))| {
-                    !x_own.contains(k)
-                        && (over_superclass_modules
-                            || xpos + 1 + i < first_super
-                            || self.class(*k).kind != ClassKind::Module)
-                })
-                .map(|(_, e)| e.clone())
+                .filter(|(k, _)| !x_own.contains(k))
+                .cloned()
                 .collect()
         };
         // (A candidate the side excludes: on the class side an extension's,
