@@ -1725,6 +1725,14 @@ pub struct RtWorld {
     /// key it lacks is an internal error.
     #[serde(default)]
     pub witness_record: Vec<(ClassId, MethodId, Option<MethodId>)>,
+    /// In a compile-time round only (`rtworld::fill`): the classes whose
+    /// conformance waits for their `static` statements
+    /// (`World::conformance_deferred`, docs/14 §5), which may still lack
+    /// an implementation a statement is to generate (#801). An abstract
+    /// method reached on one is an error at the statement, not a violated
+    /// fact. Empty in a program's final tables.
+    #[serde(default)]
+    pub deferred_conformance: Vec<ClassId>,
     /// (class, module method, what runs): for an abstract method, the
     /// record's witness resolved for the class (`witness_record`); for one
     /// with a body, `find_override`; for every key `in_witness_rows`

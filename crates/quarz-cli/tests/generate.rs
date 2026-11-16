@@ -412,6 +412,102 @@ puts Post.new(1, "t").hits
     );
 }
 
+/// #801: a class including a module whose requirement its own `static`
+/// statements generate (its conformance deferred past them, docs/14 §5):
+/// the compile-time rounds before the generating statement run, and the
+/// program gets the implementation; one that never comes, or comes with
+/// another signature, is refused by the deferred check.
+#[test]
+fn a_deferred_conformance_gets_its_implementation_from_the_statements() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Gen\n  static def self.gen_area -> Void\n    def_method(:area) { 5 }\n  end\n  static def self.gen_other -> Void\n    def_method(:other) { 1 }\n  end\n  static def self.gen_area_arg -> Void\n    def_method(:area, :x) { |x: Int| x }\n  end\nend\n",
+    );
+    let app = |gen: &str| {
+        format!(
+            "require_relative \"lib\"\nmodule Sh\n  abstract def area -> Int\nend\nclass K < Gen\n  include Sh\n  {gen}\nend\ndef a(s: Sh) -> Int = s.area\nputs a(K.new)\n"
+        )
+    };
+    let main = write(&d.0, "main.qz", &app("gen_area"));
+    let (ok, out, err) = quarz(&d.0, &["run", main.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "5\n");
+    // Never generated, or with another signature: the deferred check.
+    for (gen, want) in [
+        (
+            "gen_other",
+            "none.qz:5:1: error: `K` must implement `area` (abstract in `Sh`)",
+        ),
+        (
+            "gen_area_arg",
+            "none.qz:5:1: error: `K` must implement `area` (abstract in `Sh`)",
+        ),
+    ] {
+        let none = write(&d.0, "none.qz", &app(gen));
+        let (ok, _, err) = quarz(&d.0, &["check", none.to_str().unwrap()], &[]);
+        assert!(!ok, "{gen}");
+        assert!(err.contains(want), "{gen}: {err}");
+        assert!(!err.contains("internal error"), "{gen}: {err}");
+    }
+}
+
+/// #801: compile-time code that reaches a deferred conformance's
+/// requirement before a statement generates it fails at its statement,
+/// naming the class, the module and the method, whatever `QUARZ_VERIFY`
+/// says (a class whose conformance is not deferred keeps the violation,
+/// tests/verify.rs); on the instance side and on the class side.
+#[test]
+fn a_deferred_requirement_reached_before_it_is_generated() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "module Sh\n  abstract def area -> Int\nend\nmodule ShC\n  abstract def self.kind -> Int\nend\nmodule Use\n  def self.area_of(s: Sh) -> Int = s.area\n  def self.kind_of(t: Type[ShC]) -> Int = t.kind\nend\nabstract class Gen\n  include Sh\n  include ShC\n  static def self.use_it -> Void\n    puts Use.area_of(new)\n  end\n  static def self.use_cls -> Void\n    puts Use.kind_of(type)\n  end\n  static def self.gen -> Void\n    def_method(:area) { 5 }\n    def_class_method(:kind) { 7 }\n  end\nend\n",
+    );
+    for (stmt, method, module) in [("use_it", "area", "Sh"), ("use_cls", "kind", "ShC")] {
+        let main = write(
+            &d.0,
+            "main.qz",
+            &format!(
+                "require_relative \"lib\"\nclass K < Gen\n  {stmt}\n  gen\nend\nputs K.new.area\n"
+            ),
+        );
+        let want = format!(
+            "main.qz:3:3: error: `{stmt}` raised RuntimeError: `{method}` of `K` is not implemented yet: `K`'s conformance to `{module}` waits for its class's `static` statements, and none has generated `{method}` so far (docs/14 §5)"
+        );
+        for verify in [None, Some("0"), Some("moves")] {
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_quarz"));
+            cmd.args(["check", main.to_str().unwrap()])
+                .current_dir(&d.0)
+                .env("QUARZ_THREADS", "1");
+            match verify {
+                Some(v) => cmd.env("QUARZ_VERIFY", v),
+                None => cmd.env_remove("QUARZ_VERIFY"),
+            };
+            let out = cmd.output().expect("run quarz");
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert_eq!(out.status.code(), Some(1), "{stmt} {verify:?}: {err}");
+            assert!(err.contains(&want), "{stmt} {verify:?}: {err}");
+        }
+        // After the generation, the same call runs.
+        let after = write(
+            &d.0,
+            "after.qz",
+            &format!(
+                "require_relative \"lib\"\nclass K < Gen\n  gen\n  {stmt}\nend\nputs K.new.area\n"
+            ),
+        );
+        let (ok, out, err) = quarz(&d.0, &["run", after.to_str().unwrap()], &[]);
+        assert!(ok, "{stmt}: {err}");
+        assert_eq!(out, "5\n", "{stmt}");
+        // (What the statement printed, at compile time, on stderr.)
+        let printed = if stmt == "use_it" { "5" } else { "7" };
+        assert!(err.lines().any(|l| l == printed), "{stmt}: {err}");
+    }
+}
+
 #[test]
 fn what_cannot_be_a_field_or_a_callee() {
     let d = dir();

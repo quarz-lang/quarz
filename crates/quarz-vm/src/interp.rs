@@ -3193,6 +3193,25 @@ impl Interp {
                     )));
                 }
             }
+            // (A compile-time run on a class whose conformance waits for
+            // its statements, docs/14 §5: the implementation may be one a
+            // statement still to run generates, #801. An error at the
+            // statement, whatever `QUARZ_VERIFY` says.)
+            let cid = match &recv {
+                Value::Class(c) => *c,
+                other => self.class_of(other),
+            };
+            if self.program.world.deferred_conformance.contains(&cid) {
+                let world = &self.program.world;
+                return Err(self.err_runtime(&format!(
+                    "`{}` of `{}` is not implemented yet: `{}`'s conformance to `{}` waits for its class's `static` statements, and none has generated `{}` so far (docs/14 §5)",
+                    m.name,
+                    world.class(cid).name,
+                    world.class(cid).name,
+                    world.class(m.owner).name,
+                    m.name
+                )));
+            }
             let what = format!(
                 "abstract method `{}` called on {}, which no check saw implemented",
                 m.name,

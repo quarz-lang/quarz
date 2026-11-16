@@ -72,6 +72,18 @@ pub fn build(world: &World, out: &types::Output, lw: &Lowerer, file_names: Vec<S
 /// overridden, the constants' functions and the quoted blocks' trees, the
 /// file names. Nothing `declared`'s rows read.
 pub fn fill(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<String>) {
+    // (Per round: the deferred check removes a class from the list during
+    // a phase, and the program's final tables have none, every deferred
+    // conformance having been checked by then, #801.)
+    rt.deferred_conformance = if lw.static_mode {
+        world.conformance_deferred.clone()
+    } else {
+        debug_assert!(
+            world.conformance_deferred.is_empty(),
+            "a conformance still deferred at the final lowering"
+        );
+        Vec::new()
+    };
     for (c, rc) in world.classes.iter().zip(rt.classes.iter_mut()) {
         let layout = &lw.layouts[c.id as usize];
         // A type with a parameter in it has no name of its own: a
@@ -504,6 +516,8 @@ fn declared_rest(
         builtin,
         file_names: Vec::new(),
         file_mains,
+        // (Per round, `fill`.)
+        deferred_conformance: Vec::new(),
     };
     rt.class_override_rows = class_override_rows(world, &rt, table);
     rt.build_witness_rows();
