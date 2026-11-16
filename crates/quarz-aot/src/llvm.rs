@@ -1040,9 +1040,19 @@ pub fn compile(module: &Module, object: &Path) -> Result<(), String> {
     let opt = opt_level()?;
     let (clang, major) = find_clang()?;
     let opaque = major >= 15;
+    let start = std::time::Instant::now();
     let ir = emit(module, opaque)?;
     let ll_path = object.with_extension("ll");
     std::fs::write(&ll_path, &ir).map_err(|e| format!("{}: {e}", ll_path.display()))?;
+    crate::report(
+        "emit",
+        start,
+        &[
+            ("bytes", ir.len().to_string()),
+            ("functions", module.functions.len().to_string()),
+        ],
+    );
+    let start = std::time::Instant::now();
     let output = Command::new(&clang)
         .args([opt, "-c", "-x", "ir", "-Wno-override-module", "-o"])
         .arg(object)
@@ -1059,6 +1069,11 @@ pub fn compile(module: &Module, object: &Path) -> Result<(), String> {
             String::from_utf8_lossy(&output.stderr)
         ));
     }
+    crate::report(
+        "clang",
+        start,
+        &[("level", opt.trim_start_matches("-O").to_string())],
+    );
     Ok(())
 }
 

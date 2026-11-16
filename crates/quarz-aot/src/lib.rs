@@ -42,11 +42,36 @@ pub fn find_runtime_lib() -> Result<PathBuf, String> {
     Err("cannot find libquarz_vm.a (build it with `cargo build` or set QUARZ_RT_LIB)".to_string())
 }
 
+/// Whether `QUARZ_BUILD_TIMINGS=1` asks `quarz build` for its stages'
+/// times (#785).
+pub fn timings() -> bool {
+    std::env::var_os("QUARZ_BUILD_TIMINGS").is_some_and(|v| v == "1")
+}
+
+/// Under `QUARZ_BUILD_TIMINGS=1`, one line on standard error for a stage
+/// of `quarz build` that began at `start`: `quarz-build-timing
+/// stage=<name> ms=<wall time> [<key>=<value> ...]`, for scripts to read
+/// (docs/05). Nothing otherwise.
+pub fn report(stage: &str, start: std::time::Instant, extra: &[(&str, String)]) {
+    if !timings() {
+        return;
+    }
+    let mut line = format!(
+        "quarz-build-timing stage={stage} ms={:.3}",
+        start.elapsed().as_secs_f64() * 1000.0
+    );
+    for (k, v) in extra {
+        line.push_str(&format!(" {k}={v}"));
+    }
+    eprintln!("{line}");
+}
+
 /// Link an object file with the runtime into the executable `output`,
 /// dropping the runtime's code the program cannot reach (the runtime is
 /// one codegen unit, each function in a section of its own).
 fn link(object: &Path, output: &Path) -> Result<(), String> {
     let runtime = find_runtime_lib()?;
+    let start = std::time::Instant::now();
     let status = Command::new("cc")
         .arg("-o")
         .arg(output)
@@ -62,8 +87,11 @@ fn link(object: &Path, output: &Path) -> Result<(), String> {
     if !status.success() {
         return Err(format!("linking failed ({status})"));
     }
+    report("link", start, &[]);
     if std::env::var_os("QUARZ_NO_STRIP").is_none() {
+        let start = std::time::Instant::now();
         strip(output)?;
+        report("strip", start, &[]);
     }
     Ok(())
 }
@@ -102,6 +130,7 @@ pub fn build(module: &Module, output: &Path) -> Result<(), String> {
     // What the program cannot run is neither compiled nor decoded at
     // start-up (`QUARZ_NO_SHAKE` keeps everything, for comparison).
     let mut shaken;
+    let start = std::time::Instant::now();
     let module = if std::env::var_os("QUARZ_NO_SHAKE").is_some() {
         module
     } else {
@@ -116,6 +145,7 @@ pub fn build(module: &Module, output: &Path) -> Result<(), String> {
         }
         &shaken
     };
+    report("shake", start, &[]);
     let obj_path = output.with_extension("o");
     llvm::compile(module, &obj_path)?;
     let linked = link(&obj_path, output);
