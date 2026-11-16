@@ -5,7 +5,11 @@
 # extension includes dispatch to the extension's implementations wherever
 # the value goes). Each cell prints, through the module type, by a direct
 # call where the extension is active, and through the module's own method
-# calling it: `ext ext ext`, the expected output from that rule.
+# calling it: `ext ext ext`, the expected output from that rule, also
+# where the target has a method of the signature of its own (the
+# conformance is the extension's, so its own method is the implementation
+# through the module: the `own` cells, a generic twin and a non-generic
+# one).
 # Axes: target generic (a parameter, concrete arguments) x path (an
 # extension of the class, top-level, scoped, conditional; through a
 # subclass) x side (instance, class).
@@ -126,3 +130,35 @@ end
 def via_g(t: Type[MG[Int]]) -> String = t.m(1)
 def via_g2(t: Type[MG[Int]]) -> String = t.call_m(1)
 puts "class/param: #{via_g(CG[Int])} #{CG[Int].m(1)} #{via_g2(CG[Int])}"
+
+# The target with a method of its own of the signature: the non-generic
+# twin, then through the extension's parameter.
+module MH
+  def m(x: Int) -> String = "M"
+  def call_m(x: Int) -> String = m(x)
+end
+class CH
+  def initialize; end
+  def m(x: Int) -> String = "own"
+end
+extension CH
+  include MH
+  def m(x: Int) -> String = "ext"
+end
+def via_h(t: MH) -> String = t.m(1)
+puts "own/nongeneric: #{via_h(CH.new)} #{CH.new.m(1)} #{CH.new.call_m(1)}"
+
+module MI[T]
+  def m(x: T) -> String = "M"
+  def call_m(x: T) -> String = m(x)
+end
+class CI[U]
+  def initialize; end
+  def m(x: U) -> String = "own"
+end
+extension CI[U]
+  include MI[U]
+  def m(x: U) -> String = "ext"
+end
+def via_i(t: MI[Int]) -> String = t.m(1)
+puts "own/param: #{via_i(CI[Int].new)} #{CI[Int].new.m(1)} #{CI[Int].new.call_m(1)}"

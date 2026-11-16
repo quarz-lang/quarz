@@ -5,3 +5,5 @@ conditional/param: ext ext ext
 sub/param: ext ext ext
 top/nongeneric: ext ext ext
 class/param: ext ext ext
+own/nongeneric: ext ext ext
+own/param: ext ext ext
