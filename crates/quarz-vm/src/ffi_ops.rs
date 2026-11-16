@@ -259,6 +259,7 @@ op_entry!(
             5 => CallOp::Yield,
             6 => CallOp::Super(a),
             8 => CallOp::InstanceExec,
+            9 => CallOp::Function(a),
             _ => CallOp::Raise,
         };
         rt.op_call(
