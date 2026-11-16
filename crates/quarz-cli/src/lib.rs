@@ -61,6 +61,20 @@ pub fn build(
     quarz_aot::build(&module, output)
 }
 
+/// `build_with` by `jobs` clang processes at once (`quarz build -j`).
+pub fn build_with_jobs(
+    checked: Checked,
+    files: &[SourceFile],
+    lowerer: Lowerer,
+    output: &std::path::Path,
+    jobs: usize,
+) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    let module = quarz_lower::lower_checked_with(lowerer, &checked, files);
+    quarz_aot::report("lower", start, &[]);
+    quarz_aot::build_with_jobs(&module, output, jobs)
+}
+
 /// `build` continuing `lowerer` (see `run_with`).
 pub fn build_with(
     checked: Checked,

@@ -1647,10 +1647,26 @@ pub fn lower_checked_with(mut lw: Lowerer, checked: &Checked, files: &[SourceFil
         quarz_ir::live::own_dying_receivers(f, &in_place);
     }
     check(&functions, verify::Stage::Moves);
+    // (The groups as keys: the application first, the cogs by index, then
+    // the standard library's modules by file.)
+    let file_groups = checked
+        .world
+        .file_groups
+        .iter()
+        .map(|(file, g)| {
+            let key = match g {
+                quarz_types::UnitGroup::App => 0,
+                quarz_types::UnitGroup::Cog(i) => (1 << 32) | u64::from(*i),
+                quarz_types::UnitGroup::Std(f) => (2 << 32) | u64::from(*f),
+            };
+            (*file, key)
+        })
+        .collect();
     Module {
         world: delta.world,
         functions,
         units: delta.units,
+        file_groups,
     }
 }
 

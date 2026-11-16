@@ -22,7 +22,7 @@ commands:
                  statements generated; --tree: print the checked tree as
                  JSON, for formal/'s tests; the format changes without notice)
   ir [TARGET]    print the QIR of TARGET (for debugging the lowering)
-  build [TARGET] [-o OUT]
+  build [TARGET] [-o OUT] [-j N]
                  compile TARGET to a native executable (default: a script
                  without .qz, or the cog's name in its directory)
   run [TARGET] [ARGS...]   type-check and run TARGET (`--` before ARGS
@@ -97,10 +97,31 @@ fn main() -> ExitCode {
                 }
                 rest.drain(i..i + 2);
             }
+            // `-j N` or `-jN`: the clang processes at once (#786).
+            let mut jobs_arg: Option<String> = None;
+            if let Some(i) = rest.iter().position(|a| a.starts_with("-j")) {
+                if rest[i] == "-j" {
+                    match rest.get(i + 1) {
+                        Some(j) => jobs_arg = Some(j.clone()),
+                        None => return usage(),
+                    }
+                    rest.drain(i..i + 2);
+                } else {
+                    jobs_arg = Some(rest[i][2..].to_string());
+                    rest.remove(i);
+                }
+            }
+            let jobs = match quarz_aot::build_jobs(jobs_arg.as_deref()) {
+                Ok(j) => j,
+                Err(e) => {
+                    eprintln!("quarz: {e}");
+                    return ExitCode::FAILURE;
+                }
+            };
             match Target::parse(&rest) {
                 Ok((target, extra)) if extra.is_empty() => {
                     let out = out.unwrap_or_else(|| target.default_output());
-                    build_file(&target, &out)
+                    build_file(&target, &out, jobs)
                 }
                 Ok(_) => usage(),
                 Err(code) => code,
@@ -414,14 +435,14 @@ fn ir_file(target: &Target) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn build_file(target: &Target, out: &std::path::Path) -> ExitCode {
+fn build_file(target: &Target, out: &std::path::Path, jobs: usize) -> ExitCode {
     // (`total`, last: the whole build's wall time, against which the
     // stages' sum shows what no stage holds, #785.)
     let start = std::time::Instant::now();
     let Some((checked, files, lowerer)) = load_and_check_timed(target, false, true) else {
         return ExitCode::FAILURE;
     };
-    let built = quarz_cli::build_with(checked, &files, lowerer, out);
+    let built = quarz_cli::build_with_jobs(checked, &files, lowerer, out, jobs);
     quarz_aot::report("total", start, &[]);
     match built {
         Ok(()) => ExitCode::SUCCESS,

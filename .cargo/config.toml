@@ -18,3 +18,7 @@ QUARZ_VERIFY = "moves"
 # caught there. An installed `quarz` is unaffected, and a QUARZ_AOT_OPT
 # already in the environment wins.
 QUARZ_AOT_OPT = "0"
+# One clang process per build (#786): the test binaries already build
+# their programs in parallel, and the executable is the same for every
+# number of jobs. A QUARZ_BUILD_JOBS already in the environment wins.
+QUARZ_BUILD_JOBS = "1"

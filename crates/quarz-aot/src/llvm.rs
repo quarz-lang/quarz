@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use quarz_ir::*;
@@ -69,7 +69,8 @@ struct Ll<'a> {
     nslots: u32,
     ntmp: u32,
     /// The metadata node of this function's subprogram, and of each
-    /// line's location (ids are module-wide: `meta_base` and up).
+    /// line's location: local ids (`meta_base` and up), written as
+    /// `meta_ref`s and numbered in their partition by `relocate_meta`.
     meta_base: u32,
     lines: Vec<u32>,
     line: Option<u32>,
@@ -77,6 +78,41 @@ struct Ll<'a> {
     intrinsics: Vec<&'static str>,
     /// The definitions of the function's data (`data_words` and so on).
     data: Vec<String>,
+}
+
+/// Where a `define`'s linkage goes: `internal` in a program of one
+/// partition, `hidden` when the tables are in a partition of their own
+/// and name every function (#786).
+const LINKAGE: &str = "\x03";
+
+/// A reference to a function's metadata node by its local id, which the
+/// function's partition numbers (`relocate_meta`). The markers are control
+/// characters, which IR text has nowhere else: string constants escape
+/// them (`\01`).
+fn meta_ref(local: u32) -> String {
+    format!("!\x01{local}\x02")
+}
+
+/// `text` with each `meta_ref` numbered from `base`, and each `LINKAGE`
+/// replaced by `linkage`.
+fn relocate_meta(text: &str, base: u32, linkage: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(['\x01', '\x03']) {
+        out.push_str(&rest[..at]);
+        if rest.as_bytes()[at] == 3 {
+            out.push_str(linkage);
+            rest = &rest[at + 1..];
+            continue;
+        }
+        let tail = &rest[at + 1..];
+        let end = tail.find('\x02').expect("a metadata marker's end");
+        let local: u32 = tail[..end].parse().expect("a metadata marker's id");
+        let _ = write!(out, "{}", base + local);
+        rest = &tail[end + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn ty_str(ty: Ty, opaque: bool) -> &'static str {
@@ -302,7 +338,7 @@ impl<'a> Ll<'a> {
                         self.lines.len() - 1
                     }
                 };
-                format!(", !dbg !{}", self.meta_base + 1 + k as u32)
+                format!(", !dbg {}", meta_ref(self.meta_base + 1 + k as u32))
             }
             None => String::new(),
         }
@@ -365,10 +401,10 @@ impl<'a> Ll<'a> {
             .collect();
         let _ = writeln!(
             out,
-            "define internal {} @{name}({}) {attrs} !dbg !{} {{",
+            "define {LINKAGE} {} @{name}({}) {attrs} !dbg {} {{",
             ret_type(&self.rets, self.opaque),
             ps.join(", "),
-            self.meta_base
+            meta_ref(self.meta_base)
         );
         let nblocks = self.blocks.len();
         for i in 0..nblocks {
@@ -407,14 +443,14 @@ impl<'a> Ll<'a> {
             out.push('\n');
         }
         let mut meta = vec![format!(
-            "!{} = distinct !DISubprogram(name: \"{name}\", scope: !3, file: !3, line: 1, type: !4, spFlags: DISPFlagDefinition, unit: !0)",
-            self.meta_base
+            "{} = distinct !DISubprogram(name: \"{name}\", scope: !3, file: !3, line: 1, type: !4, spFlags: DISPFlagDefinition, unit: !0)",
+            meta_ref(self.meta_base)
         )];
         for (k, line) in self.lines.iter().enumerate() {
             meta.push(format!(
-                "!{} = !DILocation(line: {line}, scope: !{})",
-                self.meta_base + 1 + k as u32,
-                self.meta_base
+                "{} = !DILocation(line: {line}, scope: {})",
+                meta_ref(self.meta_base + 1 + k as u32),
+                meta_ref(self.meta_base)
             ));
         }
         let _ = std::mem::take(&mut self.intrinsics);
@@ -1035,8 +1071,13 @@ fn opt_level() -> Result<&'static str, String> {
     }
 }
 
-/// Compile a module to the object file `object`.
-pub fn compile(module: &Module, object: &Path) -> Result<(), String> {
+/// Compile a module to object files in the directory `dir`, one per
+/// partition (`p000.o`, ...), by at most `jobs` clang processes at once
+/// (#786); the objects in partition order. Each partition's IR is written
+/// next to its object (`p000.ll`) and removed after, unless
+/// `QUARZ_KEEP_IR` is set. When a clang fails, the ones running are
+/// waited for, no other starts, and every failure is reported.
+pub fn compile(module: &Module, dir: &Path, jobs: usize) -> Result<Vec<PathBuf>, String> {
     let opt = opt_level()?;
     // (`find_clang` runs `clang --version`: a process of its own.)
     let start = std::time::Instant::now();
@@ -1044,40 +1085,100 @@ pub fn compile(module: &Module, object: &Path) -> Result<(), String> {
     crate::report("clang_version", start, &[]);
     let opaque = major >= 15;
     let start = std::time::Instant::now();
-    let ir = emit(module, opaque)?;
-    let ll_path = object.with_extension("ll");
-    std::fs::write(&ll_path, &ir).map_err(|e| format!("{}: {e}", ll_path.display()))?;
+    let parts = emit(module, opaque)?;
+    let mut lls: Vec<PathBuf> = Vec::with_capacity(parts.len());
+    for (p, ir) in parts.iter().enumerate() {
+        let ll = dir.join(format!("p{p:03}.ll"));
+        std::fs::write(&ll, ir).map_err(|e| format!("{}: {e}", ll.display()))?;
+        lls.push(ll);
+    }
     crate::report(
         "emit",
         start,
         &[
-            ("bytes", ir.len().to_string()),
+            (
+                "bytes",
+                parts.iter().map(String::len).sum::<usize>().to_string(),
+            ),
             ("functions", module.functions.len().to_string()),
         ],
     );
+    drop(parts);
     let start = std::time::Instant::now();
-    let output = Command::new(&clang)
-        .args([opt, "-c", "-x", "ir", "-Wno-override-module", "-o"])
-        .arg(object)
-        .arg(&ll_path)
-        .output()
-        .map_err(|e| format!("cannot run {clang}: {e}"))?;
+    let cpu_before = children_cpu_ms();
+    let objects: Vec<PathBuf> = lls.iter().map(|ll| ll.with_extension("o")).collect();
+    // (A queue of partitions taken by `jobs` threads, each running one
+    // clang at a time; the failures by partition.)
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failed = std::sync::atomic::AtomicBool::new(false);
+    let errors: std::sync::Mutex<Vec<(usize, String)>> = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|s| {
+        for _ in 0..jobs.clamp(1, lls.len().max(1)) {
+            s.spawn(|| loop {
+                if failed.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                let p = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(ll) = lls.get(p) else { break };
+                let result = Command::new(&clang)
+                    .args([opt, "-c", "-x", "ir", "-Wno-override-module", "-o"])
+                    .arg(&objects[p])
+                    .arg(ll)
+                    .output();
+                let error = match result {
+                    Err(e) => Some(format!("cannot run {clang}: {e}")),
+                    Ok(o) if !o.status.success() => Some(format!(
+                        "{clang} failed on partition {p} ({}):\n{}",
+                        o.status,
+                        String::from_utf8_lossy(&o.stderr)
+                    )),
+                    Ok(_) => None,
+                };
+                if let Some(e) = error {
+                    failed.store(true, std::sync::atomic::Ordering::Relaxed);
+                    errors.lock().expect("the errors").push((p, e));
+                }
+            });
+        }
+    });
     if std::env::var_os("QUARZ_KEEP_IR").is_none() {
-        let _ = std::fs::remove_file(&ll_path);
+        for ll in &lls {
+            let _ = std::fs::remove_file(ll);
+        }
     }
-    if !output.status.success() {
-        return Err(format!(
-            "{clang} failed ({}):\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        ));
+    let mut errors = errors.into_inner().expect("the errors");
+    if !errors.is_empty() {
+        errors.sort_by_key(|(p, _)| *p);
+        return Err(errors
+            .into_iter()
+            .map(|(_, e)| e)
+            .collect::<Vec<_>>()
+            .join("\n"));
     }
     crate::report(
         "clang",
         start,
-        &[("level", opt.trim_start_matches("-O").to_string())],
+        &[
+            ("cpu_ms", format!("{:.3}", children_cpu_ms() - cpu_before)),
+            ("partitions", objects.len().to_string()),
+            ("jobs", jobs.clamp(1, objects.len().max(1)).to_string()),
+            ("level", opt.trim_start_matches("-O").to_string()),
+        ],
     );
-    Ok(())
+    Ok(objects)
+}
+
+/// The user and system time of this process's waited-for children, in
+/// milliseconds (`getrusage(RUSAGE_CHILDREN)`): the clang processes' summed
+/// time for `QUARZ_BUILD_TIMINGS`.
+fn children_cpu_ms() -> f64 {
+    // SAFETY: `getrusage` writes the struct it is given and nothing else.
+    let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &mut u) } != 0 {
+        return 0.0;
+    }
+    let ms = |t: libc::timeval| t.tv_sec as f64 * 1000.0 + t.tv_usec as f64 / 1000.0;
+    ms(u.ru_utime) + ms(u.ru_stime)
 }
 
 /// Index of each runtime function in the declaration table.
@@ -1087,7 +1188,7 @@ struct RtIdx {
 }
 
 /// The module as LLVM IR text.
-fn emit(module: &Module, opaque: bool) -> Result<String, String> {
+fn emit(module: &Module, opaque: bool) -> Result<Vec<String>, String> {
     let (p, i32_, i64_) = (Ty::Ptr, Ty::I32, Ty::I64);
     let mut decls: Vec<FnDecl> = Vec::new();
     fn push(decls: &mut Vec<FnDecl>, name: &str, params: &[Ty], rets: &[Ty]) -> u32 {
@@ -1198,41 +1299,66 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
         params: body_params.to_vec(),
         rets: vec![i32_],
     }];
-
-    let mut out = String::new();
-    out.push_str("; generated by quarz\n");
+    // A function's declaration, for a partition that calls it in another.
+    let declare_text = |d: &FnDecl| -> String {
+        let ps: Vec<&str> = d.params.iter().map(|t| ty_str(*t, opaque)).collect();
+        format!(
+            "declare hidden {} @{}({})\n",
+            ret_type(&d.rets, opaque),
+            d.name,
+            ps.join(", ")
+        )
+    };
+    let ptr = ty_str(Ty::Ptr, opaque);
+    // What every partition declares: the runtime's entries and the
+    // intrinsics.
+    let mut prelude = String::new();
+    prelude.push_str("; generated by quarz\n");
     for d in &decls[..nrt] {
         let ps: Vec<&str> = d.params.iter().map(|t| ty_str(*t, opaque)).collect();
         let _ = writeln!(
-            out,
+            prelude,
             "declare {} @{}({})",
             ret_type(&d.rets, opaque),
             d.name,
             ps.join(", ")
         );
     }
-    let ptr = ty_str(Ty::Ptr, opaque);
-    let _ = writeln!(out, "declare {ptr} @llvm.stacksave()");
+    let _ = writeln!(prelude, "declare {ptr} @llvm.stacksave()");
     for name in ["sadd", "ssub", "smul"] {
         let _ = writeln!(
-            out,
+            prelude,
             "declare {{ i64, i1 }} @llvm.{name}.with.overflow.i64(i64, i64)"
         );
     }
-    out.push('\n');
+    prelude.push('\n');
+    // !0-!5 describe the unit, !6 and !7 are the branch weights: in every
+    // partition; a partition's functions number theirs from !8 on.
+    let meta_head = "\n!llvm.dbg.cu = !{!0}\n!llvm.module.flags = !{!1, !2}\n!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !3, producer: \"quarz\", isOptimized: true, runtimeVersion: 0, emissionKind: LineTablesOnly)\n!1 = !{i32 2, !\"Debug Info Version\", i32 3}\n!2 = !{i32 2, !\"Dwarf Version\", i32 4}\n!3 = !DIFile(filename: \"quarz\", directory: \"/\")\n!4 = !DISubroutineType(types: !5)\n!5 = !{}\n!6 = !{!\"branch_weights\", i32 1, i32 2000}\n!7 = !{!\"branch_weights\", i32 2000, i32 1}\n";
 
-    // Metadata: !0 the unit, !1 and !2 the flags, !3 the file, !4 and !5
-    // the (empty) subroutine type; functions take ids from !6 on.
-    let mut meta: Vec<String> = Vec::new();
-    // !0-!5 describe the unit, !6 and !7 are the branch weights.
-    let mut meta_next: u32 = 8;
     let methods = &module.world.methods;
     // A `Release` runs deinitializers only in a program that has some.
     let has_deinit = methods
         .iter()
         .any(|m| m.name == "deinitialize" && m.func.is_some());
-    let mut text = String::new();
+    // Each function's text (its entries: the body, the typed entry, the
+    // early entry), with its metadata numbered locally and its linkage
+    // left to the partition (`relocate_meta`); and the functions it calls
+    // directly.
+    struct Gen {
+        text: String,
+        meta: Vec<String>,
+        nmeta: u32,
+        calls: Vec<FuncId>,
+    }
+    let mut gens: Vec<Gen> = Vec::with_capacity(module.functions.len());
     for (i, f) in module.functions.iter().enumerate() {
+        let mut g = Gen {
+            text: String::new(),
+            meta: Vec::new(),
+            nmeta: 0,
+            calls: gen::direct_callees(f, methods).into_iter().collect(),
+        };
         let mut entries = vec![(None, funcs[i], None)];
         if let (Some(sig), Some(tf)) = (&typed[i], typed_funcs[i]) {
             entries.push((Some(sig.clone()), tf, None));
@@ -1245,10 +1371,10 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
                 Some(s) => typed_signature(s),
                 None => (body_params.to_vec(), vec![i32_]),
             };
-            let mut b = Ll::new(&decls, &sigs, opaque, &params, &rets, meta_next);
+            let mut b = Ll::new(&decls, &sigs, opaque, &params, &rets, g.nmeta);
             let mut callees: HashMap<FuncId, u32> = HashMap::new();
             let mut callees_typed: HashMap<FuncId, u32> = HashMap::new();
-            for c in gen::direct_callees(f, methods) {
+            for &c in &g.calls {
                 callees.insert(c, funcs[c as usize]);
                 if let Some(tf) = entry_funcs[c as usize].or(typed_funcs[c as usize]) {
                     callees_typed.insert(c, tf);
@@ -1314,14 +1440,136 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
             };
             let name = decls[target as usize].name.clone();
             let (fn_text, fn_meta) = b.finish(&name, attrs, &params);
-            meta_next += fn_meta.len() as u32;
-            meta.extend(fn_meta);
-            text.push_str(&fn_text);
-            text.push('\n');
+            g.nmeta += fn_meta.len() as u32;
+            g.meta.extend(fn_meta);
+            g.text.push_str(&fn_text);
+            g.text.push('\n');
+        }
+        gens.push(g);
+    }
+
+    // The partitions (#786, tmp/plan-786.md §1): the functions by their
+    // file's group (the application, each cog, each standard library
+    // module; the prelude's files are in none), then in id order within a
+    // group; a group's run is cut into buckets of `PARTITION_BYTES` of IR
+    // or more, a new one starting at a method of another class. A program
+    // under `PARTITION_BYTES` in all is one partition, with the tables.
+    let group = |i: usize| -> u64 {
+        module
+            .file_groups
+            .get(&module.functions[i].file)
+            .copied()
+            .unwrap_or(u64::MAX)
+    };
+    let owner = |i: usize| -> Option<u32> {
+        match module.functions[i].kind {
+            quarz_ir::FuncKind::Method(m) => methods.get(m as usize).map(|m| m.owner),
+            _ => None,
+        }
+    };
+    let total: usize = gens.iter().map(|g| g.text.len()).sum();
+    let mut order: Vec<usize> = (0..gens.len()).collect();
+    let mut parts: Vec<Vec<usize>> = Vec::new();
+    if total < PARTITION_BYTES {
+        parts.push(order);
+    } else {
+        order.sort_by_key(|&i| (group(i), i));
+        let mut acc = 0usize;
+        let mut prev: Option<(u64, Option<u32>)> = None;
+        for i in order {
+            let (g, o) = (group(i), owner(i));
+            let cut = match prev {
+                None => true,
+                Some((pg, po)) => pg != g || (acc >= PARTITION_BYTES && o.is_some() && o != po),
+            };
+            if cut {
+                parts.push(Vec::new());
+                acc = 0;
+            }
+            parts.last_mut().expect("a partition").push(i);
+            acc += gens[i].text.len();
+            if o.is_some() {
+                prev = Some((g, o));
+            } else if let Some((_, po)) = prev {
+                prev = Some((g, po));
+            } else {
+                prev = Some((g, None));
+            }
         }
     }
-    out.push_str(&text);
+    let one = parts.len() == 1;
+    let linkage = if one { "internal" } else { "hidden" };
+    let mut part_of = vec![0usize; gens.len()];
+    for (p, fs) in parts.iter().enumerate() {
+        for &i in fs {
+            part_of[i] = p;
+        }
+    }
+    let mut outs: Vec<String> = Vec::with_capacity(parts.len() + 1);
+    for (p, fs) in parts.iter().enumerate() {
+        let mut out = prelude.clone();
+        // The functions of other partitions this one calls (each of its
+        // entries: an unused declaration costs nothing).
+        let mut foreign: Vec<FuncId> = fs
+            .iter()
+            .flat_map(|&i| gens[i].calls.iter().copied())
+            .filter(|&c| part_of[c as usize] != p)
+            .collect();
+        foreign.sort_unstable();
+        foreign.dedup();
+        for &c in &foreign {
+            let c = c as usize;
+            for d in [Some(funcs[c]), typed_funcs[c], entry_funcs[c]]
+                .into_iter()
+                .flatten()
+            {
+                out.push_str(&declare_text(&decls[d as usize]));
+            }
+        }
+        if !foreign.is_empty() {
+            out.push('\n');
+        }
+        let mut base = 8u32;
+        let mut meta = String::new();
+        for &i in fs {
+            out.push_str(&relocate_meta(&gens[i].text, base, linkage));
+            for m in &gens[i].meta {
+                meta.push_str(&relocate_meta(m, base, linkage));
+                meta.push('\n');
+            }
+            base += gens[i].nmeta;
+        }
+        if one {
+            tables(&mut out, module, opaque, &body_params);
+        }
+        out.push_str(meta_head);
+        out.push_str(&meta);
+        outs.push(out);
+    }
+    // The tables, the blobs and `main`: a partition of their own, last,
+    // declaring every function the table names.
+    if !one {
+        let mut out = prelude.clone();
+        for i in 0..module.functions.len() {
+            out.push_str(&declare_text(&decls[funcs[i] as usize]));
+        }
+        tables(&mut out, module, opaque, &body_params);
+        outs.push(out);
+    }
+    Ok(outs)
+}
 
+/// The IR of one partition's functions above which a program is split
+/// (#786): about 2 MB, a clang process's work of 0.15 s at `-O0` and 1 s
+/// at `-O2` on the machine of tmp/plan-786.md.
+const PARTITION_BYTES: usize = 2_000_000;
+
+/// The serialized program, the natives' and the compiled bodies' tables and
+/// `main`, appended to `out` (`declared`: the bodies are declared, in a
+/// partition of their own).
+fn tables(out: &mut String, module: &Module, opaque: bool, body_params: &[Ty]) {
+    let i32_ = Ty::I32;
+    let ptr = ty_str(Ty::Ptr, opaque);
     // The serialized program (the functions without their bodies, which
     // the machine code replaces) and the table of compiled bodies.
     let mut kept = quarz_ir::Image {
@@ -1482,13 +1730,4 @@ fn emit(module: &Module, opaque: bool) -> Result<String, String> {
         L::SIGNATURE as i64,
         L::vec_layout_packed() as i64
     );
-    let _ = writeln!(
-        out,
-        "\n!llvm.dbg.cu = !{{!0}}\n!llvm.module.flags = !{{!1, !2}}\n!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !3, producer: \"quarz\", isOptimized: true, runtimeVersion: 0, emissionKind: LineTablesOnly)\n!1 = !{{i32 2, !\"Debug Info Version\", i32 3}}\n!2 = !{{i32 2, !\"Dwarf Version\", i32 4}}\n!3 = !DIFile(filename: \"quarz\", directory: \"/\")\n!4 = !DISubroutineType(types: !5)\n!5 = !{{}}\n!6 = !{{!\"branch_weights\", i32 1, i32 2000}}\n!7 = !{{!\"branch_weights\", i32 2000, i32 1}}"
-    );
-    for m in &meta {
-        out.push_str(m);
-        out.push('\n');
-    }
-    Ok(out)
 }
