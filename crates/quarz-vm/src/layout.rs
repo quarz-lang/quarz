@@ -8,6 +8,11 @@ use crate::interp::{Hot, Interp};
 use crate::vm::Activation;
 
 pub const ACT_SIZE: usize = size_of::<Activation>();
+/// Space compiled code reserves for an `Activation` it builds itself
+/// (`qz_enter`): at least its size (asserted below).
+pub const ACT_BUF_SIZE: usize = 320;
+const _: () = assert!(ACT_SIZE <= ACT_BUF_SIZE);
+const _: () = assert!(std::mem::align_of::<Activation>() <= 16);
 pub const ACT_FID: usize = offset_of!(Activation, fid);
 pub const ACT_TASK: usize = offset_of!(Activation, task);
 pub const ACT_LINE: usize = offset_of!(Activation, line);
@@ -50,6 +55,67 @@ pub const RAISE_OVERFLOW: u32 = 0;
 pub const RAISE_ZERO_DIVISION: u32 = 1;
 pub const RAISE_UNSOUND: u32 = 2;
 
+/// The size of a value, as compiled code lays out its registers and an
+/// object's value fields (`quarz_ir::VALUE_BYTES`, which the lowering's
+/// field offsets use too; `value.rs` asserts `Value`'s size).
+pub const VALUE_SIZE: usize = quarz_ir::VALUE_BYTES as usize;
+
+/// The tags of the `Value`s compiled code builds and tests inline: they
+/// are `Value`'s discriminants (`value.rs` declares them so, `repr(u8)`).
+pub const TAG_NIL: u8 = 0;
+pub const TAG_BOOL: u8 = 1;
+pub const TAG_INT: u8 = 2;
+pub const TAG_FLOAT: u8 = 3;
+pub const TAG_CLASS: u8 = 5;
+pub const TAG_ARRAY: u8 = 10;
+pub const TAG_OBJECT: u8 = 16;
+/// Tags below this hold no reference-counted payload (`Value` puts the
+/// variants without reference counting first).
+pub const NEEDS_DROP_FROM: u64 = 8;
+/// Where a `Bool`'s byte and a `Class`'s id are in a value: right after
+/// the tag, as `repr(u8)` lays out a variant whose payload is smaller than
+/// a word (`check` verifies both at start-up). Every other payload is at
+/// the next word.
+pub const BOOL_OFF: usize = 1;
+pub const CLASS_OFF: usize = 4;
+/// Where an object's field layout pointer is, from its allocation (the
+/// header's first word, after the allocation's two counts).
+pub const OBJECT_FIELDS_PTR_OFF: usize = offset_of!(
+    crate::rc::Inner<crate::value::ObjectOf<std::cell::UnsafeCell<[u64; 0]>>>,
+    value
+) + offset_of!(
+    crate::value::ObjectOf<std::cell::UnsafeCell<[u64; 0]>>,
+    layout
+);
+
+/// The statuses the runtime's entries return to compiled code.
+pub const STATUS_OK: u32 = 0;
+pub const STATUS_RAISE: u32 = 1;
+pub const STATUS_BREAK: u32 = 2;
+pub const STATUS_NEXT: u32 = 3;
+pub const STATUS_RETURN: u32 = 4;
+pub const STATUS_RETRY: u32 = 5;
+pub const STATUS_EXIT: u32 = 6;
+/// `qz_enter_virtual` ran the whole call itself (the result is in
+/// `regs[dst]`, the argument area is empty).
+pub const STATUS_DONE: u32 = 7;
+/// A typed entry's result did not fit its declared type: it is boxed in
+/// the caller's `out` instead (compiled code writes and reads it).
+pub const STATUS_BOXED: u32 = 8;
+
+/// The operand tag of a call's kind in `qz_op_call`'s descriptor:
+/// `CallKind`, written by the generator and decoded by `ffi_ops`.
+pub const CALL_METHOD: u32 = 0;
+pub const CALL_SEND: u32 = 1;
+pub const CALL_CONSTRUCT: u32 = 2;
+pub const CALL_CONSTRUCT_RECV: u32 = 3;
+pub const CALL_PROC: u32 = 4;
+pub const CALL_YIELD: u32 = 5;
+pub const CALL_SUPER: u32 = 6;
+pub const CALL_RAISE: u32 = 7;
+pub const CALL_INSTANCE_EXEC: u32 = 8;
+pub const CALL_FUNCTION: u32 = 9;
+
 /// Everything above, folded into one number.
 pub const SIGNATURE: u64 = {
     let xs = [
@@ -84,6 +150,38 @@ pub const SIGNATURE: u64 = {
         RAISE_OVERFLOW as usize,
         RAISE_ZERO_DIVISION as usize,
         RAISE_UNSOUND as usize,
+        ACT_BUF_SIZE,
+        VALUE_SIZE,
+        TAG_NIL as usize,
+        TAG_BOOL as usize,
+        TAG_INT as usize,
+        TAG_FLOAT as usize,
+        TAG_CLASS as usize,
+        TAG_ARRAY as usize,
+        TAG_OBJECT as usize,
+        NEEDS_DROP_FROM as usize,
+        BOOL_OFF,
+        CLASS_OFF,
+        OBJECT_FIELDS_PTR_OFF,
+        STATUS_OK as usize,
+        STATUS_RAISE as usize,
+        STATUS_BREAK as usize,
+        STATUS_NEXT as usize,
+        STATUS_RETURN as usize,
+        STATUS_RETRY as usize,
+        STATUS_EXIT as usize,
+        STATUS_DONE as usize,
+        STATUS_BOXED as usize,
+        CALL_METHOD as usize,
+        CALL_SEND as usize,
+        CALL_CONSTRUCT as usize,
+        CALL_CONSTRUCT_RECV as usize,
+        CALL_PROC as usize,
+        CALL_YIELD as usize,
+        CALL_SUPER as usize,
+        CALL_RAISE as usize,
+        CALL_INSTANCE_EXEC as usize,
+        CALL_FUNCTION as usize,
     ];
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut i = 0;
@@ -214,4 +312,21 @@ pub fn check(sig: u64, vec: u64) {
         0,
         "Value layout changed: Nil tag"
     );
+    // A `Bool`'s byte and a `Class`'s id where compiled code reads and
+    // writes them (`BOOL_OFF`, `CLASS_OFF`).
+    {
+        let b = crate::value::Value::Bool(true);
+        let c = crate::value::Value::Class(0x0102_0304);
+        // SAFETY: reading the bytes of live values, within their size.
+        let (byte, id) = unsafe {
+            let bp = &b as *const crate::value::Value as *const u8;
+            let cp = &c as *const crate::value::Value as *const u8;
+            (
+                *bp.add(BOOL_OFF),
+                std::ptr::read_unaligned(cp.add(CLASS_OFF) as *const u32),
+            )
+        };
+        assert_eq!(byte, 1, "Value layout changed: a Bool's byte");
+        assert_eq!(id, 0x0102_0304, "Value layout changed: a Class's id");
+    }
 }

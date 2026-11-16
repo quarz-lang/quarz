@@ -250,16 +250,19 @@ op_entry!(
             .map(|p| (p[0], p[1]))
             .collect();
         let (a, b) = (head[2], head[3]);
+        // (The tags of `CallKind`, `layout::CALL_*`, as the generator
+        // writes them.)
+        use crate::layout as L;
         let kind = match head[1] {
-            0 => CallOp::Method(a),
-            1 => CallOp::Send(unsafe { text(name, name_len) }),
-            2 => CallOp::Construct { class: a, init: opt(b) },
-            3 => CallOp::ConstructRecv { class: a, init: opt(b) },
-            4 => CallOp::ProcCall,
-            5 => CallOp::Yield,
-            6 => CallOp::Super(a),
-            8 => CallOp::InstanceExec,
-            9 => CallOp::Function(a),
+            L::CALL_METHOD => CallOp::Method(a),
+            L::CALL_SEND => CallOp::Send(unsafe { text(name, name_len) }),
+            L::CALL_CONSTRUCT => CallOp::Construct { class: a, init: opt(b) },
+            L::CALL_CONSTRUCT_RECV => CallOp::ConstructRecv { class: a, init: opt(b) },
+            L::CALL_PROC => CallOp::ProcCall,
+            L::CALL_YIELD => CallOp::Yield,
+            L::CALL_SUPER => CallOp::Super(a),
+            L::CALL_INSTANCE_EXEC => CallOp::InstanceExec,
+            L::CALL_FUNCTION => CallOp::Function(a),
             _ => CallOp::Raise,
         };
         rt.op_call(

@@ -1,4 +1,4 @@
-//! What a run-time type test sees (#536 step 7, tmp/plan-536-step7.md):
+//! What a run-time type test sees (#536 step 7):
 //! the one place that decides which part of a type a test checks at run
 //! time, for the checker (what it may vouch for: `unverifiable`) and for
 //! the lowering (the test it emits: `run_time_test`, recorded by the

@@ -2869,26 +2869,31 @@ pub type FlowBox = RefCell<Option<Flow>>;
 #[derive(Clone, Debug)]
 #[repr(u8)]
 pub enum Value {
-    Nil,
-    Bool(bool),
-    Int(i64),
-    Float(f64),
+    // (The tags compiled code uses are `layout`'s: the compiler then
+    // refuses an order that gives them other values.)
+    Nil = crate::layout::TAG_NIL,
+    Bool(bool) = crate::layout::TAG_BOOL,
+    Int(i64) = crate::layout::TAG_INT,
+    Float(f64) = crate::layout::TAG_FLOAT,
     Symbol(Symbol),
-    Class(ClassId),
+    Class(ClassId) = crate::layout::TAG_CLASS,
     /// Nanoseconds.
     Duration(i64),
     /// A string of at most 14 bytes, kept in the value itself.
     Short(ShortStr),
-    BigInt(Rc<BigInt>),
+    // The first variant with a counted payload: every variant before it
+    // has none, every one from it on has one (`NEEDS_DROP_FROM`, which
+    // compiled code compares tags with).
+    BigInt(Rc<BigInt>) = crate::layout::NEEDS_DROP_FROM as u8,
     /// A longer string.
     Str(Rc<str>),
-    Array(Rc<ArrayData>),
+    Array(Rc<ArrayData>) = crate::layout::TAG_ARRAY,
     Hash(Rc<HashData>),
     Set(Rc<ValueSet>),
     Range(Rc<RangeVal>),
     Regexp(Rc<RegexpVal>),
     MatchData(Rc<MatchDataVal>),
-    Object(Rc<Object>),
+    Object(Rc<Object>) = crate::layout::TAG_OBJECT,
     Proc(Rc<Closure>),
     ArrayBuilder(Rc<RefCell<Vec<Value>>>),
     HashBuilder(Rc<RefCell<ValueMap>>),
@@ -2960,8 +2965,7 @@ impl RandomState {
     }
 }
 
-/// Tags below this hold no reference-counted payload.
-pub const NEEDS_DROP_FROM: u64 = 8;
+pub use crate::layout::NEEDS_DROP_FROM;
 
 /// A string short enough to live in a value's payload: its length,
 /// then the bytes (valid UTF-8).
@@ -3451,8 +3455,7 @@ pub fn check_rc_layout() {
     );
 }
 
-/// Size of a value in bytes, as compiled code lays out its registers.
-pub const VALUE_SIZE: usize = 16;
+pub use crate::layout::VALUE_SIZE;
 
 const _: () = assert!(std::mem::size_of::<Value>() == VALUE_SIZE);
 

@@ -180,11 +180,10 @@ pub struct Output {
     /// A compound assignment's logical call (`o.c ||= v` through the
     /// value's own `||`): its record, apart from the writer's.
     pub op_logical_calls: HashMap<NodeId, CallRecord>,
-    /// `as`/`as?`/`is_a?` calls whose run-time test must check elements:
-    /// the value may be of the class without being of the type.
-    /// The run-time test of an `as`/`is_a?`/`as?` whose static type does
-    /// not decide it (`testable::run_time_test`, #536 step 7): what the
-    /// lowering emits there.
+    /// The run-time test of an `as`/`is_a?`/`as?` call that a value of its
+    /// static type may fail although it is of the target's class
+    /// (`testable::run_time_test`, #536 step 7): recorded only there,
+    /// what the lowering emits; elsewhere the class alone is tested.
     pub run_time_tests: rustc_hash::FxHashMap<NodeId, quarz_ir::RtType>,
     /// `x.foo!(args)` calls that are sugar for `x = x.foo(args)` (the
     /// receiver's type has no `foo!`): the call targets `foo` and its
