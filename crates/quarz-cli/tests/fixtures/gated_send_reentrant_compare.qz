@@ -1,0 +1,19 @@
+# #790: as gated_send_reentrant_each.qz, through `Comparable#<=>`: the
+# first `include?` fills G's cell without reaching the class comparison,
+# the second reaches it (`==` on a class object, a cell not yet filled)
+# inside the `<=>` the filled cell runs. Before, it panicked with
+# "RefCell already borrowed", on the VM and in compiled programs.
+class G
+  include Comparable[G]
+  @v: Int
+  @t: Type[Object]
+  def initialize(@v: Int, @t: Type[Object])
+  end
+  def v -> Int = @v
+  def <=>(other: G) -> Int
+    return @v <=> other.v if @v < 10
+    (@t == String ? @v : 0) <=> other.v
+  end
+end
+puts (G.new(1, Int)..G.new(3, Int)).include?(G.new(2, Int))
+puts (G.new(11, String)..G.new(13, String)).include?(G.new(12, String))

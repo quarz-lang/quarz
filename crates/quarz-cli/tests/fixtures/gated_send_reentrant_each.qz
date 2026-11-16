@@ -1,0 +1,9 @@
+# #790: a gated send whose dispatch cell is filled (`send_requirement`'s
+# hit) runs the method with the vtable no longer borrowed, so a dispatch
+# inside it may fill a cell of its own. Before, the second line below
+# panicked with "RefCell already borrowed", on the VM and in compiled
+# programs: the first fills Array's `Enumerable#each` cell, the second
+# runs `==` on a class object for the first time inside that `each`.
+p [1].each_with_index.map { |x, i| x + i }
+c: Type[Object] = Int
+p [2].each_with_index.map { |x, i| c == String }
