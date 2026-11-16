@@ -1719,19 +1719,18 @@ impl<'ast> Declarer<'ast> {
                         // class's arguments for it: `Base[Int]`'s `T`.
                         // Checked for each conformance, not once per pair.)
                         let owner = self.world.method(i).owner;
-                        // (The module's ancestry in the target's own
-                        // parameters too, as `aargs_here` below.)
-                        let cargs_t = self
-                            .conformance_args(ext, &margs, target)
-                            .unwrap_or_else(|| margs.clone());
+                        // (`in_target`: the target's own ancestry, this
+                        // include's modules and every module this
+                        // extension's includes bring, in the target's own
+                        // parameters: a witness of another include of the
+                        // same extension (`E[U]`'s for `R[U]`) is seen
+                        // through its arguments too, #775.)
                         let oargs = (owner != target)
                             .then(|| {
-                                self.world
-                                    .ancestors_with_no_extensions(target)
-                                    .into_iter()
-                                    .chain(self.world.ancestors(module, &cargs_t))
+                                in_target
+                                    .iter()
                                     .find(|(k, _)| *k == owner)
-                                    .map(|(_, a)| a)
+                                    .map(|(_, a)| a.clone())
                             })
                             .flatten();
                         // (The module's arguments in the target's own

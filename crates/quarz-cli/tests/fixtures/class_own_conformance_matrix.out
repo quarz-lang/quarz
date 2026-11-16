@@ -26,6 +26,8 @@ generic/sup/param: B B B
 generic/sup/sub/param: B B B
 generic/ext/param: E E E
 generic/ext/sub/param: E E E
+generic/ext_sup/param: E E E
+generic/ext_sup/sub/param: E E E
 abstract/own/none: own own own
 abstract/own_inc/none: E E E
 abstract/sup/none: B B B
