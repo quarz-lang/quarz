@@ -1645,6 +1645,42 @@ end
 "#,
             "`d` returns Int but `M.d`, which it overrides, returns String",
         ),
+        // A generic extension including a generic module through its own
+        // parameter, its own method of another result over the module's:
+        // the pair is found by the pairing rule through the extension's
+        // view (`World::replaces`); the override table's entry for the
+        // extension's method has no such pair (#716's oracle), so a check
+        // reading the table would accept these.
+        (
+            "witness of another type, generic ext through its parameter (instance)",
+            r#"module M[T]
+  def m(x: T) -> String = "M"
+end
+class C[U]
+  def initialize; end
+end
+extension C[U]
+  include M[U]
+  def m(x: U) -> Int = 1
+end
+"#,
+            "`m` returns Int but `M#m`, which it overrides, returns String",
+        ),
+        (
+            "witness of another type, generic ext through its parameter (class)",
+            r#"module M[T]
+  def self.m(x: T) -> String = "M"
+end
+class C[U]
+  def initialize; end
+end
+extension C[U]
+  include M[U]
+  def self.m(x: U) -> Int = 1
+end
+"#,
+            "`m` returns Int but `M.m`, which it overrides, returns String",
+        ),
         (
             "witness of another type, own (class)",
             r#"module M

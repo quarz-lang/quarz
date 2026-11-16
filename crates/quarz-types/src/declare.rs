@@ -2860,7 +2860,22 @@ impl<'ast> Declarer<'ast> {
                                     }
                                 }
                             } else {
-                                self.overrides_at_run_time(mid, o, *a, aargs)
+                                // (The one pairing rule, `World::replaces`, seen
+                                // through the extension's view, not the
+                                // override table, #716: for a generic
+                                // extension including a generic module through
+                                // its own parameter (`extension C[U]; include
+                                // M[U]; def m(x: U)`), the table's entry for the
+                                // extension's method, computed over the
+                                // target's ancestors in the target's frame, has
+                                // no pair with the module's method, which this
+                                // check must hold to it. The oracle of #716
+                                // found every other pair agreeing: of 14,272
+                                // asked over check-diff, the probes, fuzz seeds
+                                // 1-8000 and the area binaries (well-formed log
+                                // lines), 50 differed, all of that shape.)
+                                self.world.method(mid).singleton == self.world.method(o).singleton
+                                    && self.world.replaces(mid, o, *a, aargs)
                             };
                             // (On the class side, left to the named error,
                             // and checked as before if it is not given.)
@@ -3182,7 +3197,8 @@ impl<'ast> Declarer<'ast> {
                         // method's entry; a module's, its entry or this
                         // class's module-over-ancestor pairs.)
                         let replaces = if x == id {
-                            self.overrides_at_run_time(mid, o, *a, aargs)
+                            self.world.method(mid).singleton == self.world.method(o).singleton
+                                && self.world.overrides(mid).contains(&o)
                         } else {
                             self.world.method(mid).singleton == self.world.method(o).singleton
                                 && (self.world.overrides(mid).contains(&o)
@@ -3710,16 +3726,6 @@ impl<'ast> Declarer<'ast> {
         }
     }
 
-    /// Whether the runtime takes `m` to override `o` (of the ancestor `a`
-    /// with `aargs`): `quarz_lower::rtworld::overridden_methods` (the same
-    /// kinds of parameters, each at least as wide, those added optional),
-    /// or the interpreter's `same_signature` (as many, of the same types
-    /// but where either is a type parameter, which matches anything).
-    fn overrides_at_run_time(&self, m: MethodId, o: MethodId, a: ClassId, aargs: &[Type]) -> bool {
-        self.world.method(m).singleton == self.world.method(o).singleton
-            && self.replaces_at_run_time(m, o, a, aargs)
-    }
-
     /// Whether `p` and `q` are the same keyword parameter: by name, or both
     /// `**rest`.
     fn same_keyword(p: &ParamInfo, q: &ParamInfo) -> bool {
@@ -3729,11 +3735,6 @@ impl<'ast> Declarer<'ast> {
                 ParamKind::KeywordOnly => p.name == q.name,
                 _ => false,
             }
-    }
-
-    /// `World::replaces` (the one pairing rule), from the declarer.
-    fn replaces_at_run_time(&self, m: MethodId, o: MethodId, a: ClassId, aargs: &[Type]) -> bool {
-        self.world.replaces(m, o, a, aargs)
     }
 
     /// An override `m` of `o` (their types seen through `subst` and
