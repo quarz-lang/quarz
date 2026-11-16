@@ -1976,10 +1976,32 @@ puts kk(P.new), kk(Q.new), kk(R.new), P.new.k
     run_both(&d.0, &app, "7\n7\n7\n7\n");
 }
 
-// Rows 5 and 7 through a deferred conformance (the implementation a
-// class's statements generate, `World::conformance_deferred`) have no
-// fixture yet: such a program is refused on main (#801). Their rows are
-// rebuilt on every generation into the class all the same (D(X)).
+#[test]
+fn the_implementation_a_deferred_conformance_waits_for() {
+    // Rows 5 and 7: `K`'s conformance to `Sh` waits for its statements
+    // (`World::conformance_deferred`), which generate `area` (#801); the
+    // witness record's entries for `K` and its subclass are made then.
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+module Sh
+  abstract def area -> Int
+end
+class K < Gen
+  include Sh
+  gen_area
+end
+class L < K
+end
+def a(s: Sh) -> Int = s.area
+puts a(K.new), a(L.new)
+"#,
+    );
+    run_both(&d.0, &app, "5\n5\n");
+}
 
 #[test]
 fn a_field_generated_into_a_superclass_with_subclasses() {
@@ -2076,6 +2098,54 @@ puts A.make.x, B.make.x
 "#,
     );
     run_both(&d.0, &app, "1\n10\n");
+}
+
+#[test]
+fn tables_built_again_for_classes_a_later_check_adds() {
+    // `quarz test` checks the doc examples after the files' statements
+    // ran, with the same runner: their classes make the kept tables be
+    // built from nothing. The epochs go on from the earlier tables' (a
+    // new start at 1 told the runner's safety net that nothing changed
+    // since its last round, and the examples' rows went unchecked: the
+    // oracle's panic).
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let t = write(
+        &d.0,
+        "ex_test.qz",
+        r#"require "test"
+require_relative "lib"
+# One.
+#
+# ```
+# class A1 < Gen
+#   gen_area
+# end
+# A1.new.area   # => 5
+# ```
+class One < Gen
+  gen_area
+end
+# Two.
+#
+# ```
+# class A2 < Gen
+#   gen_field
+# end
+# A2.new.hits   # => 3
+# ```
+class Two
+end
+class T < Test::Case
+  def test_x
+    assert(One.new.area == 5)
+  end
+end
+"#,
+    );
+    let (ok, out, err) = quarz(&d.0, &["test", t.to_str().unwrap()], &[]);
+    assert!(ok, "{out}{err}");
+    assert!(out.contains("3 tests, 3 assertions, 0 failures"), "{out}");
 }
 
 #[test]

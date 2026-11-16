@@ -70,6 +70,10 @@ pub struct Lowerer {
     /// completed by each round (`rtworld::fill`). Built again when the
     /// class graph changes.
     kept: Option<kept::Kept>,
+    /// The last epoch any kept tables reached: tables built again go on
+    /// from it, so that an epoch a reader holds from the tables before
+    /// never names a sync of the new ones (`kept::Kept::changed_since`).
+    epochs: u64,
     /// The kept tables' epoch the safety net ran over every row at
     /// (`declare`): the next `lower` ships those rows, which must not have
     /// changed since; without it, `lower` reports them
@@ -1012,7 +1016,12 @@ impl Lowerer {
         let stats = match synced {
             Ok(s) => s,
             Err(why) => {
-                self.kept = Some(kept::Kept::build(world, out, &mut self.layouts));
+                self.kept = Some(kept::Kept::build(
+                    world,
+                    out,
+                    &mut self.layouts,
+                    self.epochs + 1,
+                ));
                 kept::SyncStats {
                     full: true,
                     classes: world.classes.len(),
@@ -1022,6 +1031,7 @@ impl Lowerer {
             }
         };
         let k = self.kept.as_ref().expect("synced above");
+        self.epochs = k.epoch();
         self.overridden = k.overridden.clone();
         kept::record_stats(&stats);
         if kept::verify_enabled() {

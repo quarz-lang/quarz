@@ -149,8 +149,13 @@ const FLATNESS_NAMES: [&str; 4] = ["==", "!=", "hash", "initialize"];
 
 impl Kept {
     /// Every table from nothing, the layouts (`layout::compute`) into
-    /// `layouts`.
-    pub(crate) fn build(world: &World, out: &types::Output, layouts: &mut Vec<Layout>) -> Kept {
+    /// `layouts`, at `epoch` (after every epoch earlier tables reached).
+    pub(crate) fn build(
+        world: &World,
+        out: &types::Output,
+        layouts: &mut Vec<Layout>,
+        epoch: u64,
+    ) -> Kept {
         let (rt, table) = rtworld::declared_with(world, out, rtworld::witness_record(world));
         let n = world.classes.len();
         let by_class = |c: ClassId| c as usize;
@@ -184,8 +189,8 @@ impl Kept {
             class_rows,
             overridden,
             graph,
-            epoch: 1,
-            log: vec![(1, None)],
+            epoch,
+            log: vec![(epoch, None)],
         }
     }
 
