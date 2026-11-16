@@ -1172,8 +1172,10 @@ pub fn compile(module: &Module, dir: &Path, jobs: usize) -> Result<Vec<PathBuf>,
 /// milliseconds (`getrusage(RUSAGE_CHILDREN)`): the clang processes' summed
 /// time for `QUARZ_BUILD_TIMINGS`.
 fn children_cpu_ms() -> f64 {
-    // SAFETY: `getrusage` writes the struct it is given and nothing else.
+    // SAFETY: `rusage` is plain integers, for which all zeroes is a value;
+    // `getrusage` writes the struct it is given and nothing else.
     let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
     if unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &mut u) } != 0 {
         return 0.0;
     }
@@ -1449,8 +1451,8 @@ fn emit(module: &Module, opaque: bool) -> Result<Vec<String>, String> {
     }
 
     // The partitions (#786, tmp/plan-786.md §1): the functions by their
-    // file's group (the application, each cog, each standard library
-    // module; the prelude's files are in none), then in id order within a
+    // file's group (the application, each cog, the standard library with
+    // the prelude: `Module::file_groups`), then in id order within a
     // group; a group's run is cut into buckets of `PARTITION_BYTES` of IR
     // or more, a new one starting at a method of another class. A program
     // under `PARTITION_BYTES` in all is one partition, with the tables.
@@ -1468,9 +1470,10 @@ fn emit(module: &Module, opaque: bool) -> Result<Vec<String>, String> {
         }
     };
     let total: usize = gens.iter().map(|g| g.text.len()).sum();
+    let target = partition_bytes();
     let mut order: Vec<usize> = (0..gens.len()).collect();
     let mut parts: Vec<Vec<usize>> = Vec::new();
-    if total < PARTITION_BYTES {
+    if total < target {
         parts.push(order);
     } else {
         order.sort_by_key(|&i| (group(i), i));
@@ -1480,7 +1483,7 @@ fn emit(module: &Module, opaque: bool) -> Result<Vec<String>, String> {
             let (g, o) = (group(i), owner(i));
             let cut = match prev {
                 None => true,
-                Some((pg, po)) => pg != g || (acc >= PARTITION_BYTES && o.is_some() && o != po),
+                Some((pg, po)) => pg != g || (acc >= target && o.is_some() && o != po),
             };
             if cut {
                 parts.push(Vec::new());
@@ -1563,6 +1566,16 @@ fn emit(module: &Module, opaque: bool) -> Result<Vec<String>, String> {
 /// (#786): about 2 MB, a clang process's work of 0.15 s at `-O0` and 1 s
 /// at `-O2` on the machine of tmp/plan-786.md.
 const PARTITION_BYTES: usize = 2_000_000;
+
+/// The partition size `emit` cuts at: `PARTITION_BYTES`, or
+/// `QUARZ_BUILD_PARTITION_BYTES` (for tests and measurements: a small value
+/// splits even a small program at every class).
+fn partition_bytes() -> usize {
+    std::env::var("QUARZ_BUILD_PARTITION_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(PARTITION_BYTES)
+}
 
 /// The serialized program, the natives' and the compiled bodies' tables and
 /// `main`, appended to `out` (`declared`: the bodies are declared, in a
@@ -1673,7 +1686,7 @@ fn tables(out: &mut String, module: &Module, opaque: bool, body_params: &[Ty]) {
             if opaque {
                 format!("ptr @qz_fn_{i}")
             } else {
-                let ft = fn_type(&body_params, &[i32_], false);
+                let ft = fn_type(body_params, &[i32_], false);
                 format!("i8* bitcast ({ft}* @qz_fn_{i} to i8*)")
             }
         })

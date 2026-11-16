@@ -42,9 +42,10 @@ pub struct Module {
     /// Compilation units in execution order (dependencies first).
     pub units: Vec<Unit>,
     /// Each source file's group, for `quarz build`'s partitions (#786):
-    /// files of one group (the application, a cog, a standard library
-    /// module) share a key, and keys order the groups. A file without one
-    /// (the prelude's) is in none. Not in the compiled program's image.
+    /// files of one group (the application, a cog, the standard library)
+    /// share a key, and keys order the groups; the standard library's is
+    /// `u64::MAX`, which a file without one (the prelude's) joins. Not in
+    /// the compiled program's image.
     #[serde(default)]
     pub file_groups: HashMap<u32, u64>,
 }
