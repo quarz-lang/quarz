@@ -885,7 +885,6 @@ impl Interp {
             world,
             functions,
             units,
-            ..
         } = module;
         Interp::with_state(world, 0, functions, units, argv, state)
     }

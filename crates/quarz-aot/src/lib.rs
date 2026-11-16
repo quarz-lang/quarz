@@ -9,6 +9,13 @@ use std::process::Command;
 
 use quarz_ir::Module;
 
+/// Each source file's group, for `quarz build`'s partitions (#786): the
+/// files of one group (the application, a cog, the standard library)
+/// share a key, and the keys order the groups; a file without one is in
+/// the standard library's (`u64::MAX`). Empty, every function is in one
+/// group.
+pub type FileGroups = std::collections::HashMap<u32, u64>;
+
 mod builder;
 mod gen;
 mod llvm;
@@ -149,16 +156,21 @@ pub fn build_jobs(jobs: Option<&str>) -> Result<usize, String> {
 }
 
 /// Compile a module and link it into the executable `output`, with the
-/// jobs `build_jobs(None)` gives.
+/// jobs `build_jobs(None)` gives and no file groups.
 pub fn build(module: &Module, output: &Path) -> Result<(), String> {
-    build_with_jobs(module, output, build_jobs(None)?)
+    build_with_jobs(module, &FileGroups::default(), output, build_jobs(None)?)
 }
 
 /// `build` by `jobs` clang processes at once. The program's partitions
 /// are compiled in a directory next to `output` (`<output>.quarz-build`),
 /// removed after the link, or when the build fails; `QUARZ_KEEP_IR` keeps
 /// it, with each partition's IR, and says where.
-pub fn build_with_jobs(module: &Module, output: &Path, jobs: usize) -> Result<(), String> {
+pub fn build_with_jobs(
+    module: &Module,
+    groups: &FileGroups,
+    output: &Path,
+    jobs: usize,
+) -> Result<(), String> {
     // What the program cannot run is neither compiled nor decoded at
     // start-up (`QUARZ_NO_SHAKE` keeps everything, for comparison).
     let mut shaken;
@@ -184,7 +196,8 @@ pub fn build_with_jobs(module: &Module, output: &Path, jobs: usize) -> Result<()
     // (Fresh: what an earlier build left is not linked in.)
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let built = llvm::compile(module, &dir, jobs).and_then(|objects| link(&objects, output));
+    let built =
+        llvm::compile(module, groups, &dir, jobs).and_then(|objects| link(&objects, output));
     if std::env::var_os("QUARZ_KEEP_IR").is_some() {
         for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
             if entry.path().extension().is_some_and(|e| e == "o") {

@@ -9,6 +9,8 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::FileGroups;
+
 use quarz_ir::*;
 use quarz_vm::layout as L;
 
@@ -80,10 +82,16 @@ struct Ll<'a> {
     data: Vec<String>,
 }
 
-/// Where a `define`'s linkage goes: `internal` in a program of one
+/// Where a body's `define` linkage goes: `internal` in a program of one
 /// partition, `hidden` when the tables are in a partition of their own
-/// and name every function (#786).
+/// and name every body (#786).
 const LINKAGE: &str = "\x03";
+
+/// Where a typed or early entry's `define` linkage goes: `hidden` when a
+/// function of another partition calls it, else `internal`, so that clang
+/// may still delete an entry it inlined into all its callers (as `hidden`,
+/// bezel's CLI kept 62 such entries, 69 KB of code at `-O2`).
+const ENTRY_LINKAGE: &str = "\x04";
 
 /// A reference to a function's metadata node by its local id, which the
 /// function's partition numbers (`relocate_meta`). The markers are control
@@ -93,17 +101,25 @@ fn meta_ref(local: u32) -> String {
     format!("!\x01{local}\x02")
 }
 
-/// `text` with each `meta_ref` numbered from `base`, and each `LINKAGE`
-/// replaced by `linkage`.
-fn relocate_meta(text: &str, base: u32, linkage: &str) -> String {
+/// `text` with each `meta_ref` numbered from `base`, each `LINKAGE`
+/// replaced by `linkage` and each `ENTRY_LINKAGE` by `entry_linkage`.
+fn relocate_meta(text: &str, base: u32, linkage: &str, entry_linkage: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
-    while let Some(at) = rest.find(['\x01', '\x03']) {
+    while let Some(at) = rest.find(['\x01', '\x03', '\x04']) {
         out.push_str(&rest[..at]);
-        if rest.as_bytes()[at] == 3 {
-            out.push_str(linkage);
-            rest = &rest[at + 1..];
-            continue;
+        match rest.as_bytes()[at] {
+            3 => {
+                out.push_str(linkage);
+                rest = &rest[at + 1..];
+                continue;
+            }
+            4 => {
+                out.push_str(entry_linkage);
+                rest = &rest[at + 1..];
+                continue;
+            }
+            _ => {}
         }
         let tail = &rest[at + 1..];
         let end = tail.find('\x02').expect("a metadata marker's end");
@@ -1077,7 +1093,12 @@ fn opt_level() -> Result<&'static str, String> {
 /// next to its object (`p000.ll`) and removed after, unless
 /// `QUARZ_KEEP_IR` is set. When a clang fails, the ones running are
 /// waited for, no other starts, and every failure is reported.
-pub fn compile(module: &Module, dir: &Path, jobs: usize) -> Result<Vec<PathBuf>, String> {
+pub fn compile(
+    module: &Module,
+    groups: &FileGroups,
+    dir: &Path,
+    jobs: usize,
+) -> Result<Vec<PathBuf>, String> {
     let opt = opt_level()?;
     // (`find_clang` runs `clang --version`: a process of its own.)
     let start = std::time::Instant::now();
@@ -1085,7 +1106,7 @@ pub fn compile(module: &Module, dir: &Path, jobs: usize) -> Result<Vec<PathBuf>,
     crate::report("clang_version", start, &[]);
     let opaque = major >= 15;
     let start = std::time::Instant::now();
-    let parts = emit(module, opaque)?;
+    let parts = emit(module, groups, opaque)?;
     let mut lls: Vec<PathBuf> = Vec::with_capacity(parts.len());
     for (p, ir) in parts.iter().enumerate() {
         let ll = dir.join(format!("p{p:03}.ll"));
@@ -1190,7 +1211,7 @@ struct RtIdx {
 }
 
 /// The module as LLVM IR text.
-fn emit(module: &Module, opaque: bool) -> Result<Vec<String>, String> {
+fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String>, String> {
     let (p, i32_, i64_) = (Ty::Ptr, Ty::I32, Ty::I64);
     let mut decls: Vec<FnDecl> = Vec::new();
     fn push(decls: &mut Vec<FnDecl>, name: &str, params: &[Ty], rets: &[Ty]) -> u32 {
@@ -1441,7 +1462,11 @@ fn emit(module: &Module, opaque: bool) -> Result<Vec<String>, String> {
                 "uwtable \"disable-tail-calls\"=\"true\""
             };
             let name = decls[target as usize].name.clone();
-            let (fn_text, fn_meta) = b.finish(&name, attrs, &params);
+            let (mut fn_text, fn_meta) = b.finish(&name, attrs, &params);
+            if sig.is_some() {
+                // (A typed or early entry: its own linkage, `ENTRY_LINKAGE`.)
+                fn_text = fn_text.replacen(LINKAGE, ENTRY_LINKAGE, 1);
+            }
             g.nmeta += fn_meta.len() as u32;
             g.meta.extend(fn_meta);
             g.text.push_str(&fn_text);
@@ -1452,13 +1477,15 @@ fn emit(module: &Module, opaque: bool) -> Result<Vec<String>, String> {
 
     // The partitions (#786, tmp/plan-786.md §1): the functions by their
     // file's group (the application, each cog, the standard library with
-    // the prelude: `Module::file_groups`), then in id order within a
-    // group; a group's run is cut into buckets of `PARTITION_BYTES` of IR
-    // or more, a new one starting at a method of another class. A program
-    // under `PARTITION_BYTES` in all is one partition, with the tables.
+    // the prelude: `FileGroups`), then in id order within a group. A group
+    // is cut into partitions of about `PARTITION_BYTES` of IR: a new one
+    // starts at a method of another class once the current one holds that
+    // much, or at a method of the same class once that class's part of it
+    // does (a large class spans partitions, a small one never does); never
+    // at a block, which stays with what precedes it. A program under
+    // `PARTITION_BYTES` in all is one partition, with the tables.
     let group = |i: usize| -> u64 {
-        module
-            .file_groups
+        groups
             .get(&module.functions[i].file)
             .copied()
             .unwrap_or(u64::MAX)
@@ -1477,27 +1504,37 @@ fn emit(module: &Module, opaque: bool) -> Result<Vec<String>, String> {
         parts.push(order);
     } else {
         order.sort_by_key(|&i| (group(i), i));
+        // (The bytes of the current partition, and of its last class's
+        // methods in it; the last group and class seen.)
         let mut acc = 0usize;
+        let mut class_acc = 0usize;
         let mut prev: Option<(u64, Option<u32>)> = None;
         for i in order {
             let (g, o) = (group(i), owner(i));
             let cut = match prev {
                 None => true,
-                Some((pg, po)) => pg != g || (acc >= target && o.is_some() && o != po),
+                Some((pg, po)) => {
+                    pg != g
+                        || (o.is_some()
+                            && if o != po {
+                                acc >= target
+                            } else {
+                                class_acc >= target
+                            })
+                }
             };
             if cut {
                 parts.push(Vec::new());
                 acc = 0;
+                class_acc = 0;
+            }
+            if o.is_some() && prev.is_some_and(|(_, po)| po != o) {
+                class_acc = 0;
             }
             parts.last_mut().expect("a partition").push(i);
             acc += gens[i].text.len();
-            if o.is_some() {
-                prev = Some((g, o));
-            } else if let Some((_, po)) = prev {
-                prev = Some((g, po));
-            } else {
-                prev = Some((g, None));
-            }
+            class_acc += gens[i].text.len();
+            prev = Some((g, o.or(prev.and_then(|(_, po)| po))));
         }
     }
     let one = parts.len() == 1;
@@ -1506,6 +1543,16 @@ fn emit(module: &Module, opaque: bool) -> Result<Vec<String>, String> {
     for (p, fs) in parts.iter().enumerate() {
         for &i in fs {
             part_of[i] = p;
+        }
+    }
+    // The functions some other partition calls: their typed and early
+    // entries are `hidden` too.
+    let mut crossing = vec![false; gens.len()];
+    for (i, g) in gens.iter().enumerate() {
+        for &c in &g.calls {
+            if part_of[c as usize] != part_of[i] {
+                crossing[c as usize] = true;
+            }
         }
     }
     let mut outs: Vec<String> = Vec::with_capacity(parts.len() + 1);
@@ -1535,9 +1582,10 @@ fn emit(module: &Module, opaque: bool) -> Result<Vec<String>, String> {
         let mut base = 8u32;
         let mut meta = String::new();
         for &i in fs {
-            out.push_str(&relocate_meta(&gens[i].text, base, linkage));
+            let entry_linkage = if crossing[i] { "hidden" } else { "internal" };
+            out.push_str(&relocate_meta(&gens[i].text, base, linkage, entry_linkage));
             for m in &gens[i].meta {
-                meta.push_str(&relocate_meta(m, base, linkage));
+                meta.push_str(&relocate_meta(m, base, linkage, "internal"));
                 meta.push('\n');
             }
             base += gens[i].nmeta;
@@ -1569,7 +1617,7 @@ const PARTITION_BYTES: usize = 2_000_000;
 
 /// The partition size `emit` cuts at: `PARTITION_BYTES`, or
 /// `QUARZ_BUILD_PARTITION_BYTES` (for tests and measurements: a small value
-/// splits even a small program at every class).
+/// splits even a small program at every method).
 fn partition_bytes() -> usize {
     std::env::var("QUARZ_BUILD_PARTITION_BYTES")
         .ok()

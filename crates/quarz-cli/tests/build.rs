@@ -272,7 +272,7 @@ fn quarz_build(
 }
 
 /// #786: programs split into partitions (`QUARZ_BUILD_PARTITION_BYTES=1`
-/// cuts at every class, so direct calls, typed and early entries, blocks
+/// cuts at every method, so direct calls, typed and early entries, blocks
 /// and the tables cross partitions) run as on the VM, leave no build
 /// directory, and build the same executable for every number of jobs. The
 /// fixtures: blocks (`block_destructure_padding`, `keyword_procs`), typed
