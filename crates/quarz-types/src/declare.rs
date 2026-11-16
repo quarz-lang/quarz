@@ -2294,7 +2294,11 @@ impl<'ast> Declarer<'ast> {
     /// would otherwise run different methods (the extension's own through
     /// the module, the module's through the ancestor). The module's method
     /// overrides an ancestor's by the override table (`World::overrides`)
-    /// or, for the target, a pair of `World::include_overrides_of`.
+    /// or, for the target, a pair of `World::include_overrides_of`. The
+    /// instance side only: on the class side an extension's own class
+    /// method is the witness of every class method of its name its
+    /// includes bring, so the same method runs through them, and the
+    /// class side keeps no such rule (the user's decision on #761).
     fn check_extension_over_module_override(
         &mut self,
         ext: ExtensionId,
