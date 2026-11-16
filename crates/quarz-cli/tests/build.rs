@@ -287,6 +287,74 @@ fn aot_opt_levels() {
     );
 }
 
+/// #785: `QUARZ_BUILD_TIMINGS=1` makes `quarz build` print one line per
+/// stage on standard error, `total` last (no values asserted: they are
+/// times), and changes nothing it builds; without it, nothing is printed.
+#[test]
+fn build_timings_print_every_stage_and_change_nothing() {
+    let path = fixture("control_flow.qz");
+    let dir = std::env::temp_dir().join(format!("quarz-build-timings-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let build = |exe: &Path, timed: bool| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_quarz"));
+        // (Every stage runs: `strip` is skipped under `QUARZ_NO_STRIP`.)
+        cmd.arg("build")
+            .arg(&path)
+            .arg("-o")
+            .arg(exe)
+            .env_remove("QUARZ_NO_STRIP");
+        if timed {
+            cmd.env("QUARZ_BUILD_TIMINGS", "1");
+        } else {
+            cmd.env_remove("QUARZ_BUILD_TIMINGS");
+        }
+        cmd.output().expect("run quarz build")
+    };
+    let (plain_exe, timed_exe) = (dir.join("plain"), dir.join("timed"));
+    let plain = build(&plain_exe, false);
+    let timed = build(&timed_exe, true);
+    let same = fs::read(&plain_exe).ok() == fs::read(&timed_exe).ok();
+    let _ = fs::remove_dir_all(&dir);
+    assert!(plain.status.success() && timed.status.success());
+    assert!(
+        plain.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&plain.stderr)
+    );
+    assert!(same, "the executables differ");
+    let err = String::from_utf8_lossy(&timed.stderr);
+    let lines: Vec<&str> = err.lines().collect();
+    let stages = [
+        "parse",
+        "check",
+        "declare",
+        "lower",
+        "shake",
+        "clang_version",
+        "emit",
+        "clang",
+        "link",
+        "strip",
+        "total",
+    ];
+    for (line, stage) in lines.iter().zip(stages) {
+        assert!(
+            line.starts_with(&format!("quarz-build-timing stage={stage} ms=")),
+            "{err}"
+        );
+    }
+    assert_eq!(lines.len(), stages.len(), "{err}");
+    assert!(
+        lines[1].contains(" cache_hits=") && lines[1].contains(" cache_misses="),
+        "{err}"
+    );
+    assert!(
+        lines[6].contains(" bytes=") && lines[6].contains(" functions="),
+        "{err}"
+    );
+    assert!(lines[7].contains(" level="), "{err}");
+}
+
 /// #630, compiled: an abstract method reached at run time is a violation
 /// under `QUARZ_VERIFY` and a `TypeError` without it, as on the VM
 /// (tests/verify.rs). No program the `quarz` command accepts reaches one,

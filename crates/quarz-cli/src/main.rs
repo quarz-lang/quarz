@@ -254,6 +254,24 @@ fn load_and_check(
     target: &Target,
     library: bool,
 ) -> Option<(quarz_types::Checked, Vec<SourceFile>, quarz_lower::Lowerer)> {
+    load_and_check_timed(target, library, false)
+}
+
+/// `load_and_check`, reporting its stages' times under
+/// `QUARZ_BUILD_TIMINGS=1` when `timed` (`quarz build`, #785): reading and
+/// parsing, checking (with the cache's hits and misses), and the runtime
+/// tables with the witness net (`declare`).
+fn load_and_check_timed(
+    target: &Target,
+    library: bool,
+    timed: bool,
+) -> Option<(quarz_types::Checked, Vec<SourceFile>, quarz_lower::Lowerer)> {
+    let report = |stage: &str, start: std::time::Instant, extra: &[(&str, String)]| {
+        if timed {
+            quarz_aot::report(stage, start, extra);
+        }
+    };
+    let start = std::time::Instant::now();
     let prelude_file = SourceFile::new("<prelude>", quarz_types::PRELUDE_SOURCE);
     let prelude = quarz_types::parse_prelude();
     let mut failed = false;
@@ -330,6 +348,9 @@ fn load_and_check(
     if failed {
         return None;
     }
+    report("parse", start, &[]);
+    let start = std::time::Instant::now();
+    let cache_before = quarz_types::cache::stats();
     let sources: Vec<SourceFile> = units.iter().map(|u| u.source.clone()).collect();
     let to_check: Vec<quarz_types::Unit> = units.into_iter().map(quarz_types::Unit::from).collect();
     let mut files = vec![prelude_file.clone()];
@@ -344,6 +365,16 @@ fn load_and_check(
         diagnostics.extend(errors);
         ok
     });
+    let cache_after = quarz_types::cache::stats();
+    report(
+        "check",
+        start,
+        &[
+            ("cache_hits", (cache_after.0 - cache_before.0).to_string()),
+            ("cache_misses", (cache_after.1 - cache_before.1).to_string()),
+        ],
+    );
+    let start = std::time::Instant::now();
     // The runtime's tables and the safety net over their rows, once
     // (`Lowerer::declare`): a refused row refuses the program; the lowering
     // takes the tables.
@@ -354,6 +385,7 @@ fn load_and_check(
         diagnostics.extend(errors);
         ok
     });
+    report("declare", start, &[]);
     for (file_index, diag) in &diagnostics {
         let f = if *file_index == 0 {
             &prelude_file
@@ -383,10 +415,15 @@ fn ir_file(target: &Target) -> ExitCode {
 }
 
 fn build_file(target: &Target, out: &std::path::Path) -> ExitCode {
-    let Some((checked, files, lowerer)) = load_and_check(target, false) else {
+    // (`total`, last: the whole build's wall time, against which the
+    // stages' sum shows what no stage holds, #785.)
+    let start = std::time::Instant::now();
+    let Some((checked, files, lowerer)) = load_and_check_timed(target, false, true) else {
         return ExitCode::FAILURE;
     };
-    match quarz_cli::build_with(checked, &files, lowerer, out) {
+    let built = quarz_cli::build_with(checked, &files, lowerer, out);
+    quarz_aot::report("total", start, &[]);
+    match built {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("quarz: {e}");

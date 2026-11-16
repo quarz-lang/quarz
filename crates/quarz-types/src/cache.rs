@@ -391,11 +391,31 @@ pub fn key(program: &quarz_syntax::ast::Program, interfaces: u64) -> Option<u64>
     Some(hash(&(build, program, interfaces)))
 }
 
+/// How many files' checks `load` found (hits) and did not (misses) in
+/// this process, with the cache on: `quarz build`'s timings say whether
+/// the cache answered (#785).
+static HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `load`'s hits and misses so far (`HITS`, `MISSES`).
+pub fn stats() -> (u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (HITS.load(Relaxed), MISSES.load(Relaxed))
+}
+
 /// Read the checks kept under `key`. (Its syntax, in the key, holds the
 /// file's node ids and spans: checks read back are for the same range.)
 pub fn load(key: u64) -> Option<Checks> {
+    use std::sync::atomic::Ordering::Relaxed;
     let p = path(key)?;
-    let bytes = std::fs::read(&p).ok()?;
+    let found = load_from(&p);
+    if found.is_some() { &HITS } else { &MISSES }.fetch_add(1, Relaxed);
+    found
+}
+
+/// `load` from the cache file `p`.
+fn load_from(p: &std::path::Path) -> Option<Checks> {
+    let bytes = std::fs::read(p).ok()?;
     let (sum, body): (u64, Vec<u8>) =
         bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
             .ok()?
@@ -408,7 +428,7 @@ pub fn load(key: u64) -> Option<Checks> {
         .ok()
         .map(|(c, _)| c)?;
     // (Its time says when it was last used: `sweep`.)
-    if let Ok(f) = std::fs::File::options().append(true).open(&p) {
+    if let Ok(f) = std::fs::File::options().append(true).open(p) {
         let _ = f.set_modified(std::time::SystemTime::now());
     }
     Some(checks)

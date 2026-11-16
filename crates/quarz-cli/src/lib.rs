@@ -68,7 +68,9 @@ pub fn build_with(
     lowerer: Lowerer,
     output: &std::path::Path,
 ) -> Result<(), String> {
+    let start = std::time::Instant::now();
     let module = quarz_lower::lower_checked_with(lowerer, &checked, files);
+    quarz_aot::report("lower", start, &[]);
     quarz_aot::build(&module, output)
 }
 
