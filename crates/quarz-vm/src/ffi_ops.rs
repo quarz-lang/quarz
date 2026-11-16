@@ -16,17 +16,6 @@ use quarz_ir::{FastOp, HashItem, Reg, RtType, StrPiece, Term, VarLoc};
 use smallvec::SmallVec;
 
 use crate::ffi::STATUS_OK;
-
-// #536 step 8b, commit 1: the tags `qz_op_call` decodes below equal
-// `layout`'s single definitions (the next commit reads them and deletes
-// this).
-const _: () = {
-    use crate::layout as L;
-    assert!(L::CALL_METHOD == 0 && L::CALL_SEND == 1 && L::CALL_CONSTRUCT == 2);
-    assert!(L::CALL_CONSTRUCT_RECV == 3 && L::CALL_PROC == 4 && L::CALL_YIELD == 5);
-    assert!(L::CALL_SUPER == 6 && L::CALL_RAISE == 7 && L::CALL_INSTANCE_EXEC == 8);
-    assert!(L::CALL_FUNCTION == 9);
-};
 use crate::interp::{Flow, Interp};
 use crate::ops::{CallOp, CallOps, OwnedOps};
 use crate::value::Value;
@@ -261,16 +250,19 @@ op_entry!(
             .map(|p| (p[0], p[1]))
             .collect();
         let (a, b) = (head[2], head[3]);
+        // (The tags of `CallKind`, `layout::CALL_*`, as the generator
+        // writes them.)
+        use crate::layout as L;
         let kind = match head[1] {
-            0 => CallOp::Method(a),
-            1 => CallOp::Send(unsafe { text(name, name_len) }),
-            2 => CallOp::Construct { class: a, init: opt(b) },
-            3 => CallOp::ConstructRecv { class: a, init: opt(b) },
-            4 => CallOp::ProcCall,
-            5 => CallOp::Yield,
-            6 => CallOp::Super(a),
-            8 => CallOp::InstanceExec,
-            9 => CallOp::Function(a),
+            L::CALL_METHOD => CallOp::Method(a),
+            L::CALL_SEND => CallOp::Send(unsafe { text(name, name_len) }),
+            L::CALL_CONSTRUCT => CallOp::Construct { class: a, init: opt(b) },
+            L::CALL_CONSTRUCT_RECV => CallOp::ConstructRecv { class: a, init: opt(b) },
+            L::CALL_PROC => CallOp::ProcCall,
+            L::CALL_YIELD => CallOp::Yield,
+            L::CALL_SUPER => CallOp::Super(a),
+            L::CALL_INSTANCE_EXEC => CallOp::InstanceExec,
+            L::CALL_FUNCTION => CallOp::Function(a),
             _ => CallOp::Raise,
         };
         rt.op_call(

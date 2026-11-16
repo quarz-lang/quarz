@@ -2881,7 +2881,10 @@ pub enum Value {
     Duration(i64),
     /// A string of at most 14 bytes, kept in the value itself.
     Short(ShortStr),
-    BigInt(Rc<BigInt>),
+    // The first variant with a counted payload: every variant before it
+    // has none, every one from it on has one (`NEEDS_DROP_FROM`, which
+    // compiled code compares tags with).
+    BigInt(Rc<BigInt>) = crate::layout::NEEDS_DROP_FROM as u8,
     /// A longer string.
     Str(Rc<str>),
     Array(Rc<ArrayData>) = crate::layout::TAG_ARRAY,

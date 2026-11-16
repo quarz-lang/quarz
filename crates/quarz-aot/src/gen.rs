@@ -9,65 +9,36 @@ use quarz_vm::layout as L;
 use crate::builder::{Builder, FloatCC, IntCC, Ty};
 use crate::unbox::{self, Num, State};
 
-/// Size of a `Value` in bytes (`repr(u8)`: a tag byte, then a payload
-/// at the next word; only the tag's byte of the first word is defined).
-const VALUE_SIZE: i32 = 16;
-/// Where a `Bool`'s byte and a `Class`'s id are in a value: right after
-/// the tag, as `repr(u8)` lays out a variant whose payload is smaller than
-/// a word (the runtime checks both at start-up). Every other payload is
-/// at the next word. A tag is stored before the payload, since storing it
-/// may write the whole first word.
-const BOOL_OFF: i32 = 1;
-const CLASS_OFF: i32 = 4;
-/// Space for an `Activation` built by compiled code (`qz_enter`); the
-/// runtime checks its real size against this.
-const ACT_BUF_SIZE: u32 = 320;
-/// Tags below this hold no reference-counted payload (`NEEDS_DROP_FROM`).
-const NEEDS_DROP_FROM: i64 = 8;
-/// `qz_enter_virtual` ran the call itself (see `ffi::STATUS_DONE`).
-const STATUS_DONE: i64 = 7;
+// The layout constants compiled code shares with the runtime, from their
+// one definition (`quarz_vm::layout`, in `SIGNATURE`), in the types the
+// generator writes them as.
+/// Size of a `Value` in bytes.
+const VALUE_SIZE: i32 = L::VALUE_SIZE as i32;
+/// Where a `Bool`'s byte and a `Class`'s id are in a value (the runtime
+/// checks both at start-up, `layout::check`). Every other payload is at
+/// the next word. A tag is stored before the payload, since storing it may
+/// write the whole first word.
+const BOOL_OFF: i32 = L::BOOL_OFF as i32;
+const CLASS_OFF: i32 = L::CLASS_OFF as i32;
+/// Space for an `Activation` built by compiled code (`qz_enter`).
+const ACT_BUF_SIZE: u32 = L::ACT_BUF_SIZE as u32;
+/// Tags below this hold no reference-counted payload.
+const NEEDS_DROP_FROM: i64 = L::NEEDS_DROP_FROM as i64;
+/// `qz_enter_virtual` ran the call itself.
+const STATUS_DONE: i64 = L::STATUS_DONE as i64;
 /// A typed entry's result did not fit its declared type: it is boxed
 /// in the caller's `out` instead.
-const STATUS_BOXED: i64 = 8;
-const TAG_NIL: i64 = 0;
-const TAG_BOOL: i64 = 1;
-const TAG_INT: i64 = 2;
-const TAG_FLOAT: i64 = 3;
-const TAG_CLASS: i64 = 5;
-const TAG_ARRAY: i64 = 10;
-const TAG_OBJECT: i64 = 16;
-/// Offset of the field view in an `Object` from its `Rc` allocation
-/// (after the allocation's two words); see `Object::bind_fields`.
-const OBJECT_FIELDS_PTR_OFF: i32 = 16;
-
-const STATUS_RAISE: i64 = 1;
-
-// #536 step 8b, commit 1: these copies equal `quarz_vm::layout`'s single
-// definitions, and so do the operand tags of `CallKind` written below
-// (`qz_op_call`'s descriptor); the next commit reads layout's and deletes
-// the copies and this.
-const _: () = {
-    assert!(VALUE_SIZE as usize == L::VALUE_SIZE);
-    assert!(BOOL_OFF as usize == L::BOOL_OFF);
-    assert!(CLASS_OFF as usize == L::CLASS_OFF);
-    assert!(ACT_BUF_SIZE as usize == L::ACT_BUF_SIZE);
-    assert!(NEEDS_DROP_FROM as u64 == L::NEEDS_DROP_FROM);
-    assert!(STATUS_DONE as u32 == L::STATUS_DONE);
-    assert!(STATUS_BOXED as u32 == L::STATUS_BOXED);
-    assert!(STATUS_RAISE as u32 == L::STATUS_RAISE);
-    assert!(TAG_NIL as u8 == L::TAG_NIL);
-    assert!(TAG_BOOL as u8 == L::TAG_BOOL);
-    assert!(TAG_INT as u8 == L::TAG_INT);
-    assert!(TAG_FLOAT as u8 == L::TAG_FLOAT);
-    assert!(TAG_CLASS as u8 == L::TAG_CLASS);
-    assert!(TAG_ARRAY as u8 == L::TAG_ARRAY);
-    assert!(TAG_OBJECT as u8 == L::TAG_OBJECT);
-    assert!(OBJECT_FIELDS_PTR_OFF as usize == L::OBJECT_FIELDS_PTR_OFF);
-    assert!(L::CALL_METHOD == 0 && L::CALL_SEND == 1 && L::CALL_CONSTRUCT == 2);
-    assert!(L::CALL_CONSTRUCT_RECV == 3 && L::CALL_PROC == 4 && L::CALL_YIELD == 5);
-    assert!(L::CALL_SUPER == 6 && L::CALL_RAISE == 7 && L::CALL_INSTANCE_EXEC == 8);
-    assert!(L::CALL_FUNCTION == 9);
-};
+const STATUS_BOXED: i64 = L::STATUS_BOXED as i64;
+const STATUS_RAISE: i64 = L::STATUS_RAISE as i64;
+const TAG_NIL: i64 = L::TAG_NIL as i64;
+const TAG_BOOL: i64 = L::TAG_BOOL as i64;
+const TAG_INT: i64 = L::TAG_INT as i64;
+const TAG_FLOAT: i64 = L::TAG_FLOAT as i64;
+const TAG_CLASS: i64 = L::TAG_CLASS as i64;
+const TAG_ARRAY: i64 = L::TAG_ARRAY as i64;
+const TAG_OBJECT: i64 = L::TAG_OBJECT as i64;
+/// Where an object's field layout pointer is, from its `Rc` allocation.
+const OBJECT_FIELDS_PTR_OFF: i32 = L::OBJECT_FIELDS_PTR_OFF as i32;
 
 /// The runtime's entries for the instructions compiled code does not do
 /// inline (`quarz_vm::ffi_ops`), one per kind: each takes the
@@ -3021,18 +2992,22 @@ impl<B: Builder> Gen<'_, B> {
                 on_self: _,
             } => {
                 let (tag, a, b2, name): (u32, u32, u32, &str) = match kind {
-                    CallKind::Method(m) => (0, *m, 0, ""),
-                    CallKind::Send(n) => (1, 0, 0, n),
-                    CallKind::Construct { class, init } => (2, *class, opt(*init), ""),
-                    CallKind::ConstructRecv { class, init } => (3, *class, opt(*init), ""),
-                    CallKind::ProcCall => (4, 0, 0, ""),
-                    CallKind::Yield => (5, 0, 0, ""),
-                    CallKind::Super(m) => (6, *m, 0, ""),
-                    CallKind::Raise => (7, 0, 0, ""),
-                    CallKind::InstanceExec => (8, 0, 0, ""),
+                    CallKind::Method(m) => (L::CALL_METHOD, *m, 0, ""),
+                    CallKind::Send(n) => (L::CALL_SEND, 0, 0, n),
+                    CallKind::Construct { class, init } => {
+                        (L::CALL_CONSTRUCT, *class, opt(*init), "")
+                    }
+                    CallKind::ConstructRecv { class, init } => {
+                        (L::CALL_CONSTRUCT_RECV, *class, opt(*init), "")
+                    }
+                    CallKind::ProcCall => (L::CALL_PROC, 0, 0, ""),
+                    CallKind::Yield => (L::CALL_YIELD, 0, 0, ""),
+                    CallKind::Super(m) => (L::CALL_SUPER, *m, 0, ""),
+                    CallKind::Raise => (L::CALL_RAISE, 0, 0, ""),
+                    CallKind::InstanceExec => (L::CALL_INSTANCE_EXEC, 0, 0, ""),
                     // (A function's call: as `CallOp::Function`, which a
                     // native with a by-reference version takes directly.)
-                    CallKind::Function(m) => (9, *m, 0, ""),
+                    CallKind::Function(m) => (L::CALL_FUNCTION, *m, 0, ""),
                 };
                 let mut desc = vec![
                     *dst,
