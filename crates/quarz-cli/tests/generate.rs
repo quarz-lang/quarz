@@ -139,6 +139,82 @@ fn generated_methods_run_the_same_interpreted_and_compiled() {
     assert!(ok, "{err}");
 }
 
+/// #810: a `==` and `hash` that `def_method` generates are the type's own,
+/// as written ones are (docs/03 §6): hash keys and set members compare and
+/// hash by them, and so does a `data` holder's field holding the type by
+/// reference (`D` has a `String` field, so no field holds it in place).
+/// Cells: `Set` members, `Hash` keys (lookup and insertion), a `data`
+/// holder's `==` and `hash`, an array's `include?` (which always asked
+/// the element's `==`); interpreted and compiled.
+#[test]
+fn generated_eq_and_hash_are_the_keys_own() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r##"module ByX
+  abstract def x -> Int
+  static def self.by_x -> Void
+    def_method(:==, :other) do |other: Object|
+      case other
+      in D => o then o.x == x
+      else false
+      end
+    end
+    def_method(:hash) { x.hash }
+  end
+end
+data D(x: Int, s: String)
+  include ByX
+end
+module Go
+  static def self.go -> Void
+    D.by_x
+  end
+end
+"##,
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        r##"require_relative "lib"
+
+class Gen
+  include Go
+  go
+end
+
+data E = (d: D, n: Int)
+
+a = D.new(1, "a")
+b = D.new(1, "b")
+c = D.new(2, "a")
+puts a == b
+puts a == c
+puts Set[a, b, c].size
+h = {a => "first"}
+puts h[b]
+puts h.put(b, "second").size
+puts E.new(a, 3) == E.new(b, 3)
+puts E.new(a, 3) == E.new(c, 3)
+puts Set[E.new(a, 3), E.new(b, 3)].size
+puts [a].include?(b)
+"##,
+    );
+    let expected = "true\nfalse\n2\nfirst\n1\ntrue\nfalse\n1\ntrue\n";
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let out = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+}
+
 #[test]
 fn what_a_lifted_block_cannot_do() {
     let d = dir();

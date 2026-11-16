@@ -240,7 +240,9 @@ pub fn class_row(world: &World, out: &types::Output, id: ClassId) -> RtClass {
                 c.methods.get(*n).is_some_and(|ms| {
                     ms.iter().any(|m| {
                         let m = world.method(*m);
-                        !m.singleton && !m.is_native && m.body.is_some()
+                        // (A generated one's body is its lifted block,
+                        // `Generated::func`: it has none of its own.)
+                        !m.singleton && !m.is_native && (m.body.is_some() || m.generated.is_some())
                     })
                 })
             }),
