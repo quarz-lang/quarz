@@ -721,7 +721,17 @@ impl Derived {
         let vslots = world
             .methods
             .iter()
-            .map(|m| vslot(m.overridden && !m.singleton && !m.is_extension))
+            .map(|m| {
+                let virtual_ = m.dispatch() == quarz_ir::Dispatch::Virtual;
+                #[cfg(debug_assertions)]
+                quarz_ir::dispatch_oracle(
+                    9,
+                    m.overridden && !m.singleton && !m.is_extension,
+                    virtual_,
+                    &m.name,
+                );
+                vslot(virtual_)
+            })
             .collect();
         Derived {
             natives,
@@ -2629,10 +2639,13 @@ impl Interp {
     pub fn resolve_dynamic(&self, recv: &Value, mid: MethodId) -> Result<MethodId, Flow> {
         let m = self.program.method(mid);
         if m.singleton {
+            let class_side = m.dispatch() == quarz_ir::Dispatch::ClassSide;
+            #[cfg(debug_assertions)]
+            quarz_ir::dispatch_oracle(10, m.overridden, class_side, &m.name);
             // A class method some subclass overrides: the class it is
             // called on decides.
             return match recv {
-                Value::Class(cid) if m.overridden && *cid != m.owner => {
+                Value::Class(cid) if class_side && *cid != m.owner => {
                     // (The cache holds keys only: a hit needs no check.)
                     if let Some(found) = self.class_method_cache.borrow().get(&(*cid, mid)) {
                         return Ok(found.unwrap_or(mid));

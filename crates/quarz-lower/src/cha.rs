@@ -63,7 +63,10 @@ fn rewrite_in(f: &mut Function, world: &RtWorld, has_subclass: &[bool]) {
                         lines.push(line);
                         continue;
                     };
-                    if method.overridden {
+                    let dispatched = method.dispatch() != Dispatch::Static;
+                    #[cfg(debug_assertions)]
+                    quarz_ir::dispatch_oracle(12, method.overridden, dispatched, &method.name);
+                    if dispatched {
                         insts.push(inst);
                         lines.push(line);
                         continue;

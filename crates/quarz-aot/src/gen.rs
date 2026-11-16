@@ -948,7 +948,15 @@ fn direct_target(inst: &Inst, methods: &[RtMethod]) -> Option<FuncId> {
     let m = methods.get(*mid as usize)?;
     // An overridden method (a class method too: the class it is called
     // on decides) is resolved at run time.
-    if m.native_key.is_some() || (m.overridden && !m.is_extension) {
+    let resolved = m.native_key.is_some() || m.dispatch() != Dispatch::Static;
+    #[cfg(debug_assertions)]
+    quarz_ir::dispatch_oracle(
+        1,
+        m.native_key.is_some() || (m.overridden && !m.is_extension),
+        resolved,
+        &m.name,
+    );
+    if resolved {
         return None;
     }
     m.func
@@ -2267,7 +2275,16 @@ impl<B: Builder> Gen<'_, B> {
     fn typed_callee(&self, inst: &Inst) -> Option<FuncId> {
         let call = self.static_target(inst)?;
         let m = &self.methods[call.mid as usize];
-        if m.overridden && !m.is_extension && m.native_key.is_none() {
+        let old = m.overridden && !m.is_extension && m.native_key.is_none();
+        // (`direct_target` gives none for it: the check goes in commit 2.)
+        #[cfg(debug_assertions)]
+        quarz_ir::dispatch_oracle(
+            2,
+            old,
+            old && direct_target(inst, self.methods).is_none(),
+            &m.name,
+        );
+        if old {
             return None;
         }
         let callee = direct_target(inst, self.methods)?;
@@ -2300,7 +2317,14 @@ impl<B: Builder> Gen<'_, B> {
         // A method some class overrides (an abstract one always is) is
         // resolved on the receiver by `qz_call_static` itself; the
         // declared signature says what the call passes.
-        let virtual_ = m.overridden && !m.singleton && !m.is_extension;
+        let virtual_ = m.dispatch() == Dispatch::Virtual;
+        #[cfg(debug_assertions)]
+        quarz_ir::dispatch_oracle(
+            3,
+            m.overridden && !m.singleton && !m.is_extension,
+            virtual_,
+            &m.name,
+        );
         let fixed = m.synth == RtSynth::None
             && (!m.is_abstract || virtual_)
             && (m.native_key.is_some()
@@ -4904,12 +4928,21 @@ impl<B: Builder> Gen<'_, B> {
                     let d = self.i32(dst);
                     {
                         let m = &self.methods[mid as usize];
-                        if !function
-                            && m.overridden
-                            && !m.singleton
-                            && !m.is_extension
-                            && m.native_key.is_none()
-                        {
+                        let virtual_ = !function
+                            && m.dispatch() == Dispatch::Virtual
+                            && m.native_key.is_none();
+                        #[cfg(debug_assertions)]
+                        quarz_ir::dispatch_oracle(
+                            4,
+                            !function
+                                && m.overridden
+                                && !m.singleton
+                                && !m.is_extension
+                                && m.native_key.is_none(),
+                            virtual_,
+                            &m.name,
+                        );
+                        if virtual_ {
                             self.virtual_call(
                                 inst, mid, recv, &args, blk, dst, block, index, unwind,
                             );

@@ -107,11 +107,14 @@ fn site(inst: &Inst, eligible: &[bool], methods: &[RtMethod]) -> Option<Site> {
     }
     let m = methods.get(*mid as usize)?;
     let fid = m.func?;
+    let fixed = m.dispatch() == Dispatch::Static;
+    #[cfg(debug_assertions)]
+    quarz_ir::dispatch_oracle(6, !m.overridden || m.is_extension, fixed, &m.name);
     let bound = m.synth == RtSynth::None
         && !m.is_abstract
         && !m.has_block
         && m.native_key.is_none()
-        && (!m.overridden || m.is_extension)
+        && fixed
         && m.params.len() == args.len()
         && m.params
             .iter()

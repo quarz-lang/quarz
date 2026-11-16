@@ -1600,7 +1600,63 @@ fn no_shape() -> u32 {
     NO_SHAPE
 }
 
+/// How a call resolved to a method finds what runs (#536 step 4,
+/// `RtMethod::dispatch`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dispatch {
+    /// Nothing may run in its place: the method itself.
+    Static,
+    /// An instance method something may replace: resolved on the
+    /// receiver's class (a virtual slot).
+    Virtual,
+    /// A class method something may replace: resolved on the class object
+    /// it is called on.
+    ClassSide,
+}
+
+/// #536 step 4's oracle (debug builds, removed with the old formulas):
+/// `old`, a site's formula, equals `new`, its reading of
+/// `RtMethod::dispatch`. With `QUARZ_DISPATCH_ORACLE` naming a file, each
+/// site's count is appended there whenever it reaches a power of two.
+#[cfg(debug_assertions)]
+pub fn dispatch_oracle(site: usize, old: bool, new: bool, method: &str) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::OnceLock;
+    static COUNTS: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
+    static PATH: OnceLock<Option<String>> = OnceLock::new();
+    assert_eq!(old, new, "#536 step 4 oracle, site {site}: `{method}`");
+    if let Some(path) = PATH.get_or_init(|| std::env::var("QUARZ_DISPATCH_ORACLE").ok()) {
+        let n = COUNTS[site].fetch_add(1, Ordering::Relaxed) + 1;
+        if n.is_power_of_two() {
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(f, "site {site} {n}");
+            }
+        }
+    }
+}
+
 impl RtMethod {
+    /// How a call resolved to this method finds what runs (#536 step 4):
+    /// the one predicate every site reads, from `overridden` (the
+    /// override table's, `World::overridden_methods`, and abstract
+    /// methods) and the side. An extension's method is never `overridden`
+    /// (`rtworld::fill` asserts it), so it is `Static`. Whether a static
+    /// target has a body to call directly (`native_key`, `synth`, `func`)
+    /// is the call site's question, not this one's.
+    pub fn dispatch(&self) -> Dispatch {
+        debug_assert!(!(self.overridden && self.is_extension), "{}", self.name);
+        match (self.overridden, self.singleton) {
+            (false, _) => Dispatch::Static,
+            (true, false) => Dispatch::Virtual,
+            (true, true) => Dispatch::ClassSide,
+        }
+    }
+
     /// A method's positional shape: its number of parameters and whether
     /// it takes a block, when every parameter is positional; `NO_SHAPE`
     /// otherwise (a rest, keywords).
