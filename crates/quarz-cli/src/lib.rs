@@ -58,7 +58,42 @@ pub fn build(
     output: &std::path::Path,
 ) -> Result<(), String> {
     let module = quarz_lower::lower_checked(&checked, files);
-    quarz_aot::build(&module, output)
+    let jobs = quarz_aot::build_jobs(None)?;
+    quarz_aot::build_with_jobs(&module, &file_groups(&checked), output, jobs)
+}
+
+/// The checked program's files by group, as `quarz build` partitions them
+/// (`quarz_aot::FileGroups`): the application first, then the cogs by
+/// index, then the standard library as one group (it changes only with
+/// the compiler), which the prelude's files, in none, join.
+fn file_groups(checked: &Checked) -> quarz_aot::FileGroups {
+    checked
+        .world
+        .file_groups
+        .iter()
+        .map(|(file, g)| {
+            let key = match g {
+                quarz_types::UnitGroup::App => 0,
+                quarz_types::UnitGroup::Cog(i) => 1 + u64::from(*i),
+                quarz_types::UnitGroup::Std(_) => u64::MAX,
+            };
+            (*file, key)
+        })
+        .collect()
+}
+
+/// `build_with` by `jobs` clang processes at once (`quarz build -j`).
+pub fn build_with_jobs(
+    checked: Checked,
+    files: &[SourceFile],
+    lowerer: Lowerer,
+    output: &std::path::Path,
+    jobs: usize,
+) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    let module = quarz_lower::lower_checked_with(lowerer, &checked, files);
+    quarz_aot::report("lower", start, &[]);
+    quarz_aot::build_with_jobs(&module, &file_groups(&checked), output, jobs)
 }
 
 /// `build` continuing `lowerer` (see `run_with`).
@@ -71,7 +106,8 @@ pub fn build_with(
     let start = std::time::Instant::now();
     let module = quarz_lower::lower_checked_with(lowerer, &checked, files);
     quarz_aot::report("lower", start, &[]);
-    quarz_aot::build(&module, output)
+    let jobs = quarz_aot::build_jobs(None)?;
+    quarz_aot::build_with_jobs(&module, &file_groups(&checked), output, jobs)
 }
 
 /// Lower and run a checked program capturing its standard output.

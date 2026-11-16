@@ -202,7 +202,17 @@ fn frame_word_is_set_before_it_is_read() {
         "{}",
         String::from_utf8_lossy(&built.stderr)
     );
-    let ir = fs::read_to_string(exe.with_extension("ll")).unwrap();
+    // (The kept IR: each partition's, in `<exe>.quarz-build/`.)
+    let mut build_dir = exe.as_os_str().to_owned();
+    build_dir.push(".quarz-build");
+    let mut lls: Vec<_> = fs::read_dir(&build_dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "ll"))
+        .collect();
+    lls.sort();
+    let ir: String = lls.iter().map(|p| fs::read_to_string(p).unwrap()).collect();
     let _ = fs::remove_dir_all(&dir);
     // `ptrs` is a compiled function's sixth stack slot (after the
     // registers, the scratch list, the activation buffer, the result
@@ -242,6 +252,228 @@ fn frame_word_is_set_before_it_is_read() {
     }
     assert!(reads > 0, "no function of the fixture reads its frame word");
     assert!(unset.is_empty(), "frame word read unset in {unset:?}");
+}
+
+/// #786: `quarz build` of `path` to `exe` with `envs`, its output.
+fn quarz_build(
+    path: &Path,
+    exe: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> std::process::Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_quarz"));
+    cmd.arg("build").arg(path).arg("-o").arg(exe).args(args);
+    // (Split only where a test asks, whatever the run's environment.)
+    cmd.env_remove("QUARZ_BUILD_PARTITION_BYTES");
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    cmd.output().expect("run quarz build")
+}
+
+/// #786: programs split into partitions (`QUARZ_BUILD_PARTITION_BYTES=1`
+/// cuts at every method, so direct calls, typed and early entries, blocks
+/// and the tables cross partitions) run as on the VM, leave no build
+/// directory, and build the same executable for every number of jobs. The
+/// fixtures: blocks (`block_destructure_padding`, `keyword_procs`), typed
+/// entries and backtraces (`builtins/typed_backtrace`), generics and
+/// witnesses (`extension_generic_module_witness`), exceptions and
+/// deinitializers (`rescue_flows`, `deinitialize_once`), tasks
+/// (`blocking_captures`, `task_block_self_release`), and all of these
+/// (`deep_values`).
+#[test]
+fn partitioned_builds_run_as_on_the_vm() {
+    let dir = std::env::temp_dir().join(format!("quarz-partitions-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let split = [
+        ("QUARZ_BUILD_PARTITION_BYTES", "1"),
+        ("QUARZ_BUILD_TIMINGS", "1"),
+    ];
+    for name in [
+        "block_destructure_padding.qz",
+        "keyword_procs.qz",
+        "builtins/typed_backtrace.qz",
+        "extension_generic_module_witness.qz",
+        "rescue_flows.qz",
+        "deinitialize_once.qz",
+        "blocking_captures.qz",
+        "task_block_self_release.qz",
+        "deep_values.qz",
+    ] {
+        let path = fixture(name);
+        let (vm_code, vm_out) = common::run_path(&path, &[]);
+        let mut exes = Vec::new();
+        for jobs in ["1", "4"] {
+            let exe = dir.join(format!("split_{jobs}"));
+            let built = quarz_build(&path, &exe, &["-j", jobs], &split);
+            let err = String::from_utf8_lossy(&built.stderr);
+            assert!(built.status.success(), "{name} -j {jobs}: {err}");
+            let clang = err
+                .lines()
+                .find(|l| l.contains("stage=clang "))
+                .unwrap_or("");
+            assert!(
+                !clang.contains(" partitions=1 "),
+                "{name}: not split: {clang}"
+            );
+            if jobs == "1" {
+                assert!(clang.contains(" jobs=1 "), "{clang}");
+            }
+            let mut build_dir = exe.as_os_str().to_owned();
+            build_dir.push(".quarz-build");
+            assert!(
+                !Path::new(&build_dir).exists(),
+                "{name}: the build directory is left"
+            );
+            let out = Command::new(&exe).output().expect("run the executable");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                vm_out,
+                "output of {name} -j {jobs}"
+            );
+            assert_eq!(
+                out.status.code().unwrap_or(-1),
+                vm_code,
+                "exit code of {name} -j {jobs}"
+            );
+            exes.push(fs::read(&exe).unwrap());
+        }
+        assert!(
+            exes[0] == exes[1],
+            "{name}: -j 1 and -j 4 built different executables"
+        );
+    }
+    // Unsplit, a small program is one partition, the tables with it.
+    let whole = quarz_build(
+        &fixture("control_flow.qz"),
+        &dir.join("whole"),
+        &[],
+        &[("QUARZ_BUILD_TIMINGS", "1")],
+    );
+    let _ = fs::remove_dir_all(&dir);
+    let err = String::from_utf8_lossy(&whole.stderr);
+    assert!(
+        err.lines()
+            .any(|l| l.contains("stage=clang ") && l.contains(" partitions=1 ")),
+        "{err}"
+    );
+}
+
+/// #786: `-j 0` and a `-j` that is not a number are errors, as is such a
+/// `QUARZ_BUILD_JOBS`.
+#[test]
+fn build_jobs_must_be_a_positive_number() {
+    let path = fixture("control_flow.qz");
+    let dir = std::env::temp_dir().join(format!("quarz-jobs-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    for (args, envs, what) in [
+        (
+            &["-j", "0"][..],
+            &[][..],
+            "-j must be a number of jobs, 1 or more, not \"0\"",
+        ),
+        (
+            &["-jx"][..],
+            &[][..],
+            "-j must be a number of jobs, 1 or more, not \"x\"",
+        ),
+        (
+            &[][..],
+            &[("QUARZ_BUILD_JOBS", "many")][..],
+            "QUARZ_BUILD_JOBS must be a number of jobs, 1 or more, not \"many\"",
+        ),
+    ] {
+        let built = quarz_build(&path, &dir.join("out"), args, envs);
+        let err = String::from_utf8_lossy(&built.stderr);
+        assert!(!built.status.success(), "{args:?} {envs:?} built");
+        assert!(err.contains(what), "{args:?} {envs:?}: {err}");
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// #786: a clang that fails, or is killed, on one partition fails the
+/// build with that partition named and leaves no build directory or
+/// executable; `QUARZ_KEEP_IR` keeps the directory with each partition's
+/// IR, and says where.
+#[test]
+fn a_failing_partition_fails_the_build_and_leaves_nothing() {
+    let path = fixture("control_flow.qz");
+    let dir = std::env::temp_dir().join(format!("quarz-partition-fail-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let clang = Command::new("sh")
+        .args([
+            "-c",
+            "if [ -n \"$QUARZ_CLANG\" ]; then command -v \"$QUARZ_CLANG\"; else command -v clang; fi",
+        ])
+        .output()
+        .unwrap();
+    let real = String::from_utf8_lossy(&clang.stdout).trim().to_string();
+    if real.is_empty() {
+        eprintln!("skipped: no clang on PATH to wrap");
+        let _ = fs::remove_dir_all(&dir);
+        return;
+    }
+    for (name, act) in [
+        ("fails", "echo broken partition >&2; exit 1"),
+        ("killed", "kill -9 $$"),
+    ] {
+        // A clang that does `act` on the second partition and compiles the others.
+        let fake = dir.join(format!("clang-{name}"));
+        fs::write(
+            &fake,
+            format!("#!/bin/sh\ncase \"$*\" in *p001.ll*) {act};; esac\nexec {real} \"$@\"\n"),
+        )
+        .unwrap();
+        Command::new("chmod").arg("+x").arg(&fake).status().unwrap();
+        let exe = dir.join(format!("out-{name}"));
+        let built = quarz_build(
+            &path,
+            &exe,
+            &["-j", "2"],
+            &[
+                ("QUARZ_BUILD_PARTITION_BYTES", "1"),
+                ("QUARZ_CLANG", fake.to_str().unwrap()),
+            ],
+        );
+        let err = String::from_utf8_lossy(&built.stderr);
+        assert!(!built.status.success(), "{name}: built");
+        assert!(err.contains("failed on partition 1"), "{name}: {err}");
+        let mut build_dir = exe.as_os_str().to_owned();
+        build_dir.push(".quarz-build");
+        assert!(
+            !Path::new(&build_dir).exists(),
+            "{name}: the build directory is left"
+        );
+        assert!(!exe.exists(), "{name}: an executable is left");
+    }
+    let exe = dir.join("kept");
+    let built = quarz_build(
+        &path,
+        &exe,
+        &[],
+        &[("QUARZ_BUILD_PARTITION_BYTES", "1"), ("QUARZ_KEEP_IR", "1")],
+    );
+    let err = String::from_utf8_lossy(&built.stderr);
+    let mut build_dir = exe.as_os_str().to_owned();
+    build_dir.push(".quarz-build");
+    let kept: Vec<String> = fs::read_dir(&build_dir)
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    let _ = fs::remove_dir_all(&dir);
+    assert!(built.status.success(), "{err}");
+    assert!(
+        err.contains("the IR is kept in") && err.contains(".quarz-build"),
+        "{err}"
+    );
+    assert!(
+        kept.iter().any(|f| f == "p000.ll") && kept.iter().any(|f| f == "p001.ll"),
+        "{kept:?}"
+    );
+    assert!(!kept.iter().any(|f| f.ends_with(".o")), "{kept:?}");
 }
 
 /// `QUARZ_AOT_OPT` picks clang's level (0 and 2 both build a program
