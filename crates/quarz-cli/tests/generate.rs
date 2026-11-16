@@ -386,6 +386,42 @@ end
     assert_eq!(out, "12345678901234567890123:2\n");
 }
 
+/// #812: the warning for a `==` without a `hash` (or the other way round)
+/// counts what the statements generate, and is given once, after them,
+/// for a class whose ancestors have statements: a subclass writing `==`
+/// over a superclass's generated `hash` gets none, the superclass (`hash`
+/// alone) one; a class writing `==` alone and generating something else
+/// gets it once, not again when the statement generated into it. Such
+/// classes (`World::conformance_deferred`) are warned by
+/// `Declarer::recheck_conformance`, after their file's statements; a class
+/// with no statements above it (`Plain`) when declared, once.
+#[test]
+fn the_eq_hash_warning_sees_generated_methods_once() {
+    let d = dir();
+    write(
+        &d.0,
+        "gen.qz",
+        "module GenH\n  static def self.gen_hash -> Void\n    def_method(:hash) { 1 }\n  end\nend\nmodule GenFoo\n  static def self.gen_foo -> Void\n    def_method(:foo) { 1 }\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"gen\"\nclass Base\n  include GenH\n  gen_hash\nend\nclass Sub < Base\n  def ==(other: Object) -> Bool = true\nend\nclass Own\n  include GenFoo\n  def ==(other: Object) -> Bool = true\n  gen_foo\nend\nclass Plain\n  def ==(other: Object) -> Bool = true\nend\nputs Set[Sub.new, Sub.new].size\nputs Own.new.foo\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    let warnings: Vec<&str> = err.lines().filter(|l| l.contains("warning:")).collect();
+    assert_eq!(
+        warnings,
+        [
+            "app.qz:15:3: warning: `Plain` defines `==` but not `hash`: as a Hash key or a Set member, equal values must hash the same",
+            "app.qz:4:3: warning: `Base` defines `hash` but not `==`: as a Hash key or a Set member, equal values must hash the same",
+            "app.qz:11:3: warning: `Own` defines `==` but not `hash`: as a Hash key or a Set member, equal values must hash the same",
+        ],
+        "{err}"
+    );
+}
+
 #[test]
 fn generated_fields_and_abstract_implementations() {
     let d = dir();

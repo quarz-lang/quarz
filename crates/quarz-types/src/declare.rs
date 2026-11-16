@@ -1130,7 +1130,11 @@ impl<'ast> Declarer<'ast> {
             self.check_class_include_overrides(p.id);
             self.check_class_side_overrides(p.id);
             self.check_copied_deinitialize(p.id);
-            self.check_eq_with_hash(p.id);
+            // (A class whose conformance waits for the statements is
+            // warned once they ran: they may generate the other one.)
+            if !self.world.conformance_deferred.contains(&p.id) {
+                self.check_eq_with_hash(p.id);
+            }
             self.check_duplicate_methods(p.id);
             self.check_static_mixins(p);
             self.world.active_extensions.get_mut().clear();
@@ -4447,7 +4451,8 @@ impl<'ast> Declarer<'ast> {
             (None, Some(m)) => ("hash", "==", m),
             _ => return,
         };
-        // One inherited with a body (not `Object`'s natives) goes with it.
+        // One inherited with a body (not `Object`'s natives), or generated
+        // (its body the lifted block), goes with it.
         let inherited = self
             .world
             .ancestors(id, &[])
@@ -4457,7 +4462,7 @@ impl<'ast> Declarer<'ast> {
                 self.world.class(a).methods.get(missing).is_some_and(|ms| {
                     ms.iter().any(|m| {
                         let m = self.world.method(*m);
-                        !m.singleton && !m.is_native && m.body.is_some()
+                        !m.singleton && !m.is_native && (m.body.is_some() || m.generated.is_some())
                     })
                 })
             });
@@ -4661,7 +4666,9 @@ impl<'ast> Declarer<'ast> {
             self.check_class_include_overrides(id);
             self.check_class_side_overrides(id);
             self.check_copied_deinitialize(id);
-            self.check_eq_with_hash(id);
+            if !self.world.conformance_deferred.contains(&id) {
+                self.check_eq_with_hash(id);
+            }
             self.check_duplicate_methods(id);
             self.world.active_extensions.get_mut().clear();
         }
@@ -4723,7 +4730,9 @@ impl<'ast> Declarer<'ast> {
     }
 
     /// The conformance of `classes`, deferred when they were declared
-    /// (`World::conformance_deferred`), checked now.
+    /// (`World::conformance_deferred`), checked now, with the warning
+    /// for a `==` without a `hash` or the other way round (the statements
+    /// may have generated either).
     pub fn recheck_conformance(&mut self, classes: &[ClassId]) {
         for &id in classes {
             let class = self.world.class(id);
@@ -4731,6 +4740,7 @@ impl<'ast> Declarer<'ast> {
             let file = class.file;
             *self.world.active_extensions.get_mut() = self.world.group_extensions(file);
             self.check_conformance_of(id);
+            self.check_eq_with_hash(id);
             self.world.active_extensions.get_mut().clear();
         }
     }
