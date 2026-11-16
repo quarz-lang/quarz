@@ -3817,7 +3817,14 @@ impl World {
                         if *anc == self.builtin.meta_classdef && mi.name == "type" {
                             continue;
                         }
-                        if !out.contains(&o) && self.replaces(m, o, *anc, &aargs) {
+                        if !out.contains(&o)
+                            && self.replaces_seen(
+                                m,
+                                &self.seen_from_owner(mi),
+                                o,
+                                &self.class_subst(*anc, &aargs),
+                            )
+                        {
                             out.push(o);
                         }
                     }
@@ -3825,6 +3832,20 @@ impl World {
             }
         }
         out
+    }
+
+    /// How method `m`'s types are seen from its owner, the class whose
+    /// ancestors the override table pairs it over: an extension's own
+    /// method is written in the extension's type parameters, mapped here
+    /// to its target's own (`extension_subst`; `extension C[U]`'s `U` as
+    /// `C`'s); any other method, and a non-generic extension's, as it is
+    /// (#788: without it a generic extension's method paired with no
+    /// method of a generic module it includes through its own parameter).
+    fn seen_from_owner(&self, m: &MethodInfo) -> HashMap<TypeParamId, Type> {
+        match m.extension {
+            Some(e) => self.extension_subst(&self.extensions[e as usize], &self.own_args(m.owner)),
+            None => HashMap::default(),
+        }
     }
 
     /// The methods extensions give each class (any extension), by target
@@ -3881,11 +3902,11 @@ impl World {
             // (The ancestor's arguments, once per ancestor with a method of
             // the name.)
             let subst = self.class_subst(anc, anc_args);
-            let none = HashMap::default();
+            let mine = self.seen_from_owner(m);
             for pid in ids {
                 if pid != m.id
                     && !out.contains(&pid)
-                    && self.replaces_seen(m.id, &none, pid, &subst)
+                    && self.replaces_seen(m.id, &mine, pid, &subst)
                 {
                     out.push(pid);
                 }

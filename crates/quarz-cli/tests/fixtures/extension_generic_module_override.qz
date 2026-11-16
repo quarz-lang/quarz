@@ -1,0 +1,164 @@
+# An extension's own method over a method with a body of a module it
+# includes runs, through the module, for the target and its subclasses,
+# whether the module is generic and included through the extension's own
+# parameter or not (#788; docs/01 §7: the methods of a module the
+# extension includes dispatch to the extension's implementations wherever
+# the value goes). Each cell prints, through the module type, by a direct
+# call where the extension is active, and through the module's own method
+# calling it: `ext ext ext`, the expected output from that rule, also
+# where the target has a method of the signature of its own (the
+# conformance is the extension's, so its own method is the implementation
+# through the module: the `own` cells, a generic twin and a non-generic
+# one).
+# Axes: target generic (a parameter, concrete arguments) x path (an
+# extension of the class, top-level, scoped, conditional; through a
+# subclass) x side (instance, class).
+# Skipped as identical by the rules or covered elsewhere:
+# - the module's method abstract: the witness record answers, the same
+#   for both (witness_matrix_instance_*, witness_matrix_generic)
+# - another cog: an extension of a class from outside its cog overrides
+#   nothing (10-cogs.md)
+
+# Top-level, generic module through the extension's parameter.
+module MA[T]
+  def m(x: T) -> String = "M"
+  def call_m(x: T) -> String = m(x)
+end
+class CA[U]
+  def initialize; end
+end
+extension CA[U]
+  include MA[U]
+  def m(x: U) -> String = "ext"
+end
+def via_a(t: MA[Int]) -> String = t.m(1)
+puts "top/param: #{via_a(CA[Int].new)} #{CA[Int].new.m(1)} #{CA[Int].new.call_m(1)}"
+
+# The same with concrete arguments: the module included as `MB[Int]`.
+module MB[T]
+  def m(x: T) -> String = "M"
+  def call_m(x: T) -> String = m(x)
+end
+class CB[U]
+  def initialize; end
+end
+extension CB[U]
+  include MB[Int]
+  def m(x: Int) -> String = "ext"
+end
+def via_b(t: MB[Int]) -> String = t.m(1)
+puts "top/concrete: #{via_b(CB[Int].new)} #{CB[Int].new.m(1)} #{CB[Int].new.call_m(1)}"
+
+# Scoped.
+module MC[T]
+  def m(x: T) -> String = "M"
+  def call_m(x: T) -> String = m(x)
+end
+class CC[U]
+  def initialize; end
+end
+module XC
+  extension CC[U]
+    include MC[U]
+    def m(x: U) -> String = "ext"
+  end
+  def self.up(c: CC[Int]) -> MC[Int] = c
+  def self.direct(c: CC[Int]) -> String = c.m(1)
+end
+def via_c(t: MC[Int]) -> String = t.m(1)
+puts "scoped/param: #{via_c(XC.up(CC[Int].new))} #{XC.direct(CC[Int].new)} #{XC.up(CC[Int].new).call_m(1)}"
+
+# Conditional.
+module MD[T]
+  def m(x: T) -> String = "M"
+  def call_m(x: T) -> String = m(x)
+end
+class CD[U]
+  def initialize; end
+end
+extension CD[U <: Int]
+  include MD[U]
+  def m(x: U) -> String = "ext"
+end
+def via_d(t: MD[Int]) -> String = t.m(1)
+puts "conditional/param: #{via_d(CD[Int].new)} #{CD[Int].new.m(1)} #{CD[Int].new.call_m(1)}"
+
+# Through a subclass of the target.
+module ME[T]
+  def m(x: T) -> String = "M"
+  def call_m(x: T) -> String = m(x)
+end
+class CE[U]
+  def initialize; end
+end
+class DE[U] < CE[U]
+  def initialize; end
+end
+extension CE[U]
+  include ME[U]
+  def m(x: U) -> String = "ext"
+end
+def via_e(t: ME[Int]) -> String = t.m(1)
+puts "sub/param: #{via_e(DE[Int].new)} #{DE[Int].new.m(1)} #{DE[Int].new.call_m(1)}"
+
+# The non-generic twin.
+module MF
+  def m(x: Int) -> String = "M"
+  def call_m(x: Int) -> String = m(x)
+end
+class CF
+  def initialize; end
+end
+extension CF
+  include MF
+  def m(x: Int) -> String = "ext"
+end
+def via_f(t: MF) -> String = t.m(1)
+puts "top/nongeneric: #{via_f(CF.new)} #{CF.new.m(1)} #{CF.new.call_m(1)}"
+
+# The class side, generic module through the extension's parameter.
+module MG[T]
+  def self.m(x: T) -> String = "M"
+  def self.call_m(x: T) -> String = m(x)
+end
+class CG[U]
+end
+extension CG[U]
+  include MG[U]
+  def self.m(x: U) -> String = "ext"
+end
+def via_g(t: Type[MG[Int]]) -> String = t.m(1)
+def via_g2(t: Type[MG[Int]]) -> String = t.call_m(1)
+puts "class/param: #{via_g(CG[Int])} #{CG[Int].m(1)} #{via_g2(CG[Int])}"
+
+# The target with a method of its own of the signature: the non-generic
+# twin, then through the extension's parameter.
+module MH
+  def m(x: Int) -> String = "M"
+  def call_m(x: Int) -> String = m(x)
+end
+class CH
+  def initialize; end
+  def m(x: Int) -> String = "own"
+end
+extension CH
+  include MH
+  def m(x: Int) -> String = "ext"
+end
+def via_h(t: MH) -> String = t.m(1)
+puts "own/nongeneric: #{via_h(CH.new)} #{CH.new.m(1)} #{CH.new.call_m(1)}"
+
+module MI[T]
+  def m(x: T) -> String = "M"
+  def call_m(x: T) -> String = m(x)
+end
+class CI[U]
+  def initialize; end
+  def m(x: U) -> String = "own"
+end
+extension CI[U]
+  include MI[U]
+  def m(x: U) -> String = "ext"
+end
+def via_i(t: MI[Int]) -> String = t.m(1)
+puts "own/param: #{via_i(CI[Int].new)} #{CI[Int].new.m(1)} #{CI[Int].new.call_m(1)}"

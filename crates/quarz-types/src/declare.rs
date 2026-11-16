@@ -2862,18 +2862,25 @@ impl<'ast> Declarer<'ast> {
                             } else {
                                 // (The one pairing rule, `World::replaces`, seen
                                 // through the extension's view, not the
-                                // override table, #716: for a generic
-                                // extension including a generic module through
-                                // its own parameter (`extension C[U]; include
-                                // M[U]; def m(x: U)`), the table's entry for the
-                                // extension's method, computed over the
-                                // target's ancestors in the target's frame, has
-                                // no pair with the module's method, which this
-                                // check must hold to it. The oracle of #716
-                                // found every other pair agreeing: of 14,272
-                                // asked over check-diff, the probes, fuzz seeds
-                                // 1-8000 and the area binaries (well-formed log
-                                // lines), 50 differed, all of that shape.)
+                                // override table, #716, #788: the table, which
+                                // sees an extension's own method from its
+                                // target since #788, agrees on every pair
+                                // measured but one kind: an extension
+                                // including a generic module with other
+                                // arguments than the class's first
+                                // conformance to it (`include M[Int]` in one
+                                // module's extension of `C`, `include
+                                // M[String]` in another's), where the rule
+                                // sees `M[String]` through this extension's
+                                // own include and the table `M` once, with
+                                // the first arguments. Such a program is
+                                // refused by the one-set-of-arguments rule;
+                                // the rule is the stricter side, so it stays.
+                                // #788's oracle, asked / true / differing:
+                                // check-diff 84 / 83 / 0, the probes
+                                // 228 / 225 / 1, fuzz seeds 1-8000
+                                // 13754 / 11724 / 0, the quarz-cli binaries
+                                // and quarz-types 283 / 278 / 0.)
                                 self.world.method(mid).singleton == self.world.method(o).singleton
                                     && self.world.replaces(mid, o, *a, aargs)
                             };
