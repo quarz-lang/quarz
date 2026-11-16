@@ -3,7 +3,8 @@
 //! instructions (an array's elements stored as words, an object's class,
 //! the `Int` method of an operator), which the interpreter does not need
 //! and compiled code reads without a check, or with one that only says a
-//! type went wrong somewhere. With the variable set, the interpreter checks
+//! type went wrong somewhere. With the variable set (or, in a debug build,
+//! unless it is `0`), the interpreter checks
 //! each of them before trusting it; a violated one is a bug in the checker
 //! or in lowering, so it stops the program, with what was violated and
 //! where, rather than raise something a `rescue` could hide.
@@ -16,12 +17,15 @@ use crate::interp::Interp;
 use crate::rc::Rc;
 use crate::value::{ArrayData, Value};
 
-/// Whether `QUARZ_VERIFY` asks for the checks (`1`, or `moves`, which
-/// asks for more), read once.
+/// Whether the facts are checked, read once: `QUARZ_VERIFY` set to `1`,
+/// or `moves` (which asks for more); unset, in a debug build (#536 step
+/// 10), so that a debug `quarz` used outside cargo checks them too. Any
+/// other value (`0`) turns them off.
 pub fn enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var("QUARZ_VERIFY").is_ok_and(|v| matches!(v.as_str(), "1" | "moves"))
+    *ON.get_or_init(|| match std::env::var("QUARZ_VERIFY") {
+        Ok(v) => matches!(v.as_str(), "1" | "moves"),
+        Err(_) => cfg!(debug_assertions),
     })
 }
 

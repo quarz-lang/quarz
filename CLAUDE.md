@@ -192,8 +192,9 @@ never use `pgrep -f` with a plain pattern).
   warm `target/quarz-cache`, and `rm -rf` it after a change to the
   encoding without a new build id.
 - `QUARZ_VERIFY=moves` (set by `.cargo/config.toml`) makes the interpreter
-  check the facts compiled code trusts and the moves, and debug builds
-  run the QIR verifier after each lowering pass (`QUARZ_VERIFY_IR=0`
+  check the facts compiled code trusts and the moves; a debug build
+  checks the facts by default (`QUARZ_VERIFY=0` turns that off) and
+  runs the QIR verifier after each lowering pass (`QUARZ_VERIFY_IR=0`
   turns it off): a violation is a bug in the checker or a pass, to fix
   there, not by loosening the check (docs/05 §3).
 - `tests/copies.rs`: loops meant to update collections in place must

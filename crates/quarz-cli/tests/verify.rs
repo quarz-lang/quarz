@@ -22,16 +22,28 @@ fn in_child_with(
     verify: &str,
     module: impl FnOnce() -> Module,
 ) -> (Option<i32>, String) {
+    in_child_env(name, Some(verify), module)
+}
+
+/// `in_child`, with `QUARZ_VERIFY` set to `verify`, or removed from the
+/// child's environment for `None` (`cargo test` sets it for this binary).
+fn in_child_env(
+    name: &str,
+    verify: Option<&str>,
+    module: impl FnOnce() -> Module,
+) -> (Option<i32>, String) {
     if std::env::var("QUARZ_VERIFY_CHILD").as_deref() == Ok(name) {
         let code = quarz_cli::run_module(module(), Vec::new());
         std::process::exit(code);
     }
-    let out = Command::new(std::env::current_exe().unwrap())
-        .args([name, "--exact", "--nocapture", "--test-threads=1"])
-        .env("QUARZ_VERIFY_CHILD", name)
-        .env("QUARZ_VERIFY", verify)
-        .output()
-        .expect("run the test binary");
+    let mut cmd = Command::new(std::env::current_exe().unwrap());
+    cmd.args([name, "--exact", "--nocapture", "--test-threads=1"])
+        .env("QUARZ_VERIFY_CHILD", name);
+    match verify {
+        Some(v) => cmd.env("QUARZ_VERIFY", v),
+        None => cmd.env_remove("QUARZ_VERIFY"),
+    };
+    let out = cmd.output().expect("run the test binary");
     (
         out.status.code(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -116,6 +128,57 @@ fn a_field_read_on_another_class_stops_the_program() {
         err.contains("QIR fact violated: FieldGet of B on a A"),
         "{err}"
     );
+}
+
+/// The program of `a_field_read_on_another_class_stops_the_program`: reads
+/// of `A`'s field claiming it is `B`'s.
+fn field_read_on_another_class() -> Module {
+    let mut module = common::lower(
+        "class A\n  var @x: Int\n  def initialize(@x: Int) end\n  def x -> Int = @x\nend\n\
+         class B\n  var @y: Int\n  def initialize(@y: Int) end\nend\n\
+         p A.new(1).x\np B.new(2)\n",
+    );
+    let (a, b) = (class_id(&module, "A"), class_id(&module, "B"));
+    for inst in insts(&mut module) {
+        if let Inst::FieldGet { class, .. } = inst {
+            if *class == a {
+                *class = b;
+            }
+        }
+    }
+    module
+}
+
+/// With `QUARZ_VERIFY` unset, a debug build checks the facts as with `1`
+/// (#536 step 10), a release build does not; `0` turns the checks off.
+#[test]
+fn a_debug_build_checks_the_facts_by_default() {
+    let (code, err) = in_child_env(
+        "a_debug_build_checks_the_facts_by_default",
+        None,
+        field_read_on_another_class,
+    );
+    if cfg!(debug_assertions) {
+        assert_eq!(code, Some(101), "{err}");
+        assert!(
+            err.contains("QIR fact violated: FieldGet of B on a A"),
+            "{err}"
+        );
+    } else {
+        assert_eq!(code, Some(0), "{err}");
+        assert!(!err.contains("QIR fact violated"), "{err}");
+    }
+}
+
+#[test]
+fn verify_zero_turns_the_checks_off() {
+    let (code, err) = in_child_env(
+        "verify_zero_turns_the_checks_off",
+        Some("0"),
+        field_read_on_another_class,
+    );
+    assert_eq!(code, Some(0), "{err}");
+    assert!(!err.contains("QIR fact violated"), "{err}");
 }
 
 #[test]
