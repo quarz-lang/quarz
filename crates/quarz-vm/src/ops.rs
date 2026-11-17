@@ -691,8 +691,8 @@ impl Interp {
         let n = match &regs[src as usize] {
             Value::Array(a) => a.len(),
             Value::Hash(h) => h.len(),
-            Value::Str(s) => s.chars().count(),
-            Value::Short(s) => s.chars().count(),
+            v @ Value::Str(s) => crate::natives::string::char_count(v, s),
+            v @ Value::Short(s) => crate::natives::string::char_count(v, s),
             _ => 0,
         };
         regs[dst as usize] = Value::Int(n as i64);

@@ -276,7 +276,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let b = sb(i, r)?;
         let idx = int(i, a.arg(0), "index")?;
         let mut text = b.borrow_mut();
-        Ok(match char_offset(&text, idx) {
+        Ok(match char_offset(&text, idx, false) {
             Some((st, en)) => {
                 let removed: String = text.drain(st..en).collect();
                 Value::string(removed)

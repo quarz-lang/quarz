@@ -12,11 +12,11 @@ use super::collections::index_data;
 pub fn register(m: &mut super::Registry<FastNativeFn>) {
     // ----- String -----
     fast!(m, "String#size", |_, r, a| match (r.as_str(), a) {
-        (Some(s), []) => Some(Ok(Value::Int(s.chars().count() as i64))),
+        (Some(s), []) => Some(Ok(Value::Int(super::string::char_count(r, s) as i64))),
         _ => None,
     });
     fast!(m, "String#length", |_, r, a| match (r.as_str(), a) {
-        (Some(s), []) => Some(Ok(Value::Int(s.chars().count() as i64))),
+        (Some(s), []) => Some(Ok(Value::Int(super::string::char_count(r, s) as i64))),
         _ => None,
     });
     fast!(m, "String#bytesize", |_, r, a| match (r.as_str(), a) {

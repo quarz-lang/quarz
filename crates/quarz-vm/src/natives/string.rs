@@ -35,10 +35,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Bool(a.arg(0).as_str() == Some(s(i, r)?)))
     });
     native!(m, "String#size", |i, r, _| {
-        Ok(Value::Int(s(i, r)?.chars().count() as i64))
+        Ok(Value::Int(char_count(r, s(i, r)?) as i64))
     });
     native!(m, "String#length", |i, r, _| {
-        Ok(Value::Int(s(i, r)?.chars().count() as i64))
+        Ok(Value::Int(char_count(r, s(i, r)?) as i64))
     });
     native!(m, "String#bytesize", |i, r, _| {
         Ok(Value::Int(s(i, r)?.len() as i64))
@@ -264,22 +264,58 @@ pub(super) fn sb_push(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     Ok(recv.clone())
 }
 
-/// Character index (negative counts from the end) into a byte offset.
-pub(super) fn char_offset(text: &str, index: i64) -> Option<(usize, usize)> {
-    let n = text.chars().count() as i64;
-    let i = if index < 0 { n + index } else { index };
-    if i < 0 || i >= n {
-        return None;
+/// Whether `v` is a string known to be ASCII only, so that its length in
+/// bytes counts its characters and a character index is a byte index
+/// (#837): a heap string's bit (`Rc::<str>::is_ascii`, set when it was
+/// made), a short one's bytes (at most 14).
+#[inline]
+pub(crate) fn ascii_known(v: &Value) -> bool {
+    match v {
+        Value::Str(r) => crate::rc::Rc::is_ascii(r),
+        Value::Short(s) => s.is_ascii(),
+        _ => false,
     }
-    let mut it = text.char_indices();
-    let (start, c) = it.nth(i as usize)?;
+}
+
+/// `String#size` of `v`, whose text is `text`: its length when it is
+/// ASCII only, else a count of its characters.
+#[inline]
+pub(crate) fn char_count(v: &Value, text: &str) -> usize {
+    if ascii_known(v) {
+        text.len()
+    } else {
+        text.chars().count()
+    }
+}
+
+/// The byte range of character `index` of `text` (from the end when
+/// negative), if there is one. `ascii`: `text` is ASCII only
+/// (`ascii_known`), so the range is found in constant time; otherwise a
+/// non-negative index walks to the character, and only a negative one
+/// counts them all first.
+pub(super) fn char_offset(text: &str, index: i64, ascii: bool) -> Option<(usize, usize)> {
+    if ascii {
+        let n = text.len() as i64;
+        let i = if index < 0 { n + index } else { index };
+        return (0..n).contains(&i).then(|| (i as usize, i as usize + 1));
+    }
+    let i = if index < 0 {
+        let i = text.chars().count() as i64 + index;
+        if i < 0 {
+            return None;
+        }
+        i
+    } else {
+        index
+    };
+    let (start, c) = text.char_indices().nth(usize::try_from(i).ok()?)?;
     Some((start, start + c.len_utf8()))
 }
 
 pub(super) fn string_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     match args.arg(0) {
-        Value::Int(i) => match char_offset(text, *i) {
+        Value::Int(i) => match char_offset(text, *i, ascii_known(recv)) {
             Some((st, en)) => Ok(Value::str(&text[st..en])),
             None => Err(interp.err_index(&format!("index {i} out of string bounds"))),
         },
@@ -294,7 +330,7 @@ pub(super) fn string_index(interp: &Interp, recv: &Value, args: Args) -> EvalRes
 fn string_index_opt(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let i = int(interp, args.arg(0), "index")?;
-    Ok(match char_offset(text, i) {
+    Ok(match char_offset(text, i, ascii_known(recv)) {
         Some((st, en)) => Value::str(&text[st..en]),
         None => Value::Nil,
     })

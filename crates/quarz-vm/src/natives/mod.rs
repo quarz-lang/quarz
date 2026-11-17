@@ -116,7 +116,7 @@ pub mod process;
 pub mod random;
 pub mod signal;
 mod steps;
-mod string;
+pub(crate) mod string;
 mod text;
 pub mod time;
 #[cfg(feature = "tls")]
