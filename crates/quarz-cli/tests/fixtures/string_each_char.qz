@@ -1,0 +1,47 @@
+# `String#each_char` (#836: a prepared block where it can be, and the
+# characters kept in the value): each character, ASCII or not, once and in
+# order; `next`, `break` and a `return` of the enclosing method from the
+# block; an exception raised in it; the receiver as it was when the call
+# began, its variable rebound in the block; a block capturing a variable
+# a nested block writes; `chars`, `split("")` and `chr`.
+# VM and compiled (tests/build.rs).
+s = "héllo wörld"
+out: Array[String] = []
+s.each_char { |c| out = out.push(c) }
+p out
+n = 0
+s.each_char do |c|
+  next if c == "l"
+  n += 1
+end
+p n
+first = ""
+s.each_char do |c|
+  first = c
+  break if c == "o"
+end
+p first
+def find_vowel(t: String) -> String?
+  t.each_char { |c| return c if "aeiouéö".include?(c) }
+  nil
+end
+p find_vowel("rhythm"), find_vowel("strength")
+begin
+  "abc".each_char { |c| raise "at #{c}" if c == "b" }
+rescue RuntimeError => e
+  puts e.message
+end
+t = "abc"
+seen = ""
+t.each_char do |c|
+  seen += c
+  t = "xyz"
+end
+p seen, t
+count = 0
+"aaaa".each_char { |c| [1].each { |_| count += 1 } }
+p count
+up: Array[String] = []
+"aé".each_char { |c| up = up.push(c.upcase) }
+p up
+p "añb".chars, "añb".split(""), 241.chr, 97.chr

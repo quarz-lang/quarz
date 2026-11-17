@@ -676,9 +676,8 @@ fn string_count(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 pub(super) fn string_each_char(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let b = block(interp, &args)?;
-    for c in text.chars() {
-        interp.call_block(&b, smallvec![Value::char(c)])?;
-    }
+    // (A prepared block where it can be, as `Array#each`'s, #836.)
+    super::each_value(interp, text.chars().map(Value::char), &b)?;
     Ok(Value::Nil)
 }
 
