@@ -43,6 +43,24 @@ module Crypto
   # ```
   native def self.random_bytes(n: Int) -> Bytes
 
+  # Whether `a` and `b` hold the same bytes, a `String` compared as its
+  # UTF-8 bytes (so `"ab"` equals `b"ab"`). For a token, a MAC or a digest
+  # received, compared with the one expected.
+  #
+  # When the lengths are equal, the time taken does not depend on the
+  # contents: not on where the first difference is, nor on whether there
+  # is one (`==` stops at the first difference, which shows through
+  # timing). Different lengths answer `false` at once, so the length is
+  # not hidden: compare values of a fixed length, such as digests.
+  #
+  # ```
+  # Crypto.secure_compare("token", "token")    # => true
+  # Crypto.secure_compare("token", "tokeN")    # => false
+  # Crypto.secure_compare("ab", b"ab")         # => true
+  # Crypto.secure_compare("ab", "abc")         # => false
+  # ```
+  native def self.secure_compare(a: Bytes | String, b: Bytes | String) -> Bool
+
   # AES, in its authenticated mode GCM.
   module AES
     # AES-GCM with one key: authenticated encryption, which keeps data

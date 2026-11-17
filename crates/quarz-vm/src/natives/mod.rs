@@ -440,14 +440,15 @@ fn registry() -> Registry<NativeFn> {
     m
 }
 
-/// Without the `crypto` feature: RSA, AES-GCM, argon2id and random
-/// bytes raise.
+/// Without the `crypto` feature: RSA, AES-GCM, argon2id, random bytes
+/// and comparison in constant time raise.
 #[cfg(not(feature = "crypto"))]
 fn no_crypto(m: &mut Registry<NativeFn>) {
     native!(
         m,
         [
             "Crypto.random_bytes",
+            "Crypto.secure_compare",
             "Crypto::AES.seal_with",
             "Crypto::AES.open_with",
             "Crypto::Argon2.hash_with",
