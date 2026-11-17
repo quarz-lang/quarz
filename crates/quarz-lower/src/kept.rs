@@ -267,6 +267,9 @@ impl Kept {
             "internal error: R0's witnesses changed during a static phase (#717)"
         );
         let mut dirty: Vec<ClassId> = Vec::new();
+        // (The owners of the methods generated so far in this sync, for
+        // `New`'s check.)
+        let mut generated_into: HashSet<ClassId> = HashSet::default();
         // (The classes whose holders' rows and layouts debug builds check
         // unchanged, `assert_holders_kept`.)
         #[cfg(debug_assertions)]
@@ -297,6 +300,7 @@ impl Kept {
                         "internal error: a statement generated `{}` into an extension or a class of the type side (#717)",
                         mi.name
                     );
+                    generated_into.insert(x);
                     dirty.extend(self.graph.below(x));
                     if is_data(world, x) && FLATNESS_NAMES.contains(&mi.name.as_str()) {
                         stats.data_eq = true;
@@ -318,14 +322,13 @@ impl Kept {
                 }
                 // (Row 1's inherited constructors.) The `Method` event of
                 // the method that builds the instance, into the same class,
-                // comes in the same sync (`static_run::Runner` calls
-                // `StaticHost::generated_new` right after `add_generated`
-                // declared it): its D is this one's.
+                // comes before it in the same sync (`static_run::Runner`
+                // calls `StaticHost::generated_new` right after
+                // `add_generated` declared it): its D is this one's.
                 StaticEvent::New(x) => {
                     stats.news = true;
                     assert!(
-                        events.iter().any(|e| matches!(e,
-                            StaticEvent::Method(m) if world.method(*m).owner == *x)),
+                        generated_into.contains(x),
                         "internal error: a generated constructor of `{}` came without its method's event (#717)",
                         world.class(*x).name
                     );
@@ -748,8 +751,11 @@ fn sorted<R: Ord>(mut rows: Vec<R>) -> Vec<R> {
 }
 
 /// Whether the oracle runs (`QUARZ_VERIFY_STATIC_TABLES`, set by
-/// `.cargo/config.toml` for `cargo test`): every sync's tables compared
-/// with the tables built from nothing.
+/// `.cargo/config.toml` for `cargo test` and `cargo run`): every sync's
+/// tables compared with the tables built from nothing. Read at run time,
+/// as `QUARZ_VERIFY=moves` is, so a release build runs it too when asked
+/// (and through `cargo run --release`); an installed `quarz` or
+/// `target/release/quarz` run directly does not.
 pub(crate) fn verify_enabled() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
