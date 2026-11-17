@@ -1744,10 +1744,12 @@ impl<B: Builder> Gen<'_, B> {
 
     /// With the checks (#536 step 10b, #842), on a `FieldGet` or
     /// `FieldSet` (`set`) fast path, where `obj` holds an object: one of
-    /// exactly `class` goes on at the cost of a compare; any other (a
-    /// subclass, whose layout starts with the class's, or a violation)
-    /// asks the runtime, which tests `class_is_a`. Without the checks,
-    /// nothing.
+    /// exactly `class` goes on at the cost of a compare, and so does one of
+    /// the class the runtime last accepted at this site, kept in the
+    /// site's cell (#841); any other (a subclass not seen yet, or a
+    /// violation) asks the runtime, which tests `class_is_a` and keeps the
+    /// class in the cell when it passes. The code compares only with
+    /// answers that test gave. Without the checks, nothing.
     fn verify_field_class(&mut self, obj: Reg, class: ClassId, set: bool) {
         let Some(h) = self.h.verify_field_class else {
             return;
@@ -1758,13 +1760,22 @@ impl<B: Builder> Gen<'_, B> {
             .uload32(rc, OBJECT_FIELDS_PTR_OFF + L::OBJECT_CLASS_OFF as i32);
         let same = self.b.icmp_imm(IntCC::Equal, cid, i64::from(class));
         let other = self.b.create_block();
+        let ask = self.b.create_block();
         let on = self.b.create_block();
         self.b.brif(same, on, &[], other, &[]);
         self.b.switch_to_block(other);
+        // (The cell holds the class id plus one: null is none yet.)
+        let cell = self.b.data_cell();
+        let seen = self.b.load_relaxed(Ty::I64, cell, 0);
+        let want = self.b.iadd_imm(cid, 1);
+        let hit = self.b.icmp(IntCC::Equal, seen, want);
+        self.b.brif(hit, on, &[], ask, &[]);
+        self.b.switch_to_block(ask);
+        self.b.set_cold(ask);
         let o = self.i32(obj);
         let c = self.i32(class);
         let s = self.i32(u32::from(set));
-        self.b.call(h, &[self.rt, self.regs, o, c, s]);
+        self.b.call(h, &[self.rt, self.regs, o, c, s, cell]);
         self.b.jump(on, &[]);
         self.b.switch_to_block(on);
     }
