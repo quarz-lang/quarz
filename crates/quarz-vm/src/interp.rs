@@ -1159,8 +1159,6 @@ impl Interp {
                     })
                     .collect()
             };
-        #[cfg(debug_assertions)]
-        interp.assert_key_rows(&keys);
         crate::keys::set(&interp, keys);
         interp
     }
@@ -3727,41 +3725,6 @@ impl Interp {
     }
 
     // ----- conversions ---------------------------------------------------------------------------
-
-    /// #813's oracle (debug builds, removed with the old computation):
-    /// the key table made from the rows is the one the interpreter's own
-    /// lookup made before them, for every class.
-    #[cfg(debug_assertions)]
-    fn assert_key_rows(&self, keys: &[Option<crate::keys::KeyMethods>]) {
-        let world = &self.program.world;
-        let owners: Vec<ClassId> = (0..world.classes.len() as ClassId)
-            .filter(|&c| world.class(c).declares_eq_hash)
-            .collect();
-        let own = |c: ClassId, name: &str, argc: usize| {
-            self.find_method(c, name, argc, false, false).filter(|m| {
-                let m = self.program.method(*m);
-                m.native_key.is_none() && !m.is_extension
-            })
-        };
-        for c in 0..world.classes.len() as ClassId {
-            let old = if world.class(c).ancestors.iter().any(|a| owners.contains(a)) {
-                (own(c, "==", 1), own(c, "hash", 0))
-            } else {
-                (None, None)
-            };
-            let new = keys
-                .get(c as usize)
-                .copied()
-                .flatten()
-                .map_or((None, None), |k| (k.eq, k.hash));
-            assert_eq!(
-                old,
-                new,
-                "internal error (#813): the key methods of `{}` from the rows differ from the lookup's",
-                world.class(c).name
-            );
-        }
-    }
 
     /// Append `v`'s `to_s` to `buf` (numbers and strings without a
     /// temporary).

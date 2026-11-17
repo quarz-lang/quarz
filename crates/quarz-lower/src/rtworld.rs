@@ -238,19 +238,6 @@ pub fn class_row(world: &World, out: &types::Output, id: ClassId) -> RtClass {
         variants: c.variants.clone(),
         variant_of: c.variant_of,
         structural: matches!(c.kind, ClassKind::Data | ClassKind::Variant),
-        // (A file's top-level `def`s are functions, not its
-        // object's `==`.)
-        declares_eq_hash: c.kind != ClassKind::Main
-            && ["==", "hash"].iter().any(|n| {
-                c.methods.get(*n).is_some_and(|ms| {
-                    ms.iter().any(|m| {
-                        let m = world.method(*m);
-                        // (A generated one's body is its lifted block,
-                        // `Generated::func`: it has none of its own.)
-                        !m.singleton && !m.is_native && (m.body.is_some() || m.generated.is_some())
-                    })
-                })
-            }),
         key_methods: world.key_methods(c.id),
         is_exception: world.is_exception_class(c.id),
         is_abstract: c.is_abstract,
