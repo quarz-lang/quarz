@@ -99,29 +99,41 @@ fn ensure(world: &World, cid: ClassId, memo: &mut Vec<Option<Layout>>, stack: &m
     memo[cid as usize] = Some(Layout { ivars, slots, init });
 }
 
-/// What a change of the world did to the layouts that existed: the first
-/// class of `before` (by id) that `after` lays out otherwise, with the
-/// first of its declared fields placed otherwise (another first physical
-/// field, or another `data` type held in place there; past the shorter
-/// list when only the number of fields or of physical fields differs).
-/// A class `after` adds is not compared. The checks that a layout cannot
-/// change under code lowered with it (#809: a later unit's declarations)
-/// call it on the layouts before and after.
+/// What a change of the world did to the layouts that existed: each class
+/// of `before` (by id) that `after` lays out otherwise, with the first of
+/// its declared fields placed otherwise (another first physical field, or
+/// another `data` type held in place there; past the shorter list when
+/// only the number of fields or of physical fields differs). A class
+/// `after` adds is not compared. The checks that a layout cannot change
+/// under code lowered with it (#809: a later unit's declarations) call it
+/// on the layouts before and after.
+pub fn changes<'a>(
+    before: &'a [Layout],
+    after: &'a [Layout],
+) -> impl Iterator<Item = (ClassId, usize)> + 'a {
+    before
+        .iter()
+        .zip(after)
+        .enumerate()
+        .filter_map(|(id, (b, a))| {
+            let differs = b
+                .ivars
+                .iter()
+                .zip(&a.ivars)
+                .position(|(x, y)| x.name != y.name || x.slot != y.slot || x.flat != y.flat);
+            match differs {
+                Some(i) => Some((id as ClassId, i)),
+                None if b.ivars.len() != a.ivars.len() || b.slots.len() != a.slots.len() => {
+                    Some((id as ClassId, b.ivars.len().min(a.ivars.len())))
+                }
+                None => None,
+            }
+        })
+}
+
+/// The first of `changes`.
 pub fn first_change(before: &[Layout], after: &[Layout]) -> Option<(ClassId, usize)> {
-    for (id, (b, a)) in before.iter().zip(after).enumerate() {
-        let differs = b
-            .ivars
-            .iter()
-            .zip(&a.ivars)
-            .position(|(x, y)| x.name != y.name || x.slot != y.slot || x.flat != y.flat);
-        if let Some(i) = differs {
-            return Some((id as ClassId, i));
-        }
-        if b.ivars.len() != a.ivars.len() || b.slots.len() != a.slots.len() {
-            return Some((id as ClassId, b.ivars.len().min(a.ivars.len())));
-        }
-    }
-    None
+    changes(before, after).next()
 }
 
 fn is_scalar(world: &World, ty: &Type) -> bool {

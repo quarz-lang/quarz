@@ -801,7 +801,6 @@ fn layout_change_error(
     first_extension: usize,
     example: bool,
 ) -> FileDiagnostic {
-    let holder = world.class(change.holder);
     // The field's declaring class: the first up the chain that has it.
     let declarer = world
         .superclass_chain(change.holder)
@@ -845,7 +844,7 @@ fn layout_change_error(
             } else {
                 format!(
                     "declare the extension in the program's files, so that it is seen before `{}` is laid out",
-                    holder.name
+                    declarer.name
                 )
             };
             let message = format!(

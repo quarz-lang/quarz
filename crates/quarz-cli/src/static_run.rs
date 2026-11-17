@@ -2271,7 +2271,23 @@ impl StaticRunner for Runner {
             return None;
         }
         let before = self.later_before.take()?;
-        let (class, index) = quarz_lower::layout::first_change(&before, &now)?;
+        // The field whose type the declarations gave an `==`, `!=` or
+        // `hash` (`World::user_method`), which is what the error explains:
+        // its holders up the nesting change too, and may come first.
+        let compared = |d: ClassId| {
+            [("==", 1), ("!=", 1), ("hash", 0)]
+                .iter()
+                .any(|(n, argc)| world.user_method(d, n, *argc).is_some())
+        };
+        let (class, index) = quarz_lower::layout::changes(&before, &now)
+            .find(|(c, i)| {
+                before[*c as usize]
+                    .ivars
+                    .get(*i)
+                    .and_then(|v| v.flat)
+                    .is_some_and(compared)
+            })
+            .or_else(|| quarz_lower::layout::first_change(&before, &now))?;
         let ivar = before[class as usize].ivars.get(index);
         Some(LayoutChange {
             holder: class,
