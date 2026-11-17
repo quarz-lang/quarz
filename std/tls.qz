@@ -191,4 +191,87 @@ module TLS
 
     private native def check -> Nil
   end
+
+  # Certificates for tests, made on the spot: a test can serve TLS and
+  # trust it without fixture files. Not for production: nothing else
+  # trusts what it makes.
+  module Testing
+    # A certificate and its private key, both PEM.
+    data Certificate(
+      # The certificate (PEM).
+      certificate: String,
+      # Its private key (PEM, PKCS#8).
+      private_key: String
+    )
+      # The certificate, its private key hidden.
+      def inspect -> String
+        "#<TLS::Testing::Certificate certificate: (#{certificate.bytesize} bytes), private_key: <hidden>>"
+      end
+
+      # :ditto:
+      def to_s -> String = inspect
+    end
+
+    # A self-signed certificate for `names`, valid from now (to the
+    # second, rounded down) until `valid_for` from now (to the second,
+    # rounded up), with a new ECDSA P-256 key. A name that
+    # `Socket::IP.parse` reads is an IP address, any other a DNS name
+    # (`*.example.com` matches one label); the first is also the
+    # subject's common name. The certificate is no CA, so that it can be
+    # the server's own certificate and the client's only root at once:
+    #
+    # ```quarz no_run
+    # cert = TLS::Testing.self_signed(["localhost", "127.0.0.1"])
+    # server = TLS::ServerConfig.new(certificate: cert.certificate, private_key: cert.private_key)
+    # client = TLS::Config.new(roots: TLS::Roots.from_pem(cert.certificate))
+    # ```
+    #
+    # Each call makes a new key and a new serial number.
+    #
+    # ## Raises
+    #
+    # `ArgumentError` for no names, a name that is neither an IP address
+    # nor a DNS name (letters, digits and `-` in dot-separated labels,
+    # ASCII only: `xn--` for others; `*.` first at most), or a
+    # `valid_for` that is not positive. `NotImplementedError` when TLS is
+    # not built in.
+    def self.self_signed(names: Array[String], valid_for: Duration = 1.day) -> Certificate
+      raise ArgumentError, "self_signed: no names" if names.empty?
+      raise ArgumentError, "self_signed: valid_for must be positive, not #{valid_for}" unless valid_for > 0.seconds
+      dns: Array[String] = []
+      ips: Array[String] = []
+      names.each do |name|
+        ip = Socket::IP.parse(name)
+        if ip
+          ips = ips.push(ip.to_s)
+        elsif dns_name?(name)
+          dns = dns.push(name)
+        else
+          raise ArgumentError, "self_signed: not an IP address or a DNS name: #{name.inspect}"
+        end
+      end
+      now = Time.now
+      from = now.to_i
+      # (Rounded up: the certificate never ends before `valid_for` is up.)
+      to = (now + valid_for).to_i
+      to += 1 if Time.at(to) < now + valid_for
+      pem = generate(dns, ips, from, to)
+      Certificate.new(certificate: pem[0], private_key: pem[1])
+    end
+
+    # :nodoc:
+    # Whether `name` is a DNS name a certificate can hold: labels of
+    # letters, digits and `-` (not first or last), at most 63 bytes each,
+    # 253 in all, the first one `*` at most.
+    def self.dns_name?(name: String) -> Bool
+      return false if name.empty? || name.bytesize > 253
+      labels = name.split(".", -1)
+      labels.each_with_index.all? do |label, i|
+        (i == 0 && label == "*" && labels.size > 1) ||
+          (label.bytesize <= 63 && label.match?(/\A[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?\z/))
+      end
+    end
+
+    private native def self.generate(dns: Array[String], ips: Array[String], not_before: Int, not_after: Int) -> [String, String]
+  end
 end

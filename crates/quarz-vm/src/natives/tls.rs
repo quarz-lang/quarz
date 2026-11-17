@@ -56,6 +56,23 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         server_config(i, server_key(i, r)?)?;
         Ok(Value::Nil)
     });
+    native!(m, "TLS::Testing.generate", |i, _, a| {
+        let strings = |v: &Value, what: &str| -> Result<Vec<String>, Flow> {
+            let Value::Array(xs) = v else {
+                return Err(i.err_type(&format!("{what} must be an Array")));
+            };
+            xs.iter()
+                .map(|x| Ok(string(i, &x, what)?.to_string()))
+                .collect()
+        };
+        let dns = strings(a.arg(0), "a DNS name")?;
+        let ips = strings(a.arg(1), "an IP address")?;
+        let not_before = super::int(i, a.arg(2), "not_before")?;
+        let not_after = super::int(i, a.arg(3), "not_after")?;
+        let (cert, key) = self_signed(&dns, &ips, not_before, not_after)
+            .map_err(|e| i.err_arg(&format!("cannot make the certificate: {e}")))?;
+        Ok(Value::array(vec![Value::string(cert), Value::string(key)]))
+    });
     native!(m, "TLS::Roots.check", |i, _, a| {
         let Value::Bytes(pem) = a.arg(0) else {
             return Err(i.err_type("pem must be Bytes"));
@@ -561,4 +578,42 @@ impl ServerCertVerifier for NoVerify {
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.0.signature_verification_algorithms.supported_schemes()
     }
+}
+
+/// A self-signed end-entity certificate (no basicConstraints: webpki
+/// refuses a CA as the server's own certificate) for the DNS names and IP
+/// addresses given, with a new ECDSA P-256 key: its PEM and the key's
+/// (PKCS#8). The first name is also the subject's common name. The times
+/// are Unix seconds. `TLS::Testing.self_signed` (std/tls.qz) decides which
+/// name is an address (`Socket::IP.parse`) and checks the names; the
+/// addresses come in its canonical form.
+fn self_signed(
+    dns: &[String],
+    ips: &[String],
+    not_before: i64,
+    not_after: i64,
+) -> Result<(String, String), String> {
+    use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, SanType};
+    let time = |t: i64| {
+        time::OffsetDateTime::from_unix_timestamp(t).map_err(|_| "a time out of range".to_string())
+    };
+    let mut params = CertificateParams::default();
+    for d in dns {
+        let name = d.clone().try_into().map_err(|e| format!("{d}: {e}"))?;
+        params.subject_alt_names.push(SanType::DnsName(name));
+    }
+    for ip in ips {
+        let addr: std::net::IpAddr = ip.parse().map_err(|_| format!("not an IP address: {ip}"))?;
+        params.subject_alt_names.push(SanType::IpAddress(addr));
+    }
+    let mut subject = DistinguishedName::new();
+    if let Some(first) = dns.first().or(ips.first()) {
+        subject.push(DnType::CommonName, first.as_str());
+    }
+    params.distinguished_name = subject;
+    params.not_before = time(not_before)?;
+    params.not_after = time(not_after)?;
+    let key = KeyPair::generate().map_err(|e| e.to_string())?;
+    let cert = params.self_signed(&key).map_err(|e| e.to_string())?;
+    Ok((cert.pem(), key.serialize_pem()))
 }

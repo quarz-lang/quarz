@@ -1,0 +1,115 @@
+# TLS::Testing.self_signed: a certificate a test server presents and its
+# client trusts, through TLS::ServerConfig, TLS::Roots and TLSSocket.
+require "tls"
+require "test"
+
+class TlsTestingTest < Test::Case
+  # Serves one handshake with `cert` and connects to it as `name`,
+  # trusting `cert` alone: the line the server read, or what the
+  # client's handshake raised.
+  def connect(cert: TLS::Testing::Certificate, name: String) -> String
+    server_config = TLS::ServerConfig.new(certificate: cert.certificate, private_key: cert.private_key)
+    client_config = TLS::Config.new(roots: TLS::Roots.from_pem(cert.certificate))
+    listener = TCPServer.new("127.0.0.1", 0)
+    port = listener.local_address.port
+    Task.scope do |scope|
+      server = scope.spawn do
+        sock = listener.accept
+        begin
+          tls = TLSSocket.accept(sock, server_config)
+          line = tls.gets? || ""
+          tls.close
+          line.chomp
+        rescue TLS::Error, IOError
+          sock.close
+          ""
+        end
+      end
+      result = begin
+        tls = TLSSocket.connect(TCPSocket.new("127.0.0.1", port), name, client_config)
+        assert(tls.verified?)
+        tls.puts("hello #{name}")
+        tls.close
+        server.await
+      rescue TLS::CertificateError => e
+        server.await
+        "refused: #{e.message}"
+      end
+      listener.close
+      result
+    end
+  end
+
+  def test_trusted_for_each_name
+    cert = TLS::Testing.self_signed(["localhost", "127.0.0.1", "::1", "*.example.com"])
+    ["localhost", "127.0.0.1", "::1", "a.example.com"].each do |name|
+      assert_equal("hello #{name}", connect(cert, name))
+    end
+  end
+
+  def test_refused_for_another_name
+    cert = TLS::Testing.self_signed(["localhost", "*.example.com"])
+    ["example.org", "127.0.0.1", "example.com", "a.b.example.com"].each do |name|
+      assert_match(/\Arefused: /, connect(cert, name), name)
+    end
+  end
+
+  # Valid for its `valid_for` only: 1 second, which ends at most 2
+  # seconds from now once rounded up (to the second), and the client
+  # compares whole seconds.
+  def test_refused_once_expired
+    cert = TLS::Testing.self_signed(["localhost"], valid_for: 1.second)
+    sleep 3.seconds
+    assert_match(/\Arefused: .*expired/i, connect(cert, "localhost"))
+  end
+
+  # Under a second, the end is rounded up to the next second: usable at
+  # once.
+  def test_a_validity_under_a_second
+    cert = TLS::Testing.self_signed(["localhost"], valid_for: 1.ms)
+    assert_equal("hello localhost", connect(cert, "localhost"))
+  end
+
+  def test_each_call_makes_a_new_key
+    a = TLS::Testing.self_signed(["localhost"])
+    b = TLS::Testing.self_signed(["localhost"])
+    assert(a.private_key != b.private_key)
+    assert(a.certificate != b.certificate)
+    assert_match(/\A-----BEGIN CERTIFICATE-----\n/, a.certificate)
+    assert_match(/\A-----BEGIN PRIVATE KEY-----\n/, a.private_key)
+  end
+
+  def test_inspect_hides_the_key
+    cert = TLS::Testing.self_signed(["localhost"])
+    body = cert.private_key.lines[1].chomp
+    for_show = [cert.inspect, cert.to_s, [cert].inspect]
+    for_show.each do |s|
+      assert_match(/#<TLS::Testing::Certificate certificate: \(\d+ bytes\), private_key: <hidden>>/, s)
+      assert(!s.include?(body), s)
+    end
+  end
+
+  def test_argument_errors
+    assert_raise_message("self_signed: no names") { TLS::Testing.self_signed([]); nil }
+    ["bad name", "", "é.com", "a..b", "-a.com", "a-.com", "*", "*.*.com", "a*.com", "a.*.com",
+     "#{"a" * 64}.com", "[::1]", "a_b.com"].each do |name|
+      assert_raise_message("self_signed: not an IP address or a DNS name: #{name.inspect}") do
+        TLS::Testing.self_signed([name])
+        nil
+      end
+    end
+    assert_raise_message("self_signed: valid_for must be positive, not 0s") do
+      TLS::Testing.self_signed(["localhost"], valid_for: 0.seconds)
+      nil
+    end
+    assert_raise(ArgumentError) { TLS::Testing.self_signed(["localhost"], valid_for: -1.seconds); nil }
+  end
+
+  # A name with a leading-zero part is no IP address (`Socket::IP.parse`)
+  # but is a DNS name of digits: it is a DNS SAN, so `127.0.0.1` does not
+  # match it.
+  def test_a_name_socket_ip_refuses_is_a_dns_name
+    cert = TLS::Testing.self_signed(["127.000.0.1"])
+    assert_match(/\Arefused: /, connect(cert, "127.0.0.1"))
+  end
+end

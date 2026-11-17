@@ -213,6 +213,8 @@ const PURITY_BY_CLASS: &[(&str, Purity)] = &[
     ("UNIXSocket", Denied),
     ("UNIXServer", Denied),
     ("TLSSocket", Denied),
+    // (A new key each time.)
+    ("TLS::Testing", Denied),
     // Values and what computes from them.
     ("Object", Pure),
     ("Kernel", Pure),
@@ -488,7 +490,8 @@ fn no_tls(m: &mut Registry<NativeFn>) {
             "TLSSocket.handshake",
             "TLS::Roots.check",
             "TLS::ServerConfig#accept",
-            "TLS::ServerConfig#check"
+            "TLS::ServerConfig#check",
+            "TLS::Testing.generate"
         ],
         |i, _, _| {
             Err(i.raise(
