@@ -112,6 +112,10 @@ end
 # serve, and the classes `TCPSocket`, `TCPServer`, `UDPSocket`,
 # `UNIXSocket` and `UNIXServer` the connections.
 module Socket
+  # A name whose every address `Socket.tcp`'s `allow_address` refused.
+  class ForbiddenAddress < SocketError
+  end
+
   # A numeric address, IPv4 or IPv6, and a port.
   data Address(
     # The numeric host: `127.0.0.1`, `::1`.
@@ -454,19 +458,32 @@ module Socket
   # nothing to race: it is connected to in the calling task.
   # `fast_fallback: false` tries the addresses in the order the resolver
   # gives them, one after the other, each until it connects or fails.
+  #
+  # `allow_address`, when given, is called with each address the name
+  # resolves to before any is tried, and only those it returns true for
+  # are: the address it was given is the one connected to, as the name is
+  # looked up once. When it refuses every address found,
+  # `ForbiddenAddress` is raised; an exception it raises ends the call.
+  #
+  # ```quarz no_run
+  # # Refuse loopback: "localhost" raises Socket::ForbiddenAddress.
+  # Socket.tcp("localhost", 80, allow_address: ->(a: Socket::Address) { !a.ip.loopback? })
+  # ```
   def self.tcp(host: String, port: Int, connect_timeout: Duration? = nil, fast_fallback: Bool = true,
-               fallback_delay: Duration = CONNECTION_ATTEMPT_DELAY) -> TCPSocket
+               fallback_delay: Duration = CONNECTION_ATTEMPT_DELAY,
+               allow_address: (shareable (Address) -> Bool)? = nil) -> TCPSocket
     if connect_timeout
-      Task.timeout(connect_timeout) { open_tcp(host, port, fast_fallback, fallback_delay) }
+      Task.timeout(connect_timeout) { open_tcp(host, port, fast_fallback, fallback_delay, allow_address) }
     else
-      open_tcp(host, port, fast_fallback, fallback_delay)
+      open_tcp(host, port, fast_fallback, fallback_delay, allow_address)
     end
   end
 
   # The same, with the connection given to the block and closed after it.
   def self.tcp[R](host: String, port: Int, connect_timeout: Duration? = nil, fast_fallback: Bool = true,
-                  fallback_delay: Duration = CONNECTION_ATTEMPT_DELAY, &: (TCPSocket) -> R) -> R
-    sock = tcp(host, port, connect_timeout:, fast_fallback:, fallback_delay:)
+                  fallback_delay: Duration = CONNECTION_ATTEMPT_DELAY,
+                  allow_address: (shareable (Address) -> Bool)? = nil, &: (TCPSocket) -> R) -> R
+    sock = tcp(host, port, connect_timeout:, fast_fallback:, fallback_delay:, allow_address:)
     begin
       yield(sock)
     ensure
@@ -603,7 +620,16 @@ module Socket
 
   # :nodoc:
   # What a lookup for one family found.
-  data Lookup = (family: Int, addresses: Array[Address], error: String?)
+  data Lookup = (family: Int, addresses: Array[Address], error: String?, refused: Int = 0)
+
+  # :nodoc:
+  # `found` with only the addresses `allow_address` returns true for, and
+  # the number it refused.
+  def self.allowed(found: Lookup, allow_address: (shareable (Address) -> Bool)?) -> Lookup
+    return found if allow_address.nil?
+    kept = found.addresses.select { |a| allow_address.call(a) }
+    found.with(addresses: kept, refused: found.refused + found.addresses.size - kept.size)
+  end
 
   # :nodoc:
   # The addresses in the order to try them: the families alternating,
@@ -622,11 +648,14 @@ module Socket
   # :nodoc:
   # `tcp` without its time limit: an IP address, or a name without
   # `fast_fallback`, in order and in this task; a name by Happy Eyeballs.
-  def self.open_tcp(host: String, port: Int, fast_fallback: Bool, delay: Duration) -> TCPSocket
+  def self.open_tcp(host: String, port: Int, fast_fallback: Bool, delay: Duration,
+                    allow_address: (shareable (Address) -> Bool)?) -> TCPSocket
     if !fast_fallback || ip_address?(host)
-      in_order(host, getaddrinfo(host, port))
+      found = allowed(Lookup.new(0, getaddrinfo(host, port), nil), allow_address)
+      raise ForbiddenAddress, "#{host}: no address allowed" if found.addresses.empty? && found.refused > 0
+      in_order(host, found.addresses)
     else
-      happy_eyeballs(host, port, delay)
+      happy_eyeballs(host, port, delay, allow_address)
     end
   end
 
@@ -654,8 +683,9 @@ module Socket
   end
 
   # :nodoc:
-  def self.happy_eyeballs(host: String, port: Int, delay: Duration) -> TCPSocket
-    won, failed, unresolved, attempts, alone = Task.scope do |scope|
+  def self.happy_eyeballs(host: String, port: Int, delay: Duration,
+                          allow_address: (shareable (Address) -> Bool)?) -> TCPSocket
+    won, failed, unresolved, attempts, alone, refused = Task.scope do |scope|
       lookups = Channel[Lookup].new(capacity: 2)
       [6, 4].each do |family|
         scope.spawn do
@@ -670,22 +700,29 @@ module Socket
       pending: Array[Address] = []
       unanswered = 2
       lookup_error: String? = nil
+      # The addresses `allow_address` refused, which are never tried.
+      refused = 0
       # The first answer; if it is IPv4's, IPv6's for a little longer.
-      first = lookups.receive
+      first = allowed(lookups.receive, allow_address)
+      refused += first.refused
       unanswered -= 1
       pending = interleave(first.addresses)
       lookup_error ||= first.error
       if first.family == 4
         Channel.select do |s|
-          s.receive(lookups) do |more|
+          s.receive(lookups) do |answer|
+            more = allowed(answer, allow_address)
+            refused += more.refused
             unanswered -= 1
             pending = interleave(pending + more.addresses)
             lookup_error ||= more.error
           end
           s.after(RESOLUTION_DELAY) { }
         end
-      elsif (more = lookups.try_receive)
+      elsif (answer = lookups.try_receive)
         # IPv4's answer in too.
+        more = allowed(answer, allow_address)
+        refused += more.refused
         unanswered -= 1
         pending = interleave(pending + more.addresses)
         lookup_error ||= more.error
@@ -693,7 +730,8 @@ module Socket
       # Nothing to try yet: the other answer decides (there is nothing to
       # do meanwhile).
       if pending.empty? && unanswered > 0
-        more = lookups.receive
+        more = allowed(lookups.receive, allow_address)
+        refused += more.refused
         unanswered -= 1
         pending = interleave(more.addresses)
         lookup_error ||= more.error
@@ -741,7 +779,9 @@ module Socket
             end
           end
           if unanswered > 0
-            s.receive(lookups) do |more|
+            s.receive(lookups) do |answer|
+              more = allowed(answer, allow_address)
+              refused += more.refused
               unanswered -= 1
               pending = interleave(pending + more.addresses)
               lookup_error ||= more.error
@@ -753,7 +793,7 @@ module Socket
         end
       end
       scope.cancel
-      [winner, failure, lookup_error, made, single ? pending : nil]
+      [winner, failure, lookup_error, made, single ? pending : nil, refused]
     end
     # One address: connected to in this task.
     if alone && !alone.empty?
@@ -766,6 +806,7 @@ module Socket
     end
     return won if won
     raise failed if failed
+    raise ForbiddenAddress, "#{host}: no address allowed" if refused > 0
     raise SocketError, unresolved || "getaddrinfo: #{host}: no address"
   end
 end

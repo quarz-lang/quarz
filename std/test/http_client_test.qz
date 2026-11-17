@@ -1,6 +1,6 @@
 # HTTP::Client against HTTP::Server (and a few servers written by hand)
 # in the same program: bodies both ways, keep-alive, redirects, limits,
-# timeouts, retries, HTTPS, and a CONNECT proxy.
+# timeouts, retries, HTTPS, a CONNECT proxy, and an address filter.
 require "http"
 require "test"
 
@@ -479,6 +479,151 @@ class HttpClientTest < Test::Case
       # An http target: sent to the proxy in absolute form.
       res = client(proxy: HTTP::Proxy.new("http://user:secret@#{proxy}")).get("http://example.com/a?b")
       assert_equal("proxied GET http://example.com/a?b Basic #{Base64.encode("user:secret")}", res.body.read)
+    end
+  end
+
+  # allow_address: each address is checked after the name is resolved,
+  # before anything is sent to it.
+  def filtered(allow: shareable (Socket::Address) -> Bool, proxy: HTTP::Proxy? = nil) -> HTTP::Client
+    HTTP::Client.new(proxy: proxy, allow_address: allow)
+  end
+
+  def port_of(base: String) -> Int = base.rpartition(":")[2].to_i
+
+  def test_allow_address_refuses_a_name
+    serving do |base|
+      port = port_of(base)
+      c = filtered(->(a: Socket::Address) { !a.ip.loopback? })
+      ["http://localhost:#{port}/text", "#{base}/text", "http://2130706433:#{port}/text"].each do |url|
+        e = assert_raise(HTTP::Client::ForbiddenAddress) { c.get(url); nil }
+        host = URI.parse(url).host
+        assert_equal("no allowed address for #{host}:#{port}", e.message)
+      end
+      assert_equal(0, connections)
+    end
+  end
+
+  # The address allowed is the one connected to: refusing IPv6, the
+  # request goes to 127.0.0.1, which is all the filter allowed.
+  def test_allow_address_sees_the_address_connected_to
+    serving do |base|
+      port = port_of(base)
+      seen = Atom[Array[Socket::Address]].new([])
+      allow: shareable (Socket::Address) -> Bool = ->(a: Socket::Address) do
+        seen.update { |all| all.push(a) }
+        !a.ipv6?
+      end
+      c = filtered(allow)
+      assert_equal("hello GET", c.get("http://localhost:#{port}/text").body.read)
+      assert_equal([Socket::Address.new("127.0.0.1", port)], seen.get.reject(&:ipv6?))
+      assert_equal(1, connections)
+    end
+  end
+
+  def test_allow_address_on_a_redirect
+    serving do |a|
+      serving do |b|
+        allowed_port = port_of(a)
+        c = filtered(->(x: Socket::Address) { x.port == allowed_port })
+        to = "#{b}/text".gsub("/", "~")
+        e = assert_raise(HTTP::Client::ForbiddenAddress) { c.get("#{a}/redirect/302/#{to}"); nil }
+        assert_equal("no allowed address for 127.0.0.1:#{port_of(b)}", e.message)
+        # A redirect to the same origin goes on the kept connection.
+        assert_equal("hello GET", c.get("#{a}/redirect/302/~text").body.read)
+      end
+    end
+  end
+
+  # A kept connection is not checked again: it was when made.
+  def test_allow_address_once_per_connection
+    serving do |base|
+      calls = Atom[Int].new(0)
+      allow: shareable (Socket::Address) -> Bool = ->(a: Socket::Address) do
+        calls.update { |n| n + 1 }
+        true
+      end
+      c = filtered(allow)
+      3.times { assert_equal("hello GET", c.get("#{base}/text").body.read) }
+      assert_equal(1, connections)
+      assert_equal(1, calls.get)
+    end
+  end
+
+  # Through a proxy, the proxy's address is checked, not the target's.
+  def test_allow_address_through_a_proxy
+    proxying do |proxy|
+      proxy_port = port_of(proxy)
+      seen = Atom[Array[Int]].new([])
+      allow: shareable (Socket::Address) -> Bool = ->(a: Socket::Address) do
+        seen.update { |all| all.push(a.port) }
+        true
+      end
+      via = HTTP::Proxy.new("http://user:secret@#{proxy}")
+      res = filtered(allow, via).get("http://example.com/a")
+      assert_equal("proxied GET http://example.com/a Basic #{Base64.encode("user:secret")}", res.body.read)
+      assert_equal([proxy_port], seen.get)
+      e = assert_raise(HTTP::Client::ForbiddenAddress) do
+        filtered(->(a: Socket::Address) { a.port != proxy_port }, via).get("http://example.com/a")
+        nil
+      end
+      assert_equal("no allowed address for the proxy 127.0.0.1:#{proxy_port}", e.message)
+    end
+  end
+
+  def test_allow_address_that_raises
+    serving do |base|
+      c = filtered(->(a: Socket::Address) -> Bool { raise ArgumentError, "refused by the program" })
+      e = assert_raise(ArgumentError) { c.get("#{base}/text"); nil }
+      assert_equal("refused by the program", e.message)
+      assert_equal(0, connections)
+    end
+  end
+
+  # public_only, by its rule: global? for IPv4 (mapped too); for IPv6,
+  # also inside 2000::/3; NAT64's 64:ff9b::/96 by the IPv4 it embeds.
+  def data_public_only -> Hash[String, [String, Bool]]
+    {
+      "global IPv4" => ["8.8.8.8", true],
+      "loopback" => ["127.0.0.1", false],
+      "private" => ["10.0.0.1", false],
+      "shared address space" => ["100.64.0.1", false],
+      "link-local, cloud metadata" => ["169.254.169.254", false],
+      "this network" => ["0.0.0.0", false],
+      "multicast" => ["224.0.0.1", false],
+      "broadcast" => ["255.255.255.255", false],
+      "mapped global" => ["::ffff:8.8.8.8", true],
+      "mapped loopback" => ["::ffff:127.0.0.1", false],
+      "global IPv6" => ["2606:4700::1111", true],
+      "globally reachable inside a refused block" => ["2001:1::1", true],
+      "documentation" => ["2001:db8::1", false],
+      "IPv6 loopback" => ["::1", false],
+      "IPv6 link-local" => ["fe80::1", false],
+      "unique local" => ["fd00::1", false],
+      "IPv6 multicast" => ["ff02::1", false],
+      "6to4" => ["2002:c000:204::1", false],
+      "Teredo" => ["2001:0:4136:e378::1", false],
+      "NAT64 of a global address" => ["64:ff9b::808:808", true],
+      "NAT64 of loopback" => ["64:ff9b::7f00:1", false],
+      "NAT64 of a private address" => ["64:ff9b::a00:1", false],
+      "NAT64 of the metadata address" => ["64:ff9b::a9fe:a9fe", false],
+      "IPv4-compatible loopback" => ["::7f00:1", false],
+      "IPv4-compatible global" => ["::808:808", false],
+      "site-local" => ["fec0::1", false],
+      "outside 2000::/3" => ["4000::1", false],
+    }
+  end
+
+  def test_public_only(data: [String, Bool])
+    host, expected = data
+    assert_equal(expected, HTTP::Client.public_only.call(Socket::Address.new(host, 443)))
+  end
+
+  def test_public_only_refuses_localhost
+    serving do |base|
+      c = filtered(HTTP::Client.public_only)
+      e = assert_raise(HTTP::Client::ForbiddenAddress) { c.get("http://localhost:#{port_of(base)}/text"); nil }
+      assert_equal("no allowed address for localhost:#{port_of(base)}", e.message)
+      assert_equal(0, connections)
     end
   end
 

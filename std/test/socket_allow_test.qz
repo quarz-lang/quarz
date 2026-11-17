@@ -1,0 +1,65 @@
+# Socket.tcp's allow_address: the addresses a name resolves to are
+# filtered before any is tried, and the one connected to is one the
+# filter allowed. Local servers only.
+require "socket"
+require "test"
+
+class SocketAllowAddressTest < Test::Case
+  @server: TCPServer = TCPServer.new("127.0.0.1", 0)
+
+  def port -> Int = @server.local_address.port
+
+  def no_loopback -> shareable (Socket::Address) -> Bool
+    ->(a: Socket::Address) { !a.ip.loopback? }
+  end
+
+  # The hosts naming 127.0.0.1, by Happy Eyeballs and in order: a name,
+  # the address, and forms only the resolver reads as it.
+  def data_hosts -> Hash[String, [String, Bool]]
+    {
+      "name, fast fallback" => ["localhost", true],
+      "name, in order" => ["localhost", false],
+      "address" => ["127.0.0.1", true],
+      "decimal" => ["2130706433", true],
+      "hexadecimal part" => ["0x7f.1", true],
+      "decimal, in order" => ["2130706433", false],
+    }
+  end
+
+  def test_hosts(data: [String, Bool])
+    host, fast = data
+    e = assert_raise(Socket::ForbiddenAddress) do
+      Socket.tcp(host, port, fast_fallback: fast, allow_address: no_loopback).close
+      nil
+    end
+    assert_equal("#{host}: no address allowed", e.message)
+    sock = Socket.tcp(host, port, fast_fallback: fast, allow_address: ->(a: Socket::Address) { !a.ipv6? })
+    assert_equal("127.0.0.1", sock.remote_address.host)
+    sock.close
+  end
+
+  # The address the filter last allowed is the one connected to.
+  def test_the_address_allowed_is_the_one_connected_to
+    seen = Atom[Array[Socket::Address]].new([])
+    allow: shareable (Socket::Address) -> Bool = ->(a: Socket::Address) do
+      seen.update { |all| all.push(a) }
+      !a.ipv6?
+    end
+    sock = Socket.tcp("localhost", port, allow_address: allow)
+    allowed = seen.get.reject(&:ipv6?)
+    assert_equal([sock.remote_address], allowed)
+    sock.close
+  end
+
+  def test_a_filter_that_raises_ends_the_call
+    e = assert_raise(ArgumentError) do
+      Socket.tcp("localhost", port, allow_address: ->(a: Socket::Address) -> Bool { raise ArgumentError, "no" }).close
+      nil
+    end
+    assert_equal("no", e.message)
+  end
+
+  def test_forbidden_address_is_a_socket_error
+    assert_true(Socket::ForbiddenAddress.new("x").is_a?(SocketError))
+  end
+end

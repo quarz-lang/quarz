@@ -287,7 +287,8 @@ module HTTP
                  proxy: Proxy? = Proxy.from_env,
                  max_idle_per_host: Int = 4, idle_timeout: Duration = 60.seconds,
                  user_agent: String = "quarz-http/<version>",
-                 fast_fallback: Bool = true)             # Socket.tcp's: false, no Happy Eyeballs
+                 fast_fallback: Bool = true,             # Socket.tcp's: false, no Happy Eyeballs
+                 allow_address: (shareable (Socket::Address) -> Bool)? = nil)  # see Connecting
     def self.default -> Client                          # made on first use
     def request(req: Request) -> Response
     def get(url: String | URI, headers: Headers | Hash[String, String] = Headers.empty) -> Response   # head, delete alike
@@ -331,15 +332,27 @@ What the client adds to a request: `Host` (from the URL; a request's own is repl
 
 **Connecting.** `Socket.tcp` (the addresses tried by Happy Eyeballs, or in order with `fast_fallback: false`), then, for `https`, `TLSSocket.connect` with the host as the server name, all within `connect_timeout`. Through a proxy (`Proxy.from_env` by default: `https_proxy`/`HTTPS_PROXY` for `https` targets, `http_proxy`/`HTTP_PROXY` for `http` ones, a URL that is not `http` with a host, `socks5://` say, ignored with one warning on standard error; `HTTP_PROXY` ignored when `REQUEST_METHOD` is set, as Go does, since a CGI request's `Proxy` header sets it (httpoxy); `no_proxy`/`NO_PROXY` as curl reads it: names with their subdomains, with or without a leading dot, addresses (only themselves; no CIDR networks yet), each with an optional `:port` (`[::1]:8080`), `*`): an `https` target goes through `CONNECT host:port`, then the TLS handshake over the tunnel; an `http` target is sent to the proxy in absolute form (without the URL's user information). The user information of a target URL is never sent, as a header or otherwise: a program that wants `Authorization: Basic` sets it. The proxy URL's user information is sent as `Proxy-Authorization: Basic`. A proxy that refuses the tunnel is `ProxyError` with its status.
 
+**Address filter.**
+- `allow_address` is called with each address a new connection may go to. It runs after the name is resolved and before anything is sent: `Socket.tcp(allow_address:)` resolves the name once and connects only to the numeric addresses the filter allowed, by Happy Eyeballs over those left. So a name that answers differently a second time (DNS rebinding) cannot slip a different address in, and a URL's host written as an address in any form the resolver reads (`127.0.0.1`, `[::1]`, `2130706433`, `0x7f.1`) is checked as the address it resolves to. `https` still verifies the certificate and sends SNI for the host name.
+- It runs for the first request, for each redirect, and for each new connection to a host. A connection reused from the pool is not checked again: it was checked when it was made, and a client's filter is fixed when the client is made.
+- When every address is refused, the request raises `ForbiddenAddress`, whose message names the host, not the addresses. An exception the filter raises ends the request unchanged.
+- Through a proxy, the filter sees the proxy's address only. The target is resolved by the proxy, so this client does not check it.
+- `HTTP::Client.public_only` is a ready-made filter for a client given URLs by others (SSRF):
+  - an IPv4 address, or an IPv4-mapped one, is allowed when `Socket::IP#global?` says so (the IANA special-purpose registries' "Globally Reachable");
+  - an IPv6 address must also be inside `2000::/3`, which refuses IPv4-compatible `::a.b.c.d`, site-local `fec0::/10` and unallocated space;
+  - the NAT64 well-known prefix `64:ff9b::/96` is judged by the IPv4 address it embeds.
+
+  Its limits: a network-specific NAT64 prefix cannot be known; a private service at a global address (the machine's own public one) passes; through a proxy, only the proxy's address is checked, and it must pass too.
+
 **Redirects** (Go's rules). Up to `max_redirects`: 301, 302 and 303 are followed with `GET` and no body (a `HEAD` stays `HEAD`), 307 and 308 with the same method and body (a `Stream` body cannot be sent again: `RedirectError`). `Location` is resolved against the request's URL (`URI#resolve`). When a redirect leaves the origin (`URI#origin`: scheme, host and port), `Authorization`, `Cookie` and `Proxy-Authorization` are dropped. A redirect's body is drained (or its connection closed) before the next request. More than `max_redirects` is `TooManyRedirects`. A signed request should set `max_redirects: 0` and sign again: the client cannot.
 
-**Errors.** `HTTP::Client::Error < StandardError` (not `HTTP::Error`, whose status is for a server to answer with): `ConnectError` (the name has no address, refused, unreachable, the TLS handshake, the connection failing under a request; the message carries the cause's), `TimeoutError` (`Task::Timeout` of `timeout`, `connect_timeout`, `read_timeout` and `write_timeout`), `ProtocolError` (a bad status line, header or framing, headers over `max_header_bytes`, a connection closed without a response), `ResponseTooLarge`, `RedirectError`, `TooManyRedirects`, `ProxyError` (`status`), `StatusError`. An exception is Shareable and a response's body is not, so `StatusError` carries the response's `status`, `headers`, `url` and its `body` as `Bytes` (read by `ensure_success`, nil when it could not be; the message names the status and the URL, never the body), and `TooManyRedirects` the last redirect's `status`, `headers` and `url`.
+**Errors.** `HTTP::Client::Error < StandardError` (not `HTTP::Error`, whose status is for a server to answer with): `ConnectError` (the name has no address, refused, unreachable, the TLS handshake, the connection failing under a request; the message carries the cause's), `ForbiddenAddress` (`allow_address` refused every address), `TimeoutError` (`Task::Timeout` of `timeout`, `connect_timeout`, `read_timeout` and `write_timeout`), `ProtocolError` (a bad status line, header or framing, headers over `max_header_bytes`, a connection closed without a response), `ResponseTooLarge`, `RedirectError`, `TooManyRedirects`, `ProxyError` (`status`), `StatusError`. An exception is Shareable and a response's body is not, so `StatusError` carries the response's `status`, `headers`, `url` and its `body` as `Bytes` (read by `ensure_success`, nil when it could not be; the message names the status and the URL, never the body), and `TooManyRedirects` the last redirect's `status`, `headers` and `url`.
 
 ## 10. Later
 
 - **HTTP/2**, **WebSocket**, compression, static files with ranges and caching headers, an automatic `OPTIONS` answer in the router, request logging in a standard format.
 - A `Supervisor` for restarting a server with other long-lived tasks ([04-concurrency.md](04-concurrency.md) §5) is designed separately.
-- The client's: compression (`Accept-Encoding`), cookies, HTTP/2, `Expect: 100-continue`, UNIX-socket targets, and an address filter against SSRF (a program checks `URI` and `Socket.getaddrinfo` before calling, for now).
+- The client's: compression (`Accept-Encoding`), cookies, HTTP/2, `Expect: 100-continue`, and UNIX-socket targets.
 - `HTTP.parse_query` and the percent-decoding could become thin wrappers over `uri` ([06-stdlib.md](06-stdlib.md) §10).
 
 ## 11. Alternatives Not Adopted

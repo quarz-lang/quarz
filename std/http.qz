@@ -2274,6 +2274,12 @@ module HTTP
     class ConnectError < Error
     end
 
+    # Every address the host (or the proxy) resolves to was refused by
+    # the client's `allow_address`. The message names the host, not the
+    # addresses.
+    class ForbiddenAddress < Error
+    end
+
     # The request ran out of time (`timeout`, `connect_timeout`,
     # `read_timeout` or `write_timeout`).
     class TimeoutError < Error
@@ -2577,6 +2583,9 @@ module HTTP
     @idle_timeout: Duration
     @user_agent: String
     @fast_fallback: Bool
+    # The addresses connected to: set when the client is made, never
+    # after, so every pooled connection was made under it.
+    @allow_address: (shareable (Socket::Address) -> Bool)?
     # The kept connections, by origin and proxy.
     @pool: Atom[Hash[String, Array[Idle]]]
     # `#close` was called: connections are no longer kept.
@@ -2590,15 +2599,33 @@ module HTTP
     # `http/1.1`); `proxy` defaults to the environment's. `fast_fallback`
     # is `Socket.tcp`'s: false tries a name's addresses one after the
     # other, without Happy Eyeballs.
+    #
+    # `allow_address` is called with each address a connection may go to,
+    # after the name is resolved and before anything is sent to it (by
+    # `Socket.tcp`, so the address allowed is the one connected to):
+    # for the first request, each redirect, and each new connection to a
+    # host; a connection kept in the pool was checked when it was made.
+    # A refused address is not tried; when every address is refused, the
+    # request raises `ForbiddenAddress`, and an exception the filter
+    # raises ends the request. Through a proxy, it is the proxy's address
+    # that is checked: the target is resolved by the proxy, and this
+    # client does not check it. `Client.public_only` is one such filter.
+    #
+    # ```quarz no_run
+    # client = HTTP::Client.new(allow_address: HTTP::Client.public_only)
+    # client.get("http://127.0.0.1/")   # raises HTTP::Client::ForbiddenAddress
+    # ```
     def initialize(*, timeout: Duration? = nil, connect_timeout: Duration = 10.seconds,
                    read_timeout: Duration = 30.seconds, write_timeout: Duration = 30.seconds,
                    max_header_bytes: Int = 65_536, max_body_bytes: Int = 16_777_216,
                    max_redirects: Int = 10, tls: TLS::Config = TLS::Config.default,
                    proxy: Proxy? = Proxy.from_env, max_idle_per_host: Int = 4,
                    idle_timeout: Duration = 60.seconds, user_agent: String = USER_AGENT,
-                   fast_fallback: Bool = true)
+                   fast_fallback: Bool = true,
+                   allow_address: (shareable (Socket::Address) -> Bool)? = nil)
       @timeout = timeout
       @fast_fallback = fast_fallback
+      @allow_address = allow_address
       @connect_timeout = connect_timeout
       @read_timeout = read_timeout
       @write_timeout = write_timeout
@@ -2617,6 +2644,53 @@ module HTTP
       @pool = Atom[Hash[String, Array[Idle]]].new({})
       @closed = Atom.new(false)
     end
+
+    # A filter for `allow_address` that allows only addresses reachable
+    # from anywhere, so that a client given URLs by others reaches none
+    # of the machine's own, its network's, or other special-purpose
+    # addresses. The rule:
+    #
+    # - an IPv4 address (or an IPv4-mapped IPv6 one) is allowed when
+    #   `Socket::IP#global?` says so;
+    # - an IPv6 address must also be in `2000::/3`, the global unicast
+    #   space, and not refused by `global?`. That refuses the deprecated
+    #   IPv4-compatible `::a.b.c.d` and site-local `fec0::/10`, and what
+    #   the IETF has not allocated.
+    # - The exception is the NAT64 well-known prefix `64:ff9b::/96`
+    #   (RFC 6052): it is allowed when the IPv4 address it embeds is, since
+    #   a NAT64 gateway connects to that address.
+    #
+    # Its limits:
+    # - a NAT64 network-specific prefix cannot be known from the address,
+    #   so an address under one is judged as the IPv6 address it is;
+    # - a private service reachable at a global address (the machine's
+    #   own public address, say) is allowed;
+    # - through a proxy, the proxy's address is checked and must pass,
+    #   and the target is not checked by the client.
+    #
+    # ```
+    # allow = HTTP::Client.public_only
+    # allow.call(Socket::Address.new("8.8.8.8", 443))           # => true
+    # allow.call(Socket::Address.new("10.0.0.1", 443))          # => false
+    # allow.call(Socket::Address.new("64:ff9b::a00:1", 443))    # => false
+    # ```
+    def self.public_only -> shareable (Socket::Address) -> Bool
+      ->(a: Socket::Address) { Client.public_ip?(a.ip) }
+    end
+
+    # :nodoc:
+    # `public_only`'s rule.
+    def self.public_ip?(address: Socket::IP) -> Bool
+      ip = address.unmap
+      return ip.global? if ip.v4?
+      return public_ip?(Socket::IP.new(ip.bytes.slice(12, 4))) if ip.in?(NAT64_PREFIX)
+      ip.in?(GLOBAL_UNICAST) && ip.global?
+    end
+
+    # :nodoc:
+    NAT64_PREFIX = Socket::IP::Network.of("64:ff9b::/96")
+    # :nodoc:
+    GLOBAL_UNICAST = Socket::IP::Network.of("2000::/3")
 
     # :nodoc:
     DEFAULT = Atom[Client?].new(nil)
@@ -2952,7 +3026,8 @@ module HTTP
       begin
         Task.timeout(@connect_timeout) do
           if proxy_url
-            sock = Socket.tcp(proxy_url.host || "", proxy_url.port || 80, fast_fallback: @fast_fallback)
+            sock = Socket.tcp(proxy_url.host || "", proxy_url.port || 80, fast_fallback: @fast_fallback,
+                              allow_address: @allow_address)
             if https
               Client.secure(sock) do
                 Client.tunnel(sock, host, port, proxy_url, max)
@@ -2962,16 +3037,19 @@ module HTTP
               sock
             end
           elsif https
-            sock = Socket.tcp(host, port, fast_fallback: @fast_fallback)
+            sock = Socket.tcp(host, port, fast_fallback: @fast_fallback, allow_address: @allow_address)
             Client.secure(sock) { TLSSocket.connect(sock, host, tls) }
           else
-            Socket.tcp(host, port, fast_fallback: @fast_fallback)
+            Socket.tcp(host, port, fast_fallback: @fast_fallback, allow_address: @allow_address)
           end
         end
       rescue Task::Timeout
         raise TimeoutError.new("connecting to #{Client.host_header(url)} took longer than #{@connect_timeout}")
       rescue Error => e
         raise e
+      rescue Socket::ForbiddenAddress
+        target = proxy_url ? "the proxy #{Client.host_header(proxy_url)}" : Client.host_header(url)
+        raise ForbiddenAddress.new("no allowed address for #{target}")
       rescue SocketError, SystemCallError, IOError => e
         via = proxy_url ? " through the proxy #{Client.host_header(proxy_url)}" : ""
         raise ConnectError.new("cannot connect to #{Client.host_header(url)}#{via}: #{e.message}")
