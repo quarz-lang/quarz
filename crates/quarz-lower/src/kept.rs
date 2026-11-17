@@ -309,8 +309,8 @@ impl Kept {
                 // generation of one that would change a layout is refused
                 // before it is declared (`static_run::layout_refusal`,
                 // #796's option C, #817), and checked after it in every
-                // build, any other generation in debug builds
-                // (`static_run`'s `layouts_before`).
+                // build; any other generation in debug builds, once per
+                // statement (`static_run::Runner::generate_each`, #818).
                 //
                 // Never an extension's method, nor an instance method of a
                 // class of T, which would change rows of every class (row

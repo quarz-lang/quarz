@@ -339,7 +339,49 @@ impl Runner {
         result
     }
 
+    /// `generate_members`, and in debug builds the check that what it
+    /// generated changed no existing layout, once after the last
+    /// generation of the statement or hook (#818; #796 option C): but for
+    /// the classes a `def_field` added a field to and their subclasses,
+    /// whose holders keep them by reference. A generated `==`, `!=` or
+    /// `hash` is judged before it is declared and checked after it in
+    /// every build (`generate_members`).
     fn generate_each(
+        &mut self,
+        host: &mut dyn StaticHost,
+        stmt: &StaticStmt,
+        pending: Vec<Pending>,
+        classes: &mut Vec<ClassId>,
+    ) -> Result<(), StaticFailure> {
+        let before = cfg!(debug_assertions).then(|| quarz_lower::layout::compute(host.world()));
+        let fields: Vec<ClassId> = pending
+            .iter()
+            .filter_map(|p| match p {
+                Pending::Field(f) => Some(f.class),
+                _ => None,
+            })
+            .collect();
+        let result = self.generate_members(host, stmt, pending, classes);
+        if let (Some(before), Ok(())) = (&before, &result) {
+            let world = host.world();
+            let after = quarz_lower::layout::compute(world);
+            let moved = quarz_lower::layout::changes(before, &after).find(|(c, _)| {
+                !world
+                    .superclass_chain(*c)
+                    .iter()
+                    .any(|s| fields.contains(s))
+            });
+            assert!(
+                moved.is_none(),
+                "a generation of a statement of `{}` changed the layout of `{}` (#796)",
+                world.class(stmt.class).name,
+                moved.map_or(String::new(), |(c, _)| world.class(c).name.clone())
+            );
+        }
+        result
+    }
+
+    fn generate_members(
         &mut self,
         host: &mut dyn StaticHost,
         stmt: &StaticStmt,
@@ -761,8 +803,7 @@ impl Runner {
             // a module it gets methods from) is refused before it is
             // declared: what was lowered or made with the layout keeps it.
             let deciding = !info.singleton && matches!(info.name.as_str(), "==" | "!=" | "hash");
-            let layouts_before = (deciding || cfg!(debug_assertions))
-                .then(|| quarz_lower::layout::compute(host.world()));
+            let layouts_before = deciding.then(|| quarz_lower::layout::compute(host.world()));
             if deciding {
                 if let Some(why) = layout_refusal(
                     host.world(),
@@ -776,26 +817,17 @@ impl Runner {
             let mid = host
                 .add_generated(info)
                 .map_err(|why| fail(format!("{at}: {why}")))?;
-            // What the check judged is what the declaration did: for the
-            // names it judges, in every build (an internal error, not a
-            // wrong layout); for any generation, in debug builds.
+            // What the check judged is what the declaration did, in every
+            // build (an internal error, not a wrong layout). Any other
+            // generation is checked once per statement in debug builds
+            // (`generate_each`).
             if let Some(before) = &layouts_before {
-                let changed = || {
-                    quarz_lower::layout::first_change(
-                        before,
-                        &quarz_lower::layout::compute(host.world()),
-                    )
-                    .is_some()
-                };
-                if deciding && changed() {
+                let after = quarz_lower::layout::compute(host.world());
+                if quarz_lower::layout::first_change(before, &after).is_some() {
                     return Err(fail(format!(
                         "{at}: internal error: the generation changed how a field holds a `data` type, which the check before it did not foresee (#796); please report"
                     )));
                 }
-                debug_assert!(
-                    deciding || !changed(),
-                    "{at}: a generation changed a layout (#796)"
-                );
             }
             declared[index] = Some(mid);
             // `override: true`: the method overrides an inherited one of

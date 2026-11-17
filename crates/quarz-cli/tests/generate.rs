@@ -976,6 +976,33 @@ end
     }
 }
 
+/// `def_field` generates into a class only, which a holder keeps by
+/// reference: one into a `data` type (by another class's statement: a
+/// `data` body takes none), which a holder may hold in place, is refused at
+/// the statement. That is what lets a debug build's
+/// per-statement layout check (#818) except only the field's class and its
+/// subclasses.
+#[test]
+fn a_field_is_generated_into_a_class_only() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "module AddField\n  static def self.add_field -> Void\n    def_field(:extra, Int, 0)\n  end\nend\ndata D(x: Int)\n  include AddField\nend\nmodule Go\n  static def self.go -> Void\n    D.add_field\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\ndata H = (d: D, n: Int)\nclass Driver\n  include Go\n  go\nend\np H.new(D.new(1), 2)\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok, "{err}");
+    assert!(
+        err.contains("`D` is not a class: fields are generated into classes only"),
+        "{err}"
+    );
+}
+
 /// #796 (C): a generation into a `data` type no field holds in place is
 /// accepted, and the type is compared by the generated `==` and `hash`
 /// everywhere, a holder's fields included (each holding it by reference).
