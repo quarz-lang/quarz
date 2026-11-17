@@ -3116,31 +3116,9 @@ impl Interp {
                 }
                 // The body's `initialize` taking the fields builds the
                 // value, as `new` would (docs/01 §4): the one the checker
-                // found (`RtClass::with_init`, #536 step 6). Debug builds
-                // check it against the rule of its own the runtime had
-                // (by parameter names and printed types), whose choice
-                // still runs until the rule is removed.
+                // found (`RtClass::with_init`, #536 step 6).
                 let class = self.program.world.class(o.class);
-                let own_init = class.methods.get("initialize").and_then(|ids| {
-                    ids.iter().copied().find(|i| {
-                        let im = self.program.method(*i);
-                        im.synth != RtSynth::DataInit
-                            && im.params.len() == class.ivars.len()
-                            && im.params.iter().zip(&class.ivars).all(|(p, f)| {
-                                p.kind == RtParamKind::Positional
-                                    && p.name == f.name
-                                    && (p.ty == f.ty || p.ty.is_none() || f.ty.is_none())
-                            })
-                    })
-                });
-                debug_assert!(
-                    own_init == class.with_init,
-                    "internal error (#536 step 6): `{}#with` runs {:?} by the runtime's rule, {:?} by the checker's",
-                    class.name,
-                    own_init,
-                    class.with_init
-                );
-                if let Some(init) = own_init {
+                if let Some(init) = class.with_init {
                     let args: ArgVec = (0..class.ivars.len())
                         .map(|i| self.logical_get(&copy, i))
                         .collect();
@@ -3530,94 +3508,36 @@ impl Interp {
         Ok((values, provided))
     }
 
-    /// Allocate an instance and run its initializer.
     /// For `new` on a class method's receiver: the class the receiver
     /// names (`class` or a subclass) and the `initialize` to run: the one
     /// the checker chose for the subclass (`RtClass::inherited_inits`,
     /// recorded for every subclass the method's `new` can build, #536
-    /// step 6).
-    ///
-    /// The oracle (debug builds, removed with the rule): the rule of its
-    /// own it had before (`walked_class_init`) gives the same answer
-    /// wherever a record does; a receiver without a record fails the
-    /// assertion. A release build falls back to that rule.
+    /// step 6). A subclass without a record is an internal error.
     pub fn receiver_class_init(
         &self,
         recv: &Value,
         class: ClassId,
         init: Option<MethodId>,
-    ) -> (ClassId, Option<MethodId>) {
+    ) -> Result<(ClassId, Option<MethodId>), Flow> {
         let cid = match recv {
             Value::Class(c) => *c,
             _ => class,
         };
         if cid == class {
-            return (cid, init);
+            return Ok((cid, init));
         }
-        let recorded = self
-            .program
-            .world
-            .class(cid)
-            .inherited_inits
-            .iter()
-            .find(|(i, _)| *i == init)
-            .map(|(_, chosen)| *chosen);
-        #[cfg(debug_assertions)]
-        {
-            let walked = self.walked_class_init(cid, class, init);
-            let (sub, from) = (
-                &self.program.world.class(cid).name,
-                &self.program.world.class(class).name,
-            );
-            assert!(
-                recorded.is_some(),
-                "internal error (#536 step 6): no inherited constructor recorded for `{sub}` from `{from}`'s `new`"
-            );
-            assert!(
-                recorded == Some(walked),
-                "internal error (#536 step 6): the recorded constructor of `{sub}` from `{from}`'s `new` ({recorded:?}) is not the walk's ({walked:?})"
-            );
+        let info = self.program.world.class(cid);
+        match info.inherited_inits.iter().find(|(i, _)| *i == init) {
+            Some((_, chosen)) => Ok((cid, *chosen)),
+            None => Err(self.err_runtime(&format!(
+                "internal error: no inherited constructor recorded for `{}` from `{}`'s `new`; please report",
+                info.name,
+                self.program.world.class(class).name
+            ))),
         }
-        (
-            cid,
-            recorded.unwrap_or_else(|| self.walked_class_init(cid, class, init)),
-        )
     }
 
-    /// The rule `receiver_class_init` had of its own before the records
-    /// were total (#536 step 6's oracle): the nearest `initialize`
-    /// declared between `cid` and `class` (of `init`'s signature, or the
-    /// first), else `init`.
-    fn walked_class_init(
-        &self,
-        cid: ClassId,
-        class: ClassId,
-        init: Option<MethodId>,
-    ) -> Option<MethodId> {
-        for anc in &self.program.world.class(cid).ancestors {
-            if *anc == class {
-                break;
-            }
-            // A module's `initialize` makes only a class with no fields
-            // to assign (docs/01 §3), as the checker has it.
-            if self.program.world.class(*anc).kind == RtClassKind::Module
-                && !self.program.world.class(cid).module_init
-            {
-                continue;
-            }
-            if let Some(ids) = self.program.world.class(*anc).methods.get("initialize") {
-                return init
-                    .and_then(|i| {
-                        ids.iter()
-                            .copied()
-                            .find(|id| *id == i || self.program.method(*id).overrides.contains(&i))
-                    })
-                    .or_else(|| ids.first().copied());
-            }
-        }
-        init
-    }
-
+    /// Allocate an instance and run its initializer.
     pub fn construct(
         &self,
         class: ClassId,

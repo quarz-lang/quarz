@@ -1552,6 +1552,9 @@ impl Runner {
     /// `lower_static`, each followed by the checks it asked for.
     fn lower(&mut self, host: &mut dyn StaticHost, stmt: &StaticStmt, callee: MethodId) -> FuncId {
         loop {
+            // (The sites of the methods the last round checked included:
+            // the round's rows carry their records, #536 step 6.)
+            host.record_inherited_constructors();
             // The classes whose statements are still to run, with their
             // descendants: not reached by name (`Lowerer::static_skip`).
             let skip = self.cover(host).skip.clone();

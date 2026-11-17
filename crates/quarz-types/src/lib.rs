@@ -762,6 +762,13 @@ pub trait StaticHost {
     /// Errors a run found outside the statement, each at its own place:
     /// the safety net's over a compile-time round's rows (#645).
     fn report_errors(&mut self, errors: Vec<FileDiagnostic>);
+    /// Before a round is lowered for a compile-time run: record the
+    /// constructor every subclass declared so far is built with where a
+    /// method it inherits calls `new` (`Output::inherited_inits`), for
+    /// the sites of the methods checked so far, which the run may reach
+    /// (#536 step 6). Records only: the errors are reported once, by the
+    /// check after the statements.
+    fn record_inherited_constructors(&mut self);
 }
 
 /// Why a `static` statement could not run: reported at its position.

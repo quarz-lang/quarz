@@ -1011,6 +1011,8 @@ pub struct ReplSnapshot {
     self_news: Vec<SelfNew>,
     generated_news: Vec<(ClassId, ClassId, MethodId, Option<MethodId>)>,
     repl_ctor_marks: (usize, usize, usize),
+    static_ctor_marks: (usize, usize, usize),
+    static_ctor_inits: Vec<ClassId>,
     runtime_tests: Vec<RuntimeTest>,
     repl_test_marks: (usize, usize, usize),
 }
@@ -1194,6 +1196,12 @@ pub struct Checker {
     /// (`World::class_ext_impls`): a new one may pin an old site for an
     /// old class, so every pair is checked again (#504).
     repl_ctor_marks: (usize, usize, usize),
+    /// The same marks for the record-only pass before each compile-time
+    /// run (`record_inherited_constructors`), and the classes a statement
+    /// generated an `initialize` into since: it may change the choice for
+    /// a pair seen before of that class or a class below it.
+    static_ctor_marks: (usize, usize, usize),
+    static_ctor_inits: Vec<ClassId>,
     /// The run-time tests against a module accepted so far, for the REPL:
     /// a later input that makes one unanswerable is refused there (#515).
     runtime_tests: Vec<RuntimeTest>,
@@ -1332,6 +1340,8 @@ impl Checker {
             self_news: Vec::new(),
             generated_news: Vec::new(),
             repl_ctor_marks: (0, 0, 0),
+            static_ctor_marks: (0, 0, 0),
+            static_ctor_inits: Vec::new(),
             runtime_tests: Vec::new(),
             repl_test_marks: (0, 0, 0),
             constructing_self: false,
@@ -1767,11 +1777,42 @@ impl Checker {
     }
 
     fn check_inherited_constructors(&mut self) {
-        self.check_inherited_constructors_from((0, 0));
+        self.check_inherited_constructors_from((0, 0), &[]);
     }
 
-    /// As `check_inherited_constructors`, for the pairs of a site and a
-    /// class not both seen before (`marks`: the sites and classes seen).
+    /// `StaticHost::record_inherited_constructors`: the inherited
+    /// constructors of the classes and the sites so far recorded, so that a
+    /// `new` a compile-time run reaches on a subclass finds its record
+    /// (#536 step 6, #858).
+    /// Records only: the errors are the pass after the statements'
+    /// (`check_all`), which checks every pair again. Like the REPL's pass,
+    /// it checks only the pairs not seen before, and those of the classes
+    /// at or below one a statement generated an `initialize` into since
+    /// (`static_ctor_inits`); every pair when an extension's witness came
+    /// since (it may pin an old site for an old class).
+    fn record_inherited_constructors_so_far(&mut self) {
+        let now = (
+            self.self_news.len(),
+            self.world.classes.len(),
+            self.world.class_ext_impls.len(),
+        );
+        // (Nothing new since the last pass: a round's usual case.)
+        if self.static_ctor_marks == now && self.static_ctor_inits.is_empty() {
+            return;
+        }
+        let (sites, classes, witnesses) = self.static_ctor_marks;
+        let marks = if self.world.class_ext_impls.len() == witnesses {
+            (sites, classes)
+        } else {
+            (0, 0)
+        };
+        let again = std::mem::take(&mut self.static_ctor_inits);
+        let reported = self.diagnostics.len();
+        self.check_inherited_constructors_from(marks, &again);
+        self.diagnostics.truncate(reported);
+        self.static_ctor_marks = now;
+    }
+
     /// Whether class `sid` or a superclass includes module `m` itself
     /// (its own includes, through what they include): the module's class
     /// methods then go by ordinary dispatch, not by witnesses (#504).
@@ -1785,10 +1826,13 @@ impl Checker {
     /// it includes, a superclass's included, whatever extensions are
     /// active), under the bound filter `extension_may_reach`.
     fn conforms_by_extension(&self, sid: ClassId, m: ClassId) -> bool {
-        self.world.conformances(sid).into_iter().any(|(src, k, _)| {
-            src.is_some_and(|(e, _)| self.extension_may_reach(e, sid))
-                && (k == m || self.world.ancestor_ids(k).contains(&m))
-        })
+        // (What an extension includes is a module, as is all a module
+        // has above it: never a class `m`.)
+        self.world.class(m).kind == ClassKind::Module
+            && self.world.conformances(sid).into_iter().any(|(src, k, _)| {
+                src.is_some_and(|(e, _)| self.extension_may_reach(e, sid))
+                    && (k == m || self.world.ancestor_ids(k).contains(&m))
+            })
     }
 
     /// The class methods named `name` of the modules `sid` conforms to
@@ -1933,7 +1977,10 @@ impl Checker {
         }
     }
 
-    fn check_inherited_constructors_from(&mut self, marks: (usize, usize)) {
+    /// As `check_inherited_constructors`, for the pairs of a site and a
+    /// class not both seen before (`marks`: the sites and classes seen),
+    /// and the pairs of the classes at or below one of `again`.
+    fn check_inherited_constructors_from(&mut self, marks: (usize, usize), again: &[ClassId]) {
         let (sites_seen, classes_seen) = marks;
         let new_sites: HashSet<(ClassId, MethodId, u32, Option<MethodId>)> = self
             .self_news
@@ -1948,6 +1995,14 @@ impl Checker {
         sites.sort_by_key(|s| (s.0, s.2, s.3.start, s.1));
         sites.dedup_by_key(|s| (s.0, s.2, s.3.start, s.1));
         let mut reported = HashSet::default();
+        // (The classes at or below one of `again`, once for every site.)
+        let again: Vec<bool> = if again.is_empty() {
+            Vec::new()
+        } else {
+            (0..self.world.classes.len() as ClassId)
+                .map(|sid| again.iter().any(|&c| self.world.class_is_a(sid, c)))
+                .collect()
+        };
         for (cid, init, method, span, _) in sites {
             let site_new = new_sites.contains(&(cid, method, span.start, init));
             let mname = self.world.method(method).name.clone();
@@ -1961,7 +2016,10 @@ impl Checker {
             };
             let nclasses = self.world.classes.len() as ClassId;
             for sid in 0..nclasses {
-                if !site_new && (sid as usize) < classes_seen {
+                if !site_new
+                    && (sid as usize) < classes_seen
+                    && !again.get(sid as usize).copied().unwrap_or(false)
+                {
                     continue;
                 }
                 // (Or conforming to the module through an extension, which
@@ -2297,10 +2355,13 @@ impl Checker {
         init: Option<MethodId>,
         chosen: Option<MethodId>,
     ) {
-        let entry = (sub, init, chosen);
+        // (In place: a pair recorded again unchanged leaves the list
+        // equal, which `Kept::sync` compares at every round.)
         let list = &mut self.out.inherited_inits;
-        list.retain(|(c, i, _)| (*c, *i) != (sub, init));
-        list.push(entry);
+        match list.iter_mut().find(|(c, i, _)| (*c, *i) == (sub, init)) {
+            Some(entry) => entry.2 = chosen,
+            None => list.push((sub, init, chosen)),
+        }
     }
 
     /// The fields `initialize` must assign (see `init`): every field and
@@ -2645,7 +2706,7 @@ impl Checker {
         } else {
             (0, 0)
         };
-        self.check_inherited_constructors_from(marks);
+        self.check_inherited_constructors_from(marks, &[]);
         self.check_abstract_receivers();
         self.check_abstract_type_args();
         self.recheck_runtime_tests();
@@ -2671,6 +2732,8 @@ impl Checker {
             self_news: self.self_news.clone(),
             generated_news: self.generated_news.clone(),
             repl_ctor_marks: self.repl_ctor_marks,
+            static_ctor_marks: self.static_ctor_marks,
+            static_ctor_inits: self.static_ctor_inits.clone(),
             runtime_tests: self.runtime_tests.clone(),
             repl_test_marks: self.repl_test_marks,
         }
@@ -2690,6 +2753,8 @@ impl Checker {
         self.self_news = s.self_news;
         self.generated_news = s.generated_news;
         self.repl_ctor_marks = s.repl_ctor_marks;
+        self.static_ctor_marks = s.static_ctor_marks;
+        self.static_ctor_inits = s.static_ctor_inits;
         self.runtime_tests = s.runtime_tests;
         self.repl_test_marks = s.repl_test_marks;
         self.quoted_seen.clear();
@@ -18634,6 +18699,10 @@ impl crate::StaticHost for Checker {
             let owner = info.owner;
             let id = self.world.add_method(info);
             self.world.static_events.push(StaticEvent::Method(id));
+            // (It may hide the overloads an old pair of `owner` or a class
+            // below was recorded with: the next pass before a run checks
+            // their pairs again.)
+            self.static_ctor_inits.push(owner);
             // The generated methods building a class that finds its
             // `initialize` through `owner` (on the way from it up to the
             // class `new` was checked for) now find this overload, which
@@ -18712,6 +18781,10 @@ impl crate::StaticHost for Checker {
 
     fn report_errors(&mut self, errors: Vec<crate::FileDiagnostic>) {
         self.diagnostics.extend(errors);
+    }
+
+    fn record_inherited_constructors(&mut self) {
+        self.record_inherited_constructors_so_far();
     }
 }
 

@@ -343,6 +343,40 @@ fn a_construction_reaches_its_own_initialize() {
     }
 }
 
+/// A class method that calls `new`, run at compile time on a subclass
+/// whose statements are running, builds it with the `initialize` the
+/// checker records for it, as at run time: the first of its overloads
+/// that takes what `new` passes (docs/01 §3), here `(n: Object, &blk)`,
+/// not the first declared, which takes a `String` (#858).
+#[test]
+fn an_inherited_new_at_compile_time_builds_with_the_overload_that_fits() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Two\n  @n: Int\n  def initialize(@n: Int); end\n  def self.mk(n: Int) -> Self = new(n)\n  def n -> Int = @n\n  static def self.probe -> Void\n    v = mk(6).n\n    def_class_method(:v) { v }\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass TwoSub < Two\n  def initialize(n: String)\n    puts \"str\"\n    @n = n.size\n  end\n  def initialize(n: Object, &blk: (() -> Int)?)\n    puts \"obj\"\n    @n = 9\n  end\n  probe\nend\np TwoSub.v\np TwoSub.mk(6).n\n",
+    );
+    // (The statement's run, at compile time, prints to stderr.)
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!((out.as_str(), err.as_str()), ("9\nobj\n9\n", "obj\n"));
+    let exe = d.0.join("app-bin");
+    let (ok, out, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", exe.to_str().unwrap()],
+        &[],
+    );
+    assert!(ok, "{err}");
+    assert_eq!((out.as_str(), err.as_str()), ("", "obj\n"));
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "9\nobj\n9\n");
+}
+
 /// A symbol is a method's name only where a call says so: a symbol value
 /// (`:count` as a hash key) reaches no method of its name, while a call
 /// by name (a union's members' methods, `&:name`) reaches them all

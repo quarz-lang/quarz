@@ -95,8 +95,9 @@ pub(crate) struct Kept {
     /// The checker's constructor choices the class rows were made with
     /// (`Output::inherited_inits`, which `class_row` reads): written by
     /// the check of a `new` site's class (`Checker::
-    /// check_inherited_constructors`, after a file's statements), with no
-    /// event, so compared at each sync.
+    /// check_inherited_constructors`: before each compile-time round, for
+    /// what is declared and checked so far, and after a file's
+    /// statements), with no event, so compared at each sync.
     inherited: Vec<(ClassId, Option<MethodId>, Option<MethodId>)>,
     /// The declared tables, assembled (`rtworld::declared`'s value).
     pub(crate) rt: RtWorld,

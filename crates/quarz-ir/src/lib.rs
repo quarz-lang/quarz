@@ -1437,10 +1437,6 @@ pub struct RtClass {
     /// The declared fields, with where each lives.
     #[serde(default)]
     pub ivars: Vec<RtIvar>,
-    /// No field needs an `initialize` to assign it, so a module's
-    /// `initialize` may make one (`World::has_fields_to_assign`).
-    #[serde(default)]
-    pub module_init: bool,
     /// The `initialize` this class is built with where a class method it
     /// inherits calls `new` passing what the first element's parameters
     /// take (`None`: nothing): the checker's choice among its overloads
