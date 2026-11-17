@@ -1479,6 +1479,11 @@ pub struct RtClass {
     /// compared by them as hash keys and set members.
     #[serde(default)]
     pub declares_eq_hash: bool,
+    /// The `==` and `hash` its instances are compared and hashed by as
+    /// hash keys and set members, where they are the program's own and not
+    /// the built-in ones (`World::key_methods`, #813).
+    #[serde(default)]
+    pub key_methods: (Option<MethodId>, Option<MethodId>),
     pub is_exception: bool,
     /// `abstract class`: never instantiated.
     #[serde(default)]

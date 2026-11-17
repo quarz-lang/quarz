@@ -4430,7 +4430,10 @@ impl<'ast> Declarer<'ast> {
 
     /// A class defining `==` defines `hash` too, and the other way round:
     /// a hash's keys and a set's members are compared by them, and equal
-    /// values must hash the same (a warning, as Rust's clippy has).
+    /// values must hash the same (a warning, as Rust's clippy has). It
+    /// reads what the keys compare by (`World::key_methods`, #813): the
+    /// class's own method is one of them, and nothing of the program's is
+    /// the other, inherited or generated included.
     fn check_eq_with_hash(&mut self, id: ClassId) {
         let class = self.world.class(id);
         // A module may bring one, the classes including it the other; a
@@ -4438,6 +4441,44 @@ impl<'ast> Declarer<'ast> {
         if class.file == 0 || matches!(class.kind, ClassKind::Module | ClassKind::Main) {
             return;
         }
+        let verdict = self.eq_hash_verdict(id);
+        self.compare_eq_hash_verdicts(id, verdict);
+        let Some((defined, missing, mid)) = verdict else {
+            return;
+        };
+        let span = self.world.method(mid).span;
+        let name = self.world.class(id).name.clone();
+        self.warning(
+            format!("`{name}` defines `{defined}` but not `{missing}`: as a Hash key or a Set member, equal values must hash the same"),
+            span,
+        );
+    }
+
+    /// `check_eq_with_hash`'s verdict: the name class `id` defines, the
+    /// name it lacks, and the method defining it.
+    fn eq_hash_verdict(&self, id: ClassId) -> Option<(&'static str, &'static str, MethodId)> {
+        let own = |m: Option<MethodId>| m.filter(|m| self.world.method(*m).owner == id);
+        match self.world.key_methods(id) {
+            (Some(eq), None) => own(Some(eq)).map(|m| ("==", "hash", m)),
+            (None, Some(hash)) => own(Some(hash)).map(|m| ("hash", "==", m)),
+            _ => None,
+        }
+    }
+
+    /// #813's oracle (removed with the old computation): the verdict the
+    /// class's own table and an inherited body gave before. A difference is
+    /// printed on standard error under `QUARZ_LOG_813`, not asserted: some
+    /// are intended (`hash(seed: Int)`, which no key calls; a pair split
+    /// between the class and what it inherits), and each is listed.
+    fn compare_eq_hash_verdicts(
+        &self,
+        id: ClassId,
+        new: Option<(&'static str, &'static str, MethodId)>,
+    ) {
+        if std::env::var_os("QUARZ_LOG_813").is_none() {
+            return;
+        }
+        let class = self.world.class(id);
         let own = |name: &str| {
             class.methods.get(name).and_then(|ms| {
                 ms.iter()
@@ -4445,36 +4486,37 @@ impl<'ast> Declarer<'ast> {
                     .find(|m| !self.world.method(*m).singleton)
             })
         };
-        let (eq, hash) = (own("=="), own("hash"));
-        let (defined, missing, mid) = match (eq, hash) {
-            (Some(m), None) => ("==", "hash", m),
-            (None, Some(m)) => ("hash", "==", m),
-            _ => return,
-        };
-        // One inherited with a body (not `Object`'s natives), or generated
-        // (its body the lifted block), goes with it.
-        let inherited = self
-            .world
-            .ancestors(id, &[])
-            .into_iter()
-            .skip(1)
-            .any(|(a, _)| {
-                self.world.class(a).methods.get(missing).is_some_and(|ms| {
-                    ms.iter().any(|m| {
-                        let m = self.world.method(*m);
-                        !m.singleton && !m.is_native && (m.body.is_some() || m.generated.is_some())
+        let old = match (own("=="), own("hash")) {
+            (Some(m), None) => Some(("==", "hash", m)),
+            (None, Some(m)) => Some(("hash", "==", m)),
+            _ => None,
+        }
+        .filter(|(_, missing, _)| {
+            !self
+                .world
+                .ancestors(id, &[])
+                .into_iter()
+                .skip(1)
+                .any(|(a, _)| {
+                    self.world.class(a).methods.get(*missing).is_some_and(|ms| {
+                        ms.iter().any(|m| {
+                            let m = self.world.method(*m);
+                            !m.singleton
+                                && !m.is_native
+                                && (m.body.is_some() || m.generated.is_some())
+                        })
                     })
                 })
-            });
-        if inherited {
-            return;
+        });
+        if old != new {
+            eprintln!(
+                "quarz-813 class={} file={} old={:?} new={:?}",
+                class.name,
+                class.file,
+                old.map(|(d, m, _)| (d, m)),
+                new.map(|(d, m, _)| (d, m))
+            );
         }
-        let span = self.world.method(mid).span;
-        let name = class.name.clone();
-        self.warning(
-            format!("`{name}` defines `{defined}` but not `{missing}`: as a Hash key or a Set member, equal values must hash the same"),
-            span,
-        );
     }
 
     /// Whether instances of `id` are copied by the language or the

@@ -1977,6 +1977,56 @@ puts kk(P.new), kk(Q.new), kk(R.new), P.new.k
 }
 
 #[test]
+fn key_methods_generated_into_a_module_an_unheld_type_includes() {
+    // The class row's `key_methods` (#813) reads the lookup of `Pt`, which
+    // meets `Keyed`: `==` and `hash` generated into `Keyed` (a `Method`
+    // event, whose D holds `Pt`) make `Pt`'s instances compare by them as
+    // keys, at compile time in a later run (`static(Probe.size)`, on the
+    // interpreter made from the kept rows) and at run time. `Pt` is a
+    // class, which no field holds in place, so the generation is allowed.
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r#"module GenEq
+  static def self.gen_eq -> Void
+    def_method(:==, :other) { |other: Object| true }
+    def_method(:hash) { 0 }
+  end
+end
+module Keyed
+  include GenEq
+end
+class Pt
+  include Keyed
+  var @x: Int
+  def initialize(@x: Int) end
+end
+class Trigger
+  static def self.go -> Void
+    Keyed.gen_eq
+  end
+end
+class Probe
+  static def self.size -> Int = Set[Pt.new(1), Pt.new(2)].size
+end
+"#,
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class X < Trigger
+  go
+end
+N = static(Probe.size)
+puts N, Set[Pt.new(1), Pt.new(2)].size, {Pt.new(1) => "a"}[Pt.new(3)]
+"#,
+    );
+    run_both(&d.0, &app, "1\n1\na\n");
+}
+
+#[test]
 fn the_implementation_a_deferred_conformance_waits_for() {
     // Rows 5 and 7: `K`'s conformance to `Sh` waits for its statements
     // (`World::conformance_deferred`), which generate `area` (#801); the

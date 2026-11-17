@@ -251,6 +251,7 @@ pub fn class_row(world: &World, out: &types::Output, id: ClassId) -> RtClass {
                     })
                 })
             }),
+        key_methods: world.key_methods(c.id),
         is_exception: world.is_exception_class(c.id),
         is_abstract: c.is_abstract,
         objects: world.instances_are_objects(c.id),
