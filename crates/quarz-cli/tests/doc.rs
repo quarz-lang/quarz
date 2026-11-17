@@ -447,6 +447,40 @@ fn edge_cases_of_the_output() {
     );
 }
 
+/// A `:nodoc:` module a type includes is not listed on the type's page
+/// (text and HTML), unless `--private` (#864).
+#[test]
+fn a_nodoc_module_is_not_among_the_includes() {
+    let d = Dir::new();
+    d.write(
+        "n.qz",
+        "# :nodoc:\nmodule Helpers\n  private def twice(x: Int) -> Int = x * 2\nend\n\n# A public class.\nclass Shown\n  include Helpers\n  include Comparable[Shown]\n\n  def <=>(other: Shown) -> Int = 0\nend\n",
+    );
+    let out = quarz_in(&d.0, &["doc", "n.qz", "Shown"]);
+    assert!(
+        stdout(&out).starts_with("class Shown\n  include Comparable[Shown]\n"),
+        "{}",
+        stdout(&out)
+    );
+    let out = quarz_in(&d.0, &["doc", "n.qz", "Shown", "--private"]);
+    assert!(
+        stdout(&out).starts_with("class Shown\n  include Helpers, Comparable[Shown]\n"),
+        "{}",
+        stdout(&out)
+    );
+    let site = d.0.join("site");
+    let out = quarz_in(
+        &d.0,
+        &["doc", "n.qz", "--html", "-o", site.to_str().unwrap()],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let page = std::fs::read_to_string(site.join("Shown.html")).unwrap();
+    assert!(
+        page.contains("<p>include <a ") && !page.contains("Helpers"),
+        "{page}"
+    );
+}
+
 #[test]
 fn checks_that_go_where_they_can_and_cannot() {
     let d = Dir::new();
