@@ -271,6 +271,15 @@ impl MethodInfo {
     }
 }
 
+/// A method of the program's that a lookup finds (`World::user_method_with`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserMethod {
+    /// Declared.
+    Declared(MethodId),
+    /// One of the methods supposed added.
+    Added,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ConstInfo {
     pub id: ConstId,
@@ -3487,6 +3496,24 @@ impl World {
     /// (`key_methods`) and whether a field holds a `data` type in place
     /// (`quarz_lower::layout`) are decided by it.
     pub fn user_method(&self, cid: ClassId, name: &str, argc: usize) -> Option<MethodId> {
+        match self.user_method_with(cid, name, argc, &[]) {
+            Some(UserMethod::Declared(m)) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// `user_method` as if each `(class, name)` of `added` were declared
+    /// too: a method of the program's taking the call, in that class's own
+    /// table (a generation never goes into a table that has the name,
+    /// `add_generated`). How a generation is judged before it is declared
+    /// (#796).
+    pub fn user_method_with(
+        &self,
+        cid: ClassId,
+        name: &str,
+        argc: usize,
+        added: &[(ClassId, &str)],
+    ) -> Option<UserMethod> {
         let fits = |m: &MethodInfo| {
             let (min, max) = m.positional_arity();
             !m.singleton && m.extension.is_none() && min <= argc && argc <= max && m.block.is_none()
@@ -3503,6 +3530,9 @@ impl World {
                     break 'outer;
                 }
             }
+            if added.contains(&(anc, name)) {
+                return Some(UserMethod::Added);
+            }
         }
         let mut m = found?;
         if self.method(m).is_abstract {
@@ -3516,7 +3546,31 @@ impl World {
             }
         }
         let info = self.method(m);
-        (!info.is_native && info.extension.is_none() && !info.is_abstract).then_some(m)
+        (!info.is_native && info.extension.is_none() && !info.is_abstract)
+            .then_some(UserMethod::Declared(m))
+    }
+
+    /// The class declaring field `name` of class `cid`: `cid` or the first
+    /// up its superclass chain with the field among its own.
+    pub fn field_declarer(&self, cid: ClassId, name: &str) -> ClassId {
+        self.superclass_chain(cid)
+            .into_iter()
+            .find(|c| self.class(*c).fields.iter().any(|f| f.name == name))
+            .unwrap_or(cid)
+    }
+
+    /// The first of `==`, `!=` and `hash` that a value of class `cid` would
+    /// be compared or hashed by as one of the program's methods, with
+    /// `added` supposed declared (`user_method_with`): what keeps a `data`
+    /// type from being held in place (`quarz_lower::layout`, #809).
+    pub fn compared_by(
+        &self,
+        cid: ClassId,
+        added: &[(ClassId, &str)],
+    ) -> Option<(&'static str, UserMethod)> {
+        [("==", 1), ("!=", 1), ("hash", 0)]
+            .into_iter()
+            .find_map(|(n, argc)| self.user_method_with(cid, n, argc, added).map(|m| (n, m)))
     }
 
     /// The `==` and `hash` a value of class `cid` is compared and hashed

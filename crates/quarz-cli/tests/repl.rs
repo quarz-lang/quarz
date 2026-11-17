@@ -1319,6 +1319,53 @@ fn a_file_required_at_the_prompt_is_declared_after_its_requires() {
 }
 
 #[test]
+fn generated_equality_and_holders_across_inputs() {
+    // #796 (C) in the session. `==` generated into a type no field holds
+    // in place is accepted, and a holder a later input declares holds the
+    // type by reference (L1, docs/14 §5): it compares by the generated
+    // `==`. A generation into a type an earlier input holds in place is
+    // refused at its statement, and the holder and the type are as they
+    // were. An input that generated `==` into a type and declared a holder
+    // and then failed leaves neither: the next one sees the type without
+    // `==`, held in place again.
+    let gen = "module GenEq; static def self.gen_eq -> Void; def_method(:==, :other) { |other: Object| true }; def_method(:hash) { 42 }; end; end";
+    let (out, _) = values(&[
+        gen,
+        "data D(x: Int); include GenEq; end",
+        "module Go; static def self.go -> Void; D.gen_eq; end; end",
+        "class C; include Go; go; end",
+        "data E = (d: D, n: Int)",
+        "E.new(D.new(1), 3) == E.new(D.new(2), 3)",
+        "Set[E.new(D.new(1), 3), E.new(D.new(2), 3)].size",
+        // Held in place first, then refused.
+        "data D2(x: Int); include GenEq; end",
+        "data E2 = (d: D2, n: Int)",
+        "old = E2.new(D2.new(1), 3)",
+        "module Go2; static def self.go -> Void; D2.gen_eq; end; end",
+        "class C2; include Go2; go; end",
+        "D2.new(1) == D2.new(2)",
+        "old.d.x",
+        "old == E2.new(D2.new(2), 3)",
+        // Generated, held, then the input fails: rolled back.
+        "data D3(x: Int); include GenEq; end",
+        "module Go3; static def self.go -> Void; D3.gen_eq; end; end",
+        "class C3; include Go3; go; end; data E3 = (d: D3, n: Int); nope",
+        "D3.new(1) == D3.new(2)",
+        "data E3 = (d: D3, n: Int)",
+        "E3.new(D3.new(1), 3).d.x",
+        "E3.new(D3.new(1), 3) == E3.new(D3.new(2), 3)",
+    ]);
+    assert_eq!(&out[3..7], ["", "", "=> true", "=> 1"], "{out:?}");
+    assert!(
+        out[11].contains("`def_method(:==)`: `D2` is stored in place in the field `@d` of `E2`"),
+        "{out:?}"
+    );
+    assert_eq!(&out[12..15], ["=> false", "=> 1", "=> false"], "{out:?}");
+    assert!(out[17].starts_with("error: "), "{out:?}");
+    assert_eq!(&out[18..], ["=> false", "", "=> 1", "=> false"], "{out:?}");
+}
+
+#[test]
 fn an_input_that_makes_a_refused_row_is_refused() {
     // The safety net's error stage (#536, #642): an input whose extension
     // makes a row the net refuses is refused there, and the session goes
