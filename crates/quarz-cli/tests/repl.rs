@@ -1360,6 +1360,29 @@ fn a_file_required_at_the_prompt_is_declared_after_its_requires() {
     assert!(out[1].contains("unknown constant `TOP`"), "{out:?}");
 }
 
+/// #814 in the session: an input whose class a statement of its own
+/// generates into, and which then fails, gives the class's warning once
+/// among its errors (`Session::feed`'s `dedup_diagnostics`).
+#[test]
+fn an_input_s_warnings_are_given_once_with_its_errors() {
+    let mut repl = Repl::new(Box::new(Shared(Arc::new(Mutex::new(Vec::new()))))).unwrap();
+    let gen = "module GenFoo; static def self.gen_foo -> Void; def_method(:foo) { 1 }; end; end";
+    assert!(matches!(repl.feed_line(gen), Outcome::Value(_)));
+    let Outcome::Errors(errs) = repl.feed_line(
+        "class Own; include GenFoo; def ==(o: Object) -> Bool = true; gen_foo; end; nope",
+    ) else {
+        panic!("the input should fail");
+    };
+    let text = errs.join("");
+    assert_eq!(
+        text.matches("warning: `Own` defines `==` but not `hash`")
+            .count(),
+        1,
+        "{text}"
+    );
+    assert_eq!(text.matches("error: ").count(), 1, "{text}");
+}
+
 #[test]
 fn generated_equality_and_holders_across_inputs() {
     // #796 (C) in the session. `==` generated into a type no field holds
