@@ -28,7 +28,28 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "String#<=>", |i, r, a| {
         Ok(Value::Int(
-            s(i, r)?.cmp(string(i, a.arg(0), "other")?) as i64
+            order(s(i, r)?, string(i, a.arg(0), "other")?) as i64
+        ))
+    });
+    // (Comparable's would call `<=>` through dispatch for each, #836.)
+    native!(m, "String#<", |i, r, a| {
+        Ok(Value::Bool(
+            order(s(i, r)?, string(i, a.arg(0), "other")?).is_lt(),
+        ))
+    });
+    native!(m, "String#<=", |i, r, a| {
+        Ok(Value::Bool(
+            order(s(i, r)?, string(i, a.arg(0), "other")?).is_le(),
+        ))
+    });
+    native!(m, "String#>", |i, r, a| {
+        Ok(Value::Bool(
+            order(s(i, r)?, string(i, a.arg(0), "other")?).is_gt(),
+        ))
+    });
+    native!(m, "String#>=", |i, r, a| {
+        Ok(Value::Bool(
+            order(s(i, r)?, string(i, a.arg(0), "other")?).is_ge(),
         ))
     });
     native!(m, "String#==", |i, r, a| {
@@ -48,12 +69,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "String#[]?", string_index_opt);
     native!(m, "String#chars", |i, r, _| {
-        Ok(Value::array(
-            s(i, r)?
-                .chars()
-                .map(|c| Value::string(c.to_string()))
-                .collect(),
-        ))
+        Ok(Value::array(s(i, r)?.chars().map(Value::char).collect()))
     });
     native!(m, "String#bytes", |i, r, _| {
         Ok(Value::array(
@@ -264,6 +280,14 @@ pub(super) fn sb_push(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     Ok(recv.clone())
 }
 
+/// The order of two strings: by code points, which is the order of their
+/// UTF-8 bytes. The one computation of it: `String#<=>` and `#<`, `#<=`,
+/// `#>`, `#>=` (natives and fast natives) read their answer from it.
+#[inline]
+pub(super) fn order(a: &str, b: &str) -> std::cmp::Ordering {
+    a.cmp(b)
+}
+
 /// Whether `v` is a string known to be ASCII only, so that its length in
 /// bytes counts its characters and a character index is a byte index
 /// (#837): a heap string's bit (`Rc::<str>::is_ascii`, set when it was
@@ -379,7 +403,7 @@ pub(super) fn string_split(interp: &Interp, recv: &Value, args: Args) -> EvalRes
     let parts: Vec<Value> = match (first, first.and_then(|v| v.as_str())) {
         (None, _) => text.split_whitespace().map(Value::str).collect(),
         (Some(_), Some(" ")) => text.split_whitespace().map(Value::str).collect(),
-        (Some(_), Some("")) => text.chars().map(|c| Value::string(c.to_string())).collect(),
+        (Some(_), Some("")) => text.chars().map(Value::char).collect(),
         (Some(_), Some(sep)) => {
             let mut v: Vec<&str> = text.split(sep).collect();
             while v.last() == Some(&"") {
@@ -652,9 +676,8 @@ fn string_count(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 pub(super) fn string_each_char(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let b = block(interp, &args)?;
-    for c in text.chars() {
-        interp.call_block(&b, smallvec![Value::string(c.to_string())])?;
-    }
+    // (A prepared block where it can be, as `Array#each`'s, #836.)
+    super::each_value(interp, text.chars().map(Value::char), &b)?;
     Ok(Value::Nil)
 }
 

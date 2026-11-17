@@ -31,6 +31,31 @@ pub fn register(m: &mut super::Registry<FastNativeFn>) {
         (Some(s), [o]) => Some(Ok(Value::Bool(o.as_str() == Some(s)))),
         _ => None,
     });
+    // (Comparable's would call `<=>` through dispatch for each, #836.)
+    fast!(m, "String#<", |_, r, a| match (r.as_str(), a) {
+        (Some(s), [o]) => o
+            .as_str()
+            .map(|o| Ok(Value::Bool(super::string::order(s, o).is_lt()))),
+        _ => None,
+    });
+    fast!(m, "String#<=", |_, r, a| match (r.as_str(), a) {
+        (Some(s), [o]) => o
+            .as_str()
+            .map(|o| Ok(Value::Bool(super::string::order(s, o).is_le()))),
+        _ => None,
+    });
+    fast!(m, "String#>", |_, r, a| match (r.as_str(), a) {
+        (Some(s), [o]) => o
+            .as_str()
+            .map(|o| Ok(Value::Bool(super::string::order(s, o).is_gt()))),
+        _ => None,
+    });
+    fast!(m, "String#>=", |_, r, a| match (r.as_str(), a) {
+        (Some(s), [o]) => o
+            .as_str()
+            .map(|o| Ok(Value::Bool(super::string::order(s, o).is_ge()))),
+        _ => None,
+    });
     fast!(m, "String#!=", |_, r, a| match (r.as_str(), a) {
         (Some(s), [o]) => Some(Ok(Value::Bool(o.as_str() != Some(s)))),
         _ => None,
