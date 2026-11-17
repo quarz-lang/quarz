@@ -3993,7 +3993,7 @@ mod tests {
             variants: Vec::new(),
             variant_of: None,
             structural: false,
-            declares_eq_hash: false,
+            key_methods: (None, None),
             is_exception: false,
             is_abstract: false,
             objects: true,

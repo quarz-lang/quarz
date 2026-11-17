@@ -1,0 +1,15 @@
+own: true 1 true true true
+own, subclass: true 1 true true true
+include: true 1 true true true
+superclass's include: true 1 true true true
+generic: true 1 true true true
+abstract, subclass: true 1 true true true
+data: true 1 true true true
+extension: true 1 true true true
+superclass's extension: true 1 true true true
+abstract, built-in: false 2 false false false
+abstract, module: true 1 true true true
+hash(seed): true true true
+extension's own: false 2 false false false
+scoped extension: false 2 false false false
+scoped extension, using: false 2 false false false

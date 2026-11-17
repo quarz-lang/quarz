@@ -2840,6 +2840,37 @@ fn eq_comes_with_hash() {
         "`P` defines `hash` but not `==`",
     );
     no_warnings("class P\n  def ==(o: Object) -> Bool = true\n  def hash -> Int = 0\nend");
+    // What keys compare by decides (`World::key_methods`, #813). A
+    // `hash(seed: Int)` is not the `hash` a key calls: beside an own `==`
+    // the keys hash by the built-in one, and alone it defines no key
+    // method.
+    warns(
+        "class P\n  def ==(o: Object) -> Bool = true\n  def hash(seed: Int) -> Int = seed\nend",
+        "`P` defines `==` but not `hash`",
+    );
+    no_warnings("class P\n  def hash(seed: Int) -> Int = seed\nend");
+    // An abstract `==` compares nothing until implemented.
+    no_warnings("abstract class P\n  abstract def ==(o: Object) -> Bool\nend");
+    // The other one inherited from a superclass, or from a module included
+    // directly or by an unconditional extension, goes with it.
+    no_warnings("class S\n  def ==(o: Object) -> Bool = true\n  def hash -> Int = 0\nend\nclass P < S\n  def ==(o: Object) -> Bool = false\nend");
+    no_warnings("module E\n  def ==(o: Object) -> Bool = true\nend\nclass P\n  include E\n  def hash -> Int = 0\nend");
+    no_warnings("module H\n  def hash -> Int = 0\nend\nclass P\n  def ==(o: Object) -> Bool = true\nend\nextension P\n  include H\nend");
+    // Not an extension's own `hash`, nor a scoped extension's: neither
+    // takes part in dispatch, so keys hash by the built-in one.
+    warns(
+        "class P\n  def ==(o: Object) -> Bool = true\nend\nextension P\n  def hash -> Int = 0\nend",
+        "`P` defines `==` but not `hash`",
+    );
+    warns(
+        "class P\n  def ==(o: Object) -> Bool = true\nend\nmodule Sc\n  extension P\n    def hash -> Int = 0\n  end\nend",
+        "`P` defines `==` but not `hash`",
+    );
+    // A generic class as any other.
+    warns(
+        "class P[T]\n  def ==(o: Object) -> Bool = true\nend",
+        "`P` defines `==` but not `hash`",
+    );
 }
 
 #[test]

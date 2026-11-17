@@ -1,0 +1,133 @@
+# What a hash key, a set member, `Array#include?` and a `data` holder's
+# `==` compare an object by (`World::key_methods`, shipped as
+# `RtClass::key_methods`, #813): the `==` and `hash` the runtime's lookup
+# finds when they are the program's own (written, in the class, a
+# superclass, a module included along the chain, or a module an
+# unconditional extension includes), an abstract one standing for its
+# witness; otherwise the built-in ones, which compare an object by
+# identity. `Loose` makes every two values equal with one hash, so each
+# row prints `true 1 true true true` when `Loose` decides and
+# `false 2 false false false` when the built-in ones do.
+#
+# Cells: targets class, generic class, abstract class (through a
+# subclass), `data`; paths own methods, own include, a superclass's
+# include, an extension of the class, an extension of a superclass, a
+# subclass of each; an abstract `==` met by the built-in one and by a
+# module's; a `hash(seed: Int)`, which no key calls; an extension's own
+# `==`; a scoped extension's module, with and without `using`. Skipped:
+# generated `==`/`hash` (tests/generate.rs and tests/static.rs, which run
+# statements), an extension of an included module, another cog (the
+# rows are global: tests/cogs.rs covers #817's cross-cog case), arguments
+# (no row depends on a class's arguments). VM and compiled
+# (tests/build.rs).
+module Loose
+  def ==(other: Object) -> Bool = true
+  def hash -> Int = 0
+end
+
+data Box[T] = (v: T)
+
+def row(name: String, a: Object, b: Object) -> Void
+  h = {a => 1}
+  puts "#{name}: #{a == b} #{Set[a, b].size} #{h.key?(b)} #{[a].include?(b)} #{Box.new(a) == Box.new(b)}"
+end
+
+class Own
+  def ==(other: Object) -> Bool = true
+  def hash -> Int = 0
+end
+row("own", Own.new, Own.new)
+
+class OwnSub < Own
+end
+row("own, subclass", OwnSub.new, OwnSub.new)
+
+class Inc
+  include Loose
+end
+row("include", Inc.new, Inc.new)
+
+class IncSub < Inc
+end
+row("superclass's include", IncSub.new, IncSub.new)
+
+class Gen[T]
+  include Loose
+  var @v: T
+  def initialize(@v: T) end
+end
+row("generic", Gen.new(1), Gen.new("a"))
+
+abstract class Abs
+  include Loose
+end
+class AbsSub < Abs
+end
+row("abstract, subclass", AbsSub.new, AbsSub.new)
+
+data Dat(x: Int)
+  include Loose
+end
+row("data", Dat.new(1), Dat.new(2))
+
+class Ext
+end
+extension Ext
+  include Loose
+end
+row("extension", Ext.new, Ext.new)
+
+class ExtSup
+end
+class ExtSub < ExtSup
+end
+extension ExtSup
+  include Loose
+end
+row("superclass's extension", ExtSub.new, ExtSub.new)
+
+module Req
+  abstract def ==(other: Object) -> Bool
+end
+class ByBuiltin
+  include Req
+end
+row("abstract, built-in", ByBuiltin.new, ByBuiltin.new)
+
+class ByModule
+  include Loose
+  include Req
+end
+row("abstract, module", ByModule.new, ByModule.new)
+
+class Seeded
+  def ==(other: Object) -> Bool = true
+  def hash(seed: Int) -> Int = seed
+end
+s1 = Seeded.new
+s2 = Seeded.new
+puts "hash(seed): #{s1 == s2} #{[s1].include?(s2)} #{Box.new(s1) == Box.new(s2)}"
+
+class ExtOwn
+end
+extension ExtOwn
+  def ==(other: Object) -> Bool = true
+  def hash -> Int = 0
+end
+row("extension's own", ExtOwn.new, ExtOwn.new)
+
+class Scoped
+end
+module Scope
+  extension Scoped
+    include Loose
+  end
+end
+row("scoped extension", Scoped.new, Scoped.new)
+module UsesScope
+  using Scope
+  def self.show -> Void
+    row("scoped extension, using", Scoped.new, Scoped.new)
+  end
+end
+UsesScope.show

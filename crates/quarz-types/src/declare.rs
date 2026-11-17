@@ -4430,7 +4430,10 @@ impl<'ast> Declarer<'ast> {
 
     /// A class defining `==` defines `hash` too, and the other way round:
     /// a hash's keys and a set's members are compared by them, and equal
-    /// values must hash the same (a warning, as Rust's clippy has).
+    /// values must hash the same (a warning, as Rust's clippy has). It
+    /// reads what the keys compare by (`World::key_methods`, #813): the
+    /// class's own method is one of them, and nothing of the program's is
+    /// the other, inherited or generated included.
     fn check_eq_with_hash(&mut self, id: ClassId) {
         let class = self.world.class(id);
         // A module may bring one, the classes including it the other; a
@@ -4438,43 +4441,26 @@ impl<'ast> Declarer<'ast> {
         if class.file == 0 || matches!(class.kind, ClassKind::Module | ClassKind::Main) {
             return;
         }
-        let own = |name: &str| {
-            class.methods.get(name).and_then(|ms| {
-                ms.iter()
-                    .copied()
-                    .find(|m| !self.world.method(*m).singleton)
-            })
-        };
-        let (eq, hash) = (own("=="), own("hash"));
-        let (defined, missing, mid) = match (eq, hash) {
-            (Some(m), None) => ("==", "hash", m),
-            (None, Some(m)) => ("hash", "==", m),
-            _ => return,
-        };
-        // One inherited with a body (not `Object`'s natives), or generated
-        // (its body the lifted block), goes with it.
-        let inherited = self
-            .world
-            .ancestors(id, &[])
-            .into_iter()
-            .skip(1)
-            .any(|(a, _)| {
-                self.world.class(a).methods.get(missing).is_some_and(|ms| {
-                    ms.iter().any(|m| {
-                        let m = self.world.method(*m);
-                        !m.singleton && !m.is_native && (m.body.is_some() || m.generated.is_some())
-                    })
-                })
-            });
-        if inherited {
+        let Some((defined, missing, mid)) = self.eq_hash_verdict(id) else {
             return;
-        }
+        };
         let span = self.world.method(mid).span;
-        let name = class.name.clone();
+        let name = self.world.class(id).name.clone();
         self.warning(
             format!("`{name}` defines `{defined}` but not `{missing}`: as a Hash key or a Set member, equal values must hash the same"),
             span,
         );
+    }
+
+    /// `check_eq_with_hash`'s verdict: the name class `id` defines, the
+    /// name it lacks, and the method defining it.
+    fn eq_hash_verdict(&self, id: ClassId) -> Option<(&'static str, &'static str, MethodId)> {
+        let own = |m: MethodId| self.world.method(m).owner == id;
+        match self.world.key_methods(id) {
+            (Some(eq), None) if own(eq) => Some(("==", "hash", eq)),
+            (None, Some(hash)) if own(hash) => Some(("hash", "==", hash)),
+            _ => None,
+        }
     }
 
     /// Whether instances of `id` are copied by the language or the

@@ -1140,39 +1140,25 @@ impl Interp {
             .map(|c| interp.deinitializer(c).is_some())
             .collect();
         crate::deinit::set_classes(deinit, interp.global.id);
-        // A class's own `==` and `hash` (not a native's: the prelude's
-        // compare in Rust), by which hashes and sets compare its instances.
-        // Only the classes below one that declares a `==` or `hash` with a
-        // body are looked at (most programs have none: start-up pays a
-        // scan of the classes' method tables).
+        // The `==` and `hash` each class's instances are compared and
+        // hashed by as keys, from the lowering's rows (`RtClass::key_methods`,
+        // `World::key_methods`, #813). Every interpreter makes its table
+        // from its own world: a REPL input's, a static round's.
         let world = &interp.program.world;
-        let owners: Vec<ClassId> = (0..world.classes.len() as ClassId)
-            .filter(|&c| world.class(c).declares_eq_hash)
-            .collect();
-        // The class's own: neither a native nor an extension's (which
-        // takes no part in dynamic dispatch, docs/01-syntax.md §7).
-        let own = |c: ClassId, name: &str, argc: usize| {
-            interp.find_method(c, name, argc, false, false).filter(|m| {
-                let m = interp.program.method(*m);
-                m.native_key.is_none() && !m.is_extension
-            })
-        };
-        let keys: Vec<Option<crate::keys::KeyMethods>> = if owners.is_empty() {
-            Vec::new()
-        } else {
-            (0..world.classes.len() as ClassId)
-                .map(|c| {
-                    if !world.class(c).ancestors.iter().any(|a| owners.contains(a)) {
-                        return None;
-                    }
-                    let k = crate::keys::KeyMethods {
-                        eq: own(c, "==", 1),
-                        hash: own(c, "hash", 0),
-                    };
-                    (k.eq.is_some() || k.hash.is_some()).then_some(k)
-                })
-                .collect()
-        };
+        let keys: Vec<Option<crate::keys::KeyMethods>> =
+            if world.classes.iter().all(|c| c.key_methods == (None, None)) {
+                Vec::new()
+            } else {
+                world
+                    .classes
+                    .iter()
+                    .map(|c| {
+                        let (eq, hash) = c.key_methods;
+                        (eq.is_some() || hash.is_some())
+                            .then_some(crate::keys::KeyMethods { eq, hash })
+                    })
+                    .collect()
+            };
         crate::keys::set(&interp, keys);
         interp
     }
