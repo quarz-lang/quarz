@@ -1009,13 +1009,9 @@ impl Lowerer {
     /// the layouts; compared with the tables built from nothing when the
     /// oracle asks (`QUARZ_VERIFY_STATIC_TABLES`).
     fn sync_tables(&mut self, world: &World, out: &Output) {
-        let synced = match &mut self.kept {
+        let stats = match &mut self.kept {
             Some(k) if k.fits(world) => k.sync(world, out, &mut self.layouts),
-            _ => Err(kept::SyncStats::default()),
-        };
-        let stats = match synced {
-            Ok(s) => s,
-            Err(why) => {
+            _ => {
                 self.kept = Some(kept::Kept::build(
                     world,
                     out,
@@ -1026,7 +1022,7 @@ impl Lowerer {
                     full: true,
                     classes: world.classes.len(),
                     methods: world.methods.len(),
-                    ..why
+                    ..Default::default()
                 }
             }
         };

@@ -2101,6 +2101,39 @@ puts A.make.x, B.make.x
 }
 
 #[test]
+fn a_default_that_builds_a_class_a_field_is_generated_into() {
+    // `K`'s field default constructs `F`: a field generated into `F`
+    // drops the default's function (`Lowerer::invalidate_layout`), and
+    // `K` is neither in D(F) nor a holder of `F`; the next round lowers
+    // it again because it waits (`defaults_waiting`). Without that, the
+    // oracle's `assert_defaults_lowered` panics at `Q`'s round.
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class P < Gen
+  nothing
+end
+class F < Gen
+  gen_field
+  def base -> Int = 1
+end
+class K
+  @n: Int = F.new.base
+  def n -> Int = @n
+end
+class Q < Gen
+  nothing
+end
+puts K.new.n, F.new.hits
+"#,
+    );
+    run_both(&d.0, &app, "1\n3\n");
+}
+
+#[test]
 fn tables_built_again_for_classes_a_later_check_adds() {
     // `quarz test` checks the doc examples after the files' statements
     // ran, with the same runner: their classes make the kept tables be

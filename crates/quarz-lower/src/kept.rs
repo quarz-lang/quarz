@@ -23,11 +23,15 @@
 //!   (`ClassInfo::fields`, own or inherited, so with their D), and the
 //!   holders of those that are `data` types, enums or variants (held in
 //!   turn), transitively: a layout lays a flat `data` field out in place,
-//!   and a `data` type's shareability reads its fields' types.
+//!   and a `data` type's shareability reads its fields' types. Only a
+//!   `data` type's flatness names take it (row 8, #796); a field or a
+//!   recheck changes no holder's row or layout (`Kept::sync` says why;
+//!   debug builds check it, `Kept::assert_holders_kept`).
 //! - **T**: the classes whose instance methods a class object answers
 //!   (`RtWorld::type_side_owners`): an instance method into one of them
-//!   changes the override row of every class method of its name and the
-//!   class-side keys of every class, so it rebuilds everything.
+//!   would change the override row of every class method of its name and
+//!   the class-side keys of every class. No statement generates one
+//!   (`Kept::sync` says why, and asserts it).
 //!
 //! Every invalidation set is a superset; a row kept stale is a soundness
 //! bug, which the oracle (`QUARZ_VERIFY_STATIC_TABLES`, `verify`)
@@ -129,13 +133,12 @@ pub(crate) struct SyncStats {
     pub classes: usize,
     pub methods: usize,
     pub events: usize,
-    /// Which edges of the table the events took: T (row 3(b)/7), H for a
-    /// field or a recheck (rows 1/8/10), H for a `data` type's equality
-    /// (row 8, #796), new R0 witnesses (rows 5/7).
-    pub type_side: bool,
-    pub holders: bool,
+    /// Which edges of the table the events took: H for a `data` type's
+    /// equality (row 8, #796), a recheck (rows 1/10), a deferred
+    /// conformance (rows 5/7), a field (rows 1/2/8/9/10).
     pub data_eq: bool,
-    pub witnesses: bool,
+    pub rechecked: bool,
+    pub conformance: bool,
     pub fields: bool,
     pub news: bool,
     pub inits: bool,
@@ -230,14 +233,13 @@ impl Kept {
     }
 
     /// Read the events since the last sync and rebuild the rows they
-    /// reach; `Err` when everything must be built again instead (an
-    /// instance method into a class of T), with what the events took.
+    /// reach.
     pub(crate) fn sync(
         &mut self,
         world: &World,
         out: &types::Output,
         layouts: &mut Vec<Layout>,
-    ) -> Result<SyncStats, SyncStats> {
+    ) -> SyncStats {
         #[cfg(debug_assertions)]
         self.graph.assert_heads(world);
         let mut stats = SyncStats::default();
@@ -252,72 +254,104 @@ impl Kept {
             world.methods.len(),
             "internal error: methods were added to the world without their events (#717)"
         );
+        // R0's witnesses (`World::ext_impls`, `class_ext_impls`) are
+        // recorded by the declaration of an extension
+        // (`Declarer::check_extension_conformance`,
+        // `check_extension_static`) and by nothing a `static` statement
+        // runs (`recheck_classes` and `recheck_conformance` read them):
+        // a new extension changes the graph key, which builds everything
+        // again. So between two syncs of one graph they do not grow.
         assert!(
-            world.ext_impls.len() >= self.ext_impls
-                && world.class_ext_impls.len() >= self.class_ext_impls,
-            "internal error: R0's witnesses shrank during a static phase (#717)"
+            world.ext_impls.len() == self.ext_impls
+                && world.class_ext_impls.len() == self.class_ext_impls,
+            "internal error: R0's witnesses changed during a static phase (#717)"
         );
         let mut dirty: Vec<ClassId> = Vec::new();
+        // (The classes whose holders' rows and layouts debug builds check
+        // unchanged, `assert_holders_kept`.)
+        #[cfg(debug_assertions)]
+        let mut held: Vec<ClassId> = Vec::new();
         for event in events {
             match event {
-                // (Rows 1, 2, 3(a), 4, 5, 7, 10, 12 for D(owner); row 3(b)
-                // and 7 for all through T; row 8 through H for a `data`
-                // type's flatness names.)
+                // (Rows 1, 2, 3(a), 4, 5, 7, 10, 12 for D(owner); row 8
+                // through H for a `data` type's flatness names.)
+                //
+                // Never an extension's method, nor an instance method of a
+                // class of T, which would change rows of every class (row
+                // 3(b) and 7): a statement generates into the class it
+                // runs on (`self`), never an extension, and runs on a
+                // class only through a `static def` the class has (its
+                // body's statements, or another class's statement calling
+                // it); the classes of T are the prelude's, which have
+                // none, and a module with `static def`s is never included
+                // by an extension (`check_extension_static`), the only way
+                // a user's module joins T. Both would have to change for
+                // this to fail.
                 StaticEvent::Method(m) => {
                     let mi = world.method(*m);
                     let x = mi.owner;
-                    if mi.extension.is_some()
-                        || (!mi.singleton && self.graph.type_side_owners.binary_search(&x).is_ok())
-                    {
-                        stats.type_side = true;
-                        return Err(stats);
-                    }
+                    assert!(
+                        mi.extension.is_none()
+                            && (mi.singleton
+                                || self.graph.type_side_owners.binary_search(&x).is_err()),
+                        "internal error: a statement generated `{}` into an extension or a class of the type side (#717)",
+                        mi.name
+                    );
                     dirty.extend(self.graph.below(x));
                     if is_data(world, x) && FLATNESS_NAMES.contains(&mi.name.as_str()) {
                         stats.data_eq = true;
                         dirty.extend(self.graph.held_by(world, x));
                     }
                 }
-                // (Rows 1, 2 (field indices), 8, 9, 10 for D(X) ∪ H(X).)
+                // (Rows 1, 2 (field indices), 8, 9, 10 for D(X).) Not H(X):
+                // a field is generated into a class only
+                // (`Checker::add_generated_field`), which a holder keeps by
+                // reference: no holder's layout moves, and a class's
+                // shareability is its written `Shareable` (an include, which
+                // no statement adds), so no `data` holder's changes.
                 StaticEvent::Field(x) => {
                     stats.fields = true;
-                    stats.holders = true;
                     dirty.extend(self.graph.below(*x));
-                    dirty.extend(self.graph.held_by(world, *x));
                     self.graph.add_holder(world, *x);
+                    #[cfg(debug_assertions)]
+                    held.push(*x);
                 }
-                // (Row 1's inherited constructors.)
+                // (Row 1's inherited constructors.) The `Method` event of
+                // the method that builds the instance, into the same class,
+                // comes in the same sync (`static_run::Runner` calls
+                // `StaticHost::generated_new` right after `add_generated`
+                // declared it): its D is this one's.
                 StaticEvent::New(x) => {
                     stats.news = true;
-                    dirty.extend(self.graph.below(*x));
+                    assert!(
+                        events.iter().any(|e| matches!(e,
+                            StaticEvent::Method(m) if world.method(*m).owner == *x)),
+                        "internal error: a generated constructor of `{}` came without its method's event (#717)",
+                        world.class(*x).name
+                    );
                 }
                 // (A body's captures: no row reads them.)
                 StaticEvent::Captures(_) => {}
-                // (The shareable promise reset: rows 1 and 10 for H; R0's
-                // witnesses below.)
+                // (The shareable promise reset: rows 1 and 10.) Not H: a
+                // recheck finds the shareability it reset unchanged, as
+                // no statement adds an include or a field to a `data`
+                // type, enum or variant (see `Field`), the only things a
+                // derived shareability reads.
                 StaticEvent::Rechecked(cs) => {
+                    stats.rechecked = true;
                     for c in cs {
                         dirty.extend(self.graph.below(*c));
-                        stats.holders = true;
-                        dirty.extend(self.graph.held_by(world, *c));
+                        #[cfg(debug_assertions)]
+                        held.push(*c);
                     }
                 }
-                // (R0's witnesses below.)
                 StaticEvent::Conformance(cs) => {
+                    stats.conformance = true;
                     for c in cs {
                         dirty.extend(self.graph.below(*c));
                     }
                 }
             }
-        }
-        // New witnesses R0 recorded (rows 5 and 7): their classes' D.
-        for (target, _, _) in &world.ext_impls[self.ext_impls..] {
-            stats.witnesses = true;
-            dirty.extend(self.graph.below(*target));
-        }
-        for w in &world.class_ext_impls[self.class_ext_impls..] {
-            stats.witnesses = true;
-            dirty.extend(self.graph.below(w.class));
         }
         // Constructor choices changed since (no event: see `inherited`):
         // the class rows of their classes.
@@ -346,6 +380,8 @@ impl Kept {
         dirty.sort_unstable();
         dirty.dedup();
         self.rebuild(world, out, &dirty, layouts);
+        #[cfg(debug_assertions)]
+        self.assert_holders_kept(world, out, &held, &dirty, layouts);
         self.cursor = world.static_events.len();
         self.methods = world.methods.len();
         self.ext_impls = world.ext_impls.len();
@@ -357,7 +393,50 @@ impl Kept {
             .map(|c| self.graph.owned[*c as usize].len())
             .sum();
         self.log.push((self.epoch, Some(dirty)));
-        Ok(stats)
+        stats
+    }
+
+    /// Debug builds: the holders (H) of the classes a field was generated
+    /// into or rechecked, outside `dirty` (sorted), have the class rows and
+    /// layouts they would have if rebuilt (`sync`'s `Field` and
+    /// `Rechecked`: why no event rebuilds them).
+    #[cfg(debug_assertions)]
+    fn assert_holders_kept(
+        &self,
+        world: &World,
+        out: &types::Output,
+        xs: &[ClassId],
+        dirty: &[ClassId],
+        layouts: &[Layout],
+    ) {
+        let mut hs: Vec<ClassId> = xs
+            .iter()
+            .flat_map(|x| self.graph.held_by(world, *x))
+            .filter(|h| dirty.binary_search(h).is_err())
+            .collect();
+        hs.sort_unstable();
+        hs.dedup();
+        if hs.is_empty() {
+            return;
+        }
+        let mut memo: Vec<Option<Layout>> = layouts.iter().cloned().map(Some).collect();
+        for &h in &hs {
+            memo[h as usize] = None;
+        }
+        for &h in &hs {
+            assert!(
+                rtworld::class_row(world, out, h) == self.rt.classes[h as usize],
+                "internal error: the class row of `{}` changed with a class it holds (#717)",
+                world.class(h).name
+            );
+            layout::of(world, h, &mut memo);
+            assert_eq!(
+                format!("{:?}", memo[h as usize]),
+                format!("{:?}", layouts.get(h as usize)),
+                "internal error: the layout of `{}` changed with a class it holds (#717)",
+                world.class(h).name
+            );
+        }
     }
 
     /// The rows of `dirty` (sorted), and their methods', built again; the
@@ -781,15 +860,14 @@ pub(crate) fn record_stats(s: &SyncStats) {
     };
     use std::io::Write;
     let line = format!(
-        "sync full={} classes={} methods={} events={} type_side={} holders={} data_eq={} witnesses={} fields={} news={} inits={} verified={}\n",
+        "sync full={} classes={} methods={} events={} data_eq={} rechecked={} conformance={} fields={} news={} inits={} verified={}\n",
         s.full as u8,
         s.classes,
         s.methods,
         s.events,
-        s.type_side as u8,
-        s.holders as u8,
         s.data_eq as u8,
-        s.witnesses as u8,
+        s.rechecked as u8,
+        s.conformance as u8,
         s.fields as u8,
         s.news as u8,
         s.inits as u8,
