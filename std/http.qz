@@ -2494,6 +2494,32 @@ module HTTP
       # A copy with the header `name` set to `value` (replacing it).
       def header(name: String, value: String) -> Request = with(headers: headers.put(name, value))
 
+      # The request target the client sends for this URL: its path (`/`
+      # when empty) and query, without user information or fragment
+      # (origin form). Through a proxy, a plain `http` request's line
+      # carries the absolute form of the same URL instead (an `https` one
+      # goes in a tunnel, with this target), and the proxy forwards it with
+      # this target.
+      #
+      # ```
+      # req = HTTP::Client::Request.get("https://example.com:8443/a?b=1")
+      # req.target   # => "/a?b=1"
+      # HTTP::Client::Request.get("http://example.com").target   # => "/"
+      # ```
+      def target -> String = Client.origin_form(url)
+
+      # The value of the Host header the client sends: the URL's host,
+      # with its port when it is not the scheme's default, an IPv6 address
+      # in brackets. A Host header among `headers` is not sent: this one
+      # replaces it.
+      #
+      # ```
+      # HTTP::Client::Request.get("https://example.com:8443/a").host   # => "example.com:8443"
+      # HTTP::Client::Request.get("https://example.com:443/a").host    # => "example.com"
+      # HTTP::Client::Request.get("http://[::1]:8080/").host           # => "[::1]:8080"
+      # ```
+      def host -> String = Client.host_header(url)
+
       # Whether sending it twice does what sending it once does: GET, HEAD,
       # PUT, DELETE, OPTIONS (a kept connection found closed is retried
       # only then).
@@ -2922,7 +2948,7 @@ module HTTP
     private def request_head(req: Request, absolute: Bool, proxy_url: URI?) -> [String, Bool]
       url = req.url
       # No user information on the wire (RFC 9110 §4.2.4).
-      target = absolute ? url.with(userinfo: nil, fragment: nil).to_s : Client.origin_form(url)
+      target = absolute ? url.with(userinfo: nil, fragment: nil).to_s : req.target
       headers = req.headers.delete("content-length").delete("transfer-encoding").delete("host")
       headers = headers.put("user-agent", @user_agent) unless headers.key?("user-agent")
       chunked = false
@@ -2946,14 +2972,14 @@ module HTTP
       raise ArgumentError, "a request header with a control character or a bad name" unless HTTP.valid_headers?(headers)
       out = String::Builder.new
       out << "#{req.method} #{target} HTTP/1.1\r\n"
-      out << "Host: #{Client.host_header(url)}\r\n"
+      out << "Host: #{req.host}\r\n"
       headers.each { |k, v| out << "#{Headers.canonical(k)}: #{v}\r\n" }
       out << "\r\n"
       [out.to_s, chunked]
     end
 
     # :nodoc:
-    # The path and query (`/` for an empty path).
+    # The path and query (`/` for an empty path): `Request#target`.
     def self.origin_form(url: URI) -> String
       path = url.path.empty? ? "/" : url.path
       q = url.query
@@ -2962,7 +2988,7 @@ module HTTP
 
     # :nodoc:
     # `host[:port]` as the Host header gives it (the port when not the
-    # default one).
+    # default one): `Request#host`, and a proxy's in messages.
     def self.host_header(url: URI) -> String
       h = url.host || ""
       h = "[#{h}]" if h.include?(":")
