@@ -1614,7 +1614,7 @@ impl<'ast> Declarer<'ast> {
                 // (The one pairing rule, `World::replaces_seen`, with both
                 // sides seen from the target.)
                 let fits = |this: &Self, i: MethodId| {
-                    if !this.implements(i, m) {
+                    if !this.takes_calls_by_shape(i, m) {
                         return false;
                     }
                     if info.is_abstract {
@@ -2192,7 +2192,7 @@ impl<'ast> Declarer<'ast> {
                         .flatten()
                         .copied()
                         .filter(|&i| {
-                            self.implements(i, r)
+                            self.takes_calls_by_shape(i, r)
                                 && !self.world.takes_calls_of(
                                     self.world.method(i),
                                     &ext_subst,
@@ -2830,7 +2830,7 @@ impl<'ast> Declarer<'ast> {
                             // overloads, not implementations. Without one, a
                             // method of the extension of the name and side
                             // that takes the requirement's calls by shape
-                            // (`implements`) could be taken for its
+                            // (`takes_calls_by_shape`) could be taken for its
                             // implementation, so each is held to the
                             // requirement (rule (1''), #720). Otherwise, as
                             // for any, `find_override`'s.
@@ -2848,7 +2848,7 @@ impl<'ast> Declarer<'ast> {
                                 // by type, R0's `takes`, takes its calls by
                                 // shape too.)
                                 debug_assert!(
-                                    choice.is_none_or(|w| self.implements(w, o)),
+                                    choice.is_none_or(|w| self.takes_calls_by_shape(w, o)),
                                     "R0's choice for an extension takes the requirement's calls by type but not by shape"
                                 );
                                 // (Not a method a missing requirement's error
@@ -2860,7 +2860,7 @@ impl<'ast> Declarer<'ast> {
                                     Some(w) => w == mid,
                                     None => {
                                         !self.r0_near.contains(&(ext, o, mid))
-                                            && self.implements(mid, o)
+                                            && self.takes_calls_by_shape(mid, o)
                                     }
                                 }
                             } else {
@@ -5070,7 +5070,7 @@ impl<'ast> Declarer<'ast> {
                     // an active extension's class method of the shape on an
                     // ancestor strictly before `runs`'s owner in the class
                     // object's dispatch order (`taken_extension`, whose
-                    // `implements` keeps to the requirement's side).
+                    // `takes_calls_by_shape` keeps to the requirement's side).
                     let rule_a = if m.is_abstract
                         && !class.is_abstract
                         && runs != abs
@@ -5209,7 +5209,7 @@ impl<'ast> Declarer<'ast> {
 
     /// Rule A's extension: an active extension of one of `ancestors` with a
     /// method that takes the calls of requirement `r` by shape
-    /// (`implements`), which could be taken for its implementation on the
+    /// (`takes_calls_by_shape`), which could be taken for its implementation on the
     /// class's own side, where an extension's method never is one. With a
     /// witness `before`, only one whose target comes strictly before the
     /// witness's owner in `ancestors` (`check_conformance_of`'s order rule).
@@ -5235,7 +5235,7 @@ impl<'ast> Declarer<'ast> {
                 .is_some_and(|tp| limit.is_none_or(|l| tp < l))
                 && x.methods
                     .get(name)
-                    .is_some_and(|ids| ids.iter().any(|&i| self.implements(i, r)))
+                    .is_some_and(|ids| ids.iter().any(|&i| self.takes_calls_by_shape(i, r)))
         })
     }
 
@@ -5287,7 +5287,7 @@ impl<'ast> Declarer<'ast> {
     }
 
     /// The extension `ext`'s own class methods that take abstract class
-    /// method `r`'s calls by shape (`implements`) but not by type in their
+    /// method `r`'s calls by shape (`takes_calls_by_shape`) but not by type in their
     /// parameters (`World::takes_calls_of`, `aargs` being `r`'s module's
     /// arguments in the extension's parameters), when nothing else would
     /// implement it: none of the extension's own methods of the name takes
@@ -5336,12 +5336,14 @@ impl<'ast> Declarer<'ast> {
         if elsewhere {
             return Vec::new();
         }
-        own.into_iter().filter(|&i| self.implements(i, r)).collect()
+        own.into_iter()
+            .filter(|&i| self.takes_calls_by_shape(i, r))
+            .collect()
     }
 
     /// The note a "nothing implements it" error gives for `near`, an
     /// extension's own methods of requirement `r`'s name and side that
-    /// take its calls by shape (`implements`) but not by type in their
+    /// take its calls by shape (`takes_calls_by_shape`) but not by type in their
     /// parameters (`World::takes_calls_of`): another overload, not its
     /// implementation (#751). The caller puts it in parentheses.
     fn near_misses(&self, near: &[MethodId], r: MethodId) -> String {
@@ -5367,9 +5369,28 @@ impl<'ast> Declarer<'ast> {
         )
     }
 
-    /// A concrete method of the same name whose arity covers the abstract
-    /// one's counts as its implementation.
-    fn implements(&self, candidate: MethodId, abstract_id: MethodId) -> bool {
+    /// Whether `candidate` takes the calls of `abstract_id` by shape: a
+    /// concrete method of the same name and side whose positional arity
+    /// covers the other's, with a block exactly when it has one, accepting
+    /// its keyword calls. Each condition is necessary for
+    /// `World::takes_calls_of` (the pairing rule, by type), so this is a
+    /// necessary condition of it, not an implementation rule (#808). Its
+    /// uses:
+    /// - a pre-filter before the typed test (an extension's witness,
+    ///   `fits`);
+    /// - the methods an error names as near misses (R0's, an extension's
+    ///   class side, `class_near_misses`), messages only;
+    /// - a debug assertion of R0's typed choice;
+    /// - rule (1''): without R0's choice, an extension's method of the
+    ///   shape is held to the requirement as an override would be;
+    /// - rule A (`taken_extension`, instance and class side): an active
+    ///   extension's method of the shape before the witness's owner refuses
+    ///   the class.
+    ///
+    /// The last two are verdicts by shape: approximations in the
+    /// direction of more checks and more refusals, decided on #720
+    /// (2026-11-15).
+    fn takes_calls_by_shape(&self, candidate: MethodId, abstract_id: MethodId) -> bool {
         let (c, a) = (self.world.method(candidate), self.world.method(abstract_id));
         // (Of the same side: an extension keeps both in one table, #590.)
         if c.is_abstract || c.name != a.name || c.singleton != a.singleton {
