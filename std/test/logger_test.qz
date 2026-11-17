@@ -1,0 +1,260 @@
+require "logger"
+require "json"
+require "test"
+
+# What a logger writes, read back from a file of the test's own.
+module Logged
+  def self.lines(name: String, format: Logger::Format = Logger::Format::Text, level: Logger::Level = Logger::Level::Info, &: (Logger) -> Void) -> Array[String]
+    path = "#{Dir.tmpdir}/quarz-logger-test-#{Process.pid}-#{name}"
+    begin
+      File.open(path, "w") { |io| yield Logger.new(io, level: level, format: format) }
+      File.read(path).lines.map { |l| l.chomp }
+    ensure
+      File.delete(path) if File.exist?(path)
+    end
+  end
+
+  # A text record without its time, which is checked apart.
+  def self.rest(line: String) -> String = line.split(" ", 2)[1]
+end
+
+class LoggerTextTest < Test::Case
+  def test_a_record_is_time_level_message_and_fields
+    lines = Logged.lines("text") { |log| log.info("started", port: 8080, host: "example.com") }
+    assert_equal(1, lines.size)
+    assert_match(/\A\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z /, lines[0])
+    assert_equal("info started port=8080 host=example.com", Logged.rest(lines[0]))
+  end
+
+  def test_the_time_is_now_in_utc
+    before = Time.now
+    lines = Logged.lines("time") { |log| log.info("x") }
+    after = Time.now
+    time = Time.iso8601(lines[0].split(" ")[0])
+    assert(time >= before - 1.seconds && time <= after, "#{time} not in [#{before}, #{after}]")
+  end
+
+  def test_values_are_quoted_when_needed
+    lines = Logged.lines("quote") do |log|
+      log.info("m", a: "two words", b: "", c: "x=y", d: "say \"hi\"", e: "back\\slash", f: "line\nbreak", g: "tab\there", h: "plain-é")
+    end
+    assert_equal(%q(info m a="two words" b="" c="x=y" d="say \"hi\"" e="back\\\\slash" f="line\nbreak" g="tab\there" h=plain-é),
+                 Logged.rest(lines[0]))
+  end
+
+  def test_other_values_are_their_json
+    data_point = Point.new(1, 2)
+    lines = Logged.lines("json-values") do |log|
+      log.info("m", i: 1, f: 2.5, t: true, n: nil, s: :sym, a: [1, 2], h: { "k" => 1 }, p: data_point, w: ["a b"],
+                    at: Time.utc(2024, 3, 5, 14, 7, 9), b: b"\x00\xff")
+    end
+    assert_equal(%q(info m i=1 f=2.5 t=true n=null s=sym a=[1,2] h="{\"k\":1}" p="{\"x\":1,\"y\":2}" w="[\"a b\"]" at=2024-03-05T14:07:09Z b="AP8="),
+                 Logged.rest(lines[0]))
+  end
+
+  def test_a_value_json_refuses_is_its_inspect
+    lines = Logged.lines("nan") { |log| log.info("m", x: 0.0 / 0.0, y: 1.0 / 0.0) }
+    assert_equal("info m x=NaN y=Infinity", Logged.rest(lines[0]))
+  end
+
+  def test_names_are_quoted_when_needed
+    fields = { :"a b" => 1, :"k=v" => 2, :"x\ny" => 3, :"" => 4, :plain => 5 }
+    lines = Logged.lines("names") { |log| log.info("m", **fields) }
+    assert_equal(1, lines.size)
+    assert_equal(%q(info m "a b"=1 "k=v"=2 "x\ny"=3 ""=4 plain=5), Logged.rest(lines[0]))
+  end
+
+  def test_a_field_with_a_record_key_is_renamed
+    lines = Logged.lines("rename-text") { |log| log.with(time: 1).info("m", msg: "x y", level: "debug") }
+    assert_equal(%q(info m fields.time=1 fields.msg="x y" fields.level=debug), Logged.rest(lines[0]))
+  end
+
+  def test_the_message_is_one_line
+    lines = Logged.lines("message") { |log| log.info("two\nlines and \"quotes\"\r\t\u0001") }
+    assert_equal(1, lines.size)
+    assert_equal(%q(info two\nlines and "quotes"\r\t\u0001), Logged.rest(lines[0]))
+  end
+end
+
+data Point = (x: Int, y: Int)
+
+class RaisingJson
+  def to_json -> String = raise "boom"
+end
+
+class LoggerJsonTest < Test::Case
+  def test_a_record_is_one_object
+    lines = Logged.lines("json", Logger::Format::Json) { |log| log.warn("slow", ms: 1250, path: "/a b") }
+    assert_equal(1, lines.size)
+    doc = JSON.parse(lines[0])
+    assert_equal(["time", "level", "msg", "ms", "path"], doc.as_h.keys)
+    assert_equal("warn", doc["level"].as_s)
+    assert_equal("slow", doc["msg"].as_s)
+    assert_equal(1250, doc["ms"].as_i)
+    assert_equal("/a b", doc["path"].as_s)
+    assert_match(/\A\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\z/, doc["time"].as_s)
+  end
+
+  def test_values_are_json
+    lines = Logged.lines("json-all", Logger::Format::Json) do |log|
+      log.info("m\n\"q\"", n: nil, a: [1, "x"], p: Point.new(1, 2), b: b"\x00\xff", x: 0.0 / 0.0)
+    end
+    rest = lines[0].sub(/\A\{"time":"[^"]*",/, "{")
+    assert_equal(%q({"level":"info","msg":"m\n\"q\"","n":null,"a":[1,"x"],"p":{"x":1,"y":2},"b":"AP8=","x":"NaN"}), rest)
+  end
+
+  def test_a_field_with_a_record_key_is_renamed
+    lines = Logged.lines("rename-json", Logger::Format::Json) { |log| log.info("m", msg: "field", level: 3, time: "t", other: 1) }
+    assert_match(/,"level":"info","msg":"m","fields.msg":"field","fields.level":3,"fields.time":"t","other":1\}\z/, lines[0])
+    doc = JSON.parse(lines[0])
+    assert_equal(["time", "level", "msg", "fields.msg", "fields.level", "fields.time", "other"], doc.as_h.keys)
+  end
+
+  # A renamed field and one already named so: the later in field order is
+  # kept, so every key is written once.
+  def test_a_renamed_field_and_one_of_its_new_name
+    fields1 = { msg: "renamed", :"fields.msg" => "own", a: 1 }
+    fields2 = { :"fields.msg" => "own", msg: "renamed", a: 1 }
+    lines = Logged.lines("collide", Logger::Format::Json) do |log|
+      log.info("m", **fields1)
+      log.info("m", **fields2)
+    end
+    rests = lines.map { |l| l.sub(/\A\{"time":"[^"]*",/, "{") }
+    assert_equal([%q({"level":"info","msg":"m","fields.msg":"own","a":1}),
+                  %q({"level":"info","msg":"m","fields.msg":"renamed","a":1})], rests)
+  end
+
+  # The rename comes after `with` fields and the call's are merged: a
+  # call's `msg` replaces a `with` one.
+  def test_the_rename_follows_the_merge
+    lines = Logged.lines("rename-with", Logger::Format::Json) { |log| log.with(msg: "w", level: 1).info("m", msg: "c") }
+    assert_match(/,"msg":"m","fields.msg":"c","fields.level":1\}\z/, lines[0])
+  end
+end
+
+class LoggerLevelTest < Test::Case
+  def test_records_below_the_level_are_not_written
+    lines = Logged.lines("level", level: Logger::Level::Warn) do |log|
+      log.debug("d")
+      log.info("i")
+      log.warn("w")
+      log.error("e")
+    end
+    assert_equal(["warn w", "error e"], lines.map { |l| Logged.rest(l) })
+  end
+
+  def test_debug_writes_everything
+    lines = Logged.lines("debug", level: Logger::Level::Debug) do |log|
+      log.debug("d")
+      log.error("e")
+    end
+    assert_equal(["debug d", "error e"], lines.map { |l| Logged.rest(l) })
+  end
+
+  def test_enabled
+    log = Logger.new(level: Logger::Level::Info)
+    assert_equal[Logger::Level](Logger::Level::Info, log.level)
+    assert(!log.enabled?(Logger::Level::Debug))
+    assert(log.enabled?(Logger::Level::Info))
+    assert(log.enabled?(Logger::Level::Error))
+  end
+
+  def test_level_by_name
+    assert_equal[Logger::Level](Logger::Level::Debug, Logger.level("debug"))
+    assert_equal[Logger::Level](Logger::Level::Info, Logger.level("info"))
+    assert_equal[Logger::Level](Logger::Level::Warn, Logger.level("WARN"))
+    assert_equal[Logger::Level](Logger::Level::Error, Logger.level("Error"))
+    assert_raise_message("unknown log level: \"verbose\"") { Logger.level("verbose") }
+    assert_raise(ArgumentError) { Logger.level("") }
+  end
+
+  def test_names
+    assert_equal(["debug", "info", "warn", "error"],
+                 [Logger::Level::Debug, Logger::Level::Info, Logger::Level::Warn, Logger::Level::Error].map { |l| l.name })
+  end
+end
+
+class LoggerWithTest < Test::Case
+  def test_with_adds_fields_to_every_record
+    lines = Logged.lines("with") do |log|
+      child = log.with(service: "api").with(request: 17)
+      child.info("a")
+      child.info("b", status: 200)
+      log.info("c")
+    end
+    assert_equal(["info a service=api request=17", "info b service=api request=17 status=200", "info c"],
+                 lines.map { |l| Logged.rest(l) })
+  end
+
+  def test_a_later_field_replaces_one_of_the_same_name
+    lines = Logged.lines("replace") do |log|
+      log.with(a: 1, b: 1).with(b: 2).info("m", a: 3)
+    end
+    assert_equal("info m a=3 b=2", Logged.rest(lines[0]))
+  end
+
+  def test_the_child_keeps_level_and_format
+    lines = Logged.lines("child", Logger::Format::Json, Logger::Level::Warn) do |log|
+      child = log.with(k: "v")
+      child.info("hidden")
+      child.error("shown")
+    end
+    assert_equal(1, lines.size)
+    assert_equal("v", JSON.parse(lines[0])["k"].as_s)
+  end
+
+  def test_splat_fields
+    extra = { a: 1, b: "x" }
+    lines = Logged.lines("splat") { |log| log.info("m", **extra, c: 2) }
+    assert_equal("info m a=1 b=x c=2", Logged.rest(lines[0]))
+  end
+end
+
+class LoggerTaskTest < Test::Case
+  # Records of tasks sharing a logger come out whole, one per line.
+  def test_tasks_records_do_not_interleave
+    words = "x" * 2000
+    lines = Logged.lines("tasks") do |log|
+      Task.scope do |s|
+        8.times do |t|
+          s.spawn do
+            50.times do |i|
+              log.info("record", task: t, i: i, pad: words)
+              Task.yield
+            end
+          end
+        end
+      end
+    end
+    assert_equal(400, lines.size)
+    lines.each { |l| assert_match(/\Ainfo record task=\d i=\d+ pad=x{2000}\z/, Logged.rest(l)) }
+  end
+
+  def test_a_logger_is_shareable
+    log: Shareable = Logger.new
+    assert(log.is_a?(Logger))
+  end
+end
+
+class LoggerIOTest < Test::Case
+  def test_what_a_values_to_json_raises_comes_out
+    lines = Logged.lines("to-json") do |log|
+      assert_raise_message("boom") { log.info("m", v: RaisingJson.new) }
+      log.info("after")
+    end
+    assert_equal(["info after"], lines.map { |l| Logged.rest(l) })
+  end
+
+  def test_a_write_to_a_closed_io_raises
+    path = "#{Dir.tmpdir}/quarz-logger-test-#{Process.pid}-closed"
+    begin
+      io = File.open(path, "w")
+      log = Logger.new(io)
+      io.close
+      assert_raise(IOError) { log.info("lost") }
+      Logger.new(io, level: Logger::Level::Error).info("below the level: not written, no error")
+    ensure
+      File.delete(path) if File.exist?(path)
+    end
+  end
+end

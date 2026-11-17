@@ -1,0 +1,233 @@
+require "json"
+
+# Logger: records with a level, a message and fields, written one line
+# each, as text or as JSON.
+#
+# ```
+# require "logger"
+# log = Logger.new(STDOUT)
+# log.info("started", port: 8080)
+# # 2026-11-17T10:23:47.707Z info started port=8080
+# db = log.with(component: "db")
+# db.debug("hidden")                  # below the logger's level: nothing
+# db.warn("slow query", ms: 1250)
+# # 2026-11-17T10:23:47.708Z warn slow query component=db ms=1250
+# ```
+#
+# A record is the time (RFC 3339, UTC, in milliseconds), the level, the
+# message and the fields: those `with` gave the logger, then the call's
+# (a call's field replaces a `with` field of the same name).
+#
+# In the text format (`Format::Text`), the message is written as it is,
+# its control characters escaped as JSON escapes them (`\n`), so that a
+# record is one line; each field is `name=value`, where the value is its
+# JSON text (below: `1`, `true`, `null`, `[1,2]`), a JSON string's
+# characters without the quotes (`a`, `2024-03-05T14:07:09Z` for a
+# `Time`). A name or a value that is empty or holds a space, `"`, `=`,
+# `\` or a control character is written as a JSON string
+# (`note="two words"`, `h="{\"k\":1}"`, `"a b"=1`).
+#
+# In the JSON format (`Format::Json`), a record is one object:
+# `{"time":"…","level":"info","msg":"started","port":8080}`, its fields
+# after `msg` in order.
+#
+# In both formats, a field named `time`, `level` or `msg` is written as
+# `fields.time`, `fields.level` or `fields.msg`, so that it never takes
+# the place of the record's own; of two fields that then have one name
+# (a field named `fields.msg` beside one named `msg`), the later is
+# written and the earlier dropped.
+#
+# Field values are written as `JSON.generate` writes them (a `Time` as an
+# RFC 3339 string, `Bytes` as Base64, a `data` value as an object); a
+# value it refuses (a `Float` NaN or infinity) is written as its
+# `inspect` string. What a value's own `to_json` raises, and the
+# `SystemStackError` of a value nested too deeply (a cycle through
+# mutable objects), come out of the log call, as does an error of the
+# IO's `write`; the record is then not written.
+#
+# A record is written with one `write` to the IO, which the runtime keeps
+# whole: records of tasks sharing a logger do not interleave. A `Logger`
+# is `Shareable` (a task may use one it captures), but it holds an IO
+# handle, which `Task.blocking` cannot copy to its helper.
+class Logger
+  include Shareable
+
+  # A record's importance, from `Debug` to `Error`. A logger writes the
+  # records of its level and above.
+  enum Level
+    # Detail for debugging.
+    variant Debug
+    # Normal operation.
+    variant Info
+    # Something unexpected the program goes on after.
+    variant Warn
+    # A failure.
+    variant Error
+
+    # The level's name, as records show it: `"debug"`, `"info"`, `"warn"`
+    # or `"error"`.
+    def name -> String
+      case self
+      in Debug then "debug"
+      in Info then "info"
+      in Warn then "warn"
+      in Error then "error"
+      end
+    end
+
+    # The level's place in the order, `Debug` lowest.
+    def rank -> Int
+      case self
+      in Debug then 0
+      in Info then 1
+      in Warn then 2
+      in Error then 3
+      end
+    end
+  end
+
+  # How records are written: `Text` (`time level message name=value …`)
+  # or `Json` (one object per line).
+  enum Format
+    # One line of text per record.
+    variant Text
+    # One JSON object per line.
+    variant Json
+  end
+
+  # The level named `text`, compared without regard to case: `debug`,
+  # `info`, `warn` or `error`.
+  #
+  # ```
+  # Logger.level("warn")      # => Logger::Level::Warn
+  # Logger.level("DEBUG")     # => Logger::Level::Debug
+  # Logger.level("verbose")   # raises ArgumentError
+  # ```
+  #
+  # ## Raises
+  #
+  # `ArgumentError` for another name.
+  def self.level(text: String) -> Level
+    case text.downcase
+    when "debug" then Level::Debug
+    when "info" then Level::Info
+    when "warn" then Level::Warn
+    when "error" then Level::Error
+    else raise ArgumentError, "unknown log level: #{text.inspect}"
+    end
+  end
+
+  @io: IO
+  @level: Level
+  @format: Format
+  @fields: Hash[Symbol, Shareable]
+
+  # A logger writing to `io` the records of `level` and above, in
+  # `format`.
+  #
+  # ```
+  # log = Logger.new(level: Logger.level(ENV.fetch("LOG_LEVEL", "info")))
+  # log = Logger.new(STDOUT, format: Logger::Format::Json)
+  # ```
+  def initialize(io: IO = STDERR, *, level: Level = Level::Info, format: Format = Format::Text)
+    @io = io
+    @level = level
+    @format = format
+    @fields = {}
+  end
+
+  # :nodoc:
+  def initialize(io: IO, level: Level, format: Format, fields: Hash[Symbol, Shareable])
+    @io = io
+    @level = level
+    @format = format
+    @fields = fields
+  end
+
+  # A logger that adds `fields` to each record, after this logger's own
+  # (a field of the same name replaces it). It writes to the same IO, at
+  # the same level, in the same format.
+  #
+  # ```
+  # log = Logger.new(STDOUT)
+  # req = log.with(request_id: "r-17")
+  # req.info("done", status: 200)
+  # # 2026-11-17T10:23:47.707Z info done request_id=r-17 status=200
+  # ```
+  def with(**fields: Shareable) -> Logger = Logger.new(@io, @level, @format, @fields.merge(fields))
+
+  # Writes a `Level::Debug` record, if the logger's level lets it through.
+  def debug(message: String, **fields: Object) -> Void = log(Level::Debug, message, fields)
+
+  # Writes a `Level::Info` record, if the logger's level lets it through.
+  def info(message: String, **fields: Object) -> Void = log(Level::Info, message, fields)
+
+  # Writes a `Level::Warn` record, if the logger's level lets it through.
+  def warn(message: String, **fields: Object) -> Void = log(Level::Warn, message, fields)
+
+  # Writes a `Level::Error` record.
+  def error(message: String, **fields: Object) -> Void = log(Level::Error, message, fields)
+
+  # The lowest level the logger writes.
+  def level -> Level = @level
+
+  # Whether the logger writes records of `level`.
+  def enabled?(level: Level) -> Bool = level.rank >= @level.rank
+
+  private def log(level: Level, message: String, fields: Hash[Symbol, Object]) -> Void
+    return unless enabled?(level)
+    time = Time.now.utc.iso8601(3)
+    all = Logger.named(@fields.merge(fields))
+    line =
+      case @format
+      in Format::Text then Logger.text_record(time, level, message, all)
+      in Format::Json then Logger.json_record(time, level, message, all)
+      end
+    @io.write(line)
+  end
+
+  # :nodoc:
+  def self.text_record(time: String, level: Level, message: String, fields: Hash[String, Object]) -> String
+    msg = message.gsub(/[\x00-\x1f\x7f]/) { |c| JSON.generate(c)[1...-1] }
+    parts = [time, level.name, msg]
+    fields.each { |name, value| parts = parts.push("#{text_quoted(name)}=#{text_value(value)}") }
+    "#{parts.join(" ")}\n"
+  end
+
+  # :nodoc:
+  def self.json_record(time: String, level: Level, message: String, fields: Hash[String, Object]) -> String
+    parts = ["\"time\":#{JSON.generate(time)}", "\"level\":#{JSON.generate(level.name)}",
+             "\"msg\":#{JSON.generate(message)}"]
+    fields.each { |name, value| parts = parts.push("#{JSON.generate(name)}:#{json_value(value)}") }
+    "{#{parts.join(",")}}\n"
+  end
+
+  # :nodoc:
+  def self.named(fields: Hash[Symbol, Object]) -> Hash[String, Object]
+    named: Hash[String, Object] = {}
+    fields.each do |key, value|
+      name = key.to_s
+      name = "fields.#{name}" if name == "time" || name == "level" || name == "msg"
+      named = named.delete(name).put(name, value)
+    end
+    named
+  end
+
+  # :nodoc:
+  def self.text_value(value: Object) -> String
+    json = json_value(value)
+    text_quoted(json.start_with?("\"") ? JSON.parse(json).as_s : json)
+  end
+
+  # :nodoc:
+  def self.text_quoted(text: String) -> String
+    text.empty? || text.match?(/[\s"=\\\x00-\x1f\x7f]/) ? JSON.generate(text) : text
+  end
+
+  # :nodoc:
+  def self.json_value(value: Object) -> String
+    JSON.generate(value)
+  rescue JSON::GeneratorError
+    JSON.generate(value.inspect)
+  end
+end
