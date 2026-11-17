@@ -116,6 +116,10 @@ enum Node {
     HashSym(usize),
     /// A `data` class and its fields' nodes.
     Data(ClassId, Vec<usize>),
+    /// A union: the node for each kind of JSON value it takes, by the
+    /// kind's letter (`s` string, `n` number, `b` bool, `a` array, `o`
+    /// object), in that order.
+    Union(Vec<(u8, usize)>),
 }
 
 /// The nodes of descriptor `text` (`quarz_types::json_decode`: a prefix,
@@ -143,6 +147,15 @@ fn descriptor(text: &str, classes: usize) -> Option<Vec<Node>> {
                 "e" => Node::Set(num(rest)?),
                 "h" => Node::HashStr(num(rest)?),
                 "H" => Node::HashSym(num(rest)?),
+                "u" => Node::Union(
+                    rest.split(',')
+                        .map(|e| {
+                            let (&k, n) = e.as_bytes().split_first()?;
+                            matches!(k, b's' | b'n' | b'b' | b'a' | b'o')
+                                .then_some((k, num(std::str::from_utf8(n).ok()?)?))
+                        })
+                        .collect::<Option<Vec<_>>>()?,
+                ),
                 "d" => {
                     let (c, fields) = rest.split_once(':')?;
                     let fields = if fields.is_empty() {
@@ -252,6 +265,25 @@ impl Decoder<'_> {
         let is_null = class == c.null;
         match node {
             Node::Value => Ok(v.clone()),
+            Node::Union(ref entries) => {
+                let kind = if class == c.string {
+                    b's'
+                } else if class == c.number {
+                    b'n'
+                } else if class == c.boolean {
+                    b'b'
+                } else if class == c.array {
+                    b'a'
+                } else if class == c.object {
+                    b'o'
+                } else {
+                    0
+                };
+                match entries.iter().find(|(k, _)| *k == kind) {
+                    Some(&(_, m)) => self.decode(v, m),
+                    None => Err(self.shape(&node, &self.found(v))),
+                }
+            }
             Node::Opt(m) => {
                 if is_null {
                     Ok(Value::Nil)
@@ -440,7 +472,13 @@ impl Decoder<'_> {
 
     /// The error for a value that is not what `node` decodes.
     fn shape(&self, node: &Node, found: &str) -> DecodeFail {
-        let expected = match node {
+        let expected = self.expected(node);
+        DecodeFail::Shape(format!("{}: expected {expected}, found {found}", self.path))
+    }
+
+    /// What `node` decodes, for an error.
+    fn expected(&self, node: &Node) -> String {
+        match node {
             Node::Int => "an integer that fits an Int".to_string(),
             Node::Integer => "an integer".to_string(),
             Node::Float => "a number".to_string(),
@@ -458,8 +496,18 @@ impl Decoder<'_> {
                 "an object (for {})",
                 self.interp.program.world.class(*cid).name
             ),
-        };
-        DecodeFail::Shape(format!("{}: expected {expected}, found {found}", self.path))
+            Node::Union(entries) => {
+                let parts: Vec<String> = entries
+                    .iter()
+                    .map(|&(_, m)| self.expected(&self.nodes[m]))
+                    .collect();
+                match parts.as_slice() {
+                    [] => "a JSON value".to_string(),
+                    [one] => one.clone(),
+                    [init @ .., last] => format!("{} or {last}", init.join(", ")),
+                }
+            }
+        }
     }
 }
 

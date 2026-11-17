@@ -34,6 +34,15 @@ data JsonTestOwnInit(x: Int)
   end
 end
 
+data JsonTestRef = (id: String)
+
+data JsonTestOwner = (owner: String | JsonTestRef, n: Int = 0)
+
+data JsonTestBox[T] = (v: T | Array[T])
+
+# Named only in a union: the compiled program must keep its class.
+data JsonTestOnlyInUnion = (k: String)
+
 enum JsonTestColor
   variant Red
   variant Green
@@ -223,5 +232,82 @@ class JsonDecodeTest < Test::Case
     assert_nil(JSON.decode?[JsonTestArgs]("not json"))
     assert_nil(JSON.decode?[JsonTestArgs]("{}"))
     assert_equal(JsonTestArgs.new(user_id: 3), JSON.decode?[JsonTestArgs]('{"user_id": 3}'))
+  end
+end
+
+class JsonDecodeUnionTest < Test::Case
+  def test_the_kind_picks_the_member
+    assert_equal(JsonTestOwner.new(owner: "x"), JSON.decode[JsonTestOwner]('{"owner": "x"}'))
+    assert_equal(JsonTestOwner.new(owner: JsonTestRef.new(id: "r"), n: 2),
+                 JSON.decode[JsonTestOwner]('{"owner": {"id": "r"}, "n": 2}'))
+    five: Int | String | Bool | Array[Float] | Hash[String, Int] = 5
+    assert_equal[Int | String | Bool | Array[Float] | Hash[String, Int]](five, JSON.decode[Int | String | Bool | Array[Float] | Hash[String, Int]]("5"))
+    vals: Array[Int | String | Bool | Array[Float] | Hash[String, Int]] = [1, "s", true, [1.0, 2.5], { "k" => 1 }]
+    assert_equal[Array[Int | String | Bool | Array[Float] | Hash[String, Int]]](vals, JSON.decode[Array[Int | String | Bool | Array[Float] | Hash[String, Int]]]('[1, "s", true, [1, 2.5], {"k": 1}]'))
+  end
+
+  def test_string_like_members
+    t: Time | Int = Time.at(1700000000)
+    assert_equal[Time | Int](t, JSON.decode[Time | Int]('"2023-11-14T22:13:20Z"'))
+    sym: Symbol | Array[Int] = :abc
+    assert_equal[Symbol | Array[Int]](sym, JSON.decode[Symbol | Array[Int]]('"abc"'))
+    raw: Bytes | Bool = b"hi"
+    assert_equal[Bytes | Bool](raw, JSON.decode[Bytes | Bool]('"aGk="'))
+    big: Integer | String = 123456789012345678901234567890
+    assert_equal[Integer | String](big, JSON.decode[Integer | String]("123456789012345678901234567890"))
+  end
+
+  def test_one_or_many
+    one: String | Array[String] = "a"
+    many: String | Array[String] = ["a", "b"]
+    assert_equal[String | Array[String]](one, JSON.decode[String | Array[String]]('"a"'))
+    assert_equal[String | Array[String]](many, JSON.decode[String | Array[String]]('["a", "b"]'))
+  end
+
+  def test_with_nil
+    expected: Array[(String | JsonTestRef)?] = [nil, "a", JsonTestRef.new(id: "b")]
+    assert_equal[Array[(String | JsonTestRef)?]](expected, JSON.decode[Array[(String | JsonTestRef)?]]('[null, "a", {"id": "b"}]'))
+    h: Hash[Symbol, Int | Array[Int] | Nil] = { a: 1, b: [2], c: nil }
+    assert_equal[Hash[Symbol, Int | Array[Int] | Nil]](h, JSON.decode[Hash[Symbol, Int | Array[Int] | Nil]]('{"a": 1, "b": [2], "c": null}'))
+  end
+
+  def test_through_a_generic_data_type
+    assert_equal(JsonTestBox[Int].new(v: 1), JSON.decode[JsonTestBox[Int]]('{"v": 1}'))
+    assert_equal(JsonTestBox[Int].new(v: [1, 2]), JSON.decode[JsonTestBox[Int]]('{"v": [1, 2]}'))
+    assert_equal(JsonTestBox[JsonTestRef].new(v: [JsonTestRef.new(id: "a")]),
+                 JSON.decode[JsonTestBox[JsonTestRef]]('{"v": [{"id": "a"}]}'))
+  end
+
+  def test_a_data_type_named_only_in_a_union
+    v = JSON.decode[Int | JsonTestOnlyInUnion]('{"k": "a"}')
+    assert_equal("JsonTestOnlyInUnion(k: \"a\")", v.inspect)
+    assert_equal(JSON.generate(v), '{"k":"a"}')
+  end
+
+  def test_round_trip
+    owners = [JsonTestOwner.new(owner: "x"), JsonTestOwner.new(owner: JsonTestRef.new(id: "r"), n: 3)]
+    assert_equal[Array[JsonTestOwner]](owners, JSON.decode[Array[JsonTestOwner]](JSON.generate(owners)))
+  end
+
+  def test_errors_name_the_members
+    e = assert_raise(JSON::DecodeError) { JSON.decode[JsonTestOwner]('{"owner": 1}'); nil }
+    assert_equal("$.owner: expected a string or an object (for JsonTestRef), found 1", e.message)
+    e = assert_raise(JSON::DecodeError) { JSON.decode[JsonTestOwner]('{"owner": null}'); nil }
+    assert_equal("$.owner: expected a string or an object (for JsonTestRef), found null", e.message)
+    e = assert_raise(JSON::DecodeError) { JSON.decode[Array[Time | Array[Int] | Bool]]('[true, 1]'); nil }
+    assert_equal("$[1]: expected an RFC 3339 time string, true or false or an array, found 1", e.message)
+    # (A member the kind picked fails with its own error.)
+    e = assert_raise(JSON::DecodeError) { JSON.decode[Time | Int]('"yesterday"'); nil }
+    assert_equal("$: expected an RFC 3339 time string, found \"yesterday\"", e.message)
+    e = assert_raise(JSON::DecodeError) { JSON.decode[Int | String]("1.5"); nil }
+    assert_equal("$: expected an integer that fits an Int, found 1.5", e.message)
+    e = assert_raise(JSON::DecodeError) { JSON.decode[JsonTestOwner]('{"owner": {"name": "r"}}'); nil }
+    assert_equal("$.owner: missing field `id` of JsonTestRef", e.message)
+  end
+
+  def test_decode_or_nil_on_a_kind_no_member_takes
+    assert_nil(JSON.decode?[String | JsonTestRef]("1"))
+    assert_nil(JSON.decode?[String | JsonTestRef]("null"))
+    assert_equal[String | JsonTestRef]("a", JSON.decode?[String | JsonTestRef]('"a"'))
   end
 end

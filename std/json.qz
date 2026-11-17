@@ -355,13 +355,32 @@ module JSON
   # `Nil`, `U?` (`null` gives nil), `Array[U]`, `Set[U]`, `Hash[String, U]`
   # and `Hash[Symbol, U]` (from an object), `Time` (an RFC 3339 string),
   # `Bytes` (a standard Base64 string), `JSON::Value` (the sub-tree as it
-  # is), and a `data` type whose fields are of these types (its type
+  # is), a union whose members the kind of the JSON value tells apart
+  # (below), and a `data` type whose fields are of these types (its type
   # arguments applied), from an object. A field the object does not have
   # takes its default, and one without a default is an error; keys the
   # type has no field for are ignored. A `data` value is built from its
   # fields: no `initialize` of its own runs. The checker refuses another
   # `T` (a class, an enum, a procedure, `Object`, a type parameter) at the
   # call.
+  #
+  # A union takes at most one member from each kind of JSON value:
+  # strings (`String`, `Symbol`, `Time`, `Bytes`), numbers (`Int`,
+  # `Integer`, `Float`), `true` and `false` (`Bool`), arrays (`Array`,
+  # `Set`) and objects (a `data` type or a `Hash`), and nil for `null`
+  # as in `U?`; the value's kind picks the member. A union with two
+  # members of one kind (`String | Time`, `Int | Float`, two `data`
+  # types), or `JSON::Value` beside another member, is refused at the
+  # call.
+  #
+  # ```
+  # data Ref = (id: String)
+  # data Owner = (owner: String | Ref, tags: String | Array[String] = [])
+  # JSON.decode[Owner]('{"owner": {"id": "r"}, "tags": "a"}')
+  # # => Owner(owner: Ref(id: "r"), tags: "a")
+  # JSON.decode[Owner]('{"owner": 1}')
+  # # raises JSON::DecodeError
+  # ```
   #
   # `JSON.generate` is the inverse: `JSON.decode[T](JSON.generate(x)) == x`
   # for a value `x` of such a type.

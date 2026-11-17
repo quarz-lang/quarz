@@ -1372,7 +1372,16 @@ enum E
   variant A
 end
 data W = (f: Foo)
-data U = (x: Int | String)
+data U = (x: Int | Float)
+data R = (id: String)
+data S = (n: Int)
+u1 = JSON.decode[String | Time]("1")
+u2 = JSON.decode[R | S]("1")
+u3 = JSON.decode[R | Hash[String, Int]]("1")
+u4 = JSON.decode[Array[Int] | Set[Int]]("1")
+u5 = JSON.decode[Array[JSON::Value | String]]("1")
+u6 = JSON.decode[Int | Integer | String]("1")
+u7 = JSON.decode[(Bool | E)?]("1")
 x = JSON.decode[Object]("1")
 y = JSON.decode[W]("{}")
 z = JSON.decode[E]("1")
@@ -1394,7 +1403,14 @@ ok = JSON.decode[Wrap[Wrap[Int]]]('{"x": {"x": 1}}')
         "`JSON.decode` cannot decode into Object: `Object` is a class: only `data` types are decoded from objects",
         "`JSON.decode` cannot decode into W: `Foo` is a class",
         "`JSON.decode` cannot decode into E: `E` is an enum",
-        "`JSON.decode` cannot decode into U: `Int | String` is a union: only a type or nil (`T?`) is decoded",
+        "`JSON.decode` cannot decode into U: `Int | Float` is a union JSON cannot tell apart: `Int` and `Float` are both decoded from a number",
+        "`JSON.decode` cannot decode into String | Time: `String | Time` is a union JSON cannot tell apart: `String` and `Time` are both decoded from a string",
+        "`JSON.decode` cannot decode into R | S: `R | S` is a union JSON cannot tell apart: `R` and `S` are both decoded from an object",
+        "is a union JSON cannot tell apart: `R` and `Hash[String, Int]` are both decoded from an object",
+        "is a union JSON cannot tell apart: `Array[Int]` and `Set[Int]` are both decoded from an array",
+        "is a union JSON cannot tell apart: `JSON::Value` is decoded from any JSON value: write `JSON::Value`",
+        "are both decoded from a number",
+        "`JSON.decode` cannot decode into Bool | E | Nil: `E` is an enum",
         "`JSON.decode?` cannot decode into Hash[Int, Int]: `Hash[Int, Int]` has keys that are neither `String` nor `Symbol`",
         "`JSON.decode` cannot decode into T: `T` is a type parameter: the type must be written at the call",
         "`JSON.decode` takes the type to decode into explicitly (`JSON.decode[Args](text)`)",
@@ -1519,6 +1535,60 @@ fn json_decode_of_a_type_parameter_a_generated_method_carries() {
     ] {
         assert!(err.contains(want), "{want}\n{err}");
     }
+}
+
+#[test]
+fn json_decode_of_a_union_with_a_type_parameter_a_generated_method_carries() {
+    // `JSON.decode[A | String]` in a `def_method` block: the union is
+    // checked at the statement, with `A` put in (flattened: a union or an
+    // optional `A` adds its members), and refused there when two members
+    // are decoded from one kind of JSON value (#828). (`A` is inferred
+    // from a value: a union is no value to pass as a `Type`.)
+    let lib = "require \"json\"\ndata Box[T] = (v: T)\nclass Base\n  static def self.args[A](sample: Box[A]) -> Void\n    def_method(:dec, :text) { |text: String| -> A | String JSON.decode[A | String](text) }\n  end\nend\n";
+    let d = dir();
+    write(&d.0, "lib.qz", lib);
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\ndata P = (x: Int)\nclass J < Base\n  args Box[P].new(v: P.new(x: 0))\nend\nclass K < Base\n  args Box[Int | Array[Int]].new(v: 1)\nend\nclass L < Base\n  args Box[String?].new(v: nil)\nend\np J.new.dec('{\"x\": 1}')\np J.new.dec('\"s\"')\np K.new.dec(\"[1]\")\np K.new.dec(\"2\")\np K.new.dec('\"t\"')\np L.new.dec(\"null\")\np L.new.dec('\"u\"')\n",
+    );
+    run_and_build(&d.0, &app, "P(x: 1)\n\"s\"\n[1]\n2\n\"t\"\nnil\n\"u\"\n");
+    for (arg, want) in [
+        ("Box[Time].new(v: Time.at(0))", "`Time | String` is a union JSON cannot tell apart: `Time` and `String` are both decoded from a string"),
+        ("Box[JSON::Value].new(v: JSON.parse(\"1\"))", "is a union JSON cannot tell apart: `JSON::Value` is decoded from any JSON value"),
+        ("Box[Symbol | Int].new(v: 1)", "are both decoded from a string"),
+    ] {
+        let app = write(
+            &d.0,
+            "app.qz",
+            &format!("require_relative \"lib\"\nclass K < Base\n  args {arg}\nend\n"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        assert!(!ok, "{arg}");
+        assert!(
+            err.starts_with("app.qz:3:3: error: `def_method(:dec)`: `JSON.decode` in the block cannot decode into "),
+            "{arg}: {err}"
+        );
+        assert!(err.contains(want), "{arg}: {want}\n{err}");
+    }
+}
+
+#[test]
+fn json_decode_keeps_a_data_class_named_only_in_a_union() {
+    // A `data` type the program names nowhere but in a union `JSON.decode`
+    // decodes into: compiled, the tree shake keeps its class and methods,
+    // which the descriptor names (#828).
+    let d = dir();
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require \"json\"\ndata OnlyHere = (k: String)\nv = JSON.decode[Int | OnlyHere]('{\"k\": \"a\"}')\np v\nputs v.to_s\nputs JSON.generate(v)\np JSON.decode[Int | OnlyHere](\"3\")\n",
+    );
+    run_and_build(
+        &d.0,
+        &app,
+        "OnlyHere(k: \"a\")\nOnlyHere(k: \"a\")\n{\"k\":\"a\"}\n3\n",
+    );
 }
 
 #[test]
