@@ -106,11 +106,23 @@ pub(crate) struct Kept {
     class_rows: Vec<Vec<(ClassId, MethodId, MethodId)>>,
     /// `World::overridden_methods_over` the kept table and pairs.
     pub(crate) overridden: HashSet<MethodId>,
-    graph: Graph,
+    /// The class graph's inversions, made at the first sync that has
+    /// something to rebuild: a program whose statements generate nothing
+    /// (most have none) never needs them.
+    graph: Option<Graph>,
+    /// Each class's superclass and includes when the tables were built
+    /// (debug builds assert they do not change, #717's P1).
+    #[cfg(debug_assertions)]
+    heads: Vec<(Option<Type>, Vec<Type>)>,
     /// Each sync's number and the classes it rebuilt (`None`: all), for
-    /// the readers that keep rows of their own (`changed_since`).
+    /// the readers that keep rows of their own (`changed_since`): the last
+    /// `LOG_SYNCS` syncs. A reader that has not synced for longer is told
+    /// everything changed (`changed_since`'s `None`), which is always
+    /// sound; the readers (the runner's reflection and safety net, the
+    /// field defaults, `netted`) read at every round, so they are one or
+    /// two syncs behind.
     epoch: u64,
-    log: Vec<(u64, Option<Vec<ClassId>>)>,
+    log: std::collections::VecDeque<(u64, Option<Vec<ClassId>>)>,
 }
 
 /// The class graph's inversions, made once per graph.
@@ -125,10 +137,33 @@ struct Graph {
     type_side_owners: Vec<ClassId>,
     /// Each class's methods, by owner.
     owned: Vec<Vec<MethodId>>,
-    /// Each class's superclass and includes when the graph was made
-    /// (debug builds assert they do not change, #717's P1).
-    #[cfg(debug_assertions)]
-    heads: Vec<(Option<Type>, Vec<Type>)>,
+}
+
+/// How many syncs `Kept::log` keeps.
+const LOG_SYNCS: usize = 64;
+
+/// `Kept::changed_since` over `log`: the classes rebuilt by the syncs
+/// after `epoch`, or `None` when one of them rebuilt everything or the log
+/// no longer reaches back to `epoch` (`LOG_SYNCS`).
+fn changed_in(
+    log: &std::collections::VecDeque<(u64, Option<Vec<ClassId>>)>,
+    epoch: u64,
+) -> Option<Vec<ClassId>> {
+    if epoch == 0 || log.front().is_none_or(|(e, _)| *e > epoch + 1) {
+        return None;
+    }
+    // (From the newest back: a reader asks for the syncs since its own
+    // last one, a few entries.)
+    let mut out: Vec<ClassId> = Vec::new();
+    for (e, cs) in log.iter().rev() {
+        if *e <= epoch {
+            break;
+        }
+        out.extend(cs.as_ref()?.iter().copied());
+    }
+    out.sort_unstable();
+    out.dedup();
+    Some(out)
 }
 
 /// What one sync rebuilt, for the statistics (`QUARZ_STATIC_TABLES_STATS`).
@@ -170,7 +205,6 @@ impl Kept {
         let flat: Vec<(ClassId, MethodId, MethodId)> =
             class_pairs.iter().flatten().copied().collect();
         let overridden = world.overridden_methods_over(&table, &rt.include_overrides, &flat);
-        let graph = Graph::build(world, &rt);
         *layouts = layout::compute(world);
         Kept {
             key: GraphKey::of(world),
@@ -188,9 +222,11 @@ impl Kept {
             witness_rows,
             class_rows,
             overridden,
-            graph,
+            graph: None,
+            #[cfg(debug_assertions)]
+            heads: heads(world),
             epoch,
-            log: vec![(epoch, None)],
+            log: [(epoch, None)].into(),
         }
     }
 
@@ -203,21 +239,7 @@ impl Kept {
     /// The classes rebuilt by the syncs after `epoch`, or `None` when one
     /// of them rebuilt everything (or the log does not reach back).
     pub(crate) fn changed_since(&self, epoch: u64) -> Option<Vec<ClassId>> {
-        if epoch == 0 || self.log.first().is_none_or(|(e, _)| *e > epoch + 1) {
-            return None;
-        }
-        // (From the newest back: a reader asks for the syncs since its own
-        // last one, a few entries.)
-        let mut out: Vec<ClassId> = Vec::new();
-        for (e, cs) in self.log.iter().rev() {
-            if *e <= epoch {
-                break;
-            }
-            out.extend(cs.as_ref()?.iter().copied());
-        }
-        out.sort_unstable();
-        out.dedup();
-        Some(out)
+        changed_in(&self.log, epoch)
     }
 
     pub(crate) fn epoch(&self) -> u64 {
@@ -238,10 +260,16 @@ impl Kept {
         layouts: &mut Vec<Layout>,
     ) -> SyncStats {
         #[cfg(debug_assertions)]
-        self.graph.assert_heads(world);
+        assert!(
+            heads(world) == self.heads,
+            "internal error: a class's superclass or includes changed during a static phase (#717)"
+        );
         let mut stats = SyncStats::default();
         let events = &world.static_events[self.cursor..];
         stats.events = events.len();
+        if self.graph.is_none() && (!events.is_empty() || out.inherited_inits != self.inherited) {
+            self.graph = Some(Graph::build(world, &self.rt, self.methods));
+        }
         let added = events
             .iter()
             .filter(|e| matches!(e, StaticEvent::Method(_)))
@@ -264,14 +292,15 @@ impl Kept {
             "internal error: R0's witnesses changed during a static phase (#717)"
         );
         let mut dirty: Vec<ClassId> = Vec::new();
-        // (The owners of the methods generated so far in this sync, for
-        // `New`'s check.)
+        // (The classes methods or fields were generated into so far in
+        // this sync, for `New`'s and `Rechecked`'s checks.)
         let mut generated_into: HashSet<ClassId> = HashSet::default();
         // (The classes whose holders' rows and layouts debug builds check
         // unchanged, `assert_holders_kept`.)
         #[cfg(debug_assertions)]
         let mut held: Vec<ClassId> = Vec::new();
         for event in events {
+            let graph = self.graph.as_mut().expect("built above");
             match event {
                 // (Rows 1, 2, 3(a), 4, 5, 7, 10, 12 for D(owner).) Not
                 // H(owner): a generation changes no existing layout. A
@@ -300,12 +329,12 @@ impl Kept {
                     assert!(
                         mi.extension.is_none()
                             && (mi.singleton
-                                || self.graph.type_side_owners.binary_search(&x).is_err()),
+                                || graph.type_side_owners.binary_search(&x).is_err()),
                         "internal error: a statement generated `{}` into an extension or a class of the type side (#717)",
                         mi.name
                     );
                     generated_into.insert(x);
-                    dirty.extend(self.graph.below(x));
+                    dirty.extend(graph.below(x));
                     #[cfg(debug_assertions)]
                     held.push(x);
                 }
@@ -317,10 +346,11 @@ impl Kept {
                 // no statement adds), so no `data` holder's changes.
                 StaticEvent::Field(x) => {
                     stats.fields = true;
-                    dirty.extend(self.graph.below(*x));
+                    generated_into.insert(*x);
+                    dirty.extend(graph.below(*x));
                     #[cfg(debug_assertions)]
                     {
-                        self.graph.add_holder(world, *x);
+                        graph.add_holder(world, *x);
                         held.push(*x);
                     }
                 }
@@ -339,23 +369,46 @@ impl Kept {
                 }
                 // (A body's captures: no row reads them.)
                 StaticEvent::Captures(_) => {}
-                // (The shareable promise reset: rows 1 and 10.) Not H: a
-                // recheck finds the shareability it reset unchanged, as
-                // no statement adds an include or a field to a `data`
-                // type, enum or variant (see `Field`), the only things a
-                // derived shareability reads.
+                // (The shareable promise reset: rows 1 and 10.) The classes
+                // rechecked are those a statement generated into: the
+                // runner's `run_statement` hands `recheck_classes` the list
+                // `generate_each` built, where a class goes after
+                // `add_generated` (a `Method` event) or
+                // `add_generated_field` (a `Field` event) into it
+                // succeeded, in the same statement run, so in the same
+                // sync and before it. A statement that generated nothing
+                // leaves the list empty, and no recheck runs (no event).
+                // Their D is rebuilt already, and the recheck's own
+                // classes (their descendants and includers) are in it. Not H: a recheck
+                // finds the shareability it reset unchanged, as no
+                // statement adds an include or a field to a `data` type,
+                // enum or variant (see `Field`), the only things a derived
+                // shareability reads.
                 StaticEvent::Rechecked(cs) => {
                     stats.rechecked = true;
                     for c in cs {
-                        dirty.extend(self.graph.below(*c));
+                        assert!(
+                            generated_into.contains(c),
+                            "internal error: `{}` was rechecked with nothing generated into it (#717)",
+                            world.class(*c).name
+                        );
                         #[cfg(debug_assertions)]
                         held.push(*c);
                     }
                 }
+                // (No row reads what `recheck_conformance` changes: the
+                // classes leave `World::conformance_deferred`, which only
+                // the safety net reads, exempting their missing
+                // implementations in a round, `witness_net::errors`.) Their
+                // D is rebuilt so that the runner's net checks their rows
+                // again without the exemption (`changed_since`). The
+                // checker's own conformance check reports a missing
+                // implementation first, so no program shows the edge
+                // matter while the two agree: it is the net's backstop.
                 StaticEvent::Conformance(cs) => {
                     stats.conformance = true;
                     for c in cs {
-                        dirty.extend(self.graph.below(*c));
+                        dirty.extend(graph.below(*c));
                     }
                 }
             }
@@ -380,9 +433,11 @@ impl Kept {
             }
             self.inherited = out.inherited_inits.clone();
         }
-        for m in self.methods..world.methods.len() {
-            let owner = world.method(m as MethodId).owner;
-            self.graph.owned[owner as usize].push(m as MethodId);
+        if let Some(graph) = &mut self.graph {
+            for m in self.methods..world.methods.len() {
+                let owner = world.method(m as MethodId).owner;
+                graph.owned[owner as usize].push(m as MethodId);
+            }
         }
         dirty.sort_unstable();
         dirty.dedup();
@@ -395,11 +450,13 @@ impl Kept {
         self.class_ext_impls = world.class_ext_impls.len();
         self.epoch += 1;
         stats.classes = dirty.len();
-        stats.methods = dirty
-            .iter()
-            .map(|c| self.graph.owned[*c as usize].len())
-            .sum();
-        self.log.push((self.epoch, Some(dirty)));
+        stats.methods = self.graph.as_ref().map_or(0, |g| {
+            dirty.iter().map(|c| g.owned[*c as usize].len()).sum()
+        });
+        self.log.push_back((self.epoch, Some(dirty)));
+        if self.log.len() > LOG_SYNCS {
+            self.log.pop_front();
+        }
         stats
     }
 
@@ -418,7 +475,11 @@ impl Kept {
     ) {
         let mut hs: Vec<ClassId> = xs
             .iter()
-            .flat_map(|x| self.graph.held_by(world, *x))
+            .flat_map(|x| {
+                self.graph
+                    .as_ref()
+                    .map_or(Vec::new(), |g| g.held_by(world, *x))
+            })
             .filter(|h| dirty.binary_search(h).is_err())
             .collect();
         hs.sort_unstable();
@@ -471,7 +532,7 @@ impl Kept {
         // The methods of the classes rebuilt (new ones among them): their
         // rows may list a method generated above or below them.
         for &c in dirty {
-            for &m in &self.graph.owned[c as usize] {
+            for &m in &self.graph.as_ref().expect("built for a dirty class").owned[c as usize] {
                 self.table[m as usize] = world.overrides(m);
                 let row = rtworld::method_row(world, m, &self.table[m as usize]);
                 if (m as usize) < self.rt.methods.len() {
@@ -500,7 +561,11 @@ impl Kept {
                 world,
                 &self.rt,
                 &self.table,
-                &self.graph.type_side_owners,
+                &self
+                    .graph
+                    .as_ref()
+                    .expect("built for a dirty class")
+                    .type_side_owners,
                 c,
             );
         }
@@ -525,7 +590,7 @@ impl Kept {
 }
 
 impl Graph {
-    fn build(world: &World, rt: &RtWorld) -> Graph {
+    fn build(world: &World, rt: &RtWorld, methods: usize) -> Graph {
         let n = world.classes.len();
         let mut below: Vec<Vec<ClassId>> = (0..n as ClassId).map(|c| vec![c]).collect();
         let direct: Vec<Vec<ClassId>> = (0..n as ClassId)
@@ -552,8 +617,10 @@ impl Graph {
                 }
             }
         }
+        // (The methods the tables have rows for: `Kept::sync` adds the
+        // ones after them.)
         let mut owned: Vec<Vec<MethodId>> = vec![Vec::new(); n];
-        for m in &world.methods {
+        for m in &world.methods[..methods] {
             owned[m.owner as usize].push(m.id);
         }
         let mut type_side_owners = rt.type_side_owners();
@@ -564,8 +631,6 @@ impl Graph {
             holders,
             type_side_owners,
             owned,
-            #[cfg(debug_assertions)]
-            heads: heads(world),
         }
     }
 
@@ -609,16 +674,6 @@ impl Graph {
                 }
             }
         }
-    }
-
-    /// #717's P1: no class's superclass or includes changed since the
-    /// graph was made.
-    #[cfg(debug_assertions)]
-    fn assert_heads(&self, world: &World) {
-        assert!(
-            heads(world) == self.heads,
-            "internal error: a class's superclass or includes changed during a static phase (#717)"
-        );
     }
 }
 
@@ -895,5 +950,58 @@ pub(crate) fn record_stats(s: &SyncStats) {
         .open(path)
     {
         let _ = f.write_all(line.as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A log as `Kept` keeps it: built at `first` (everything), then one
+    /// sync per entry of `dirty`, the last `LOG_SYNCS` kept.
+    fn log_of(
+        first: u64,
+        dirty: &[&[ClassId]],
+    ) -> std::collections::VecDeque<(u64, Option<Vec<ClassId>>)> {
+        let mut log: std::collections::VecDeque<_> = [(first, None)].into();
+        for (i, cs) in dirty.iter().enumerate() {
+            log.push_back((first + 1 + i as u64, Some(cs.to_vec())));
+            if log.len() > LOG_SYNCS {
+                log.pop_front();
+            }
+        }
+        log
+    }
+
+    #[test]
+    fn a_reader_gets_the_classes_rebuilt_since_its_epoch() {
+        let log = log_of(5, &[&[3, 1], &[], &[2, 3]]);
+        assert_eq!(changed_in(&log, 8), Some(vec![]));
+        assert_eq!(changed_in(&log, 7), Some(vec![2, 3]));
+        assert_eq!(changed_in(&log, 6), Some(vec![2, 3]));
+        assert_eq!(changed_in(&log, 5), Some(vec![1, 2, 3]));
+        // (The build itself rebuilt everything.)
+        assert_eq!(changed_in(&log, 4), None);
+        // (Never synced.)
+        assert_eq!(changed_in(&log, 0), None);
+    }
+
+    #[test]
+    fn a_reader_further_behind_than_the_log_gets_everything() {
+        let dirty: Vec<Vec<ClassId>> = (0..100).map(|i| vec![i]).collect();
+        let refs: Vec<&[ClassId]> = dirty.iter().map(|v| v.as_slice()).collect();
+        let log = log_of(1, &refs);
+        assert_eq!(log.len(), LOG_SYNCS);
+        let newest = 1 + 100;
+        // (The oldest entry kept is `newest - LOG_SYNCS + 1`: a reader at
+        // the epoch before it still gets the classes.)
+        let oldest = newest - LOG_SYNCS as u64 + 1;
+        assert_eq!(
+            changed_in(&log, oldest - 1).map(|v| v.len()),
+            Some(LOG_SYNCS)
+        );
+        assert_eq!(changed_in(&log, oldest - 2), None);
+        assert_eq!(changed_in(&log, 2), None);
+        assert_eq!(changed_in(&log, newest), Some(vec![]));
     }
 }

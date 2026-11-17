@@ -744,11 +744,17 @@ pub enum StaticEvent {
     /// (`StaticHost::set_generated_captures`): its body only.
     Captures(MethodId),
     /// The declaration-time checks of these classes run again
-    /// (`StaticHost::recheck_classes`): the shareable promise reset, R0's
-    /// witnesses (`ext_impls`, `class_ext_impls`) possibly extended.
+    /// (`StaticHost::recheck_classes`): the shareable promise reset and
+    /// known again (the class rows' `Shareable` marker, rows 1 and 10).
+    /// R0's witnesses (`ext_impls`, `class_ext_impls`) are not extended:
+    /// only an extension's declaration records them (`Kept::sync` in
+    /// quarz-lower asserts it).
     Rechecked(Vec<ClassId>),
     /// The deferred conformance of these classes checked
-    /// (`Declarer::recheck_conformance`): witnesses possibly recorded.
+    /// (`Declarer::recheck_conformance`, which reads the world): they left
+    /// `World::conformance_deferred`, so a round's safety net no longer
+    /// passes over a missing implementation of theirs
+    /// (`witness_net::errors`).
     Conformance(Vec<ClassId>),
 }
 
