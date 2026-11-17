@@ -511,9 +511,9 @@ pub unsafe extern "C" fn qz_field_get(
     STATUS_OK
 }
 
-/// A `FieldGet` fast path's fact, in a program compiled with the checks
-/// (#536 step 10b, `gen.rs`): `regs[obj]` is an object of `class` or
-/// below. Checked when the program runs with them (`QUARZ_VERIFY`, as
+/// A `FieldGet` (or, `set` not 0, `FieldSet`) fast path's fact, in a
+/// program compiled with the checks (#536 step 10b, #842, `gen.rs`):
+/// `regs[obj]` is an object of `class` or below. Checked when the program runs with them (`QUARZ_VERIFY`, as
 /// the interpreter does); a violation stops it.
 ///
 /// # Safety
@@ -524,12 +524,14 @@ pub unsafe extern "C" fn qz_verify_field_class(
     regs: *mut Value,
     obj: u32,
     class: u32,
+    set: u32,
 ) {
     let rt = &*rt;
     if !rt.verify {
         return;
     }
-    if let Some(what) = rt.field_class_violation("FieldGet", &*regs.add(obj as usize), class) {
+    let name = if set == 0 { "FieldGet" } else { "FieldSet" };
+    if let Some(what) = rt.field_class_violation(name, &*regs.add(obj as usize), class) {
         rt.violated(what);
     }
 }

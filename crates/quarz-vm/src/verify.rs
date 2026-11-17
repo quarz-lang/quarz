@@ -260,7 +260,7 @@ impl Interp {
     /// What is wrong with reading or writing (`name`) a field of `class`
     /// on `v`, if anything: it must be an object of `class` or below. The
     /// interpreter's check of `FieldGet`/`FieldSet`, and compiled code's
-    /// of its `FieldGet` fast path (`ffi::qz_verify_field_class`).
+    /// of its `FieldGet` and `FieldSet` fast paths (`ffi::qz_verify_field_class`).
     pub(crate) fn field_class_violation(
         &self,
         name: &str,
