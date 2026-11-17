@@ -102,6 +102,73 @@ fn an_array_word_read_out_of_range_stops_the_program() {
 }
 
 #[test]
+fn a_counted_value_in_a_register_heap_possible_leaves_out_stops_the_program() {
+    // #536 step 9: compiled code never releases a register outside
+    // `live::heap_possible`. A comparison's result is a `Bool` by the
+    // checker's types, so `heap_possible` leaves its register out; here
+    // a comparison is added of objects whose `<` returns an array (a
+    // broken promise), so a counted value lands there. (A rewrite storing a
+    // counted value through an instruction `heap_possible` marks, a call
+    // or a constant that is not a number, marks the register itself, so
+    // only such a broken type fact reaches the check.)
+    let (code, err) = in_child(
+        "a_counted_value_in_a_register_heap_possible_leaves_out_stops_the_program",
+        || {
+            let mut module = common::lower(
+                "class X\n  def <(o: X) -> Array[Int] = [1, 2]\nend\np(X.new < X.new)\n",
+            );
+            // After the first `X.new`, a comparison of that object with
+            // itself, into a register of its own that nothing else writes
+            // (`X#<` itself is inlined at the program's call, and
+            // register sharing may give a register to an object too).
+            let x = class_id(&module, "X");
+            let main = module.units.last().unwrap().body as usize;
+            let f = &mut module.functions[main];
+            let fresh = f.nregs;
+            let mut changed = false;
+            'blocks: for b in &mut f.blocks {
+                for i in 0..b.insts.len() {
+                    if let Inst::Call {
+                        dst,
+                        kind: quarz_ir::CallKind::Construct { class, .. },
+                        ..
+                    } = &b.insts[i]
+                    {
+                        if *class == x {
+                            let obj = *dst;
+                            b.insts.insert(
+                                i + 1,
+                                Inst::BinOp {
+                                    dst: fresh,
+                                    op: quarz_ir::FastOp::Lt,
+                                    lhs: obj,
+                                    rhs: obj,
+                                    method: None,
+                                },
+                            );
+                            let line = b.lines[i];
+                            b.lines.insert(i + 1, line);
+                            changed = true;
+                            break 'blocks;
+                        }
+                    }
+                }
+            }
+            f.nregs += 1;
+            assert!(changed, "no construction of X");
+            module
+        },
+    );
+    assert_eq!(code, Some(101), "{err}");
+    assert!(
+        err.contains("QIR fact violated: BinOp in ")
+            && err.contains("wrote an Array to r")
+            && err.contains("which `live::heap_possible` says holds no counted value"),
+        "{err}"
+    );
+}
+
+#[test]
 fn a_field_read_on_another_class_stops_the_program() {
     let (code, err) = in_child("a_field_read_on_another_class_stops_the_program", || {
         let mut module = common::lower(

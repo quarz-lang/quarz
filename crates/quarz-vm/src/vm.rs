@@ -594,9 +594,10 @@ impl Interp {
         }
         let mut pending: Option<Flow> = None;
         let r = if self.verify {
-            self.run_blocks::<true>(f, blocks, pool, act, &mut regs, &mut pending)
+            let heap = self.verify_heap(fid, f, blocks);
+            self.run_blocks::<true>(f, &heap, blocks, pool, act, &mut regs, &mut pending)
         } else {
-            self.run_blocks::<false>(f, blocks, pool, act, &mut regs, &mut pending)
+            self.run_blocks::<false>(f, &[], blocks, pool, act, &mut regs, &mut pending)
         };
         release_regs(&mut regs);
         if regs.spilled() {
@@ -673,6 +674,7 @@ impl Interp {
     fn run_blocks<const VERIFY: bool>(
         &self,
         f: &FuncInfo,
+        heap: &[bool],
         blocks: &[Block],
         pool: &RefCell<Vec<Value>>,
         act: &Activation,
@@ -793,6 +795,7 @@ impl Interp {
                     Ok(()) => {
                         if VERIFY {
                             self.verify_after(f, regs, inst);
+                            self.verify_heap_after(f, heap, regs, inst);
                             if let Some(sh) = &mut shadow {
                                 Interp::shadow_after(sh, inst, true);
                             }

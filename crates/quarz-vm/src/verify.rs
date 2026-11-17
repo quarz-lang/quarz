@@ -11,7 +11,12 @@
 
 use std::sync::OnceLock;
 
+use quarz_ir::{Block, FuncId};
+
 use quarz_ir::{FieldKind, FuncInfo, FuncKind, Inst, RtParamKind};
+
+/// `Interp::verify_heap`'s entry, by function id.
+pub(crate) type Heap = Rc<Vec<bool>>;
 
 use crate::interp::Interp;
 use crate::rc::Rc;
@@ -379,6 +384,58 @@ impl Interp {
         }
         if let Inst::Release { src } = inst {
             shadow[*src as usize] = true;
+        }
+    }
+
+    /// `live::heap_possible` of function `fid`, found once: a function id
+    /// names one body for the interpreter's life (its function tables are
+    /// extend-only: an entry is never replaced, moved or removed, a failed
+    /// REPL input's included, docs/05 §7).
+    pub(crate) fn verify_heap(&self, fid: FuncId, f: &FuncInfo, blocks: &[Block]) -> Heap {
+        let mut cache = self.verify_heap.borrow_mut();
+        let i = fid as usize;
+        if cache.len() <= i {
+            cache.resize(i + 1, None);
+        }
+        match &cache[i] {
+            Some(heap) => heap.clone(),
+            None => {
+                let heap = Rc::new(quarz_ir::live::heap_possible_in(
+                    f.nregs,
+                    blocks,
+                    &f.consts,
+                    f.kind,
+                    &self.program.world.methods,
+                ));
+                cache[i] = Some(heap.clone());
+                heap
+            }
+        }
+    }
+
+    /// #536 step 9: a register `live::heap_possible` leaves out holds no
+    /// counted value after `inst` wrote it. Compiled code shares that
+    /// analysis (`gen.rs`) and never releases such a register, so a
+    /// counted value there would leak, or be read as a number.
+    pub(crate) fn verify_heap_after(
+        &self,
+        f: &FuncInfo,
+        heap: &[bool],
+        regs: &[Value],
+        inst: &Inst,
+    ) {
+        for r in inst.defs() {
+            let v = &regs[r as usize];
+            if !heap.get(r as usize).copied().unwrap_or(true)
+                && (v.type_tag() as u64) >= crate::value::NEEDS_DROP_FROM
+            {
+                self.violated(format!(
+                    "{} in {} wrote {} to r{r}, which `live::heap_possible` says holds no counted value",
+                    inst_name(inst),
+                    f.name,
+                    describe(v)
+                ));
+            }
         }
     }
 
