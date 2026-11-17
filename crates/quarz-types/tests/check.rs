@@ -6326,6 +6326,26 @@ fn the_std_side_of_an_extensions_module_is_checked_in_every_direction() {
 }
 
 #[test]
+fn destructuring_a_failed_expression_reports_its_error_only() {
+    // #822: the right side's error is the one reported; destructuring its
+    // placeholder adds none, nor does destructuring code that never
+    // returns, and each variable takes the placeholder in turn.
+    assert_eq!(
+        diagnostics("class K; end\na, b = K.new.nope\np a"),
+        ["undefined method `nope` for K"]
+    );
+    assert_eq!(
+        diagnostics("class K; end\na, (b, c) = K.new.nope\np a, b, c"),
+        ["undefined method `nope` for K"]
+    );
+    ok("def f -> Nothing = raise \"no\"\na, b = f\np a");
+    err(
+        "a, b = 1",
+        "cannot destructure Int (expected a tuple or array)",
+    );
+}
+
+#[test]
 fn a_destructured_array_element_may_be_shorter() {
     // #531: the binder pads a shorter element with `nil`, so each
     // parameter it spreads an `Array[T]` element over is typed `T?`.
