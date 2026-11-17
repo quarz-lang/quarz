@@ -2077,7 +2077,7 @@ class Time
   #   padded with a space or a zero.
   #
   # The grammar is followed exactly:
-  # - day and month names and `GMT` are case-sensitive;
+  # - day and month names and "GMT" are case-sensitive;
   # - the separators are single;
   # - whitespace at the ends is ignored.
   #
