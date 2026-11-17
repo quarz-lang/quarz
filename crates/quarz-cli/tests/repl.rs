@@ -1197,6 +1197,128 @@ fn a_later_unconditional_extension_that_breaks_a_test_is_refused() {
 }
 
 #[test]
+fn a_later_extension_that_would_change_a_layout_is_refused() {
+    // #809 (E1): `D` is held in place in `E`, which an earlier input
+    // lowered and made a value of. A later unconditional extension whose
+    // include gives `D` an `==` would hold `D` by reference: refused at
+    // its input, which leaves no trace. `D` still compares by its fields,
+    // `E` reads and writes as before, and the value made before is intact.
+    // A file required at the prompt is refused the same way, and again
+    // when required once more.
+    let dir = std::env::temp_dir().join(format!("quarz-repl-809-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let ext = dir.join("ext.qz");
+    std::fs::write(&ext, "extension D\n  include Loose\nend\n").unwrap();
+    let require = format!("require_relative \"{}\"", ext.with_extension("").display());
+    let (out, _) = values(&[
+        "data D = (x: Int)",
+        "data E = (d: D, n: Int)",
+        "def mk(a: Int) -> E = E.new(D.new(a), 3)",
+        "old = mk(1)",
+        "module Loose; def ==(other: Object) -> Bool = true; def hash -> Int = 0; end",
+        "extension D; include Loose; end",
+        &require,
+        &require,
+        "D.new(1) == D.new(2)",
+        "Set[D.new(1), D.new(2)].size",
+        "old.d.x",
+        "old == mk(2)",
+        "mk(5).d.x",
+    ]);
+    let refusal = "error: `include Loose` in `extension D` would make `D` compared and hashed by `Loose#==`, but `D` is already stored in place in the field `@d` of `E`: declare the extension in the program's files, so that it is seen before `E` is laid out";
+    assert!(out[5].contains(refusal), "{out:?}");
+    assert!(out[6].contains(refusal), "{out:?}");
+    // Rolled back with its input: required again, refused again (its top
+    // level never ran, and it is not taken as loaded).
+    assert!(out[7].contains(refusal), "{out:?}");
+    assert_eq!(
+        &out[8..],
+        ["=> false", "=> 2", "=> 1", "=> false", "=> 5"],
+        "{out:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_later_extension_names_the_field_whose_type_it_changes() {
+    // #809 (E1): the refusal names the field holding the type the
+    // extension's include gives an `==`, not a holder further out that
+    // changes with it (`H` holds `E`, declared before it, which holds
+    // `D`); an enum variant's field; a field a superclass declares, named
+    // at its class.
+    let refusal = |field: &str, holder: &str| {
+        format!("error: `include Loose` in `extension D` would make `D` compared and hashed by `Loose#==`, but `D` is already stored in place in the field `@{field}` of `{holder}`: declare the extension in the program's files, so that it is seen before `{holder}` is laid out")
+    };
+    let loose = "module Loose; def ==(other: Object) -> Bool = true; def hash -> Int = 0; end";
+    let extend = "extension D; include Loose; end";
+    let (out, _) = values(&[
+        "class H; @e: E; def initialize(@e: E); end; end; data E = (d: D, n: Int); data D = (x: Int)",
+        "h = H.new(E.new(D.new(1), 2))",
+        loose,
+        extend,
+    ]);
+    assert!(out[3].contains(&refusal("d", "E")), "{out:?}");
+    let (out, _) = values(&[
+        "data D = (x: Int)",
+        "enum Shape; variant Dot(p: D); end",
+        "s = Shape::Dot.new(D.new(1))",
+        loose,
+        extend,
+    ]);
+    assert!(out[4].contains(&refusal("p", "Shape::Dot")), "{out:?}");
+    let (out, _) = values(&[
+        "data D = (x: Int)",
+        "class Base; @d: D; def initialize(@d: D); end; end",
+        "class Sub < Base; end",
+        "s = Sub.new(D.new(1))",
+        loose,
+        extend,
+    ]);
+    assert!(out[5].contains(&refusal("d", "Base")), "{out:?}");
+}
+
+#[test]
+fn a_file_required_at_the_prompt_is_declared_after_its_requires() {
+    // #809 (E1), a limit of the REPL the maintainer accepted: `app.qz`
+    // requires `lib.qz`, which holds `D` in place in `E` and makes one at
+    // its top level, and then extends `D` with `Loose`. As one program it
+    // is accepted (`quarz run`); required at the prompt, `lib.qz` is
+    // declared and run first, so `app.qz`'s extension is refused, and the
+    // input is rolled back with what it declared.
+    let dir = std::env::temp_dir().join(format!("quarz-repl-809r-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("lib.qz"),
+        "module Loose\n  def ==(other: Object) -> Bool = true\n  def hash -> Int = 0\nend\ndata D = (x: Int)\ndata E = (d: D, n: Int)\nTOP = E.new(D.new(1), 3)\n",
+    )
+    .unwrap();
+    let app = dir.join("app.qz");
+    std::fs::write(
+        &app,
+        "require_relative \"lib\"\nextension D\n  include Loose\nend\nputs TOP == E.new(D.new(2), 3)\n",
+    )
+    .unwrap();
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .args(["run", app.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "true\n");
+    let require = format!("require_relative \"{}\"", dir.join("app").display());
+    let (out, _) = values(&[&require, "TOP.d.x"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        out[0].contains("app.qz:2:1: error: `include Loose` in `extension D` would make `D` compared and hashed by `Loose#==`"),
+        "{out:?}"
+    );
+    assert!(out[1].contains("unknown constant `TOP`"), "{out:?}");
+}
+
+#[test]
 fn an_input_that_makes_a_refused_row_is_refused() {
     // The safety net's error stage (#536, #642): an input whose extension
     // makes a row the net refuses is refused there, and the session goes

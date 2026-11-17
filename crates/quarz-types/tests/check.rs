@@ -100,6 +100,27 @@ fn prelude_checks_cleanly() {
     assert!(checked.is_some());
 }
 
+/// `World::user_method` (what a value is compared and hashed by, and so
+/// whether a `data` type is held in place, #809) walks the classes' own
+/// tables only: the runtime's lookup tries the prelude's extensions
+/// first, and that is the same only while none of them defines `==`,
+/// `!=` or `hash`. One that does needs `user_method` to look at them.
+#[test]
+fn no_prelude_extension_defines_equality() {
+    let prelude = parse(PRELUDE_SOURCE);
+    let (state, _) = quarz_types::prelude_state(&prelude.program);
+    let world = &state.world;
+    for e in &world.extensions {
+        for name in ["==", "!=", "hash"] {
+            assert!(
+                !e.methods.contains_key(name),
+                "a prelude extension of `{}` defines `{name}`: `World::user_method` must then try the prelude's extensions first, as `Interp::find_method` does",
+                world.class(e.target).name
+            );
+        }
+    }
+}
+
 #[test]
 fn locals_and_literals() {
     ok("x = 1\ny = x + 2\nputs y");
