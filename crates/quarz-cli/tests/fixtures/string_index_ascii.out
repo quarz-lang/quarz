@@ -1,0 +1,67 @@
+26
+26
+26
+"a"
+"b"
+"z"
+"y"
+"z"
+nil
+nil
+"a"
+IndexError: index 26 out of string bounds
+28
+28
+32
+"h"
+"é"
+"n"
+"e"
+"n"
+nil
+nil
+"h"
+IndexError: index 28 out of string bounds
+19
+19
+21
+"e"
+"́"
+"t"
+"x"
+"t"
+nil
+nil
+"e"
+IndexError: index 19 out of string bounds
+3
+3
+3
+"a"
+"b"
+"c"
+"b"
+"c"
+nil
+nil
+"a"
+IndexError: index 3 out of string bounds
+2
+2
+4
+"ç"
+"à"
+"à"
+"ç"
+"à"
+nil
+nil
+"ç"
+IndexError: index 2 out of string bounds
+36
+"4"
+"9"
+37
+"é"
+"é"
+2

@@ -143,14 +143,21 @@ unsafe impl<T> Target for T {
     }
 }
 
+/// The top bit of a string's length word (`Rc::from_bytes`): set when
+/// every byte is ASCII, which makes the length its count of characters
+/// (`Rc::<str>::is_ascii`, #837). The rest of the word is the length: an
+/// allocation is at most `isize::MAX` bytes (`Layout`), below the bit.
+const ASCII_BIT: usize = 1 << (usize::BITS - 1);
+
 // SAFETY: made by `Rc::from_bytes`, the length in the word before.
 unsafe impl Target for [u8] {
     const PREFIX: usize = 8;
 
     #[inline(always)]
     unsafe fn inner(p: *mut u8) -> *mut Inner<[u8]> {
-        // SAFETY: as the caller promises.
-        let len = unsafe { *p.cast::<usize>().sub(1) };
+        // SAFETY: as the caller promises. (The length without the ASCII
+        // bit, the one reader of the word.)
+        let len = unsafe { *p.cast::<usize>().sub(1) } & !ASCII_BIT;
         std::ptr::slice_from_raw_parts_mut(p, len) as *mut Inner<[u8]>
     }
 }
@@ -585,8 +592,12 @@ impl<T: ?Sized + Target> Borrow<T> for Rc<T> {
 }
 
 impl From<&str> for Rc<str> {
+    /// Every heap string is made here (the other conversions come here):
+    /// its ASCII bit is set from its bytes, which no one changes after
+    /// (`Rc::get_mut` is never used on a string, and `make_mut` needs a
+    /// sized value).
     fn from(s: &str) -> Rc<str> {
-        let bytes: Rc<[u8]> = Rc::from_bytes(s.as_bytes());
+        let bytes: Rc<[u8]> = Rc::from_bytes(s.as_bytes(), s.is_ascii());
         let ptr = bytes.ptr;
         std::mem::forget(bytes);
         // The allocation holds valid UTF-8; `str` and `[u8]` have the
@@ -618,13 +629,32 @@ impl From<Box<str>> for Rc<str> {
 
 impl From<&[u8]> for Rc<[u8]> {
     fn from(bytes: &[u8]) -> Rc<[u8]> {
-        Rc::from_bytes(bytes)
+        Rc::from_bytes(bytes, false)
     }
 }
 
 impl From<Vec<u8>> for Rc<[u8]> {
     fn from(bytes: Vec<u8>) -> Rc<[u8]> {
-        Rc::from_bytes(&bytes)
+        Rc::from_bytes(&bytes, false)
+    }
+}
+
+impl Rc<str> {
+    /// Whether every byte of the string is ASCII, so that its length in
+    /// bytes is its count of characters and a character index is a byte
+    /// index (`String#size`, `#[]`, #837): set when it was made.
+    #[inline(always)]
+    pub fn is_ascii(this: &Rc<str>) -> bool {
+        // SAFETY: a string's allocation has its length word before the
+        // counts (`from_bytes`).
+        let word = unsafe { *this.ptr.as_ptr().cast::<usize>().sub(1) };
+        let ascii = word & ASCII_BIT != 0;
+        debug_assert_eq!(
+            ascii,
+            this.as_bytes().is_ascii(),
+            "a string's ASCII bit (#837)"
+        );
+        ascii
     }
 }
 
@@ -635,8 +665,10 @@ impl<T> From<T> for Rc<T> {
 }
 
 impl Rc<[u8]> {
-    /// The length, then the counts, then the bytes (see `Target`).
-    fn from_bytes(bytes: &[u8]) -> Rc<[u8]> {
+    /// The length, then the counts, then the bytes (see `Target`); the
+    /// length word with `ASCII_BIT` when `ascii` (a string's, whose bytes
+    /// are all ASCII; never a byte string's).
+    fn from_bytes(bytes: &[u8], ascii: bool) -> Rc<[u8]> {
         let (inner, offset) = Layout::new::<Inner<()>>()
             .extend(Layout::array::<u8>(bytes.len()).expect("string too large"))
             .expect("string too large");
@@ -652,7 +684,10 @@ impl Rc<[u8]> {
             if mem.is_null() {
                 handle_alloc_error(layout);
             }
-            mem.cast::<usize>().write(bytes.len());
+            // (`Layout::array` refused a length past `isize::MAX` above,
+            // so the bit is free.)
+            mem.cast::<usize>()
+                .write(bytes.len() | if ascii { ASCII_BIT } else { 0 });
             let counts = mem.add(<[u8] as Target>::PREFIX);
             let inner = <[u8] as Target>::inner(counts);
             (&raw mut (*inner).local).write(Cell::new(1));

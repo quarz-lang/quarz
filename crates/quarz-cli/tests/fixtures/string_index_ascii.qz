@@ -1,0 +1,33 @@
+# `String#size`, `#length`, `#[]` and `#[]?` by character, whatever the
+# string's representation (#837): a short string (at most 14 bytes) and a
+# heap one, ASCII only (answered from its byte length) or not (counted);
+# negative indices from the end, out of range an `IndexError` for `[]` and
+# `nil` for `[]?`; a combining character is a character of its own. VM and
+# compiled (tests/build.rs).
+ascii = "abcdefghijklmnopqrstuvwxyz"
+mixed = "héllo wörld, ça va très bien"
+comb = "été and more text"
+short_ascii = "abc"
+short_mixed = "çà"
+[ascii, mixed, comb, short_ascii, short_mixed].each do |s|
+  p s.size, s.length, s.bytesize
+  p s[0], s[1], s[-1], s[-2], s[s.size - 1]
+  p s[s.size]?, s[-s.size - 1]?, s[-s.size]
+  begin
+    s[s.size]
+  rescue IndexError => e
+    puts "IndexError: #{e.message}"
+  end
+end
+# Made at run time, not literals.
+built = ascii + "0123456789"
+p built.size, built[30], built[-1]
+nonascii = built + "é"
+p nonascii.size, nonascii[-1], nonascii[36]
+i = 0
+n = 0
+while i < built.size
+  n += 1 if built[i] == "a" || built[i] == "0"
+  i += 1
+end
+p n
