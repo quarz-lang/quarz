@@ -337,6 +337,12 @@ What the client adds to a request: `Host` (from the URL; a request's own is repl
 - It runs for the first request, for each redirect, and for each new connection to a host. A connection reused from the pool is not checked again: it was checked when it was made, and a client's filter is fixed when the client is made.
 - When every address is refused, the request raises `ForbiddenAddress`, whose message names the host, not the addresses. An exception the filter raises ends the request unchanged.
 - Through a proxy, the filter sees the proxy's address only. The target is resolved by the proxy, so this client does not check it.
+- `HTTP::Client.public_only` is a ready-made filter for a client given URLs by others (SSRF):
+  - an IPv4 address, or an IPv4-mapped one, is allowed when `Socket::IP#global?` says so (the IANA special-purpose registries' "Globally Reachable");
+  - an IPv6 address must also be inside `2000::/3`, which refuses IPv4-compatible `::a.b.c.d`, site-local `fec0::/10` and unallocated space;
+  - the NAT64 well-known prefix `64:ff9b::/96` is judged by the IPv4 address it embeds.
+
+  Its limits: a network-specific NAT64 prefix cannot be known; a private service at a global address (the machine's own public one) passes; through a proxy, only the proxy's address is checked, and it must pass too.
 
 **Redirects** (Go's rules). Up to `max_redirects`: 301, 302 and 303 are followed with `GET` and no body (a `HEAD` stays `HEAD`), 307 and 308 with the same method and body (a `Stream` body cannot be sent again: `RedirectError`). `Location` is resolved against the request's URL (`URI#resolve`). When a redirect leaves the origin (`URI#origin`: scheme, host and port), `Authorization`, `Cookie` and `Proxy-Authorization` are dropped. A redirect's body is drained (or its connection closed) before the next request. More than `max_redirects` is `TooManyRedirects`. A signed request should set `max_redirects: 0` and sign again: the client cannot.
 

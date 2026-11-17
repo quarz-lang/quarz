@@ -579,6 +579,54 @@ class HttpClientTest < Test::Case
     end
   end
 
+  # public_only, by its rule: global? for IPv4 (mapped too); for IPv6,
+  # also inside 2000::/3; NAT64's 64:ff9b::/96 by the IPv4 it embeds.
+  def data_public_only -> Hash[String, [String, Bool]]
+    {
+      "global IPv4" => ["8.8.8.8", true],
+      "loopback" => ["127.0.0.1", false],
+      "private" => ["10.0.0.1", false],
+      "shared address space" => ["100.64.0.1", false],
+      "link-local, cloud metadata" => ["169.254.169.254", false],
+      "this network" => ["0.0.0.0", false],
+      "multicast" => ["224.0.0.1", false],
+      "broadcast" => ["255.255.255.255", false],
+      "mapped global" => ["::ffff:8.8.8.8", true],
+      "mapped loopback" => ["::ffff:127.0.0.1", false],
+      "global IPv6" => ["2606:4700::1111", true],
+      "globally reachable inside a refused block" => ["2001:1::1", true],
+      "documentation" => ["2001:db8::1", false],
+      "IPv6 loopback" => ["::1", false],
+      "IPv6 link-local" => ["fe80::1", false],
+      "unique local" => ["fd00::1", false],
+      "IPv6 multicast" => ["ff02::1", false],
+      "6to4" => ["2002:c000:204::1", false],
+      "Teredo" => ["2001:0:4136:e378::1", false],
+      "NAT64 of a global address" => ["64:ff9b::808:808", true],
+      "NAT64 of loopback" => ["64:ff9b::7f00:1", false],
+      "NAT64 of a private address" => ["64:ff9b::a00:1", false],
+      "NAT64 of the metadata address" => ["64:ff9b::a9fe:a9fe", false],
+      "IPv4-compatible loopback" => ["::7f00:1", false],
+      "IPv4-compatible global" => ["::808:808", false],
+      "site-local" => ["fec0::1", false],
+      "outside 2000::/3" => ["4000::1", false],
+    }
+  end
+
+  def test_public_only(data: [String, Bool])
+    host, expected = data
+    assert_equal(expected, HTTP::Client.public_only.call(Socket::Address.new(host, 443)))
+  end
+
+  def test_public_only_refuses_localhost
+    serving do |base|
+      c = filtered(HTTP::Client.public_only)
+      e = assert_raise(HTTP::Client::ForbiddenAddress) { c.get("http://localhost:#{port_of(base)}/text"); nil }
+      assert_equal("no allowed address for localhost:#{port_of(base)}", e.message)
+      assert_equal(0, connections)
+    end
+  end
+
   def test_no_proxy_matching
     p = HTTP::Proxy.new("http://proxy:3128", no_proxy: ["example.com", ".internal", "10.0.0.1:8080", "[::1]"])
     assert_nil(p.proxy_for(URI.parse("https://example.com/")))

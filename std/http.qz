@@ -2609,10 +2609,10 @@ module HTTP
     # request raises `ForbiddenAddress`, and an exception the filter
     # raises ends the request. Through a proxy, it is the proxy's address
     # that is checked: the target is resolved by the proxy, and this
-    # client does not check it.
+    # client does not check it. `Client.public_only` is one such filter.
     #
     # ```quarz no_run
-    # client = HTTP::Client.new(allow_address: ->(a: Socket::Address) { !a.ip.loopback? })
+    # client = HTTP::Client.new(allow_address: HTTP::Client.public_only)
     # client.get("http://127.0.0.1/")   # raises HTTP::Client::ForbiddenAddress
     # ```
     def initialize(*, timeout: Duration? = nil, connect_timeout: Duration = 10.seconds,
@@ -2644,6 +2644,53 @@ module HTTP
       @pool = Atom[Hash[String, Array[Idle]]].new({})
       @closed = Atom.new(false)
     end
+
+    # A filter for `allow_address` that allows only addresses reachable
+    # from anywhere, so that a client given URLs by others reaches none
+    # of the machine's own, its network's, or other special-purpose
+    # addresses. The rule:
+    #
+    # - an IPv4 address (or an IPv4-mapped IPv6 one) is allowed when
+    #   `Socket::IP#global?` says so;
+    # - an IPv6 address must also be in `2000::/3`, the global unicast
+    #   space, and not refused by `global?`. That refuses the deprecated
+    #   IPv4-compatible `::a.b.c.d` and site-local `fec0::/10`, and what
+    #   the IETF has not allocated.
+    # - The exception is the NAT64 well-known prefix `64:ff9b::/96`
+    #   (RFC 6052): it is allowed when the IPv4 address it embeds is, since
+    #   a NAT64 gateway connects to that address.
+    #
+    # Its limits:
+    # - a NAT64 network-specific prefix cannot be known from the address,
+    #   so an address under one is judged as the IPv6 address it is;
+    # - a private service reachable at a global address (the machine's
+    #   own public address, say) is allowed;
+    # - through a proxy, the proxy's address is checked and must pass,
+    #   and the target is not checked by the client.
+    #
+    # ```
+    # allow = HTTP::Client.public_only
+    # allow.call(Socket::Address.new("8.8.8.8", 443))           # => true
+    # allow.call(Socket::Address.new("10.0.0.1", 443))          # => false
+    # allow.call(Socket::Address.new("64:ff9b::a00:1", 443))    # => false
+    # ```
+    def self.public_only -> shareable (Socket::Address) -> Bool
+      ->(a: Socket::Address) { Client.public_ip?(a.ip) }
+    end
+
+    # :nodoc:
+    # `public_only`'s rule.
+    def self.public_ip?(address: Socket::IP) -> Bool
+      ip = address.unmap
+      return ip.global? if ip.v4?
+      return public_ip?(Socket::IP.new(ip.bytes.slice(12, 4))) if ip.in?(NAT64_PREFIX)
+      ip.in?(GLOBAL_UNICAST) && ip.global?
+    end
+
+    # :nodoc:
+    NAT64_PREFIX = Socket::IP::Network.of("64:ff9b::/96")
+    # :nodoc:
+    GLOBAL_UNICAST = Socket::IP::Network.of("2000::/3")
 
     # :nodoc:
     DEFAULT = Atom[Client?].new(nil)
