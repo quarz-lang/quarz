@@ -1,0 +1,12 @@
+0
+true
+false
+"b"
+"c"
+""
+"ü"
+["", "B", "Z", "a", "a long string past fourteen bytes", "a long string past fourteen bytez", "ab", "abc", "b", "e", "z", "é", "ü"]
+true
+true
+false
+true

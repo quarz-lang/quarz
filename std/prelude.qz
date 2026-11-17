@@ -2371,6 +2371,14 @@ class String
   # Compares by code points (the order of the UTF-8 bytes): -1, 0 or 1.
   # Upper case comes before lower case; `#casecmp` ignores case.
   native def <=>(other: String) -> Int
+  # Whether the receiver is less than `other`.
+  native def <(other: String) -> Bool
+  # Whether the receiver is less than or equal to `other`.
+  native def <=(other: String) -> Bool
+  # Whether the receiver is greater than `other`.
+  native def >(other: String) -> Bool
+  # Whether the receiver is greater than or equal to `other`.
+  native def >=(other: String) -> Bool
   # Whether `other` is a string with the same characters (a `Symbol` is
   # not equal to a string).
   native def ==(other: Object) -> Bool

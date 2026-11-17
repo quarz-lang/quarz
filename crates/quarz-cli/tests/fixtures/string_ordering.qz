@@ -1,0 +1,17 @@
+# A string's `<`, `<=`, `>` and `>=` are its own (#836) and agree with its
+# `<=>` (code points, the order of the UTF-8 bytes) on every pair: equal,
+# a prefix, upper before lower case, non-ASCII, short and long (heap)
+# strings. `between?`, `clamp`, `min`, `max` and `sort` are as before.
+# VM and compiled (tests/build.rs).
+words = ["", "a", "ab", "abc", "b", "B", "Z", "é", "e", "ü", "z", "a long string past fourteen bytes", "a long string past fourteen bytez"]
+bad = 0
+words.each do |x|
+  words.each do |y|
+    c = x <=> y
+    bad += 1 if (x < y) != (c < 0) || (x <= y) != (c <= 0) || (x > y) != (c > 0) || (x >= y) != (c >= 0)
+  end
+end
+p bad
+p "b".between?("a", "c"), "d".between?("a", "c"), "a".clamp("b", "c"), "q".clamp("b", "c")
+p words.min, words.max, words.sort
+p "apple" < "banana", "apple" >= "apple", "Zebra" > "apple", "é" > "z"

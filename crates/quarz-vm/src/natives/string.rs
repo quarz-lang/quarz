@@ -28,7 +28,28 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "String#<=>", |i, r, a| {
         Ok(Value::Int(
-            s(i, r)?.cmp(string(i, a.arg(0), "other")?) as i64
+            order(s(i, r)?, string(i, a.arg(0), "other")?) as i64
+        ))
+    });
+    // (Comparable's would call `<=>` through dispatch for each, #836.)
+    native!(m, "String#<", |i, r, a| {
+        Ok(Value::Bool(
+            order(s(i, r)?, string(i, a.arg(0), "other")?).is_lt(),
+        ))
+    });
+    native!(m, "String#<=", |i, r, a| {
+        Ok(Value::Bool(
+            order(s(i, r)?, string(i, a.arg(0), "other")?).is_le(),
+        ))
+    });
+    native!(m, "String#>", |i, r, a| {
+        Ok(Value::Bool(
+            order(s(i, r)?, string(i, a.arg(0), "other")?).is_gt(),
+        ))
+    });
+    native!(m, "String#>=", |i, r, a| {
+        Ok(Value::Bool(
+            order(s(i, r)?, string(i, a.arg(0), "other")?).is_ge(),
         ))
     });
     native!(m, "String#==", |i, r, a| {
@@ -262,6 +283,14 @@ pub(super) fn sb_push(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let piece = interp.to_s(args.arg(0))?;
     sb(interp, recv)?.borrow_mut().push_str(&piece);
     Ok(recv.clone())
+}
+
+/// The order of two strings: by code points, which is the order of their
+/// UTF-8 bytes. The one computation of it: `String#<=>` and `#<`, `#<=`,
+/// `#>`, `#>=` (natives and fast natives) read their answer from it.
+#[inline]
+pub(super) fn order(a: &str, b: &str) -> std::cmp::Ordering {
+    a.cmp(b)
 }
 
 /// Whether `v` is a string known to be ASCII only, so that its length in
