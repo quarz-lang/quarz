@@ -1079,7 +1079,16 @@ fn page(world: &World, id: ClassId, kind: Kind, doc: Option<Doc>, private: bool)
             });
         }
     }
-    let mut includes: Vec<String> = c.includes.iter().map(|t| world.type_name(t)).collect();
+    // A `:nodoc:` module is listed only with `--private`, as its page is.
+    let mut includes: Vec<String> = c
+        .includes
+        .iter()
+        .filter(|t| {
+            private
+                || !matches!(t, Type::Class(m, _) if nodoc(&world.doc_at(world.class(*m).span).cloned()))
+        })
+        .map(|t| world.type_name(t))
+        .collect();
     includes.retain(|n| n != "Shareable" && n != "Unshareable");
     Page {
         id,
