@@ -35,6 +35,11 @@ base64 = "0.23"
 # provider (no cmake), and the system's root certificates.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 rustls-native-certs = { version = "0.8", optional = true }
+# `TLS::Testing.self_signed`: certificates for tests, signed with ring
+# (rustls's provider above), no other crypto backend.
+rcgen = { version = "0.14", default-features = false, features = ["pem", "ring", "crypto"], optional = true }
+# (rcgen's own: a certificate's validity times.)
+time = { version = "0.3", default-features = false, optional = true }
 # `std/crypto.qz` (the `crypto` feature): RustCrypto's RSA. Its 0.10
 # line is the one on `sha2` 0.11 (0.9 is on 0.10) and constant-time
 # (RUSTSEC-2023-0071): pinned while it is a release candidate (#357: move
@@ -65,7 +70,7 @@ libmimalloc-sys = { version = "=0.1.49", features = ["extended"], optional = tru
 default = ["mimalloc", "tls", "crypto"]
 mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
 # TLS (`TLSSocket`, `std/tls.qz`): without it, connecting raises.
-tls = ["dep:rustls", "dep:rustls-native-certs", "dep:openssl-probe"]
+tls = ["dep:rustls", "dep:rustls-native-certs", "dep:openssl-probe", "dep:rcgen", "dep:time"]
 # RSA, AES-GCM, argon2id, random bytes and comparison in constant time
 # (`std/crypto.qz`): without it, they raise.
 crypto = ["dep:rsa", "dep:rand", "dep:pem-rfc7468", "dep:aes-gcm", "dep:getrandom", "dep:argon2", "dep:zeroize", "dep:subtle"]
