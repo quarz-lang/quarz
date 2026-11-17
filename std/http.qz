@@ -2291,6 +2291,28 @@ module HTTP
   # the environment's (`Proxy.from_env`) unless given.
   class Client
     include Shareable
+    include URLForms
+
+    # :nodoc:
+    # The forms of a URL a request sends, as private methods of the
+    # classes that include it (`Client` and `Client::Request`).
+    module URLForms
+      # The path and query (`/` for an empty path): `Request#target`.
+      private def origin_form(url: URI) -> String
+        path = url.path.empty? ? "/" : url.path
+        q = url.query
+        q ? "#{path}?#{q}" : path
+      end
+
+      # `host[:port]` as the Host header gives it (the port when not the
+      # default one): `Request#host`, and a proxy's in messages.
+      private def host_header(url: URI) -> String
+        h = url.host || ""
+        h = "[#{h}]" if h.include?(":")
+        pt = url.port
+        pt && pt != url.default_port ? "#{h}:#{pt}" : h
+      end
+    end
 
     # Sent when a request names no `User-Agent`.
     USER_AGENT = "quarz-http/0.0.1"
@@ -2411,6 +2433,8 @@ module HTTP
       # The body.
       body: Content
     )
+      include URLForms
+
       # Raises `ArgumentError` for a method that is not a token or a URL
       # that is not `http` or `https` with a host (or holds whitespace or a
       # control character).
@@ -2506,7 +2530,7 @@ module HTTP
       # req.target   # => "/a?b=1"
       # HTTP::Client::Request.get("http://example.com").target   # => "/"
       # ```
-      def target -> String = Client.origin_form(url)
+      def target -> String = origin_form(url)
 
       # The value of the Host header the client sends: the URL's host,
       # with its port when it is not the scheme's default, an IPv6 address
@@ -2518,7 +2542,7 @@ module HTTP
       # HTTP::Client::Request.get("https://example.com:443/a").host    # => "example.com"
       # HTTP::Client::Request.get("http://[::1]:8080/").host           # => "[::1]:8080"
       # ```
-      def host -> String = Client.host_header(url)
+      def host -> String = host_header(url)
 
       # Whether sending it twice does what sending it once does: GET, HEAD,
       # PUT, DELETE, OPTIONS (a kept connection found closed is retried
@@ -2925,7 +2949,7 @@ module HTTP
         raise ProtocolError.new("the server closed the connection without a response")
       rescue IOError, SystemCallError => e
         raise Stale.new(e.message) if reused && reader.received == 0 && again?(req, sent)
-        raise ConnectError.new("the connection to #{Client.host_header(req.url)} failed: #{e.message}")
+        raise ConnectError.new("the connection to #{req.host} failed: #{e.message}")
       rescue Task::Timeout
         raise TimeoutError.new("writing the request took longer than #{@write_timeout}")
       rescue HTTP::Error => e
@@ -2976,24 +3000,6 @@ module HTTP
       headers.each { |k, v| out << "#{Headers.canonical(k)}: #{v}\r\n" }
       out << "\r\n"
       [out.to_s, chunked]
-    end
-
-    # :nodoc:
-    # The path and query (`/` for an empty path): `Request#target`.
-    def self.origin_form(url: URI) -> String
-      path = url.path.empty? ? "/" : url.path
-      q = url.query
-      q ? "#{path}?#{q}" : path
-    end
-
-    # :nodoc:
-    # `host[:port]` as the Host header gives it (the port when not the
-    # default one): `Request#host`, and a proxy's in messages.
-    def self.host_header(url: URI) -> String
-      h = url.host || ""
-      h = "[#{h}]" if h.include?(":")
-      pt = url.port
-      pt && pt != url.default_port ? "#{h}:#{pt}" : h
     end
 
     # :nodoc:
@@ -3098,15 +3104,15 @@ module HTTP
           end
         end
       rescue Task::Timeout
-        raise TimeoutError.new("connecting to #{Client.host_header(url)} took longer than #{@connect_timeout}")
+        raise TimeoutError.new("connecting to #{host_header(url)} took longer than #{@connect_timeout}")
       rescue Error => e
         raise e
       rescue Socket::ForbiddenAddress
-        target = proxy_url ? "the proxy #{Client.host_header(proxy_url)}" : Client.host_header(url)
+        target = proxy_url ? "the proxy #{host_header(proxy_url)}" : host_header(url)
         raise ForbiddenAddress.new("no allowed address for #{target}")
       rescue SocketError, SystemCallError, IOError => e
-        via = proxy_url ? " through the proxy #{Client.host_header(proxy_url)}" : ""
-        raise ConnectError.new("cannot connect to #{Client.host_header(url)}#{via}: #{e.message}")
+        via = proxy_url ? " through the proxy #{host_header(proxy_url)}" : ""
+        raise ConnectError.new("cannot connect to #{host_header(url)}#{via}: #{e.message}")
       rescue HTTP::Error => e
         raise ConnectError.new("the proxy's answer: #{HTTP.client_error(e).message}")
       end
