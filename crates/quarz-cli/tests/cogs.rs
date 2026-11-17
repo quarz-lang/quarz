@@ -327,6 +327,37 @@ fn static_defs_run_from_dependency_cogs() {
 }
 
 #[test]
+fn a_generation_into_another_cogs_held_type_is_refused() {
+    // #796 (C): a field of a library cog holds its `data` type `D` in
+    // place; the application's statement, running the library's `static
+    // def`, would give `D` an `==`. Refused at the statement, naming the
+    // library's field (docs/14 §5).
+    let w = World::new();
+    w.write(
+        "geo/Cog.toml",
+        "[cog]\nname = \"geo\"\nversion = \"0.1.0\"\n",
+    );
+    w.write(
+        "geo/src/geo.qz",
+        "module GenEq\n  static def self.gen_eq -> Void\n    def_method(:==, :other) { |other: Object| true }\n  end\nend\ndata D(x: Int)\n  include GenEq\nend\ndata E = (d: D, n: Int)\nmodule Go\n  static def self.go -> Void\n    D.gen_eq\n  end\nend\n",
+    );
+    w.commit("geo", Some("v0.1.0"));
+    w.app(
+        &format!("Geo = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("geo")),
+        "class C\n  include Geo::Go\n  go\nend\n",
+    );
+    let out = w.quarz("app", &["check"]);
+    assert!(!out.ok, "{}", out.stderr);
+    assert!(
+        out.stderr.contains(
+            "`def_method(:==)`: `Geo::D` is stored in place in the field `@d` of `Geo::E`"
+        ),
+        "{}",
+        out.stderr
+    );
+}
+
+#[test]
 fn statements_run_after_their_ancestors() {
     // docs/14 §2: within a cog, a class's statements run after those of
     // its superclasses, wherever these are written; unrelated classes

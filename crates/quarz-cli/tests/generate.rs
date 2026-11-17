@@ -422,6 +422,554 @@ fn the_eq_hash_warning_sees_generated_methods_once() {
     );
 }
 
+/// #796 (C): whether a field holds a `data` type in place is decided with
+/// the declarations as written, and a generation that would change it is
+/// refused at its statement, before it is declared, naming the field
+/// whose type would get the method (docs/14 §5). Cells: #796's reproducer,
+/// after a statement that lowered the holder's methods and without it; the holder a
+/// class, a `data` type holding it (`E`, inside `H`), an enum variant, a
+/// generic class, a superclass's field (named at it), a class of a later
+/// file; the method `==`/`hash` or `!=`, into the type, into a module it
+/// includes or one an unconditional extension includes into it; the
+/// module the type includes after (or before) a module requiring `==`,
+/// whose abstract `==` the generated one then implements; the
+/// generation by a statement or by a class-end hook (reported at the
+/// statement that registered it); after a statement whose generated body
+/// builds a holder (`make`), whose hook captured one, or whose
+/// `def_field` baked one (#796's survivors (a), (b), (c)).
+#[test]
+fn a_generation_that_would_change_a_layout_is_refused() {
+    const COMMON: &str = r##"module GenEq
+  static def self.gen_eq -> Void
+    def_method(:==, :other) { |other: Object| true }
+    def_method(:hash) { 42 }
+  end
+end
+module GenNe
+  static def self.gen_ne -> Void
+    def_method(:!=, :other) { |other: Object| false }
+  end
+end
+"##;
+    let cases: [(&str, &str, &str, &str, &str); 17] = [
+        (
+            "req_then_m",
+            r##"module Req
+  abstract def ==(other: Object) -> Bool
+end
+module M
+  include GenEq
+end
+data D(x: Int)
+  include Req
+  include M
+end
+data E = (d: D, n: Int)
+module Go
+  static def self.go -> Void
+    M.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class C
+  include Go
+  go
+end
+puts E.new(D.new(1), 3) == E.new(D.new(2), 3)
+puts E.new(D.new(1), 3).d.x
+"##,
+            "app.qz:4:3: error: ",
+            "`D`, which gets the methods of `M`, is stored in place in the field `@d` of `E`",
+        ),
+        (
+            "m_then_req",
+            r##"module Req
+  abstract def ==(other: Object) -> Bool
+end
+module M
+  include GenEq
+end
+data D(x: Int)
+  include M
+  include Req
+end
+data E = (d: D, n: Int)
+module Go
+  static def self.go -> Void
+    M.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class C
+  include Go
+  go
+end
+puts E.new(D.new(1), 3) == E.new(D.new(2), 3)
+puts E.new(D.new(1), 3).d.x
+"##,
+            "app.qz:4:3: error: ",
+            "`D`, which gets the methods of `M`, is stored in place in the field `@d` of `E`",
+        ),
+        (
+            "ext_m",
+            r##"module Req
+  abstract def ==(other: Object) -> Bool
+end
+module M
+  include GenEq
+end
+data D(x: Int)
+  include Req
+end
+extension D
+  include M
+end
+data E = (d: D, n: Int)
+module Go
+  static def self.go -> Void
+    M.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class C
+  include Go
+  go
+end
+puts E.new(D.new(1), 3) == E.new(D.new(2), 3)
+puts E.new(D.new(1), 3).d.x
+"##,
+            "app.qz:4:3: error: ",
+            "`D`, which gets the methods of `M`, is stored in place in the field `@d` of `E`",
+        ),
+        (
+            "reproducer",
+            r##"data D(x: Int, y: Int)
+  include GenEq
+end
+class H
+  @d: D
+  @n: Int
+  def initialize(@d: D, @n: Int)
+  end
+  def d -> D = @d
+  def n -> Int = @n
+end
+module Warm
+  static def self.warm -> Void
+    h = H.new(D.new(3, 30), 4)
+    raise "warm" unless h.d.x == 3 && h.n == 4
+  end
+end
+module Go
+  static def self.go -> Void
+    D.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class W
+  include Warm
+  warm
+end
+class C
+  include Go
+  go
+end
+h = H.new(D.new(5, 50), 6)
+puts h.d.x, h.d.y, h.n, h.d == D.new(9, 90)
+"##,
+            "app.qz:8:3: error: ",
+            "`def_method(:==)`: `D` is stored in place in the field `@d` of `H`, and a type stored in place compares by its fields: a `static` statement cannot give it `==`, `!=` or `hash` (write the method in `D`'s body)",
+        ),
+        (
+            "reproducer_cold",
+            r##"data D(x: Int, y: Int)
+  include GenEq
+end
+class H
+  @d: D
+  @n: Int
+  def initialize(@d: D, @n: Int)
+  end
+  def d -> D = @d
+  def n -> Int = @n
+end
+module Warm
+  static def self.warm -> Void
+    h = H.new(D.new(3, 30), 4)
+    raise "warm" unless h.d.x == 3 && h.n == 4
+  end
+end
+module Go
+  static def self.go -> Void
+    D.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class C
+  include Go
+  go
+end
+h = H.new(D.new(5, 50), 6)
+puts h.d.x, h.d.y, h.n, h.d == D.new(9, 90)
+"##,
+            "app.qz:4:3: error: ",
+            "`def_method(:==)`: `D` is stored in place in the field `@d` of `H`, and a type stored in place compares by its fields: a `static` statement cannot give it `==`, `!=` or `hash` (write the method in `D`'s body)",
+        ),
+        (
+            "nested",
+            r##"data D(x: Int)
+  include GenEq
+end
+data E = (d: D, n: Int)
+class H
+  @e: E
+  def initialize(@e: E); end
+end
+module Go
+  static def self.go -> Void
+    D.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class C
+  include Go
+  go
+end
+"##,
+            "app.qz:4:3: error: ",
+            "`def_method(:==)`: `D` is stored in place in the field `@d` of `E`",
+        ),
+        (
+            "later_file",
+            r##"data D(x: Int)
+  include GenEq
+end
+module Go
+  static def self.go -> Void
+    D.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class C
+  include Go
+  go
+end
+class Late
+  @d: D
+  def initialize(@d: D); end
+end
+"##,
+            "app.qz:4:3: error: ",
+            "`D` is stored in place in the field `@d` of `Late`",
+        ),
+        (
+            "enum",
+            r##"data D(x: Int)
+  include GenEq
+end
+enum S
+  variant Dot(p: D)
+end
+module Go
+  static def self.go -> Void
+    D.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class C
+  include Go
+  go
+end
+"##,
+            "app.qz:4:3: error: ",
+            "`D` is stored in place in the field `@p` of `S::Dot`",
+        ),
+        (
+            "generic",
+            r##"data D(x: Int)
+  include GenEq
+end
+class G[T]
+  @d: D
+  @t: T
+  def initialize(@d: D, @t: T); end
+end
+module Go
+  static def self.go -> Void
+    D.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class C
+  include Go
+  go
+end
+"##,
+            "app.qz:4:3: error: ",
+            "`D` is stored in place in the field `@d` of `G`",
+        ),
+        (
+            "inherit",
+            r##"data D(x: Int)
+  include GenEq
+end
+class Base
+  @d: D
+  def initialize(@d: D); end
+end
+class Sub < Base
+end
+module Go
+  static def self.go -> Void
+    D.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class C
+  include Go
+  go
+end
+"##,
+            "app.qz:4:3: error: ",
+            "`D` is stored in place in the field `@d` of `Base`",
+        ),
+        (
+            "module",
+            r##"module M
+  include GenEq
+end
+data D(x: Int)
+  include M
+end
+data E = (d: D, n: Int)
+module Go
+  static def self.go -> Void
+    M.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class C
+  include Go
+  go
+end
+"##,
+            "app.qz:4:3: error: ",
+            "`D`, which gets the methods of `M`, is stored in place in the field `@d` of `E`, and a type stored in place compares by its fields: a `static` statement cannot give it `==`, `!=` or `hash` through `M` (write the method in `M`'s body)",
+        ),
+        (
+            "ext_module",
+            r##"module M
+  include GenEq
+end
+data D = (x: Int)
+extension D
+  include M
+end
+data E = (d: D, n: Int)
+module Go
+  static def self.go -> Void
+    M.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class C
+  include Go
+  go
+end
+"##,
+            "app.qz:4:3: error: ",
+            "`D`, which gets the methods of `M`, is stored in place in the field `@d` of `E`",
+        ),
+        (
+            "ne",
+            r##"data D(x: Int)
+  include GenNe
+end
+data E = (d: D, n: Int)
+module Go
+  static def self.go -> Void
+    D.gen_ne
+  end
+end
+"##,
+            r##"require_relative "lib"
+class C
+  include Go
+  go
+end
+"##,
+            "app.qz:4:3: error: ",
+            "`def_method(:!=)`: `D` is stored in place in the field `@d` of `E`",
+        ),
+        (
+            "survivor_a",
+            r##"data D(x: Int, y: Int)
+  include GenEq
+end
+data E = (d: D, n: Int)
+module Mk
+  static def self.make_it -> Void
+    def_method(:make) do -> E
+      E.new(D.new(1, 2), 3)
+    end
+  end
+end
+module Go
+  static def self.go -> Void
+    D.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class R
+  include Mk
+  include Go
+  make_it
+  go
+end
+puts R.new.make.d.y
+"##,
+            "app.qz:6:3: error: ",
+            "`D` is stored in place in the field `@d` of `E`",
+        ),
+        (
+            "survivor_b",
+            r##"data D(x: Int, y: Int)
+  include GenEq
+end
+data E = (d: D, n: Int)
+module Hk
+  static def self.hook_it -> Void
+    e = E.new(D.new(1, 2), 3)
+    at_class_end(:k) { |cls| puts "hook: #{e.d.x} #{e.d.y} #{e.n}" }
+  end
+end
+module Go
+  static def self.go -> Void
+    D.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class R
+  include Hk
+  include Go
+  hook_it
+  go
+end
+"##,
+            "app.qz:6:3: error: ",
+            "`D` is stored in place in the field `@d` of `E`",
+        ),
+        (
+            "survivor_c",
+            r##"data D(x: Int, y: Int)
+  include GenEq
+end
+data E = (d: D, n: Int)
+module Fd
+  static def self.field_it -> Void
+    def_field(:e, E, E.new(D.new(1, 2), 3), reader: true)
+  end
+end
+module Go
+  static def self.go -> Void
+    D.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class R
+  include Fd
+  include Go
+  field_it
+  go
+end
+puts R.new.e.d.y
+"##,
+            "app.qz:6:3: error: ",
+            "`D` is stored in place in the field `@d` of `E`",
+        ),
+        (
+            "hook_gen",
+            r##"data D(x: Int)
+  include GenEq
+end
+data E = (d: D, n: Int)
+module Hg
+  static def self.later -> Void
+    at_class_end(:k) { |cls| D.gen_eq }
+  end
+end
+"##,
+            r##"require_relative "lib"
+class R
+  include Hg
+  later
+end
+"##,
+            "app.qz:4:3: error: ",
+            "the class-end hook `:k` (registered by `later`): `def_method(:==)`: `D` is stored in place in the field `@d` of `E`",
+        ),
+    ];
+    for (name, lib, app, at, message) in cases {
+        let d = dir();
+        write(&d.0, "lib.qz", &format!("{COMMON}{lib}"));
+        let app = write(&d.0, "app.qz", app);
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        assert!(!ok, "{name}: {err}");
+        let line = err
+            .lines()
+            .find(|l| l.starts_with(at))
+            .unwrap_or_else(|| panic!("{name}: no error at {at}: {err}"));
+        assert!(line.contains(message), "{name}: {err}");
+    }
+}
+
+/// #796 (C): a generation into a `data` type no field holds in place is
+/// accepted, and the type is compared by the generated `==` and `hash`
+/// everywhere, a holder's fields included (each holding it by reference).
+/// Cells: no holder; a nilable field (`D?`); a generic `data` type's
+/// parameter (`P[D]`); interpreted and compiled.
+#[test]
+fn a_generation_into_a_type_held_by_reference_is_accepted() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "module GenEq\n  static def self.gen_eq -> Void\n    def_method(:==, :other) { |other: Object| true }\n    def_method(:hash) { 42 }\n  end\nend\ndata D(x: Int)\n  include GenEq\nend\ndata Q = (d: D?, n: Int)\ndata P[T] = (v: T, n: Int)\nmodule Go\n  static def self.go -> Void\n    D.gen_eq\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass C\n  include Go\n  go\nend\nputs D.new(1) == D.new(2)\nputs Set[D.new(1), D.new(2)].size\nputs Q.new(D.new(1), 3) == Q.new(D.new(2), 3)\nputs Set[Q.new(D.new(1), 3), Q.new(D.new(2), 3)].size\nputs P[D].new(D.new(1), 3) == P[D].new(D.new(2), 3)\nputs Set[P[D].new(D.new(1), 3), P[D].new(D.new(2), 3)].size\n",
+    );
+    let expected = "true\n1\ntrue\n1\ntrue\n1\n";
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let out = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+}
+
 #[test]
 fn generated_fields_and_abstract_implementations() {
     let d = dir();

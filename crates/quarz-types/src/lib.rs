@@ -801,23 +801,12 @@ fn layout_change_error(
     first_extension: usize,
     example: bool,
 ) -> FileDiagnostic {
-    // The field's declaring class: the first up the chain that has it.
-    let declarer = world
-        .superclass_chain(change.holder)
-        .into_iter()
-        .find(|c| {
-            world
-                .class(*c)
-                .fields
-                .iter()
-                .any(|f| f.name == change.field)
-        })
-        .unwrap_or(change.holder);
-    let declarer = world.class(declarer);
+    let declarer = world.class(world.field_declarer(change.holder, &change.field));
     let found = change.data.and_then(|d| {
-        let (name, m) = [("==", 1), ("!=", 1), ("hash", 0)]
-            .into_iter()
-            .find_map(|(n, argc)| world.user_method(d, n, argc).map(|m| (n, m)))?;
+        let (name, m) = match world.compared_by(d, &[])? {
+            (n, UserMethod::Declared(m)) => (n, m),
+            (_, UserMethod::Added) => return None,
+        };
         let owner = world.method(m).owner;
         world.extensions[first_extension.min(world.extensions.len())..]
             .iter()

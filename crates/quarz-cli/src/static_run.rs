@@ -730,9 +730,48 @@ impl Runner {
                 builds_self: false,
                 needs_includer: None,
             };
+            // #796 (C): whether a field holds a `data` type in place is
+            // decided with the declarations as written. A generation that
+            // would change it (an `==`, `!=` or `hash` into the type, or into
+            // a module it gets methods from) is refused before it is
+            // declared: what was lowered or made with the layout keeps it.
+            let deciding = !info.singleton && matches!(info.name.as_str(), "==" | "!=" | "hash");
+            let layouts_before = (deciding || cfg!(debug_assertions))
+                .then(|| quarz_lower::layout::compute(host.world()));
+            if deciding {
+                if let Some(why) = layout_refusal(
+                    host.world(),
+                    layouts_before.as_deref().unwrap_or_default(),
+                    g.class,
+                    &info.name,
+                ) {
+                    return Err(fail(format!("{at}: {why}")));
+                }
+            }
             let mid = host
                 .add_generated(info)
                 .map_err(|why| fail(format!("{at}: {why}")))?;
+            // What the check judged is what the declaration did: for the
+            // names it judges, in every build (an internal error, not a
+            // wrong layout); for any generation, in debug builds.
+            if let Some(before) = &layouts_before {
+                let changed = || {
+                    quarz_lower::layout::first_change(
+                        before,
+                        &quarz_lower::layout::compute(host.world()),
+                    )
+                    .is_some()
+                };
+                if deciding && changed() {
+                    return Err(fail(format!(
+                        "{at}: internal error: the generation changed how a field holds a `data` type, which the check before it did not foresee (#796); please report"
+                    )));
+                }
+                debug_assert!(
+                    deciding || !changed(),
+                    "{at}: a generation changed a layout (#796)"
+                );
+            }
             declared[index] = Some(mid);
             // `override: true`: the method overrides an inherited one of
             // its name (docs/14 §5, #328).
@@ -2271,23 +2310,9 @@ impl StaticRunner for Runner {
             return None;
         }
         let before = self.later_before.take()?;
-        // The field whose type the declarations gave an `==`, `!=` or
-        // `hash` (`World::user_method`), which is what the error explains:
-        // its holders up the nesting change too, and may come first.
-        let compared = |d: ClassId| {
-            [("==", 1), ("!=", 1), ("hash", 0)]
-                .iter()
-                .any(|(n, argc)| world.user_method(d, n, *argc).is_some())
-        };
-        let (class, index) = quarz_lower::layout::changes(&before, &now)
-            .find(|(c, i)| {
-                before[*c as usize]
-                    .ivars
-                    .get(*i)
-                    .and_then(|v| v.flat)
-                    .is_some_and(compared)
-            })
-            .or_else(|| quarz_lower::layout::first_change(&before, &now))?;
+        let (class, index) = quarz_lower::layout::explained_change(&before, &now, |d| {
+            world.compared_by(d, &[]).is_some()
+        })?;
         let ivar = before[class as usize].ivars.get(index);
         Some(LayoutChange {
             holder: class,
@@ -2335,6 +2360,44 @@ enum Pending {
     /// A handle made by name (`field_ref`, `method_ref`), checked as a
     /// captured one is.
     Handle(Baked),
+}
+
+/// Why generating method `name` into `class` is refused, if it is: it
+/// would change how a field of a class laid out with `before` holds a
+/// `data` type (#796 (C), docs/14 §5), the field the error names being
+/// the one whose type would get the method
+/// (`quarz_lower::layout::explained_change`).
+fn layout_refusal(
+    world: &World,
+    before: &[quarz_lower::layout::Layout],
+    class: ClassId,
+    name: &str,
+) -> Option<String> {
+    let added = [(class, name)];
+    let after = quarz_lower::layout::compute_with(world, &added);
+    let (holder, index) = quarz_lower::layout::explained_change(before, &after, |d| {
+        world.compared_by(d, &added).is_some()
+    })?;
+    let ivar = &before[holder as usize].ivars.get(index)?;
+    let declarer = world.class(world.field_declarer(holder, &ivar.name));
+    let target = &world.class(class).name;
+    Some(match ivar.flat {
+        Some(d) if d == class => format!(
+            "`{target}` is stored in place in the field `@{}` of `{}`, and a type stored in place compares by its fields: a `static` statement cannot give it `==`, `!=` or `hash` (write the method in `{target}`'s body)",
+            ivar.name, declarer.name
+        ),
+        Some(d) => {
+            let d = &world.class(d).name;
+            format!(
+                "`{d}`, which gets the methods of `{target}`, is stored in place in the field `@{}` of `{}`, and a type stored in place compares by its fields: a `static` statement cannot give it `==`, `!=` or `hash` through `{target}` (write the method in `{target}`'s body)",
+                ivar.name, declarer.name
+            )
+        }
+        None => format!(
+            "internal error: the generation would change how the field `@{}` of `{}` is laid out; please report",
+            ivar.name, declarer.name
+        ),
+    })
 }
 
 /// A `def_field` call's request, its default baked.
