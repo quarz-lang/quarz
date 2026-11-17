@@ -1444,10 +1444,13 @@ pub struct RtClass {
     /// The `initialize` this class is built with where a class method it
     /// inherits calls `new` passing what the first element's parameters
     /// take (`None`: nothing): the checker's choice among its overloads
-    /// (`Output::inherited_inits`), before `Interp::receiver_class_init`'s
-    /// own rule.
-    #[serde(default)]
-    pub inherited_inits: Vec<(Option<MethodId>, MethodId)>,
+    /// (`Output::inherited_inits`; `None`: none runs), for every such
+    /// method (#536 step 6).
+    pub inherited_inits: Vec<(Option<MethodId>, Option<MethodId>)>,
+    /// For a `data` type or an enum variant, the body's `initialize` its
+    /// `with` builds through (`World::with_initialize`; `None`: the
+    /// generated one).
+    pub with_init: Option<MethodId>,
     /// Methods declared by the class, by name (overloads in declaration
     /// order).
     #[serde(serialize_with = "sorted")]

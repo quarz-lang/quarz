@@ -3115,7 +3115,11 @@ impl Interp {
                     }
                 }
                 // The body's `initialize` taking the fields builds the
-                // value, as `new` would (docs/01 §4).
+                // value, as `new` would (docs/01 §4): the one the checker
+                // found (`RtClass::with_init`, #536 step 6). Debug builds
+                // check it against the rule of its own the runtime had
+                // (by parameter names and printed types), whose choice
+                // still runs until the rule is removed.
                 let class = self.program.world.class(o.class);
                 let own_init = class.methods.get("initialize").and_then(|ids| {
                     ids.iter().copied().find(|i| {
@@ -3129,6 +3133,13 @@ impl Interp {
                             })
                     })
                 });
+                debug_assert!(
+                    own_init == class.with_init,
+                    "internal error (#536 step 6): `{}#with` runs {:?} by the runtime's rule, {:?} by the checker's",
+                    class.name,
+                    own_init,
+                    class.with_init
+                );
                 if let Some(init) = own_init {
                     let args: ArgVec = (0..class.ivars.len())
                         .map(|i| self.logical_get(&copy, i))
@@ -3522,9 +3533,14 @@ impl Interp {
     /// Allocate an instance and run its initializer.
     /// For `new` on a class method's receiver: the class the receiver
     /// names (`class` or a subclass) and the `initialize` to run: the one
-    /// the checker chose among the subclass's overloads for `init`
-    /// (`RtClass::inherited_inits`), else the nearest one declared between
-    /// it and `class` (of `init`'s signature, or the first), else `init`.
+    /// the checker chose for the subclass (`RtClass::inherited_inits`,
+    /// recorded for every subclass the method's `new` can build, #536
+    /// step 6).
+    ///
+    /// The oracle (debug builds, removed with the rule): the rule of its
+    /// own it had before (`walked_class_init`) gives the same answer
+    /// wherever a record does; a receiver without a record fails the
+    /// assertion. A release build falls back to that rule.
     pub fn receiver_class_init(
         &self,
         recv: &Value,
@@ -3538,17 +3554,46 @@ impl Interp {
         if cid == class {
             return (cid, init);
         }
-        // The checker's choice among the subclass's overloads.
-        if let Some((_, chosen)) = self
+        let recorded = self
             .program
             .world
             .class(cid)
             .inherited_inits
             .iter()
             .find(|(i, _)| *i == init)
+            .map(|(_, chosen)| *chosen);
+        #[cfg(debug_assertions)]
         {
-            return (cid, Some(*chosen));
+            let walked = self.walked_class_init(cid, class, init);
+            let (sub, from) = (
+                &self.program.world.class(cid).name,
+                &self.program.world.class(class).name,
+            );
+            assert!(
+                recorded.is_some(),
+                "internal error (#536 step 6): no inherited constructor recorded for `{sub}` from `{from}`'s `new`"
+            );
+            assert!(
+                recorded == Some(walked),
+                "internal error (#536 step 6): the recorded constructor of `{sub}` from `{from}`'s `new` ({recorded:?}) is not the walk's ({walked:?})"
+            );
         }
+        (
+            cid,
+            recorded.unwrap_or_else(|| self.walked_class_init(cid, class, init)),
+        )
+    }
+
+    /// The rule `receiver_class_init` had of its own before the records
+    /// were total (#536 step 6's oracle): the nearest `initialize`
+    /// declared between `cid` and `class` (of `init`'s signature, or the
+    /// first), else `init`.
+    fn walked_class_init(
+        &self,
+        cid: ClassId,
+        class: ClassId,
+        init: Option<MethodId>,
+    ) -> Option<MethodId> {
         for anc in &self.program.world.class(cid).ancestors {
             if *anc == class {
                 break;
@@ -3561,20 +3606,16 @@ impl Interp {
                 continue;
             }
             if let Some(ids) = self.program.world.class(*anc).methods.get("initialize") {
-                let pick = init
+                return init
                     .and_then(|i| {
-                        // (`initialize` pairs are in the override table
-                        // too, #536; the rest of this fallback is #536's
-                        // step 6.)
                         ids.iter()
                             .copied()
                             .find(|id| *id == i || self.program.method(*id).overrides.contains(&i))
                     })
                     .or_else(|| ids.first().copied());
-                return (cid, pick);
             }
         }
-        (cid, init)
+        init
     }
 
     pub fn construct(

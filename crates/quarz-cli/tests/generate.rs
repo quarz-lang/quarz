@@ -1003,6 +1003,40 @@ fn a_field_is_generated_into_a_class_only() {
     );
 }
 
+/// An `initialize` is generated into a class only: neither `def_initialize`
+/// nor `def_method(:initialize)` reaches a `data` type, whose `with` builds
+/// through the body's own `initialize` (`World::with_initialize`,
+/// `RtClass::with_init`). So what `with` runs is fixed before the
+/// statements run, and the kept tables need no edge for it (#536 step 6).
+#[test]
+fn an_initialize_is_generated_into_a_class_only() {
+    for (gen, want) in [
+        (
+            "def_initialize(:x) do |x: Int|\n      @x = x * 10\n    end",
+            "`def_initialize`: `D` is not a class: `initialize` is generated into classes only",
+        ),
+        (
+            "def_method(:initialize, :x) do |x: Int|\n      nil\n    end",
+            "`def_method(:initialize)`: `initialize` cannot be generated: `def_initialize` generates its overloads",
+        ),
+    ] {
+        let d = dir();
+        write(
+            &d.0,
+            "lib.qz",
+            &format!("data D(x: Int)\n  static def self.gen_init -> Void\n    {gen}\n  end\nend\nmodule Go\n  static def self.go -> Void\n    D.gen_init\n  end\nend\n"),
+        );
+        let app = write(
+            &d.0,
+            "app.qz",
+            "require_relative \"lib\"\nclass Driver\n  include Go\n  go\nend\np D.new(1).with(x: 2).x\n",
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        assert!(!ok, "{err}");
+        assert!(err.contains(want), "{err}");
+    }
+}
+
 /// #796 (C): a generation into a `data` type no field holds in place is
 /// accepted, and the type is compared by the generated `==` and `hash`
 /// everywhere, a holder's fields included (each holding it by reference).

@@ -220,6 +220,7 @@ pub fn class_row(world: &World, out: &types::Output, id: ClassId) -> RtClass {
             .filter(|(sub, _, _)| *sub == c.id)
             .map(|(_, init, chosen)| (*init, *chosen))
             .collect(),
+        with_init: world.with_initialize(c.id),
         methods: c
             .methods
             .iter()
