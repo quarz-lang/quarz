@@ -6338,6 +6338,7 @@ fn destructuring_a_failed_expression_reports_its_error_only() {
         diagnostics("class K; end\na, (b, c) = K.new.nope\np a, b, c"),
         ["undefined method `nope` for K"]
     );
+    // (Run, VM and compiled: `tests/fixtures/destructure_nothing.qz`.)
     ok("def f -> Nothing = raise \"no\"\na, b = f\np a");
     err(
         "a, b = 1",

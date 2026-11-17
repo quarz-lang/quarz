@@ -1,0 +1,33 @@
+# A destructuring whose right side never returns (type `Nothing`, #822):
+# the checker gives each target `Nothing`, and the raise leaves before
+# anything is assigned. Plain, nested and splat targets, of a call
+# typed `Nothing` and of `raise` itself. VM and compiled (tests/build.rs).
+def f -> Nothing = raise "from f"
+
+begin
+  a, b = f
+  p a, b
+rescue Exception => e
+  puts "plain: #{e.message}"
+end
+
+begin
+  c, (d, e2) = f
+  p c, d, e2
+rescue Exception => e
+  puts "nested: #{e.message}"
+end
+
+begin
+  g, *h = f
+  p g, h
+rescue Exception => e
+  puts "splat: #{e.message}"
+end
+
+begin
+  i, j = raise "direct"
+  p i, j
+rescue Exception => e
+  puts "raise: #{e.message}"
+end

@@ -1,0 +1,4 @@
+plain: from f
+nested: from f
+splat: from f
+raise: direct
