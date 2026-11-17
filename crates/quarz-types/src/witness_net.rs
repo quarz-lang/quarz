@@ -71,7 +71,20 @@ pub fn check(
     witness_rows: &[(ClassId, MethodId, Option<MethodId>)],
     class_rows: &[(ClassId, MethodId, MethodId)],
 ) -> Vec<Checked> {
-    let mut d = Declarer::with_world(world.clone());
+    check_where(world, override_rows, witness_rows, class_rows, &|_| true)
+}
+
+/// `check` over the rows whose class `keep` admits, in the same order (the
+/// rows of the classes a static round rebuilt, #717). The declarer is made
+/// only when a row is checked.
+pub fn check_where(
+    world: &World,
+    override_rows: &[(ClassId, MethodId, MethodId)],
+    witness_rows: &[(ClassId, MethodId, Option<MethodId>)],
+    class_rows: &[(ClassId, MethodId, MethodId)],
+    keep: &dyn Fn(ClassId) -> bool,
+) -> Vec<Checked> {
+    let mut d: Option<Declarer> = None;
     let rows = override_rows
         .iter()
         .map(|(c, r, b)| ("override", *c, *r, *b))
@@ -97,14 +110,20 @@ pub fn check(
                 })
                 .map(|(c, r, b)| ("class", *c, *r, *b)),
         );
-    rows.map(|(table, class, req, by)| Checked {
-        table,
-        class,
-        req,
-        by,
-        verdict: check_row(&mut d, class, req, by),
-    })
-    .collect()
+    rows.filter(|(_, class, _, _)| keep(*class))
+        .map(|(table, class, req, by)| Checked {
+            table,
+            class,
+            req,
+            by,
+            verdict: check_row(
+                d.get_or_insert_with(|| Declarer::with_world(world.clone())),
+                class,
+                req,
+                by,
+            ),
+        })
+        .collect()
 }
 
 fn check_row(d: &mut Declarer, c: ClassId, req: MethodId, by: MethodId) -> Verdict {

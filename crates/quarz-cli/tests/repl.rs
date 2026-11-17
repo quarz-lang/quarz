@@ -275,6 +275,48 @@ fn a_failed_input_is_rolled_back() {
 }
 
 #[test]
+fn the_kept_tables_follow_the_inputs() {
+    // #717's kept tables in a session, every sync compared with the tables
+    // built from nothing (`QUARZ_VERIFY_STATIC_TABLES`, set for the tests).
+    // A statement runs only in the body of a class its input declares, so
+    // each input's static phase starts on another class graph and builds
+    // the tables again (`Kept::fits`); its rounds then keep them. Between:
+    // an input of functions only, or of a constant (the graph key's
+    // declared methods); a refused input, rolled back with the tables
+    // (`Lowerer::forget` drops them: the next input's are built from
+    // nothing); and an extension a later input declares (the graph key's
+    // extensions), which a later class's statements then see.
+    let (out, _) = values(&[
+        "class Gen",
+        "  static def self.g(n: Symbol) -> Void",
+        "    def_method(n) { 1 }",
+        "  end",
+        "  static def self.f -> Void",
+        "    def_field(:k, Int, 3, reader: true)",
+        "  end",
+        "end",
+        "class A < Gen; g :one; end",
+        "def twice(x: Int) -> Int = x * 2",
+        "K2 = 7",
+        "twice(A.new.one) + K2",
+        "class B < A; f; g :two; end",
+        "B.new.k + B.new.one + B.new.two",
+        "class C < Gen; g :c; def bad -> Int = \"s\"; end",
+        "class C < Gen; g :c2; end",
+        "C.new.c2",
+        "module Tw; def tw -> Int = 2; end",
+        "extension A; include Tw; end",
+        "class D < A; g :d; end",
+        "D.new.tw + D.new.d + twice(B.new.k)",
+    ]);
+    assert_eq!(out[11], "=> 9", "{out:?}");
+    assert_eq!(out[13], "=> 5", "{out:?}");
+    assert!(out[14].contains("method `bad` returns Int"), "{out:?}");
+    assert_eq!(out[16], "=> 1", "{out:?}");
+    assert_eq!(out[20], "=> 9", "{out:?}");
+}
+
+#[test]
 fn a_failed_inputs_objects_do_not_meet_the_next_ones_classes() {
     // An object a failed input's `static` statement made, left in a cycle,
     // is collected when the input is rolled back: the class that reuses

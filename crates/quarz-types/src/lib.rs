@@ -667,6 +667,13 @@ pub fn check_movement_with(
 /// What a `StaticRunner` may ask of the checker while it runs a
 /// `static` statement: the world and the results so far, and the check
 /// of a method the statement's callee reaches.
+///
+/// Every hook that changes the world pushes its `StaticEvent`
+/// (`World::static_events`): the lowering keeps its tables across a
+/// statement's rounds and rebuilds only the rows the events name (#717),
+/// so a change without an event leaves a row stale. A new hook adds its
+/// event kind, and that kind's rows in `quarz_lower::kept`'s match (the
+/// table on #717).
 pub trait StaticHost {
     fn world(&self) -> &World;
     fn output(&self) -> &Output;

@@ -1319,7 +1319,7 @@ pub enum RtClassKind {
 /// A field as the program declares it. `slot` is where it starts in the
 /// object's physical fields; a `flat` field is a data value stored in
 /// place (its data class's physical fields follow from `slot`).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RtIvar {
     pub name: String,
     pub ty: Option<String>,
@@ -1328,7 +1328,7 @@ pub struct RtIvar {
     pub default: Option<FuncId>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RtField {
     pub name: String,
     /// The default value's initializer (run with `self` = the new object).
@@ -1411,7 +1411,7 @@ pub fn field_slots(fields: &[RtField]) -> FieldSlots {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RtClass {
     pub name: String,
     pub kind: RtClassKind,
@@ -1508,7 +1508,7 @@ pub enum RtParamKind {
     Block,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RtParam {
     pub name: String,
     pub kind: RtParamKind,
@@ -1533,7 +1533,7 @@ pub enum RtSynth {
     DataToH,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RtMethod {
     /// The positional shape (`RtMethod::shape_of`): two methods of one
     /// shape other than `NO_SHAPE` take the same positional arguments and
@@ -1674,7 +1674,7 @@ impl RtMethod {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RtConst {
     pub name: String,
     pub owner: Option<ClassId>,
@@ -1683,7 +1683,7 @@ pub struct RtConst {
 }
 
 /// Methods added to a class by an extension (always-active ones first).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RtExtension {
     pub target: ClassId,
     #[serde(serialize_with = "sorted")]
@@ -1698,7 +1698,7 @@ pub struct RtExtension {
     pub includes: Vec<ClassId>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RtBuiltin {
     pub object: ClassId,
     pub nil: ClassId,
@@ -1741,7 +1741,7 @@ pub struct RtBuiltin {
     pub enumerable: ClassId,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RtWorld {
     pub classes: Vec<RtClass>,
     #[serde(with = "dropped")]

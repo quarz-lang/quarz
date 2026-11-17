@@ -1854,3 +1854,405 @@ end
     assert!(ok, "{err}");
     assert_eq!(err, "B\n");
 }
+
+// ----- #717: the tables kept across a static phase's rounds -----
+//
+// Each program below makes a `static` statement change what the kept
+// tables hold (the table on #717, "M2 note, refreshed", §5), and code after
+// it observes the change, interpreted and compiled. `cargo test` runs the
+// command with `QUARZ_VERIFY_STATIC_TABLES=1` (.cargo/config.toml), so
+// every round's kept tables are also compared with the tables built from
+// nothing.
+
+/// `quarz run` and the compiled program of `app` both print `expected`.
+fn run_both(d: &Path, app: &Path, expected: &str) {
+    let (ok, out, err) = quarz(d, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected, "{err}");
+    let exe = d.join("app-bin");
+    let (ok, _, err) = quarz(
+        d,
+        &["build", app.to_str().unwrap(), "-o", exe.to_str().unwrap()],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+}
+
+const KEPT_LIB: &str = r##"class Gen
+  static def self.gen_m -> Void
+    def_method(:m, override: true) { "B" }
+  end
+  static def self.gen_area -> Void
+    def_method(:area) { 5 }
+  end
+  static def self.gen_field -> Void
+    def_field(:hits, Int, 3, reader: true)
+  end
+  static def self.gen_name -> Void
+    def_class_method(:name) { "custom" }
+  end
+  static def self.nothing -> Void
+  end
+end
+module GenK
+  static def self.gen_k -> Void
+    def_method(:k) { 7 }
+  end
+end
+module M
+  include GenK
+end
+class Trigger
+  static def self.go -> Void
+    M.gen_k
+  end
+end
+"##;
+
+#[test]
+fn a_method_generated_between_an_override_and_its_target() {
+    // Rows 1–3: `C#m` overrides `A#m`; generating `B#m` between them
+    // puts it in `C#m`'s override row, and in the dispatch of `B` and `D`.
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class A < Gen
+  def m -> String = "A"
+end
+class B < A
+  gen_m
+end
+class C < B
+  def m -> String = "C" + super
+end
+class D < B
+end
+def show(a: A) -> String = a.m
+puts show(A.new), show(B.new), show(C.new), show(D.new)
+"#,
+    );
+    run_both(&d.0, &app, "A\nB\nCB\nB\n");
+}
+
+#[test]
+fn a_method_generated_into_a_module_with_includers() {
+    // Rows 4–6: `M#k` generated into a module two classes include and an
+    // extension makes a third conform to; `P`'s include now puts `M#k`
+    // over its superclass's `k` (an include pair that was not there). A
+    // module body takes no statement: `X`'s reaches `M` through the
+    // `static def` `M` has from `GenK`.
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class S
+  def k -> Int = 1
+end
+class P < S
+  include M
+end
+class Q
+  include M
+end
+class R
+end
+extension R
+  include M
+end
+class X < Trigger
+  go
+end
+def kk(m: M) -> Int = m.k
+puts kk(P.new), kk(Q.new), kk(R.new), P.new.k
+"#,
+    );
+    run_both(&d.0, &app, "7\n7\n7\n7\n");
+}
+
+#[test]
+fn the_implementation_a_deferred_conformance_waits_for() {
+    // Rows 5 and 7: `K`'s conformance to `Sh` waits for its statements
+    // (`World::conformance_deferred`), which generate `area` (#801); the
+    // witness record's entries for `K` and its subclass are made then.
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+module Sh
+  abstract def area -> Int
+end
+class K < Gen
+  include Sh
+  gen_area
+end
+class L < K
+end
+def a(s: Sh) -> Int = s.area
+puts a(K.new), a(L.new)
+"#,
+    );
+    run_both(&d.0, &app, "5\n5\n");
+}
+
+#[test]
+fn a_field_generated_into_a_superclass_with_subclasses() {
+    // Rows 1, 2, 8–10: a field into `F` moves the own fields of `G`, its
+    // subclass, and is laid out in `F`'s holder `H` (by reference: a
+    // class), whose reflection and layout are made again.
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class F < Gen
+  gen_field
+end
+class G < F
+  @g: Int
+  def initialize(@g: Int)
+  end
+  def g -> Int = @g
+end
+class H
+  @f: F
+  @n: Int
+  def initialize(@f: F, @n: Int)
+  end
+  def f -> F = @f
+  def n -> Int = @n
+end
+x = G.new(4)
+h = H.new(x, 6)
+puts x.hits, x.g, h.f.hits, h.n
+"#,
+    );
+    run_both(&d.0, &app, "3\n4\n3\n6\n");
+}
+
+#[test]
+fn a_class_method_that_takes_a_type_method_s_place() {
+    // Rows 3 and 7: `N.name` generated over `Type#name` (the override
+    // table pairs it with `Type`'s method; the class-side rows of `N` and
+    // its subclass take it). An instance method generated into a class of
+    // `Type`'s side (`Type`, `Object`, ... #717's T) has no fixture: those
+    // are the prelude's, no `static` statement runs in them, and another
+    // class's statement reaches a class only through a `static def` the
+    // class has, which they have none of.
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class N < Gen
+  gen_name
+end
+class O < N
+end
+def nm(t: Type[Object]) -> String = t.name
+puts N.name, O.name, nm(N), nm(Gen)
+"#,
+    );
+    run_both(&d.0, &app, "custom\ncustom\ncustom\nGen\n");
+}
+
+#[test]
+fn constructor_choices_made_after_the_statements() {
+    // Row 1's `inherited_inits`: the checker records which `initialize`
+    // `B.make`'s inherited `new` runs (`check_inherited_constructors`)
+    // after the file's statements ran, with no event; the kept class rows
+    // follow it (`Kept::inherited`). Before, `B`'s row kept none (the
+    // oracle's panic), as no event reached `B`.
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class Z < Gen
+  nothing
+end
+class A
+  @x: Int
+  def initialize(@x: Int)
+  end
+  def x -> Int = @x
+  def self.make -> Self = new(1)
+end
+class B < A
+  def initialize(x: Int)
+    super(x * 10)
+  end
+end
+puts A.make.x, B.make.x
+"#,
+    );
+    run_both(&d.0, &app, "1\n10\n");
+}
+
+#[test]
+fn a_default_that_builds_a_class_a_field_is_generated_into() {
+    // `K`'s field default constructs `F`: a field generated into `F`
+    // drops the default's function (`Lowerer::invalidate_layout`), and
+    // `K` is neither in D(F) nor a holder of `F`; the next round lowers
+    // it again because it waits (`defaults_waiting`). Without that, the
+    // oracle's `assert_defaults_lowered` panics at `Q`'s round.
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class P < Gen
+  nothing
+end
+class F < Gen
+  gen_field
+  def base -> Int = 1
+end
+class K
+  @n: Int = F.new.base
+  def n -> Int = @n
+end
+class Q < Gen
+  nothing
+end
+puts K.new.n, F.new.hits
+"#,
+    );
+    run_both(&d.0, &app, "1\n3\n");
+}
+
+#[test]
+fn a_field_without_accessors_moves_a_subclass_s_reader() {
+    // Rows 1 and 2 through D(F) alone: a field generated into `F`, with no
+    // reader (whose `Method` event would rebuild D(F) too), by another
+    // class's statement (so `G`, under no class with statements, is not
+    // deferred, and no `Conformance` event rebuilds it), moves the index
+    // of `@g` that `G`'s `attr_reader` reads. Without the `Field` event's
+    // D, `G#g`'s row keeps the old index.
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r#"class Gen
+  static def self.gen_bare -> Void
+    def_field(:bare, Int, 4)
+  end
+end
+class Trig
+  static def self.go -> Void
+    F.gen_bare
+  end
+end
+"#,
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class F < Gen
+end
+class G < F
+  @g: Int
+  attr_reader :g
+  def initialize(@g: Int); end
+end
+class X < Trig
+  go
+end
+puts G.new(5).g
+"#,
+    );
+    run_both(&d.0, &app, "5\n");
+}
+
+#[test]
+fn tables_built_again_for_classes_a_later_check_adds() {
+    // `quarz test` checks the doc examples after the files' statements
+    // ran, with the same runner: their classes make the kept tables be
+    // built from nothing. The epochs go on from the earlier tables' (a
+    // new start at 1 told the runner's safety net that nothing changed
+    // since its last round, and the examples' rows went unchecked: the
+    // oracle's panic).
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let t = write(
+        &d.0,
+        "ex_test.qz",
+        r#"require "test"
+require_relative "lib"
+# One.
+#
+# ```
+# class A1 < Gen
+#   gen_area
+# end
+# A1.new.area   # => 5
+# ```
+class One < Gen
+  gen_area
+end
+# Two.
+#
+# ```
+# class A2 < Gen
+#   gen_field
+# end
+# A2.new.hits   # => 3
+# ```
+class Two
+end
+class T < Test::Case
+  def test_x
+    assert(One.new.area == 5)
+  end
+end
+"#,
+    );
+    let (ok, out, err) = quarz(&d.0, &["test", t.to_str().unwrap()], &[]);
+    assert!(ok, "{out}{err}");
+    assert!(out.contains("3 tests, 3 assertions, 0 failures"), "{out}");
+}
+
+#[test]
+fn a_statement_that_generates_nothing_rebuilds_nothing() {
+    // Row 6 of §5: rounds whose statements generate nothing rebuild no
+    // class's rows (each sync's line in `QUARZ_STATIC_TABLES_STATS`).
+    let d = dir();
+    write(&d.0, "lib.qz", KEPT_LIB);
+    let mut src = String::from("require_relative \"lib\"\n");
+    for i in 0..20 {
+        src.push_str(&format!("class C{i} < Gen\n  nothing\nend\n"));
+    }
+    src.push_str("puts \"ok\"\n");
+    let app = write(&d.0, "app.qz", &src);
+    let stats = d.0.join("stats");
+    let (ok, out, err) = quarz(
+        &d.0,
+        &["run", app.to_str().unwrap()],
+        &[("QUARZ_STATIC_TABLES_STATS", stats.to_str().unwrap())],
+    );
+    assert!(ok, "{err}");
+    assert_eq!(out, "ok\n");
+    let lines = std::fs::read_to_string(&stats).unwrap();
+    let incremental: Vec<&str> = lines.lines().filter(|l| l.contains("full=0")).collect();
+    assert!(incremental.len() >= 20, "{lines}");
+    assert!(
+        incremental
+            .iter()
+            .filter(|l| l.contains("events=0"))
+            .all(|l| l.contains("classes=0 methods=0")),
+        "{lines}"
+    );
+}

@@ -711,10 +711,51 @@ pub struct World {
     /// witness; an extension takes no other part in dynamic dispatch
     /// (docs/01 §7).
     pub class_ext_impls: Vec<ClassWitness>,
+    /// What `static` statements changed in the world, in order (#717):
+    /// pushed by the `StaticHost` hooks and the checker's conformance
+    /// recheck, the only ways a compile-time run changes the world, and
+    /// read by the lowering (`quarz_lower::kept`) to rebuild the rows of
+    /// what changed. A change made without its event leaves a kept row
+    /// stale. Grows within a program; a rolled-back REPL input may leave
+    /// it shorter than a reader's cursor, which then rebuilds everything.
+    #[serde(skip)]
+    pub static_events: Vec<StaticEvent>,
     /// `ancestors` remembered while the classes do not change (checking;
     /// `freeze_ancestors`): a lookup computed them again and again.
     #[serde(skip)]
     ancestors_memo: AncestorsMemo,
+}
+
+/// A change a compile-time run made to the world (`World::static_events`,
+/// #717). Each kind names the rows of the lowering's tables it may change
+/// (the table on #717, "M2 note, refreshed"); `quarz_lower::kept` matches
+/// them without a wildcard, so a new kind must say there what it changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StaticEvent {
+    /// A method, class method or `initialize` added
+    /// (`StaticHost::add_generated`).
+    Method(MethodId),
+    /// A field appended to a class (`StaticHost::add_generated_field`).
+    Field(ClassId),
+    /// A generated class method building an instance of `class`
+    /// (`StaticHost::generated_new`): its inherited constructors.
+    New(ClassId),
+    /// A generated method's captures set
+    /// (`StaticHost::set_generated_captures`): its body only.
+    Captures(MethodId),
+    /// The declaration-time checks of these classes run again
+    /// (`StaticHost::recheck_classes`): the shareable promise reset and
+    /// known again (the class rows' `Shareable` marker, rows 1 and 10).
+    /// R0's witnesses (`ext_impls`, `class_ext_impls`) are not extended:
+    /// only an extension's declaration records them (`Kept::sync` in
+    /// quarz-lower asserts it).
+    Rechecked(Vec<ClassId>),
+    /// The deferred conformance of these classes checked
+    /// (`Declarer::recheck_conformance`, which reads the world): they left
+    /// `World::conformance_deferred`, so a round's safety net no longer
+    /// passes over a missing implementation of theirs
+    /// (`witness_net::errors`).
+    Conformance(Vec<ClassId>),
 }
 
 type AncestorsKey = (ClassId, Vec<Type>, Vec<ExtensionId>);
@@ -3810,16 +3851,29 @@ impl World {
     /// extension's method is never in it: it is bound statically
     /// (docs/01 §7), whatever replaces it in the table.
     pub fn overridden_methods(&self, table: &[Vec<MethodId>]) -> HashSet<MethodId> {
+        self.overridden_methods_over(
+            table,
+            &self.include_overrides(),
+            &self.class_include_overrides(),
+        )
+    }
+
+    /// `overridden_methods` with the include pairs already made: `pairs`
+    /// as `include_overrides` gives them, `class_pairs` as
+    /// `class_include_overrides` does (the lowering keeps both across a
+    /// static phase's rounds, #717).
+    pub fn overridden_methods_over(
+        &self,
+        table: &[Vec<MethodId>],
+        pairs: &[(ClassId, MethodId, MethodId)],
+        class_pairs: &[(ClassId, MethodId, MethodId)],
+    ) -> HashSet<MethodId> {
         let mut out: HashSet<MethodId> = table.iter().flatten().copied().collect();
         // (Not an extension's method: one is bound statically, docs/01 §7,
         // and no reader of the slot looks at it.)
         out.retain(|m| self.method(*m).extension.is_none());
-        out.extend(self.include_overrides().into_iter().map(|(_, o, _)| o));
-        out.extend(
-            self.class_include_overrides()
-                .into_iter()
-                .map(|(_, o, _)| o),
-        );
+        out.extend(pairs.iter().map(|(_, o, _)| *o));
+        out.extend(class_pairs.iter().map(|(_, o, _)| *o));
         out.extend(
             self.class_ext_impls
                 .iter()

@@ -20,6 +20,7 @@ mod devirt;
 mod func;
 mod inline;
 mod iter;
+mod kept;
 pub mod layout;
 pub mod lift;
 mod regshare;
@@ -64,17 +65,26 @@ pub struct StaticRound {
 
 #[derive(Default)]
 pub struct Lowerer {
-    /// The tables the declarations decide, built after the program's check
-    /// (`declare`) and taken by the next lowering round, which completes
-    /// them (`rtworld::fill`): built once per program.
-    declared: Option<(quarz_ir::RtWorld, [usize; 3])>,
-    /// The witness record of the world a compile-time round last built
-    /// its tables for (`rtworld::witness_record`), by what it reads: the
-    /// world's size and its witness tables' (`record_key`). Made again
-    /// when they change.
-    #[allow(clippy::type_complexity)]
-    record_memo:
-        std::cell::RefCell<Option<([usize; 5], Vec<(ClassId, MethodId, Option<MethodId>)>)>>,
+    /// The tables the declarations decide, kept across the rounds and
+    /// rebuilt for what the `static` statements changed (`kept`, #717):
+    /// completed by each round (`rtworld::fill`). Built again when the
+    /// class graph changes.
+    kept: Option<kept::Kept>,
+    /// The last epoch any kept tables reached: tables built again go on
+    /// from it, so that an epoch a reader holds from the tables before
+    /// never names a sync of the new ones (`kept::Kept::changed_since`).
+    epochs: u64,
+    /// The kept tables' epoch the safety net ran over every row at
+    /// (`declare`): the next `lower` ships those rows, which must not have
+    /// changed since; without it, `lower` reports them
+    /// (`QUARZ_WITNESS_NET`).
+    netted: Option<u64>,
+    /// The classes some field default of which was left for a later
+    /// static round (its expression not checked yet, or its function
+    /// dropped), and the kept tables' epoch the last round's defaults were
+    /// lowered at (`lower_static`).
+    defaults_waiting: HashSet<ClassId>,
+    defaults_epoch: u64,
     /// Lowering for a compile-time run (docs/14): every method is lazy,
     /// reached from the statement, and one whose body is not checked yet
     /// is reported instead of lowered.
@@ -292,6 +302,7 @@ impl Lowerer {
                 }
                 FallbackOwner::FieldDefault(c, i) => {
                     self.field_default_funcs.remove(&(c, i));
+                    self.defaults_waiting.insert(c);
                 }
             }
         }
@@ -325,10 +336,11 @@ impl Lowerer {
         // (The ids from `methods` on are given to other methods next.)
         self.overrides_cache.1.clear();
         self.bounded_cache.1.clear();
-        // (The failed input's record may be for a world of the sizes a
-        // later input reaches with other declarations: `record_key` holds
-        // within one program only.)
-        *self.record_memo.borrow_mut() = None;
+        // (The kept tables may be for a world of the sizes a later input
+        // reaches with other declarations.)
+        self.kept = None;
+        self.netted = None;
+        self.defaults_waiting.clear();
         // (The failed input's, which may refer to the methods forgotten;
         // an earlier input's still wait for a final lowering when it
         // had nothing to run, declarations only.)
@@ -389,11 +401,10 @@ impl Lowerer {
         out: &Output,
         own: &dyn Fn(quarz_types::witness_net::Decl) -> bool,
     ) -> Vec<quarz_types::FileDiagnostic> {
-        let rt = rtworld::declared(world, out);
-        let errors = rows_errors(world, &rt, own, false);
-        if errors.is_empty() {
-            self.declared = Some((rt, world_size(world)));
-        }
+        self.sync_tables(world, out);
+        let kept = self.kept.as_ref().expect("synced above");
+        let errors = rows_errors(world, &kept.rt, own, false);
+        self.netted = errors.is_empty().then(|| kept.epoch());
         errors
     }
 
@@ -421,8 +432,7 @@ impl Lowerer {
         self.quoted_sites.clear();
         self.pending.clear();
         self.files = files;
-        self.overridden = world.overridden_methods(&world.override_table());
-        self.layouts = layout::compute(world);
+        self.sync_tables(world, out);
 
         // Methods.
         if self.method_funcs.len() < world.methods.len() {
@@ -556,19 +566,20 @@ impl Lowerer {
             .map(|f| f.expect("function lowered"))
             .collect();
         let file_names = self.files.iter().map(|f| f.name.clone()).collect();
-        if self.declared.is_none() {
-            let rt = rtworld::declared(world, out);
-            witness_net(world, &rt);
-            self.declared = Some((rt, world_size(world)));
+        let kept = self.kept.as_ref().expect("synced above");
+        match self.netted.take() {
+            // (The net ran over every row in `declare`: nothing may have
+            // been built again since, or rows would reach the runtime
+            // unchecked. Nothing declares or generates between the check
+            // and the lowering.)
+            Some(epoch) => assert!(
+                kept.changed_since(epoch).is_some_and(|cs| cs.is_empty()),
+                "internal error: the tables changed between the safety net and the lowering"
+            ),
+            // (The safety net's report, when `declare` did not run it.)
+            None => witness_net(world, &kept.rt),
         }
-        let (mut rt, size) = self.declared.take().expect("declared above");
-        // (Nothing declares between the check and the lowering: the tables
-        // are for this world, or the front end declared too early.)
-        assert_eq!(
-            size,
-            world_size(world),
-            "internal error: the tables were declared for another world"
-        );
+        let mut rt = kept.rt.clone();
         rtworld::fill(&mut rt, world, self, file_names);
         Delta {
             world: rt,
@@ -669,9 +680,16 @@ impl Lowerer {
             }
         }
         // A field default is kept by (class, index): the indices of the
-        // classes' own fields may have moved.
-        self.field_default_funcs
-            .retain(|(class, _), id| !is_stale(*id) && !classes.contains(class));
+        // classes' own fields may have moved. The next static round lowers
+        // those it drops again (`defaults_waiting`).
+        let waiting = &mut self.defaults_waiting;
+        self.field_default_funcs.retain(|(class, _), id| {
+            let keep = !is_stale(*id) && !classes.contains(class);
+            if !keep {
+                waiting.insert(*class);
+            }
+            keep
+        });
     }
 
     /// The function of the default of field `index` of class `cid`
@@ -919,8 +937,10 @@ impl Lowerer {
 
     /// The functions of class `cid`'s own field defaults whose
     /// expressions are checked and not lowered yet (`field_default_funcs`):
-    /// a static round's step for one class.
-    fn lower_field_defaults_of(&mut self, world: &World, out: &Output, cid: ClassId) {
+    /// a static round's step for one class. Whether one was left because
+    /// its expression is not checked yet.
+    fn lower_field_defaults_of(&mut self, world: &World, out: &Output, cid: ClassId) -> bool {
+        let mut left = false;
         let class_info = world.class(cid);
         let fields = world.all_fields(class_info.id);
         let own = fields.len().saturating_sub(class_info.fields.len());
@@ -940,6 +960,7 @@ impl Lowerer {
                 continue;
             };
             if !out.node_types.contains_key(&default.id) {
+                left = true;
                 continue;
             }
             let id = self.alloc_func();
@@ -957,6 +978,79 @@ impl Lowerer {
             });
             self.set_func(id, f);
         }
+        left
+    }
+
+    /// The oracle's check (`QUARZ_VERIFY_STATIC_TABLES`, #717) that a
+    /// static round left no default of class `cid` unlowered that
+    /// `lower_field_defaults_of` would lower: every class's, as the
+    /// rounds lowered them before the kept tables.
+    fn assert_defaults_lowered(&self, world: &World, out: &Output, cid: ClassId) {
+        let class_info = world.class(cid);
+        let fields = world.all_fields(cid);
+        let own = fields.len().saturating_sub(class_info.fields.len());
+        for (i, (field, _)) in fields.iter().enumerate().skip(own) {
+            let due = field.baked_default.is_some()
+                || field
+                    .default
+                    .as_ref()
+                    .is_some_and(|d| out.node_types.contains_key(&d.id));
+            assert!(
+                !due || self.field_default_funcs.contains_key(&(cid, i)),
+                "internal error (QUARZ_VERIFY_STATIC_TABLES): the default of `{}#@{}` is not lowered (#717)",
+                class_info.name,
+                field.name
+            );
+        }
+    }
+
+    /// The kept tables brought up to `world` (`kept::Kept::sync`, or built
+    /// from nothing for another class graph), with the overridden set and
+    /// the layouts; compared with the tables built from nothing when the
+    /// oracle asks (`QUARZ_VERIFY_STATIC_TABLES`).
+    fn sync_tables(&mut self, world: &World, out: &Output) {
+        let stats = match &mut self.kept {
+            Some(k) if k.fits(world) => k.sync(world, out, &mut self.layouts),
+            _ => {
+                self.kept = Some(kept::Kept::build(
+                    world,
+                    out,
+                    &mut self.layouts,
+                    self.epochs + 1,
+                ));
+                kept::SyncStats {
+                    full: true,
+                    classes: world.classes.len(),
+                    methods: world.methods.len(),
+                    ..Default::default()
+                }
+            }
+        };
+        let k = self.kept.as_ref().expect("synced above");
+        self.epochs = k.epoch();
+        self.overridden = k.overridden.clone();
+        kept::record_stats(&stats);
+        if kept::verify_enabled() {
+            kept::verify(world, out, k, &self.layouts);
+        }
+    }
+
+    /// The kept tables' epoch (`kept::Kept::changed_since`): what the
+    /// readers keeping rows of their own (the static runner's reflection
+    /// and safety net) compare with.
+    pub fn tables_epoch(&self) -> u64 {
+        self.kept.as_ref().map_or(0, |k| k.epoch())
+    }
+
+    /// The classes whose kept rows were rebuilt after `epoch`, or `None`
+    /// when everything was (or no tables are kept, or they have not read
+    /// every event of `world`).
+    pub fn tables_changed_since(&self, world: &World, epoch: u64) -> Option<Vec<ClassId>> {
+        let k = self.kept.as_ref()?;
+        if !k.fits(world) || !k.synced(world) {
+            return None;
+        }
+        k.changed_since(epoch)
     }
 
     /// Lower a class body's `static` statement (docs/14) with what it
@@ -983,8 +1077,7 @@ impl Lowerer {
         self.quoted_sites.clear();
         self.pending.clear();
         self.files = files;
-        self.overridden = world.overridden_methods(&world.override_table());
-        self.layouts = layout::compute(world);
+        self.sync_tables(world, out);
         if self.method_funcs.len() < world.methods.len() {
             self.method_funcs.resize(world.methods.len(), None);
         }
@@ -992,9 +1085,32 @@ impl Lowerer {
             self.reached.resize(world.methods.len(), false);
         }
         // Field defaults whose expressions are checked (a construction
-        // at compile time needs them).
-        for class_info in &world.classes {
-            self.lower_field_defaults_of(world, out, class_info.id);
+        // at compile time needs them): of the classes the kept tables
+        // rebuilt since the last round (a field generated into them), and
+        // of those with a default left for later.
+        let kept = self.kept.as_ref().expect("synced above");
+        let classes: Vec<ClassId> = match kept.changed_since(self.defaults_epoch) {
+            Some(mut cs) => {
+                cs.extend(self.defaults_waiting.drain());
+                cs.sort_unstable();
+                cs.dedup();
+                cs
+            }
+            None => {
+                self.defaults_waiting.clear();
+                (0..world.classes.len() as ClassId).collect()
+            }
+        };
+        self.defaults_epoch = kept.epoch();
+        for c in classes {
+            if self.lower_field_defaults_of(world, out, c) {
+                self.defaults_waiting.insert(c);
+            }
+        }
+        if kept::verify_enabled() {
+            for c in 0..world.classes.len() as ClassId {
+                self.assert_defaults_lowered(world, out, c);
+            }
         }
         let stmt_func = match self.static_stmt_func {
             Some((id, f)) if id == stmt.id => f,
@@ -1092,7 +1208,8 @@ impl Lowerer {
             .map(|f| f.expect("function lowered"))
             .collect();
         let file_names = self.files.iter().map(|f| f.name.clone()).collect();
-        let rt = rtworld::build(world, out, self, file_names);
+        let mut rt = self.kept.as_ref().expect("synced above").rt.clone();
+        rtworld::fill(&mut rt, world, self, file_names);
         self.static_mode = false;
         StaticRound {
             delta: Delta {
@@ -1673,14 +1790,37 @@ pub fn net_errors(
     rows_errors(world, &rtworld::declared(world, out), own, false)
 }
 
-/// The safety net's errors over the rows of tables already built (a
-/// compile-time round's, `Lowerer::lower_static`, #645).
-pub fn rows_net(
+/// The safety net over the rows of tables already built (a compile-time
+/// round's, `Lowerer::lower_static`, #645): the rows of `classes` (all
+/// when `None`) checked, and the errors among them. The runner keeps the
+/// others' verdicts across rounds: a verdict reads only its row and what
+/// a static phase does not change (#717).
+#[allow(clippy::type_complexity)]
+pub fn rows_net_of(
     world: &World,
     rt: &quarz_ir::RtWorld,
     own: &dyn Fn(quarz_types::witness_net::Decl) -> bool,
-) -> Vec<quarz_types::FileDiagnostic> {
-    rows_errors(world, rt, own, true)
+    classes: Option<&[ClassId]>,
+) -> (
+    Vec<quarz_types::witness_net::Checked>,
+    Vec<quarz_types::FileDiagnostic>,
+) {
+    witness_net(world, rt);
+    let checked = quarz_types::witness_net::check_where(
+        world,
+        &rt.override_rows,
+        &rt.witness_rows,
+        &rt.class_override_rows,
+        &|c| classes.is_none_or(|cs| cs.binary_search(&c).is_ok()),
+    );
+    let errors = quarz_types::witness_net::errors(world, &checked, own, true);
+    (checked, errors)
+}
+
+/// Whether the oracle over the tables kept across a static phase's rounds
+/// runs (`QUARZ_VERIFY_STATIC_TABLES`, #717).
+pub fn verify_static_tables() -> bool {
+    kept::verify_enabled()
 }
 
 /// The net over `rt`'s rows: the report `QUARZ_WITNESS_NET` asks for, and
@@ -1700,49 +1840,6 @@ fn rows_errors(
         &rt.class_override_rows,
     );
     quarz_types::witness_net::errors(world, &checked, own, round)
-}
-
-/// What the witness record reads, by size: the world's classes,
-/// methods and extensions, and R0's and the class side's witnesses.
-/// Within one program it changes whenever the record could: classes and
-/// modules are not reopened (a new include needs a new class or
-/// extension), and a `static` statement's generation only adds
-/// (`StaticHost::add_generated` pushes a new method, refusing a name the
-/// class has, so no signature changes in place; `add_generated_field` adds
-/// fields and `set_generated_captures` a body's captures, which the record
-/// does not read). Across a REPL input that is rolled back it does not
-/// hold: `Lowerer::forget` drops the memo.
-fn record_key(world: &World) -> [usize; 5] {
-    let [c, m, e] = world_size(world);
-    [c, m, e, world.ext_impls.len(), world.class_ext_impls.len()]
-}
-
-impl Lowerer {
-    /// The witness record for `world` (`rtworld::witness_record`), kept
-    /// while `record_key` stays the same: the compile-time rounds of a
-    /// program build their tables again and again (#536 step 3's S2).
-    pub fn witness_record(&self, world: &World) -> Vec<(ClassId, MethodId, Option<MethodId>)> {
-        let key = record_key(world);
-        let mut memo = self.record_memo.borrow_mut();
-        if let Some((k, r)) = memo.as_ref() {
-            if *k == key {
-                return r.clone();
-            }
-        }
-        let r = rtworld::witness_record(world);
-        *memo = Some((key, r.clone()));
-        r
-    }
-}
-
-/// The world's size the declared tables were built for: its classes,
-/// methods and extensions.
-fn world_size(world: &World) -> [usize; 3] {
-    [
-        world.classes.len(),
-        world.methods.len(),
-        world.extensions.len(),
-    ]
 }
 
 /// The safety net's report over the rows just built, on stderr, when

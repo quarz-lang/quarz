@@ -3123,6 +3123,7 @@ impl Checker {
             self.diagnostics.append(&mut declarer.diagnostics);
             self.world = std::mem::take(&mut declarer.world);
             self.world.freeze_ancestors(true);
+            self.world.static_events.push(StaticEvent::Conformance(due));
         }
     }
 
@@ -3204,6 +3205,7 @@ impl Checker {
             self.diagnostics.append(&mut declarer.diagnostics);
             self.world = std::mem::take(&mut declarer.world);
             self.world.freeze_ancestors(true);
+            self.world.static_events.push(StaticEvent::Conformance(due));
         }
     }
 
@@ -17720,9 +17722,15 @@ impl Checker {
                 .any(|t| self.may_be_of_class(m, t) && !self.world.is_subtype(m, t))
         });
         if checked {
-            self.out.run_time_tests.insert(
-                expr.id,
-                crate::testable::run_time_test(&self.world, &target),
+            let test = crate::testable::run_time_test(&self.world, &target);
+            // A site checked again (a method `add_generated_field` set
+            // unchecked) records what it recorded before: the lowering
+            // may keep a function that read it (#717, which only drops
+            // the functions touching the classes' fields).
+            let before = self.out.run_time_tests.insert(expr.id, test);
+            debug_assert!(
+                before.is_none_or(|b| self.out.run_time_tests.get(&expr.id) == Some(&b)),
+                "internal error: the run-time test of a site changed when it was checked again (#717)"
             );
         }
         match call.name.as_str() {
@@ -18573,6 +18581,7 @@ impl crate::StaticHost for Checker {
     ) -> Result<(), String> {
         self.check_generated_new(class, from, method, init)?;
         self.generated_news.push((class, from, method, init));
+        self.world.static_events.push(StaticEvent::New(class));
         // Its subclasses inherit `method`: checked as a written one's `new`.
         self.self_news.push((class, init, method, at.1, at.0));
         Ok(())
@@ -18581,6 +18590,7 @@ impl crate::StaticHost for Checker {
         if let Some(g) = &mut self.world.method_mut(method).generated {
             g.captures = captures;
         }
+        self.world.static_events.push(StaticEvent::Captures(method));
     }
     fn add_generated(&mut self, info: MethodInfo) -> Result<MethodId, String> {
         // `def_initialize` (docs/14 §5): one more overload of
@@ -18607,6 +18617,7 @@ impl crate::StaticHost for Checker {
             }
             let owner = info.owner;
             let id = self.world.add_method(info);
+            self.world.static_events.push(StaticEvent::Method(id));
             // The generated methods building a class that finds its
             // `initialize` through `owner` (on the way from it up to the
             // class `new` was checked for) now find this overload, which
@@ -18652,6 +18663,7 @@ impl crate::StaticHost for Checker {
             ));
         }
         self.world.class_mut(class).fields.push(field);
+        self.world.static_events.push(StaticEvent::Field(class));
         // The field comes after the class's own, so what was checked so
         // far keeps its field indices (`Output::ivar_fields`), except in
         // the subclasses, whose own fields come after it now: their
@@ -18677,6 +18689,9 @@ impl crate::StaticHost for Checker {
         self.diagnostics.append(&mut declarer.diagnostics);
         self.world = std::mem::take(&mut declarer.world);
         self.world.freeze_ancestors(true);
+        self.world
+            .static_events
+            .push(StaticEvent::Rechecked(classes.to_vec()));
     }
 
     fn report_errors(&mut self, errors: Vec<crate::FileDiagnostic>) {
@@ -18777,6 +18792,8 @@ impl Checker {
                 info.name
             ));
         }
-        Ok(self.world.add_method(info))
+        let id = self.world.add_method(info);
+        self.world.static_events.push(StaticEvent::Method(id));
+        Ok(id)
     }
 }
