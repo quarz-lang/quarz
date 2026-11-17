@@ -233,7 +233,6 @@ module HTTP
 
     def read_timeout=(d: Duration?) -> Void
       @read_timeout = d
-      nil
     end
 
     # Read more into the buffer; false at the end of the stream.
@@ -355,7 +354,6 @@ module HTTP
       else
         @on_end = f
       end
-      nil
     end
 
     # :nodoc:
@@ -374,7 +372,6 @@ module HTTP
         @on_end = nil
         cb.call(false) if cb
       end
-      nil
     end
 
     # A body with these contents (for requests built in tests).
@@ -432,7 +429,6 @@ module HTTP
       cb = @on_end
       @on_end = nil
       cb.call(true) if cb
-      nil
     end
 
     private def read_chunk_raw(max: Int) -> Bytes
@@ -598,7 +594,6 @@ module HTTP
         end
         ended
       end
-      nil
     end
   end
 
@@ -850,13 +845,11 @@ module HTTP
           io.write(data)
         end
       end
-      nil
     end
 
     # Flushes what has been written to the connection.
     def flush -> Void
       @io.flush
-      nil
     end
 
     # Ends a chunked body (the last, empty chunk). The server calls it when
@@ -865,7 +858,6 @@ module HTTP
       return nil if @head
       io = @io
       Task.timeout(@timeout) { io.write("0\r\n\r\n") } if @chunked
-      nil
     end
   end
 
@@ -976,7 +968,6 @@ module HTTP
     in Content::Empty
       Task.timeout(timeout) { io.write(head) }
     end
-    nil
   end
 
   # ----- handlers -------------------------------------------------------------------
@@ -1455,7 +1446,6 @@ module HTTP
         close_listener
         @done.close
       end
-      nil
     end
 
     # Stops the server: it stops accepting, closes the connections waiting
@@ -1482,13 +1472,11 @@ module HTTP
         end
         break
       end
-      nil
     end
 
     # Waits until `#serve` has returned (after a `#shutdown`).
     def wait -> Void
       @done.receive?
-      nil
     end
 
     # Whether `#shutdown` has been called.
@@ -1503,7 +1491,6 @@ module HTTP
       rescue IOError, SystemCallError
         nil
       end
-      nil
     end
 
     private def close_idle -> Void
@@ -1516,7 +1503,6 @@ module HTTP
       end
       # (A handshake that has finished is not cancelled: its task is done.)
       @handshakes.value.each { |_, s| s.cancel }
-      nil
     end
 
     protected def accept_loop(scope: Task::Scope) -> Void
@@ -1549,7 +1535,6 @@ module HTTP
           end
         end
       end
-      nil
     end
 
     private def accept_one -> [IO, Socket::Address?]?
@@ -1572,7 +1557,6 @@ module HTTP
       @tokens.try_receive
       left = @active.update { |n| n - 1 }
       @drained.try_send(nil) if left == 0 && stopping?
-      nil
     end
 
     private def report(e: Exception, req: Request?) -> Void
@@ -1592,7 +1576,6 @@ module HTTP
       else
         STDERR.puts "HTTP::Server#{where}: #{e.class.name}: #{e.message}"
       end
-      nil
     end
 
     # The requests of one connection, one after another. Whatever goes
@@ -1710,7 +1693,6 @@ module HTTP
           end
         end
       end
-      nil
     end
 
     # Read what the handler left of the body, if little; whether the
@@ -1971,7 +1953,6 @@ module HTTP
     # order they were added.
     def each(&: (String, Pattern, T) -> Void) -> Void
       entries.each { |e| yield e.method, e.pattern, e.value }
-      nil
     end
 
     # The number of routes.
@@ -2079,7 +2060,6 @@ module HTTP
     # or one conflicting with a route already added (`Routes#add`).
     def handle(method: String, pattern: String, handler: Handler) -> Void
       @routes = @routes.add(method, pattern, handler)
-      nil
     end
 
     # The same, with a handler from the block.
@@ -2123,19 +2103,16 @@ module HTTP
       router.routes.each do |method, pattern, handler|
         handle(method, prefix.delete_suffix("/") + pattern.source, handler)
       end
-      nil
     end
 
     # The handler of a path no route has (by default, `Server::Response.not_found`).
     def not_found(handler: Handler) -> Void
       @fallback = handler
-      nil
     end
 
     # :ditto:
     def not_found(&blk: shareable (Server::Request) -> Server::Response) -> Void
       @fallback = ProcHandler.new(blk)
-      nil
     end
 
     # The router of the routes added so far.
@@ -2575,7 +2552,6 @@ module HTTP
       # connection is closed.
       def close -> Void
         body.discard(65_536)
-        nil
       end
     end
 
@@ -2608,7 +2584,6 @@ module HTTP
         else
           close_io
         end
-        nil
       end
 
       private def close_io -> Void
@@ -2617,7 +2592,6 @@ module HTTP
         rescue IOError, SystemCallError
           nil
         end
-        nil
       end
 
       # Dropped before the body ended: the connection is closed.
@@ -2823,7 +2797,6 @@ module HTTP
         old = @pool.get
       end
       old.each { |_, idles| idles.each { |i| Client.close_quietly(i.io) } }
-      nil
     end
 
     # :nodoc:
@@ -2833,7 +2806,6 @@ module HTTP
       rescue IOError, SystemCallError
         nil
       end
-      nil
     end
 
     # The redirects followed.
@@ -3149,7 +3121,6 @@ module HTTP
       raise ProxyError.new(status) unless status >= 200 && status <= 299
       # What follows is the server's: the proxy sent nothing more.
       raise ProtocolError.new("the proxy sent data after its answer") if reader.buffered > 0
-      nil
     end
 
     # :nodoc:

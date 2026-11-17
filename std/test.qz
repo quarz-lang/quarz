@@ -243,7 +243,6 @@ module Test
       rescue Exception => e
         fail_with(message, "Exception raised:\n#{e.class.name}(<#{e.message}>)")
       end
-      nil
     end
 
     # Fails the test, with `message`.
@@ -292,13 +291,11 @@ module Test
     # ```
     def omit_if(condition: Bool, message: String = "omitted") -> Void
       raise Omitted.new(message) if condition
-      nil
     end
 
     # Omits the test (as `#omit`) unless `condition` is true.
     def omit_unless(condition: Bool, message: String = "omitted") -> Void
       raise Omitted.new(message) unless condition
-      nil
     end
 
 
@@ -311,7 +308,6 @@ module Test
     def check(ok: Bool, message: String?, &: () -> String) -> Void
       add_assertion
       fail_with(message, yield) unless ok
-      nil
     end
 
     # Fails the test: raises `Test::AssertionFailed` with `message` (when
@@ -374,13 +370,11 @@ module Test
 
     def add_assertion -> Void
       @assertion_count += 1
-      nil
     end
 
     # A note shown in the report.
     def notify(message: String) -> Void
       @notes = @notes.push(message)
-      nil
     end
   end
 
@@ -402,7 +396,6 @@ module Test
       rescue AssertionFailed => e
         raise AssertionFailed.new("#{where}: #{e.message}")
       end
-      nil
     end
 
     # False, but not to the checker: what a `quarz no_run` example does
@@ -986,7 +979,6 @@ module Test
         scope.cancel
       end
     end
-    nil
   end
 
   # :nodoc:
@@ -997,7 +989,6 @@ module Test
       print r.mark
       STDOUT.flush
     end
-    nil
   end
 
   # :nodoc:
@@ -1037,7 +1028,6 @@ module Test
     puts "#{results.size} tests, #{assertions} assertions, #{count.call(:failure)} failures, " \
          "#{count.call(:error)} errors, #{count.call(:pending)} pendings, " \
          "#{count.call(:omission)} omissions, #{notes} notifications"
-    nil
   end
 
   # :nodoc:
@@ -1075,6 +1065,5 @@ module Test
     end
     out << "</testsuites>\n"
     File.write(path, out.to_s)
-    nil
   end
 end
