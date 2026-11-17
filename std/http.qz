@@ -875,7 +875,7 @@ module HTTP
       end
     end
     headers = headers.delete("content-length").delete("transfer-encoding") if no_body
-    headers = headers.put("date", Time.now.utc.strftime("%a, %d %b %Y %H:%M:%S GMT")) unless headers.key?("date")
+    headers = headers.put("date", Time.now.httpdate) unless headers.key?("date")
     if !keep_alive
       headers = headers.put("connection", "close")
     elsif http10
