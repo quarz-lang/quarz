@@ -559,8 +559,8 @@ module HTTP
   # HTTP::Proxies.of(["10.0.0.0/33"])   # raises ArgumentError
   # ```
   data Proxies(
-    # Each network's address bytes (4 or 16) and prefix length in bits.
-    networks: Array[[Bytes, Int]]
+    # The networks.
+    networks: Array[Socket::IP::Network]
   )
     # No trusted proxy.
     def self.none -> Proxies = Proxies.new([])
@@ -570,13 +570,12 @@ module HTTP
     def self.of(specs: Array[String]) -> Proxies
       Proxies.new(specs.map do |spec|
         addr, slash, bits = spec.partition("/")
-        bytes = HTTP.ip_bytes(addr)
-        raise ArgumentError, "not an address: #{spec}" if bytes.nil?
-        unless slash.empty? || (bits.match?(/\A[0-9]{1,3}\z/) && bits.to_i <= bytes.size * 8)
+        ip = HTTP.parse_ip(addr)
+        raise ArgumentError, "not an address: #{spec}" if ip.nil?
+        unless slash.empty? || (bits.match?(/\A[0-9]{1,3}\z/) && bits.to_i <= ip.bytes.size * 8)
           raise ArgumentError, "bad network prefix: #{spec}"
         end
-        prefix = slash.empty? ? bytes.size * 8 : bits.to_i
-        [bytes, prefix]
+        Socket::IP::Network.new(ip, slash.empty? ? ip.bytes.size * 8 : bits.to_i)
       end)
     end
 
@@ -586,66 +585,17 @@ module HTTP
     # Whether the numeric address `host` is in one of the networks; `false`
     # for anything that is not an address.
     def include?(host: String) -> Bool
-      bytes = HTTP.ip_bytes(host)
-      return false if bytes.nil?
-      networks.any? { |n| HTTP.in_network?(bytes, n[0], n[1]) }
+      ip = HTTP.parse_ip(host)
+      return false if ip.nil?
+      networks.any? { |n| ip.in?(n) }
     end
   end
 
   # :nodoc:
-  # The bytes of a numeric IPv4 (4) or IPv6 (16) address; nil for
-  # anything else. An IPv4-mapped IPv6 address is its IPv4 address.
-  def self.ip_bytes(host: String) -> Bytes?
-    h = host.delete_prefix("[").delete_suffix("]")
-    if h.include?(":")
-      head, sep, tail = h.partition("::")
-      groups = ->(s: String) { s.empty? ? [] : s.split(":") }
-      left = groups.call(head)
-      right = groups.call(tail)
-      # A trailing dotted IPv4 part counts as two groups.
-      v4: Bytes? = nil
-      last = right.empty? ? (left.empty? ? nil : left[-1]) : right[-1]
-      if last && last.include?(".")
-        v4 = ip_bytes(last)
-        return nil if v4.nil? || v4.size != 4
-        if right.empty?
-          left = left.take(left.size - 1)
-        else
-          right = right.take(right.size - 1)
-        end
-      end
-      have = left.size + right.size + (v4 ? 2 : 0)
-      return nil if sep.empty? ? have != 8 : have > 7
-      all = left + (0...(8 - have)).map { |_| "0" } + right
-      out = Bytes::Builder.new
-      ok = all.all? { |g| g.match?(/\A[0-9A-Fa-f]{1,4}\z/) }
-      return nil unless ok
-      all.each do |g|
-        v = g.to_i(16)
-        out << v / 256
-        out << v % 256
-      end
-      out << v4 if v4
-      bytes = out.to_bytes
-      return nil unless bytes.size == 16
-      mapped = bytes.slice(0, 12) == Bytes[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255]
-      mapped ? bytes.slice(12, 4) : bytes
-    else
-      parts = h.split(".")
-      return nil unless parts.size == 4 && parts.all? { |p| p.match?(/\A[0-9]{1,3}\z/) && p.to_i <= 255 }
-      Bytes.from(parts.map(&:to_i))
-    end
-  end
-
-  # :nodoc:
-  def self.in_network?(addr: Bytes, net: Bytes, prefix: Int) -> Bool
-    return false unless addr.size == net.size
-    full = prefix / 8
-    return false unless addr.slice(0, full) == net.slice(0, full)
-    rest = prefix % 8
-    return true if rest == 0
-    mask = (0xff << (8 - rest)) & 0xff
-    (addr[full] & mask) == (net[full] & mask)
+  # The numeric address `host` is, in brackets or not; nil for anything
+  # else. An IPv4-mapped IPv6 address is its IPv4 address.
+  def self.parse_ip(host: String) -> Socket::IP?
+    Socket::IP.parse(host.delete_prefix("[").delete_suffix("]"))&.unmap
   end
 
   # A request target split at its first `?` into the path, percent-decoded,
@@ -1216,7 +1166,7 @@ module HTTP
         chain = headers.all("x-forwarded-for").flat_map { |v| v.split(",").map(&:strip) }
         chain.reverse.each do |a|
           # Anything but an address ends the chain: the peer's then.
-          return peer_host if HTTP.ip_bytes(a).nil?
+          return peer_host if HTTP.parse_ip(a).nil?
           return a unless proxies.include?(a)
         end
         peer_host

@@ -50,6 +50,8 @@ class HttpHardeningParseTest < Test::Case
       "IPv4 prefix too long" => ["127.0.0.1/33", "bad network prefix: 127.0.0.1/33"],
       "IPv6 prefix too long" => ["::1/129", "bad network prefix: ::1/129"],
       "not an address" => ["nope", "not an address: nope"],
+      # Read as octal by some parsers (RFC 6943 section 3.1.1).
+      "leading zero" => ["010.0.0.0/8", "not an address: 010.0.0.0/8"],
     }
   end
 
@@ -61,6 +63,13 @@ class HttpHardeningParseTest < Test::Case
 
   def test_proxy_networks
     assert_true(HTTP::Proxies.of(["10.0.0.0/8", "::1/128"]).include?("10.9.9.9"))
+  end
+
+  # An entry with a leading zero is not an address: it ends the chain.
+  def test_forwarded_for_with_a_leading_zero
+    req = HTTP::Server::Request.get("/", HTTP::Headers.empty.add("X-Forwarded-For", "1.2.3.4, 010.0.0.5"))
+            .with(remote_address: Socket::Address.new("127.0.0.1", 9), proxies: HTTP::Proxies.of(["127.0.0.1", "10.0.0.0/8"]), trusted: true)
+    assert_equal("127.0.0.1", req.remote_ip)
   end
 
   def test_bad_forwarded_for_ignored

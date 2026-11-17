@@ -1,0 +1,392 @@
+# Socket::IP: parsing, printing, networks, and the ranges the predicates
+# name. The expected answers of `global?` come from the IANA
+# special-purpose registries, copied below, not from running the code.
+require "socket"
+require "test"
+
+class SocketIPParseTest < Test::Case
+  def ip(text: String) -> Socket::IP
+    ip = Socket::IP.parse(text)
+    raise ArgumentError, "not parsed: #{text}" if ip.nil?
+    ip
+  end
+
+  def data_parsed -> Hash[String, [String, String]]
+    {
+      "IPv4" => ["192.0.2.1", "192.0.2.1"],
+      "IPv4 zeros" => ["0.0.0.0", "0.0.0.0"],
+      "IPv4 top" => ["255.255.255.255", "255.255.255.255"],
+      "IPv6 full" => ["1:2:3:4:5:6:7:8", "1:2:3:4:5:6:7:8"],
+      "IPv6 upper case and leading zeros" => ["2001:0DB8:0000:0000:0000:0000:0000:0001", "2001:db8::1"],
+      "IPv6 compressed" => ["2001:db8::1", "2001:db8::1"],
+      "IPv6 unspecified" => ["::", "::"],
+      "IPv6 loopback" => ["::1", "::1"],
+      "IPv6 trailing ::" => ["2001:db8::", "2001:db8::"],
+      "IPv6 dotted tail" => ["64:ff9b::192.0.2.1", "64:ff9b::c000:201"],
+      "IPv4-mapped" => ["::ffff:192.0.2.1", "::ffff:192.0.2.1"],
+      "IPv4-mapped in hex" => ["::ffff:c000:201", "::ffff:192.0.2.1"],
+      # RFC 5952 section 4.2: the longest run, the first of equal ones,
+      # and never one group alone.
+      "longest zero run" => ["1:0:0:2:0:0:0:3", "1:0:0:2::3"],
+      "first of equal runs" => ["1:0:0:2:3:0:0:4", "1::2:3:0:0:4"],
+      "one zero group" => ["1:0:2:3:4:5:6:7", "1:0:2:3:4:5:6:7"],
+      "run at the end" => ["0:0:1:0:0:0:0:0", "0:0:1::"],
+    }
+  end
+
+  def test_parsed(data: [String, String])
+    text, expected = data
+    assert_equal(expected, ip(text).to_s)
+  end
+
+  def data_refused -> Hash[String, String]
+    {
+      "three parts" => "1.2.3",
+      "five parts" => "1.2.3.4.5",
+      "trailing dot" => "1.2.3.4.",
+      "part over 255" => "1.2.3.256",
+      "leading zero" => "010.0.0.1",
+      "leading zero, all zeros" => "1.2.3.00",
+      "sign" => "+1.2.3.4",
+      "empty" => "",
+      "name" => "localhost",
+      "two ::" => "1::2::3",
+      ":::" => ":::",
+      "seven groups" => "1:2:3:4:5:6:7",
+      "nine groups" => "1:2:3:4:5:6:7:8:9",
+      "eight groups and ::" => "1:2:3:4::5:6:7:8",
+      "trailing colon" => "1:2:3:4:5:6:7:8:",
+      "leading colon" => ":1:2:3:4:5:6:7:8",
+      "trailing colon after ::" => "1::2:",
+      "five hex digits" => "1::12345",
+      "brackets" => "[::1]",
+      "zone" => "fe80::1%eth0",
+      "dotted tail not last" => "::1.2.3.4:1",
+      "bad dotted tail" => "::ffff:1.2.3",
+      "dotted tail with leading zero" => "::ffff:1.2.3.04",
+      "dotted part before ::" => "1.2.3.4::",
+      "dotted part before :: after a group" => "1:2.3.4.5::",
+    }
+  end
+
+  def test_refused(data: String)
+    assert_nil(Socket::IP.parse(data))
+  end
+
+  def test_bytes
+    assert_equal(Bytes[32, 1, 13, 184, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], ip("2001:db8::1").bytes)
+    assert_equal(Bytes[0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0, 7, 0, 8], ip("1:2:3:4:5:6:7:8").bytes)
+    assert_equal(Bytes[192, 0, 2, 1], ip("192.0.2.1").bytes)
+    assert_equal("::ffff:10.0.0.1", Socket::IP.new(Bytes[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 10, 0, 0, 1]).to_s)
+    e = assert_raise(ArgumentError) { Socket::IP.new(Bytes[1, 2, 3]); nil }
+    assert_equal("an IP address has 4 or 16 bytes, not 3", e.message)
+  end
+
+  def test_families_and_unmap
+    v4 = ip("10.0.0.1")
+    mapped = ip("::ffff:10.0.0.1")
+    assert_true(v4.v4?)
+    assert_false(v4.v6?)
+    assert_true(mapped.v6?)
+    assert_true(mapped.mapped?)
+    assert_false(ip("::1").mapped?)
+    assert_equal(v4, mapped.unmap)
+    assert_equal(v4, v4.unmap)
+    assert_false(v4 == mapped)
+  end
+
+  def test_address_ip
+    assert_equal(ip("::1"), Socket::Address.new("::1", 80).ip)
+    e = assert_raise(ArgumentError) { Socket::Address.new("localhost", 80).ip; nil }
+    assert_equal("not an IP address: localhost", e.message)
+  end
+end
+
+class SocketIPNetworkTest < Test::Case
+  def ip(text: String) -> Socket::IP
+    ip = Socket::IP.parse(text)
+    raise ArgumentError, "not parsed: #{text}" if ip.nil?
+    ip
+  end
+
+  def net(text: String) -> Socket::IP::Network
+    n = Socket::IP::Network.parse(text)
+    raise ArgumentError, "not parsed: #{text}" if n.nil?
+    n
+  end
+
+  def data_network_parsed -> Hash[String, [String, String]]
+    {
+      "IPv4" => ["10.0.0.0/8", "10.0.0.0/8"],
+      "host bits kept" => ["10.1.2.3/8", "10.1.2.3/8"],
+      "bare IPv4" => ["10.0.0.1", "10.0.0.1/32"],
+      "bare IPv6" => ["::1", "::1/128"],
+      "IPv6" => ["fd00::/8", "fd00::/8"],
+      "zero prefix" => ["::/0", "::/0"],
+      "mapped, /96 or longer" => ["::ffff:10.0.0.0/104", "10.0.0.0/8"],
+      "mapped, shorter" => ["::ffff:0.0.0.0/80", "::ffff:0.0.0.0/80"],
+    }
+  end
+
+  def test_network_parsed(data: [String, String])
+    text, expected = data
+    assert_equal(expected, net(text).to_s)
+  end
+
+  def data_network_refused -> Hash[String, String]
+    {
+      "IPv4 prefix too long" => "10.0.0.0/33",
+      "IPv6 prefix too long" => "::/129",
+      "empty prefix" => "10.0.0.0/",
+      "negative prefix" => "10.0.0.0/-1",
+      "prefix not a number" => "10.0.0.0/x",
+      "not an address" => "nope/8",
+    }
+  end
+
+  def test_network_refused(data: String)
+    assert_nil(Socket::IP::Network.parse(data))
+  end
+
+  def test_network_new
+    e = assert_raise(ArgumentError) { Socket::IP::Network.new(ip("10.0.0.0"), 33); nil }
+    assert_equal("bad network prefix: 10.0.0.0/33", e.message)
+  end
+
+  def data_in -> Hash[String, [String, String, Bool]]
+    {
+      "inside" => ["10.200.0.1", "10.0.0.0/8", true],
+      "outside" => ["11.0.0.1", "10.0.0.0/8", false],
+      "partial byte, inside" => ["172.31.255.255", "172.16.0.0/12", true],
+      "partial byte, outside" => ["172.32.0.0", "172.16.0.0/12", false],
+      "host bits of the network ignored" => ["10.9.9.9", "10.1.2.3/8", true],
+      "zero prefix" => ["1.2.3.4", "0.0.0.0/0", true],
+      "a host" => ["10.0.0.1", "10.0.0.1", true],
+      "another host" => ["10.0.0.2", "10.0.0.1", false],
+      "IPv6 inside" => ["fd12::1", "fd00::/8", true],
+      "IPv6 outside" => ["fe80::1", "fd00::/8", false],
+      "mapped in an IPv4 network" => ["::ffff:10.0.0.1", "10.0.0.0/8", true],
+      "IPv4 in a mapped network" => ["10.0.0.1", "::ffff:10.0.0.0/104", true],
+      "IPv4 not in an IPv6 network" => ["10.0.0.1", "::/0", false],
+      "IPv6 not in an IPv4 network" => ["::1", "0.0.0.0/0", false],
+      # A mapped network shorter than /96 stays an IPv6 one.
+      "IPv6 in a mapped /64" => ["::1", "::ffff:0:0/64", true],
+      "mapped in a mapped /64" => ["::ffff:1.2.3.4", "::ffff:0:0/64", true],
+      "IPv4 not in a mapped /64" => ["1.2.3.4", "::ffff:0:0/64", false],
+      "IPv6 in ::/0" => ["::1", "::/0", true],
+      "mapped in ::/0" => ["::ffff:1.2.3.4", "::/0", true],
+      "IPv4 not in ::/0" => ["1.2.3.4", "::/0", false],
+      "IPv6 in a mapped /90" => ["::ffc0:0:1", "::ffff:0:0/90", true],
+      "IPv6 not in a mapped /90" => ["::ff80:0:1", "::ffff:0:0/90", false],
+      "mapped in a mapped /90" => ["::ffff:1.2.3.4", "::ffff:0:0/90", true],
+      "IPv4 not in a mapped /90" => ["1.2.3.4", "::ffff:0:0/90", false],
+    }
+  end
+
+  def test_in(data: [String, String, Bool])
+    address, network, expected = data
+    assert_equal(expected, ip(address).in?(net(network)))
+  end
+end
+
+class SocketIPRangesTest < Test::Case
+  def ip(text: String) -> Socket::IP
+    ip = Socket::IP.parse(text)
+    raise ArgumentError, "not parsed: #{text}" if ip.nil?
+    ip
+  end
+
+  # Each predicate's answers, by its ranges: [address, loopback?,
+  # private?, link_local?, multicast?, unspecified?].
+  def data_predicates -> Hash[String, [String, Bool, Bool, Bool, Bool, Bool]]
+    {
+      "127.0.0.0/8 first" => ["127.0.0.0", true, false, false, false, false],
+      "127.0.0.0/8 last" => ["127.255.255.255", true, false, false, false, false],
+      "::1" => ["::1", true, false, false, false, false],
+      "::2" => ["::2", false, false, false, false, false],
+      "10.0.0.0/8" => ["10.255.255.255", false, true, false, false, false],
+      "172.16.0.0/12" => ["172.16.0.0", false, true, false, false, false],
+      "past 172.16.0.0/12" => ["172.32.0.0", false, false, false, false, false],
+      "192.168.0.0/16" => ["192.168.255.255", false, true, false, false, false],
+      "fc00::/7 low" => ["fc00::", false, true, false, false, false],
+      "fc00::/7 high" => ["fdff:ffff::1", false, true, false, false, false],
+      "100.64.0.0/10 is not private" => ["100.64.0.1", false, false, false, false, false],
+      "169.254.0.0/16" => ["169.254.0.1", false, false, true, false, false],
+      "fe80::/10" => ["febf:ffff::1", false, false, true, false, false],
+      "past fe80::/10" => ["fec0::1", false, false, false, false, false],
+      "224.0.0.0/4 low" => ["224.0.0.1", false, false, false, true, false],
+      "224.0.0.0/4 high" => ["239.255.255.255", false, false, false, true, false],
+      "past 224.0.0.0/4" => ["240.0.0.1", false, false, false, false, false],
+      "ff00::/8" => ["ff02::1", false, false, false, true, false],
+      "0.0.0.0" => ["0.0.0.0", false, false, false, false, true],
+      "0.0.0.1" => ["0.0.0.1", false, false, false, false, false],
+      "::" => ["::", false, false, false, false, true],
+      "mapped loopback" => ["::ffff:127.0.0.1", true, false, false, false, false],
+      "mapped private" => ["::ffff:192.168.0.1", false, true, false, false, false],
+      "mapped link-local" => ["::ffff:169.254.1.1", false, false, true, false, false],
+      "mapped multicast" => ["::ffff:224.0.0.1", false, false, false, true, false],
+      "mapped unspecified" => ["::ffff:0.0.0.0", false, false, false, false, true],
+      "global" => ["8.8.8.8", false, false, false, false, false],
+    }
+  end
+
+  def test_predicates(data: [String, Bool, Bool, Bool, Bool, Bool])
+    address, loopback, priv, link_local, multicast, unspecified = data
+    a = ip(address)
+    assert_equal([loopback, priv, link_local, multicast, unspecified],
+                 [a.loopback?, a.private?, a.link_local?, a.multicast?, a.unspecified?])
+  end
+
+  # The IANA IPv4 and IPv6 Special-Purpose Address Registries
+  # (iana-ipv4-special-registry, iana-ipv6-special-registry; the rows
+  # allocated up to 2025-04): each block, its name and its "Globally
+  # Reachable" column as written there ("" for a deprecated block,
+  # which has none).
+  REGISTRY = [
+    ["0.0.0.0/8", "\"This network\"", "False"],
+    ["0.0.0.0/32", "\"This host on this network\"", "False"],
+    ["10.0.0.0/8", "Private-Use", "False"],
+    ["100.64.0.0/10", "Shared Address Space", "False"],
+    ["127.0.0.0/8", "Loopback", "False"],
+    ["169.254.0.0/16", "Link Local", "False"],
+    ["172.16.0.0/12", "Private-Use", "False"],
+    ["192.0.0.0/24", "IETF Protocol Assignments", "False"],
+    ["192.0.0.0/29", "IPv4 Service Continuity Prefix", "False"],
+    ["192.0.0.8/32", "IPv4 dummy address", "False"],
+    ["192.0.0.9/32", "Port Control Protocol Anycast", "True"],
+    ["192.0.0.10/32", "Traversal Using Relays around NAT Anycast", "True"],
+    ["192.0.0.170/32", "NAT64/DNS64 Discovery", "False"],
+    ["192.0.0.171/32", "NAT64/DNS64 Discovery", "False"],
+    ["192.0.2.0/24", "Documentation (TEST-NET-1)", "False"],
+    ["192.31.196.0/24", "AS112-v4", "True"],
+    ["192.52.193.0/24", "AMT", "True"],
+    ["192.88.99.0/24", "Deprecated (6to4 Relay Anycast)", ""],
+    ["192.88.99.2/32", "6a44-relay anycast address", "False"],
+    ["192.168.0.0/16", "Private-Use", "False"],
+    ["192.175.48.0/24", "Direct Delegation AS112 Service", "True"],
+    ["198.18.0.0/15", "Benchmarking", "False"],
+    ["198.51.100.0/24", "Documentation (TEST-NET-2)", "False"],
+    ["203.0.113.0/24", "Documentation (TEST-NET-3)", "False"],
+    ["240.0.0.0/4", "Reserved", "False"],
+    ["255.255.255.255/32", "Limited Broadcast", "False"],
+    ["::1/128", "Loopback Address", "False"],
+    ["::/128", "Unspecified Address", "False"],
+    ["::ffff:0:0/96", "IPv4-mapped Address", "False"],
+    ["64:ff9b::/96", "IPv4-IPv6 Translat.", "True"],
+    ["64:ff9b:1::/48", "IPv4-IPv6 Translat.", "False"],
+    ["100::/64", "Discard-Only Address Block", "False"],
+    ["100:0:0:1::/64", "Dummy IPv6 Prefix", "False"],
+    ["2001::/23", "IETF Protocol Assignments", "False"],
+    ["2001::/32", "TEREDO", "N/A"],
+    ["2001:1::1/128", "Port Control Protocol Anycast", "True"],
+    ["2001:1::2/128", "Traversal Using Relays around NAT Anycast", "True"],
+    ["2001:1::3/128", "DNS-SD Service Registration Protocol Anycast", "True"],
+    ["2001:2::/48", "Benchmarking", "False"],
+    ["2001:3::/32", "AMT", "True"],
+    ["2001:4:112::/48", "AS112-v6", "True"],
+    ["2001:10::/28", "Deprecated (previously ORCHID)", ""],
+    ["2001:20::/28", "ORCHIDv2", "True"],
+    ["2001:30::/28", "Drone Remote ID Protocol Entity Tags (DETs) Prefix", "True"],
+    ["2001:db8::/32", "Documentation", "False"],
+    ["2002::/16", "6to4", "N/A"],
+    ["2620:4f:8000::/48", "Direct Delegation AS112 Service", "True"],
+    ["3fff::/20", "Documentation", "False"],
+    ["5f00::/16", "Segment Routing (SRv6) SIDs", "False"],
+    ["fc00::/7", "Unique-Local", "False"],
+    ["fe80::/10", "Link-Local Unicast", "False"],
+  ]
+
+  # One address in each block and in no smaller block inside it, and the
+  # block ("" for an address in none, "multicast" for one in the
+  # multicast ranges, which these registries do not list). The block
+  # decides: "True" is globally reachable; "False", "N/A" and none
+  # (deprecated) are not. An IPv4-mapped address is decided by its IPv4
+  # address's block, ::ffff:0:0/96 by none.
+  PROBES = [
+    ["0.1.2.3", "0.0.0.0/8"],
+    ["0.0.0.0", "0.0.0.0/32"],
+    ["10.255.0.1", "10.0.0.0/8"],
+    ["100.127.255.254", "100.64.0.0/10"],
+    ["127.1.2.3", "127.0.0.0/8"],
+    ["169.254.10.10", "169.254.0.0/16"],
+    ["172.31.255.255", "172.16.0.0/12"],
+    ["192.0.0.200", "192.0.0.0/24"],
+    ["192.0.0.7", "192.0.0.0/29"],
+    ["192.0.0.8", "192.0.0.8/32"],
+    ["192.0.0.9", "192.0.0.9/32"],
+    ["192.0.0.10", "192.0.0.10/32"],
+    ["192.0.0.170", "192.0.0.170/32"],
+    ["192.0.0.171", "192.0.0.171/32"],
+    ["192.0.2.55", "192.0.2.0/24"],
+    ["192.31.196.1", "192.31.196.0/24"],
+    ["192.52.193.1", "192.52.193.0/24"],
+    ["192.88.99.1", "192.88.99.0/24"],
+    ["192.88.99.2", "192.88.99.2/32"],
+    ["192.168.1.1", "192.168.0.0/16"],
+    ["192.175.48.1", "192.175.48.0/24"],
+    ["198.19.0.1", "198.18.0.0/15"],
+    ["198.51.100.7", "198.51.100.0/24"],
+    ["203.0.113.9", "203.0.113.0/24"],
+    ["255.255.255.254", "240.0.0.0/4"],
+    ["255.255.255.255", "255.255.255.255/32"],
+    ["::1", "::1/128"],
+    ["::", "::/128"],
+    ["::ffff:10.0.0.1", "10.0.0.0/8"],
+    ["::ffff:192.0.0.9", "192.0.0.9/32"],
+    ["64:ff9b::808:808", "64:ff9b::/96"],
+    ["64:ff9b:1::1", "64:ff9b:1::/48"],
+    ["100::1", "100::/64"],
+    ["100:0:0:1::1", "100:0:0:1::/64"],
+    ["2001:100::1", "2001::/23"],
+    ["2001:1::4", "2001::/23"],
+    ["2001:0:4136:e378::1", "2001::/32"],
+    ["2001:1::1", "2001:1::1/128"],
+    ["2001:1::2", "2001:1::2/128"],
+    ["2001:1::3", "2001:1::3/128"],
+    ["2001:2::1", "2001:2::/48"],
+    ["2001:3::1", "2001:3::/32"],
+    ["2001:4:112::1", "2001:4:112::/48"],
+    ["2001:10::1", "2001:10::/28"],
+    ["2001:20::1", "2001:20::/28"],
+    ["2001:30::1", "2001:30::/28"],
+    ["2001:db8::1", "2001:db8::/32"],
+    ["2002:c000:204::1", "2002::/16"],
+    ["2620:4f:8000::1", "2620:4f:8000::/48"],
+    ["3fff::1", "3fff::/20"],
+    ["5f00::1", "5f00::/16"],
+    ["fd00::1", "fc00::/7"],
+    ["fe80::1", "fe80::/10"],
+    ["224.0.0.1", "multicast"],
+    ["ff02::1", "multicast"],
+    ["8.8.8.8", ""],
+    ["100.128.0.1", ""],
+    ["172.32.0.1", ""],
+    ["::ffff:8.8.8.8", ""],
+    ["2001:200::1", ""],
+    ["3fff:1000::1", ""],
+    ["2606:4700::1111", ""],
+    # Reserved by the IETF outside 2000::/3, in no special-purpose block.
+    ["4000::1", ""],
+  ]
+
+  def test_every_block_has_a_probe
+    probed = PROBES.map { |p| p[1] }
+    missing = REGISTRY.map { |r| r[0] }.reject { |b| b == "::ffff:0:0/96" || probed.include?(b) }
+    assert_empty(missing)
+  end
+
+  def test_global
+    wrong = PROBES.filter_map do |probe|
+      address, block = probe
+      row = REGISTRY.find { |r| r[0] == block }
+      if block != "" && block != "multicast" && row.nil?
+        "#{block}: no such block"
+      else
+        expected = block == "" || (!row.nil? && row[2] == "True")
+        got = ip(address).global?
+        got == expected ? nil : "#{address} (#{block}): #{got}"
+      end
+    end
+    assert_empty(wrong)
+  end
+end

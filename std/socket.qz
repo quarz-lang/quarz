@@ -128,6 +128,296 @@ module Socket
     # Socket::Address.new("::1", 8080).to_s       # => "[::1]:8080"
     # ```
     def to_s -> String = ipv6? ? "[#{host}]:#{port}" : "#{host}:#{port}"
+
+    # The host as an `IP`. Raises `ArgumentError` when it is not a numeric
+    # address (an `Address` made by hand from a name).
+    #
+    # ```
+    # Socket::Address.new("127.0.0.1", 80).ip.loopback?   # => true
+    # ```
+    def ip -> IP
+      ip = IP.parse(host)
+      raise ArgumentError, "not an IP address: #{host}" if ip.nil?
+      ip
+    end
+  end
+
+  # An IP address, IPv4 or IPv6, held as its bytes in network order.
+  #
+  # `IP.parse` reads the textual forms; the predicates say which ranges
+  # of the IANA special-purpose address registries the address is in. An
+  # IPv4-mapped IPv6 address (`::ffff:10.0.0.1`) answers them, and `in?`,
+  # as its IPv4 address does; `==` tells the two forms apart.
+  #
+  # ```
+  # Socket::IP.parse("10.1.2.3")&.private?           # => true
+  # Socket::IP.parse("::ffff:127.0.0.1")&.loopback?   # => true
+  # Socket::IP.parse("2001:db8::1")&.global?          # => false
+  # Socket::IP.parse("1.2.3")                         # => nil
+  # ```
+  data IP(
+    # 4 bytes for IPv4, 16 for IPv6.
+    bytes: Bytes
+  )
+    # Raises `ArgumentError` unless `bytes` has 4 or 16 bytes.
+    def initialize(bytes: Bytes)
+      unless bytes.size == 4 || bytes.size == 16
+        raise ArgumentError, "an IP address has 4 or 16 bytes, not #{bytes.size}"
+      end
+      @bytes = bytes
+    end
+
+    # The address `text` is: dotted IPv4 (`192.0.2.1`), or IPv6 as
+    # RFC 4291 section 2.2 writes it (`2001:db8::1`, `::ffff:192.0.2.1`);
+    # nil for anything else: a host name, an address in brackets or with
+    # a zone (`fe80::1%eth0`), and an IPv4 part with a leading zero
+    # (`010.0.0.1`, which some parsers read as octal: RFC 6943 section
+    # 3.1.1) included.
+    def self.parse(text: String) -> IP?
+      bytes = text.include?(":") ? v6_bytes(text) : v4_bytes(text)
+      bytes.nil? ? nil : IP.new(bytes)
+    end
+
+    # :nodoc:
+    def self.v4_bytes(text: String) -> Bytes?
+      parts = text.split(".", -1)
+      return nil unless parts.size == 4 && parts.all? { |p| p.match?(/\A(0|[1-9][0-9]{0,2})\z/) && p.to_i <= 255 }
+      Bytes.from(parts.map(&:to_i))
+    end
+
+    # :nodoc:
+    def self.v6_bytes(text: String) -> Bytes?
+      head, sep, tail = text.partition("::")
+      groups = ->(s: String) { s.empty? ? [] : s.split(":", -1) }
+      left = groups.call(head)
+      right = groups.call(tail)
+      # A dotted IPv4 part, last in the text, counts as two groups.
+      v4: Bytes? = nil
+      last = right.empty? ? (sep.empty? && !left.empty? ? left[-1] : nil) : right[-1]
+      if last && last.include?(".")
+        v4 = v4_bytes(last)
+        return nil if v4.nil?
+        if right.empty?
+          left = left.take(left.size - 1)
+        else
+          right = right.take(right.size - 1)
+        end
+      end
+      have = left.size + right.size + (v4 ? 2 : 0)
+      return nil if sep.empty? ? have != 8 : have > 7
+      all = left + (0...(8 - have)).map { |_| "0" } + right
+      return nil unless all.all? { |g| g.match?(/\A[0-9A-Fa-f]{1,4}\z/) }
+      out = Bytes::Builder.new
+      all.each do |g|
+        v = g.to_i(16)
+        out << v / 256
+        out << v % 256
+      end
+      out << v4 if v4
+      out.to_bytes
+    end
+
+    # Whether this is an IPv4 address (4 bytes).
+    def v4? -> Bool = bytes.size == 4
+    # Whether this is an IPv6 address (16 bytes), IPv4-mapped included.
+    def v6? -> Bool = bytes.size == 16
+    # Whether this is an IPv4-mapped IPv6 address (`::ffff:0:0/96`).
+    def mapped? -> Bool = v6? && bytes.slice(0, 12) == MAPPED_PREFIX
+
+    # The IPv4 address an IPv4-mapped one maps; any other address itself.
+    #
+    # ```
+    # Socket::IP.parse("::ffff:10.0.0.1")&.unmap.to_s   # => "10.0.0.1"
+    # ```
+    def unmap -> IP = mapped? ? IP.new(bytes.slice(12, 4)) : self
+
+    # The address as RFC 5952 writes it: lower case, without leading
+    # zeros, the longest run of two or more zero groups (the first of
+    # equal ones) as `::`, an IPv4-mapped address as `::ffff:192.0.2.1`.
+    #
+    # ```
+    # Socket::IP.parse("2001:DB8:0:0:1:0:0:1").to_s   # => "2001:db8::1:0:0:1"
+    # ```
+    def to_s -> String
+      return bytes.to_a.join(".") if v4?
+      return "::ffff:#{unmap}" if mapped?
+      groups = (0...8).map { |i| bytes[2 * i] * 256 + bytes[2 * i + 1] }
+      start = -1
+      len = 0
+      i = 0
+      while i < 8
+        j = i
+        j += 1 while j < 8 && groups[j] == 0
+        if j - i > len && j - i >= 2
+          start = i
+          len = j - i
+        end
+        i = j == i ? i + 1 : j
+      end
+      hex = groups.map { |g| g.to_s(16) }
+      return hex.join(":") if start < 0
+      "#{hex.take(start).join(":")}::#{hex.drop(start + len).join(":")}"
+    end
+
+    # Whether the address is in `network`. An IPv4-mapped address is in an
+    # IPv4 network as its IPv4 address is, and in an IPv6 network by its
+    # 16 bytes (`::ffff:1.2.3.4` is in `::/0`); an IPv4 address is in no
+    # IPv6 network.
+    #
+    # ```
+    # net = Socket::IP::Network.parse("192.168.0.0/16")
+    # raise ArgumentError if net.nil?
+    # Socket::IP.parse("192.168.3.4")&.in?(net)          # => true
+    # Socket::IP.parse("::ffff:192.168.3.4")&.in?(net)   # => true
+    # ```
+    def in?(network: Network) -> Bool
+      n = network.address.bytes
+      a = n.size == 4 ? unmap.bytes : bytes
+      return false unless a.size == n.size
+      prefix = network.prefix
+      full = prefix / 8
+      return false unless a.slice(0, full) == n.slice(0, full)
+      rest = prefix % 8
+      return true if rest == 0
+      mask = (0xff << (8 - rest)) & 0xff
+      (a[full] & mask) == (n[full] & mask)
+    end
+
+    # Loopback: 127.0.0.0/8 (RFC 1122), ::1/128 (RFC 4291).
+    def loopback? -> Bool = within?(LOOPBACK)
+    # Private use: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (RFC 1918),
+    # and the unique local fc00::/7 (RFC 4193). The shared address space
+    # 100.64.0.0/10 (RFC 6598) is not among them.
+    def private? -> Bool = within?(PRIVATE)
+    # Link-local: 169.254.0.0/16 (RFC 3927), fe80::/10 (RFC 4291).
+    def link_local? -> Bool = within?(LINK_LOCAL)
+    # Multicast: 224.0.0.0/4 (RFC 5771), ff00::/8 (RFC 4291).
+    def multicast? -> Bool = within?(MULTICAST)
+    # Unspecified: 0.0.0.0/32, ::/128.
+    def unspecified? -> Bool = within?(UNSPECIFIED)
+
+    # Whether the address is globally reachable, as the "Globally
+    # Reachable" column of the IANA IPv4 and IPv6 Special-Purpose Address
+    # Registries says: false for an address in a block whose value is not
+    # True, and for a multicast one (which those registries do not list).
+    # When blocks nest, the smallest one holding the address decides
+    # (`192.0.0.9/32` is globally reachable inside the `192.0.0.0/24`
+    # that is not). A block whose value is N/A or none (6to4 `2002::/16`,
+    # Teredo `2001::/32`, the deprecated `192.88.99.0/24` and
+    # `2001:10::/28`) counts as not globally reachable. An address in no
+    # block is, a range the IETF reserves outside 2000::/3 (`4000::1`)
+    # included: the address-space registries are not read.
+    #
+    # ```
+    # Socket::IP.parse("8.8.8.8")&.global?       # => true
+    # Socket::IP.parse("100.64.0.1")&.global?    # => false
+    # Socket::IP.parse("192.0.0.9")&.global?     # => true
+    # ```
+    def global? -> Bool
+      return false if multicast?
+      best: [Network, Symbol]? = nil
+      SPECIAL.each do |row|
+        if in?(row[0]) && (best.nil? || row[0].prefix > best[0].prefix)
+          best = row
+        end
+      end
+      best.nil? || best[1] == :yes
+    end
+
+    # :nodoc:
+    def within?(networks: Array[Network]) -> Bool = networks.any? { |n| in?(n) }
+
+    # An address block: an address and a prefix length in bits. The bits
+    # past the prefix are kept and ignored. A network of an IPv4-mapped
+    # address with a prefix of 96 or more is the IPv4 network it maps.
+    #
+    # ```
+    # Socket::IP::Network.parse("10.0.0.0/8").to_s    # => "10.0.0.0/8"
+    # Socket::IP::Network.parse("::1").to_s           # => "::1/128"
+    # Socket::IP::Network.parse("10.0.0.0/33")        # => nil
+    # ```
+    data Network(
+      # The address, host bits as given.
+      address: IP,
+      # The prefix length in bits: up to 32 for IPv4, 128 for IPv6.
+      prefix: Int
+    )
+      # Raises `ArgumentError` for a prefix below 0 or longer than the
+      # address.
+      def initialize(address: IP, prefix: Int)
+        if prefix < 0 || prefix > address.bytes.size * 8
+          raise ArgumentError, "bad network prefix: #{address}/#{prefix}"
+        end
+        if address.mapped? && prefix >= 96
+          @address = address.unmap
+          @prefix = prefix - 96
+        else
+          @address = address
+          @prefix = prefix
+        end
+      end
+
+      # The network `text` is: an address and `/` and a prefix length in
+      # decimal (`10.0.0.0/8`), or an address alone (`/32` or `/128`); nil
+      # for anything else.
+      def self.parse(text: String) -> Network?
+        addr, slash, bits = text.partition("/")
+        ip = IP.parse(addr)
+        return nil if ip.nil?
+        return Network.new(ip, ip.bytes.size * 8) if slash.empty?
+        return nil unless bits.match?(/\A[0-9]{1,3}\z/) && bits.to_i <= ip.bytes.size * 8
+        Network.new(ip, bits.to_i)
+      end
+
+      # :nodoc:
+      # The network `text` is; raises `ArgumentError` when it is none.
+      def self.of(text: String) -> Network
+        n = parse(text)
+        raise ArgumentError, "not a network: #{text}" if n.nil?
+        n
+      end
+
+      # The network as `10.0.0.0/8`.
+      def to_s -> String = "#{address}/#{prefix}"
+    end
+
+    # :nodoc:
+    MAPPED_PREFIX = Bytes[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255]
+    # :nodoc:
+    LOOPBACK = ["127.0.0.0/8", "::1/128"].map { |s| Network.of(s) }
+    # :nodoc:
+    PRIVATE = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"].map { |s| Network.of(s) }
+    # :nodoc:
+    LINK_LOCAL = ["169.254.0.0/16", "fe80::/10"].map { |s| Network.of(s) }
+    # :nodoc:
+    MULTICAST = ["224.0.0.0/4", "ff00::/8"].map { |s| Network.of(s) }
+    # :nodoc:
+    UNSPECIFIED = ["0.0.0.0/32", "::/128"].map { |s| Network.of(s) }
+    # :nodoc:
+    # The IANA IPv4 and IPv6 Special-Purpose Address Registries, with the
+    # blocks allocated up to 2025-04 (RFC 9780): each block and its
+    # "Globally Reachable" value,
+    # `:yes`, `:no`, or `:na` (N/A, or none for a deprecated block).
+    # `::ffff:0:0/96` is left out: a mapped address answers as its IPv4.
+    SPECIAL = [
+      ["0.0.0.0/8", :no], ["0.0.0.0/32", :no], ["10.0.0.0/8", :no],
+      ["100.64.0.0/10", :no], ["127.0.0.0/8", :no], ["169.254.0.0/16", :no],
+      ["172.16.0.0/12", :no], ["192.0.0.0/24", :no], ["192.0.0.0/29", :no],
+      ["192.0.0.8/32", :no], ["192.0.0.9/32", :yes], ["192.0.0.10/32", :yes],
+      ["192.0.0.170/32", :no], ["192.0.0.171/32", :no], ["192.0.2.0/24", :no],
+      ["192.31.196.0/24", :yes], ["192.52.193.0/24", :yes], ["192.88.99.0/24", :na],
+      ["192.88.99.2/32", :no], ["192.168.0.0/16", :no], ["192.175.48.0/24", :yes],
+      ["198.18.0.0/15", :no], ["198.51.100.0/24", :no], ["203.0.113.0/24", :no],
+      ["240.0.0.0/4", :no], ["255.255.255.255/32", :no],
+      ["::1/128", :no], ["::/128", :no], ["64:ff9b::/96", :yes],
+      ["64:ff9b:1::/48", :no], ["100::/64", :no], ["100:0:0:1::/64", :no],
+      ["2001::/23", :no], ["2001::/32", :na], ["2001:1::1/128", :yes],
+      ["2001:1::2/128", :yes], ["2001:1::3/128", :yes], ["2001:2::/48", :no],
+      ["2001:3::/32", :yes], ["2001:4:112::/48", :yes], ["2001:10::/28", :na],
+      ["2001:20::/28", :yes], ["2001:30::/28", :yes], ["2001:db8::/32", :no],
+      ["2002::/16", :na], ["2620:4f:8000::/48", :yes], ["3fff::/20", :no],
+      ["5f00::/16", :no], ["fc00::/7", :no], ["fe80::/10", :no],
+    ].map { |r| [Network.of(r[0]), r[1]] }
   end
 
   # Happy Eyeballs (RFC 8305): how long to wait for the IPv6 addresses
