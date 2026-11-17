@@ -2134,6 +2134,50 @@ puts K.new.n, F.new.hits
 }
 
 #[test]
+fn a_field_without_accessors_moves_a_subclass_s_reader() {
+    // Rows 1 and 2 through D(F) alone: a field generated into `F`, with no
+    // reader (whose `Method` event would rebuild D(F) too), by another
+    // class's statement (so `G`, under no class with statements, is not
+    // deferred, and no `Conformance` event rebuilds it), moves the index
+    // of `@g` that `G`'s `attr_reader` reads. Without the `Field` event's
+    // D, `G#g`'s row keeps the old index.
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r#"class Gen
+  static def self.gen_bare -> Void
+    def_field(:bare, Int, 4)
+  end
+end
+class Trig
+  static def self.go -> Void
+    F.gen_bare
+  end
+end
+"#,
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+class F < Gen
+end
+class G < F
+  @g: Int
+  attr_reader :g
+  def initialize(@g: Int); end
+end
+class X < Trig
+  go
+end
+puts G.new(5).g
+"#,
+    );
+    run_both(&d.0, &app, "5\n");
+}
+
+#[test]
 fn tables_built_again_for_classes_a_later_check_adds() {
     // `quarz test` checks the doc examples after the files' statements
     // ran, with the same runner: their classes make the kept tables be
