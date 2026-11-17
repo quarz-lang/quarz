@@ -49,7 +49,8 @@ module HTTP
     end
   end
 
-  # A body over the server's `max_body_bytes` (`Body#read`): answered `413`.
+  # A body over the server's `max_body_bytes`, or over the `max` a read
+  # was given (`Body#read`): answered `413`.
   class PayloadTooLarge < Error
     # An error with status 413.
     def initialize(message: String = "Payload Too Large")
@@ -464,27 +465,59 @@ module HTTP
       part
     end
 
-    # Yields the body's pieces as they arrive, until its end. Unlike
-    # `#read`, it is not bounded by `max_body_bytes`.
-    def each_chunk(&: (Bytes) -> Void) -> Void
-      loop do
-        part = read_chunk
-        break if part.empty?
-        yield part
+    # Yields the body's pieces as they arrive, until its end. Without
+    # `max`, unlike `#read`, it is not bounded by `max_body_bytes`. With
+    # `max`, it raises `PayloadTooLarge` (a client's:
+    # `Client::ResponseTooLarge`) before yielding a piece that would take
+    # the body past `max` bytes or past `max_body_bytes`, whichever is
+    # smaller; a `Content-Length` over it raises before anything is read.
+    #
+    # ## Raises
+    #
+    # `ArgumentError` for a negative `max`.
+    def each_chunk(max: Int? = nil, &: (Bytes) -> Void) -> Void
+      cap = cap_of(max)
+      if cap
+        too_large(cap) if over?(cap)
+        seen = 0
+        loop do
+          part = read_chunk
+          break if part.empty?
+          seen += part.size
+          too_large(cap) if seen > cap
+          yield part
+        end
+      else
+        loop do
+          part = read_chunk
+          break if part.empty?
+          yield part
+        end
       end
     end
 
     # The whole body; `PayloadTooLarge` past the server's
-    # `max_body_bytes` (a client's: `Client::ResponseTooLarge` past its
-    # own).
-    def read_bytes -> Bytes
+    # `max_body_bytes` or past `max` bytes, whichever is smaller (a
+    # client's: `Client::ResponseTooLarge` past its own `max_body_bytes` or
+    # `max`). A `Content-Length` over the limit raises before anything is
+    # read (no `100 Continue` is sent).
+    #
+    # ```
+    # HTTP::Body.of("abc").read_bytes(max: 3)   # => b"abc"
+    # HTTP::Body.of("abcd").read_bytes(max: 3)  # raises HTTP::PayloadTooLarge
+    # ```
+    #
+    # ## Raises
+    #
+    # `ArgumentError` for a negative `max`.
+    def read_bytes(max: Int? = nil) -> Bytes
+      cap = cap_of(max) || @limit
       begin
-        len = @length
-        raise PayloadTooLarge.new if len && len > @limit
+        too_large(cap) if over?(cap)
         out = Bytes::Builder.new
         each_chunk do |part|
           out << part
-          raise PayloadTooLarge.new if out.size > @limit
+          too_large(cap) if out.size > cap
         end
         out.to_bytes
       rescue Error => e
@@ -492,10 +525,32 @@ module HTTP
       end
     end
 
+    # The limit a read with `max` keeps to: the smaller of `max` and the
+    # body's own (nil without `max`).
+    private def cap_of(max: Int?) -> Int?
+      return nil if max.nil?
+      raise ArgumentError.new("negative max: #{max}") if max < 0
+      max < @limit ? max : @limit
+    end
+
+    # Whether the `Content-Length` is over `cap`.
+    private def over?(cap: Int) -> Bool
+      len = @length
+      !len.nil? && len > cap
+    end
+
+    # Past `cap` bytes: a server's `PayloadTooLarge`, a client's
+    # `ResponseTooLarge` giving `cap`.
+    private def too_large(cap: Int) -> Nothing
+      raise HTTP.client_too_large(cap) if @client
+      raise PayloadTooLarge.new
+    end
+
     # The whole body as a string. Raises `PayloadTooLarge` past the server's
-    # `max_body_bytes` and `BadRequest` when it is not UTF-8 (a client's:
-    # `Client::ResponseTooLarge` and `Client::ProtocolError`). What is
-    # read is gone: a second read gives `""`.
+    # `max_body_bytes` or past `max` bytes, whichever is smaller (`max`
+    # counts bytes, not characters), and `BadRequest` when it is not UTF-8
+    # (a client's: `Client::ResponseTooLarge` and `Client::ProtocolError`).
+    # What is read is gone: a second read gives `""`.
     #
     # ```
     # body = HTTP::Body.of("name=quarz")
@@ -503,8 +558,8 @@ module HTTP
     # body.read    # => "name=quarz"
     # body.read    # => ""
     # ```
-    def read -> String
-      bytes = read_bytes
+    def read(max: Int? = nil) -> String
+      bytes = read_bytes(max: max)
       text = bytes.decode?
       raise_for(BadRequest.new("body is not UTF-8")) if text.nil?
       text
@@ -2290,8 +2345,9 @@ module HTTP
     class ProtocolError < Error
     end
 
-    # A body larger than `max_body_bytes`, read with `read` or
-    # `read_bytes` (`each_chunk` has no limit).
+    # A body larger than `max_body_bytes`, or than the `max` a read was
+    # given, read with `read`, `read_bytes` or `each_chunk(max:)`
+    # (`each_chunk` without `max` has no limit).
     class ResponseTooLarge < Error
     end
 
@@ -2481,8 +2537,8 @@ module HTTP
       version: String,
       # The header fields.
       headers: Headers,
-      # The body (`read` up to the client's `max_body_bytes`, `each_chunk`
-      # without a limit).
+      # The body (`read` up to the client's `max_body_bytes` or a smaller
+      # `max:`, `each_chunk` without a limit unless given `max:`).
       body: Body,
       # The URL that answered: the request's, or where redirects led.
       url: URI,
@@ -3149,10 +3205,16 @@ module HTTP
   def self.client_error(e: Error) -> Client::Error
     case e.status
     when 408 then Client::TimeoutError.new("read timed out")
-    when 413 then Client::ResponseTooLarge.new("the response body is larger than max_body_bytes")
     when 431 then Client::ProtocolError.new("the response's headers are larger than max_header_bytes")
     else Client::ProtocolError.new(e.message)
     end
+  end
+
+  # :nodoc:
+  # A client's body read past `limit` bytes (a module function, as
+  # `client_error` is).
+  def self.client_too_large(limit: Int) -> Client::Error
+    Client::ResponseTooLarge.new("the response body is larger than #{limit} bytes")
   end
 
   # :nodoc:

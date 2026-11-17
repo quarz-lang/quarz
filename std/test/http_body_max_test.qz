@@ -1,0 +1,303 @@
+# HTTP::Body read with a limit of the call's own (`max:`), below the
+# server's `max_body_bytes` or the client's.
+require "http"
+require "test"
+
+class HttpBodyMaxTest < Test::Case
+  # The body of a request parsed from `text`, with a server limit of 100.
+  def body(text: String) -> HTTP::Body
+    req = HTTP.read_request(HTTP::Reader.of(text.to_bytes), 1000, 100, nil, HTTP::Proxies.none, false)
+    req ? req.body : HTTP::Body.empty
+  end
+
+  def sized(content: String) -> HTTP::Body = body("POST / HTTP/1.1\r\nContent-Length: #{content.bytesize}\r\n\r\n#{content}")
+
+  def chunked(parts: Array[String]) -> HTTP::Body
+    chunks = parts.map { |p| "#{p.bytesize.to_s(16)}\r\n#{p}\r\n" }.join
+    body("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n#{chunks}0\r\n\r\n")
+  end
+
+  def test_read_up_to_max
+    assert_equal("abcd", sized("abcd").read(max: 4))
+    assert_equal(b"abcd", sized("abcd").read_bytes(max: 4))
+    assert_equal("abcd", chunked(["ab", "cd"]).read(max: 4))
+    assert_equal("", sized("").read(max: 0))
+  end
+
+  def test_past_max
+    assert_raise(HTTP::PayloadTooLarge) { sized("abcde").read(max: 4); nil }
+    assert_raise(HTTP::PayloadTooLarge) { sized("abcde").read_bytes(max: 4); nil }
+    assert_raise(HTTP::PayloadTooLarge) { chunked(["ab", "cd", "e"]).read(max: 4); nil }
+    assert_raise(HTTP::PayloadTooLarge) { sized("a").read(max: 0); nil }
+  end
+
+  # A Content-Length over the limit raises before anything is read.
+  def test_a_length_over_max_reads_nothing
+    b = sized("abcde")
+    assert_raise(HTTP::PayloadTooLarge) { b.read(max: 4); nil }
+    assert(!b.started?)
+    assert_equal(5, b.remaining)
+  end
+
+  # `max` never raises the server's limit (100 here).
+  def test_max_above_the_servers_limit
+    big = "x" * 101
+    assert_raise(HTTP::PayloadTooLarge) { sized(big).read(max: 1000); nil }
+    assert_raise(HTTP::PayloadTooLarge) { chunked([big]).read(max: 1000); nil }
+    assert_equal(100, sized("x" * 100).read(max: 1000).size)
+  end
+
+  # `max` counts bytes, not characters.
+  def test_max_counts_bytes
+    assert_equal("é", sized("é").read(max: 2))
+    assert_raise(HTTP::PayloadTooLarge) { sized("éé").read(max: 3); nil }
+  end
+
+  def test_a_negative_max
+    assert_raise_message("negative max: -1") { sized("a").read(max: -1); nil }
+    assert_raise(ArgumentError) { sized("a").each_chunk(max: -1) { |_| nil } }
+  end
+
+  # The block never sees more than `max` bytes in all.
+  def test_each_chunk_with_max
+    seen: Array[String] = []
+    chunked(["ab", "cd"]).each_chunk(max: 4) { |p| seen = seen.push(p.decode) }
+    assert_equal(["ab", "cd"], seen)
+    got: Array[String] = []
+    assert_raise(HTTP::PayloadTooLarge) do
+      chunked(["ab", "cd", "e"]).each_chunk(max: 4) { |p| got = got.push(p.decode) }
+    end
+    assert_equal(["ab", "cd"], got)
+    none: Array[String] = []
+    assert_raise(HTTP::PayloadTooLarge) { sized("abcde").each_chunk(max: 4) { |p| none = none.push(p.decode) } }
+    assert(none.empty?)
+  end
+
+  # Without `max`, `each_chunk` is not bounded by the server's limit.
+  def test_each_chunk_without_max
+    n = 0
+    chunked(["x" * 60, "x" * 60]).each_chunk { |p| n += p.size }
+    assert_equal(120, n)
+    m = 0
+    assert_raise(HTTP::PayloadTooLarge) { chunked(["x" * 60, "x" * 60]).each_chunk(max: 1000) { |p| m += p.size } }
+    assert_equal(60, m)
+  end
+
+  def test_body_of
+    assert_equal("abc", HTTP::Body.of("abc").read(max: 3))
+    assert_raise(HTTP::PayloadTooLarge) { HTTP::Body.of("abcd").read(max: 3); nil }
+  end
+end
+
+class HttpBodyMaxServerTest < Test::Case
+  def handler -> HTTP::Handler
+    HTTP.handler do |req|
+      case req.path
+      when "/small" then HTTP::Server::Response.text("got #{req.body.read(max: 4)}")
+      when "/chunks"
+        n = 0
+        req.body.each_chunk(max: 4) { |p| n += p.size }
+        HTTP::Server::Response.text("got #{n}")
+      else HTTP::Server::Response.text("hello")
+      end
+    end
+  end
+
+  def serving(&: (Int) -> Void) -> Void
+    server = HTTP::Server.new(handler, host: "127.0.0.1", port: 0, max_body_bytes: 100,
+                              on_error: ->(e: Exception, r: HTTP::Server::Request?) { nil })
+    Task.scope do |scope|
+      scope.spawn { server.serve }
+      begin
+        yield server.local_address.port
+      ensure
+        server.shutdown
+      end
+    end
+    nil
+  end
+
+  # The status lines of what the server sends until it closes, joined by `|`.
+  def statuses(port: Int, text: String) -> String
+    Socket.tcp("127.0.0.1", port) do |s|
+      s.write(text)
+      out = String::Builder.new
+      loop do
+        part = s.readpartial?(4096)
+        break if part.nil?
+        out << part
+      end
+      # (A status line may follow the previous body on its line.)
+      out.to_s.scan(/HTTP\/1\.1 \d{3} [^\r]*/).join("|")
+    end
+  end
+
+  def test_a_handlers_max_answers_413
+    serving do |port|
+      assert_equal("HTTP/1.1 200 OK", statuses(port, "POST /small HTTP/1.1\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabcd"))
+      assert_equal("HTTP/1.1 413 Payload Too Large",
+                   statuses(port, "POST /small HTTP/1.1\r\nContent-Length: 5\r\nConnection: close\r\n\r\nabcde"))
+      assert_equal("HTTP/1.1 413 Payload Too Large",
+                   statuses(port, "POST /chunks HTTP/1.1\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n"))
+      assert_equal("HTTP/1.1 200 OK",
+                   statuses(port, "POST /chunks HTTP/1.1\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n1\r\nd\r\n0\r\n\r\n"))
+    end
+  end
+
+  # After a chunked body crossed `max` part-way, the rest of it is not
+  # read: the connection is closed after the 413, and a request sent
+  # behind it on the same connection is not answered.
+  def test_the_connection_is_closed_after_a_crossing_chunked_body
+    serving do |port|
+      second = "GET /hello HTTP/1.1\r\nConnection: close\r\n\r\n"
+      assert_equal("HTTP/1.1 413 Payload Too Large",
+                   statuses(port, "POST /chunks HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n#{second}"))
+    end
+  end
+
+  # A Content-Length body refused before it was read is small enough to
+  # be read and dropped after the 413, so the connection goes on.
+  def test_a_refused_content_length_body_is_dropped_and_the_connection_kept
+    serving do |port|
+      second = "GET /hello HTTP/1.1\r\nConnection: close\r\n\r\n"
+      assert_equal("HTTP/1.1 413 Payload Too Large|HTTP/1.1 200 OK",
+                   statuses(port, "POST /small HTTP/1.1\r\nContent-Length: 5\r\n\r\nabcde#{second}"))
+    end
+  end
+
+  # A Content-Length over the handler's `max` is refused without a
+  # `100 Continue`: the client need not send the body.
+  def test_no_100_continue_past_max
+    serving do |port|
+      assert_equal("HTTP/1.1 413 Payload Too Large",
+                   statuses(port, "POST /small HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n"))
+      assert_equal("HTTP/1.1 100 Continue|HTTP/1.1 200 OK",
+                   statuses(port, "POST /small HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabcd"))
+    end
+  end
+end
+
+class HttpBodyMaxClientTest < Test::Case
+  def serving(&: (String) -> Void) -> Void
+    h = HTTP.handler { |_req| HTTP::Server::Response.text("x" * 5000) }
+    server = HTTP::Server.new(h, host: "127.0.0.1", port: 0)
+    Task.scope do |scope|
+      scope.spawn { server.serve }
+      begin
+        yield "http://127.0.0.1:#{server.local_address.port}"
+      ensure
+        server.shutdown
+      end
+    end
+    nil
+  end
+
+  def test_read_with_max
+    serving do |base|
+      c = HTTP::Client.new(max_body_bytes: 1000)
+      e = assert_raise(HTTP::Client::ResponseTooLarge) { c.get(base).body.read(max: 10); nil }
+      assert_equal("the response body is larger than 10 bytes", e.message)
+      # The client's own limit, smaller than `max`, still holds.
+      e = assert_raise(HTTP::Client::ResponseTooLarge) { c.get(base).body.read(max: 100_000); nil }
+      assert_equal("the response body is larger than 1000 bytes", e.message)
+      e = assert_raise(HTTP::Client::ResponseTooLarge) { c.get(base).body.read; nil }
+      assert_equal("the response body is larger than 1000 bytes", e.message)
+      assert_equal(5000, HTTP::Client.new.get(base).body.read_bytes(max: 5000).size)
+    end
+  end
+
+  # A keep-alive server that answers every request with 5000 bytes (in
+  # two chunks for `/chunked`) and counts the connections it accepts.
+  def counting(&: (String, Atom[Int]) -> Void) -> Void
+    listener = TCPServer.new("127.0.0.1", 0)
+    accepted = Atom.new(0)
+    Task.scope do |scope|
+      scope.spawn do
+        loop do
+          sock = listener.accept
+          accepted.update { |n| n + 1 }
+          scope.spawn do
+            reader = HTTP::Reader.new(sock)
+            begin
+              loop do
+                req = HTTP.read_request(reader, 4096, 4096, nil, HTTP::Proxies.none, false)
+                break if req.nil?
+                if req.path == "/chunked"
+                  sock.write("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n#{"9c4\r\n#{"x" * 2500}\r\n" * 2}0\r\n\r\n")
+                else
+                  sock.write("HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\n#{"x" * 5000}")
+                end
+              end
+            rescue IOError, SystemCallError, HTTP::Error
+              nil
+            end
+            sock.close
+          end
+        end
+      rescue IOError
+        nil
+      end
+      begin
+        yield "http://127.0.0.1:#{listener.local_address.port}", accepted
+      ensure
+        listener.close
+        scope.cancel
+      end
+    end
+    nil
+  end
+
+  # A body read past its `max` is not read to its end: its connection
+  # does not go back to the pool.
+  def test_the_connection_is_not_reused_after_the_raise
+    counting do |base, accepted|
+      c = HTTP::Client.new
+      assert_equal(5000, c.get(base).body.read.size)
+      assert_equal(5000, c.get(base).body.read.size)
+      assert_equal(1, accepted.get)
+      # A Content-Length over `max`.
+      e = assert_raise(HTTP::Client::ResponseTooLarge) { c.get(base).body.read(max: 4000); nil }
+      assert_equal("the response body is larger than 4000 bytes", e.message)
+      assert_equal(5000, c.get(base).body.read.size)
+      assert_equal(2, accepted.get)
+      # Crossing `max` part-way through a chunked body.
+      e = assert_raise(HTTP::Client::ResponseTooLarge) { c.get("#{base}/chunked").body.read(max: 4000); nil }
+      assert_equal("the response body is larger than 4000 bytes", e.message)
+      assert_equal(5000, c.get("#{base}/chunked").body.read.size)
+      assert_equal(3, accepted.get)
+    end
+  end
+
+  # The same with `each_chunk(max:)`.
+  def test_the_connection_is_not_reused_after_each_chunk_raised
+    counting do |base, accepted|
+      c = HTTP::Client.new
+      n = 0
+      c.get(base).body.each_chunk(max: 5000) { |p| n += p.size }
+      assert_equal(5000, n)
+      assert_equal(1, accepted.get)
+      e = assert_raise(HTTP::Client::ResponseTooLarge) { c.get(base).body.each_chunk(max: 4000) { |_| nil } }
+      assert_equal("the response body is larger than 4000 bytes", e.message)
+      assert_equal(5000, c.get(base).body.read.size)
+      assert_equal(2, accepted.get)
+      seen = 0
+      e = assert_raise(HTTP::Client::ResponseTooLarge) { c.get("#{base}/chunked").body.each_chunk(max: 4000) { |p| seen += p.size } }
+      assert_equal("the response body is larger than 4000 bytes", e.message)
+      assert_equal(2500, seen)
+      assert_equal(5000, c.get("#{base}/chunked").body.read.size)
+      assert_equal(3, accepted.get)
+    end
+  end
+
+  def test_each_chunk_with_max
+    serving do |base|
+      c = HTTP::Client.new
+      n = 0
+      assert_raise(HTTP::Client::ResponseTooLarge) { c.get(base).body.each_chunk(max: 100) { |p| n += p.size } }
+      assert_equal(0, n)
+      m = 0
+      c.get(base).body.each_chunk(max: 5000) { |p| m += p.size }
+      assert_equal(5000, m)
+    end
+  end
+end

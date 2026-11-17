@@ -84,9 +84,9 @@ The body is read from the socket as the handler asks for it, so `Body` is a clas
 
 ```crystal
 class Body
-  def read -> String                   # the whole body; HTTP::PayloadTooLarge past max_body_bytes
-  def read_bytes -> Bytes
-  def each_chunk(&: (Bytes) -> Void) -> Void   # as it arrives, without the limit
+  def read(max: Int? = nil) -> String  # the whole body; HTTP::PayloadTooLarge past max_body_bytes or max
+  def read_bytes(max: Int? = nil) -> Bytes
+  def each_chunk(max: Int? = nil, &: (Bytes) -> Void) -> Void   # as it arrives; without max, no limit
   def read_chunk(max: Int = 16_384) -> Bytes # the next piece (empty at the end)
   def size -> Int?                     # Content-Length, when there is one
   def consumed? -> Bool                # whether it has been read to the end
@@ -94,6 +94,8 @@ end
 ```
 
 `Content-Length` and `Transfer-Encoding: chunked` are both decoded; a request with neither has an empty body. `Expect: 100-continue` is answered with `100 Continue` when the handler first reads. What the handler did not read of a `Content-Length` body is read and dropped after it returns when at most 64 KiB remain (each read within `read_timeout`), so that the connection can be reused; otherwise (a chunked body, more left, a body whose framing failed, or a client waiting for a `100 Continue` that was never sent) the connection is closed after the response. A body read that fails (bad framing, `read_timeout`) leaves the connection to be closed after the response.
+
+A read given `max:` accepts at most that many bytes, and never more than `max_body_bytes`: a route that takes only small bodies reads `req.body.read(max: 4096)`, and a larger body is answered `413` (`PayloadTooLarge`). A `Content-Length` over the limit is refused before anything is read, so a client waiting for `100 Continue` is not told to send. `each_chunk(max:)` raises before yielding the piece that would go past the limit; without `max:` it has no limit, for a handler that streams a large body somewhere else. A negative `max` raises `ArgumentError`.
 
 ### Headers
 
@@ -326,7 +328,7 @@ end
 
 What the client adds to a request: `Host` (from the URL; a request's own is replaced), the framing (`Content-Length` for a `Text` or `Binary` body, and `0` for an empty `POST`, `PUT` or `PATCH`; `Transfer-Encoding: chunked` for a `Stream` body; a request's own framing headers are dropped, as the server drops a handler's), `User-Agent` when the request has none. Nothing else: no `Accept-Encoding` (a `Content-Encoding` body is given as it came), no cookies, no `Expect: 100-continue`. A URL is `http` or `https` with a host, without whitespace or control characters (`ArgumentError`, as for a method that is not a token or a header that would split the request).
 
-**Responses and bodies.** `request` returns once the headers are read; `body` is an `HTTP::Body`, the server's request body, read from the connection as it is asked for: `read`/`read_bytes` up to `max_body_bytes` (`ResponseTooLarge` past it), `read_chunk` and `each_chunk` without a limit. A `HEAD` response, a 1xx, 204 or 304 has an empty body; interim 1xx responses before the final one are skipped; a body without framing (HTTP/1.0, or `Connection: close` without a length) is read to the connection's end. A non-2xx response is a value: `ensure_success` raises for it.
+**Responses and bodies.** `request` returns once the headers are read; `body` is an `HTTP::Body`, the server's request body, read from the connection as it is asked for: `read`/`read_bytes` up to `max_body_bytes` or a smaller `max:` (`ResponseTooLarge` past it, its message giving the limit), `read_chunk`, and `each_chunk` without a limit unless given `max:`. A `HEAD` response, a 1xx, 204 or 304 has an empty body; interim 1xx responses before the final one are skipped; a body without framing (HTTP/1.0, or `Connection: close` without a length) is read to the connection's end. A non-2xx response is a value: `ensure_success` raises for it.
 
 **The pool.** Idle connections are kept per origin and proxy, at most `max_idle_per_host`, for `idle_timeout`, in an `Atom`, so that the client is Shareable; what one request reads (its `Reader`, its `Body`) is the calling task's. A connection goes back to the pool when its response's body has been read to the end (`read`, `read_bytes`, `each_chunk`, or `close`) with nothing buffered past it, and the response allowed it (HTTP/1.1, no `Connection: close`, not a 101, not both `Transfer-Encoding` and `Content-Length`). A response dropped before its body ends closes its connection: the body's owner closes it in `deinitialize`, so a half-read connection is never reused. A kept connection found closed (no byte of the response came) is replaced once by a new connection, when that cannot do the request twice: its body is not a `Stream` (whose procedure runs once), and nothing of it was sent or it is idempotent (`GET`, `HEAD`, `PUT`, `DELETE`, `OPTIONS`). Whatever ends a request early (an error, a timeout, a cancellation) closes its connection. The status lines and headers of a response share `max_header_bytes`. No pipelining.
 
