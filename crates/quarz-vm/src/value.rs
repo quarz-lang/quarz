@@ -3493,6 +3493,16 @@ impl Value {
         b
     }
 
+    /// A string of one character, kept in the value: no allocation, as a
+    /// character is at most 4 bytes (`ShortStr::MAX` is 14). What
+    /// `String#chars`, `#each_char` and the like make per character
+    /// (#836).
+    #[inline]
+    pub fn char(c: char) -> Value {
+        let mut buf = [0u8; 4];
+        Value::str(c.encode_utf8(&mut buf))
+    }
+
     /// A string value: in the value itself when short, shared on the
     /// heap otherwise.
     pub fn str(s: &str) -> Value {

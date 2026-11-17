@@ -151,7 +151,7 @@ pub(super) fn step(interp: &Interp, st: &mut Stepper, recv: &Value) -> Result<Op
             match text[*offset..].chars().next() {
                 Some(c) => {
                     *offset += c.len_utf8();
-                    Some(Value::string(c.to_string()))
+                    Some(Value::char(c))
                 }
                 None => None,
             }

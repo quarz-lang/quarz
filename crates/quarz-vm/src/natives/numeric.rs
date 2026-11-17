@@ -671,7 +671,7 @@ fn int_to_s(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 fn int_chr(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     let i = int(interp, recv, "Int")?;
     match char::from_u32(i as u32) {
-        Some(c) if i >= 0 => Ok(Value::string(c.to_string())),
+        Some(c) if i >= 0 => Ok(Value::char(c)),
         _ => Err(interp.raise(
             interp.program.exc.range_error,
             &format!("{i} out of char range"),

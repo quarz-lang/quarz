@@ -69,12 +69,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "String#[]?", string_index_opt);
     native!(m, "String#chars", |i, r, _| {
-        Ok(Value::array(
-            s(i, r)?
-                .chars()
-                .map(|c| Value::string(c.to_string()))
-                .collect(),
-        ))
+        Ok(Value::array(s(i, r)?.chars().map(Value::char).collect()))
     });
     native!(m, "String#bytes", |i, r, _| {
         Ok(Value::array(
@@ -408,7 +403,7 @@ pub(super) fn string_split(interp: &Interp, recv: &Value, args: Args) -> EvalRes
     let parts: Vec<Value> = match (first, first.and_then(|v| v.as_str())) {
         (None, _) => text.split_whitespace().map(Value::str).collect(),
         (Some(_), Some(" ")) => text.split_whitespace().map(Value::str).collect(),
-        (Some(_), Some("")) => text.chars().map(|c| Value::string(c.to_string())).collect(),
+        (Some(_), Some("")) => text.chars().map(Value::char).collect(),
         (Some(_), Some(sep)) => {
             let mut v: Vec<&str> = text.split(sep).collect();
             while v.last() == Some(&"") {
@@ -682,7 +677,7 @@ pub(super) fn string_each_char(interp: &Interp, recv: &Value, args: Args) -> Eva
     let text = s(interp, recv)?;
     let b = block(interp, &args)?;
     for c in text.chars() {
-        interp.call_block(&b, smallvec![Value::string(c.to_string())])?;
+        interp.call_block(&b, smallvec![Value::char(c)])?;
     }
     Ok(Value::Nil)
 }
