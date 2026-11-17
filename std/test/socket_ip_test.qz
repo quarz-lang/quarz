@@ -167,6 +167,17 @@ class SocketIPNetworkTest < Test::Case
       "IPv4 in a mapped network" => ["10.0.0.1", "::ffff:10.0.0.0/104", true],
       "IPv4 not in an IPv6 network" => ["10.0.0.1", "::/0", false],
       "IPv6 not in an IPv4 network" => ["::1", "0.0.0.0/0", false],
+      # A mapped network shorter than /96 stays an IPv6 one.
+      "IPv6 in a mapped /64" => ["::1", "::ffff:0:0/64", true],
+      "mapped in a mapped /64" => ["::ffff:1.2.3.4", "::ffff:0:0/64", true],
+      "IPv4 not in a mapped /64" => ["1.2.3.4", "::ffff:0:0/64", false],
+      "IPv6 in ::/0" => ["::1", "::/0", true],
+      "mapped in ::/0" => ["::ffff:1.2.3.4", "::/0", true],
+      "IPv4 not in ::/0" => ["1.2.3.4", "::/0", false],
+      "IPv6 in a mapped /90" => ["::ffc0:0:1", "::ffff:0:0/90", true],
+      "IPv6 not in a mapped /90" => ["::ff80:0:1", "::ffff:0:0/90", false],
+      "mapped in a mapped /90" => ["::ffff:1.2.3.4", "::ffff:0:0/90", true],
+      "IPv4 not in a mapped /90" => ["1.2.3.4", "::ffff:0:0/90", false],
     }
   end
 

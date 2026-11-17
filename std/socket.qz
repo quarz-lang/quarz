@@ -262,8 +262,9 @@ module Socket
     end
 
     # Whether the address is in `network`. An IPv4-mapped address is in an
-    # IPv4 network as its IPv4 address is; otherwise an address is only in
-    # a network of its own family.
+    # IPv4 network as its IPv4 address is, and in an IPv6 network by its
+    # 16 bytes (`::ffff:1.2.3.4` is in `::/0`); an IPv4 address is in no
+    # IPv6 network.
     #
     # ```
     # net = Socket::IP::Network.parse("192.168.0.0/16")
@@ -271,8 +272,8 @@ module Socket
     # Socket::IP.parse("::ffff:192.168.3.4").in?(net)   # => true
     # ```
     def in?(network: Network) -> Bool
-      a = unmap.bytes
-      n = network.address.unmap.bytes
+      n = network.address.bytes
+      a = n.size == 4 ? unmap.bytes : bytes
       return false unless a.size == n.size
       prefix = network.prefix
       full = prefix / 8
