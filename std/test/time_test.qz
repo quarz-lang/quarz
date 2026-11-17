@@ -116,3 +116,113 @@ class TimeEdgeTest < Test::Case
     assert_equal(t, Time.parse("2024-03-05T14:07:09Z"))
   end
 end
+
+# HTTP dates (RFC 9110 section 5.6.7).
+class TimeHttpdateTest < Test::Case
+  @t: Time = Time.utc(1994, 11, 6, 8, 49, 37)
+
+  def test_httpdate_writes_imf_fixdate_in_utc
+    assert_equal("Sun, 06 Nov 1994 08:49:37 GMT", @t.httpdate)
+    assert_equal("Sun, 06 Nov 1994 08:49:37 GMT", Time.parse("1994-11-06T17:49:37+09:00").httpdate)
+    assert_equal("Mon, 01 Jan 2024 00:00:05 GMT", Time.utc(2024, 1, 1, 0, 0, 5).httpdate)
+  end
+
+  def test_httpdate_reads_back
+    assert_equal(@t, Time.httpdate(@t.httpdate))
+  end
+
+  def data_read -> Hash[String, String]
+    {
+      "IMF-fixdate" => "Sun, 06 Nov 1994 08:49:37 GMT",
+      "RFC 850" => "Sunday, 06-Nov-94 08:49:37 GMT",
+      "asctime, space-padded day" => "Sun Nov  6 08:49:37 1994",
+      "asctime, two-digit day" => "Sun Nov 06 08:49:37 1994",
+      "whitespace at the ends" => " \tSun, 06 Nov 1994 08:49:37 GMT \n",
+      # The day name is not compared with the date (1994-11-06 is a Sunday).
+      "IMF-fixdate, another day name" => "Mon, 06 Nov 1994 08:49:37 GMT",
+      "RFC 850, another day name" => "Friday, 06-Nov-94 08:49:37 GMT",
+      "asctime, another day name" => "Wed Nov  6 08:49:37 1994",
+    }
+  end
+
+  def test_read(data: String)
+    assert_equal(@t, Time.httpdate(data))
+    assert_equal(@t, Time.httpdate?(data))
+  end
+
+  def data_refused -> Hash[String, String]
+    {
+      "lower-case day name" => "sun, 06 Nov 1994 08:49:37 GMT",
+      "upper-case month" => "Sun, 06 NOV 1994 08:49:37 GMT",
+      "lower-case GMT" => "Sun, 06 Nov 1994 08:49:37 gmt",
+      "UTC for GMT" => "Sun, 06 Nov 1994 08:49:37 UTC",
+      "an offset" => "Sun, 06 Nov 1994 08:49:37 +0000",
+      "no zone" => "Sun, 06 Nov 1994 08:49:37",
+      "full day name in IMF-fixdate" => "Sunday, 06 Nov 1994 08:49:37 GMT",
+      "short day name in RFC 850" => "Sun, 06-Nov-94 08:49:37 GMT",
+      "not a day name" => "Sux, 06 Nov 1994 08:49:37 GMT",
+      "one-digit day" => "Sun, 6 Nov 1994 08:49:37 GMT",
+      "two-digit year in IMF-fixdate" => "Sun, 06 Nov 94 08:49:37 GMT",
+      "four-digit year in RFC 850" => "Sunday, 06-Nov-1994 08:49:37 GMT",
+      "two spaces" => "Sun,  06 Nov 1994 08:49:37 GMT",
+      "asctime, day not padded" => "Sun Nov 6 08:49:37 1994",
+      "asctime with GMT" => "Sun Nov  6 08:49:37 1994 GMT",
+      "one-digit hour" => "Sun, 06 Nov 1994 8:49:37 GMT",
+      "day 31 in November" => "Sun, 31 Nov 1994 08:49:37 GMT",
+      "day 00" => "Sun, 00 Nov 1994 08:49:37 GMT",
+      "29 February in a common year" => "Tue, 29 Feb 2022 00:00:00 GMT",
+      "hour 24" => "Sun, 06 Nov 1994 24:00:00 GMT",
+      "minute 60" => "Sun, 06 Nov 1994 08:60:37 GMT",
+      "second 61" => "Sun, 06 Nov 1994 08:49:61 GMT",
+      "second 60 not at 23:59" => "Sun, 06 Nov 1994 08:49:60 GMT",
+      "ISO 8601" => "1994-11-06T08:49:37Z",
+      "empty" => "",
+    }
+  end
+
+  def test_refused(data: String)
+    assert_nil(Time.httpdate?(data))
+    e = assert_raise(ArgumentError) { Time.httpdate(data); nil }
+    assert_equal("not an HTTP date: #{data.inspect}", e.message)
+  end
+
+  # 23:59:60 is read as the next day's midnight, in each form.
+  def test_leap_second
+    after = Time.utc(1999, 1, 1)
+    assert_equal(after, Time.httpdate("Thu, 31 Dec 1998 23:59:60 GMT"))
+    assert_equal(after, Time.httpdate("Thursday, 31-Dec-98 23:59:60 GMT"))
+    assert_equal(after, Time.httpdate("Thu Dec 31 23:59:60 1998"))
+  end
+
+  def test_out_of_range_year
+    assert_raise(RangeError) { Time.httpdate("Fri, 01 Jan 9999 00:00:00 GMT"); nil }
+    assert_nil(Time.httpdate?("Fri, 01 Jan 9999 00:00:00 GMT"))
+  end
+
+  # The RFC 850 form's two-digit year: in the current century, or the one
+  # before when that is more than 50 years after `now`. `now` is given, so
+  # these do not depend on today's date.
+  def data_rfc850_year -> Hash[String, [Time, String, Int]]
+    now = Time.utc(2026, 11, 6, 8, 49, 37)
+    {
+      "this year" => [now, "Friday, 06-Nov-26 08:49:37 GMT", 2026],
+      "earlier this century" => [now, "Sunday, 06-Nov-05 08:49:37 GMT", 2005],
+      "the century's start" => [now, "Sunday, 06-Nov-00 08:49:37 GMT", 2000],
+      "less than 50 years ahead" => [now, "Sunday, 06-Nov-75 08:49:37 GMT", 2075],
+      "exactly 50 years ahead" => [now, "Sunday, 06-Nov-76 08:49:37 GMT", 2076],
+      "a second more than 50 years ahead" => [now, "Sunday, 06-Nov-76 08:49:38 GMT", 1976],
+      "a day more than 50 years ahead" => [now, "Sunday, 07-Nov-76 08:49:37 GMT", 1976],
+      "a year more than 50 years ahead" => [now, "Sunday, 06-Nov-77 08:49:37 GMT", 1977],
+      "the century's end" => [now, "Sunday, 06-Nov-99 08:49:37 GMT", 1999],
+      "early in a century" => [Time.utc(2003, 1, 1), "Sunday, 06-Nov-52 08:49:37 GMT", 2052],
+      "early in a century, past 50 years" => [Time.utc(2003, 1, 1), "Sunday, 06-Nov-54 08:49:37 GMT", 1954],
+      "late in a century" => [Time.utc(2090, 1, 1), "Sunday, 06-Nov-10 08:49:37 GMT", 2010],
+    }
+  end
+
+  def test_rfc850_year(data: [Time, String, Int])
+    now, text, year = data
+    t = Time.httpdate_at(text, now)
+    assert_equal(year, t&.year)
+  end
+end

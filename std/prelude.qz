@@ -2068,6 +2068,129 @@ class Time
   # Time.iso8601("3000-01-01T00:00:00Z")   # raises RangeError
   # ```
   native def self.iso8601(text: String) -> Time
+  # The time an HTTP date writes (RFC 9110 section 5.6.7), in UTC. The
+  # three forms are read:
+  #
+  # - IMF-fixdate: `Sun, 06 Nov 1994 08:49:37 GMT`;
+  # - the obsolete RFC 850 form: `Sunday, 06-Nov-94 08:49:37 GMT`;
+  # - the obsolete asctime form: `Sun Nov  6 08:49:37 1994`, its day
+  #   padded with a space or a zero.
+  #
+  # The grammar is followed exactly:
+  # - day and month names and `GMT` are case-sensitive;
+  # - the separators are single;
+  # - whitespace at the ends is ignored.
+  #
+  # The day name must be one, but it is not compared with the date (RFC
+  # 9110 lets a recipient ignore it).
+  #
+  # A leap second, `23:59:60`, is read as the next day's `00:00:00`.
+  #
+  # The RFC 850 form's two-digit year is in the current century, unless
+  # that makes the time more than 50 years in the future: then it is
+  # the century before.
+  #
+  # ## Raises
+  #
+  # `ArgumentError` when `text` is in none of these forms or a part is
+  # out of range (month day 31 in November, hour 24); `RangeError` for a
+  # time outside the range `Time` can hold.
+  #
+  # ```
+  # Time.httpdate("Sun, 06 Nov 1994 08:49:37 GMT")    # => 1994-11-06 08:49:37 UTC
+  # Time.httpdate("Sunday, 06-Nov-94 08:49:37 GMT")   # => 1994-11-06 08:49:37 UTC
+  # Time.httpdate("Sun Nov  6 08:49:37 1994")         # => 1994-11-06 08:49:37 UTC
+  # Time.httpdate("2024-03-05T14:07:09Z")             # raises ArgumentError
+  # ```
+  def self.httpdate(text: String) -> Time
+    t = httpdate_at(text, Time.now)
+    raise ArgumentError, "not an HTTP date: #{text.inspect}" if t.nil?
+    t
+  end
+
+  # The time an HTTP date writes, as `.httpdate` reads it; `nil` where
+  # `.httpdate` raises.
+  #
+  # ```
+  # Time.httpdate?("Sun, 06 Nov 1994 08:49:37 GMT")   # => 1994-11-06 08:49:37 UTC
+  # Time.httpdate?("Sun, 31 Nov 1994 08:49:37 GMT")   # => nil
+  # ```
+  def self.httpdate?(text: String) -> Time?
+    begin
+      httpdate_at(text, Time.now)
+    rescue RangeError
+      nil
+    end
+  end
+
+  # :nodoc:
+  HTTP_WDAY = "(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)"
+  # :nodoc:
+  HTTP_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+  # :nodoc:
+  HTTP_MONTH = "(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+  # :nodoc:
+  HTTP_TIME = "([0-9]{2}):([0-9]{2}):([0-9]{2})"
+  # :nodoc:
+  IMF_FIXDATE = Regexp.new("\\A#{HTTP_WDAY}, ([0-9]{2}) #{HTTP_MONTH} ([0-9]{4}) #{HTTP_TIME} GMT\\z")
+  # :nodoc:
+  RFC850_DATE = Regexp.new("\\A(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), ([0-9]{2})-#{HTTP_MONTH}-([0-9]{2}) #{HTTP_TIME} GMT\\z")
+  # :nodoc:
+  ASCTIME_DATE = Regexp.new("\\A#{HTTP_WDAY} #{HTTP_MONTH} ([0-9]{2}| [0-9]) #{HTTP_TIME} ([0-9]{4})\\z")
+
+  # :nodoc:
+  # `.httpdate?` with `now` as the current time (for the RFC 850 year);
+  # raises `RangeError` as `.httpdate` does.
+  def self.httpdate_at(text: String, now: Time) -> Time?
+    s = text.strip
+    # [year, month, day, hour, min, sec] as written; a two-digit year for
+    # RFC 850.
+    parts: Array[String] = []
+    two_digit = false
+    m = s.match(IMF_FIXDATE)
+    if m
+      parts = [m[3], m[2], m[1], m[4], m[5], m[6]].map { |p| p || "" }
+    else
+      m = s.match(RFC850_DATE)
+      if m
+        parts = [m[3], m[2], m[1], m[4], m[5], m[6]].map { |p| p || "" }
+        two_digit = true
+      else
+        m = s.match(ASCTIME_DATE)
+        return nil if m.nil?
+        parts = [m[6], m[1], m[2], m[3], m[4], m[5]].map { |p| p || "" }
+      end
+    end
+    month = HTTP_MONTHS.index(parts[1])
+    return nil if month.nil?
+    day = parts[2].strip.to_i
+    hour = parts[3].to_i
+    min = parts[4].to_i
+    sec = parts[5].to_i
+    leap = sec == 60
+    if leap
+      return nil unless hour == 23 && min == 59
+      sec = 59
+    end
+    year = parts[0].to_i
+    if two_digit
+      n = now.utc
+      year += n.year / 100 * 100
+      # Later than 50 years from now: by the year, then the rest.
+      rest = ->(mo: Int, d: Int, h: Int, mi: Int, se: Int) { (((mo * 32 + d) * 24 + h) * 60 + mi) * 61 + se }
+      limit = n.year + 50
+      if year > limit || (year == limit && rest.call(month + 1, day, hour, min, sec) > rest.call(n.month, n.day, n.hour, n.min, n.sec))
+        year -= 100
+      end
+    end
+    t = begin
+      Time.utc(year, month + 1, day, hour, min, sec)
+    rescue ArgumentError
+      nil
+    end
+    return nil if t.nil?
+    leap ? t + 1.second : t
+  end
   # The time elapsed since the program started, from a clock that never
   # goes back.
   #
@@ -2178,6 +2301,13 @@ class Time
   # The same, with `fraction_digits` digits of the second's fraction
   # (clamped to 0 to 9): `2024-03-05T14:07:09.000Z`.
   native def iso8601(fraction_digits: Int) -> String
+  # The time as an HTTP date (RFC 9110 section 5.6.7, IMF-fixdate), in
+  # UTC whatever the time's offset.
+  #
+  # ```
+  # Time.utc(1994, 11, 6, 8, 49, 37).httpdate   # => "Sun, 06 Nov 1994 08:49:37 GMT"
+  # ```
+  def httpdate -> String = utc.strftime("%a, %d %b %Y %H:%M:%S GMT")
   # The time as `2024-03-05 14:07:09 +0900`, or `... UTC` in UTC.
   native def to_s -> String
   # As `#to_s`, with the fraction of the second when it is not zero:
