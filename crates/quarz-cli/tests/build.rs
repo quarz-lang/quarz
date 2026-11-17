@@ -587,6 +587,72 @@ fn build_timings_print_every_stage_and_change_nothing() {
     assert!(lines[7].contains(" level="), "{err}");
 }
 
+/// #536 step 10b: a compiled `FieldGet`'s fast path reads a field where
+/// its class lays it out, trusting the object to be of that class. A
+/// program compiled with the checks (by a `quarz` that checks the facts
+/// itself, as this debug test binary does: `quarz_vm::verify::enabled`)
+/// checks it when it runs with them, as the interpreter does
+/// (tests/verify.rs): reads of `A`'s field claiming it is `B`'s stop the
+/// program; with `QUARZ_VERIFY=0` they are not checked.
+#[test]
+fn a_field_read_on_another_class_compiled() {
+    if !quarz_vm::verify::enabled() {
+        // (A release test binary with `QUARZ_VERIFY` unset compiles
+        // without the checks: nothing to see.)
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("quarz-fieldclass-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let mut module = common::lower(
+        "class A\n  var @x: Int\n  def initialize(@x: Int) end\n  def x -> Int = @x\nend\n\
+         class B\n  var @y: Int\n  def initialize(@y: Int) end\nend\n\
+         p A.new(1).x\np B.new(2)\n",
+    );
+    let class = |name: &str| {
+        module
+            .world
+            .classes
+            .iter()
+            .position(|c| c.name == name)
+            .unwrap() as u32
+    };
+    let (a, b) = (class("A"), class("B"));
+    let mut changed = false;
+    for inst in module
+        .functions
+        .iter_mut()
+        .flat_map(|f| f.blocks.iter_mut())
+        .flat_map(|b| b.insts.iter_mut())
+    {
+        if let quarz_ir::Inst::FieldGet { class, .. } = inst {
+            if *class == a {
+                *class = b;
+                changed = true;
+            }
+        }
+    }
+    assert!(changed, "no FieldGet of A");
+    let exe = dir.join("main");
+    quarz_aot::build(&module, &exe).expect("build");
+    for (verify, code, want) in [
+        (
+            "moves",
+            Some(101),
+            "QIR fact violated: FieldGet of B on a A",
+        ),
+        ("0", Some(0), ""),
+    ] {
+        let out = Command::new(&exe)
+            .env("QUARZ_VERIFY", verify)
+            .output()
+            .expect("run the executable");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), code, "{verify}: {err}");
+        assert!(err.contains(want), "{verify}: {err}");
+    }
+    fs::remove_dir_all(&dir).ok();
+}
+
 /// #630, compiled: an abstract method reached at run time is a violation
 /// under `QUARZ_VERIFY` and a `TypeError` without it, as on the VM
 /// (tests/verify.rs). No program the `quarz` command accepts reaches one,

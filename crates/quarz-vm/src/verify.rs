@@ -207,20 +207,10 @@ impl Interp {
                 } else {
                     "FieldSet"
                 };
-                let world = &self.program.world;
-                let Value::Object(o) = &regs[*obj as usize] else {
-                    return self.violated(format!(
-                        "{name} of {} on {}",
-                        world.classes[*class as usize].name,
-                        describe(&regs[*obj as usize])
-                    ));
-                };
-                if !world.class_is_a(o.class, *class) {
-                    return self.violated(format!(
-                        "{name} of {} on a {}",
-                        world.classes[*class as usize].name, world.classes[o.class as usize].name
-                    ));
+                if let Some(what) = self.field_class_violation(name, &regs[*obj as usize], *class) {
+                    return self.violated(what);
                 }
+                let world = &self.program.world;
                 if let Inst::FieldSet { src, .. } = inst {
                     let kind = self.field_kind(*class, *index);
                     let v = &regs[*src as usize];
@@ -265,6 +255,32 @@ impl Interp {
             }
             _ => {}
         }
+    }
+
+    /// What is wrong with reading or writing (`name`) a field of `class`
+    /// on `v`, if anything: it must be an object of `class` or below. The
+    /// interpreter's check of `FieldGet`/`FieldSet`, and compiled code's
+    /// of its `FieldGet` fast path (`ffi::qz_verify_field_class`).
+    pub(crate) fn field_class_violation(
+        &self,
+        name: &str,
+        v: &Value,
+        class: u32,
+    ) -> Option<String> {
+        let world = &self.program.world;
+        let Value::Object(o) = v else {
+            return Some(format!(
+                "{name} of {} on {}",
+                world.classes[class as usize].name,
+                describe(v)
+            ));
+        };
+        (!world.class_is_a(o.class, class)).then(|| {
+            format!(
+                "{name} of {} on a {}",
+                world.classes[class as usize].name, world.classes[o.class as usize].name
+            )
+        })
     }
 
     /// Check what `inst` trusts about its result, after it ran.
