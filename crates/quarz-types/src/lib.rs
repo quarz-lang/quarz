@@ -107,6 +107,17 @@ pub struct Checked {
 /// 1.. = units in order).
 pub type FileDiagnostic = (u32, Diagnostic);
 
+/// Keep the first of diagnostics alike in file, severity, span and
+/// message, in their order (#814): one said twice is never informative.
+/// A class's checks run at its declaration and again when a `static`
+/// statement generates into it (`recheck_classes`), and a file read back
+/// from the cache brings its warnings beside those a recheck finds again.
+pub fn dedup_diagnostics(list: &mut Vec<FileDiagnostic>) {
+    let mut seen: rustc_hash::FxHashSet<(u32, bool, quarz_syntax::Span, String)> =
+        Default::default();
+    list.retain(|(f, d)| seen.insert((*f, d.is_error(), d.span, d.message.clone())));
+}
+
 /// A session's state to roll back to (`Session::checkpoint`).
 pub struct Checkpoint {
     checker: check::ReplSnapshot,
@@ -239,8 +250,25 @@ impl Session {
     /// the newly loaded units in execution order (dependencies first),
     /// whose top-level statements the caller runs once; an empty list when
     /// everything was already loaded. If it fails, the caller rolls back
-    /// (`checkpoint`), so that it can be required again.
+    /// (`checkpoint`), so that it can be required again. Its diagnostics
+    /// once each (`dedup_diagnostics`).
     pub fn require(
+        &mut self,
+        path: &str,
+        relative: bool,
+        dir: &Path,
+        from: u32,
+        span: quarz_syntax::Span,
+        runner: Option<&mut (dyn StaticRunner + '_)>,
+    ) -> Result<Vec<CheckedUnit>, Vec<FileDiagnostic>> {
+        self.require_unit(path, relative, dir, from, span, runner)
+            .map_err(|mut d| {
+                dedup_diagnostics(&mut d);
+                d
+            })
+    }
+
+    fn require_unit(
         &mut self,
         path: &str,
         relative: bool,
@@ -504,8 +532,21 @@ impl Session {
     /// Declare and check one input, parsed at `base`; its class bodies'
     /// `static` statements run with `runner` (docs/14 §2). On success,
     /// returns the statements to run; the world and output are available
-    /// through `snapshot`.
+    /// through `snapshot`. Its diagnostics once each
+    /// (`dedup_diagnostics`).
     pub fn feed(
+        &mut self,
+        program: &Program,
+        base: u32,
+        runner: Option<&mut (dyn StaticRunner + '_)>,
+    ) -> Result<Vec<Expr>, Vec<FileDiagnostic>> {
+        self.feed_unit(program, base, runner).map_err(|mut d| {
+            dedup_diagnostics(&mut d);
+            d
+        })
+    }
+
+    fn feed_unit(
         &mut self,
         program: &Program,
         base: u32,
@@ -1319,9 +1360,6 @@ pub fn check_with_extra(
     let mut all = kept;
     all.extend(checked_diagnostics.iter().cloned());
     all.sort_by_key(|(f, d)| (*f, d.span.start));
-    // A method of a file read back that a `static` statement reached
-    // before was checked then too: its warnings once.
-    all.dedup_by(|a, b| a.0 == b.0 && a.1.span == b.1.span && a.1.message == b.1.message);
     diagnostics.extend(all);
     // Keep what was checked, when it is free of errors (with its warnings,
     // reported again when it is read back).
@@ -1452,6 +1490,7 @@ pub fn check_with_extra(
     }
     let (world, output, mut diags) = checker.into_output();
     diagnostics.append(&mut diags);
+    dedup_diagnostics(&mut diagnostics);
     let failed = diagnostics.iter().any(|(_, d)| d.is_error());
     let checked = Checked {
         world,

@@ -422,6 +422,44 @@ fn the_eq_hash_warning_sees_generated_methods_once() {
     );
 }
 
+/// #814: a class another file's statement generates into is checked at its
+/// declaration and again after the generation (`recheck_classes`); its
+/// warnings are given once, with the cache off, cold and warm.
+#[test]
+fn a_class_another_files_statement_generates_into_warns_once() {
+    let d = dir();
+    write(
+        &d.0,
+        "genfoo.qz",
+        "module GenFoo\n  static def self.gen_foo -> Void\n    def_method(:foo) { 1 }\n  end\nend\n",
+    );
+    write(
+        &d.0,
+        "vlib.qz",
+        "require_relative \"genfoo\"\nclass Victim\n  include GenFoo\n  def ==(other: Object) -> Bool = true\nend\nmodule Go\n  static def self.go -> Void\n    Victim.gen_foo\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"vlib\"\nclass Driver\n  include Go\n  go\nend\nputs Victim.new.foo\n",
+    );
+    let cache = d.0.join("cache");
+    let cache = cache.to_str().unwrap();
+    let want = ["vlib.qz:4:3: warning: `Victim` defines `==` but not `hash`: as a Hash key or a Set member, equal values must hash the same"];
+    for env in [
+        [("QUARZ_NO_CACHE", "1"), ("QUARZ_CACHE_DIR", cache)],
+        [("QUARZ_NO_CACHE", ""), ("QUARZ_CACHE_DIR", cache)],
+        [("QUARZ_NO_CACHE", ""), ("QUARZ_CACHE_DIR", cache)],
+    ] {
+        let env: Vec<(&str, &str)> = env.into_iter().filter(|(_, v)| !v.is_empty()).collect();
+        let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &env);
+        assert!(ok, "{err}");
+        assert_eq!(out, "1\n");
+        let warnings: Vec<&str> = err.lines().filter(|l| l.contains("warning:")).collect();
+        assert_eq!(warnings, want, "{env:?}: {err}");
+    }
+}
+
 /// #796 (C): whether a field holds a `data` type in place is decided with
 /// the declarations as written, and a generation that would change it is
 /// refused at its statement, before it is declared, naming the field
