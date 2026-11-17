@@ -653,6 +653,66 @@ fn a_field_read_on_another_class_compiled() {
     fs::remove_dir_all(&dir).ok();
 }
 
+/// #842: the same for a `FieldSet` fast path, whose `A` the rewrite makes
+/// claim `B` (the field's word lands where `B`'s first `Int` field is, so
+/// the program runs on without the check).
+#[test]
+fn a_field_write_on_another_class_compiled() {
+    if !quarz_vm::verify::enabled() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("quarz-fieldset-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let mut module = common::lower(
+        "class A\n  var @x: Int\n  def initialize(@x: Int) end\n  def set(v: Int) -> Void\n    @x = v\n  end\n  def x -> Int = @x\nend\n\
+         class B\n  var @y: Int\n  def initialize(@y: Int) end\nend\n\
+         a = A.new(1)\na.set(5)\np a.x\np B.new(2)\n",
+    );
+    let class = |name: &str| {
+        module
+            .world
+            .classes
+            .iter()
+            .position(|c| c.name == name)
+            .unwrap() as u32
+    };
+    let (a, b) = (class("A"), class("B"));
+    let mut changed = false;
+    for inst in module
+        .functions
+        .iter_mut()
+        .flat_map(|f| f.blocks.iter_mut())
+        .flat_map(|b| b.insts.iter_mut())
+    {
+        if let quarz_ir::Inst::FieldSet { class, .. } = inst {
+            if *class == a {
+                *class = b;
+                changed = true;
+            }
+        }
+    }
+    assert!(changed, "no FieldSet of A");
+    let exe = dir.join("main");
+    quarz_aot::build(&module, &exe).expect("build");
+    for (verify, code, want) in [
+        (
+            "moves",
+            Some(101),
+            "QIR fact violated: FieldSet of B on a A",
+        ),
+        ("0", Some(0), ""),
+    ] {
+        let out = Command::new(&exe)
+            .env("QUARZ_VERIFY", verify)
+            .output()
+            .expect("run the executable");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), code, "{verify}: {err}");
+        assert!(err.contains(want), "{verify}: {err}");
+    }
+    fs::remove_dir_all(&dir).ok();
+}
+
 /// #630, compiled: an abstract method reached at run time is a violation
 /// under `QUARZ_VERIFY` and a `TypeError` without it, as on the VM
 /// (tests/verify.rs). No program the `quarz` command accepts reaches one,

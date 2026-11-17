@@ -127,10 +127,10 @@ pub(crate) struct Helpers<F> {
     pub frame_get: F,
     pub frame_set: F,
     pub field_get: F,
-    /// `qz_verify_field_class`: declared, and called on a `FieldGet` fast
-    /// path whose object is not exactly of the class it names (one
-    /// compare first), only in a program compiled with the checks (#536
-    /// step 10b): when the `quarz` compiling it checks the facts itself
+    /// `qz_verify_field_class`: declared, and called on a `FieldGet` or
+    /// `FieldSet` fast path whose object is not exactly of the class it
+    /// names (one compare first), only in a program compiled with the
+    /// checks (#536 step 10b, #842): when the `quarz` compiling it checks the facts itself
     /// (`quarz_vm::verify::enabled`: a debug build, unless `QUARZ_VERIFY=0`;
     /// a release one with `QUARZ_VERIFY=1`). Otherwise the program's IR is
     /// what it was without the check.
@@ -1740,6 +1740,33 @@ impl<B: Builder> Gen<'_, B> {
         let len = self.b.load(Ty::I64, vec, l.len as i32);
         let cap = self.b.load(Ty::I64, vec, l.cap as i32);
         (kind, ptr, len, cap)
+    }
+
+    /// With the checks (#536 step 10b, #842), on a `FieldGet` or
+    /// `FieldSet` (`set`) fast path, where `obj` holds an object: one of
+    /// exactly `class` goes on at the cost of a compare; any other (a
+    /// subclass, whose layout starts with the class's, or a violation)
+    /// asks the runtime, which tests `class_is_a`. Without the checks,
+    /// nothing.
+    fn verify_field_class(&mut self, obj: Reg, class: ClassId, set: bool) {
+        let Some(h) = self.h.verify_field_class else {
+            return;
+        };
+        let rc = self.obj_ptr(obj);
+        let cid = self
+            .b
+            .uload32(rc, OBJECT_FIELDS_PTR_OFF + L::OBJECT_CLASS_OFF as i32);
+        let same = self.b.icmp_imm(IntCC::Equal, cid, i64::from(class));
+        let other = self.b.create_block();
+        let on = self.b.create_block();
+        self.b.brif(same, on, &[], other, &[]);
+        self.b.switch_to_block(other);
+        let o = self.i32(obj);
+        let c = self.i32(class);
+        let s = self.i32(u32::from(set));
+        self.b.call(h, &[self.rt, self.regs, o, c, s]);
+        self.b.jump(on, &[]);
+        self.b.switch_to_block(on);
     }
 
     /// The address of field `index` of the `class` object in `obj` (whose
@@ -4565,26 +4592,7 @@ impl<B: Builder> Gen<'_, B> {
                 if dst != obj {
                     self.note_obj(*obj);
                 }
-                // With the checks (#536 step 10b): an object of exactly the
-                // class goes on at the cost of a compare; any other (a
-                // subclass, whose layout starts with the class's, or a
-                // violation) asks the runtime, which tests `class_is_a`.
-                if let Some(h) = self.h.verify_field_class {
-                    let rc = self.obj_ptr(*obj);
-                    let cid = self
-                        .b
-                        .uload32(rc, OBJECT_FIELDS_PTR_OFF + L::OBJECT_CLASS_OFF as i32);
-                    let same = self.b.icmp_imm(IntCC::Equal, cid, i64::from(*class));
-                    let other = self.b.create_block();
-                    let read = self.b.create_block();
-                    self.b.brif(same, read, &[], other, &[]);
-                    self.b.switch_to_block(other);
-                    let o = self.i32(*obj);
-                    let c = self.i32(*class);
-                    self.b.call(h, &[self.rt, self.regs, o, c]);
-                    self.b.jump(read, &[]);
-                    self.b.switch_to_block(read);
-                }
+                self.verify_field_class(*obj, *class, false);
                 let addr = self.field_addr(*obj, *class, *field);
                 match kind {
                     // A Float or Bool field always holds one (the checker
@@ -4628,6 +4636,7 @@ impl<B: Builder> Gen<'_, B> {
                 let cont = self.b.create_block();
                 self.branch_obj(*obj, fast, slow);
                 self.b.switch_to_block(fast);
+                self.verify_field_class(*obj, *class, true);
                 let field = self.field_addr(*obj, *class, *field_index);
                 let (kind, _) = unbox::field_slot(self.classes, *class, *field_index);
                 // A word field: the number or boolean as its word, when
