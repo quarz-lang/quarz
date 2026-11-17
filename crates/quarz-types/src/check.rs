@@ -17722,9 +17722,15 @@ impl Checker {
                 .any(|t| self.may_be_of_class(m, t) && !self.world.is_subtype(m, t))
         });
         if checked {
-            self.out.run_time_tests.insert(
-                expr.id,
-                crate::testable::run_time_test(&self.world, &target),
+            let test = crate::testable::run_time_test(&self.world, &target);
+            // A site checked again (a method `add_generated_field` set
+            // unchecked) records what it recorded before: the lowering
+            // may keep a function that read it (#717, which only drops
+            // the functions touching the classes' fields).
+            let before = self.out.run_time_tests.insert(expr.id, test);
+            debug_assert!(
+                before.is_none_or(|b| self.out.run_time_tests.get(&expr.id) == Some(&b)),
+                "internal error: the run-time test of a site changed when it was checked again (#717)"
             );
         }
         match call.name.as_str() {

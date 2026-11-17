@@ -23,10 +23,11 @@
 //!   (`ClassInfo::fields`, own or inherited, so with their D), and the
 //!   holders of those that are `data` types, enums or variants (held in
 //!   turn), transitively: a layout lays a flat `data` field out in place,
-//!   and a `data` type's shareability reads its fields' types. Only a
-//!   `data` type's flatness names take it (row 8, #796); a field or a
-//!   recheck changes no holder's row or layout (`Kept::sync` says why;
-//!   debug builds check it, `Kept::assert_holders_kept`).
+//!   and a `data` type's shareability reads its fields' types. No event
+//!   takes it: no generation changes a holder's row or layout (a method
+//!   that would change a flat field's layout is refused, #817; a field
+//!   goes into a class, held by reference; `Kept::sync` says why). Debug
+//!   builds check it after every sync (`Kept::assert_holders_kept`).
 //! - **T**: the classes whose instance methods a class object answers
 //!   (`RtWorld::type_side_owners`): an instance method into one of them
 //!   would change the override row of every class method of its name and
@@ -38,7 +39,9 @@
 //! compares every round against the tables built from nothing.
 
 use quarz_ir::*;
-use quarz_types::{self as types, ClassKind, StaticEvent, Type, World};
+use quarz_types::{self as types, StaticEvent, World};
+#[cfg(debug_assertions)]
+use quarz_types::{ClassKind, Type};
 use rustc_hash::FxHashSet as HashSet;
 
 use crate::layout::{self, Layout};
@@ -114,7 +117,9 @@ pub(crate) struct Kept {
 struct Graph {
     /// D(X) by class, `X` first.
     below: Vec<Vec<ClassId>>,
-    /// The classes declaring a field whose type names each class.
+    /// The classes declaring a field whose type names each class (H,
+    /// which only debug builds read: `Kept::assert_holders_kept`).
+    #[cfg(debug_assertions)]
     holders: HashMap<ClassId, Vec<ClassId>>,
     /// T, sorted (`RtWorld::type_side_owners`).
     type_side_owners: Vec<ClassId>,
@@ -133,22 +138,14 @@ pub(crate) struct SyncStats {
     pub classes: usize,
     pub methods: usize,
     pub events: usize,
-    /// Which edges of the table the events took: H for a `data` type's
-    /// equality (row 8, #796), a recheck (rows 1/10), a deferred
+    /// Which events the sync read: a recheck (rows 1/10), a deferred
     /// conformance (rows 5/7), a field (rows 1/2/8/9/10).
-    pub data_eq: bool,
     pub rechecked: bool,
     pub conformance: bool,
     pub fields: bool,
     pub news: bool,
     pub inits: bool,
 }
-
-/// The names a `data` type's flatness reads (`layout::flat_class`): a
-/// method of one of them generated into a `data` type may change the
-/// layouts of its holders (#796; the edge goes if flatness is decided
-/// from the written declarations).
-const FLATNESS_NAMES: [&str; 4] = ["==", "!=", "hash", "initialize"];
 
 impl Kept {
     /// Every table from nothing, the layouts (`layout::compute`) into
@@ -276,8 +273,15 @@ impl Kept {
         let mut held: Vec<ClassId> = Vec::new();
         for event in events {
             match event {
-                // (Rows 1, 2, 3(a), 4, 5, 7, 10, 12 for D(owner); row 8
-                // through H for a `data` type's flatness names.)
+                // (Rows 1, 2, 3(a), 4, 5, 7, 10, 12 for D(owner).) Not
+                // H(owner): a generation changes no existing layout. A
+                // `data` type's flatness reads the first `==`, `!=` and
+                // `hash` along its lookup (`layout::flat_class`); a
+                // generation of one that would change a layout is refused
+                // before it is declared (`static_run::layout_refusal`,
+                // #796's option C, #817), and checked after it in every
+                // build, any other generation in debug builds
+                // (`static_run`'s `layouts_before`).
                 //
                 // Never an extension's method, nor an instance method of a
                 // class of T, which would change rows of every class (row
@@ -302,10 +306,8 @@ impl Kept {
                     );
                     generated_into.insert(x);
                     dirty.extend(self.graph.below(x));
-                    if is_data(world, x) && FLATNESS_NAMES.contains(&mi.name.as_str()) {
-                        stats.data_eq = true;
-                        dirty.extend(self.graph.held_by(world, x));
-                    }
+                    #[cfg(debug_assertions)]
+                    held.push(x);
                 }
                 // (Rows 1, 2 (field indices), 8, 9, 10 for D(X).) Not H(X):
                 // a field is generated into a class only
@@ -316,9 +318,11 @@ impl Kept {
                 StaticEvent::Field(x) => {
                     stats.fields = true;
                     dirty.extend(self.graph.below(*x));
-                    self.graph.add_holder(world, *x);
                     #[cfg(debug_assertions)]
-                    held.push(*x);
+                    {
+                        self.graph.add_holder(world, *x);
+                        held.push(*x);
+                    }
                 }
                 // (Row 1's inherited constructors.) The `Method` event of
                 // the method that builds the instance, into the same class,
@@ -535,7 +539,9 @@ impl Graph {
                 }
             }
         }
+        #[cfg(debug_assertions)]
         let mut holders: HashMap<ClassId, Vec<ClassId>> = HashMap::default();
+        #[cfg(debug_assertions)]
         for c in &world.classes {
             for f in &c.fields {
                 for k in classes_named(&f.ty) {
@@ -554,6 +560,7 @@ impl Graph {
         type_side_owners.sort_unstable();
         Graph {
             below,
+            #[cfg(debug_assertions)]
             holders,
             type_side_owners,
             owned,
@@ -569,6 +576,7 @@ impl Graph {
 
     /// H(x): the holders of `x` with their D, and the holders of those
     /// that are `data` types, enums or variants, transitively.
+    #[cfg(debug_assertions)]
     fn held_by(&self, world: &World, x: ClassId) -> Vec<ClassId> {
         let mut out: Vec<ClassId> = Vec::new();
         let mut todo: Vec<ClassId> = vec![x];
@@ -591,6 +599,7 @@ impl Graph {
 
     /// Class `x`'s last field, just generated: it holds what its type
     /// names.
+    #[cfg(debug_assertions)]
     fn add_holder(&mut self, world: &World, x: ClassId) {
         if let Some(f) = world.class(x).fields.last() {
             for k in classes_named(&f.ty) {
@@ -688,6 +697,7 @@ fn transitive(direct: &[Vec<ClassId>]) -> Vec<Vec<ClassId>> {
     done.into_iter().map(|v| v.unwrap_or_default()).collect()
 }
 
+#[cfg(debug_assertions)]
 fn is_data(world: &World, c: ClassId) -> bool {
     matches!(
         world.class(c).kind,
@@ -706,6 +716,7 @@ fn class_pairs_of(world: &World, c: ClassId) -> Vec<(ClassId, MethodId, MethodId
 }
 
 /// The classes a type names, anywhere in it.
+#[cfg(debug_assertions)]
 fn classes_named(t: &Type) -> Vec<ClassId> {
     fn walk(t: &Type, out: &mut Vec<ClassId>) {
         match t {
@@ -866,12 +877,11 @@ pub(crate) fn record_stats(s: &SyncStats) {
     };
     use std::io::Write;
     let line = format!(
-        "sync full={} classes={} methods={} events={} data_eq={} rechecked={} conformance={} fields={} news={} inits={} verified={}\n",
+        "sync full={} classes={} methods={} events={} rechecked={} conformance={} fields={} news={} inits={} verified={}\n",
         s.full as u8,
         s.classes,
         s.methods,
         s.events,
-        s.data_eq as u8,
         s.rechecked as u8,
         s.conformance as u8,
         s.fields as u8,
