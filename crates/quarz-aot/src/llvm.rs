@@ -867,6 +867,18 @@ impl Builder for Ll<'_> {
         self.def(ty, format!("load {t}, {pt} {addr}, align {}", align_of(ty)))
     }
 
+    fn load_relaxed(&mut self, ty: Ty, p: u32, off: i32) -> u32 {
+        let addr = self.addr(p, off, ty);
+        let (t, pt) = (self.t(ty), self.pt(ty));
+        self.def(
+            ty,
+            format!(
+                "load atomic {t}, {pt} {addr} monotonic, align {}",
+                align_of(ty)
+            ),
+        )
+    }
+
     fn uload8(&mut self, p: u32, off: i32) -> u32 {
         let v = self.load(Ty::I8, p, off);
         self.coerce(v, Ty::I64)
@@ -1240,7 +1252,7 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
             load_const: declare("qz_load_const", &[p, i32_, i32_, p, i32_], &[]),
             field_get: declare("qz_field_get", &[p, p, i32_, i32_, i32_], &[i32_]),
             verify_field_class: quarz_vm::verify::enabled()
-                .then(|| declare("qz_verify_field_class", &[p, p, i32_, i32_, i32_], &[])),
+                .then(|| declare("qz_verify_field_class", &[p, p, i32_, i32_, i32_, p], &[])),
             field_set: declare("qz_field_set", &[p, p, i32_, i32_, i32_], &[i32_]),
             raise: declare("qz_raise", &[p, p, i32_, i32_, i32_], &[i32_]),
             enter_virtual: declare(

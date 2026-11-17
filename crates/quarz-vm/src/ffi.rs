@@ -513,7 +513,8 @@ pub unsafe extern "C" fn qz_field_get(
 
 /// A `FieldGet` (or, `set` not 0, `FieldSet`) fast path's fact, in a
 /// program compiled with the checks (#536 step 10b, #842, `gen.rs`):
-/// `regs[obj]` is an object of `class` or below. Checked when the program runs with them (`QUARZ_VERIFY`, as
+/// `regs[obj]` is an object of `class` or below. `cell` is the site's
+/// (`Builder::data_cell`), where an accepted class is kept (#841). Checked when the program runs with them (`QUARZ_VERIFY`, as
 /// the interpreter does); a violation stops it.
 ///
 /// # Safety
@@ -525,14 +526,23 @@ pub unsafe extern "C" fn qz_verify_field_class(
     obj: u32,
     class: u32,
     set: u32,
+    cell: *const std::sync::atomic::AtomicUsize,
 ) {
     let rt = &*rt;
-    if !rt.verify {
-        return;
+    let v = &*regs.add(obj as usize);
+    if rt.verify {
+        let name = if set == 0 { "FieldGet" } else { "FieldSet" };
+        if let Some(what) = rt.field_class_violation(name, v, class) {
+            rt.violated(what);
+        }
     }
-    let name = if set == 0 { "FieldGet" } else { "FieldSet" };
-    if let Some(what) = rt.field_class_violation(name, &*regs.add(obj as usize), class) {
-        rt.violated(what);
+    // The site's cell keeps the class, plus one, that passed (#841): the
+    // compiled code goes on without a call for it next time. Only a class
+    // `field_class_violation` accepted (an object of `class` or below) is
+    // stored, or any object when nothing is checked; a store racing with
+    // another thread's leaves one such class, as either would.
+    if let Value::Object(o) = v {
+        (*cell).store(o.class as usize + 1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

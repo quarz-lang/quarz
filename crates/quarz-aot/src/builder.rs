@@ -109,6 +109,9 @@ pub trait Builder {
     fn uload8(&mut self, p: Self::Value, off: i32) -> Self::Value;
     /// A 32-bit word, zero-extended to `I64`.
     fn uload32(&mut self, p: Self::Value, off: i32) -> Self::Value;
+    /// A load another thread may store to at once (an atomic load with no
+    /// ordering): a site's cell the runtime writes (`data_cell`).
+    fn load_relaxed(&mut self, ty: Ty, p: Self::Value, off: i32) -> Self::Value;
     fn store(&mut self, v: Self::Value, p: Self::Value, off: i32);
 
     fn jump(&mut self, block: Self::Block, args: &[Self::Value]);
