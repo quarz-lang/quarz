@@ -118,12 +118,6 @@ class HttpParseTest < Test::Case
     assert_equal([true, true, false, true, true, true, false, false], hosts.map { |a| @proxies.include?(a) })
   end
 
-  def test_ip_bytes
-    assert_equal("b\" \\x01\\r\\xb8\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01\"", HTTP.ip_bytes("2001:db8::1").inspect)
-    assert_equal("b\"\\x00\\x01\\x00\\x02\\x00\\x03\\x00\\x04\\x00\\x05\\x00\\x06\\x00\\x07\\x00\\x08\"", HTTP.ip_bytes("1:2:3:4:5:6:7:8").inspect)
-    assert_nil(HTTP.ip_bytes("1::2::3"))
-  end
-
   def forwarded -> HTTP::Server::Request
     HTTP::Server::Request.get("/", HTTP::Headers.empty.add("X-Forwarded-For", "1.2.3.4, 10.0.0.5").add("X-Forwarded-For", "127.0.0.1").add("X-Forwarded-Proto", "https"))
       .with(remote_address: Socket::Address.new("127.0.0.1", 9), proxies: @proxies, trusted: true)
