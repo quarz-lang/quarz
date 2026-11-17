@@ -9508,6 +9508,10 @@ impl Checker {
             Type::Class(id, args) if *id == self.world.builtin.array && args.len() == 1 => {
                 vec![args[0].clone(); targets.len()]
             }
+            // An error already reported (the placeholder), or unreachable
+            // code: each variable gets `Nothing` too, with no follow-on
+            // error (#822).
+            t if t.is_nothing() => vec![Type::Nothing; targets.len()],
             _ => {
                 self.error(
                     format!(
