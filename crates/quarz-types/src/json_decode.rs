@@ -11,7 +11,12 @@
 //!   `HN` a `Hash` of `String` or `Symbol` keys to node N;
 //! - `dC:N,N,...` a `data` type: its class id, and its fields' nodes in
 //!   the order of the class's fields. The tree shake keeps the classes a
-//!   descriptor names (`class_ids`): the native builds their values.
+//!   descriptor names (`class_ids`): the native builds their values;
+//! - `uKN,KN,...` a union of members other than nil: for each kind of JSON
+//!   value it takes (`s` string, `n` number, `b` bool, `a` array, `o`
+//!   object, in that order), the member's node. This function decides
+//!   which member a kind picks (`Builder::union`); the native only looks
+//!   the value's kind up.
 //!
 //! A type met again (a recursive `data` type) refers to its node.
 //!
@@ -120,11 +125,14 @@ impl Builder<'_> {
                 {
                     return refuse("is nullable, but `JSON::Value` holds `null` already (`JSON::Value::Null`): write `JSON::Value`");
                 }
-                if others.len() == 1 && others.len() < ms.len() {
-                    let n = self.node(others[0])?;
+                if others.len() < ms.len() {
+                    let n = match others.as_slice() {
+                        [one] => self.node(one)?,
+                        _ => self.node(&Type::Union(others.into_iter().cloned().collect()))?,
+                    };
                     return Ok(format!("?{n}"));
                 }
-                refuse("is a union: only a type or nil (`T?`) is decoded")
+                self.union(t, &others)
             }
             Type::Class(id, args) => {
                 let id = *id;
@@ -207,6 +215,127 @@ impl Builder<'_> {
             }
             Type::Proc(..) => refuse("is a procedure"),
             _ => refuse("cannot be decoded from JSON"),
+        }
+    }
+
+    /// A union of members other than nil (`u` followed by `K=N` entries):
+    /// each member is decoded from the JSON values of one kind, and no two
+    /// members from the same kind, so the value's kind picks the member.
+    fn union(&mut self, t: &Type, members: &[&Type]) -> Result<String, String> {
+        let w = self.world;
+        let mut by_kind: Vec<(JsonKind, &Type, usize)> = Vec::new();
+        for m in members {
+            let n = self.node(m)?;
+            let kind = match self.kind(m) {
+                // (Decided at the statement, where its descriptor is made:
+                // `check_with` keeps only the verdict of this one.)
+                Kind::Carried => continue,
+                Kind::Unexpected => {
+                    return Err(format!(
+                        "internal error: `{}` described as a union's member, but of no JSON kind",
+                        w.type_name(m)
+                    ))
+                }
+                Kind::Any => {
+                    return Err(format!(
+                        "`{}` is a union JSON cannot tell apart: `{}` is decoded from any JSON value: write `JSON::Value`",
+                        w.type_name(t),
+                        w.type_name(m)
+                    ))
+                }
+                Kind::Of(k) => k,
+            };
+            if let Some((_, other, _)) = by_kind.iter().find(|(k, ..)| *k == kind) {
+                return Err(format!(
+                    "`{}` is a union JSON cannot tell apart: `{}` and `{}` are both decoded from {}",
+                    w.type_name(t),
+                    w.type_name(other),
+                    w.type_name(m),
+                    kind.noun()
+                ));
+            }
+            by_kind.push((kind, m, n));
+        }
+        by_kind.sort_by_key(|(k, ..)| *k);
+        let entries: Vec<String> = by_kind
+            .iter()
+            .map(|(k, _, n)| format!("{}{n}", k.code()))
+            .collect();
+        Ok(format!("u{}", entries.join(",")))
+    }
+
+    /// The kind of JSON value a member of a union is decoded from (the
+    /// member itself decodes: `node` described it).
+    fn kind(&self, t: &Type) -> Kind {
+        let w = self.world;
+        let b = &w.builtin;
+        match t {
+            Type::Param(_) => Kind::Carried,
+            Type::Class(id, _) => {
+                let id = *id;
+                if [b.string, b.symbol, b.time, b.bytes].contains(&id) {
+                    Kind::Of(JsonKind::String)
+                } else if [b.int, b.integer, b.float].contains(&id) {
+                    Kind::Of(JsonKind::Number)
+                } else if id == b.bool_ {
+                    Kind::Of(JsonKind::Bool)
+                } else if id == b.array || id == b.set {
+                    Kind::Of(JsonKind::Array)
+                } else if w.class(id).name == "JSON::Value" {
+                    Kind::Any
+                } else {
+                    // A `Hash` or a `data` type.
+                    Kind::Of(JsonKind::Object)
+                }
+            }
+            // (`node` refused every other type, and a union's members are
+            // no unions: `Type::union_of` flattens them.)
+            _ => Kind::Unexpected,
+        }
+    }
+}
+
+/// What a union's member is decoded from.
+enum Kind {
+    Of(JsonKind),
+    /// Every JSON value: `JSON::Value`.
+    Any,
+    /// Not known yet: a type parameter the generated method carries.
+    Carried,
+    /// None: a type `node` does not describe (an internal error).
+    Unexpected,
+}
+
+/// The kinds of JSON values other than `null`, in the order a union's
+/// entries are written.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum JsonKind {
+    String,
+    Number,
+    Bool,
+    Array,
+    Object,
+}
+
+impl JsonKind {
+    /// Its letter in a union's entries.
+    fn code(self) -> char {
+        match self {
+            JsonKind::String => 's',
+            JsonKind::Number => 'n',
+            JsonKind::Bool => 'b',
+            JsonKind::Array => 'a',
+            JsonKind::Object => 'o',
+        }
+    }
+
+    fn noun(self) -> &'static str {
+        match self {
+            JsonKind::String => "a string",
+            JsonKind::Number => "a number",
+            JsonKind::Bool => "`true` or `false`",
+            JsonKind::Array => "an array",
+            JsonKind::Object => "an object",
         }
     }
 }
