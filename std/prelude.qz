@@ -5911,7 +5911,6 @@ enum Result[T, E]
       in Ok(value:) then values << value
       in Err(error:) then return Result::Err[Array[T], E].new(error)
       end
-      nil
     end
     Result::Ok[Array[T], E].new(values.to_a)
   end
@@ -5930,7 +5929,6 @@ enum Result[T, E]
       in Ok(value:) then values << value
       in Err(error:) then errors << error
       end
-      nil
     end
     [values.to_a, errors.to_a]
   end
@@ -7002,7 +7000,6 @@ module Signal
     # Once for the program (`reader` hands its end out once): outside any
     # test's tasks, which `quarz test` cancels.
     Task.__spawn_service { dispatch(io) } if io
-    nil
   end
 
   # `:default` restores the default action, `:ignore` ignores the signal;
