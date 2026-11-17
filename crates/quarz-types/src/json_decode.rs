@@ -227,8 +227,15 @@ impl Builder<'_> {
         for m in members {
             let n = self.node(m)?;
             let kind = match self.kind(m) {
-                // (Decided at the statement, where its descriptor is made.)
+                // (Decided at the statement, where its descriptor is made:
+                // `check_with` keeps only the verdict of this one.)
                 Kind::Carried => continue,
+                Kind::Unexpected => {
+                    return Err(format!(
+                        "internal error: `{}` described as a union's member, but of no JSON kind",
+                        w.type_name(m)
+                    ))
+                }
                 Kind::Any => {
                     return Err(format!(
                         "`{}` is a union JSON cannot tell apart: `{}` is decoded from any JSON value: write `JSON::Value`",
@@ -281,8 +288,9 @@ impl Builder<'_> {
                     Kind::Of(JsonKind::Object)
                 }
             }
-            // (`node` refused every other type.)
-            _ => Kind::Any,
+            // (`node` refused every other type, and a union's members are
+            // no unions: `Type::union_of` flattens them.)
+            _ => Kind::Unexpected,
         }
     }
 }
@@ -294,6 +302,8 @@ enum Kind {
     Any,
     /// Not known yet: a type parameter the generated method carries.
     Carried,
+    /// None: a type `node` does not describe (an internal error).
+    Unexpected,
 }
 
 /// The kinds of JSON values other than `null`, in the order a union's

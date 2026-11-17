@@ -295,7 +295,9 @@ class JsonDecodeUnionTest < Test::Case
     e = assert_raise(JSON::DecodeError) { JSON.decode[JsonTestOwner]('{"owner": null}'); nil }
     assert_equal("$.owner: expected a string or an object (for JsonTestRef), found null", e.message)
     e = assert_raise(JSON::DecodeError) { JSON.decode[Array[Time | Array[Int] | Bool]]('[true, 1]'); nil }
-    assert_equal("$[1]: expected an RFC 3339 time string, true or false or an array, found 1", e.message)
+    assert_equal("$[1]: expected an RFC 3339 time string, a boolean or an array, found 1", e.message)
+    e = assert_raise(JSON::DecodeError) { JSON.decode[Bool]("1"); nil }
+    assert_equal("$: expected true or false, found 1", e.message)
     # (A member the kind picked fails with its own error.)
     e = assert_raise(JSON::DecodeError) { JSON.decode[Time | Int]('"yesterday"'); nil }
     assert_equal("$: expected an RFC 3339 time string, found \"yesterday\"", e.message)

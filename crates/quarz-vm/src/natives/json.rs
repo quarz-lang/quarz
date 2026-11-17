@@ -499,7 +499,12 @@ impl Decoder<'_> {
             Node::Union(entries) => {
                 let parts: Vec<String> = entries
                     .iter()
-                    .map(|&(_, m)| self.expected(&self.nodes[m]))
+                    .map(|&(_, m)| match self.nodes[m] {
+                        // (Beside other members, "true or false" would
+                        // read as two of them.)
+                        Node::Bool => "a boolean".to_string(),
+                        ref n => self.expected(n),
+                    })
                     .collect();
                 match parts.as_slice() {
                     [] => "a JSON value".to_string(),
