@@ -481,6 +481,37 @@ fn a_nodoc_module_is_not_among_the_includes() {
     );
 }
 
+/// A `:nodoc:` superclass is still named in a class's signature, in the
+/// text, the HTML and `--json` (docs/13 §2, #865).
+#[test]
+fn a_nodoc_superclass_is_named_in_the_signature() {
+    let d = Dir::new();
+    d.write(
+        "n.qz",
+        "# :nodoc:\nclass Base\n  # Hi.\n  def hi -> Int = 1\nend\n\n# A public class.\nclass Shown < Base\nend\n",
+    );
+    let out = quarz_in(&d.0, &["doc", "n.qz", "Shown"]);
+    assert!(
+        stdout(&out).starts_with("class Shown < Base\n"),
+        "{}",
+        stdout(&out)
+    );
+    let out = quarz_in(&d.0, &["doc", "n.qz", "--json"]);
+    assert!(
+        stdout(&out).contains("\"signature\": \"class Shown < Base\""),
+        "{}",
+        stdout(&out)
+    );
+    let site = d.0.join("site");
+    let out = quarz_in(
+        &d.0,
+        &["doc", "n.qz", "--html", "-o", site.to_str().unwrap()],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let page = std::fs::read_to_string(site.join("Shown.html")).unwrap();
+    assert!(page.contains("class Shown &lt; Base"), "{page}");
+}
+
 #[test]
 fn checks_that_go_where_they_can_and_cannot() {
     let d = Dir::new();
