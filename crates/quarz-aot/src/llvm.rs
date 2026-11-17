@@ -1239,6 +1239,8 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
             frame_set: declare("qz_frame_set", &[p, i32_, i32_, p, i32_], &[]),
             load_const: declare("qz_load_const", &[p, i32_, i32_, p, i32_], &[]),
             field_get: declare("qz_field_get", &[p, p, i32_, i32_, i32_], &[i32_]),
+            verify_field_class: quarz_vm::verify::enabled()
+                .then(|| declare("qz_verify_field_class", &[p, p, i32_, i32_], &[])),
             field_set: declare("qz_field_set", &[p, p, i32_, i32_, i32_], &[i32_]),
             raise: declare("qz_raise", &[p, p, i32_, i32_, i32_], &[i32_]),
             enter_virtual: declare(
@@ -1421,6 +1423,7 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
                 frame_get: rt.h.frame_get,
                 frame_set: rt.h.frame_set,
                 field_get: rt.h.field_get,
+                verify_field_class: rt.h.verify_field_class,
                 load_const: rt.h.load_const,
                 field_set: rt.h.field_set,
                 call_static: rt.h.call_static,

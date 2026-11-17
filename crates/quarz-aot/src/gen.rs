@@ -127,6 +127,13 @@ pub(crate) struct Helpers<F> {
     pub frame_get: F,
     pub frame_set: F,
     pub field_get: F,
+    /// `qz_verify_field_class`: declared, and called on every `FieldGet`
+    /// fast path, only in a program compiled with the checks (#536 step
+    /// 10b): when the `quarz` compiling it checks the facts itself
+    /// (`quarz_vm::verify::enabled`: a debug build, unless `QUARZ_VERIFY=0`;
+    /// a release one with `QUARZ_VERIFY=1`). Otherwise the program's IR is
+    /// what it was without the check.
+    pub verify_field_class: Option<F>,
     pub load_const: F,
     pub field_set: F,
     pub call_static: F,
@@ -4556,6 +4563,11 @@ impl<B: Builder> Gen<'_, B> {
                 self.b.switch_to_block(fast);
                 if dst != obj {
                     self.note_obj(*obj);
+                }
+                if let Some(h) = self.h.verify_field_class {
+                    let o = self.i32(*obj);
+                    let c = self.i32(*class);
+                    self.b.call(h, &[self.rt, self.regs, o, c]);
                 }
                 let addr = self.field_addr(*obj, *class, *field);
                 match kind {
