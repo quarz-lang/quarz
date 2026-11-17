@@ -3504,9 +3504,16 @@ impl World {
 
     /// `user_method` as if each `(class, name)` of `added` were declared
     /// too: a method of the program's taking the call, in that class's own
-    /// table (a generation never goes into a table that has the name,
-    /// `add_generated`). How a generation is judged before it is declared
-    /// (#796).
+    /// table. How a generation is judged before it is declared (#796).
+    /// An approximation that errs toward `Added`: when the declared world
+    /// has no method of the program's for the call, any supposed method
+    /// in one of `cid`'s run-time ancestors (`runtime_ancestors`: its
+    /// includes, every extension's included modules) counts, wherever
+    /// the lookup would meet it. Once declared it may be found by the
+    /// lookup, or as the witness of an abstract method found first (a
+    /// module's requirement it implements), which this does not work out;
+    /// so a generation is refused a little more than the exact rule
+    /// would, never less.
     pub fn user_method_with(
         &self,
         cid: ClassId,
@@ -3534,7 +3541,16 @@ impl World {
                 return Some(UserMethod::Added);
             }
         }
-        let mut m = found?;
+        let supposed = || {
+            !added.is_empty()
+                && self
+                    .runtime_ancestors(cid)
+                    .iter()
+                    .any(|(a, _)| added.contains(&(*a, name)))
+        };
+        let Some(mut m) = found else {
+            return supposed().then_some(UserMethod::Added);
+        };
         if self.method(m).is_abstract {
             if let Some(w) = self
                 .witnesses_of(cid)
@@ -3546,8 +3562,11 @@ impl World {
             }
         }
         let info = self.method(m);
-        (!info.is_native && info.extension.is_none() && !info.is_abstract)
-            .then_some(UserMethod::Declared(m))
+        if !info.is_native && info.extension.is_none() && !info.is_abstract {
+            Some(UserMethod::Declared(m))
+        } else {
+            supposed().then_some(UserMethod::Added)
+        }
     }
 
     /// The class declaring field `name` of class `cid`: `cid` or the first

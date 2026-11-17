@@ -431,6 +431,8 @@ fn the_eq_hash_warning_sees_generated_methods_once() {
 /// generic class, a superclass's field (named at it), a class of a later
 /// file; the method `==`/`hash` or `!=`, into the type, into a module it
 /// includes or one an unconditional extension includes into it; the
+/// module the type includes after (or before) a module requiring `==`,
+/// whose abstract `==` the generated one then implements; the
 /// generation by a statement or by a class-end hook (reported at the
 /// statement that registered it); after a statement whose generated body
 /// builds a holder (`make`), whose hook captured one, or whose
@@ -449,7 +451,99 @@ module GenNe
   end
 end
 "##;
-    let cases: [(&str, &str, &str, &str, &str); 14] = [
+    let cases: [(&str, &str, &str, &str, &str); 17] = [
+        (
+            "req_then_m",
+            r##"module Req
+  abstract def ==(other: Object) -> Bool
+end
+module M
+  include GenEq
+end
+data D(x: Int)
+  include Req
+  include M
+end
+data E = (d: D, n: Int)
+module Go
+  static def self.go -> Void
+    M.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class C
+  include Go
+  go
+end
+puts E.new(D.new(1), 3) == E.new(D.new(2), 3)
+puts E.new(D.new(1), 3).d.x
+"##,
+            "app.qz:4:3: error: ",
+            "`D`, which gets the methods of `M`, is stored in place in the field `@d` of `E`",
+        ),
+        (
+            "m_then_req",
+            r##"module Req
+  abstract def ==(other: Object) -> Bool
+end
+module M
+  include GenEq
+end
+data D(x: Int)
+  include M
+  include Req
+end
+data E = (d: D, n: Int)
+module Go
+  static def self.go -> Void
+    M.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class C
+  include Go
+  go
+end
+puts E.new(D.new(1), 3) == E.new(D.new(2), 3)
+puts E.new(D.new(1), 3).d.x
+"##,
+            "app.qz:4:3: error: ",
+            "`D`, which gets the methods of `M`, is stored in place in the field `@d` of `E`",
+        ),
+        (
+            "ext_m",
+            r##"module Req
+  abstract def ==(other: Object) -> Bool
+end
+module M
+  include GenEq
+end
+data D(x: Int)
+  include Req
+end
+extension D
+  include M
+end
+data E = (d: D, n: Int)
+module Go
+  static def self.go -> Void
+    M.gen_eq
+  end
+end
+"##,
+            r##"require_relative "lib"
+class C
+  include Go
+  go
+end
+puts E.new(D.new(1), 3) == E.new(D.new(2), 3)
+puts E.new(D.new(1), 3).d.x
+"##,
+            "app.qz:4:3: error: ",
+            "`D`, which gets the methods of `M`, is stored in place in the field `@d` of `E`",
+        ),
         (
             "reproducer",
             r##"data D(x: Int, y: Int)

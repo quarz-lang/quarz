@@ -751,14 +751,24 @@ impl Runner {
             let mid = host
                 .add_generated(info)
                 .map_err(|why| fail(format!("{at}: {why}")))?;
-            // (Nothing else a generation declares changes a layout.)
+            // What the check judged is what the declaration did: for the
+            // names it judges, in every build (an internal error, not a
+            // wrong layout); for any generation, in debug builds.
             if let Some(before) = &layouts_before {
-                debug_assert!(
+                let changed = || {
                     quarz_lower::layout::first_change(
                         before,
-                        &quarz_lower::layout::compute(host.world())
+                        &quarz_lower::layout::compute(host.world()),
                     )
-                    .is_none(),
+                    .is_some()
+                };
+                if deciding && changed() {
+                    return Err(fail(format!(
+                        "{at}: internal error: the generation changed how a field holds a `data` type, which the check before it did not foresee (#796); please report"
+                    )));
+                }
+                debug_assert!(
+                    deciding || !changed(),
                     "{at}: a generation changed a layout (#796)"
                 );
             }
