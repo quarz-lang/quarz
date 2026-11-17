@@ -1,6 +1,7 @@
 # Crypto::RSA: keys read from and written to PEM and DER, signatures
 # checked against ones OpenSSL made (std/test/fixtures/crypto, its
-# README has the commands), the errors, and what inspect shows.
+# README has the commands), the errors, and what inspect shows;
+# Crypto.secure_compare.
 require "crypto"
 require "digest"
 require "base64"
@@ -187,5 +188,37 @@ class CryptoRSATest < Test::Case
       end
     end
     assert_equal([true, true], tasks.map(&:await))
+  end
+end
+
+# Crypto.secure_compare: what it answers (its timing is not tested).
+class CryptoSecureCompareTest < Test::Case
+  def data_compared -> Hash[String, [Bytes | String, Bytes | String, Bool]]
+    {
+      "equal strings" => ["a secret token", "a secret token", true],
+      "equal bytes" => [b"\x00\x01\xff", b"\x00\x01\xff", true],
+      "differ at the first byte" => ["Xbcdef", "abcdef", false],
+      "differ in the middle" => ["abcXef", "abcdef", false],
+      "differ at the last byte" => ["abcdeX", "abcdef", false],
+      "bytes differ at the last byte" => [b"\x00\x01\xff", b"\x00\x01\xfe", false],
+      "shorter" => ["abc", "abcd", false],
+      "longer" => ["abcd", "abc", false],
+      "a prefix of zero bytes" => [b"\x00", b"\x00\x00", false],
+      "both empty" => ["", "", true],
+      "empty and not" => ["", "a", false],
+      "empty string and empty bytes" => ["", Bytes.new, true],
+      "string and its bytes" => ["abc", b"abc", true],
+      "bytes and the string" => [b"abc", "abc", true],
+      "string and other bytes" => ["abc", b"abd", false],
+      "non-ASCII, equal" => ["日本語é", "日本語é", true],
+      "non-ASCII and its UTF-8 bytes" => ["é", b"\xc3\xa9", true],
+      "non-ASCII, differ in a byte of a character" => ["é", "è", false],
+      "Latin-1 bytes are not the UTF-8 string" => ["é", b"\xe9", false],
+    }
+  end
+
+  def test_compared(data: [Bytes | String, Bytes | String, Bool])
+    a, b, expected = data
+    assert_equal(expected, Crypto.secure_compare(a, b))
   end
 end

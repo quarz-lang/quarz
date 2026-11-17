@@ -892,6 +892,7 @@ dependencies = [
  "rustls-native-certs",
  "sha2",
  "smallvec",
+ "subtle",
  "unicode-segmentation",
  "zeroize",
 ]

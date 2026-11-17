@@ -1,7 +1,8 @@
 //! `std/crypto.qz` (the `crypto` feature): RSA keys and signatures
 //! through RustCrypto's `rsa`, AES-GCM through `aes-gcm`, argon2id
-//! password hashes through `argon2`, and the system's random bytes
-//! through `getrandom`.
+//! password hashes through `argon2`, the system's random bytes
+//! through `getrandom`, and comparison in constant time through
+//! `subtle`.
 //!
 //! A key is a `data` value holding its DER (PKCS#8 for a private key,
 //! SPKI for a public one, whatever it was read from): the natives parse
@@ -38,6 +39,13 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         getrandom::fill(&mut buf)
             .map_err(|e| error(i, format!("the system's random source failed: {e}")))?;
         Ok(Value::bytes(buf))
+    });
+    native!(m, "Crypto.secure_compare", |i, _, a| {
+        use subtle::ConstantTimeEq;
+        let x = compared(i, a.arg(0))?;
+        let y = compared(i, a.arg(1))?;
+        // `ct_eq` on slices answers false at once for different lengths.
+        Ok(Value::Bool(x.ct_eq(y).into()))
     });
     native!(m, "Crypto::AES.seal_with", |i, _, a| {
         let key = bytes(i, a.arg(0), "key")?;
@@ -539,6 +547,15 @@ fn message<'a>(interp: &Interp, v: &'a Value) -> Result<&'a [u8], Flow> {
     match v {
         Value::Bytes(b) => Ok(b),
         v => Ok(string(interp, v, "data")?.as_bytes()),
+    }
+}
+
+/// A string compared by `Crypto.secure_compare`: `Bytes`, or a `String`'s
+/// UTF-8 bytes.
+fn compared<'a>(interp: &Interp, v: &'a Value) -> Result<&'a [u8], Flow> {
+    match v {
+        Value::Bytes(b) => Ok(b),
+        v => Ok(string(interp, v, "secure_compare")?.as_bytes()),
     }
 }
 
