@@ -1,0 +1,94 @@
+# HTTP::Client::Request#target and #host: what the client sends on the
+# request line and in the Host header.
+require "http"
+require "test"
+
+class HttpClientTargetTest < Test::Case
+  def data_target_and_host -> Hash[String, [String, String, String]]
+    {
+      "default port" => ["https://example.com/a?b=1", "/a?b=1", "example.com"],
+      "explicit default port" => ["https://example.com:443/a", "/a", "example.com"],
+      "other port" => ["https://example.com:8443/a?b=1", "/a?b=1", "example.com:8443"],
+      "http's default port" => ["http://example.com:80/", "/", "example.com"],
+      "https port on http" => ["http://example.com:443/", "/", "example.com:443"],
+      "empty path" => ["http://example.com", "/", "example.com"],
+      "empty path with a query" => ["http://example.com?q=1", "/?q=1", "example.com"],
+      "empty query" => ["http://example.com/a?", "/a?", "example.com"],
+      "IPv6" => ["http://[::1]:8080/x", "/x", "[::1]:8080"],
+      "IPv6 default port" => ["https://[2001:db8::1]/", "/", "[2001:db8::1]"],
+      "IPv4" => ["http://127.0.0.1:8080/", "/", "127.0.0.1:8080"],
+      "user information" => ["https://user:pw@example.com/a", "/a", "example.com"],
+      "fragment" => ["https://example.com/a?b#frag", "/a?b", "example.com"],
+      "escapes kept" => ["https://example.com/a%20b/%2F?x=%41", "/a%20b/%2F?x=%41", "example.com"],
+    }
+  end
+
+  def test_target_and_host(data: [String, String, String])
+    url, target, host = data
+    req = HTTP::Client::Request.get(url)
+    assert_equal(target, req.target)
+    assert_equal(host, req.host)
+  end
+
+  # A server that answers each request with its request line and Host
+  # header, as received.
+  def echoing(&: (Int) -> Void) -> Void
+    listener = TCPServer.new("127.0.0.1", 0)
+    Task.scope do |scope|
+      scope.spawn do
+        begin
+          loop do
+            sock = listener.accept
+            scope.spawn do
+              begin
+                reader = HTTP::Reader.new(sock)
+                line = (reader.read_line(4096) || Bytes.new).decode
+                headers = HTTP.read_headers(reader, 4096)
+                text = "#{line}|#{headers.all("host").join(",")}"
+                sock.write("HTTP/1.1 200 OK\r\nContent-Length: #{text.bytesize}\r\nConnection: close\r\n\r\n#{text}")
+              rescue IOError, SystemCallError, HTTP::Error
+                nil
+              ensure
+                sock.close
+              end
+              nil
+            end
+          end
+        rescue IOError
+          nil
+        end
+        nil
+      end
+      begin
+        yield listener.local_address.port
+      ensure
+        listener.close
+      end
+    end
+    nil
+  end
+
+  # What is sent is what `target` and `host` say, a `Host` the caller set
+  # replaced.
+  def test_sent_as_they_say
+    echoing do |port|
+      c = HTTP::Client.new
+      ["http://127.0.0.1:#{port}/a/b?x=1&y=%20", "http://u:p@127.0.0.1:#{port}#frag", "http://127.0.0.1:#{port}/?"].each do |url|
+        req = HTTP::Client::Request.get(url, {"Host" => "other.example"})
+        assert_equal("GET #{req.target} HTTP/1.1|#{req.host}", c.request(req).body.read, url)
+      end
+    end
+  end
+
+  # Through a proxy, a plain-http request's line carries the absolute
+  # form; its path and query are `target`, and the Host header is `host`.
+  def test_through_a_proxy
+    echoing do |port|
+      c = HTTP::Client.new(proxy: HTTP::Proxy.new("http://127.0.0.1:#{port}"))
+      req = HTTP::Client::Request.get("http://user:pw@example.com:8080/a?b=1#f")
+      assert_equal("GET http://example.com:8080/a?b=1 HTTP/1.1|example.com:8080", c.request(req).body.read)
+      assert_equal("/a?b=1", req.target)
+      assert_equal("example.com:8080", req.host)
+    end
+  end
+end
