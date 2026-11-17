@@ -150,12 +150,10 @@ module Socket
   # as its IPv4 address does; `==` tells the two forms apart.
   #
   # ```
-  # ip = Socket::IP.parse("10.1.2.3")
-  # ip.private?                                                     # => true
-  # Socket::IP.parse("::ffff:127.0.0.1").loopback?                  # => true
-  # Socket::IP.parse("2001:db8::1").global?                 # => false
-  # Socket::IP.parse("10.0.0.1").in?(Socket::IP::Network.parse("10.0.0.0/8"))   # => true
-  # Socket::IP.parse("1.2.3")                                       # => nil
+  # Socket::IP.parse("10.1.2.3")&.private?           # => true
+  # Socket::IP.parse("::ffff:127.0.0.1")&.loopback?   # => true
+  # Socket::IP.parse("2001:db8::1")&.global?          # => false
+  # Socket::IP.parse("1.2.3")                         # => nil
   # ```
   data IP(
     # 4 bytes for IPv4, 16 for IPv6.
@@ -229,7 +227,7 @@ module Socket
     # The IPv4 address an IPv4-mapped one maps; any other address itself.
     #
     # ```
-    # Socket::IP.parse("::ffff:10.0.0.1").unmap.to_s   # => "10.0.0.1"
+    # Socket::IP.parse("::ffff:10.0.0.1")&.unmap.to_s   # => "10.0.0.1"
     # ```
     def unmap -> IP = mapped? ? IP.new(bytes.slice(12, 4)) : self
 
@@ -268,8 +266,9 @@ module Socket
     #
     # ```
     # net = Socket::IP::Network.parse("192.168.0.0/16")
-    # Socket::IP.parse("192.168.3.4").in?(net)          # => true
-    # Socket::IP.parse("::ffff:192.168.3.4").in?(net)   # => true
+    # raise ArgumentError if net.nil?
+    # Socket::IP.parse("192.168.3.4")&.in?(net)          # => true
+    # Socket::IP.parse("::ffff:192.168.3.4")&.in?(net)   # => true
     # ```
     def in?(network: Network) -> Bool
       n = network.address.bytes
@@ -310,9 +309,9 @@ module Socket
     # included: the address-space registries are not read.
     #
     # ```
-    # Socket::IP.parse("8.8.8.8").global?       # => true
-    # Socket::IP.parse("100.64.0.1").global?    # => false
-    # Socket::IP.parse("192.0.0.9").global?     # => true
+    # Socket::IP.parse("8.8.8.8")&.global?       # => true
+    # Socket::IP.parse("100.64.0.1")&.global?    # => false
+    # Socket::IP.parse("192.0.0.9")&.global?     # => true
     # ```
     def global? -> Bool
       return false if multicast?
