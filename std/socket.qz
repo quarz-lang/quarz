@@ -193,9 +193,9 @@ module Socket
       groups = ->(s: String) { s.empty? ? [] : s.split(":", -1) }
       left = groups.call(head)
       right = groups.call(tail)
-      # A trailing dotted IPv4 part counts as two groups.
+      # A dotted IPv4 part, last in the text, counts as two groups.
       v4: Bytes? = nil
-      last = right.empty? ? (left.empty? ? nil : left[-1]) : right[-1]
+      last = right.empty? ? (sep.empty? && !left.empty? ? left[-1] : nil) : right[-1]
       if last && last.include?(".")
         v4 = v4_bytes(last)
         return nil if v4.nil?

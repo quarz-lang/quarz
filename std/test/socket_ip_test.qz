@@ -64,6 +64,8 @@ class SocketIPParseTest < Test::Case
       "dotted tail not last" => "::1.2.3.4:1",
       "bad dotted tail" => "::ffff:1.2.3",
       "dotted tail with leading zero" => "::ffff:1.2.3.04",
+      "dotted part before ::" => "1.2.3.4::",
+      "dotted part before :: after a group" => "1:2.3.4.5::",
     }
   end
 
