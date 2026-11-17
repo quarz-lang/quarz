@@ -449,11 +449,24 @@ pub fn borrowed_regs(f: &Function) -> Vec<bool> {
 /// need no release at exit). The compiled backends release by it, and
 /// register sharing keeps the two kinds apart so as not to widen it.
 pub fn heap_possible(f: &Function, methods: &[RtMethod]) -> Vec<bool> {
-    let mut heap = vec![false; f.nregs as usize];
+    heap_possible_in(f.nregs, &f.blocks, &f.consts, f.kind, methods)
+}
+
+/// `heap_possible` of a function given by its parts: what the interpreter
+/// keeps of one (`FuncInfo` and the blocks), which checks it against the
+/// values its registers hold (`QUARZ_VERIFY`, #536 step 9).
+pub fn heap_possible_in(
+    nregs: u32,
+    blocks: &[Block],
+    consts: &[Constant],
+    kind: FuncKind,
+    methods: &[RtMethod],
+) -> Vec<bool> {
+    let mut heap = vec![false; nregs as usize];
     // Copies carry whatever their source may hold: to a fixpoint.
     let mut moves: Vec<(Reg, Reg)> = Vec::new();
     let mut mark = |r: Reg| heap[r as usize] = true;
-    for blk in &f.blocks {
+    for blk in blocks {
         for inst in &blk.insts {
             // (A call through a typed entry leaves a number, but a result
             // that did not fit is boxed in the home for the interpreter,
@@ -464,13 +477,13 @@ pub fn heap_possible(f: &Function, methods: &[RtMethod]) -> Vec<bool> {
                 // once; a BigInt sends the function to the interpreter,
                 // and its home is released at exit).
                 Inst::Arg { dst, index } => {
-                    if !numeric_param(f, methods, *index) {
+                    if !numeric_param_of(kind, methods, *index) {
                         mark(*dst);
                     }
                 }
                 Inst::LoadConst { dst, idx } => {
                     if !matches!(
-                        f.consts[*idx as usize],
+                        consts[*idx as usize],
                         Constant::Nil | Constant::Bool(_) | Constant::Int(_) | Constant::Float(_)
                     ) {
                         mark(*dst);
@@ -570,7 +583,12 @@ pub fn heap_possible(f: &Function, methods: &[RtMethod]) -> Vec<bool> {
 /// positional one without a default): compiled code checks it once and
 /// keeps it unboxed.
 pub fn numeric_param(f: &Function, methods: &[RtMethod], index: u32) -> bool {
-    let FuncKind::Method(mid) = f.kind else {
+    numeric_param_of(f.kind, methods, index)
+}
+
+/// `numeric_param` of a function of kind `kind`.
+pub fn numeric_param_of(kind: FuncKind, methods: &[RtMethod], index: u32) -> bool {
+    let FuncKind::Method(mid) = kind else {
         return false;
     };
     methods

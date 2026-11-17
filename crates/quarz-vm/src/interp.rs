@@ -861,6 +861,9 @@ pub struct Interp {
     pub verify: bool,
     /// The kinds of each class's fields, for those checks.
     pub(crate) verify_kinds: RefCell<Vec<Option<Vec<quarz_ir::FieldKind>>>>,
+    /// Per function, the registers that may hold a counted value
+    /// (`live::heap_possible`), with the blocks they were found for.
+    pub(crate) verify_heap: RefCell<Vec<Option<crate::verify::Heap>>>,
     self_rc: RefCell<Weak<Interp>>,
     pub root_task: Cell<Option<TaskId>>,
 }
@@ -1128,6 +1131,7 @@ impl Interp {
             reg_pool: RefCell::new(Vec::new()),
             verify: crate::verify::enabled(),
             verify_kinds: RefCell::new(Vec::new()),
+            verify_heap: RefCell::new(Vec::new()),
             self_rc: RefCell::new(Weak::new()),
             root_task: Cell::new(None),
         });
