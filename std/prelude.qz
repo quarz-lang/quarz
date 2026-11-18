@@ -215,8 +215,8 @@ module Meta
   # A type as the checker declares it, as a value (docs/14 §4): a class
   # with its type arguments, a union (`T?` is one with `Nil`), a type
   # parameter of a class, or, by its text, a type a keyword cannot be
-  # given yet (a tuple, a procedure type, `Type[X]`). What `#type_ref`
-  # gives, and what a generated keyword's type may be.
+  # given yet (a tuple, a procedure type, `Type[X]`). What
+  # `Field#type_ref` gives, and what a generated keyword's type may be.
   enum TypeRef
     variant Of(type: Type[Object], args: Array[TypeRef])
     variant Union(members: Array[TypeRef])
@@ -252,7 +252,8 @@ module Meta
     end
 
     # As the compiler writes the type: `Array[Int]`, `String?`,
-    # `Int | String`.
+    # `Int | String`; a type parameter by its name alone. For reading:
+    # it is not a form `TypeRef` is made back from.
     def to_s -> String
       case self
       in Of(type:, args:) then args.empty? ? type.name : "#{type.name}[#{args.map(&:to_s).join(", ")}]"

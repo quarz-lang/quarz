@@ -2631,6 +2631,10 @@ fn layout_refusal(
     })
 }
 
+/// A keyword of `keywords:`: name, class, required, nullable, and the
+/// type in full when given one (`Meta::Keyword#type_ref`).
+type KeywordSpec = (String, ClassId, bool, bool, Option<ReflectType>);
+
 /// A `def_field` call's request, its default baked.
 struct PendingField {
     class: ClassId,
@@ -2653,9 +2657,8 @@ struct PendingGen {
     func: FuncId,
     captures: Vec<(u32, u32, Baked)>,
     doc: Option<String>,
-    /// `keywords:`: (name, class, required, nullable, the type in full
-    /// when given one).
-    keywords: Option<Vec<(String, ClassId, bool, bool, Option<ReflectType>)>>,
+    /// `keywords:`.
+    keywords: Option<Vec<KeywordSpec>>,
     /// `def_initialize` (docs/14 §5).
     initialize: bool,
     /// The classes the calling method's carried type parameters stand
@@ -3291,8 +3294,10 @@ fn reflect_rows(world: &World, id: ClassId) -> (Vec<ReflectField>, Vec<ReflectMe
     let fs: Vec<ReflectField> = world
         .all_fields(class.id)
         .into_iter()
-        .map(|(f, _)| ReflectField {
-            ty_ref: type_ref_of(world, &f.ty),
+        .map(|(f, subst)| ReflectField {
+            // (As the class has it: an inherited field's type with the
+            // superclasses' type arguments, `World::all_fields`'s map.)
+            ty_ref: type_ref_of(world, &f.ty.subst(&subst), class.id),
             name: f.name.clone(),
             ty: erase(world, &f.ty),
             mutable: f.mutable,
@@ -3305,7 +3310,9 @@ fn reflect_rows(world: &World, id: ClassId) -> (Vec<ReflectField>, Vec<ReflectMe
     // in it). `initialize` is not a method of the instances.
     let mut seen: Vec<(String, Vec<ClassId>)> = Vec::new();
     let mut ms: Vec<(MethodId, ReflectMethod)> = Vec::new();
-    for (anc, _) in world.ancestors(class.id, &[]) {
+    for (anc, args) in world.ancestors(class.id, &world.own_args(class.id)) {
+        // (An inherited method's types as the class has them.)
+        let subst = world.class_subst(anc, &args);
         let mut ids: Vec<MethodId> = world
             .class(anc)
             .methods
@@ -3330,10 +3337,14 @@ fn reflect_rows(world: &World, id: ClassId) -> (Vec<ReflectField>, Vec<ReflectMe
                 mid,
                 ReflectMethod {
                     name: m.name.clone(),
-                    params: m.params.iter().map(|p| reflect_param(world, p)).collect(),
+                    params: m
+                        .params
+                        .iter()
+                        .map(|p| reflect_param(world, p, &subst, class.id))
+                        .collect(),
                     ret: erase(world, &m.ret),
                     is_static: m.is_static,
-                    ret_ref: type_ref_of(world, &m.ret),
+                    ret_ref: type_ref_of(world, &m.ret.subst(&subst), class.id),
                 },
             ));
         }
@@ -3410,7 +3421,12 @@ impl WorldReflect {
     }
 }
 
-fn reflect_param(world: &World, p: &ParamInfo) -> ReflectParam {
+fn reflect_param(
+    world: &World,
+    p: &ParamInfo,
+    subst: &FxHashMap<TypeParamId, Type>,
+    class: ClassId,
+) -> ReflectParam {
     use quarz_syntax::ast::ParamKind;
     let kind = match p.kind {
         ParamKind::Positional if p.default.is_some() => ReflectKind::Optional,
@@ -3423,31 +3439,33 @@ fn reflect_param(world: &World, p: &ParamInfo) -> ReflectParam {
         name: p.name.clone(),
         ty: erase(world, &p.ty),
         kind,
-        ty_ref: type_ref_of(world, &p.ty),
+        ty_ref: type_ref_of(world, &p.ty.subst(subst), class),
     }
 }
 
-/// `t` as `Meta::TypeRef` shows it (docs/14 §4), from the checker's own
-/// type: a class with its arguments, a union (flattened by the checker),
-/// a class's type parameter, else the type's text (a tuple, a procedure
-/// type, `Type[X]`, a method's type parameter). `type_of_ref` is its
-/// converse where generation takes the type.
-fn type_ref_of(world: &World, t: &Type) -> ReflectType {
+/// `t`, a type as class `class` has it (its ancestors' type arguments
+/// substituted), as `Meta::TypeRef` shows it (docs/14 §4), from the
+/// checker's own type: a class with its arguments, a union (flattened
+/// by the checker), a type parameter of `class` (the only class whose
+/// parameters such a type can still name), else the type's text (a
+/// tuple, a procedure type, `Type[X]`, a method's own type parameter,
+/// `Self`). `type_of_ref` is its converse where generation takes it.
+fn type_ref_of(world: &World, t: &Type, class: ClassId) -> ReflectType {
     let t = world.devoid(t);
     match &t {
-        Type::Class(c, args) => {
-            ReflectType::Of(*c, args.iter().map(|a| type_ref_of(world, a)).collect())
+        Type::Class(c, args) => ReflectType::Of(
+            *c,
+            args.iter().map(|a| type_ref_of(world, a, class)).collect(),
+        ),
+        Type::Union(ms) => {
+            ReflectType::Union(ms.iter().map(|m| type_ref_of(world, m, class)).collect())
         }
-        Type::Union(ms) => ReflectType::Union(ms.iter().map(|m| type_ref_of(world, m)).collect()),
         Type::Param(p) => world
-            .classes
+            .class(class)
+            .type_params
             .iter()
-            .find_map(|c| {
-                c.type_params
-                    .iter()
-                    .find(|tp| tp.id == *p)
-                    .map(|tp| ReflectType::Param(c.id, tp.name.clone()))
-            })
+            .find(|tp| tp.id == *p)
+            .map(|tp| ReflectType::Param(class, tp.name.clone()))
             .unwrap_or_else(|| ReflectType::Other(world.type_name(&t))),
         _ => ReflectType::Other(world.type_name(&t)),
     }

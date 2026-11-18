@@ -2627,15 +2627,29 @@ class G[T] < Model
   def initialize(@v: Array[T]); end
   own
 end
+class Sub < G[Int]
+  own
+end
+class Sub2[U] < G[U]
+  own
+end
+class ShowSub < Model
+  show Sub
+end
+class ShowSub2 < Model
+  show Sub2
+end
 puts K.shown
 p K.round
 x = K.new
 puts x.with(ids: [1, 2], name: nil, v: "s")
 puts x.with(tags: {"a" => [1]}, v: 3)
 p G[Int].new([1]).set_all(v: [2, 3])
+puts ShowSub.shown, ShowSub2.shown
+p Sub.new([1]).set_all(v: [2]), Sub2[String].new(["a"]).set_all(v: ["b"])
 "#,
     );
-    let expected = "ids: Array[Int] (Array), name: String? (Object), tags: Hash[String, Array[Int]] (Hash), v: Int | String (Object)\ntrue\nids=[1, 2] name=nil v=\"s\"\ntags={\"a\" => [1]} v=3\n1\n";
+    let expected = "ids: Array[Int] (Array), name: String? (Object), tags: Hash[String, Array[Int]] (Hash), v: Int | String (Object)\ntrue\nids=[1, 2] name=nil v=\"s\"\ntags={\"a\" => [1]} v=3\n1\nv: Array[Int] (Array)\nv: Array[U] (Array)\n1\n1\n";
     let cache = d.0.join("cache");
     let env = [("QUARZ_CACHE_DIR", cache.to_str().unwrap())];
     let cold = quarz(&d.0, &["check", app.to_str().unwrap()], &env);
@@ -2660,6 +2674,13 @@ p G[Int].new([1]).set_all(v: [2, 3])
         "{out}"
     );
     assert!(out.contains("def set_all(*, v: Array[T]) -> Int"), "{out}");
+    // An inherited field's type as the subclass has it: `G[Int]`'s `T` is
+    // `Int` in `Sub`, and `G[U]`'s is `Sub2`'s own `U`.
+    assert!(
+        out.contains("def set_all(*, v: Array[Int]) -> Int"),
+        "{out}"
+    );
+    assert!(out.contains("def set_all(*, v: Array[U]) -> Int"), "{out}");
     // A call is checked against the types in full.
     for (call, expected) in [
         (
@@ -2675,11 +2696,19 @@ p G[Int].new([1]).set_all(v: [2, 3])
             "G[Int].new([1]).set_all(v: [\"s\"])",
             "array elements have type String but Int was expected",
         ),
+        (
+            "Sub.new([1]).set_all(v: [\"s\"])",
+            "array elements have type String but Int was expected",
+        ),
+        (
+            "Sub2[Int].new([1]).set_all(v: [\"s\"])",
+            "array elements have type String but Int was expected",
+        ),
     ] {
         let bad = write(
             &d.0,
             "bad.qz",
-            &format!("require_relative \"lib\"\ndata P = (ids: Array[Int], name: String?, tags: Hash[String, Array[Int]], v: Int | String)\nclass K < Model\n  from_fields P\nend\nclass G[T] < Model\n  @v: Array[T]\n  def initialize(@v: Array[T]); end\n  own\nend\n{call}\n"),
+            &format!("require_relative \"lib\"\ndata P = (ids: Array[Int], name: String?, tags: Hash[String, Array[Int]], v: Int | String)\nclass K < Model\n  from_fields P\nend\nclass G[T] < Model\n  @v: Array[T]\n  def initialize(@v: Array[T]); end\n  own\nend\nclass Sub < G[Int]\n  own\nend\nclass Sub2[U] < G[U]\n  own\nend\n{call}\n"),
         );
         let (ok, _, err) = quarz(&d.0, &["check", bad.to_str().unwrap()], &[]);
         assert!(!ok, "{call}");
