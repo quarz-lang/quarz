@@ -2388,8 +2388,9 @@ end
 
 # A calendar date: a year, a month and a day, with no time of day and no
 # time zone, in the proleptic Gregorian calendar, for the years 1 to
-# 9999. Immutable and Shareable; `Comparable`, so a range of dates
-# iterates by day, and an equal date finds the same hash key.
+# 9999. Immutable and Shareable; `Comparable`, and an equal date finds
+# the same hash key. A range of dates (both ends given) iterates by day:
+# `Range` steps a `Date` by `#succ`, as it steps an `Int` or a `String`.
 #
 # Days are counted with `Int`s: `date + 30`, `date2 - date`; months and
 # years by `#next_month` and `#next_year` and their `prev_` pairs. A
@@ -2519,6 +2520,8 @@ data Date(year: Int, month: Int, day: Int)
   # with its errors.
   def at_utc(hour: Int = 0, min: Int = 0, sec: Int = 0) -> Time = Time.utc(year, month, day, hour, min, sec)
 
+  # The order of the two dates: negative when this one is earlier, zero
+  # when they are the same date, positive when it is later.
   def <=>(other: Date) -> Int = days <=> other.days
 
   # The date in ISO 8601 form: `2026-11-20`.
@@ -2579,15 +2582,20 @@ data Date(year: Int, month: Int, day: Int)
     when "j" then padded(yday, 3, "0", flag)
     when "u" then padded(wday == 0 ? 7 : wday, 1, "0", flag)
     when "w" then padded(wday, 1, "0", flag)
-    when "B" then MONTH_NAMES[month - 1]
-    when "b", "h" then MONTH_NAMES[month - 1][0, 3]
-    when "A" then DAY_NAMES[wday]
-    when "a" then DAY_NAMES[wday][0, 3]
-    when "F" then to_s
-    when "D", "x" then strftime("%m/%d/%y")
-    when "%" then "%"
-    when "n" then "\n"
-    when "t" then "\t"
+    when "B", "b", "h", "A", "a", "F", "D", "x", "%", "n", "t"
+      # (A flag pads a number only, as `Time#strftime`'s.)
+      raise ArgumentError, "invalid strftime format #{format.inspect}" unless flag.empty?
+      case d
+      when "B" then month_name
+      when "b", "h" then month_name[0, 3]
+      when "A" then day_name
+      when "a" then day_name[0, 3]
+      when "F" then to_s
+      when "D", "x" then strftime("%m/%d/%y")
+      when "%" then "%"
+      when "n" then "\n"
+      else "\t"
+      end
     when "H", "I", "k", "l", "M", "S", "L", "N", "p", "P", "z", "Z", "s", "T", "R", "r", "c", "X", "f", ":"
       raise ArgumentError, "`%#{d}` needs a time of day, which a Date has not: format a Time (`date.at(...).strftime`)"
     else
@@ -2607,8 +2615,15 @@ data Date(year: Int, month: Int, day: Int)
     end
   end
 
-  MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
-  DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+  # (The month's English name, for `%B` and `%b`.)
+  private def month_name -> String
+    ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"][month - 1]
+  end
+
+  # (The weekday's English name, for `%A` and `%a`.)
+  private def day_name -> String
+    ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][wday]
+  end
 
   # The days from 1970-01-01 to this date (negative before it).
   protected def days -> Int
@@ -2642,11 +2657,28 @@ data Date(year: Int, month: Int, day: Int)
     Date.new(year, month, day < last ? day : last)
   end
 
-  # Whether `year` is a leap year in the Gregorian calendar.
+  # Whether `year` is a leap year in the proleptic Gregorian calendar:
+  # divisible by 4, but not by 100 unless by 400.
+  #
+  # ```
+  # Date.leap_year?(2024)   # => true
+  # Date.leap_year?(1900)   # => false
+  # Date.leap_year?(2000)   # => true
+  # ```
   def self.leap_year?(year: Int) -> Bool = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 
   # The number of days in `month` of `year`, 28 to 31.
+  #
+  # ## Raises
+  #
+  # `ArgumentError` for a month outside 1 to 12.
+  #
+  # ```
+  # Date.days_in_month(2024, 2)   # => 29
+  # Date.days_in_month(2026, 4)   # => 30
+  # ```
   def self.days_in_month(year: Int, month: Int) -> Int
+    raise ArgumentError, "month #{month} is out of range: a month is 1 to 12" if month < 1 || month > 12
     case month
     when 2 then leap_year?(year) ? 29 : 28
     when 4, 6, 9, 11 then 30

@@ -354,7 +354,18 @@ impl Decoder<'_> {
                         Vec::new(),
                         None,
                     )
-                    .map_err(|_| self.shape(&node, &self.found(v)))
+                    .map_err(|e| match e {
+                        // (A day that does not exist; anything else
+                        // `initialize` gives goes through as it is.)
+                        Flow::Raise(exc)
+                            if self
+                                .interp
+                                .exception_is_a(&exc, self.interp.program.exc.argument_error) =>
+                        {
+                            self.shape(&node, &self.found(v))
+                        }
+                        other => DecodeFail::Raised(other),
+                    })
             }
             Node::Bytes if class == c.string => {
                 use base64::Engine;

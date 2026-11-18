@@ -1804,7 +1804,9 @@ pub fn range_to_vec(interp: &Interp, r: &RangeVal) -> Result<Vec<Value>, Flow> {
                 }
                 Ok(out)
             }
-            None => Err(interp.err_type("cannot iterate over an endless or non-integer range")),
+            None => Err(interp.err_type(
+                "cannot iterate over this range: a range of Ints (its end may be left out), of Strings or of Dates (both ends given) iterates",
+            )),
         },
     }
 }
