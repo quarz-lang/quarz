@@ -264,6 +264,25 @@ fn inherited_constructors_follow_the_inputs() {
     assert_eq!(out[3], "=> 4", "{out:?}");
 }
 
+/// An extension a later input declares counts where an earlier input's
+/// subclass declares its overloads (the REPL's inputs are one file of the
+/// application's group), as in the program of the same lines: `Sub` is
+/// built with `initialize(x: N)` (docs/01 §3, #871).
+#[test]
+fn a_later_inputs_extension_changes_an_inherited_new() {
+    let (out, printed) = values(&[
+        "module N; end",
+        "class V; end",
+        "class Base; def initialize(x: V); end; def self.mk(x: V) -> Self = new(x); end",
+        "class Sub < Base; def initialize(x: N); puts \"N\"; end; def initialize(x: Object); puts \"Object\"; end; end",
+        "Sub.mk(V.new); nil",
+        "extension V; include N; end",
+        "Sub.mk(V.new); nil",
+    ]);
+    assert!(out.iter().all(|o| !o.starts_with("error")), "{out:?}");
+    assert_eq!(printed, "Object\nN\n");
+}
+
 #[test]
 fn a_failed_inputs_classes_are_checked_with_it() {
     // A class whose conformance waits for its input's statements (docs/14

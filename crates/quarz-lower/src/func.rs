@@ -740,7 +740,9 @@ impl<'a> FnBuilder<'a> {
         if !markers.is_empty() {
             self.lw.decode_markers.insert(id, markers);
         }
-        self.lw.block_calls.insert(id, (call_id, block.span));
+        self.lw
+            .block_calls
+            .insert(id, (call_id, block.span, self.method));
         // A generated method's body (docs/14 §5): its call resolves to the
         // generating native itself (`lifted_blocks` alone may name a call
         // a union receiver resolves to a user method of the name too).
