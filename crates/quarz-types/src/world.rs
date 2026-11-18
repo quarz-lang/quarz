@@ -564,6 +564,10 @@ pub enum View {
     Declared,
 }
 
+/// `World::replaceable_type_classes`' kept result: each class's superclass
+/// (its whole input), and the result.
+type TypeClassesMemo = (Vec<Option<ClassId>>, Vec<ClassId>);
+
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct World {
     /// A type not yet known passes the Shareable checks: set only while
@@ -589,6 +593,10 @@ pub struct World {
     /// when no Shareable check refused.
     #[serde(skip)]
     pub undecided_bound_refusals: std::cell::Cell<u64>,
+    /// `replaceable_type_classes`' last result, with the input it was
+    /// computed from: every class's superclass (#717).
+    #[serde(skip)]
+    type_classes_memo: std::cell::RefCell<Option<TypeClassesMemo>>,
     #[serde(skip)]
     subtype_depth: std::cell::Cell<u32>,
     /// The subtype questions being answered: one met again is answered
@@ -3992,7 +4000,44 @@ impl World {
     /// and an extension of a root includes nothing, #725, #730), so no
     /// class method takes a `Cog` method's place. The override table
     /// (`type_classes`) and the declarer's class-side check both read it.
+    ///
+    /// Kept between calls (#717: `World::overrides` asks for every method
+    /// it is asked about), keyed by its whole input: each class's
+    /// superclass, compared on every call. `class_is_a(k, Class)` reads
+    /// only k's superclass chain because `Class` is a class, which no
+    /// class includes ("only modules can be included",
+    /// `Declarer::resolve_headers`), and an extension includes modules
+    /// only. Nor can a class outside the prelude inherit from `Class` or
+    /// `Type` ("cannot inherit from `Type`", there too). A change of
+    /// either rule makes the key incomplete; debug builds compute the
+    /// result again on every hit and panic on a difference.
     pub(crate) fn replaceable_type_classes(&self) -> Vec<ClassId> {
+        let key: Vec<Option<ClassId>> = self
+            .classes
+            .iter()
+            .map(|c| match &c.superclass {
+                Some(Type::Class(s, _)) => Some(*s),
+                _ => None,
+            })
+            .collect();
+        if let Some((k, ks)) = self.type_classes_memo.borrow().as_ref() {
+            if *k == key {
+                #[cfg(debug_assertions)]
+                assert_eq!(
+                    *ks,
+                    self.replaceable_type_classes_uncached(),
+                    "internal error: `replaceable_type_classes` kept a stale result (#717)"
+                );
+                return ks.clone();
+            }
+        }
+        let ks = self.replaceable_type_classes_uncached();
+        *self.type_classes_memo.borrow_mut() = Some((key, ks.clone()));
+        ks
+    }
+
+    /// `replaceable_type_classes`, computed.
+    fn replaceable_type_classes_uncached(&self) -> Vec<ClassId> {
         let class_ = self.builtin.class_;
         let mut ks: Vec<ClassId> = self
             .classes
