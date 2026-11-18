@@ -296,7 +296,7 @@ pub fn method_row(world: &World, id: MethodId, overrides: &[MethodId]) -> RtMeth
                         kind: param_kind(p.kind),
                         has_default: p.default.is_some(),
                         // (`Void` is `Nil` at run time.)
-                        ty: rt_sig_type(world, m, &p.ty),
+                        ty: rt_kind(world, &p.ty),
                         default: if m.is_native {
                             let d = p.default.as_deref().and_then(literal_constant);
                             // (A call may skip it to name a later one by
@@ -320,7 +320,6 @@ pub fn method_row(world: &World, id: MethodId, overrides: &[MethodId]) -> RtMeth
                     })
                     .collect(),
                 has_block: m.block.is_some(),
-                block_ty: m.block.as_ref().and_then(|(_, t)| rt_sig_type(world, m, t)),
                 func: None,
                 native_key: if m.is_native && m.synth == Synth::None {
                     Some(m.native_key(world))
@@ -578,38 +577,24 @@ fn literal_constant(e: &quarz_syntax::ast::Expr) -> Option<Constant> {
     })
 }
 
-/// A parameter's type as `same_signature` compares it: `None`, which
-/// matches anything, where it mentions one of the method's own type
-/// parameters or `Self` (another method names them otherwise); a class's
-/// type parameter is compared by name, the substituted relation
-/// (`overridden_methods`) deciding across instantiations.
-fn rt_sig_type(world: &World, m: &types::MethodInfo, t: &Type) -> Option<String> {
-    fn open(m: &types::MethodInfo, t: &Type) -> bool {
-        match t {
-            Type::Param(p) => {
-                *p == quarz_types::declare::SELF_PARAM || m.type_params.iter().any(|tp| tp.id == *p)
+/// A parameter's machine kind (`RtParam::ty`): `Int`, `Float` or `Bool`
+/// for a parameter declared of that built-in class, by its id; `None`
+/// for any other type.
+fn rt_kind(world: &World, t: &Type) -> Option<String> {
+    let b = &world.builtin;
+    match t {
+        Type::Class(c, args) if args.is_empty() => {
+            if *c == b.int {
+                Some("Int".to_string())
+            } else if *c == b.float {
+                Some("Float".to_string())
+            } else if *c == b.bool_ {
+                Some("Bool".to_string())
+            } else {
+                None
             }
-            Type::Var(_) => true,
-            Type::Class(_, args) | Type::ClassObject(_, args) => args.iter().any(|a| open(m, a)),
-            Type::Union(ts) | Type::Tuple(ts) => ts.iter().any(|a| open(m, a)),
-            Type::TypeOf(t) => open(m, t),
-            Type::Proc(r, ps, ret, _, kws) => {
-                r.as_deref().is_some_and(|r| open(m, r))
-                    || ps.iter().any(|a| open(m, a))
-                    || open(m, ret)
-                    || kws.iter().any(|k| open(m, &k.ty))
-            }
-            Type::Nothing | Type::Void => false,
         }
-    }
-    if open(m, t) {
-        None
-    } else if t.mentions_any_param() {
-        // (A class's type parameter is that class's: by its id, so that a
-        // `T` of another class is another type.)
-        Some(format!("{:?}", world.devoid(t)))
-    } else {
-        Some(world.type_name(&world.devoid(t)))
+        _ => None,
     }
 }
 
