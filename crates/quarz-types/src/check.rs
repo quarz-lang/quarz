@@ -265,6 +265,10 @@ pub struct Output {
     pub rescue_classes: FxHashMap<Span, Vec<ClassId>>,
     /// Integer literals typed as `Float` because of their context.
     pub float_literals: rustc_hash::FxHashSet<NodeId>,
+    /// Symbol literals given where an enum is expected (#879, docs/02):
+    /// the variant (without fields) each is.
+    #[serde(default)]
+    pub symbol_variants: FxHashMap<NodeId, ClassId>,
     /// Integer literals that are `Integer`s: where one is expected, or
     /// too large for an `Int`.
     pub integer_literals: rustc_hash::FxHashSet<NodeId>,
@@ -734,6 +738,10 @@ enum TableUndo {
     /// `integer_literals`, and whether that is not its default type (the
     /// overload rule's literal level, docs/01 §9).
     Literal(NodeId, bool, bool),
+    /// A symbol literal's `Output::symbol_variants` entry before a check
+    /// recorded one (a conversion: the literal level's lower one, as an
+    /// integer literal's to a `Float`).
+    SymbolVariant(NodeId, Option<ClassId>),
 }
 
 /// What a piece of code may assign (`Checker::assigned_names`): local
@@ -2955,6 +2963,14 @@ impl Checker {
                         self.out.receiver_blocks.remove(&id);
                     }
                 }
+                TableUndo::SymbolVariant(id, before) => match before {
+                    Some(v) => {
+                        self.out.symbol_variants.insert(id, v);
+                    }
+                    None => {
+                        self.out.symbol_variants.remove(&id);
+                    }
+                },
                 TableUndo::Literal(id, float, _) => {
                     if float {
                         self.out.float_literals.remove(&id);
@@ -4065,7 +4081,14 @@ impl Checker {
             );
             if let Some(d) = &p.default {
                 let expected = p.ty.subst(&self_subst);
-                let t = self.check_expr(d, Some(&expected));
+                let t = match self.symbol_argument(d, &expected) {
+                    Ok(Some(t)) => t,
+                    Err(why) => {
+                        self.error(format!("the default of `{}`: {why}", p.name), d.span);
+                        Type::Nothing
+                    }
+                    Ok(None) => self.check_expr(d, Some(&expected)),
+                };
                 if !self.coerce(&t, &expected) {
                     self.error(
                         format!(
@@ -4094,9 +4117,9 @@ impl Checker {
             if !body_ty.is_nothing() && !self.coerce(&body_ty, &ret) {
                 let span = body.last().map(|e| e.span).unwrap_or(info.span);
                 let hint = if self.world.is_nil_type(&ret) {
-                    "; to discard the body's value, write `-> Void`"
+                    "; to discard the body's value, write `-> Void`".to_string()
                 } else {
-                    ""
+                    self.symbol_hint(body.last(), &ret)
                 };
                 self.error(
                     format!(
@@ -5509,10 +5532,11 @@ impl Checker {
                 if !self.coerce_noting(&vt, &declared) {
                     self.error(
                         format!(
-                            "cannot assign {} to `{name}` of type {}{}",
+                            "cannot assign {} to `{name}` of type {}{}{}",
                             self.name(&vt),
                             self.name(&declared),
                             self.bound_note(),
+                            self.symbol_hint(Some(value), &declared),
                         ),
                         value.span,
                     );
@@ -7160,6 +7184,20 @@ impl Checker {
             Call(call) => {
                 let uses = self.self_uses.len();
                 let t = self.check_call(expr, call, expected);
+                // The built-in `==` (or `!=`) between values that are never
+                // equal: an enum value and a symbol, a `Date` and a `Time`
+                // (#879, #884).
+                if let (Some(recv), "==" | "!=", [Arg::Positional(a)]) =
+                    (&call.recv, call.name.as_str(), call.args.as_slice())
+                {
+                    let builtin = matches!(self.out.calls.get(&expr.id),
+                        Some(CallTarget::Method { method }) if self.world.method(*method).is_native);
+                    if builtin {
+                        if let Some(why) = self.never_equal(recv, a) {
+                            self.warning(why, expr.span);
+                        }
+                    }
+                }
                 // `x.is_a?(k)` with a class value (`Object#is_a?`): against
                 // a type parameter's class value, checked as a test against
                 // each module the parameter may be (#598).
@@ -7622,9 +7660,10 @@ impl Checker {
                         if !void && !self.coerce(&t, &ret) {
                             self.error(
                                 format!(
-                                    "`return` has type {} but the method returns {}",
+                                    "`return` has type {} but the method returns {}{}",
                                     self.name(&t),
-                                    self.name(&ret)
+                                    self.name(&ret),
+                                    self.symbol_hint(value.as_deref(), &ret)
                                 ),
                                 expr.span,
                             );
@@ -9059,10 +9098,11 @@ impl Checker {
                     if !self.coerce_noting(&vt, &declared) {
                         self.error(
                             format!(
-                                "cannot assign {} to `{name}` of type {}{}",
+                                "cannot assign {} to `{name}` of type {}{}{}",
                                 self.name(&vt),
                                 self.name(&declared),
                                 self.bound_note(),
+                                self.symbol_hint(Some(value), &declared),
                             ),
                             value.span,
                         );
@@ -9127,10 +9167,11 @@ impl Checker {
                 if !self.coerce_noting(&vt, &fty) {
                     self.error(
                         format!(
-                            "cannot assign {} to `@{name}` of type {}{}",
+                            "cannot assign {} to `@{name}` of type {}{}{}",
                             self.name(&vt),
                             self.name(&fty),
                             self.bound_note(),
+                            self.symbol_hint(Some(value), &fty),
                         ),
                         value.span,
                     );
@@ -13483,9 +13524,12 @@ impl Checker {
                     }
                     // An integer literal given another type than its
                     // default (`1` as a `Float`) puts it a level down.
-                    let converted = self.table_journal[saved_diags_tables.0..]
-                        .iter()
-                        .any(|u| matches!(u, TableUndo::Literal(_, _, true)));
+                    let converted = self.table_journal[saved_diags_tables.0..].iter().any(|u| {
+                        matches!(
+                            u,
+                            TableUndo::Literal(_, _, true) | TableUndo::SymbolVariant(..)
+                        )
+                    });
                     fits.push((index, *mid, converted));
                     if index == 0 {
                         kept = Some((ret, saved_infer, saved_diags, saved_diags_tables));
@@ -13618,14 +13662,16 @@ impl Checker {
                     expr.span,
                 );
             } else if !rivals.is_empty() {
-                let mut names: Vec<String> = std::iter::once(winner)
-                    .chain(rivals)
-                    .map(|m| self.world.method_signature(self.world.method(m)))
+                let tied: Vec<MethodId> = std::iter::once(winner).chain(rivals).collect();
+                let mut names: Vec<String> = tied
+                    .iter()
+                    .map(|m| self.world.method_signature(self.world.method(*m)))
                     .collect();
                 names.dedup();
+                let symbols = self.symbol_ambiguity(call, &tied);
                 self.error(
                     format!(
-                        "the call of `{}` is ambiguous: these overloads fit it equally (pass arguments of the types of one):\n    {}",
+                        "the call of `{}` is ambiguous: these overloads fit it equally (pass arguments of the types of one{symbols}):\n    {}",
                         call.name,
                         names.join("\n    ")
                     ),
@@ -14833,11 +14879,33 @@ impl Checker {
         for (pi, matched) in &bound {
             for ma in matched {
                 let expected_ty = ma.param_ty.clone();
-                let actual = match &ma.pre_type {
-                    Some(t) => t.clone(),
-                    None => self.check_expr(ma.arg, Some(&expected_ty)),
-                };
                 let p = &m.params[*pi];
+                // (Not for `==` and `!=`: an enum value compared with a
+                // symbol is warned about, not converted, #879.)
+                let converts = !matches!(m.name.as_str(), "==" | "!=");
+                let symbol = if converts {
+                    self.symbol_argument(ma.arg, &expected_ty)
+                } else {
+                    Ok(None)
+                };
+                let actual = match symbol {
+                    Ok(Some(t)) => t,
+                    Err(why) => {
+                        let msg = format!(
+                            "argument `{}` of {}: {why}",
+                            p.name,
+                            self.world.method_signature(m)
+                        );
+                        if report {
+                            self.error(msg.clone(), ma.arg.span);
+                        }
+                        return Err(msg);
+                    }
+                    Ok(None) => match &ma.pre_type {
+                        Some(t) => t.clone(),
+                        None => self.check_expr(ma.arg, Some(&expected_ty)),
+                    },
+                };
                 let ok = self.coerce_noting(&actual, &expected_ty);
                 if !ok {
                     let msg = format!(
@@ -17033,6 +17101,199 @@ impl Checker {
     /// `p[...]`) or of `yield` (`yielding`): positional ones by place,
     /// keyword ones by name, each required keyword once, no other
     /// (docs/02 §9).
+    /// A symbol literal `e` given as an argument (or a parameter's default)
+    /// where `expected` is an enum (#879, docs/02 "Symbols as variants"):
+    /// the variant without fields of that name (`:no_key_update` is
+    /// `NoKeyUpdate`), recorded for the lowering, and the enum's type;
+    /// why not, when the name is no such variant; `None` for any other
+    /// expression or type, the literal then a `Symbol`. A type that
+    /// takes a `Symbol` (`Symbol | E`, `Object`) or is not known (a type
+    /// parameter, an inference variable) converts nothing; `E?` and
+    /// `E | F` convert when exactly one of the enums has the variant.
+    fn symbol_argument(&mut self, e: &Expr, expected: &Type) -> Result<Option<Type>, String> {
+        let ExprKind::Symbol(name) = &e.kind else {
+            return Ok(None);
+        };
+        let (enums, found) = match self.symbol_variants_for(name, expected) {
+            Some(x) => x,
+            None => return Ok(None),
+        };
+        match found.as_slice() {
+            [(v, t)] => {
+                if !self.world.class(*v).fields.is_empty() {
+                    return Err(format!(
+                        "`:{name}` would be `{}`, which carries fields: write `{}.new(...)`",
+                        self.world.class(*v).name,
+                        self.world.class(*v).name
+                    ));
+                }
+                let before = self.out.symbol_variants.insert(e.id, *v);
+                self.table_journal
+                    .push(TableUndo::SymbolVariant(e.id, before));
+                let t = t.clone();
+                self.record(e.id, &t);
+                Ok(Some(t))
+            }
+            [] => {
+                let listed: Vec<String> = enums
+                    .iter()
+                    .map(|c| {
+                        let names: Vec<String> = self
+                            .world
+                            .class(*c)
+                            .variants
+                            .iter()
+                            .filter(|v| self.world.class(**v).fields.is_empty())
+                            .map(|v| {
+                                format!(":{}", snake_case(short_name(&self.world.class(*v).name)))
+                            })
+                            .collect();
+                        format!("`{}`: {}", self.world.class(*c).name, names.join(", "))
+                    })
+                    .collect();
+                Err(format!(
+                    "`:{name}` names no variant of {} ({})",
+                    enums
+                        .iter()
+                        .map(|c| format!("`{}`", self.world.class(*c).name))
+                        .collect::<Vec<_>>()
+                        .join(" or "),
+                    listed.join("; ")
+                ))
+            }
+            several => Err(format!(
+                "`:{name}` is ambiguous here: it may be {}; write the one meant",
+                several
+                    .iter()
+                    .map(|(v, _)| format!("`{}`", self.world.class(*v).name))
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            )),
+        }
+    }
+
+    /// The enums of `expected` a symbol literal `name` may convert to,
+    /// and the variants of that name among them with each one's enum
+    /// type: `None` where the literal stays a `Symbol` (no enum, a type
+    /// that takes a `Symbol`, one not known).
+    fn symbol_variants_for(&self, name: &str, expected: &Type) -> Option<SymbolTargets> {
+        let expected = self.infer.resolve(expected);
+        if expected.has_vars() || expected.mentions_any_param() {
+            return None;
+        }
+        if self.world.is_subtype(&self.world.symbol(), &expected) {
+            return None;
+        }
+        let mut enums = Vec::new();
+        let mut found = Vec::new();
+        let wanted = camel_case(name);
+        for m in expected.members() {
+            let Type::Class(c, _) = &m else { continue };
+            if self.world.class(*c).kind != ClassKind::Enum {
+                continue;
+            }
+            enums.push(*c);
+            if let Some(v) = wanted.as_ref().and_then(|w| {
+                self.world
+                    .class(*c)
+                    .variants
+                    .iter()
+                    .find(|v| short_name(&self.world.class(**v).name) == w)
+            }) {
+                found.push((*v, m.clone()));
+            }
+        }
+        (!enums.is_empty()).then_some((enums, found))
+    }
+
+    /// What a tie between overloads `tied` makes of the call's symbol
+    /// literals (#879, decided D1): `; `:json` is `A::Json` or `B::Json`` for
+    /// each that more than one of their enum parameters has a variant for.
+    fn symbol_ambiguity(&self, call: &Call, tied: &[MethodId]) -> String {
+        let mut out = String::new();
+        for a in &call.args {
+            let (Arg::Positional(e) | Arg::Keyword { value: e, .. }) = a else {
+                continue;
+            };
+            let ExprKind::Symbol(name) = &e.kind else {
+                continue;
+            };
+            let mut variants: Vec<String> = Vec::new();
+            for m in tied {
+                for p in &self.world.method(*m).params {
+                    if let Some((_, found)) = self.symbol_variants_for(name, &p.ty) {
+                        for (v, _) in found {
+                            let v = format!("`{}`", self.world.class(v).name);
+                            if !variants.contains(&v) {
+                                variants.push(v);
+                            }
+                        }
+                    }
+                }
+            }
+            if variants.len() > 1 {
+                out.push_str(&format!("; `:{name}` is {}", variants.join(" or ")));
+            }
+        }
+        out
+    }
+
+    /// Why the built-in `==` of `a` and `b` (either order) is never true,
+    /// for the pairs it is decided for: an enum value and a symbol literal
+    /// naming one of its variants, which nothing converts there (#879,
+    /// D7), and a `Date` and a `Time` (#884's decision 3). `None` for any
+    /// other pair.
+    fn never_equal(&self, a: &Expr, b: &Expr) -> Option<String> {
+        let ty = |e: &Expr| {
+            self.out
+                .node_types
+                .get(&e.id)
+                .map(|t| self.infer.resolve(t))
+        };
+        for (value, sym) in [(a, b), (b, a)] {
+            let ExprKind::Symbol(name) = &sym.kind else {
+                continue;
+            };
+            let Some(t) = ty(value) else { continue };
+            if let Some((_, found)) = self.symbol_variants_for(name, &t) {
+                if let [(v, _)] = found.as_slice() {
+                    return Some(format!(
+                        "an enum value compared with the symbol `:{name}` is never equal: write `{}`",
+                        self.world.class(*v).name
+                    ));
+                }
+            }
+        }
+        let class_of = |e: &Expr| match ty(e)? {
+            Type::Class(c, _) => Some(c),
+            _ => None,
+        };
+        let (date, time) = (self.world.top_class("Date")?, self.world.top_class("Time")?);
+        match (class_of(a)?, class_of(b)?) {
+            (x, y) if (x, y) == (date, time) || (x, y) == (time, date) => Some(
+                "a `Date` compared with a `Time` is never equal: compare `d == t.to_date` or `d.at(...) == t`"
+                    .to_string(),
+            ),
+            _ => None,
+        }
+    }
+
+    /// The hint for a symbol literal `e` where `expected` is an enum with
+    /// that variant, but nothing converts it (an assignment, a return:
+    /// only an argument does, #879).
+    fn symbol_hint(&self, e: Option<&Expr>, expected: &Type) -> String {
+        let Some(ExprKind::Symbol(name)) = e.map(|e| &e.kind) else {
+            return String::new();
+        };
+        match self.symbol_variants_for(name, expected) {
+            Some((_, found)) if found.len() == 1 => format!(
+                "; a symbol is a variant only as an argument: write `{}`",
+                self.world.class(found[0].0).name
+            ),
+            _ => String::new(),
+        }
+    }
+
     fn check_proc_args(
         &mut self,
         args: &[Arg],
@@ -17093,7 +17354,14 @@ impl Checker {
             return;
         }
         for (e, p) in positional.iter().zip(params.iter()) {
-            let t = self.check_expr(e, Some(p));
+            let t = match self.symbol_argument(e, p) {
+                Ok(Some(t)) => t,
+                Err(why) => {
+                    self.error(why, e.span);
+                    continue;
+                }
+                Ok(None) => self.check_expr(e, Some(p)),
+            };
             if !self.coerce_noting(&t, p) {
                 let message = if yielding {
                     format!(
@@ -17150,7 +17418,15 @@ impl Checker {
                 self.error(format!("keyword `{name}` is given twice"), *kspan);
             }
             given.push(name);
-            let t = self.check_expr(value, Some(&k.ty));
+            let kt = k.ty.clone();
+            let t = match self.symbol_argument(value, &kt) {
+                Ok(Some(t)) => t,
+                Err(why) => {
+                    self.error(why, value.span);
+                    continue;
+                }
+                Ok(None) => self.check_expr(value, Some(&kt)),
+            };
             if !self.coerce(&t, &k.ty) {
                 self.error(
                     format!(
@@ -19130,4 +19406,50 @@ impl Checker {
         self.world.static_events.push(StaticEvent::Method(id));
         Ok(id)
     }
+}
+
+/// The enums a symbol literal may convert to, and the variants of its
+/// name among them with each one's enum type (`symbol_variants_for`).
+type SymbolTargets = (Vec<ClassId>, Vec<(ClassId, Type)>);
+
+/// `no_key_update` as a variant's name, `NoKeyUpdate` (#879): `None`
+/// for a symbol that is no lowercase snake_case name.
+fn camel_case(name: &str) -> Option<String> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        || !name.starts_with(|c: char| c.is_ascii_lowercase())
+    {
+        return None;
+    }
+    let mut out = String::new();
+    for part in name.split('_') {
+        let mut cs = part.chars();
+        let first = cs.next()?;
+        out.push(first.to_ascii_uppercase());
+        out.extend(cs);
+    }
+    Some(out)
+}
+
+/// `NoKeyUpdate` as a symbol's name, `no_key_update`.
+fn snake_case(name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The last segment of a class's full name (`Logger::Format::Json`).
+fn short_name(full: &str) -> &str {
+    full.rsplit("::").next().unwrap_or(full)
 }

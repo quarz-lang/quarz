@@ -1678,6 +1678,14 @@ impl<'a> FnBuilder<'a> {
             Float(f) => self.load_const(Constant::Float(*f)),
             Bytes(bytes) => self.load_const(Constant::Bytes(bytes.clone())),
             Str(parts) => self.str_parts(parts),
+            // A symbol given where an enum is expected: the variant
+            // (#879).
+            Symbol(_) if self.out.symbol_variants.contains_key(&e.id) => {
+                let dst = self.reg();
+                let class = self.out.symbol_variants[&e.id];
+                self.emit(Inst::VariantSingleton { dst, class });
+                dst
+            }
             Symbol(name) => self.load_const(Constant::Symbol(name.clone())),
             DSymbol(parts) => {
                 let s = self.str_parts(parts);
