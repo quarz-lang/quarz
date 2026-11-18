@@ -1,5 +1,5 @@
-# A last-in, first-out collection of `T`s. Immutable: `push` and `pop`
-# return the new stack, as `Array#push` does.
+# A last-in, first-out collection of `T`s. Immutable: [push] and [pop]
+# return the new stack, as [Array#push] does.
 #
 # ```
 # s = Stack[Int].new.push(1).push(2)
@@ -27,7 +27,7 @@ class Stack[T]
   #
   # ## Raises
   #
-  # `Empty` when the stack has no element: check `empty?` first.
+  # [Empty] when the stack has no element: check [empty?] first.
   def pop -> [Stack[T], T]
     raise Empty.new("empty stack") if @items.empty?
     [Stack[T].new(@items[0...-1]), @items[-1]]
@@ -41,7 +41,7 @@ class Stack[T]
   def debug_dump -> String = @items.inspect
 end
 
-# A point: `with` and `to_h` are generated.
+# A point: [with] and [to_h] are generated.
 #
 # NOTE: an example may declare its own classes.
 #

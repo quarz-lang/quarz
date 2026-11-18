@@ -1,12 +1,12 @@
 # Documentation Comments: `quarz doc`
 
-A comment written directly above a declaration documents it. The text is Markdown; a code span that names a class or a method is a link, and a fenced code block is an example that `quarz test` compiles and runs. `quarz doc` prints the documentation of a name in the terminal or generates a site for a cog. The shape is Ruby's (RDoc and Crystal document the comment above a definition), the checked links and the run examples are Rust's and Elixir's.
+A comment written directly above a declaration documents it. The text is Markdown; a name in brackets (`[Array#push]`) is a checked link to that class or method, a code span is code, and a fenced code block is an example that `quarz test` compiles and runs. `quarz doc` prints the documentation of a name in the terminal or generates a site for a cog. The shape is Ruby's (RDoc and Crystal document the comment above a definition), the checked links and the run examples are Rust's and Elixir's.
 
 ## 1. Shape
 
 ```crystal
-# A last-in, first-out collection of `T`s. Immutable: `push` and `pop`
-# return the new stack, as `Array#push` does.
+# A last-in, first-out collection of `T`s. Immutable: [push] and [pop]
+# return the new stack, as [Array#push] does.
 #
 # ```
 # s = Stack[Int].new.push(1).push(2)
@@ -18,7 +18,7 @@ class Stack[T]
   # The elements, bottom first.
   @items: Array[T]
 
-  # Raised by `pop` on an empty stack.
+  # Raised by [#pop] on an empty stack.
   class Empty < StandardError
   end
 
@@ -33,7 +33,7 @@ class Stack[T]
   #
   # ## Raises
   #
-  # `Empty` when the stack has no element: check `empty?` first.
+  # [Empty] when the stack has no element: check [#empty?] first.
   def pop -> [Stack[T], T]
     raise Empty.new("empty stack") if @items.empty?
     [Stack[T].new(@items[0...-1]), @items[-1]]
@@ -61,7 +61,7 @@ $ quarz test
 
 - A **documentation comment** is the run of whole-line comments directly above a declaration, with no blank line between them and the declaration. A comment separated by a blank line, a comment above something that is not a documented declaration (`include`, `using`, `require`, a bare `private`, a statement) and a comment at the end of a code line are ordinary comments. There is no marker (`///`, `##`): Ruby, Crystal and Go need none, and the blank-line rule tells an implementation note from documentation.
 - The text is the comment lines without their `#` and one space. Its **first paragraph is the summary**, shown in lists, in completion and in `quarz doc` of the enclosing class.
-- The example in the comment is compiled and run by `quarz test` (§4); `Stack#pop` and `Array#push` are checked links (§3).
+- The example in the comment is compiled and run by `quarz test` (§4); `[#pop]` and `[Array#push]` are checked links (§3).
 - The example is a file of an application cog, whose classes are seen bare, as a script's are. In a library cog, readers write `Mathx::Stack`, and so does its example (§4).
 
 ## 2. What Is Documented
@@ -93,8 +93,9 @@ Functions are not methods, and are listed apart, under "Functions": the function
 The text is CommonMark, with these conventions:
 
 - **Headings** are `##` and below: the page's `#` heading is the declaration's name. So a section is written `# ## Examples` in the source. In HTML they sit below what they are in: in a member's doc, `##` is an `<h4>`, smaller than the member's signature, and in a class's or a module's own doc an `<h3>`, below the page's sections ("Methods", "Functions"). The conventional sections are `Examples`, `Raises` (the exceptions a method raises, which the types do not say), `See also`.
-- **Code spans that name a declaration are links**, checked by the compiler: `` `Array#push` `` (an instance method), `` `Array.new` `` (a class method), `` `Stack::Empty` `` (a class, a module, a constant), `` `#pop` `` and `` `.new` `` (an instance method and a class method of the class being documented), `` `pop` `` (the same, when the class has a public method of that name; otherwise plain code, a parameter's name for instance). Names resolve as they would in the declaration's scope, so a cog's own classes need no module prefix in its own comments. A span that resolves is rendered as a link; one that does not is plain code. `quarz doc --check` warns about a span of a name's shape (`Foo`, `Foo::Bar`, `Foo#bar`, `Foo.bar`, `#bar`, `.bar`) that resolves to nothing, or to a private declaration that the output leaves out.
-- The methods of an `extension` are reachable only under `using` (01-syntax.md §7), so they are documented on the extension's module's page (`quarz doc Shout` lists `extension String` and `shout`) and linked from that module's own comments as `` `shout` ``; a comment elsewhere names them in prose. The prelude's always-active extensions (`extension Array[T <: Comparable[T]]`) appear on the target class's page, as the methods they are to every program.
+- **A name in brackets is a link**, checked by the compiler: `[Array#push]` (an instance method), `[Array.new]` (a class method), `[Stack::Empty]` (a class, a module, a constant), `[#pop]` and `[.new]` (an instance method and a class method of the class being documented), `[pop]` (the same, when the class has a public method of that name). The name is a declaration's name as written in code: `Foo`, `Foo::Bar`, `Foo#bar`, `Foo.bar`, `#bar`, `.bar` (with a `?`, `!` or `=` ending), or a bare method name; no spaces, no type expressions. An operator's brackets are escaped (`[Array#\[\]]`). Names resolve as they would in the declaration's scope, so a cog's own classes need no module prefix in its own comments. The link is shown as the name in code style (in the terminal, as the name); `[Name][]` is the same, and `[the push method][Array#push]` shows its own text. A bracket directly after a word character (a letter, a digit, `_`, `?`, `!`, `]`, `)`) is no link but an index or a type argument, text as Markdown leaves it: `a[i]`, `Array[Int]`, `Hash[K][V]`. Brackets whose content is not a name (`[1]`, `[sic]` when nothing is named so) and Markdown's own links (`[text](url)`) stay as Markdown makes them. `quarz doc --check` warns about a bracket of a capitalized or sigil name (`[Foo]`, `[#bar]`) that resolves to nothing, or to a private declaration the output leaves out; a bare lowercase word that names nothing is text, so a method link that should be checked is written with its sigil (`[#pop]`).
+- **A code span is code** (`` `NOWAIT` ``, `` `x + 1` ``): never resolved, never a link, never a warning. Comments written before brackets were links (#881) used code spans for links; `quarz doc --convert-links` rewrites each span that links into a bracket (its standard library's with `--std`, run from the repository's root, which must be what the `quarz` was built from) and lists the spans it leaves: one over two lines, or where a bracket would read otherwise (glued to a word, before `(` or `[`, after `!`, inside a link's text, or where the text read back would not make the bracket a link: `[Name]: text` starting a paragraph is a link definition). Each converted bracket links as the span did.
+- The methods of an `extension` are reachable only under `using` (01-syntax.md §7), so they are documented on the extension's module's page (`quarz doc Shout` lists `extension String` and `shout`) and linked from that module's own comments as `[shout]`; a comment elsewhere names them in prose. The prelude's always-active extensions (`extension Array[T <: Comparable[T]]`) appear on the target class's page, as the methods they are to every program.
 - **Admonitions**: a paragraph starting with `NOTE:`, `WARNING:`, `DEPRECATED:` or `EXPERIMENTAL:` is set off (Crystal's convention).
 - **No raw HTML**: tags are shown as text, so the generated site holds nothing but what the generator wrote.
 - Lists, emphasis, tables and links (`[text](url)`) as in Markdown. An indented code block is shown as code and is not an example.
@@ -140,7 +141,8 @@ A fenced code block in a documentation comment is a Quarz program, and `quarz te
 | `quarz doc [FILE] NAME` | Print the documentation of `NAME` (`Stack`, `Stack#pop`, `Stack.new`, `HTTP::Server::Response.text`, `puts`) as text, with the signature; for a class, its summary and its members' summaries. Resolved in the cog around the current directory, in the script `FILE` and what it requires when one is given, or in the standard library alone otherwise |
 | `quarz doc` | The cog's public API, one line per declaration |
 | `quarz doc --html [-o DIR]` | A static site of the cog (default `doc/`): one page per class and module, the `README.md` as the front page (`--readme FILE` for another), a search box (a JSON index loaded by the page), each member with its signature, text and source location. Names in signatures and text link to their pages, a dependency cog's and the standard library's on their published sites (`--std-url URL` for the standard library's), and locations to their lines on GitHub at the commit (`--source-rev REV` for the documented files'); [10-cogs.md](10-cogs.md) §8. `--std` generates the standard library's |
-| `quarz doc --check` | Report dangling links (§3), an unterminated fence and a `# =>` after `puts` or `print`; `--missing` also reports public declarations without a comment (exit 0 or 1 for CI) |
+| `quarz doc --check` | Report dangling links (§3: a bracket that names nothing), an unterminated fence and a `# =>` after `puts` or `print`; `--missing` also reports public declarations without a comment (exit 0 or 1 for CI) |
+| `quarz doc --convert-links` | Rewrite the documented files' code spans that link into brackets (§3), once, for comments written before brackets were links (#881); `--std` for the standard library's, from the repository's root |
 | `quarz doc --json` | The API with its documentation as JSON, for other tools |
 | `quarz test [--doc\|--no-doc] [--std[=NAME]]` | §4 |
 

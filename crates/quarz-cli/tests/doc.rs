@@ -111,12 +111,14 @@ fn check_and_missing() {
     }
     assert!(!err.contains("Stack#size"), "{err}");
     let d = Dir::new();
-    d.write("bad.qz", "# See `Nope#x` and `#size`, `Array#push`, `T`.\n#\n# ```\n# puts 1 # => 1\n# ```\nclass Bag\n  # Unclosed:\n  #\n  # ```\n  # 1\n  def size -> Int = 0\nend\n");
+    // (#881) A bracket names, a code span is code: `NOWAIT` and
+    // `Nope2` warn of nothing, nor do `[sic]`, `a[i]` or `Array[Nope3]`.
+    d.write("bad.qz", "# See [Nope#x] and [#size], [Array#push], [T], `NOWAIT`, `Nope2`, [sic], a[i], Array[Nope3].\n#\n# ```\n# puts 1 # => 1\n# ```\nclass Bag\n  # Unclosed:\n  #\n  # ```\n  # 1\n  def size -> Int = 0\nend\n");
     let out = quarz_in(&d.0, &["doc", "bad.qz", "--check"]);
     assert_eq!(out.status.code(), Some(1));
     let err = stderr(&out);
     assert!(
-        err.contains("bad.qz:1: warning: `Nope#x` (in the doc of `Bag`) names nothing"),
+        err.contains("bad.qz:1: warning: `[Nope#x]` (in the doc of `Bag`) names nothing"),
         "{err}"
     );
     assert!(err.contains("`# =>` after `puts` or `print`"), "{err}");
@@ -124,10 +126,79 @@ fn check_and_missing() {
         err.contains("bad.qz:7: warning: a code fence in the doc of `Bag#size` is not closed"),
         "{err}"
     );
+    for quiet in [
+        "#size",
+        "Array#push",
+        "T",
+        "NOWAIT",
+        "Nope2",
+        "sic",
+        "i",
+        "Nope3",
+    ] {
+        assert!(
+            !err.contains(&format!("`[{quiet}]`")) && !err.contains(&format!("`{quiet}`")),
+            "{quiet}: {err}"
+        );
+    }
+    assert_eq!(err.matches("names nothing").count(), 1, "{err}");
+}
+
+/// #881: `--convert-links` turns the code spans that link into brackets,
+/// leaves the others and lists those it cannot convert, and the pages
+/// then link as before.
+#[test]
+fn convert_links_turns_linking_spans_into_brackets() {
+    let d = Dir::new();
+    d.write("Cog.toml", "[cog]\nname = \"bags\"\nversion = \"0.1.0\"\n");
+    d.write("README.md", "See `Bags::Bag` and `NOWAIT`.\n");
+    d.write(
+        "src/bag.qz",
+        "# A bag: `#size`, `size`, `Array#[]`, `x + 1`, `NOWAIT`, a`Bag`,\n# `Bag`(1) and `Bag\n# #size`.\nclass Bag\n  # The count; see `Bag`.\n  def size -> Int = 0\nend\n",
+    );
+    let out = quarz_in(&d.0, &["doc", "--convert-links"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let err = stderr(&out);
     assert!(
-        !err.contains("`#size`") && !err.contains("`Array#push`") && !err.contains("`T`"),
+        err.contains("converted 5 code span(s) in 2 file(s)"),
         "{err}"
     );
+    for left in [
+        "src/bag.qz:1: `Bag` follows a word character",
+        "src/bag.qz:2: `Bag` is followed by a parenthesis",
+    ] {
+        assert!(err.contains(left), "{left}: {err}");
+    }
+    let src = std::fs::read_to_string(d.0.join("src/bag.qz")).unwrap();
+    assert!(
+        src.starts_with("# A bag: [#size], [size], [Array#\\[\\]], `x + 1`, `NOWAIT`, a`Bag`,\n# `Bag`(1) and `Bag\n# #size`.\nclass Bag\n  # The count; see [Bag].\n"),
+        "{src}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(d.0.join("README.md")).unwrap(),
+        "See [Bags::Bag] and `NOWAIT`.\n"
+    );
+    // The brackets link, as the spans did before #881; the spans left
+    // are code.
+    let site = d.0.join("site");
+    let out = quarz_in(&d.0, &["doc", "--html", "-o", site.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let index = std::fs::read_to_string(site.join("index.html")).unwrap();
+    assert!(
+        index.contains("<p>See <a href=\"Bags--Bag.html\"><code>Bags::Bag</code></a> and <code>NOWAIT</code>.</p>"),
+        "{index}"
+    );
+    let bag = std::fs::read_to_string(site.join("Bags--Bag.html")).unwrap();
+    assert!(
+        bag.contains("A bag: <a href=\"Bags--Bag.html#method-size\"><code>#size</code></a>, <a href=\"Bags--Bag.html#method-size\"><code>size</code></a>, <a href=\"https://api.quarz.dev/Array.html#method-"),
+        "{bag}"
+    );
+    assert!(
+        bag.contains("<code>x + 1</code>, <code>NOWAIT</code>, a<code>Bag</code>"),
+        "{bag}"
+    );
+    let out = quarz_in(&d.0, &["doc", "--check"]);
+    assert!(out.status.success(), "{}", stderr(&out));
 }
 
 #[test]
@@ -898,7 +969,7 @@ fn html_of_a_cog_headings_locations_and_variants() {
     );
     d.write(
         "src/shapes.qz",
-        "# A point; see `Shape::Circle`, `Shape::Circle.new` and `Shape::Hidden`.\ndata Point = (x: Int, y: Int = 0)\n\n# Shapes.\nenum Shape\n  # A circle.\n  variant Circle(radius: Int)\n  # :nodoc:\n  variant Hidden(x: Int)\nend\n",
+        "# A point; see [Shape::Circle], [Shape::Circle.new] and `Shape::Hidden`.\ndata Point = (x: Int, y: Int = 0)\n\n# Shapes.\nenum Shape\n  # A circle.\n  variant Circle(radius: Int)\n  # :nodoc:\n  variant Hidden(x: Int)\nend\n",
     );
     let site = d.0.join("site");
     let out = quarz_in(&d.0, &["doc", "--html", "-o", site.to_str().unwrap()]);

@@ -12,6 +12,8 @@ use quarz_syntax::doc::Doc;
 use quarz_syntax::{SourceFile, Span};
 use quarz_types::{ClassId, ClassKind, Member, MethodId, Synth, Type, World};
 
+mod brackets;
+mod convert;
 pub(crate) mod examples;
 mod html;
 mod links;
@@ -32,6 +34,9 @@ struct Opts {
     source_rev: Option<String>,
     /// `--readme`: the front page's Markdown, in place of the README.
     readme: Option<PathBuf>,
+    /// `--convert-links`: rewrite the code spans that link into links
+    /// (#881).
+    convert: bool,
     cog: quarz_cog::Options,
 }
 
@@ -50,6 +55,7 @@ pub fn command(args: &[String]) -> ExitCode {
         std_url: None,
         source_rev: None,
         readme: None,
+        convert: false,
         cog: quarz_cog::Options {
             verbose: true,
             ..Default::default()
@@ -78,6 +84,7 @@ pub fn command(args: &[String]) -> ExitCode {
                 }
             }
             "--check" => opts.check = true,
+            "--convert-links" => opts.convert = true,
             "--missing" => {
                 opts.check = true;
                 opts.missing = true
@@ -100,6 +107,9 @@ pub fn command(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let api = Api::build(&loaded, opts.private);
+    if opts.convert {
+        return convert::command(&loaded, &api);
+    }
     if opts.check {
         let problems = check(&loaded, &api, opts.missing);
         for p in &problems {
@@ -160,7 +170,7 @@ pub fn command(args: &[String]) -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: quarz doc [FILE] [NAME] [--html [-o DIR] [--std-url URL] [--source-rev REV] [--readme FILE]] [--check] [--missing] [--json] [--private] [--std]"
+        "usage: quarz doc [FILE] [NAME] [--html [-o DIR] [--std-url URL] [--source-rev REV] [--readme FILE]] [--check] [--missing] [--json] [--private] [--std] [--convert-links]"
     );
     ExitCode::from(2)
 }
@@ -175,6 +185,8 @@ pub(crate) struct Loaded {
     pub own: Vec<u32>,
     pub title: String,
     pub readme: Option<String>,
+    /// The file `readme` was read from.
+    pub readme_path: Option<PathBuf>,
     /// Where the pages link beyond themselves.
     pub links: links::Links,
     /// The APIs of the other sites linked to, by their URL, as `quarz
@@ -409,15 +421,18 @@ fn load(opts: &Opts) -> Option<Loaded> {
         &cog_of,
         &cog_entries,
     );
-    let readme = match &opts.readme {
-        Some(path) if opts.html => match std::fs::read_to_string(path) {
-            Ok(text) => Some(text),
+    let (readme, readme_path) = match &opts.readme {
+        Some(path) if opts.html || opts.convert => match std::fs::read_to_string(path) {
+            Ok(text) => (Some(text), Some(path.clone())),
             Err(e) => {
                 eprintln!("quarz doc: {}: {e}", path.display());
                 return None;
             }
         },
-        _ => readme,
+        _ => {
+            let path = cog.as_ref().map(|root| root.join("README.md"));
+            (readme.clone(), readme.and(path))
+        }
     };
     Some(Loaded {
         world: checked.world,
@@ -425,6 +440,7 @@ fn load(opts: &Opts) -> Option<Loaded> {
         own,
         title,
         readme,
+        readme_path,
         links,
         foreign: Default::default(),
     })
@@ -797,7 +813,7 @@ fn method_doc(
                 None,
             )
         }
-        Synth::DataToH => return (Some(generated("The fields as a `Hash`, by name.")), None),
+        Synth::DataToH => return (Some(generated("The fields as a [Hash], by name.")), None),
         _ => {}
     }
     // A generated method's doc is the `doc` given for it (docs/14 §5), not
@@ -1449,7 +1465,23 @@ impl Api {
         }
     }
 
-    /// A bare `bar` in a span: a public method of `scope`.
+    /// A bracket's name (`[Array#push]`, `[#pop]`, `[pop]`, docs/13 §3)
+    /// in the scope of `scope`: a name's shape as `resolve`, a bare
+    /// method name as `resolve_bare`.
+    pub(crate) fn resolve_link(
+        &self,
+        world: &World,
+        scope: Option<ClassId>,
+        name: &str,
+    ) -> Option<Target> {
+        if name_shaped(name) {
+            self.resolve(world, scope, name)
+        } else {
+            self.resolve_bare(world, scope?, name)
+        }
+    }
+
+    /// A bare `bar`: a public method of `scope`.
     pub(crate) fn resolve_bare(&self, world: &World, scope: ClassId, name: &str) -> Option<Target> {
         if !method_name(name) {
             return None;
@@ -1464,8 +1496,9 @@ impl Api {
 
 // ----- Markdown as text --------------------------------------------------------------
 
-/// The doc's Markdown as plain text, indented by `indent`.
-pub(crate) fn markdown_text(md: &str, indent: &str) -> String {
+/// The doc's Markdown as plain text, indented by `indent`: a bracket
+/// `linked` says names something shown as its name, as code is.
+pub(crate) fn markdown_text(md: &str, indent: &str, linked: &dyn Fn(&str) -> bool) -> String {
     let mut out = String::new();
     let mut line = String::new();
     let mut list_depth = 0usize;
@@ -1487,7 +1520,10 @@ pub(crate) fn markdown_text(md: &str, indent: &str) -> String {
         }
         line.clear();
     };
-    for event in Parser::new_ext(md, Options::ENABLE_TABLES) {
+    let events = brackets::rendered(md, Options::ENABLE_TABLES, |name, _| {
+        linked(name).then(String::new)
+    });
+    for event in events {
         match event {
             Event::Start(Tag::Heading { .. }) => {}
             Event::End(TagEnd::Heading(_)) => {
@@ -1558,11 +1594,12 @@ pub(crate) fn markdown_text(md: &str, indent: &str) -> String {
 
 fn listing(loaded: &Loaded, api: &Api) -> String {
     let mut out = String::new();
+    let top = linker(loaded, api, None);
     for k in &api.constants {
         let summary = k
             .doc
             .as_ref()
-            .map(|d| first_line(d.summary()))
+            .map(|d| first_line(d.summary(), &top))
             .unwrap_or_default();
         out.push_str(&format!(
             "{}  {}
@@ -1574,23 +1611,24 @@ fn listing(loaded: &Loaded, api: &Api) -> String {
         let summary = f
             .doc
             .as_ref()
-            .map(|d| first_line(d.summary()))
+            .map(|d| first_line(d.summary(), &top))
             .unwrap_or_default();
         let mark = if f.is_static { "(static) " } else { "" };
         out.push_str(&format!("{}  {mark}{}\n", f.path, summary));
     }
     for p in &api.pages {
+        let here = linker(loaded, api, Some(p.id));
         let summary = p
             .doc
             .as_ref()
-            .map(|d| first_line(d.summary()))
+            .map(|d| first_line(d.summary(), &here))
             .unwrap_or_default();
         out.push_str(&format!("{}  {}\n", p.signature, summary));
         for m in &p.members {
             let summary = m
                 .doc
                 .as_ref()
-                .map(|d| first_line(d.summary()))
+                .map(|d| first_line(d.summary(), &here))
                 .unwrap_or_default();
             let mark = match (m.is_abstract, m.is_static) {
                 (true, _) => "(abstract) ",
@@ -1604,9 +1642,24 @@ fn listing(loaded: &Loaded, api: &Api) -> String {
     out
 }
 
-/// A summary on one line, as plain text.
-pub(crate) fn first_line(s: &str) -> String {
-    let text = markdown_text(s, "");
+/// Whether a bracket's name links in the scope of `scope`, as the HTML
+/// links it: for the text the terminal and the summaries show.
+pub(crate) fn linker<'a>(
+    loaded: &'a Loaded,
+    api: &'a Api,
+    scope: Option<ClassId>,
+) -> impl Fn(&str) -> bool + 'a {
+    move |name| {
+        api.resolve_link(&loaded.world, scope, name)
+            .and_then(|t| html::href(loaded, api, &t))
+            .is_some()
+    }
+}
+
+/// A summary on one line, as plain text (`linked` as for
+/// `markdown_text`).
+pub(crate) fn first_line(s: &str, linked: &dyn Fn(&str) -> bool) -> String {
+    let text = markdown_text(s, "", linked);
     let joined: Vec<&str> = text
         .lines()
         .map(str::trim)
@@ -1672,7 +1725,7 @@ fn lookup(loaded: &Loaded, api: &Api, name: &str) -> Option<String> {
                 item.path, item.signature
             ));
             if let Some(d) = &item.doc {
-                out.push_str(&markdown_text(&d.text, "  "));
+                out.push_str(&markdown_text(&d.text, "  ", &linker(loaded, api, None)));
                 out.push_str("\n\n");
             }
         }
@@ -1707,7 +1760,7 @@ fn lookup(loaded: &Loaded, api: &Api, name: &str) -> Option<String> {
             let mut out = format!("{class_path}{ty}\n");
             if let Some(d) = world.doc_at(k.span) {
                 out.push('\n');
-                out.push_str(&markdown_text(&d.text, "  "));
+                out.push_str(&markdown_text(&d.text, "  ", &linker(loaded, api, None)));
             }
             return Some(out);
         }
@@ -1739,15 +1792,16 @@ fn lookup(loaded: &Loaded, api: &Api, name: &str) -> Option<String> {
                 out.push_str(&format!("  include {}\n", p.includes.join(", ")));
             }
             out.push('\n');
+            let here = linker(loaded, api, Some(class));
             if let Some(d) = &p.doc {
-                out.push_str(&markdown_text(&d.text, "  "));
+                out.push_str(&markdown_text(&d.text, "  ", &here));
                 out.push_str("\n\n");
             }
             for m in &p.members {
                 let summary = m
                     .doc
                     .as_ref()
-                    .map(|d| first_line(d.summary()))
+                    .map(|d| first_line(d.summary(), &here))
                     .unwrap_or_default();
                 out.push_str(&format!("  {}\n", m.signature));
                 if !summary.is_empty() {
@@ -1784,7 +1838,11 @@ fn lookup(loaded: &Loaded, api: &Api, name: &str) -> Option<String> {
             {
                 out.push_str(&format!("{}  {}\n\n", item.path, item.signature));
                 if let Some(d) = &item.doc {
-                    out.push_str(&markdown_text(&d.text, "  "));
+                    out.push_str(&markdown_text(
+                        &d.text,
+                        "  ",
+                        &linker(loaded, api, Some(owner)),
+                    ));
                     out.push('\n');
                     if let Some(f) = &item.from {
                         out.push_str(&format!("  (from {f})\n"));
@@ -1810,16 +1868,6 @@ fn lookup(loaded: &Loaded, api: &Api, name: &str) -> Option<String> {
         out.pop();
     }
     Some(out)
-}
-
-/// The code spans and fences of a doc, for `--check` and HTML.
-pub(crate) fn code_spans(md: &str) -> Vec<String> {
-    Parser::new(md)
-        .filter_map(|e| match e {
-            Event::Code(c) => Some(c.to_string()),
-            _ => None,
-        })
-        .collect()
 }
 
 /// The fenced code blocks of a doc: info string and code, with the
@@ -1908,14 +1956,25 @@ fn check(loaded: &Loaded, api: &Api, missing: bool) -> Vec<String> {
             .iter()
             .map(|p| p.name.clone())
             .collect();
-        for span in code_spans(&doc.text) {
-            if !name_shaped(&span) || type_params.contains(&span) || is_type_expr(&span) {
+        // The brackets that name something by their grammar (#881): one
+        // that resolves to nothing warns when it has a name's shape (a
+        // bare lowercase word is text, as `[sic]`).
+        let mut named: Vec<String> = Vec::new();
+        brackets::events(&doc.text, Options::ENABLE_TABLES, |name, _| {
+            named.push(name.to_string());
+            None
+        })
+        .for_each(drop);
+        for name in named {
+            if type_params.contains(&name) || is_type_param(&name) {
                 continue;
             }
-            match api.resolve(world, Some(scope), &span) {
-                None => problems.push(format!("{at}: warning: `{span}` (in the doc of `{path}`) names nothing\n")),
+            match api.resolve_link(world, Some(scope), &name) {
+                None if name_shaped(&name) => problems.push(format!(
+                    "{at}: warning: `[{name}]` (in the doc of `{path}`) names nothing\n"
+                )),
                 Some(Target::Elsewhere { private: true }) => problems.push(format!(
-                    "{at}: warning: `{span}` (in the doc of `{path}`) is private, so it is not documented\n"
+                    "{at}: warning: `[{name}]` (in the doc of `{path}`) is private, so it is not documented\n"
                 )),
                 _ => {}
             }
@@ -1947,10 +2006,10 @@ fn check(loaded: &Loaded, api: &Api, missing: bool) -> Vec<String> {
     problems
 }
 
-/// A one-letter type parameter (`T`, `K`) or a generic type
-/// (`Array[Int]`) is a type, not a name to link.
-fn is_type_expr(s: &str) -> bool {
-    (s.len() == 1 && s.chars().all(|c| c.is_ascii_uppercase())) || s.contains('[')
+/// A one-letter type parameter (`[T]`, `[K]`) is a type, not a name to
+/// link.
+fn is_type_param(s: &str) -> bool {
+    s.len() == 1 && s.chars().all(|c| c.is_ascii_uppercase())
 }
 
 pub(crate) fn json_string(s: &str) -> String {
@@ -2093,12 +2152,13 @@ mod tests {
     #[test]
     fn markdown_as_text() {
         let text = markdown_text(
-            "The `x`.\n\n## Raises\n\nOne\ntwo.\n\n```\na = 1\n```\n\n- a\n- b\n",
+            "The `x`, [Foo], [Bar] and [the foo][Foo].\n\n## Raises\n\nOne\ntwo.\n\n```\na = 1\n```\n\n- a\n- b\n",
             "  ",
+            &|name| name == "Foo",
         );
         assert_eq!(
             text,
-            "  The x.\n\n  Raises\n\n  One\n  two.\n\n      a = 1\n\n  - a\n  - b\n"
+            "  The x, Foo, [Bar] and the foo.\n\n  Raises\n\n  One\n  two.\n\n      a = 1\n\n  - a\n  - b\n"
         );
     }
 }
