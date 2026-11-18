@@ -144,6 +144,14 @@ pub struct Generated {
     /// Made by `def_initialize` (docs/14 §5): an `initialize` overload.
     #[serde(default)]
     pub initialize: bool,
+    /// Where the block is written: the class or module whose method it is
+    /// in (`None`: a file's top level), its file and position. Its types
+    /// were resolved, and its body checked, there; an inherited `new`'s
+    /// choice among `initialize` overloads asks under the extensions
+    /// active there (`Checker::inherited_init_fits`, #871, decided
+    /// 2026-11-20). Errors about the method are reported at `by`.
+    #[serde(default)]
+    pub written_at: Option<(Option<ClassId>, u32, u32)>,
     /// The `JSON.decode[T]` descriptors of the body whose `T` mentions a
     /// type parameter the method carries: where each marker is (the
     /// function, in the compile-time lowering, and the constant's index)

@@ -1700,13 +1700,19 @@ impl Checker {
     /// superclasses' type arguments substituted: `IntBox < Box[Int]`
     /// takes `Int` where `Box#initialize` takes `T`). Asked under the
     /// extensions active where `own` is declared (#871, decided
-    /// 2026-11-19): one answer for the pair, whatever the checker last
-    /// had active and wherever the `new` is written.
+    /// 2026-11-19), for a generated one where its block is written
+    /// (`Generated::written_at`, decided 2026-11-20): one answer for the
+    /// pair, whatever the checker last had active and wherever the `new`
+    /// is written.
     fn inherited_init_fits(&self, sub: ClassId, init: Option<MethodId>, own: MethodId) -> bool {
         let o = self.world.method(own);
-        let view = self
-            .world
-            .extensions_active_at(Some(o.owner), o.file, o.span.start);
+        // (A generated overload's: where its block is written, #871.)
+        let (lexical, file, pos) = o.generated.as_ref().and_then(|g| g.written_at).unwrap_or((
+            Some(o.owner),
+            o.file,
+            o.span.start,
+        ));
+        let view = self.world.extensions_active_at(lexical, file, pos);
         self.world
             .with_active(view, || self.inherited_init_fits_here(sub, init, own))
     }
