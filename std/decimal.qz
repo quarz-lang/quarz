@@ -1,0 +1,368 @@
+# Decimal: exact base-ten numbers, for amounts of money, a database's
+# `numeric` or a JSON number with more digits than a `Float` keeps.
+#
+# ```
+# require "decimal"
+# d = Decimal.parse("19.99")
+# (d + Decimal.parse("0.01")).to_s           # => "20.00"
+# (d * 3).to_s                               # => "59.97"
+# d.round(1).to_s                            # => "20.0"
+# d.div(3, scale: 2).to_s                    # => "6.66"
+# d == Decimal.parse("19.990")               # => true
+# ```
+#
+# A `Decimal` is an `Integer` unscaled value and a scale, the number of
+# its fraction digits: `19.99` is 1999 with the scale 2. It is exact:
+# `+`, `-` and `*` lose nothing, and there is no `/`, since a quotient
+# may not be a decimal; `div` takes the digits and the rounding. The
+# scale is kept (`19.990` prints so) while `==` and `hash` go by value.
+# A `Decimal` combines with an `Int` or an `Integer` on its right
+# (`d * 3`, `d + 1`), never with a `Float`: `d + 0.1` does not compile
+# (convert on purpose: `Decimal.parse(f.to_s)` or `d.to_f`). There is no
+# literal.
+#
+# **A `Decimal` equals and orders only `Decimal`s.** `d == 3`, `3 == d`
+# and `d == 3.0` are false, as for any two objects of different classes,
+# and `d < 3` does not compile: write `d == Decimal.new(3)`,
+# `d < Decimal.new(3)`, `d.zero?` or `d.negative?`. (Equality and order
+# across the number classes are quarz-lang/quarz#891.)
+class Decimal
+  include Shareable
+  include Comparable[Decimal]
+
+  # How `round` and `div` drop digits. At 0 fraction digits:
+  #
+  # | mode       | 2.5 | -2.5 | 2.1 | -2.1 | 2.7 | -2.7 |
+  # |------------|-----|------|-----|------|-----|------|
+  # | `HalfEven` | 2   | -2   | 2   | -2   | 3   | -3   |
+  # | `HalfUp`   | 3   | -3   | 2   | -2   | 3   | -3   |
+  # | `Down`     | 2   | -2   | 2   | -2   | 2   | -2   |
+  # | `Up`       | 3   | -3   | 3   | -3   | 3   | -3   |
+  # | `Floor`    | 2   | -3   | 2   | -3   | 2   | -3   |
+  # | `Ceiling`  | 3   | -2   | 3   | -2   | 3   | -2   |
+  enum Rounding
+    # To the nearest, a tie to the even neighbour (the default).
+    variant HalfEven
+    # To the nearest, a tie away from zero.
+    variant HalfUp
+    # Toward zero (truncation).
+    variant Down
+    # Away from zero.
+    variant Up
+    # Toward negative infinity.
+    variant Floor
+    # Toward positive infinity.
+    variant Ceiling
+  end
+
+  # The largest scale: fraction digits.
+  MAX_SCALE = 1_000
+  # The most digits of the unscaled value.
+  MAX_DIGITS = 10_000
+
+  @unscaled: Integer
+  @scale: Int
+
+  # `unscaled` × 10^-`scale`: `Decimal.new(1999, scale: 2)` is 19.99.
+  # Raises `ArgumentError` for a negative scale, one beyond `MAX_SCALE`,
+  # or an unscaled value of more than `MAX_DIGITS` digits.
+  #
+  # ```
+  # Decimal.new(1999, scale: 2).to_s     # => "19.99"
+  # Decimal.new(5).to_s                  # => "5"
+  # ```
+  def initialize(unscaled: Int | Integer, *, scale: Int = 0)
+    if scale < 0 || scale > MAX_SCALE
+      raise ArgumentError.new("a Decimal's scale is 0 to #{MAX_SCALE}, not #{scale}")
+    end
+    u = unscaled.to_integer
+    if Decimal.too_long?(u)
+      raise ArgumentError.new("a Decimal has at most #{MAX_DIGITS} digits")
+    end
+    @unscaled = u
+    @scale = scale
+  end
+
+  # The value read from `text`: an optional sign, digits, optionally a
+  # point and digits (their count is the scale), and optionally an
+  # exponent (`1.5e3` is `1500`, `15e-2` is `0.15`). Nothing else: no
+  # space, no `_`, no `.5` or `5.`. Raises `ArgumentError` naming the
+  # text when it is not one, or beyond the limits.
+  #
+  # ```
+  # Decimal.parse("-0.050").to_s      # => "-0.050"
+  # Decimal.parse("1.50e1").to_s      # => "15.0"
+  # Decimal.parse("1.5e3").to_s       # => "1500"
+  # ```
+  def self.parse(text: String) -> Decimal
+    parse?(text) || raise ArgumentError.new("not a decimal: #{text.inspect}")
+  end
+
+  # As `parse`, nil for text that is not a decimal (beyond the limits it
+  # raises `ArgumentError` as `parse` does).
+  #
+  # ```
+  # Decimal.parse?("1,5")             # => nil
+  # ```
+  def self.parse?(text: String) -> Decimal?
+    m = text.match(grammar) || return nil
+    whole = m[2] || return nil
+    fraction = m[3] || ""
+    scale = fraction.size
+    if exp_text = m[4]
+      # (The exponent's size first: `1e1000000000` computes nothing.)
+      digits = exp_text.sub(/\A[+-]/, "").sub(/\A0+/, "")
+      if digits.size > 7
+        raise ArgumentError.new("a Decimal's exponent is too large: #{text.inspect}")
+      end
+      scale -= exp_text.to_i
+    end
+    if scale > MAX_SCALE
+      raise ArgumentError.new("a Decimal's scale is 0 to #{MAX_SCALE}: #{text.inspect}")
+    end
+    if whole.size + fraction.size + (scale < 0 ? -scale : 0) > MAX_DIGITS + MAX_SCALE + 1
+      raise ArgumentError.new("a Decimal has at most #{MAX_DIGITS} digits: #{text.inspect}")
+    end
+    u = Integer.parse(whole + fraction)
+    u = -u if m[1] == "-"
+    if scale < 0
+      u = u * 10.to_integer ** -scale
+      scale = 0
+    end
+    Decimal.new(u, scale: scale)
+  end
+
+  # The unscaled value: 1999 for 19.99.
+  def unscaled -> Integer = @unscaled
+
+  # The number of fraction digits: 2 for 19.99, 3 for 19.990.
+  def scale -> Int = @scale
+
+  # The sum, exact, of the larger scale.
+  #
+  # ## Raises
+  #
+  # `ArgumentError` when the sum has more than `MAX_DIGITS` digits.
+  #
+  # ```
+  # (Decimal.parse("1.5") + Decimal.parse("0.25")).to_s   # => "1.75"
+  # (Decimal.parse("1.5") + 1).to_s                       # => "2.5"
+  # ```
+  def +(other: Decimal | Int | Integer) -> Decimal
+    o = Decimal.of(other)
+    s = @scale > o.scale ? @scale : o.scale
+    Decimal.new(upscaled(s) + o.upscaled(s), scale: s)
+  end
+
+  # The difference, exact, of the larger scale.
+  #
+  # ## Raises
+  #
+  # `ArgumentError` when the difference has more than `MAX_DIGITS`
+  # digits.
+  #
+  # ```
+  # (Decimal.parse("1.5") - Decimal.parse("0.25")).to_s   # => "1.25"
+  # ```
+  def -(other: Decimal | Int | Integer) -> Decimal
+    o = Decimal.of(other)
+    s = @scale > o.scale ? @scale : o.scale
+    Decimal.new(upscaled(s) - o.upscaled(s), scale: s)
+  end
+
+  # The product, exact, of the sum of the scales.
+  #
+  # ## Raises
+  #
+  # `ArgumentError` when the product has more than `MAX_DIGITS` digits,
+  # or more than `MAX_SCALE` fraction digits (two values of 600).
+  #
+  # ```
+  # (Decimal.parse("1.5") * Decimal.parse("0.25")).to_s   # => "0.375"
+  # (Decimal.parse("19.99") * 3).to_s                     # => "59.97"
+  # ```
+  def *(other: Decimal | Int | Integer) -> Decimal
+    o = Decimal.of(other)
+    Decimal.new(@unscaled * o.unscaled, scale: @scale + o.scale)
+  end
+
+  # The negation, of the same scale (as many digits: it cannot raise).
+  def -@ -> Decimal = Decimal.new(-@unscaled, scale: @scale)
+
+  # The absolute value, of the same scale (it cannot raise).
+  def abs -> Decimal = Decimal.new(@unscaled.abs, scale: @scale)
+
+  # Whether it is zero (of any scale).
+  def zero? -> Bool = @unscaled.zero?
+
+  # Whether it is below zero.
+  def negative? -> Bool = @unscaled.negative?
+
+  # Whether it is above zero.
+  def positive? -> Bool = @unscaled.positive?
+
+  # The value with `digits` fraction digits (0 to `MAX_SCALE`): more
+  # pad with zeros, fewer round by `mode` (`Rounding`).
+  #
+  # ```
+  # Decimal.parse("2.5").round(0).to_s                            # => "2"
+  # Decimal.parse("2.5").round(0, Decimal::Rounding::HalfUp).to_s # => "3"
+  # Decimal.parse("19.99").round(1).to_s                          # => "20.0"
+  # Decimal.parse("1.5").round(3).to_s                            # => "1.500"
+  # ```
+  def round(digits: Int, mode: Rounding = Rounding::HalfEven) -> Decimal
+    if digits < 0 || digits > MAX_SCALE
+      raise ArgumentError.new("a Decimal's scale is 0 to #{MAX_SCALE}, not #{digits}")
+    end
+    return Decimal.new(upscaled(digits), scale: digits) if digits >= @scale
+    Decimal.new(Decimal.divide(@unscaled, 10.to_integer ** (@scale - digits), mode), scale: digits)
+  end
+
+  # The quotient `self / other` with `scale` fraction digits, rounded by
+  # `mode`. Raises `ZeroDivisionError` when `other` is zero.
+  #
+  # ```
+  # Decimal.parse("10").div(3, scale: 2).to_s                             # => "3.33"
+  # Decimal.parse("2").div(3, scale: 2).to_s                              # => "0.67"
+  # Decimal.parse("2").div(3, scale: 2, mode: Decimal::Rounding::Down).to_s # => "0.66"
+  # ```
+  def div(other: Decimal | Int | Integer, *, scale: Int, mode: Rounding = Rounding::HalfEven) -> Decimal
+    if scale < 0 || scale > MAX_SCALE
+      raise ArgumentError.new("a Decimal's scale is 0 to #{MAX_SCALE}, not #{scale}")
+    end
+    o = Decimal.of(other)
+    raise ZeroDivisionError.new("division of a Decimal by zero") if o.zero?
+    # self / o = (u1 / 10^s1) / (u2 / 10^s2); the quotient at `scale`
+    # digits is (u1 * 10^(scale + s2 - s1)) / u2.
+    shift = scale + o.scale - @scale
+    n = @unscaled
+    d = o.unscaled
+    if shift >= 0
+      n = n * 10.to_integer ** shift
+    else
+      d = d * 10.to_integer ** -shift
+    end
+    Decimal.new(Decimal.divide(n, d, mode), scale: scale)
+  end
+
+  # Whether `other` is a `Decimal` of the same value, whatever the
+  # scales: `19.99` and `19.990` are equal. Another class's value, a
+  # number too, is not equal (`Decimal.new(3) == 3` is false).
+  #
+  # ```
+  # Decimal.parse("19.99") == Decimal.parse("19.990")   # => true
+  # Decimal.new(3) == 3                                 # => false
+  # ```
+  def ==(other: Object) -> Bool
+    case other
+    in Decimal => o
+      s = @scale > o.scale ? @scale : o.scale
+      upscaled(s) == o.upscaled(s)
+    else false
+    end
+  end
+
+  # :nodoc:
+  def !=(other: Object) -> Bool = !(self == other)
+
+  # The order of the values (of `Decimal`s only).
+  #
+  # ```
+  # Decimal.parse("1") < Decimal.parse("1.01")   # => true
+  # ```
+  def <=>(other: Decimal) -> Int
+    s = @scale > other.scale ? @scale : other.scale
+    upscaled(s) <=> other.upscaled(s)
+  end
+
+  # A hash of the value: equal values (`19.99`, `19.990`) hash alike.
+  def hash -> Int
+    u = @unscaled
+    s = @scale
+    while s > 0 && (u % 10).zero?
+      u = u / 10
+      s -= 1
+    end
+    [u, s].hash
+  end
+
+  # The value truncated toward zero, as an `Integer`.
+  def to_integer -> Integer
+    return @unscaled if @scale == 0
+    p = 10.to_integer ** @scale
+    q = @unscaled.abs / p
+    @unscaled.negative? ? -q : q
+  end
+
+  # The value truncated toward zero, as an `Int`; `OverflowError` when
+  # it does not fit.
+  def to_i -> Int = to_integer.to_i
+
+  # The nearest `Float` (`to_s` read as one).
+  def to_f -> Float = to_s.to_f
+
+  # The value with `scale` fraction digits, never an exponent:
+  # `"19.99"`, `"-0.050"`, `"1500"`.
+  def to_s -> String
+    digits = @unscaled.abs.to_s
+    sign = @unscaled.negative? ? "-" : ""
+    return sign + digits if @scale == 0
+    digits = "0" * (@scale + 1 - digits.size) + digits if digits.size <= @scale
+    "#{sign}#{digits[0, digits.size - @scale]}.#{digits[digits.size - @scale, @scale]}"
+  end
+
+  # :ditto:
+  def inspect -> String = to_s
+
+  # The unscaled value at the scale `s` (not below this one's).
+  protected def upscaled(s: Int) -> Integer = s == @scale ? @unscaled : @unscaled * 10.to_integer ** (s - @scale)
+
+  # (`of`, `too_long?` and `divide` are called from the instance side,
+  # which a private class method is not reachable from: public, and
+  # undocumented.)
+
+  # :nodoc:
+  # `x` as a `Decimal`.
+  def self.of(x: Decimal | Int | Integer) -> Decimal
+    case x
+    in Decimal => d then d
+    in Int => i then Decimal.new(i)
+    in Integer => i then Decimal.new(i)
+    end
+  end
+
+  # :nodoc:
+  # Whether `u` has more than `MAX_DIGITS` digits.
+  def self.too_long?(u: Integer) -> Bool
+    # (Cheap first: a bit length well under the limit has few digits.)
+    bits = u.bit_length
+    return false if bits < MAX_DIGITS * 3
+    u.abs.to_s.size > MAX_DIGITS
+  end
+
+  # The text `parse` takes: a sign, digits, a point and digits, an
+  # exponent.
+  private def self.grammar -> Regexp = /\A([+-]?)([0-9]+)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?\z/
+
+  # :nodoc:
+  # `n / d` rounded to an integer by `mode` (`d` not zero).
+  def self.divide(n: Integer, d: Integer, mode: Rounding) -> Integer
+    negative = n.negative? != d.negative?
+    a = n.abs
+    b = d.abs
+    q = a / b
+    r = a - q * b
+    return negative ? -q : q if r.zero?
+    twice = r * 2
+    up = case mode
+         in Rounding::Down then false
+         in Rounding::Up then true
+         in Rounding::Floor then negative
+         in Rounding::Ceiling then !negative
+         in Rounding::HalfUp then twice >= b
+         in Rounding::HalfEven then twice > b || (twice == b && q.odd?)
+         end
+    q = q + 1 if up
+    negative ? -q : q
+  end
+end
