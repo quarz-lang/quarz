@@ -1523,6 +1523,8 @@ x = JSON.decode[Object]("1")
 y = JSON.decode[W]("{}")
 z = JSON.decode[E]("1")
 w = JSON.decode[U]("{}")
+sd = JSON.decode[String | Date]("1")
+td = JSON.decode[Time | Date]("1")
 v = JSON.decode?[Hash[Int, Int]]("{}")
 def gen[T](s: String) -> T = JSON.decode[T](s)
 r: Int = JSON.decode("1")
@@ -1542,6 +1544,8 @@ ok = JSON.decode[Wrap[Wrap[Int]]]('{"x": {"x": 1}}')
         "`JSON.decode` cannot decode into E: `E` is an enum",
         "`JSON.decode` cannot decode into U: `Int | Float` is a union JSON cannot tell apart: `Int` and `Float` are both decoded from a number",
         "`JSON.decode` cannot decode into String | Time: `String | Time` is a union JSON cannot tell apart: `String` and `Time` are both decoded from a string",
+        "`JSON.decode` cannot decode into String | Date: `String | Date` is a union JSON cannot tell apart: `String` and `Date` are both decoded from a string",
+        "`JSON.decode` cannot decode into Time | Date: `Time | Date` is a union JSON cannot tell apart: `Time` and `Date` are both decoded from a string",
         "`JSON.decode` cannot decode into R | S: `R | S` is a union JSON cannot tell apart: `R` and `S` are both decoded from an object",
         "is a union JSON cannot tell apart: `R` and `Hash[String, Int]` are both decoded from an object",
         "is a union JSON cannot tell apart: `Array[Int]` and `Set[Int]` are both decoded from an array",

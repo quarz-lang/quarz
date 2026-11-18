@@ -107,6 +107,10 @@ enum Node {
     Sym,
     Nil,
     Time,
+    /// A `Date` (#884), of the class it names: an ISO 8601 `YYYY-MM-DD`
+    /// string, built by `Date`'s `initialize` (which refuses a day that
+    /// does not exist).
+    Date(ClassId),
     Bytes,
     Value,
     Opt(usize),
@@ -140,6 +144,7 @@ fn descriptor(text: &str, classes: usize) -> Option<Vec<Node>> {
                 "y" => Node::Sym,
                 "n" => Node::Nil,
                 "t" => Node::Time,
+                "D" => Node::Date(rest.parse().ok()?),
                 "B" => Node::Bytes,
                 "v" => Node::Value,
                 "?" => Node::Opt(num(rest)?),
@@ -320,6 +325,37 @@ impl Decoder<'_> {
                 let s = string(self.interp, &inner.unwrap_or(Value::Nil), "string")?.to_string();
                 super::time::parse_rfc3339(&s).ok_or_else(|| self.shape(&node, &self.found(v)))
             }
+            Node::Date(date) if class == c.string => {
+                let s = string(self.interp, &inner.unwrap_or(Value::Nil), "string")?.to_string();
+                // `YYYY-MM-DD` (`Date.parse?`'s form); the calendar is
+                // `Date#initialize`'s to check, whose error is the shape's.
+                let b = s.as_bytes();
+                let shaped = b.len() == 10
+                    && b[4] == b'-'
+                    && b[7] == b'-'
+                    && b.iter()
+                        .enumerate()
+                        .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit());
+                if !shaped {
+                    return Err(self.shape(&node, &self.found(v)));
+                }
+                let part = |r: std::ops::Range<usize>| Value::Int(s[r].parse::<i64>().unwrap_or(0));
+                let world = &self.interp.program.world;
+                let init = world.class(date).methods.get("initialize").and_then(|ids| {
+                    ids.iter().copied().find(|&i| {
+                        self.interp.program.method(i).synth != quarz_ir::RtSynth::DataInit
+                    })
+                });
+                self.interp
+                    .construct(
+                        date,
+                        init,
+                        smallvec![part(0..4), part(5..7), part(8..10)],
+                        Vec::new(),
+                        None,
+                    )
+                    .map_err(|_| self.shape(&node, &self.found(v)))
+            }
             Node::Bytes if class == c.string => {
                 use base64::Engine;
                 let s = string(self.interp, &inner.unwrap_or(Value::Nil), "string")?.to_string();
@@ -487,6 +523,7 @@ impl Decoder<'_> {
             Node::Sym => "a string (for a Symbol)".to_string(),
             Node::Nil => "null".to_string(),
             Node::Time => "an RFC 3339 time string".to_string(),
+            Node::Date(_) => "an ISO 8601 date string (YYYY-MM-DD)".to_string(),
             Node::Bytes => "a Base64 string".to_string(),
             Node::Value => "a JSON value".to_string(),
             Node::Opt(_) => "a value or null".to_string(),
@@ -877,6 +914,12 @@ fn generate(
                         _ => Ok(()),
                     };
                 }
+            }
+            // A `Date` (#884) as `JSON.decode` reads it back: its ISO 8601
+            // text, `Date#to_s`.
+            if class.name == "Date" && Some(o.class) == interp.program.world.class_by_name("Date") {
+                escape(&interp.to_s(v)?, out);
+                return Ok(());
             }
             if let Some(mid) = interp.has_user_method(v, "to_json", 0) {
                 let r = interp.invoke(mid, v.clone(), smallvec![], vec![], None)?;

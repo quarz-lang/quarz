@@ -1,0 +1,123 @@
+require "test"
+require "json"
+
+# `Date` (#884): a calendar date, with no time of day and no time zone.
+# The expected values follow the proleptic Gregorian calendar.
+class DateTest < Test::Case
+  @d: Date = Date.new(2026, 11, 20)
+
+  def test_parts_and_text
+    assert_equal("2026 11 20 5 324 false", [@d.year, @d.month, @d.day, @d.wday, @d.yday, @d.leap?].join(" "))
+    assert_equal("2026-11-20", @d.to_s)
+    assert_equal("2026-11-20", @d.inspect)
+    assert_equal("0001-01-01", Date.new(1, 1, 1).to_s)
+    # 1970-01-01 was a Thursday, 0001-01-01 a Monday.
+    assert_equal(4, Date.new(1970, 1, 1).wday)
+    assert_equal(1, Date.new(1, 1, 1).wday)
+    assert_equal(366, Date.new(2024, 12, 31).yday)
+  end
+
+  def test_leap_years
+    assert_true(Date.leap_year?(2024))
+    assert_true(Date.leap_year?(2000))
+    assert_false(Date.leap_year?(1900))
+    assert_false(Date.leap_year?(2026))
+    assert_equal("29 28 31 30", [Date.days_in_month(2024, 2), Date.days_in_month(2026, 2), Date.days_in_month(2026, 1), Date.days_in_month(2026, 4)].join(" "))
+  end
+
+  def test_construction_refuses_what_is_no_date
+    assert_raise(ArgumentError) { Date.new(2026, 2, 29) }
+    assert_raise(ArgumentError) { Date.new(2026, 13, 1) }
+    assert_raise(ArgumentError) { Date.new(2026, 4, 31) }
+    assert_raise(ArgumentError) { Date.new(0, 1, 1) }
+    assert_raise(ArgumentError) { Date.new(10000, 1, 1) }
+    assert_raise(ArgumentError) { @d.with(day: 31) }
+    assert_equal("2024-02-29", Date.new(2024, 2, 29).to_s)
+  end
+
+  def test_parse
+    assert_equal(@d, Date.parse("2026-11-20"))
+    assert_nil(Date.parse?("2026-02-30"))
+    assert_nil(Date.parse?("2026-1-5"))
+    assert_nil(Date.parse?(" 2026-11-20"))
+    assert_nil(Date.parse?("2026-11-20T00:00:00Z"))
+    assert_nil(Date.parse?("0000-01-01"))
+    assert_raise(ArgumentError) { Date.parse("20261120") }
+  end
+
+  def test_day_arithmetic
+    assert_equal("2026-12-20", (@d + 30).to_s)
+    assert_equal("2026-10-21", (@d - 30).to_s)
+    assert_equal(42, Date.new(2027, 1, 1) - @d)
+    assert_equal(-42, @d - Date.new(2027, 1, 1))
+    assert_equal("2026-11-21 2026-11-19", "#{@d.succ} #{@d.pred}")
+    assert_equal(3652058, Date.new(9999, 12, 31) - Date.new(1, 1, 1))
+    assert_raise(RangeError) { Date.new(9999, 12, 31) + 1 }
+    assert_raise(RangeError) { Date.new(1, 1, 1) - 1 }
+  end
+
+  def test_month_and_year_steps_clamp
+    assert_equal("2026-02-28", Date.new(2026, 1, 31).next_month.to_s)
+    assert_equal("2024-02-29", Date.new(2024, 1, 31).next_month.to_s)
+    assert_equal("2027-02-20", @d.next_month(3).to_s)
+    assert_equal("2025-12-20", @d.prev_month(11).to_s)
+    assert_equal("2025-02-28", Date.new(2024, 2, 29).next_year.to_s)
+    assert_equal("2020-02-29", Date.new(2024, 2, 29).prev_year(4).to_s)
+    assert_raise(RangeError) { Date.new(9999, 12, 1).next_month }
+    assert_raise(RangeError) { Date.new(1, 6, 1).prev_year }
+  end
+
+  def test_comparison_hash_and_sort
+    a = Date.new(2026, 3, 1)
+    b = Date.new(2025, 1, 1)
+    assert_true(b < a)
+    assert_equal("2025-01-01,2026-03-01", [a, b].sort.join(","))
+    assert_equal(b, [a, b].min)
+    assert_equal(a, [a, b].max)
+    h = {Date.new(2026, 11, 20) => "due"}
+    assert_equal("due", h[Date.new(2026, 11, 20)])
+  end
+
+  def test_ranges
+    a = Date.new(2026, 12, 30)
+    b = Date.new(2027, 1, 2)
+    assert_equal("2026-12-30,2026-12-31,2027-01-01,2027-01-02", (a..b).to_a.join(","))
+    assert_equal(3, (a...b).to_a.size)
+    assert_equal(0, (b..a).to_a.size)
+    assert_equal("3 4 5 6", (a..b).map(&:wday).join(" "))
+    assert_true((a..b).include?(Date.new(2027, 1, 1)))
+    assert_equal("9999-12-30,9999-12-31", (Date.new(9999, 12, 30)..Date.new(9999, 12, 31)).to_a.join(","))
+  end
+
+  def test_time_conversions
+    assert_equal("2024-03-05", Time.utc(2024, 3, 5, 23, 30).to_date.to_s)
+    assert_equal("2026-11-20 09:30:00 UTC", @d.at_utc(9, 30).to_s)
+    t = @d.at(8)
+    assert_equal("2026-11-20 8", "#{t.to_date} #{t.hour}")
+  end
+
+  def test_strftime
+    assert_equal("Fri 20 November 2026", @d.strftime("%a %-d %B %Y"))
+    assert_equal("2026-11-20|11/20/26|11/20/26|324|5|5", @d.strftime("%F|%D|%x|%j|%u|%w"))
+    d = Date.new(2026, 3, 5)
+    assert_equal(" 5|05|5| 3|03|20|26|Mar|Mar|Thursday|%", d.strftime("%e|%d|%-d|%_m|%0m|%C|%y|%b|%h|%A|%%"))
+    assert_raise(ArgumentError) { d.strftime("%H") }
+    assert_raise(ArgumentError) { d.strftime("%T") }
+    assert_raise(ArgumentError) { d.strftime("%z") }
+    assert_raise(ArgumentError) { d.strftime("%Q") }
+    assert_raise(ArgumentError) { d.strftime("%") }
+  end
+
+  data Due = (title: String, on: Date, dates: Array[Date], maybe: Date?)
+
+  def test_json
+    due = Due.new("x", @d, [Date.new(2026, 1, 1)], nil)
+    text = JSON.generate(due)
+    assert_equal("{\"title\":\"x\",\"on\":\"2026-11-20\",\"dates\":[\"2026-01-01\"],\"maybe\":null}", text)
+    assert_equal(due, JSON.decode[Due](text))
+    assert_equal(Date.new(2024, 2, 29), JSON.decode[Date]("\"2024-02-29\""))
+    assert_raise(JSON::DecodeError) { JSON.decode[Date]("\"2026-02-30\"") }
+    assert_raise(JSON::DecodeError) { JSON.decode[Date]("\"2026-2-3\"") }
+    assert_raise(JSON::DecodeError) { JSON.decode[Date]("1") }
+  end
+end
