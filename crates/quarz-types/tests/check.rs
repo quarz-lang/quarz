@@ -4347,11 +4347,32 @@ fn kernel_extension_functions_are_found_bare() {
     err(&format!("{mine}a: Int = answer"), msg);
     err(&format!("{mine}a: Int = ::answer"), msg);
     ok(&format!("{mine}a: Int = Kernel.answer"));
+    // A method of `self` of their signature hides both: no ambiguity,
+    // in a class and in a block with a receiver (#898); one of another
+    // signature hides neither.
+    ok(&format!(
+        "{mine}class C\n  def answer -> String = \"c\"\n  def go -> String = answer\nend\nclass Row\n  def answer -> String = \"row\"\nend\nx: String = Row.new.instance_exec {{ answer }}"
+    ));
+    err(
+        &format!("{mine}class C\n  def answer(x: Int) -> Int = x\n  def go -> Int = answer\nend"),
+        msg,
+    );
+    err(
+        &format!("{mine}class Row\n  def answer(x: Int) -> Int = x\nend\nx: Int = Row.new.instance_exec {{ answer }}"),
+        msg,
+    );
     // Two extensions: overloads, refused with the same parameters.
     let two = "module G\n  extension Kernel\n    def self.answer -> Int = 1\n    def self.twice(x: String) -> String = x + x\n  end\nend\n";
     ok(&format!(
         "{h}{two}using H\nusing G\na: Int = twice(1)\nb: String = twice(\"s\")"
     ));
+    // A private one is called bare only (as a private method is, on the
+    // implicit receiver); a generic one infers its arguments.
+    let p = "module P\n  extension Kernel\n    private def self.hidden -> Int = 1\n    def self.pick[T](x: T) -> T = x\n  end\nend\nusing P\n";
+    ok(&format!(
+        "{p}a: Int = hidden + ::hidden + pick(3)\nb: String = pick(\"s\")"
+    ));
+    err(&format!("{p}a: Int = Kernel.hidden"), "`hidden` is private");
     err(
         &format!("{h}{two}using H\nusing G\na: Int = answer"),
         "the call of `answer` is ambiguous: the extension of `Kernel` in `H` and the extension of `Kernel` in `G`, both active here, each define it with the same parameters; leave out one `using`",
