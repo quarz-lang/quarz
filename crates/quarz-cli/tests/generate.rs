@@ -2096,7 +2096,9 @@ fn field_initializers_fill_generated_fields_when_constructed() {
         "{out}"
     );
     assert!(!out.contains("__init_@"), "{out}");
-    // A `next` that ends the `initialize`'s block early runs them too.
+    // A `next` that ends the `initialize`'s block early runs them too; a
+    // subclass's `initialize` that does not call `super` leaves the field
+    // at its default (as any field `super` would have assigned).
     write(
         &d.0,
         "early.qz",
@@ -2105,11 +2107,27 @@ fn field_initializers_fill_generated_fields_when_constructed() {
     let early = write(
         &d.0,
         "early_app.qz",
-        "require_relative \"early\"\nclass C < Base\n  gen\nend\nputs C.new(2).twice, C.new(7).twice\n",
+        "require_relative \"early\"\nclass C < Base\n  gen\nend\nclass D < C\n  def initialize(y: Int)\n  end\nend\nputs C.new(2).twice, C.new(7).twice, D.new(4).twice\n",
     );
     let (ok, out, err) = quarz(&d.0, &["run", early.to_str().unwrap()], &env);
     assert!(ok, "{err}");
-    assert_eq!(out, "6\n14\n");
+    assert_eq!(out, "6\n14\n0\n");
+    // The initializer's name can be written as a quoted symbol, and a
+    // handle to it called: it computes the value and stores nothing, so
+    // only a generated `initialize` assigns the field.
+    write(
+        &d.0,
+        "handle.qz",
+        "class Base\n  var @x: Int = 0\n  def bump -> Void\n    @x += 10\n  end\n  static def self.gen -> Void\n    def_field(:twice, Int, 0, reader: true) { @x * 2 }\n    def_initialize(:x) do |x: Int|\n      @x = x\n    end\n    m = method_ref[() -> Int](:\"__init_@twice\")\n    def_method(:again) do -> Int\n      m.bind(self).call\n    end\n  end\nend\n",
+    );
+    let handle = write(
+        &d.0,
+        "handle_app.qz",
+        "require_relative \"handle\"\nclass C < Base\n  gen\nend\nc = C.new(3)\nc.bump\nputs c.again, c.twice\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", handle.to_str().unwrap()], &env);
+    assert!(ok, "{err}");
+    assert_eq!(out, "26\n6\n");
     // What is refused.
     let bad_lib = FIELD_INIT_LIB.replace(
         "  # The constructor, generated once",
