@@ -2592,13 +2592,24 @@ impl World {
     }
 
     /// Whether a call of `mid` with an implicit receiver passes no `self`
-    /// of the caller: a built-in `Kernel` function (one an `extension
-    /// Kernel` adds is a method), or a top-level `def`, a function, which
-    /// has no `self` (docs/01 §2).
+    /// of the caller: a built-in `Kernel` function, a function an
+    /// `extension Kernel` gives (`kernel_extension_function`, called on
+    /// the `Kernel` module), or a top-level `def`, a function, which has no
+    /// `self` (docs/01 §2).
     pub fn takes_no_self(&self, mid: MethodId) -> bool {
         let m = self.method(mid);
         (m.is_native && m.owner == self.builtin.kernel)
+            || self.kernel_extension_function(mid)
             || self.class(m.owner).kind == ClassKind::Main
+    }
+
+    /// Whether `mid` is a function an `extension Kernel` gives (its
+    /// `def self.name`), which a bare call finds where the extension is
+    /// active (#885) and which runs with the `Kernel` module as its `self`,
+    /// as `Kernel.name` does.
+    pub fn kernel_extension_function(&self, mid: MethodId) -> bool {
+        let m = self.method(mid);
+        m.singleton && m.extension.is_some() && m.owner == self.builtin.kernel
     }
 
     /// The pseudo-class of `file`'s top-level methods.

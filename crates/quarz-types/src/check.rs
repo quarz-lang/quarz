@@ -9897,9 +9897,9 @@ impl Checker {
     }
 
     /// `::name(...)`: a function, the file's top-level `def`s of the name
-    /// first, then the built-in `Kernel` functions, wherever it is written
-    /// (docs/01 §1); never a method of `self`, an `Object` method or one an
-    /// `extension Kernel` adds.
+    /// first, then the built-in `Kernel` functions, then those the active
+    /// `extension Kernel`s give (#885), wherever it is written (docs/01
+    /// §1); never a method of `self` or an `Object` method.
     fn check_function_call(&mut self, expr: &Expr, call: &Call, expected: Option<&Type>) -> Type {
         let fm = self.file_main(self.env.file);
         let on = Type::class(fm.unwrap_or(self.world.builtin.object));
@@ -9907,7 +9907,9 @@ impl Checker {
         // `def`s it sees, its cog's, first, hiding a built-in of the same
         // signature, then the built-in's other overloads), but only the
         // functions.
-        let cands = self.function_candidates(&call.name);
+        let mut cands = self.function_candidates(&call.name);
+        let given = self.extension_functions(&call.name, &cands, expr.span);
+        cands.extend(given);
         if cands.is_empty() {
             self.error(
                 format!(
@@ -11278,14 +11280,27 @@ impl Checker {
                 // set of overloads, the first of each signature kept.
                 if call.recv.is_none() {
                     let found = self.function_candidates(name);
-                    if !found.is_empty() {
-                        for f in found {
-                            let fm = self.world.method(f.0);
-                            if !cands.iter().any(|(id, _)| {
-                                *id == f.0 || self.world.same_signature(self.world.method(*id), fm)
-                            }) {
-                                cands.push(f);
-                            }
+                    // (Then those the active `extension Kernel`s give,
+                    // #885: hidden only by a method of `self` of their
+                    // signature, so that two extensions' of one signature
+                    // reach `resolve_overloads`, which refuses them.)
+                    let given = self.extension_functions(name, &found, expr.span);
+                    let own = cands.len();
+                    for f in found {
+                        let fm = self.world.method(f.0);
+                        if !cands.iter().any(|(id, _)| {
+                            *id == f.0 || self.world.same_signature(self.world.method(*id), fm)
+                        }) {
+                            cands.push(f);
+                        }
+                    }
+                    for g in given {
+                        let gm = self.world.method(g.0);
+                        if !cands[..own]
+                            .iter()
+                            .any(|(id, _)| self.world.same_signature(self.world.method(*id), gm))
+                        {
+                            cands.push(g);
                         }
                     }
                 }
@@ -11509,6 +11524,56 @@ impl Checker {
             }
         }
         cands
+    }
+
+    /// The functions of a name the `extension Kernel`s active at the call
+    /// give (their `def self.name`, #885), which a bare call and `::name`
+    /// find after `functions` (what `function_candidates` found there).
+    /// Both at once is an error at the call, naming them: a program's
+    /// function (or a built-in) and an extension's of one name are not
+    /// told apart by a silent choice. Two extensions' functions are
+    /// overloads, refused as any two extensions' methods are when their
+    /// parameters are the same (`resolve_overloads`).
+    fn extension_functions(
+        &mut self,
+        name: &str,
+        functions: &[(MethodId, HashMap<TypeParamId, Type>)],
+        span: Span,
+    ) -> Vec<(MethodId, HashMap<TypeParamId, Type>)> {
+        let kernel = self.world.builtin.kernel;
+        let mut given: Vec<(MethodId, HashMap<TypeParamId, Type>)> = Vec::new();
+        for e in self.world.active_extension_ids() {
+            let ext = &self.world.extensions[e as usize];
+            if ext.target != kernel {
+                continue;
+            }
+            if let Some(ids) = ext.methods.get(name) {
+                for id in ids {
+                    if self.world.kernel_extension_function(*id)
+                        && !given.iter().any(|(g, _)| g == id)
+                    {
+                        given.push((*id, HashMap::default()));
+                    }
+                }
+            }
+        }
+        if let (Some((f, _)), Some((g, _))) = (functions.first(), given.first()) {
+            let f = self.world.method(*f);
+            let what = format!(
+                "the {}function `{}`",
+                if f.is_native { "built-in " } else { "" },
+                self.world.method_signature(f)
+            );
+            let ext = self.world.method(*g).extension.expect("an extension's");
+            let by = self.extension_name(ext);
+            self.error(
+                format!(
+                    "the call of `{name}` is ambiguous: {what} and the function `Kernel.{name}` that {by} gives, active here, have one name; call the extension's as `Kernel.{name}`, or rename one"
+                ),
+                span,
+            );
+        }
+        given
     }
 
     /// For a destructive method missing on an immutable built-in type,

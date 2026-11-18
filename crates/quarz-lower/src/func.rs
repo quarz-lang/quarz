@@ -2841,6 +2841,21 @@ impl<'a> FnBuilder<'a> {
                 None
             }
             Some(r) => Some(self.expr(r)),
+            // A function an `extension Kernel` gives, called bare: on the
+            // `Kernel` module, as `Kernel.name` (#885); nothing of the
+            // caller's `self`.
+            None if matches!(
+                target,
+                Some(CallTarget::Method { method }) if self.world.kernel_extension_function(*method)
+            ) =>
+            {
+                let dst = self.reg();
+                self.emit(Inst::ClassRef {
+                    dst,
+                    class: self.world.builtin.kernel,
+                });
+                Some(dst)
+            }
             // An implicit-self call inside a block with a receiver that
             // goes to an enclosing `self`: read it from its hidden slot.
             None if self.out.outer_self_calls.contains(&e.id) => {

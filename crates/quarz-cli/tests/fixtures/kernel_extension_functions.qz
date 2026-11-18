@@ -1,0 +1,43 @@
+# A function an `extension Kernel` gives (`def self.name`) is called bare
+# where the extension is active, as `Kernel.name` (#885): its `self` is
+# the `Kernel` module, nothing of the caller's `self` is read, and a
+# quoted call names the extension it comes from.
+module Helpers
+  extension Kernel
+    def self.answer -> Int = 42
+    def self.twice(x: Int) -> Int = x * 2
+    def self.who -> String = self.inspect
+  end
+end
+using Helpers
+
+def tree(&q: Quoted[(Int) -> Int]) -> Meta::Expr = q.expr
+def show(e: Meta::Expr) -> Void
+  case e
+  in Meta::Expr::Block(body:) then body.each { |b| show(b) }
+  in Meta::Expr::Call(recv:, method:)
+    puts "#{method.name}: #{method.owner} singleton=#{method.singleton} extension=#{method.extension.inspect} receiver=#{recv.nil? ? "none" : "written"}"
+  else nil
+  end
+end
+
+def f(x: Int) -> Int = twice(x) + answer
+
+class C
+  def answer -> String = "C's own"
+  def go -> String = "#{answer} #{twice(2)}"
+end
+
+class D
+  @n: Int = 1
+  def run(&b: shareable (Int) -> Int) -> Int = b.call(@n)
+  def go -> Int = run { |x| twice(x) + answer }
+end
+
+puts Kernel.answer, answer, ::answer, who
+puts f(1)
+puts C.new.go
+puts D.new.go
+p [1, 2].map { |x| twice(x) }
+show(tree { |x| twice(x) })
+show(tree { |x| Kernel.twice(x) })

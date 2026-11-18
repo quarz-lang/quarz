@@ -4316,6 +4316,48 @@ fn kernel_functions_by_name() {
     ok("extension Kernel\n  def self.shout -> String = \"S\"\nend\nx: String = Kernel.shout");
 }
 
+/// A function an active `extension Kernel` gives (`def self.name`) is
+/// found by a bare call and by `::name`, after `self`'s methods and the
+/// program's functions (#885); a program's function of the name beside
+/// it is an ambiguity at the call, as two extensions' of the same
+/// parameters are; one of a built-in's name is refused where declared.
+#[test]
+fn kernel_extension_functions_are_found_bare() {
+    let h = "module H\n  extension Kernel\n    def self.answer -> Int = 42\n    def self.twice(x: Int) -> Int = x * 2\n  end\nend\n";
+    ok(&format!(
+        "{h}using H\na: Int = answer + ::answer + Kernel.answer\ndef f(x: Int) -> Int = twice(x)\nclass C\n  def go -> Int = [1].map {{ |x| twice(x) }}.size + answer\nend"
+    ));
+    // Not where the extension is not active.
+    err(
+        &format!("{h}a: Int = answer"),
+        "undefined local variable or method `answer` for main",
+    );
+    // A shareable block with parameters calls it without capturing the
+    // `self` of a class that is not Shareable (the case of rotor#90).
+    ok(&format!(
+        "{h}using H\ndef run(&b: shareable (Int) -> Int) -> Int = b.call(1)\nclass C\n  @n: Int = 0\n  def go -> Int = run {{ |x| twice(x) }}\nend"
+    ));
+    // A method of `self`, or of a block's receiver, comes first.
+    ok(&format!(
+        "{h}using H\nclass C\n  def answer -> String = \"c\"\n  def go -> String = answer\nend\nclass D\n  def answer -> String = \"d\"\nend\nx: String = D.new.instance_exec {{ answer }}"
+    ));
+    // A program's function of the name: ambiguous, bare and as `::name`.
+    let mine = format!("{h}def answer -> Int = 1\nusing H\n");
+    let msg = "the call of `answer` is ambiguous: the function `answer() -> Int` and the function `Kernel.answer` that the extension of `Kernel` in `H` gives, active here, have one name; call the extension's as `Kernel.answer`, or rename one";
+    err(&format!("{mine}a: Int = answer"), msg);
+    err(&format!("{mine}a: Int = ::answer"), msg);
+    ok(&format!("{mine}a: Int = Kernel.answer"));
+    // Two extensions: overloads, refused with the same parameters.
+    let two = "module G\n  extension Kernel\n    def self.answer -> Int = 1\n    def self.twice(x: String) -> String = x + x\n  end\nend\n";
+    ok(&format!(
+        "{h}{two}using H\nusing G\na: Int = twice(1)\nb: String = twice(\"s\")"
+    ));
+    err(
+        &format!("{h}{two}using H\nusing G\na: Int = answer"),
+        "the call of `answer` is ambiguous: the extension of `Kernel` in `H` and the extension of `Kernel` in `G`, both active here, each define it with the same parameters; leave out one `using`",
+    );
+}
+
 /// `Kernel`'s functions are no object's methods (docs/01 §1): a class's
 /// method of one's name is its own, `super` does not reach the built-in,
 /// and the prelude, which has no top-level object, calls them too.
