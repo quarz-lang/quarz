@@ -14098,11 +14098,17 @@ impl Checker {
         }
         // The block's arity: the same as the call's first, then the
         // fewest above it (`{ "0" }` takes `(String)` over `(String,
-        // MatchData)`).
-        let rank = |m: &MethodInfo| match (&m.block, block_arity) {
-            (Some((_, Type::Proc(_, ps, _, _, _))), Some(n)) if ps.len() == n => Some(0),
-            (Some((_, Type::Proc(_, ps, _, _, _))), Some(n)) if ps.len() > n => Some(ps.len()),
-            _ => None,
+        // MatchData)`). A block with no parameters so takes a receiver
+        // block (`T.() -> R`) over one given an argument (`(T) -> R`), a
+        // `Quoted` one's procedure type as a plain one's (#901).
+        let rank = |m: &MethodInfo| {
+            let block = m.block.as_ref().map(|(_, t)| t);
+            let proc = block.map(|t| self.world.quoted_procedure(t).unwrap_or(t));
+            match (proc, block_arity) {
+                (Some(Type::Proc(_, ps, _, _, _)), Some(n)) if ps.len() == n => Some(0),
+                (Some(Type::Proc(_, ps, _, _, _)), Some(n)) if ps.len() > n => Some(ps.len()),
+                _ => None,
+            }
         };
         match (rank(a), rank(b)) {
             (Some(x), Some(y)) if x != y => return x < y,
@@ -14907,9 +14913,9 @@ impl Checker {
                 );
                 self.table_journal
                     .push(TableUndo::Quoted(expr.id, before.0, before.1, before.2));
-                let (resolved, quoted) = match &resolved {
-                    Type::Class(c, args) if *c == self.world.builtin.quoted && args.len() == 1 => {
-                        let p = self.infer.resolve(&args[0]);
+                let (resolved, quoted) = match self.world.quoted_procedure(&resolved) {
+                    Some(p) => {
+                        let p = self.infer.resolve(p);
                         let receiver = matches!(&p, Type::Proc(Some(_), ..));
                         self.out.quoted_blocks.insert(expr.id, receiver);
                         (p, true)
