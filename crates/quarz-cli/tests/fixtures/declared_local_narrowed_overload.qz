@@ -1,0 +1,19 @@
+# A declared local's initializer narrows it, and a call's overload is
+# chosen for the narrowed type (docs/01 §10, #875): a subclass's
+# overload that does not override runs on the local, not through a
+# value typed as the superclass.
+class A
+  def narrow(x: Object) -> String = "A#narrow"
+end
+class B < A
+  def narrow(x: Int) -> String = "B#narrow"
+end
+def call(a: A) -> String = a.narrow(3)
+puts call(B.new)
+a: A = B.new
+puts a.narrow(3)
+puts a.narrow("s")
+# Assigned again, the local is an `A` as declared: a value typed `A`.
+def any(b: Bool) -> A = b ? B.new : A.new
+a = any(true)
+puts a.narrow(3)
