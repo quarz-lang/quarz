@@ -188,19 +188,82 @@ module Meta
   # reflection it does may not read a class whose statements are pending.)
   static native def self.__static_enter -> Void
   static native def self.__static_leave -> Void
-  # A field of a class: its name, declared type (type arguments erased),
-  # whether it is `var`, and whether it has a default.
-  data Field = (name: Symbol, type: Type[Object], mutable: Bool, default: Bool)
+  # A field of a class: its name, declared type's class (type arguments
+  # erased), whether it is `var`, whether it has a default, and its
+  # declared type in full (`type_ref`).
+  data Field = (name: Symbol, type: Type[Object], mutable: Bool, default: Bool, type_ref: TypeRef)
   # How a parameter is passed.
   enum ParamKind = Required | Optional | Rest | Keyword | Block
-  # A parameter of a method signature.
-  data Param = (name: Symbol, type: Type[Object], kind: ParamKind)
-  # A method's signature: no body is visible.
-  data MethodSig = (name: Symbol, params: Array[Param], result: Type[Object], static: Bool)
+  # A parameter of a method signature: its type's class, and its type in
+  # full (`type_ref`).
+  data Param = (name: Symbol, type: Type[Object], kind: ParamKind, type_ref: TypeRef)
+  # A method's signature: no body is visible. `result_ref` is the result
+  # type in full.
+  data MethodSig = (name: Symbol, params: Array[Param], result: Type[Object], static: Bool, result_ref: TypeRef)
   # A keyword parameter of a method `def_method` generates with
   # `keywords:` (docs/14 §5): its name, its type (`T?` with `nullable:`),
-  # and whether a call must pass it.
-  data Keyword = (name: Symbol, type: Type[Object], required: Bool, nullable: Bool = false)
+  # and whether a call must pass it. With `type_ref`, the keyword's type
+  # is that type in full (type arguments, unions, `nil`), and `type` must
+  # be its class (`TypeRef#erased`): `Keyword.typed` makes one so.
+  data Keyword(name: Symbol, type: Type[Object], required: Bool, nullable: Bool = false, type_ref: TypeRef? = nil)
+    # A keyword of type `ref`.
+    def self.typed(name: Symbol, ref: TypeRef, required: Bool) -> Keyword
+      Keyword.new(name, ref.erased, required, false, ref)
+    end
+  end
+
+  # A type as the checker declares it, as a value (docs/14 §4): a class
+  # with its type arguments, a union (`T?` is one with `Nil`), a type
+  # parameter of a class, or, by its text, a type a keyword cannot be
+  # given yet (a tuple, a procedure type, `Type[X]`). What `#type_ref`
+  # gives, and what a generated keyword's type may be.
+  enum TypeRef
+    variant Of(type: Type[Object], args: Array[TypeRef])
+    variant Union(members: Array[TypeRef])
+    variant Param(owner: Type[Object], name: Symbol)
+    variant Other(text: String)
+
+    # The class `c` with the type arguments `args`: `TypeRef.of(Int)`,
+    # `TypeRef.of(Array, [TypeRef.of(Int)])`.
+    def self.of(c: Type[Object], args: Array[TypeRef] = []) -> TypeRef = Of.new(c, args)
+
+    # The union of `members`, flattened, each once, in order; one member
+    # is itself.
+    def self.union(members: Array[TypeRef]) -> TypeRef
+      flat = members.flat_map do |m| -> Array[TypeRef]
+        case m
+        in Union(members:) then members
+        else [m]
+        end
+      end.uniq
+      flat.size == 1 ? flat[0] : Union.new(flat)
+    end
+
+    # This type or `nil`: `TypeRef.of(String).nullable` is `String?`.
+    def nullable -> TypeRef = TypeRef.union([self, TypeRef.of(Nil)])
+
+    # The class a `Type` value says for this type (as `Meta::Field#type`
+    # does): the class of `Of`, else `Object`.
+    def erased -> Type[Object]
+      case self
+      in Of(type:) then type
+      else Object
+      end
+    end
+
+    # As the compiler writes the type: `Array[Int]`, `String?`,
+    # `Int | String`.
+    def to_s -> String
+      case self
+      in Of(type:, args:) then args.empty? ? type.name : "#{type.name}[#{args.map(&:to_s).join(", ")}]"
+      in Union(members:)
+        others = members.reject { |m| m == TypeRef.of(Nil) }
+        others.size == 1 && others.size < members.size ? "#{others[0]}?" : members.map(&:to_s).join(" | ")
+      in Param(name:) then name.to_s
+      in Other(text:) then text
+      end
+    end
+  end
 
   # The class being declared, as a `static` statement and the `static`
   # class method it calls see it through `self`: a `Type[T]` (the class

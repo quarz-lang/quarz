@@ -27,6 +27,7 @@ use quarz_vm::interp::{Interp, SharedState, StaticEnd};
 use quarz_vm::natives::{compile_time_allowed, compile_time_denied_class, compile_time_only};
 use quarz_vm::reflect::{
     FieldRequest, GenRequest, Reflect, ReflectField, ReflectKind, ReflectMethod, ReflectParam,
+    ReflectType,
 };
 use quarz_vm::value::Value;
 
@@ -716,22 +717,49 @@ impl Runner {
                 // `Generated::keywords`).
                 Some(ks) => {
                     let mut params = Vec::new();
-                    for (name, ty, required, nullable) in ks {
-                        if !world.class(*ty).type_params.is_empty() {
-                            return Err(fail(format!(
-                                "{at}: the keyword `{name}` is typed `{}`, which takes type arguments a `Type` value does not carry: a keyword's type is a class without them",
-                                world.class(*ty).name
-                            )));
-                        }
-                        let t = Type::Class(*ty, Vec::new());
+                    for (name, ty, required, nullable, ty_ref) in ks {
+                        let t = match ty_ref {
+                            // (`type_ref`: the type in full, `type` its
+                            // class, #401's D3 (a).)
+                            Some(r) => {
+                                let t = type_of_ref(world, r, g.class).map_err(|why| {
+                                    fail(format!("{at}: the keyword `{name}`'s `type_ref`: {why}"))
+                                })?;
+                                if *nullable {
+                                    return Err(fail(format!(
+                                        "{at}: the keyword `{name}` has a `type_ref` and `nullable: true`: say `nil` in the type (`TypeRef#nullable`)"
+                                    )));
+                                }
+                                let erased = erase(world, &t);
+                                if erased != *ty {
+                                    return Err(fail(format!(
+                                        "{at}: the keyword `{name}` is typed `{}` with a `type_ref` of `{}`, whose class is `{}`: make it with `Meta::Keyword.typed`",
+                                        world.class(*ty).name,
+                                        world.type_name(&t),
+                                        world.class(erased).name
+                                    )));
+                                }
+                                t
+                            }
+                            None => {
+                                if !world.class(*ty).type_params.is_empty() {
+                                    return Err(fail(format!(
+                                        "{at}: the keyword `{name}` is typed `{}`, which takes type arguments a `Type` value does not carry: give it a `type_ref` (`Meta::Keyword.typed`)",
+                                        world.class(*ty).name
+                                    )));
+                                }
+                                let t = Type::Class(*ty, Vec::new());
+                                if *nullable {
+                                    Type::union_of(vec![t, world.nil()])
+                                } else {
+                                    t
+                                }
+                            }
+                        };
                         params.push(ParamInfo {
                             name: name.clone(),
                             kind: ParamKind::KeywordOnly,
-                            ty: if *nullable {
-                                Type::union_of(vec![t, world.nil()])
-                            } else {
-                                t
-                            },
+                            ty: t,
                             default: (!required).then(|| {
                                 std::rc::Rc::new(quarz_syntax::ast::Expr {
                                     id: 0,
@@ -2625,8 +2653,9 @@ struct PendingGen {
     func: FuncId,
     captures: Vec<(u32, u32, Baked)>,
     doc: Option<String>,
-    /// `keywords:`: (name, class, required, nullable).
-    keywords: Option<Vec<(String, ClassId, bool, bool)>>,
+    /// `keywords:`: (name, class, required, nullable, the type in full
+    /// when given one).
+    keywords: Option<Vec<(String, ClassId, bool, bool, Option<ReflectType>)>>,
     /// `def_initialize` (docs/14 §5).
     initialize: bool,
     /// The classes the calling method's carried type parameters stand
@@ -3263,6 +3292,7 @@ fn reflect_rows(world: &World, id: ClassId) -> (Vec<ReflectField>, Vec<ReflectMe
         .all_fields(class.id)
         .into_iter()
         .map(|(f, _)| ReflectField {
+            ty_ref: type_ref_of(world, &f.ty),
             name: f.name.clone(),
             ty: erase(world, &f.ty),
             mutable: f.mutable,
@@ -3303,6 +3333,7 @@ fn reflect_rows(world: &World, id: ClassId) -> (Vec<ReflectField>, Vec<ReflectMe
                     params: m.params.iter().map(|p| reflect_param(world, p)).collect(),
                     ret: erase(world, &m.ret),
                     is_static: m.is_static,
+                    ret_ref: type_ref_of(world, &m.ret),
                 },
             ));
         }
@@ -3392,7 +3423,89 @@ fn reflect_param(world: &World, p: &ParamInfo) -> ReflectParam {
         name: p.name.clone(),
         ty: erase(world, &p.ty),
         kind,
+        ty_ref: type_ref_of(world, &p.ty),
     }
+}
+
+/// `t` as `Meta::TypeRef` shows it (docs/14 §4), from the checker's own
+/// type: a class with its arguments, a union (flattened by the checker),
+/// a class's type parameter, else the type's text (a tuple, a procedure
+/// type, `Type[X]`, a method's type parameter). `type_of_ref` is its
+/// converse where generation takes the type.
+fn type_ref_of(world: &World, t: &Type) -> ReflectType {
+    let t = world.devoid(t);
+    match &t {
+        Type::Class(c, args) => {
+            ReflectType::Of(*c, args.iter().map(|a| type_ref_of(world, a)).collect())
+        }
+        Type::Union(ms) => ReflectType::Union(ms.iter().map(|m| type_ref_of(world, m)).collect()),
+        Type::Param(p) => world
+            .classes
+            .iter()
+            .find_map(|c| {
+                c.type_params
+                    .iter()
+                    .find(|tp| tp.id == *p)
+                    .map(|tp| ReflectType::Param(c.id, tp.name.clone()))
+            })
+            .unwrap_or_else(|| ReflectType::Other(world.type_name(&t))),
+        _ => ReflectType::Other(world.type_name(&t)),
+    }
+}
+
+/// The type a `Meta::TypeRef` says, for a keyword generated into `class`
+/// (`type_ref_of`'s converse), or why generation does not take it: a
+/// class given the wrong number of type arguments, an empty union, a type
+/// parameter of another class than the one generated into (#401, decided
+/// 2026-11-19: D2 (a)), or a type by its text. A type argument's bounds
+/// are checked as any declared signature's (`Checker::
+/// check_signature_bounds`, at the statement).
+fn type_of_ref(world: &World, r: &ReflectType, class: ClassId) -> Result<Type, String> {
+    Ok(match r {
+        ReflectType::Of(c, args) => {
+            let k = world.class(*c);
+            if k.type_params.len() != args.len() {
+                return Err(format!(
+                    "`{}` takes {} type argument{}, not {}",
+                    k.name,
+                    k.type_params.len(),
+                    if k.type_params.len() == 1 { "" } else { "s" },
+                    args.len()
+                ));
+            }
+            let args: Result<Vec<Type>, String> =
+                args.iter().map(|a| type_of_ref(world, a, class)).collect();
+            Type::Class(*c, args?)
+        }
+        ReflectType::Union(ms) => {
+            if ms.is_empty() {
+                return Err("an empty union is no type".to_string());
+            }
+            let ms: Result<Vec<Type>, String> =
+                ms.iter().map(|m| type_of_ref(world, m, class)).collect();
+            Type::union_of(ms?)
+        }
+        ReflectType::Param(owner, name) => {
+            let found = (*owner == class)
+                .then(|| world.class(class).type_params.iter().find(|tp| tp.name == *name))
+                .flatten();
+            match found {
+                Some(tp) => Type::Param(tp.id),
+                None => {
+                    return Err(format!(
+                        "the type parameter `{name}` of `{}` is not one of `{}`, the class generated into",
+                        world.class(*owner).name,
+                        world.class(class).name
+                    ))
+                }
+            }
+        }
+        ReflectType::Other(text) => {
+            return Err(format!(
+                "`{text}` cannot be a generated keyword's type yet: a class with its type arguments, a union or a type parameter of the class generated into can"
+            ))
+        }
+    })
 }
 
 /// Whether `t` names the class `cid` anywhere (as it is, in an argument,
@@ -3448,6 +3561,7 @@ impl Reflect for WorldReflect {
                         ty: f.ty,
                         mutable: f.mutable,
                         default: f.default,
+                        ty_ref: f.ty_ref.clone(),
                     })
                     .collect()
             })
@@ -3468,10 +3582,12 @@ impl Reflect for WorldReflect {
                                 name: p.name.clone(),
                                 ty: p.ty,
                                 kind: p.kind,
+                                ty_ref: p.ty_ref.clone(),
                             })
                             .collect(),
                         ret: m.ret,
                         is_static: m.is_static,
+                        ret_ref: m.ret_ref.clone(),
                     })
                     .collect()
             })
@@ -3495,7 +3611,7 @@ impl Reflect for WorldReflect {
             doc: self.doc.borrow_mut().take(),
             keywords: request.keywords.map(|ks| {
                 ks.into_iter()
-                    .map(|k| (k.name, k.ty, k.required, k.nullable))
+                    .map(|k| (k.name, k.ty, k.required, k.nullable, k.ty_ref))
                     .collect()
             }),
             initialize: request.initialize,

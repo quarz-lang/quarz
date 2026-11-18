@@ -9,14 +9,27 @@ use quarz_ir::{ClassId, FuncId, MethodId};
 use crate::interp::Interp;
 use crate::value::Value;
 
+/// A declared type as `Meta::TypeRef` shows it (docs/14 §4): a class with
+/// its type arguments, a union, a class's type parameter (its class and
+/// name), or another type by its text.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReflectType {
+    Of(ClassId, Vec<ReflectType>),
+    Union(Vec<ReflectType>),
+    Param(ClassId, String),
+    Other(String),
+}
+
 /// A field as `Meta::Field` shows it: the declared type's class (type
-/// arguments erased, `Object` for a type parameter or a union).
+/// arguments erased, `Object` for a type parameter or a union), and the
+/// declared type in full.
 #[derive(Debug, PartialEq)]
 pub struct ReflectField {
     pub name: String,
     pub ty: ClassId,
     pub mutable: bool,
     pub default: bool,
+    pub ty_ref: ReflectType,
 }
 
 /// How a parameter is passed, as `Meta::ParamKind`'s variants are
@@ -35,6 +48,7 @@ pub struct ReflectParam {
     pub name: String,
     pub ty: ClassId,
     pub kind: ReflectKind,
+    pub ty_ref: ReflectType,
 }
 
 /// A method's signature as `Meta::MethodSig` shows it.
@@ -44,6 +58,7 @@ pub struct ReflectMethod {
     pub params: Vec<ReflectParam>,
     pub ret: ClassId,
     pub is_static: bool,
+    pub ret_ref: ReflectType,
 }
 
 pub trait Reflect {
@@ -132,10 +147,12 @@ pub struct GenRequest {
     pub override_: bool,
 }
 
-/// A `Meta::Keyword`: name, type (a class), required, nullable.
+/// A `Meta::Keyword`: name, type (a class), required, nullable, and the
+/// type in full when it was given one (`type_ref`).
 pub struct KeywordRequest {
     pub name: String,
     pub ty: ClassId,
     pub required: bool,
     pub nullable: bool,
+    pub ty_ref: Option<ReflectType>,
 }
