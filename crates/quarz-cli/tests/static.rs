@@ -409,15 +409,17 @@ fn a_generated_initialize_changes_what_an_inherited_new_builds() {
 
 /// A compile-time run whose `new` builds a subclass the check refuses (no
 /// `initialize` of it takes what `new` passes) stops there: its statement
-/// did not run, reported after the check's own error, however the run
-/// rescues (#870). A pair refused before a later statement generates the
-/// `initialize` that fits stops only a run that builds that subclass: `X`'s
-/// run builds an `X`. Derived from the rule (docs/01 §3): `X` is built with
-/// `Two`'s `initialize` (6), `TwoSub` with its generated one (`gen`, 60).
+/// did not run, however the run rescues, and the check reports its own
+/// error for the pair where it still holds after the statements (#870).
+/// A pair refused before a later statement generates the `initialize`
+/// that fits stops only a run that builds that subclass: `X`'s run builds
+/// an `X`; one that builds `TwoSub` before then did not run, the only
+/// error. Derived from the rule (docs/01 §3): `X` is built with `Two`'s
+/// `initialize` (6), `TwoSub` with its generated one (`gen`, 60).
 #[test]
 fn a_run_that_builds_a_refused_subclass_did_not_run() {
     let d = dir();
-    let lib = "class Two\n  @n: Int\n  def initialize(@n: Int); end\n  def self.mk(n: Int) -> Self = new(n)\n  def n -> Int = @n\n  static def self.probe -> Void\n    v = mk(6).n\n    def_class_method(:v) { v }\n  end\n  static def self.rescued -> Void\n    v = begin\n      mk(6).n\n    rescue => e\n      puts \"rescued\"\n      0\n    end\n    def_class_method(:v) { v }\n  end\n  static def self.gen_init -> Void\n    def_initialize(:n) do |n: Int|\n      puts \"gen\"\n      @n = n * 10\n    end\n  end\nend\n";
+    let lib = "class Two\n  @n: Int\n  def initialize(@n: Int); end\n  def self.mk(n: Int) -> Self = new(n)\n  def n -> Int = @n\n  static def self.probe -> Void\n    v = mk(6).n\n    def_class_method(:v) { v }\n  end\n  static def self.rescued -> Void\n    v = begin\n      mk(6).n\n    rescue => e\n      puts \"rescued\"\n      0\n    end\n    def_class_method(:v) { v }\n  end\n  static def self.build(k: Type[Two]) -> Void\n    k.mk(6)\n    def_class_method(:b) { 1 }\n  end\n  static def self.gen_init -> Void\n    def_initialize(:n) do |n: Int|\n      puts \"gen\"\n      @n = n * 10\n    end\n  end\nend\n";
     write(&d.0, "lib.qz", lib);
     let refused = "`TwoSub#initialize` does not take the arguments of `new` in `Two.mk`, which `TwoSub` inherits";
     for (stmt, printed) in [("probe", ""), ("rescued", "rescued\n")] {
@@ -434,7 +436,7 @@ fn a_run_that_builds_a_refused_subclass_did_not_run() {
             "{stmt}: {err}"
         );
         assert!(
-            err.contains(&format!("app.qz:6:3: error: `{stmt}` did not run: it builds `TwoSub` with `new` in `Two.mk`, which no `initialize` of `TwoSub` takes (reported above)")),
+            err.contains(&format!("app.qz:6:3: error: `{stmt}` did not run: it builds `TwoSub` with `new` in `Two.mk`, which no `initialize` of `TwoSub` takes")),
             "{stmt}: {err}"
         );
         assert!(!err.contains("internal error"), "{stmt}: {err}");
@@ -458,6 +460,24 @@ fn a_run_that_builds_a_refused_subclass_did_not_run() {
     assert_eq!((out.as_str(), err.as_str()), ("", "gen\n"));
     let run = Command::new(&exe).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&run.stdout), "6\n60\ngen\n60\n");
+    // A run that builds `TwoSub` before `TwoSub`'s statement generates the
+    // `initialize` that fits did not run (it builds a class no overload
+    // of which takes what `new` passes then), and that is the only error:
+    // the check after the statements finds the generated one.
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass X < Two\n  build TwoSub\nend\nclass TwoSub < Two\n  def initialize(n: String)\n    @n = n.size\n  end\n  gen_init\n  probe\nend\np TwoSub.v\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert_eq!(out, "");
+    let errors: Vec<&str> = err.lines().filter(|l| l.contains(": error: ")).collect();
+    assert_eq!(
+        errors,
+        ["app.qz:3:3: error: `build` did not run: it builds `TwoSub` with `new` in `Two.mk`, which no `initialize` of `TwoSub` takes"],
+        "{err}"
+    );
 }
 
 /// A symbol is a method's name only where a call says so: a symbol value

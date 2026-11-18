@@ -2228,7 +2228,7 @@ impl Checker {
                     self.refuse_inherited_init(
                         sid,
                         init,
-                        format!("{new_in} in `{cname}{sep}{mname}` reaches `{sname}`, whose values the runtime makes (reported above)"),
+                        format!("{new_in} in `{cname}{sep}{mname}` reaches `{sname}`, whose values the runtime makes"),
                     );
                     if reported.insert((sid, method)) {
                         // At the declaration that makes `sid` reach the
@@ -2280,7 +2280,7 @@ impl Checker {
                         self.refuse_inherited_init(
                             sid,
                             init,
-                            format!("it builds `{sname}` with {new_in} in `{cname}{sep}{mname}`, which no `initialize` of `{sname}` takes (reported above)"),
+                            format!("it builds `{sname}` with {new_in} in `{cname}{sep}{mname}`, which no `initialize` of `{sname}` takes"),
                         );
                         if reported.insert((sid, method)) {
                             let near = self.world.method(chain[0]).clone();
@@ -2306,7 +2306,7 @@ impl Checker {
                 // (Made only for a pair refused.)
                 let refusal = |this: &Self| {
                     let (sname, cname) = (&this.world.class(sid).name, &this.world.class(cid).name);
-                    format!("it builds `{sname}` with {new_in} in `{cname}{sep}{mname}`, which no `initialize` of `{sname}` takes (reported above)")
+                    format!("it builds `{sname}` with {new_in} in `{cname}{sep}{mname}`, which no `initialize` of `{sname}` takes")
                 };
                 if reported.contains(&(sid, method)) {
                     // (Reported for another `new` of the method.)
@@ -2413,14 +2413,13 @@ impl Checker {
     }
 
     /// Record that the check refused `sub` built where `new` passes what
-    /// `init` takes, with why (`refused_ctors`, #870), once.
+    /// `init` takes, with why (`refused_ctors`, #870): the last check's
+    /// reason, in place.
     fn refuse_inherited_init(&mut self, sub: ClassId, init: Option<MethodId>, why: String) {
-        if !self
-            .refused_ctors
-            .iter()
-            .any(|(c, i, _)| (*c, *i) == (sub, init))
-        {
-            self.refused_ctors.push((sub, init, why));
+        let list = &mut self.refused_ctors;
+        match list.iter_mut().find(|(c, i, _)| (*c, *i) == (sub, init)) {
+            Some(entry) => entry.2 = why,
+            None => list.push((sub, init, why)),
         }
     }
 
