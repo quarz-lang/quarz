@@ -941,6 +941,54 @@ fn a_symbol_argument_is_an_enums_variant() {
     ok("enum Proto\n  variant HTTP2\n  variant Plain\nend\ndef f(p: Proto) -> Proto = p\nf(:h_t_t_p2)");
 }
 
+/// #915: a symbol literal searched for in a collection of an enum by the
+/// built-in searches that take an `Object` and compare by `==` is never
+/// found: the warning `==` gets, naming the variant. A `Hash`'s
+/// `value?`, `has_value?` and `key` search its values, a `Hash` builder
+/// its keys. Not `-` and `difference` (a collection argument), not a
+/// method a program defines, nor a collection of `Symbol`, nor a name
+/// no variant has. (A `Range` of an enum needs a `Comparable` enum; its
+/// `include?` is covered by the same table.)
+#[test]
+fn a_symbol_searched_for_in_an_enum_collection_warns() {
+    let pre = "enum Format = Json | Text\nfs: Array[Format] = [Format::Json]\nst: Set[Format] = Set.new(fs)\nh: Hash[Symbol, Format] = {a: Format::Json}\nclass Coll\n  include Enumerable[Format]\n  def each(&: (Format) -> Void) -> Void\n    yield Format::Json\n  end\nend\n";
+    for (call, method) in [
+        ("fs.include?(:json)", "include?"),
+        ("fs.index(:json)", "index"),
+        ("fs.rindex(:json)", "rindex"),
+        ("fs.count(:json)", "count"),
+        ("fs.delete(:json)", "delete"),
+        ("fs.member?(:json)", "member?"),
+        ("fs.find_index(:json)", "find_index"),
+        ("st.include?(:json)", "include?"),
+        ("st.member?(:json)", "member?"),
+        ("st.delete(:json)", "delete"),
+        ("h.value?(:json)", "value?"),
+        ("h.has_value?(:json)", "has_value?"),
+        ("h.key(:json)", "key"),
+        ("Coll.new.include?(:json)", "include?"),
+        (
+            "Array.build { |b: Array::Builder[Format]| p b.include?(:json) }",
+            "include?",
+        ),
+    ] {
+        warns(
+            &format!("{pre}p {call}"),
+            &format!("`{method}` compares the symbol `:json` with enum values, which never equal it: write `Format::Json`"),
+        );
+    }
+    for call in [
+        "p fs.include?(Format::Json)",
+        "p fs.include?(:jsno)",
+        "p fs - [:json]",
+        "p fs.difference([:json])",
+        "syms = [:json]\np syms.include?(:json)",
+        "class Bag\n  def include?(value: Object) -> Bool = true\nend\np Bag.new.include?(:json)",
+    ] {
+        no_warnings(&format!("{pre}{call}"));
+    }
+}
+
 #[test]
 fn methods_and_calls() {
     err(

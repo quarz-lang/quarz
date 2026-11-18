@@ -7198,6 +7198,33 @@ impl Checker {
                         }
                     }
                 }
+                // A symbol searched for in a collection of an enum: never
+                // found, by the `==` the search compares with (#915).
+                if let (Some(recv), [Arg::Positional(a)]) = (&call.recv, call.args.as_slice()) {
+                    let method = match self.out.calls.get(&expr.id) {
+                        Some(CallTarget::Method { method }) => Some(*method),
+                        _ => None,
+                    };
+                    let recv_ty = self
+                        .out
+                        .node_types
+                        .get(&recv.id)
+                        .map(|t| self.infer.resolve(t));
+                    let element = method
+                        .zip(recv_ty)
+                        .and_then(|(m, t)| self.search_element(m, &t));
+                    if let Some(t) = element {
+                        if let Some((name, v)) = self.symbol_never_equal(&t, a) {
+                            self.warning(
+                                format!(
+                                    "`{}` compares the symbol `:{name}` with enum values, which never equal it: write `{v}`",
+                                    call.name
+                                ),
+                                expr.span,
+                            );
+                        }
+                    }
+                }
                 // `x.is_a?(k)` with a class value (`Object#is_a?`): against
                 // a type parameter's class value, checked as a test against
                 // each module the parameter may be (#598).
@@ -17251,17 +17278,11 @@ impl Checker {
                 .map(|t| self.infer.resolve(t))
         };
         for (value, sym) in [(a, b), (b, a)] {
-            let ExprKind::Symbol(name) = &sym.kind else {
-                continue;
-            };
             let Some(t) = ty(value) else { continue };
-            if let Some((_, found)) = self.symbol_variants_for(name, &t) {
-                if let [(v, _)] = found.as_slice() {
-                    return Some(format!(
-                        "an enum value compared with the symbol `:{name}` is never equal: write `{}`",
-                        self.world.class(*v).name
-                    ));
-                }
+            if let Some((name, v)) = self.symbol_never_equal(&t, sym) {
+                return Some(format!(
+                    "an enum value compared with the symbol `:{name}` is never equal: write `{v}`"
+                ));
             }
         }
         let class_of = |e: &Expr| match ty(e)? {
@@ -17274,6 +17295,62 @@ impl Checker {
                 "a `Date` compared with a `Time` is never equal: compare `d == t.to_date` or `d.at(...) == t`"
                     .to_string(),
             ),
+            _ => None,
+        }
+    }
+
+    /// The symbol literal `sym` and the variant it names, when `sym` is
+    /// compared with a value of type `t`, an enum with that variant: never
+    /// equal, as nothing converts the literal there (`never_equal`, and a
+    /// search of a collection of the enum, #915).
+    fn symbol_never_equal(&self, t: &Type, sym: &Expr) -> Option<(String, String)> {
+        let ExprKind::Symbol(name) = &sym.kind else {
+            return None;
+        };
+        let (_, found) = self.symbol_variants_for(name, t)?;
+        match found.as_slice() {
+            [(v, _)] => Some((name.clone(), self.world.class(*v).name.clone())),
+            _ => None,
+        }
+    }
+
+    /// The element type a built-in search `m` (decided on #915) compares
+    /// its `Object` argument with by `==`, for a receiver of type `recv`;
+    /// `None` for any other method (a program's or an extension's, or a
+    /// built-in that does not search so). The searches: `Array#include?`,
+    /// `#index`, `#rindex`, `#delete`; `Set#include?`, `#member?`,
+    /// `#delete`; `Enumerable#include?`, `#member?`, `#find_index`,
+    /// `#count(value)` (the receiver's `Enumerable[T]`); `Range#include?`;
+    /// the `Array`, `Set` and `Hash` builders' `include?` (a `Hash`
+    /// builder's keys); `Hash#value?`, `#has_value?`, `#key` (its values).
+    /// Not `-` and `difference`, whose argument is a collection.
+    fn search_element(&self, m: MethodId, recv: &Type) -> Option<Type> {
+        let info = self.world.method(m);
+        if info.file != 0 || info.extension.is_some() {
+            return None;
+        }
+        let owner = self.world.class(info.owner).name.as_str();
+        let Type::Class(c, args) = recv else {
+            return None;
+        };
+        let nth = |i: usize| args.get(i).cloned();
+        match (owner, info.name.as_str()) {
+            ("Array", "include?" | "index" | "rindex" | "delete")
+            | ("Set", "include?" | "member?" | "delete")
+            | ("Range", "include?")
+            | ("Array::Builder" | "Set::Builder" | "Hash::Builder", "include?") => nth(0),
+            ("Hash", "value?" | "has_value?" | "key") => nth(1),
+            ("Enumerable", "include?" | "member?" | "find_index") | ("Enumerable", "count")
+                if info.params.len() == 1 =>
+            {
+                // (The receiver's own `Enumerable[T]`.)
+                let enumerable = info.owner;
+                self.world
+                    .ancestors(*c, args)
+                    .into_iter()
+                    .find(|(k, _)| *k == enumerable)
+                    .and_then(|(_, a)| a.first().cloned())
+            }
             _ => None,
         }
     }
