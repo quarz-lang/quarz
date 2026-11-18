@@ -63,6 +63,14 @@ pub struct StaticRound {
     pub unchecked_consts: Vec<ConstId>,
 }
 
+/// Where a block function was written (`Lowerer::block_calls`): the call
+/// it was given to, the block's span, and the method whose body holds it.
+pub type BlockCall = (
+    quarz_syntax::ast::NodeId,
+    quarz_syntax::Span,
+    Option<MethodId>,
+);
+
 #[derive(Default)]
 pub struct Lowerer {
     /// The tables the declarations decide, kept across the rounds and
@@ -142,9 +150,10 @@ pub struct Lowerer {
     /// of `static` statements hands each round's back): what a lifted
     /// block's function is copied from.
     pub done: Vec<Function>,
-    /// The call each block function was written at, and the block's
-    /// span, for the generation of methods from blocks (docs/14 §5).
-    pub block_calls: HashMap<FuncId, (quarz_syntax::ast::NodeId, quarz_syntax::Span)>,
+    /// The call each block function was written at, the block's span, and
+    /// the method whose body holds it (`None`: a file's top level), for
+    /// the generation of methods from blocks (docs/14 §5).
+    pub block_calls: HashMap<FuncId, BlockCall>,
     /// Of those, the blocks given to `def_method`, `def_class_method` or
     /// `def_initialize`: generated methods' bodies, which a static
     /// statement does not run (`lifted_block`).

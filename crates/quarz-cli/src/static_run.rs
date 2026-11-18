@@ -563,7 +563,7 @@ impl Runner {
                     "{at}: the block must be written at the call: it becomes the method's body"
                 ))
             };
-            let (call_id, block_span) = *self
+            let (call_id, block_span, block_method) = *self
                 .lowerer
                 .block_calls
                 .get(&g.func)
@@ -821,7 +821,13 @@ impl Runner {
                     keywords: keyword_hash,
                     initialize: g.initialize,
                     decode,
-                    written_at: written_at(world, &self.lowerer.done, g.func, block_span),
+                    written_at: written_at(
+                        world,
+                        &self.lowerer.done,
+                        g.func,
+                        block_span,
+                        block_method,
+                    ),
                 }),
                 builds_self: false,
                 needs_includer: None,
@@ -2637,24 +2643,19 @@ fn layout_refusal(
 type KeywordSpec = (String, ClassId, bool, bool, Option<ReflectType>);
 
 /// Where a generated method's block is written (`Generated::written_at`):
-/// its lowered function's file, the block's position, and the class or
-/// module whose method's body holds it (the innermost), else `None`.
+/// the class or module of the method whose body holds it, as the lowering
+/// recorded when it lifted the block (`Lowerer::block_calls`; `None` at
+/// a file's top level), its lowered function's file, and the block's
+/// position.
 fn written_at(
     world: &World,
     done: &[quarz_ir::Function],
     func: FuncId,
     block: Span,
+    method: Option<MethodId>,
 ) -> Option<(Option<ClassId>, u32, u32)> {
     let file = done.get(func as usize)?.file;
-    let lexical = world
-        .methods
-        .iter()
-        .filter(|m| m.file == file)
-        .filter_map(|m| m.body.as_ref().map(|d| (m.owner, d.span)))
-        .filter(|(_, s)| s.start <= block.start && block.end <= s.end)
-        .min_by_key(|(_, s)| s.end - s.start)
-        .map(|(owner, _)| owner);
-    Some((lexical, file, block.start))
+    Some((method.map(|m| world.method(m).owner), file, block.start))
 }
 
 /// A `def_field` call's request, its default baked.
