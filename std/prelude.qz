@@ -474,6 +474,10 @@ module Meta
     # members' methods that override a common one, that one; otherwise
     # the first of `methods`).
     variant Call(recv: Expr?, method: MethodRef, methods: Array[MethodRef], args: Array[Expr], block: Expr?, line: Int)
+    # `recv&.method(args)`: nil when `recv` is nil, else the call on its
+    # value, `method` and `methods` as for a [Call] (resolved on the
+    # receiver's type without [Nil]).
+    variant SafeCall(recv: Expr, method: MethodRef, methods: Array[MethodRef], args: Array[Expr], block: Expr?, line: Int)
     # The built-in `&&`, `||` and `!`; on a union where some members
     # define `!`, those members' `!` (`methods`, in dispatch order; empty:
     # the built-in alone).

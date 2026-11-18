@@ -480,7 +480,10 @@ impl<'a> FnBuilder<'a> {
         let args = self.array_of(args);
         let block = block.unwrap_or_else(|| self.nil());
         let l = self.int(line);
-        self.node("Call", vec![recv, method, methods, args, block, l])
+        // `recv&.m(...)`: a node of its own, so that a reader sees what
+        // was written (#886).
+        let kind = if call.safe_nav { "SafeCall" } else { "Call" };
+        self.node(kind, vec![recv, method, methods, args, block, l])
     }
 
     /// The `self` of the `depth`-th quoted level with a receiver

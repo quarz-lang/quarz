@@ -15702,7 +15702,7 @@ impl Checker {
     fn check_quotable(&mut self, e: &Expr) {
         let refuse = |what: &str| -> String {
             format!(
-                "{what} cannot be quoted: a block given as a `Quoted` holds literals, variables, `self`, calls, `&&`, `||`, `!`, `if` and blocks (docs/14 §6)"
+                "{what} cannot be quoted: a block given as a `Quoted` holds literals, variables, `self`, calls (`&.` too), `&&`, `||`, `!`, `if` and blocks (docs/14 §6)"
             )
         };
         let what: &str = match &e.kind {
@@ -15776,12 +15776,11 @@ impl Checker {
                     target,
                     CallTarget::Method { .. } | CallTarget::Constructor { .. }
                 );
+                // (`&.` too: `Meta::Expr::SafeCall`, #886.)
                 if !ok {
                     let message = refuse(&format!("`{}` here", call.name));
                     self.error(message, e.span);
                     return;
-                } else if call.safe_nav {
-                    "`&.`"
                 } else {
                     if let Some(r) = &call.recv {
                         self.check_quotable(r);

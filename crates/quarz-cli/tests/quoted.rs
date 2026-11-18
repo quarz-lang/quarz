@@ -79,6 +79,9 @@ def show(e: Meta::Expr) -> String
     rs = r ? show(r) + "." : ""
     bs = b ? " " + show(b) : ""
     "#{rs}#{m.name}(#{a.map { |x| show(x) }.join(", ")})#{bs}"
+  in Meta::Expr::SafeCall(recv: r, method: m, args: a, block: b)
+    bs = b ? " " + show(b) : ""
+    "#{show(r)}&.#{m.name}(#{a.map { |x| show(x) }.join(", ")})#{bs}"
   in Meta::Expr::And(left: l, right: r) then "(#{show(l)} && #{show(r)})"
   in Meta::Expr::Or(left: l, right: r) then "(#{show(l)} || #{show(r)})"
   in Meta::Expr::Not(operand: o) then "!#{show(o)}"
@@ -159,7 +162,7 @@ r.where { |x| x.even? }
     );
     let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
     assert!(!ok);
-    let tail = "cannot be quoted: a block given as a `Quoted` holds literals, variables, `self`, calls, `&&`, `||`, `!`, `if` and blocks (docs/14 §6)";
+    let tail = "cannot be quoted: a block given as a `Quoted` holds literals, variables, `self`, calls (`&.` too), `&&`, `||`, `!`, `if` and blocks (docs/14 §6)";
     for (at, what) in [
         ("8:15", "an assignment"),
         ("9:15", "a loop"),
@@ -167,7 +170,6 @@ r.where { |x| x.even? }
         ("11:15", "`return`"),
         ("12:15", "a range"),
         ("13:15", "`call` here"),
-        ("14:15", "`&.`"),
         ("15:15", "`raise` here"),
     ] {
         let want = format!("bad.qz:{at}: error: {what} {tail}");
@@ -437,6 +439,90 @@ p pass_a { |x| true }
 "##;
 
 const EXPECTED_901: &str = "1\n2\n1\n2\n1\nreceiver { self@0.Row#now() }\nreceiver { Meta::Expr::HashLit(pairs: [[Meta::Expr::Lit(value: :at, line: 44), Meta::Expr::Call(recv: nil, method: Meta::MethodRef(owner: Kernel, name: :now, singleton: true, index: 0, extension: Helpers), methods: [Meta::MethodRef(owner: Kernel, name: :now, singleton: true, index: 0, extension: Helpers)], args: [], block: nil, line: 44)]], line: 44) }\n1\n1\n2\n";
+
+/// #886: `recv&.m(...)` in a quoted block is a `Meta::Expr::SafeCall`,
+/// a node of its own: on a nilable receiver (typed `Int?` as written),
+/// with a block, on a union, chained, on a receiver block's `self`, in an
+/// inner block; the closure runs as written; interpreted and compiled.
+/// An assignment through `&.` stays refused, and a reader's exhaustive
+/// `case` without the node is a compile error saying so.
+#[test]
+fn a_safe_call_is_a_node_of_its_own() {
+    let d = dir();
+    write(&d.0, "app.qz", APP_886);
+    let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, EXPECTED_886);
+    let (ok, _, err) = quarz(&d.0, &["build", "app.qz", "-o", "app.bin"], &[]);
+    assert!(ok, "{err}");
+    let run = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), EXPECTED_886);
+    write(&d.0, "assign.qz", "class Box\n  var @n: Int = 0\n  def n -> Int = @n\n  def n=(v: Int) -> Int\n    @n = v\n  end\nend\ndef take(&b: Quoted[(Box?) -> Int?]) -> Int = 0\ntake { |x| x&.n = 1 }\ntake { |x| x&.n += 1 }\n");
+    let (ok, _, err) = quarz(&d.0, &["check", "assign.qz"], &[]);
+    assert!(!ok);
+    assert_eq!(
+        err.matches("error: an assignment cannot be quoted").count(),
+        2,
+        "{err}"
+    );
+    write(&d.0, "reader.qz", "def name(e: Meta::Expr) -> String\n  case e\n  in Meta::Expr::Lit then \"lit\"\n  in Meta::Expr::Capture then \"capture\"\n  in Meta::Expr::Arg then \"arg\"\n  in Meta::Expr::SelfRef then \"self\"\n  in Meta::Expr::Call then \"call\"\n  in Meta::Expr::And then \"and\"\n  in Meta::Expr::Or then \"or\"\n  in Meta::Expr::Not then \"not\"\n  in Meta::Expr::If then \"if\"\n  in Meta::Expr::ArrayLit then \"array\"\n  in Meta::Expr::HashLit then \"hash\"\n  in Meta::Expr::Interp then \"interp\"\n  in Meta::Expr::Block then \"block\"\n  end\nend\nputs name(Meta::Expr::Lit.new(1, 1))\n");
+    let (ok, _, err) = quarz(&d.0, &["check", "reader.qz"], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains(
+            "error: `case` does not cover: Meta::Expr::SafeCall (add an `in` arm or `else`)"
+        ),
+        "{err}"
+    );
+}
+
+const APP_886: &str = r##"def show(e: Meta::Expr) -> String
+  case e
+  in Meta::Expr::Block(body: b) then b.map { |x| show(x) }.join("; ")
+  in Meta::Expr::Arg(name: n) then n.to_s
+  in Meta::Expr::SelfRef(depth: d) then "self@#{d}"
+  in Meta::Expr::Lit(value: v) then v.inspect
+  in Meta::Expr::Call(recv: r, method: m, args: a, block: b)
+    "#{r ? show(r) + "." : ""}#{m.owner.name}##{m.name}(#{a.map { |x| show(x) }.join(", ")})#{b ? " { " + show(b) + " }" : ""}"
+  in Meta::Expr::SafeCall(recv: r, method: m, methods: ms, args: a, block: b)
+    "#{show(r)}&.#{m.owner.name}##{m.name}(#{a.map { |x| show(x) }.join(", ")})#{b ? " { " + show(b) + " }" : ""} [#{ms.map { |x| x.owner.name }.join(", ")}]"
+  else e.to_s
+  end
+end
+
+def take(&b: Quoted[(String?) -> Int?]) -> Void
+  puts show(b.expr)
+  p b.proc.call("abc"), b.proc.call(nil)
+end
+def take_list(&b: Quoted[(Array[Int]?) -> Array[Int]?]) -> Void
+  puts show(b.expr)
+  p b.proc.call([1, 2]), b.proc.call(nil)
+end
+def take_union(&b: Quoted[(String | Array[Int] | Nil) -> Int?]) -> Void
+  puts show(b.expr)
+  p b.proc.call("ab"), b.proc.call([1]), b.proc.call(nil)
+end
+def take_chain(&b: Quoted[(String?) -> String?]) -> Void
+  puts show(b.expr)
+  p b.proc.call(" a "), b.proc.call(nil)
+end
+class Row
+  def name -> String? = "row"
+end
+def take_row(&b: Quoted[Row.() -> Int?]) -> Void
+  puts show(b.expr)
+  p Row.new.instance_exec(&b.proc)
+end
+
+take { |c| c&.size }
+take_list { |xs| xs&.map { |x| x * 2 } }
+take_union { |v| v&.size }
+take_chain { |s| s&.strip&.upcase }
+take_row { name&.size }
+take { |c| [1].map { |n| c&.size }.first }
+"##;
+
+const EXPECTED_886: &str = "c&.String#size() [String]\n3\nnil\nxs&.Array#map() { x.Int#*(2) } [Array]\n[2, 4]\nnil\nv&.Array#size() [Array, String]\n2\n1\nnil\ns&.String#strip() [String]&.String#upcase() [String]\n\"A\"\nnil\nself@0.Row#name()&.String#size() [String]\n3\nMeta::Expr::ArrayLit(items: [Meta::Expr::Lit(value: 1, line: 44)], line: 44).Array#map() { c&.String#size() [String] }.Array#first()\n3\nnil\n";
 
 #[test]
 fn the_tree_is_built_once_per_call_site() {
