@@ -1,0 +1,50 @@
+# A symbol literal given where an enum is expected is its variant
+# (#879): by position, by keyword, as a default, through `E?`, to a
+# procedure and to `yield`; a `Symbol` overload keeps the symbol; a
+# symbol in a variable stays one; a quoted block sees the variant.
+
+enum Format
+  variant Json
+  variant Text
+  variant NoKeyUpdate
+end
+
+def show(f: Format) -> String
+  case f
+  in Format::Json then "json"
+  in Format::Text then "text"
+  in Format::NoKeyUpdate then "no key update"
+  end
+end
+
+def kw(*, format: Format = :text) -> String = show(format)
+def opt(format: Format?) -> String = (f = format) ? show(f) : "none"
+def pick(x: Symbol) -> String = "symbol #{x}"
+def pick(x: Format) -> String = "format #{show(x)}"
+def give(&b: (Format) -> String) -> String = yield :no_key_update
+
+class Logger
+  @format: Format
+  def initialize(@format: Format); end
+  def format -> String = show(@format)
+end
+
+def tree(&q: Quoted[() -> String]) -> String
+  case q.expr
+  in Meta::Expr::Block(body: [Meta::Expr::Call(args: [Meta::Expr::Lit(value: v)])]) then v.inspect
+  else "?"
+  end
+end
+
+puts show(:json)
+puts kw
+puts kw(format: :no_key_update)
+puts opt(:json), opt(nil)
+puts pick(:json)
+puts Logger.new(:text).format
+pr = ->(f: Format) { show(f) }
+puts pr.call(:text)
+puts give { |f| show(f) }
+puts :json == :json
+puts Format::Json == Format::Json
+puts tree { show(:json) }

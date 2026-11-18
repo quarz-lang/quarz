@@ -828,6 +828,100 @@ fn data_and_enum() {
     ok("r: Result[Int, String] = Result::Ok.new(1)\ncase r\nin Result::Ok(value:) then puts value + 1\nin Result::Err(error:) then puts error.size\nend");
 }
 
+/// #879: a symbol literal given as an argument (or a default) where an
+/// enum is expected is that enum's variant without fields, by its name
+/// (`:no_key_update` is `NoKeyUpdate`); decided D1–D7.
+#[test]
+fn a_symbol_argument_is_an_enums_variant() {
+    let pre = "enum Format\n  variant Json\n  variant Text\n  variant NoKeyUpdate\n  variant Custom(name: String)\nend\nenum Mode\n  variant Json\n  variant Fast\nend\n";
+    let ok_ = |s: &str| ok(&format!("{pre}{s}"));
+    let err_ = |s: &str, e: &str| err(&format!("{pre}{s}"), e);
+    // Arguments, by position and by keyword, and a default.
+    ok_("def f(format: Format) -> Format = format\nf(:json)\nf(:no_key_update)\nf(format: :text)");
+    ok_("def g(*, format: Format = :text) -> Format = format\ng\ng(format: :json)");
+    ok_("class C\n  @f: Format\n  def initialize(@f: Format); end\nend\nC.new(:json)");
+    // D2: `E?`, and `E | F` when one of them has the variant.
+    ok_("def n(format: Format?) -> Bool = format.nil?\nn(:json)\nn(nil)");
+    ok_("def u(x: Format | Int) -> Bool = x.is_a?(Int)\nu(:text)");
+    ok_("def m(x: Format | Mode) -> Bool = true\nm(:fast)\nm(:text)");
+    err_(
+        "def m(x: Format | Mode) -> Bool = true\nm(:json)",
+        "`:json` is ambiguous here: it may be `Format::Json` or `Mode::Json`",
+    );
+    // `Symbol | E` and a `Symbol` parameter take the symbol.
+    ok_("def s(x: Symbol | Format) -> Bool = x.is_a?(Symbol)\ns(:json)");
+    // An unknown name, a variant with fields.
+    err_(
+        "def f(format: Format) -> Format = format\nf(:jsno)",
+        "`:jsno` names no variant of `Format` (`Format`: :json, :text, :no_key_update)",
+    );
+    err_(
+        "def f(format: Format) -> Format = format\nf(:custom)",
+        "`:custom` would be `Format::Custom`, which carries fields",
+    );
+    err_(
+        "def f(format: Format) -> Format = format\nf(:Json)",
+        "`:Json` names no variant of `Format`",
+    );
+    err_(
+        "def g(*, format: Format = :jsno) -> Format = format",
+        "the default of `format`: `:jsno` names no variant of `Format`",
+    );
+    // Only a literal: a `Symbol` value is not converted.
+    err_(
+        "def f(format: Format) -> Format = format\ns = :json\nf(s)",
+        "expects Format but found Symbol",
+    );
+    // D3: not through a type variable; D4: not inside a collection
+    // literal.
+    err_(
+        "def t[T](x: T) -> T = x\ny: Format = t(:json)",
+        "cannot assign Symbol to `y` of type Format",
+    );
+    err_(
+        "def a(xs: Array[Format]) -> Int = xs.size\na([:json])",
+        "array elements have type Symbol but Format was expected",
+    );
+    // D5: a procedure's call and `yield`.
+    ok_("pr = ->(x: Format) { x }\npr.call(:json)\npr.(:text)");
+    ok_("pr = ->(*, x: Format) { x }\npr.call(x: :json)");
+    ok_("def y(&b: (Format) -> Int) -> Int = yield :json\ny { |f| 1 }");
+    err_(
+        "pr = ->(x: Format) { x }\npr.call(:jsno)",
+        "`:jsno` names no variant of `Format`",
+    );
+    // D6: no conversion in an assignment or a return, with a hint.
+    err_(
+        "x: Format = :json",
+        "cannot assign Symbol to `x` of type Format; a symbol is a variant only as an argument: write `Format::Json`",
+    );
+    err_(
+        "def r -> Format = :text",
+        "returns Format but its body has type Symbol; a symbol is a variant only as an argument: write `Format::Text`",
+    );
+    err_(
+        "def r(b: Bool) -> Format\n  return :json if b\n  Format::Text\nend",
+        "`return` has type Symbol but the method returns Format; a symbol is a variant only as an argument: write `Format::Json`",
+    );
+    // D1: two enum overloads with the variant tie, naming both.
+    err_(
+        "def o(x: Format) -> Int = 1\ndef o(x: Mode) -> Int = 2\no(:json)",
+        "(pass arguments of the types of one; `:json` is `Format::Json` or `Mode::Json`)",
+    );
+    ok_("def o(x: Format) -> Int = 1\ndef o(x: Mode) -> Int = 2\no(:fast)\no(:text)");
+    // A `Symbol` overload keeps the symbol (the literal level).
+    ok_("def q(x: Symbol) -> Int = 1\ndef q(x: Format) -> Int = 2\nq(:json)");
+    // D7: compared with the generated `==`, a warning; not converted.
+    warns(
+        &format!("{pre}def w(f: Format) -> Bool = f == :json\nw(Format::Json)"),
+        "an enum value compared with the symbol `:json` is never equal: write `Format::Json`",
+    );
+    warns(
+        &format!("{pre}def w(f: Format) -> Bool = :text != f\nw(Format::Json)"),
+        "an enum value compared with the symbol `:text` is never equal: write `Format::Text`",
+    );
+}
+
 #[test]
 fn methods_and_calls() {
     err(
