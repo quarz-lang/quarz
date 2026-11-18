@@ -410,7 +410,21 @@ xs.push!(4)            # xs = xs.push(4): `!` on an immutable value rebinds its 
   end
   p total                # => "none"
   ```
-- After an assignment the type is narrowed by **flow typing** (after `y = 10`, `y` can be treated as `Int`).
+- After an assignment the type is narrowed by **flow typing** (after `y = 10`, `y` can be treated as `Int`). A declaration's initializer narrows as any assignment does: after `a: A = B.new`, `a` is a `B` until it is assigned again, though its declared type, which later assignments must fit, stays `A`. A call's overload is chosen for the narrowed type (§9), so on such a local a subclass's overload that does not override the declared type's method (§3) can be chosen where, through a value typed `A`, it would not:
+
+  ```crystal
+  class A
+    def narrow(x: Object) -> String = "A#narrow"
+  end
+  class B < A
+    def narrow(x: Int) -> String = "B#narrow"   # an overload: `Int` is narrower than `Object`
+  end
+  def call(a: A) -> String = a.narrow(3)
+  call(B.new)        # => "A#narrow": `a` is an `A` here
+  a: A = B.new
+  a.narrow(3)        # => "B#narrow": `a` is narrowed to `B`, whose `(Int)` is the most specific
+  a.narrow("s")      # => "A#narrow"
+  ```
 - The rules for variable declaration and scope (a variable assigned inside an `if` is visible afterwards, block parameters are visible only within the block, etc.) are the same as in Ruby. Where such a variable may not have been assigned (after an `if` that assigns it in one branch only, after a `while` that assigns it in its body, in a `rescue` when the body assigns it), it is `nil` as in Ruby, and its type there is nilable: `y = n if n > 0` followed by `y + 1` is an error, while `y + 1 if y` is not.
 - Assignment to an `@ivar` is only possible inside `initialize` if the field is immutable.
 - `x.foo!(args)` is sugar for `x = x.foo(args)` when the receiver's type is immutable and has no method `foo!`. Immutable here means the built-in immutable types (03-mutability.md §2), tuples, a `data` type or enum, or a class with no `var` field (judged on the receiver's static class: a subclass that adds one does not change the call's reading); a union when every member is, a type parameter when one of its bounds is. On a mutable receiver (a builder, a class with a `var` field, a native such as `IO`), a missing `foo!` is an undefined method, so a `!` call never rebinds a variable holding a mutable object: there it is a method of the object (the builders' change it). A type that defines `foo!` itself, mutable or not, has it called as any method (a library's `insert!` that raises where `insert` returns an error). The receiver must be a local variable or a field, the result must fit its type (`s.size!` is an error), and the value of the expression is the new value. A chain rebinds the same place step by step (`s.strip!.upcase!`). Only the variable is rebound; the old value is unchanged for anything else that refers to it (`b = a; a.push!(1)` leaves `b` as it was), which differs from Ruby's mutating `!` methods: those are the builders' (`sort!` on an `Array::Builder`), called as usual and seen by every alias. The common collection updates (`push!`, `put!`, `add!`, `set!`, `delete!`) run in place when nothing else refers to the collection. The receiver cannot be another object's attribute: `obj.items.push!(x)` is an error, and `obj.items = obj.items.push(x)` copies the array every time (the object still holds it while `push` runs; in a loop that is quadratic). To update a collection another object holds, give that object a method and write `@items.push!(x)` inside it, where the update is in place.
