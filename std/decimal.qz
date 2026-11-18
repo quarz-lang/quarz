@@ -60,10 +60,6 @@ class Decimal
   # The most digits of the unscaled value.
   MAX_DIGITS = 10_000
 
-  # The text `parse` takes: a sign, digits, a point and digits, an
-  # exponent.
-  GRAMMAR = /\A([+-]?)([0-9]+)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?\z/
-
   @unscaled: Integer
   @scale: Int
 
@@ -109,7 +105,7 @@ class Decimal
   # Decimal.parse?("1,5")             # => nil
   # ```
   def self.parse?(text: String) -> Decimal?
-    m = text.match(GRAMMAR) || return nil
+    m = text.match(grammar) || return nil
     whole = m[2] || return nil
     fraction = m[3] || ""
     scale = fraction.size
@@ -144,6 +140,10 @@ class Decimal
 
   # The sum, exact, of the larger scale.
   #
+  # ## Raises
+  #
+  # `ArgumentError` when the sum has more than `MAX_DIGITS` digits.
+  #
   # ```
   # (Decimal.parse("1.5") + Decimal.parse("0.25")).to_s   # => "1.75"
   # (Decimal.parse("1.5") + 1).to_s                       # => "2.5"
@@ -156,6 +156,11 @@ class Decimal
 
   # The difference, exact, of the larger scale.
   #
+  # ## Raises
+  #
+  # `ArgumentError` when the difference has more than `MAX_DIGITS`
+  # digits.
+  #
   # ```
   # (Decimal.parse("1.5") - Decimal.parse("0.25")).to_s   # => "1.25"
   # ```
@@ -167,6 +172,11 @@ class Decimal
 
   # The product, exact, of the sum of the scales.
   #
+  # ## Raises
+  #
+  # `ArgumentError` when the product has more than `MAX_DIGITS` digits,
+  # or more than `MAX_SCALE` fraction digits (two values of 600).
+  #
   # ```
   # (Decimal.parse("1.5") * Decimal.parse("0.25")).to_s   # => "0.375"
   # (Decimal.parse("19.99") * 3).to_s                     # => "59.97"
@@ -176,10 +186,10 @@ class Decimal
     Decimal.new(@unscaled * o.unscaled, scale: @scale + o.scale)
   end
 
-  # The negation, of the same scale.
+  # The negation, of the same scale (as many digits: it cannot raise).
   def -@ -> Decimal = Decimal.new(-@unscaled, scale: @scale)
 
-  # The absolute value, of the same scale.
+  # The absolute value, of the same scale (it cannot raise).
   def abs -> Decimal = Decimal.new(@unscaled.abs, scale: @scale)
 
   # Whether it is zero (of any scale).
@@ -304,9 +314,12 @@ class Decimal
   # :ditto:
   def inspect -> String = to_s
 
-  # :nodoc:
   # The unscaled value at the scale `s` (not below this one's).
-  def upscaled(s: Int) -> Integer = s == @scale ? @unscaled : @unscaled * 10.to_integer ** (s - @scale)
+  protected def upscaled(s: Int) -> Integer = s == @scale ? @unscaled : @unscaled * 10.to_integer ** (s - @scale)
+
+  # (`of`, `too_long?` and `divide` are called from the instance side,
+  # which a private class method is not reachable from: public, and
+  # undocumented.)
 
   # :nodoc:
   # `x` as a `Decimal`.
@@ -326,6 +339,10 @@ class Decimal
     return false if bits < MAX_DIGITS * 3
     u.abs.to_s.size > MAX_DIGITS
   end
+
+  # The text `parse` takes: a sign, digits, a point and digits, an
+  # exponent.
+  private def self.grammar -> Regexp = /\A([+-]?)([0-9]+)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?\z/
 
   # :nodoc:
   # `n / d` rounded to an integer by `mode` (`d` not zero).

@@ -1,4 +1,5 @@
 require "decimal"
+require "json"
 require "test"
 
 # `Decimal` (quarz-lang/quarz#889): exact base-ten numbers.
@@ -58,6 +59,24 @@ class DecimalTest < Test::Case
     assert_equal("a Decimal's scale is 0 to 1000, not 1001", e.message)
     e = assert_raise(ArgumentError) { d("1").div(3, scale: -1) }
     assert_equal("a Decimal's scale is 0 to 1000, not -1", e.message)
+    # Refused at once, nothing computed: a huge exponent either way.
+    t0 = Time.now
+    e = assert_raise(ArgumentError) { Decimal.parse?("1e9999999") }
+    assert_equal("a Decimal has at most 10000 digits: \"1e9999999\"", e.message)
+    e = assert_raise(ArgumentError) { Decimal.parse?("1e-2000") }
+    assert_equal("a Decimal's scale is 0 to 1000: \"1e-2000\"", e.message)
+    assert(Time.now - t0 < 1.seconds)
+    # `new` with an `Integer` of 10,001 digits.
+    e = assert_raise(ArgumentError) { Decimal.new(Integer.parse("1" * 10_001)) }
+    assert_equal("a Decimal has at most 10000 digits", e.message)
+    assert_equal(10_000, Decimal.new(Integer.parse("1" * 10_000)).to_s.size)
+    # `+` and `-` past the digits (`-@` and `abs` keep them).
+    top = Decimal.parse("9" * 10_000)
+    e = assert_raise(ArgumentError) { top + 1 }
+    assert_equal("a Decimal has at most 10000 digits", e.message)
+    e = assert_raise(ArgumentError) { -top - 1 }
+    assert_equal("a Decimal has at most 10000 digits", e.message)
+    assert_equal(top, (-top).abs)
   end
 
   def test_arithmetic
@@ -107,6 +126,21 @@ class DecimalTest < Test::Case
     assert_equal("20.0", d("19.99").round(1).to_s)
     # More digits pad.
     assert_equal("1.500", d("1.5").round(3).to_s)
+    # Ties at two digits, positive and negative, by each mode.
+    ties = [
+      ["1.125", "1.12", "1.13", "1.12", "1.13", "1.12", "1.13"],
+      ["1.135", "1.14", "1.14", "1.13", "1.14", "1.13", "1.14"],
+      ["-1.125", "-1.12", "-1.13", "-1.12", "-1.13", "-1.13", "-1.12"],
+      ["-1.135", "-1.14", "-1.14", "-1.13", "-1.14", "-1.14", "-1.13"],
+    ]
+    ties.each do |row|
+      modes.each_with_index do |m, i|
+        assert_equal(row[i + 1], d(row[0]).round(2, m).to_s, "#{row[0]} #{m}")
+        # `div` at the same tie: the value times 1000, divided by 1000.
+        n = Decimal.new(d(row[0]).unscaled)
+        assert_equal(row[i + 1], n.div(1000, scale: 2, mode: m).to_s, "div #{row[0]} #{m}")
+      end
+    end
   end
 
   def test_div
@@ -143,6 +177,15 @@ class DecimalTest < Test::Case
     assert_equal(2, h.size)
     assert_equal("decimal", h[Decimal.parse("3.00")]?)
     assert_equal("int", h[3]?)
+    # Equal values hash alike: negatives, zero at several scales.
+    assert_equal(d("-1.5").hash, d("-1.500").hash)
+    assert_equal(d("-120").hash, d("-120.0").hash)
+    assert_equal(d("0").hash, d("-0.0").hash)
+    assert_equal(d("0.0").hash, d("0.00000").hash)
+    assert(d("1.5").hash != d("-1.5").hash)
+    assert_equal(1, {d("1.0") => 1}[d("1.00")]?)
+    assert(Set[d("1.0"), d("-0.0")].include?(d("0.000")))
+    assert_equal(2, Set[d("1.0"), d("1.00"), d("2")].size)
   end
 
   def test_order
@@ -151,6 +194,15 @@ class DecimalTest < Test::Case
     assert_equal(0, d("2.50") <=> d("2.5"))
     assert_equal([d("-1"), d("0.5"), d("2")], [d("2"), d("-1"), d("0.5")].sort)
     assert_equal(d("2"), [d("2"), d("-1"), d("0.5")].max)
+    # Mixed scales.
+    xs = [d("1.50"), d("1.5"), d("-0.10"), d("2"), d("-0.1"), d("1.500")]
+    assert_equal(3, xs.uniq.size)
+    assert_equal(["-0.10", "-0.1", "1.50", "1.5", "1.500", "2"], xs.sort.map(&:to_s))
+    assert_equal("-0.10", xs.min.to_s)
+    assert_equal("2", xs.max.to_s)
+    assert_equal(d("1"), d("0.5").clamp(d("1.0"), d("2.00")))
+    assert_equal("2.00", d("3").clamp(d("1.0"), d("2.00")).to_s)
+    assert_equal("1.25", d("1.25").clamp(d("1.0"), d("2.00")).to_s)
   end
 
   def test_conversions
@@ -162,6 +214,13 @@ class DecimalTest < Test::Case
     assert_equal(19.99, d("19.99").to_f)
     assert_equal(0.1, d("0.1000000000000000001").to_f)
     assert_equal("19.99", d("19.99").inspect)
+  end
+
+  # JSON before quarz-lang/quarz#889's part 2: a `Decimal` is generated
+  # as an object of its fields (part 2 writes a number), and
+  # `JSON.decode[Decimal]` does not compile (it is a class).
+  def test_json_today
+    assert_equal("{\"unscaled\":1999,\"scale\":2}", JSON.generate(d("19.99")))
   end
 
   # Properties over seeded values.
