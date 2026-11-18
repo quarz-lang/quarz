@@ -3263,23 +3263,23 @@ impl World {
 
     /// The second disjunct of the one pairing rule (`replaces_seen`): the
     /// same signature, a type mentioning a method's own type parameter,
-    /// `Self` or an inference variable matching any (`same_at_run_time`),
+    /// `Self` or an inference variable matching any (`same_or_open`),
     /// with the same block presence and the keywords `o` takes. Only the
     /// rule reads it (#716); a reader asks `replaces_seen`, or the
     /// override table (`overrides`), not this.
     fn same_signature_by_type_params(&self, m: MethodId, o: MethodId) -> bool {
         let (m, om) = (self.method(m), self.method(o));
         let (ps, qs) = (om.positional_params(), m.positional_params());
-        // (The shape first, cheap: the types, by name, only for a match.)
+        // (The shape first, cheap: the types only for a match.)
         if om.block.is_some() != m.block.is_some()
             || ps.len() != qs.len()
             || ps.iter().zip(&qs).any(|(p, q)| p.kind != q.kind)
         {
             return false;
         }
-        let same = |p: &ParamInfo, q: &ParamInfo| self.same_at_run_time(om, &p.ty, m, &q.ty);
+        let same = |p: &ParamInfo, q: &ParamInfo| self.same_or_open(om, &p.ty, m, &q.ty);
         let blocks = match (&om.block, &m.block) {
-            (Some((_, b)), Some((_, c))) => self.same_at_run_time(om, b, m, c),
+            (Some((_, b)), Some((_, c))) => self.same_or_open(om, b, m, c),
             (None, None) => true,
             _ => false,
         };
@@ -3306,10 +3306,12 @@ impl World {
                 })
     }
 
-    /// Whether `t` of `om` and `u` of `m` are the same type for the runtime
-    /// (`RtParam::ty`): one that mentions its method's own type parameters
-    /// or `Self` matches anything, any other is compared as written.
-    fn same_at_run_time(&self, om: &MethodInfo, t: &Type, m: &MethodInfo, u: &Type) -> bool {
+    /// Whether `t` of `om` and `u` of `m` are the same type for the pairing
+    /// rule's second disjunct: one that mentions its method's own type
+    /// parameters, `Self` or an inference variable matches anything; any
+    /// other is compared by `same_type`, the checker's type equality
+    /// (#536 step 5).
+    fn same_or_open(&self, om: &MethodInfo, t: &Type, m: &MethodInfo, u: &Type) -> bool {
         fn open(m: &MethodInfo, t: &Type) -> bool {
             match t {
                 Type::Param(p) => {
@@ -3330,15 +3332,7 @@ impl World {
                 Type::Nothing | Type::Void => false,
             }
         }
-        let (t, u) = (self.devoid(t), self.devoid(u));
-        open(om, &t)
-            || open(m, &u)
-            // (A class's type parameter by its id, as `rtworld::rt_sig_type`.)
-            || if t.mentions_any_param() || u.mentions_any_param() {
-                t == u
-            } else {
-                self.type_name(&t) == self.type_name(&u)
-            }
+        open(om, t) || open(m, u) || self.same_type(t, u)
     }
 
     /// Whether method `m` replaces method `o` at run time, `o` being

@@ -1511,8 +1511,11 @@ pub struct RtParam {
     pub name: String,
     pub kind: RtParamKind,
     pub has_default: bool,
-    /// The declared type, for telling overloads apart (`None` for a type
-    /// parameter, which matches anything).
+    /// The parameter's machine kind: `Int`, `Float`, `Bool` or `Nil` where
+    /// it is declared of that built-in class (`rtworld::rt_kind`, which
+    /// lists the readers), `None` otherwise. Read as a kind only
+    /// (`verify`, `live`, the AOT's `unbox`); no signature is compared at
+    /// run time (#536 step 5).
     pub ty: Option<String>,
     /// A native's default when it is a literal: a call that names a later
     /// parameter by keyword passes it in its place (`Time.utc(2024, hour:
@@ -1544,10 +1547,6 @@ pub struct RtMethod {
     pub singleton: bool,
     pub params: Vec<RtParam>,
     pub has_block: bool,
-    /// The block's type as `same_signature` compares it (`None` where it
-    /// mentions the method's own type parameters, or with no block).
-    #[serde(default)]
-    pub block_ty: Option<String>,
     pub func: Option<FuncId>,
     /// `Type#name` / `Type.name` for natives.
     pub native_key: Option<String>,
@@ -2236,7 +2235,6 @@ impl Droppable for RtMethod {
             singleton: false,
             params: Vec::new(),
             has_block: false,
-            block_ty: None,
             func: None,
             native_key: None,
             synth: RtSynth::None,

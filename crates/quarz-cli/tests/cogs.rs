@@ -703,6 +703,28 @@ fn top_level_extensions_stay_in_their_cog() {
     assert_eq!(w.ok("app", &["run"]), "3\n42\n");
 }
 
+/// Two classes of one name in two cogs are two types: a subclass's method
+/// taking the application's `Item` does not pair with its library
+/// superclass's taking `Lib::Item` (the pairing rule compares by the
+/// checker's type equality, #536 step 5), so it is an overload, and a call
+/// with a library item runs the superclass's.
+#[test]
+fn same_named_classes_of_two_cogs_do_not_pair() {
+    let w = World::new();
+    w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
+    w.write(
+        "lib/src/lib.qz",
+        "class Item\nend\nclass Base\n  def f(x: Item) -> String = \"Base#f\"\nend\n",
+    );
+    w.commit("lib", Some("v0.1.0"));
+    let dep = format!("Lib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("lib"));
+    w.app(
+        &dep,
+        "class Item\nend\nclass Sub < Lib::Base\n  def f(x: Item) -> String = \"Sub#f\"\nend\nb: Lib::Base = Sub.new\nputs b.f(Lib::Item.new)\nputs Sub.new.f(Item.new)\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "Base#f\nSub#f\n");
+}
+
 /// An extension's include at the top level of a library cog overrides the
 /// class's ancestors' methods as one at the application's top level does;
 /// one in a module body does not (docs/01 §7, #536).
