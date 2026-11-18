@@ -9897,9 +9897,9 @@ impl Checker {
     }
 
     /// `::name(...)`: a function, the file's top-level `def`s of the name
-    /// first, then the built-in `Kernel` functions, wherever it is written
-    /// (docs/01 §1); never a method of `self`, an `Object` method or one an
-    /// `extension Kernel` adds.
+    /// first, then the built-in `Kernel` functions, then those the active
+    /// `extension Kernel`s give (#885), wherever it is written (docs/01
+    /// §1); never a method of `self` or an `Object` method.
     fn check_function_call(&mut self, expr: &Expr, call: &Call, expected: Option<&Type>) -> Type {
         let fm = self.file_main(self.env.file);
         let on = Type::class(fm.unwrap_or(self.world.builtin.object));
@@ -9907,7 +9907,16 @@ impl Checker {
         // `def`s it sees, its cog's, first, hiding a built-in of the same
         // signature, then the built-in's other overloads), but only the
         // functions.
-        let cands = self.function_candidates(&call.name);
+        let mut cands = self.function_candidates(&call.name);
+        let given = self.extension_functions(&call.name);
+        // (No method of `self` hides either here.)
+        self.function_ambiguity(
+            &call.name,
+            cands.first().map(|c| c.0),
+            given.first().map(|g| g.0),
+            expr.span,
+        );
+        cands.extend(given);
         if cands.is_empty() {
             self.error(
                 format!(
@@ -11278,16 +11287,38 @@ impl Checker {
                 // set of overloads, the first of each signature kept.
                 if call.recv.is_none() {
                     let found = self.function_candidates(name);
-                    if !found.is_empty() {
-                        for f in found {
-                            let fm = self.world.method(f.0);
-                            if !cands.iter().any(|(id, _)| {
-                                *id == f.0 || self.world.same_signature(self.world.method(*id), fm)
-                            }) {
-                                cands.push(f);
-                            }
+                    // (Then those the active `extension Kernel`s give,
+                    // #885: hidden only by a method of `self` of their
+                    // signature, so that two extensions' of one signature
+                    // reach `resolve_overloads`, which refuses them.)
+                    let given = self.extension_functions(name);
+                    let own = cands.len();
+                    for f in found {
+                        let fm = self.world.method(f.0);
+                        if !cands.iter().any(|(id, _)| {
+                            *id == f.0 || self.world.same_signature(self.world.method(*id), fm)
+                        }) {
+                            cands.push(f);
                         }
                     }
+                    let functions = cands.len();
+                    for g in given {
+                        let gm = self.world.method(g.0);
+                        if !cands[..own]
+                            .iter()
+                            .any(|(id, _)| self.world.same_signature(self.world.method(*id), gm))
+                        {
+                            cands.push(g);
+                        }
+                    }
+                    // (Over the functions `self`'s methods leave: one of
+                    // their signature hides both, #898.)
+                    self.function_ambiguity(
+                        name,
+                        cands[own..functions].first().map(|c| c.0),
+                        cands[functions..].first().map(|c| c.0),
+                        expr.span,
+                    );
                 }
                 if cands.is_empty() && !implicit_self {
                     if let Some(t) = self.check_bang_assign(expr, call, recv_ty, expected) {
@@ -11509,6 +11540,63 @@ impl Checker {
             }
         }
         cands
+    }
+
+    /// The functions of a name the `extension Kernel`s active at the call
+    /// give (their `def self.name`, #885), which a bare call and `::name`
+    /// find after the program's functions and the built-ins
+    /// (`function_candidates`). Two extensions' functions are overloads,
+    /// refused as any two extensions' methods are when their parameters
+    /// are the same (`resolve_overloads`); one beside a program's function
+    /// is `function_ambiguity`'s.
+    fn extension_functions(&self, name: &str) -> Vec<(MethodId, HashMap<TypeParamId, Type>)> {
+        let kernel = self.world.builtin.kernel;
+        let mut given: Vec<(MethodId, HashMap<TypeParamId, Type>)> = Vec::new();
+        for e in self.world.active_extension_ids() {
+            let ext = &self.world.extensions[e as usize];
+            if ext.target != kernel {
+                continue;
+            }
+            if let Some(ids) = ext.methods.get(name) {
+                for id in ids {
+                    if self.world.kernel_extension_function(*id)
+                        && !given.iter().any(|(g, _)| g == id)
+                    {
+                        given.push((*id, HashMap::default()));
+                    }
+                }
+            }
+        }
+        given
+    }
+
+    /// A program's function (or a built-in) `function` and an active
+    /// extension's function `given` of one name, both candidates of a
+    /// call (neither hidden by a method of `self`): an error at the call,
+    /// naming them, not a silent choice (#885).
+    fn function_ambiguity(
+        &mut self,
+        name: &str,
+        function: Option<MethodId>,
+        given: Option<MethodId>,
+        span: Span,
+    ) {
+        if let (Some(f), Some(g)) = (function, given) {
+            let f = self.world.method(f);
+            let what = format!(
+                "the {}function `{}`",
+                if f.is_native { "built-in " } else { "" },
+                self.world.method_signature(f)
+            );
+            let ext = self.world.method(g).extension.expect("an extension's");
+            let by = self.extension_name(ext);
+            self.error(
+                format!(
+                    "the call of `{name}` is ambiguous: {what} and the function `Kernel.{name}` that {by} gives, active here, have one name; call the extension's as `Kernel.{name}`, or rename one"
+                ),
+                span,
+            );
+        }
     }
 
     /// For a destructive method missing on an immutable built-in type,

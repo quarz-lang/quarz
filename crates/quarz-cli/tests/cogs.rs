@@ -1159,6 +1159,41 @@ fn a_cogs_functions_come_after_selfs_methods_and_before_kernels() {
     );
 }
 
+/// A function an `extension Kernel` gives is found bare where the
+/// extension is active (#885): a library's module given by `using` in
+/// the application, its top-level one in its own files only; and a
+/// function of another cog that the call does not see makes no
+/// ambiguity with it.
+#[test]
+fn a_kernel_extensions_functions_are_found_where_it_is_active() {
+    let w = World::new();
+    w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
+    w.write(
+        "lib/src/helpers.qz",
+        "module Helpers\n  extension Kernel\n    def self.answer -> Int = 42\n  end\nend\n",
+    );
+    // The library's own function `answer`, which the application does
+    // not see, and a top-level extension active in the library's files.
+    w.write(
+        "lib/src/own.qz",
+        "def answer -> Int = 1\nextension Kernel\n  def self.inner -> Int = 7\nend\nmodule Calc\n  def self.k -> Int = answer + inner\nend\n",
+    );
+    w.commit("lib", Some("v0.1.0"));
+    let dep = format!("Lib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("lib"));
+    w.app(
+        &dep,
+        "using Lib::Helpers\nclass C\n  def go -> Int = [1].map { |x| x + answer }.sum\nend\np answer, ::answer, C.new.go, Lib::Calc.k\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "42\n42\n43\n8\n");
+    // The library's top-level extension stays in its files.
+    w.app(&dep, "p inner\n");
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("undefined local variable or method `inner`"),
+        "{err}"
+    );
+}
+
 #[test]
 fn versions_follow_minimal_version_selection() {
     let w = World::new();

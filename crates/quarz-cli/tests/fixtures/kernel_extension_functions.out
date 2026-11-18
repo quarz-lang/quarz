@@ -1,0 +1,12 @@
+42
+42
+42
+Kernel
+44
+C's own 4
+44
+[2, 4]
+10
+"st"
+twice: Kernel singleton=true extension=Helpers receiver=none
+twice: Kernel singleton=true extension=Helpers receiver=written
