@@ -253,8 +253,11 @@ impl HashData {
             (HashData::Values(m), _) => m.get(k).cloned(),
             (HashData::Ints(m), Value::Int(k)) => m.get(k).map(|v| Value::Int(*v)),
             // An Int-keyed hash holds no other key (`1.0 == 1` is a key
-            // equal to 1).
-            (HashData::Ints(m), Value::Float(f)) if f.fract() == 0.0 && f.abs() < 9.2e18 => {
+            // equal to 1); an integral float of `Int`'s range is exactly
+            // one (#888).
+            (HashData::Ints(m), Value::Float(f))
+                if f.fract() == 0.0 && (-TWO_TO_63..TWO_TO_63).contains(f) =>
+            {
                 m.get(&(*f as i64)).map(|v| Value::Int(*v))
             }
             (HashData::Ints(_), _) => None,

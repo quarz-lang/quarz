@@ -231,6 +231,32 @@ class ExactIntFloatTest < Test::Case
     assert_equal(1, {b19 => 1, 1e19 => 2}.size)
   end
 
+  def test_integer_against_nan
+    b30 = 1000000000000000000000000000000
+    nan = Float::NAN
+    assert_false(b30 < nan)
+    assert_false(b30 <= nan)
+    assert_false(b30 > nan)
+    assert_false(b30 >= nan)
+    assert_false(b30 == nan)
+    assert_true(b30 != nan)
+    assert_equal(-1, b30 <=> nan)
+    # (`Float` has no `<`, `>` or `<=>` taking an `Integer`.)
+    assert_false(nan == b30)
+  end
+
+  # An `Int`-keyed hash found by an integral `Float` near the ends of
+  # `Int` (the largest floats below 2**63, and -2**63).
+  def test_int_keys_found_by_floats
+    h: Hash[Int | Float, Int] = {9223372036854774784 => 1, -9223372036854775807 - 1 => 2, 3 => 3}
+    assert_equal(1, h[9223372036854774784.0])
+    assert_equal(2, h[-9223372036854775808.0])
+    assert_equal(3, h[3.0])
+    assert_false(h.key?(3.5))
+    assert_false(h.key?(9223372036854775808.0))
+    assert_true(h.key?(9223372036854774784.0))
+  end
+
   def test_collections_and_patterns
     big: Int | Float = BIG
     near: Int | Float = BIGF
