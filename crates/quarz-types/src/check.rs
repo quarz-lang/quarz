@@ -7350,15 +7350,21 @@ impl Checker {
             MultiAssign { targets, value } => self.check_multi_assign(expr, targets, value),
             TypedDecl { name, ty, value } => self.check_typed_decl(expr, name, ty.as_ref(), value),
             And(a, b) => {
-                let (ta, facts_true, _) = self.check_cond(a);
+                let (ta, facts_true, facts_false) = self.check_cond(a);
                 if let Some(t) = self.logical_method(expr, "&&", &ta, b, expected) {
                     return t;
                 }
-                let snap = self.snapshot();
+                // The path that skips `b` is the one where `a` was falsy:
+                // when `b` always exits (`x and return`), it is the only
+                // one after, as after `return if x` (#905).
+                let before = self.snapshot();
+                self.apply_facts(&facts_false);
+                let skipped = self.snapshot();
+                self.restore(&before);
                 self.apply_facts(&facts_true);
                 let tb = self.check_expr(b, None);
                 let b_dead = tb.is_nothing();
-                self.merge_with(&snap, false, b_dead);
+                self.merge_with(&skipped, false, b_dead);
                 if self.resolve(&ta) == self.world.bool_()
                     && self.resolve(&tb) == self.world.bool_()
                 {
@@ -7368,15 +7374,20 @@ impl Checker {
                 self.join(&fa, &tb)
             }
             Or(a, b) => {
-                let (ta, _, facts_false) = self.check_cond(a);
+                let (ta, facts_true, facts_false) = self.check_cond(a);
                 if let Some(t) = self.logical_method(expr, "||", &ta, b, expected) {
                     return t;
                 }
-                let snap = self.snapshot();
+                // The path that skips `b` is the one where `a` was truthy
+                // (`x or return`: `x` is truthy after it, #905).
+                let before = self.snapshot();
+                self.apply_facts(&facts_true);
+                let skipped = self.snapshot();
+                self.restore(&before);
                 self.apply_facts(&facts_false);
                 let tb = self.check_expr(b, expected);
                 let b_dead = tb.is_nothing();
-                self.merge_with(&snap, false, b_dead);
+                self.merge_with(&skipped, false, b_dead);
                 if self.resolve(&ta) == self.world.bool_()
                     && self.resolve(&tb) == self.world.bool_()
                 {
