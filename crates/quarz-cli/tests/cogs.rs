@@ -778,6 +778,49 @@ end
     }
 }
 
+/// An inherited class method's `new` builds a subclass with the first of
+/// its `initialize` overloads that takes what `new` passes, asked under the
+/// extensions active where the overload is declared (docs/01 §3, #871):
+/// not those of the file the checker happens to check last (the
+/// application's). A library's top-level extension making `V` an `N`
+/// counts for the library's `Sub`; an application's extension making it
+/// one does not, as the library's files do not see it. Interpreted and
+/// compiled.
+#[test]
+fn an_inherited_new_chooses_under_the_overloads_cog() {
+    let w = World::new();
+    let lib = |ext: &str| {
+        format!("module N\nend\nclass V\nend\n{ext}class Base\n  def initialize(x: V); end\n  def self.mk(x: V) -> Self = new(x)\nend\nclass Sub < Base\n  def initialize(x: N)\n    puts \"N\"\n  end\n  def initialize(x: Object)\n    puts \"Object\"\n  end\nend\n")
+    };
+    for (version, lib_ext, app_ext, want) in [
+        ("v0.1.0", "extension V\n  include N\nend\n", "", "N\n"),
+        (
+            "v0.2.0",
+            "",
+            "extension Lib::V\n  include Lib::N\nend\n",
+            "Object\n",
+        ),
+    ] {
+        w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
+        w.write("lib/src/lib.qz", &lib(lib_ext));
+        w.commit("lib", Some(version));
+        let dep = format!(
+            "Lib = {{ git = \"{}\", tag = \"{version}\" }}\n",
+            w.url("lib")
+        );
+        w.app(&dep, &format!("{app_ext}Lib::Sub.mk(Lib::V.new)\n"));
+        assert_eq!(w.ok("app", &["run"]), want, "{version}");
+        let exe = w.path("app/app-bin");
+        w.ok("app", &["build", "-o", exe.to_str().unwrap()]);
+        let run = Command::new(&exe).output().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout),
+            want,
+            "{version}, compiled"
+        );
+    }
+}
+
 /// An extension's include at the top level of a library cog overrides the
 /// class's ancestors' methods as one at the application's top level does;
 /// one in a module body does not (docs/01 §7, #536).

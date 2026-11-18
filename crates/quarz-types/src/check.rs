@@ -1010,7 +1010,7 @@ pub struct ReplSnapshot {
     file_mains: Vec<Option<ClassId>>,
     self_news: Vec<SelfNew>,
     generated_news: Vec<(ClassId, ClassId, MethodId, Option<MethodId>)>,
-    repl_ctor_marks: (usize, usize, usize),
+    repl_ctor_marks: (usize, usize, usize, usize),
     static_ctor_marks: (usize, usize, usize),
     static_ctor_inits: Vec<ClassId>,
     refused_ctors: Vec<(ClassId, Option<MethodId>, String)>,
@@ -1195,10 +1195,11 @@ pub struct Checker {
     /// against every site and its new sites against every class, the
     /// pairs before it being checked already; and how many witnesses
     /// (`World::class_ext_impls`): a new one may pin an old site for an
-    /// old class, so every pair is checked again (#504). (A later
-    /// extension that makes an old class conform to a module of a site
-    /// adds its witnesses too.)
-    repl_ctor_marks: (usize, usize, usize),
+    /// old class, so every pair is checked again (#504); and how many
+    /// extensions: a new one may make an argument's class conform where
+    /// an old subclass's overload is declared, so that another overload
+    /// fits, and every pair is checked again too (#871).
+    repl_ctor_marks: (usize, usize, usize, usize),
     /// The sites, classes and extensions the record-only pass before each
     /// compile-time run has seen (`record_inherited_constructors`).
     static_ctor_marks: (usize, usize, usize),
@@ -1351,7 +1352,7 @@ impl Checker {
             extension_ambiguities: 0,
             self_news: Vec::new(),
             generated_news: Vec::new(),
-            repl_ctor_marks: (0, 0, 0),
+            repl_ctor_marks: (0, 0, 0, 0),
             static_ctor_marks: (0, 0, 0),
             static_ctor_inits: Vec::new(),
             refused_ctors: Vec::new(),
@@ -1697,8 +1698,26 @@ impl Checker {
     /// Whether `own`, the `initialize` `sub` builds itself with, takes
     /// what `new` passes for `init`, both seen from `sub` (the
     /// superclasses' type arguments substituted: `IntBox < Box[Int]`
-    /// takes `Int` where `Box#initialize` takes `T`).
+    /// takes `Int` where `Box#initialize` takes `T`). Asked under the
+    /// extensions active where `own` is declared (#871, decided
+    /// 2026-11-19): one answer for the pair, whatever the checker last
+    /// had active and wherever the `new` is written.
     fn inherited_init_fits(&self, sub: ClassId, init: Option<MethodId>, own: MethodId) -> bool {
+        let o = self.world.method(own);
+        let view = self
+            .world
+            .extensions_active_at(Some(o.owner), o.file, o.span.start);
+        self.world
+            .with_active(view, || self.inherited_init_fits_here(sub, init, own))
+    }
+
+    /// `inherited_init_fits` under the extensions active now.
+    fn inherited_init_fits_here(
+        &self,
+        sub: ClassId,
+        init: Option<MethodId>,
+        own: MethodId,
+    ) -> bool {
         let params: Vec<Type> = self
             .world
             .class(sub)
@@ -2759,8 +2778,10 @@ impl Checker {
         // calling `new`, or an instance method calling `Self.new`, needs
         // an `initialize` that takes its arguments, as in a program (a
         // failed input is discarded, so what passed stays checked).
-        let (sites, classes, witnesses) = self.repl_ctor_marks;
-        let marks = if self.world.class_ext_impls.len() == witnesses {
+        let (sites, classes, witnesses, extensions) = self.repl_ctor_marks;
+        let marks = if self.world.class_ext_impls.len() == witnesses
+            && self.world.extensions.len() == extensions
+        {
             (sites, classes)
         } else {
             (0, 0)
@@ -2777,6 +2798,7 @@ impl Checker {
             self.self_news.len(),
             self.world.classes.len(),
             self.world.class_ext_impls.len(),
+            self.world.extensions.len(),
         );
     }
 

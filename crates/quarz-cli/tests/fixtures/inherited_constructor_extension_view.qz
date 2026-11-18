@@ -1,0 +1,63 @@
+# Which `initialize` an inherited class method's `new` builds a subclass
+# with: the first of its overloads that takes what `new` passes, asked
+# under the extensions active where the overload is declared (docs/01 §3,
+# #871), whatever is active where the `new` is written.
+#
+# `V` is an `N` through a top-level extension, active where `Sub`'s
+# overloads are declared: `initialize(x: N)` takes the `V` `Base.mk`
+# passes, so `Sub.mk` builds with it.
+#
+# `W` is an `M` only under `using Conf` (an extension in a module body).
+# `Two.mk2` writes its `new` under `using Conf`, `Two.mk1` without; the
+# `initialize(x: M)` of `TwoSub`, declared where `Conf` is not active, does
+# not take a `W` there, so both build with `initialize(x: Object)`: one
+# answer for the pair, wherever the `new` is written.
+module N
+end
+class V
+end
+extension V
+  include N
+end
+class Base
+  def initialize(x: V); end
+  def self.mk(x: V) -> Self = new(x)
+end
+class Sub < Base
+  def initialize(x: N)
+    puts "N"
+  end
+  def initialize(x: Object)
+    puts "Object"
+  end
+end
+
+module M
+end
+class W
+end
+module Conf
+  extension W
+    include M
+  end
+end
+class Two
+  def initialize(x: W); end
+  def self.mk1(x: W) -> Self = new(x)
+  def self.mk2(x: W) -> Self
+    using Conf
+    new(x)
+  end
+end
+class TwoSub < Two
+  def initialize(x: M)
+    puts "M"
+  end
+  def initialize(x: Object)
+    puts "Object"
+  end
+end
+
+Sub.mk(V.new)
+TwoSub.mk1(W.new)
+TwoSub.mk2(W.new)
