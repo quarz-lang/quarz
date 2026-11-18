@@ -314,6 +314,16 @@ class Decimal
   # :ditto:
   def inspect -> String = to_s
 
+  # The value as a JSON number, its scale kept (`19.990`), never an
+  # exponent: what JSON's generate writes, and its decode into a
+  # `Decimal` reads back with the same scale (the json module, #889).
+  #
+  # ```
+  # require "json"
+  # JSON.generate([Decimal.parse("19.990")])   # => "[19.990]"
+  # ```
+  def to_json -> String = to_s
+
   # The unscaled value at the scale `s` (not below this one's).
   protected def upscaled(s: Int) -> Integer = s == @scale ? @unscaled : @unscaled * 10.to_integer ** (s - @scale)
 

@@ -1525,6 +1525,11 @@ z = JSON.decode[E]("1")
 w = JSON.decode[U]("{}")
 sd = JSON.decode[String | Date]("1")
 td = JSON.decode[Time | Date]("1")
+di = JSON.decode[Decimal | Int]("1")
+df = JSON.decode[Decimal | Float]("1")
+dsr = JSON.decode[Decimal | String]("1")
+dd = JSON.decode[Decimal | Date]("1")
+db = JSON.decode[Decimal | Bool | Array[Decimal]]("1")
 v = JSON.decode?[Hash[Int, Int]]("{}")
 def gen[T](s: String) -> T = JSON.decode[T](s)
 r: Int = JSON.decode("1")
@@ -1546,6 +1551,11 @@ ok = JSON.decode[Wrap[Wrap[Int]]]('{"x": {"x": 1}}')
         "`JSON.decode` cannot decode into String | Time: `String | Time` is a union JSON cannot tell apart: `String` and `Time` are both decoded from a string",
         "`JSON.decode` cannot decode into String | Date: `String | Date` is a union JSON cannot tell apart: `String` and `Date` are both decoded from a string",
         "`JSON.decode` cannot decode into Time | Date: `Time | Date` is a union JSON cannot tell apart: `Time` and `Date` are both decoded from a string",
+        // (A `Decimal` is decoded from a number and from a string, #889.)
+        "`JSON.decode` cannot decode into Decimal | Int: `Decimal | Int` is a union JSON cannot tell apart: `Decimal` and `Int` are both decoded from a number",
+        "`JSON.decode` cannot decode into Decimal | Float: `Decimal | Float` is a union JSON cannot tell apart: `Decimal` and `Float` are both decoded from a number",
+        "`JSON.decode` cannot decode into Decimal | String: `Decimal | String` is a union JSON cannot tell apart: `Decimal` and `String` are both decoded from a string",
+        "`JSON.decode` cannot decode into Decimal | Date: `Decimal | Date` is a union JSON cannot tell apart: `Decimal` and `Date` are both decoded from a string",
         "`JSON.decode` cannot decode into R | S: `R | S` is a union JSON cannot tell apart: `R` and `S` are both decoded from an object",
         "is a union JSON cannot tell apart: `R` and `Hash[String, Int]` are both decoded from an object",
         "is a union JSON cannot tell apart: `Array[Int]` and `Set[Int]` are both decoded from an array",
@@ -1563,6 +1573,8 @@ ok = JSON.decode[Wrap[Wrap[Int]]]('{"x": {"x": 1}}')
     }
     // (A nesting written out is no recursion.)
     assert!(!err.contains("Wrap"), "{err}");
+    // (`Decimal` beside a boolean and an array: told apart.)
+    assert!(!err.contains("Decimal | Bool"), "{err}");
 }
 
 #[test]

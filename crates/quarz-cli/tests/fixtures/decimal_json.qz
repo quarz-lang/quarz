@@ -1,0 +1,17 @@
+# `JSON.decode[Decimal]` and `JSON.generate` of a `Decimal` (#889):
+# a number's digits as written, interpreted and compiled, and the same on
+# a cold and a warm checker cache (tests/run.rs).
+require "json"
+data Line = (price: Decimal, qty: Int, note: JSON::Value, tax: Decimal?)
+lines = JSON.decode[Array[Line]]("[{\"price\": 19.990, \"qty\": 2, \"note\": [0.5, 1e2], \"tax\": null}, {\"price\": \"0.1000000000000000001\", \"qty\": 1, \"note\": null, \"tax\": 1E+2}]")
+lines.each do |l|
+  puts "#{l.price} #{l.price.scale} #{l.qty} #{l.note.inspect} #{l.tax.inspect}"
+end
+puts JSON.generate(lines)
+puts JSON.decode[Decimal](JSON.parse("0.1"))
+puts JSON.decode?[Decimal]("\"x\"").inspect
+begin
+  JSON.decode[Hash[String, Decimal]]("{\"a\": 1e10000}")
+rescue JSON::DecodeError => e
+  puts e.message
+end

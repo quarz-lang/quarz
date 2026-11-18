@@ -1,0 +1,6 @@
+19.990 3 2 JSON::Value::Array(items: [JSON::Value::Number(value: 0.5), JSON::Value::Number(value: 100.0)]) nil
+0.1000000000000000001 19 1 JSON::Value::Null 100
+[{"price":19.990,"qty":2,"note":[0.5,100.0],"tax":null},{"price":0.1000000000000000001,"qty":1,"note":null,"tax":100}]
+0.1
+nil
+$.a: a Decimal has at most 10000 digits

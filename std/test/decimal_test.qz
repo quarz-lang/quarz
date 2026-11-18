@@ -2,6 +2,12 @@ require "decimal"
 require "json"
 require "test"
 
+# For the JSON tests.
+data DecLine = (price: Decimal, qty: Int, tax: Decimal?, parts: Array[Decimal], by: Hash[String, Decimal])
+data RawInner = (w: JSON::Value)
+data RawProbe = (d: Decimal, v: JSON::Value, h: Hash[String, JSON::Value], a: Array[JSON::Value], n: RawInner, f: Float, i: Int, big: Integer)
+data PlainProbe = (v: JSON::Value, h: Hash[String, JSON::Value], f: Float, i: Int, big: Integer)
+
 # `Decimal` (quarz-lang/quarz#889): exact base-ten numbers.
 class DecimalTest < Test::Case
   def d(text: String) -> Decimal = Decimal.parse(text)
@@ -216,11 +222,104 @@ class DecimalTest < Test::Case
     assert_equal("19.99", d("19.99").inspect)
   end
 
-  # JSON before quarz-lang/quarz#889's part 2: a `Decimal` is generated
-  # as an object of its fields (part 2 writes a number), and
-  # `JSON.decode[Decimal]` does not compile (it is a class).
-  def test_json_today
-    assert_equal("{\"unscaled\":1999,\"scale\":2}", JSON.generate(d("19.99")))
+  # JSON (#889's part 2): `JSON.decode[Decimal]` reads a number's digits
+  # as written, or a string; `JSON.generate` writes a number, its scale
+  # kept. (Before, a `Decimal` was generated as an object of its fields.)
+  def test_json_decode
+    [["0.1000000000000000001", "0.1000000000000000001", 19], ["19.990", "19.990", 3], ["-0.050", "-0.050", 3],
+     ["1E+2", "100", 0], ["1.50e1", "15.0", 1], ["15e-2", "0.15", 2], ["0", "0", 0], ["-0", "0", 0],
+     ["123456789012345678901234567890", "123456789012345678901234567890", 0],
+     ["\"19.99\"", "19.99", 2], ["\"1.5e3\"", "1500", 0], ["\"+7\"", "7", 0]].each do |row|
+      x = JSON.decode[Decimal](row[0].as(String))
+      assert_equal(row[1], x.to_s, row[0].as(String))
+      assert_equal(row[2], x.scale, row[0].as(String))
+    end
+    # Errors: their path, and `parse`'s reason past a limit.
+    e = assert_raise(JSON::DecodeError) { JSON.decode[Decimal]("\"abc\"") }
+    assert_equal("$: expected a decimal (a number, or a string of one), found \"abc\"", e.message)
+    e = assert_raise(JSON::DecodeError) { JSON.decode[Array[Decimal]]("[1, true]") }
+    assert_equal("$[1]: expected a decimal (a number, or a string of one), found true", e.message)
+    e = assert_raise(JSON::DecodeError) { JSON.decode[Hash[String, Decimal]]("{\"a\": 1e10000}") }
+    assert_equal("$.a: a Decimal has at most 10000 digits", e.message)
+    t0 = Time.now
+    e = assert_raise(JSON::DecodeError) { JSON.decode[Decimal]("1e1000000000") }
+    assert_equal("$: a Decimal's exponent is too large: \"1e1000000000\"", e.message)
+    e = assert_raise(JSON::DecodeError) { JSON.decode[Decimal]("1e-1001") }
+    assert_equal("$: a Decimal's scale is 0 to 1000: \"1e-1001\"", e.message)
+    assert(Time.now - t0 < 1.seconds)
+    assert_nil(JSON.decode?[Decimal]("\"x\""))
+    assert_nil(JSON.decode?[Decimal]("1e10000"))
+    # In a `data` field, an `Array`, a `Hash`'s values, nullable; beside a
+    # boolean in a union.
+    l = JSON.decode[DecLine]("{\"price\": 0.30, \"qty\": 3, \"tax\": null, \"parts\": [1, 2.50], \"by\": {\"a\": \"0.1\"}}")
+    assert_equal("0.30", l.price.to_s)
+    assert_nil(l.tax)
+    assert_equal(["1", "2.50"], l.parts.map(&:to_s))
+    assert_equal("0.1", l.by["a"].to_s)
+    assert(JSON.decode[Decimal | Bool]("true") == true)
+    assert(JSON.decode[Decimal | Bool]("1.5") == d("1.5"))
+  end
+
+  # From a parsed `JSON::Value` the document's digits are gone: an `Int`
+  # or an `Integer` converts exactly, a `Float` through its shortest text
+  # (decode the text to keep the digits). A rotor document column decodes
+  # so (rotor#94).
+  def test_json_decode_from_a_value
+    assert_equal("19.99", JSON.decode[Decimal](JSON.parse("19.99")).to_s)
+    assert_equal("0.1", JSON.decode[Decimal](JSON.parse("0.1000000000000000001")).to_s)
+    # 18 significant digits: the `Float`'s shortest text.
+    assert_equal("0.12345678901234568", JSON.decode[Decimal](JSON.parse("0.123456789012345678")).to_s)
+    assert_equal("123456789012345678901234567890", JSON.decode[Decimal](JSON.parse("123456789012345678901234567890")).to_s)
+    assert_equal("100.0", JSON.decode[Decimal](JSON.parse("1e2")).to_s)
+  end
+
+  def test_json_generate
+    assert_equal("19.990", JSON.generate(d("19.990")))
+    assert_equal("[1500,-0.05,0]", JSON.generate([d("1.5e3"), d("-0.05"), d("0")]))
+    assert_equal("{\"price\":0.30,\"qty\":3,\"tax\":null,\"parts\":[1],\"by\":{\"a\":0.1}}", JSON.generate(DecLine.new(d("0.30"), 3, nil, [d("1")], {"a" => d("0.1")})))
+    assert_equal("[\n  1.50\n]", JSON.pretty_generate([d("1.50")]))
+    # Round trip, the scale kept.
+    [d("0.1000000000000000001"), d("-12.300"), d("0"), d("1" * 40), Decimal.new(1, scale: 1000)].each do |x|
+      back = JSON.decode[Decimal](JSON.generate(x))
+      assert_equal(x, back)
+      assert_equal(x.scale, back.scale)
+    end
+  end
+
+  # No number a document holds as text for a `Decimal` leaves the
+  # decode: every `JSON::Value` it gives is the one `JSON.parse` gives
+  # (`==` and `inspect`), and the other number fields decode as in a type
+  # without a `Decimal`.
+  def test_json_raw_numbers_stay_inside
+    docs = [
+      "{\"d\": 1.5, \"v\": 2.5, \"h\": {\"x\": 1e2, \"y\": [0.1, -0]}, \"a\": [3.25, {\"z\": 1E-3}], \"n\": {\"w\": 6.02e23}, \"f\": 1e2, \"i\": 7, \"big\": 123456789012345678901234567890}",
+      "{\"d\": \"2\", \"v\": [1.0, 0.5e1], \"h\": {}, \"a\": [], \"n\": {\"w\": null}, \"f\": -0.0, \"i\": -0, \"big\": 5}",
+      "{\"d\": 0.1000000000000000001, \"v\": 0.1000000000000000001, \"h\": {\"x\": 9007199254740993.5}, \"a\": [1e-400], \"n\": {\"w\": [1.5]}, \"f\": 0.1000000000000000001, \"i\": 0, \"big\": 1}",
+    ]
+    docs.each do |text|
+      r = JSON.decode[RawProbe](text)
+      parsed = JSON.parse(text)
+      assert_equal(parsed["v"], r.v, text)
+      assert_equal(parsed["v"].inspect, r.v.inspect, text)
+      assert_equal(parsed["h"].inspect, JSON::Value::Object.new(r.h).inspect, text)
+      assert_equal(parsed["a"].inspect, JSON::Value::Array.new(r.a).inspect, text)
+      assert_equal(parsed["n"]["w"].inspect, r.n.w.inspect, text)
+      # The same fields through a type without a `Decimal`.
+      p = JSON.decode[PlainProbe](text)
+      assert_equal(p.v, r.v, text)
+      assert_equal(p.f, r.f, text)
+      assert_equal(p.i, r.i, text)
+      assert_equal(p.big, r.big, text)
+      assert_equal(p.h.inspect, r.h.inspect, text)
+    end
+    # The same errors as without a `Decimal`: `1.0` is no `Int`.
+    a = assert_raise(JSON::DecodeError) { JSON.decode[RawProbe]("{\"d\": 1, \"v\": 1, \"h\": {}, \"a\": [], \"n\": {\"w\": 1}, \"f\": 1, \"i\": 1.0, \"big\": 1}") }
+    b = assert_raise(JSON::DecodeError) { JSON.decode[PlainProbe]("{\"v\": 1, \"h\": {}, \"f\": 1, \"i\": 1.0, \"big\": 1}") }
+    assert_equal("$.i: expected an integer that fits an Int, found 1.0", a.message)
+    assert_equal(b.message, a.message)
+    a = assert_raise(JSON::DecodeError) { JSON.decode[RawProbe]("{\"d\": 1, \"v\": 1, \"h\": {}, \"a\": [], \"n\": {\"w\": 1}, \"f\": 1, \"i\": 1, \"big\": 2.5e3}") }
+    b = assert_raise(JSON::DecodeError) { JSON.decode[PlainProbe]("{\"v\": 1, \"h\": {}, \"f\": 1, \"i\": 1, \"big\": 2.5e3}") }
+    assert_equal(b.message, a.message)
   end
 
   # Properties over seeded values.

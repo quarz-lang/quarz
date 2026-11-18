@@ -392,6 +392,8 @@ fn an_extensions_include_dispatches_alike_with_a_warm_cache() {
             "scoped_extension_after_own",
             "scoped_extension_after_own_file",
             "super_past_abstract",
+            // (A `Decimal`'s descriptor names `Decimal.parse`, #889.)
+            "decimal_json",
         ]
         .iter()
         .map(|n| (n.to_string(), std::path::Path::new(fixtures).join(format!("{n}.qz")))),
