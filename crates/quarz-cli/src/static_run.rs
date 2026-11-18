@@ -2331,6 +2331,14 @@ impl Runner {
                 notes: Vec::new(),
             });
         }
+        // So does a construction the check refused: the code it would run
+        // is not the program's (#870).
+        if let Some(why) = reflect.refused_construction.borrow_mut().take() {
+            return Err(StaticFailure {
+                message: format!("{what} did not run: {why}"),
+                notes: Vec::new(),
+            });
+        }
         match result {
             Ok(value) => {
                 let pending = std::mem::take(&mut *reflect.generated.borrow_mut());
@@ -2531,6 +2539,11 @@ struct WorldReflect {
     /// The first refusal (`reflect_refusal`), which fails the statement
     /// whatever its run rescued.
     refused: RefCell<Option<String>>,
+    /// The constructions the check refused (`StaticHost::
+    /// refused_constructors`), and the first one the run met, which
+    /// fails the statement as `refused` does: it did not run (#870).
+    refused_inits: Vec<(ClassId, Option<MethodId>, String)>,
+    refused_construction: RefCell<Option<String>>,
     /// The `data` types and enums with a field that is not Shareable,
     /// whose values cannot be baked (`bake`).
     unshareable: rustc_hash::FxHashMap<ClassId, String>,
@@ -3315,6 +3328,8 @@ impl WorldReflect {
             pending: PendingView::default(),
             in_static: std::cell::Cell::new(0),
             refused: RefCell::new(None),
+            refused_inits: Vec::new(),
+            refused_construction: RefCell::new(None),
             ends: Default::default(),
             context: EndContext::default(),
             site_types: HashMap::new(),
@@ -3331,6 +3346,7 @@ impl WorldReflect {
     ) -> WorldReflect {
         let world = host.world();
         let out = host.output();
+        self.refused_inits = host.refused_constructors().to_vec();
         for (node, args) in &out.type_args {
             let Some(quarz_types::check::CallTarget::Method { method }) = out.calls.get(node)
             else {
@@ -3411,6 +3427,16 @@ fn erase(world: &World, t: &Type) -> ClassId {
 }
 
 impl Reflect for WorldReflect {
+    fn refused_construction(&self, class: ClassId, init: Option<MethodId>) -> Option<String> {
+        let (_, _, why) = self
+            .refused_inits
+            .iter()
+            .find(|(c, i, _)| (*c, *i) == (class, init))?;
+        self.refused_construction
+            .borrow_mut()
+            .get_or_insert_with(|| why.clone());
+        Some(why.clone())
+    }
     fn fields(&self, class: ClassId) -> Vec<ReflectField> {
         self.fields
             .get(&class)

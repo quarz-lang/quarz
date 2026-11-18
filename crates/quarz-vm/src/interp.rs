@@ -3512,7 +3512,10 @@ impl Interp {
     /// names (`class` or a subclass) and the `initialize` to run: the one
     /// the checker chose for the subclass (`RtClass::inherited_inits`,
     /// recorded for every subclass the method's `new` can build, #536
-    /// step 6). A subclass without a record is an internal error.
+    /// step 6). A subclass without a record is an internal error, unless
+    /// a compile-time run reached a pair the check refused (`reflect`,
+    /// #870), which stops the run. (A compiled program has no
+    /// reflection: only the compile-time runner installs one.)
     pub fn receiver_class_init(
         &self,
         recv: &Value,
@@ -3529,11 +3532,21 @@ impl Interp {
         let info = self.program.world.class(cid);
         match info.inherited_inits.iter().find(|(i, _)| *i == init) {
             Some((_, chosen)) => Ok((cid, *chosen)),
-            None => Err(self.err_runtime(&format!(
+            None => {
+                let refused = self
+                    .reflect
+                    .borrow()
+                    .as_ref()
+                    .and_then(|r| r.refused_construction(cid, init));
+                if let Some(why) = refused {
+                    return Err(self.err_runtime(&why));
+                }
+                Err(self.err_runtime(&format!(
                 "internal error: no inherited constructor recorded for `{}` from `{}`'s `new`; please report",
-                info.name,
-                self.program.world.class(class).name
-            ))),
+                    info.name,
+                    self.program.world.class(class).name
+                )))
+            }
         }
     }
 

@@ -4,7 +4,7 @@
 //! has none (the natives are compile-time only), and a compiled program
 //! embeds nothing for them.
 
-use quarz_ir::{ClassId, FuncId};
+use quarz_ir::{ClassId, FuncId, MethodId};
 
 use crate::interp::Interp;
 use crate::value::Value;
@@ -83,6 +83,12 @@ pub trait Reflect {
     /// `Meta::ClassDef#at_class_end`: a hook to run after the class's
     /// last statement (the first under its key).
     fn at_class_end(&self, class: ClassId, key: &str, hook: Value) -> Result<(), String>;
+    /// A `new` reached `class` with no `initialize` recorded for what it
+    /// passes for `init` (`RtClass::inherited_inits`): why, if the check
+    /// refused that pair (#870). The run then stops and its statement did
+    /// not run, whatever the run rescues; `None` leaves the internal
+    /// error.
+    fn refused_construction(&self, class: ClassId, init: Option<MethodId>) -> Option<String>;
 }
 
 /// A field `def_field` asks for: its type is a class (without type
