@@ -920,6 +920,25 @@ fn a_symbol_argument_is_an_enums_variant() {
         &format!("{pre}def w(f: Format) -> Bool = :text != f\nw(Format::Json)"),
         "an enum value compared with the symbol `:text` is never equal: write `Format::Text`",
     );
+    // Only the built-in `==`: an enum's own, which may take a symbol,
+    // is not warned about.
+    no_warnings("enum Tag\n  variant Red\n  def ==(other: Object) -> Bool = other == :red\n  def hash -> Int = 1\nend\ndef w(t: Tag) -> Bool = t == :red\nw(Tag::Red)");
+    // The other pair the built-in `==` never finds equal (#884).
+    warns(
+        "def w(d: Date, t: Time) -> Bool = d == t\nw(Date.new(2026, 1, 1), Time.now)",
+        "a `Date` compared with a `Time` is never equal: compare `d == t.to_date` or `d.at(...) == t`",
+    );
+    warns(
+        "def w(d: Date, t: Time) -> Bool = t != d\nw(Date.new(2026, 1, 1), Time.now)",
+        "a `Date` compared with a `Time` is never equal",
+    );
+    // An acronym's variant is named letter by letter, as the mapping is
+    // exact: `:h_t_t_p2` is `HTTP2`.
+    err(
+        "enum Proto\n  variant HTTP2\n  variant Plain\nend\ndef f(p: Proto) -> Proto = p\nf(:http)",
+        "`:http` names no variant of `Proto` (`Proto`: :h_t_t_p2, :plain)",
+    );
+    ok("enum Proto\n  variant HTTP2\n  variant Plain\nend\ndef f(p: Proto) -> Proto = p\nf(:h_t_t_p2)");
 }
 
 #[test]

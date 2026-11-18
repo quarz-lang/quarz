@@ -7184,13 +7184,19 @@ impl Checker {
             Call(call) => {
                 let uses = self.self_uses.len();
                 let t = self.check_call(expr, call, expected);
-                // `format == :json` on an enum value compares it with a
-                // symbol, never equal: the variant is meant (#879).
+                // The built-in `==` (or `!=`) between values that are never
+                // equal: an enum value and a symbol, a `Date` and a `Time`
+                // (#879, #884).
                 if let (Some(recv), "==" | "!=", [Arg::Positional(a)]) =
                     (&call.recv, call.name.as_str(), call.args.as_slice())
                 {
-                    self.symbol_comparison(recv, a, expr.span);
-                    self.symbol_comparison(a, recv, expr.span);
+                    let builtin = matches!(self.out.calls.get(&expr.id),
+                        Some(CallTarget::Method { method }) if self.world.method(*method).is_native);
+                    if builtin {
+                        if let Some(why) = self.never_equal(recv, a) {
+                            self.warning(why, expr.span);
+                        }
+                    }
                 }
                 // `x.is_a?(k)` with a class value (`Object#is_a?`): against
                 // a type parameter's class value, checked as a test against
@@ -17170,12 +17176,7 @@ impl Checker {
     /// and the variants of that name among them with each one's enum
     /// type: `None` where the literal stays a `Symbol` (no enum, a type
     /// that takes a `Symbol`, one not known).
-    #[allow(clippy::type_complexity)]
-    fn symbol_variants_for(
-        &self,
-        name: &str,
-        expected: &Type,
-    ) -> Option<(Vec<ClassId>, Vec<(ClassId, Type)>)> {
+    fn symbol_variants_for(&self, name: &str, expected: &Type) -> Option<SymbolTargets> {
         let expected = self.infer.resolve(expected);
         if expected.has_vars() || expected.mentions_any_param() {
             return None;
@@ -17237,26 +17238,43 @@ impl Checker {
         out
     }
 
-    /// The warning for `value == :name` (or `!=`) where `value` is of an
-    /// enum with that variant (#879): an enum's `==` never finds a symbol
-    /// equal, and nothing converts the literal there.
-    fn symbol_comparison(&mut self, value: &Expr, sym: &Expr, span: Span) {
-        let ExprKind::Symbol(name) = &sym.kind else {
-            return;
+    /// Why the built-in `==` of `a` and `b` (either order) is never true,
+    /// for the pairs it is decided for: an enum value and a symbol literal
+    /// naming one of its variants, which nothing converts there (#879,
+    /// D7), and a `Date` and a `Time` (#884's decision 3). `None` for any
+    /// other pair.
+    fn never_equal(&self, a: &Expr, b: &Expr) -> Option<String> {
+        let ty = |e: &Expr| {
+            self.out
+                .node_types
+                .get(&e.id)
+                .map(|t| self.infer.resolve(t))
         };
-        let Some(t) = self.out.node_types.get(&value.id).cloned() else {
-            return;
-        };
-        if let Some((_, found)) = self.symbol_variants_for(name, &t) {
-            if let [(v, _)] = found.as_slice() {
-                let v = self.world.class(*v).name.clone();
-                self.warning(
-                    format!(
-                        "an enum value compared with the symbol `:{name}` is never equal: write `{v}`"
-                    ),
-                    span,
-                );
+        for (value, sym) in [(a, b), (b, a)] {
+            let ExprKind::Symbol(name) = &sym.kind else {
+                continue;
+            };
+            let Some(t) = ty(value) else { continue };
+            if let Some((_, found)) = self.symbol_variants_for(name, &t) {
+                if let [(v, _)] = found.as_slice() {
+                    return Some(format!(
+                        "an enum value compared with the symbol `:{name}` is never equal: write `{}`",
+                        self.world.class(*v).name
+                    ));
+                }
             }
+        }
+        let class_of = |e: &Expr| match ty(e)? {
+            Type::Class(c, _) => Some(c),
+            _ => None,
+        };
+        let (date, time) = (self.world.top_class("Date")?, self.world.top_class("Time")?);
+        match (class_of(a)?, class_of(b)?) {
+            (x, y) if (x, y) == (date, time) || (x, y) == (time, date) => Some(
+                "a `Date` compared with a `Time` is never equal: compare `d == t.to_date` or `d.at(...) == t`"
+                    .to_string(),
+            ),
+            _ => None,
         }
     }
 
@@ -19389,6 +19407,10 @@ impl Checker {
         Ok(id)
     }
 }
+
+/// The enums a symbol literal may convert to, and the variants of its
+/// name among them with each one's enum type (`symbol_variants_for`).
+type SymbolTargets = (Vec<ClassId>, Vec<(ClassId, Type)>);
 
 /// `no_key_update` as a variant's name, `NoKeyUpdate` (#879): `None`
 /// for a symbol that is no lowercase snake_case name.
