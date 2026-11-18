@@ -7,8 +7,10 @@
 //!
 //! - `i` `Int`, `I` `Integer`, `f` `Float`, `s` `String`, `b` `Bool`,
 //!   `y` `Symbol`, `n` `Nil`, `t` `Time`, `DC` `Date` (the prelude's,
-//!   class `C`, from an ISO 8601 date string), `B` `Bytes`, `v`
-//!   `JSON::Value`;
+//!   class `C`, from an ISO 8601 date string), `xC:M` `Decimal` (the
+//!   `decimal` module's, class `C`, from a JSON number's text as written
+//!   or a string, built by `Decimal.parse?`, the method `M`, which the
+//!   tree shake keeps), `B` `Bytes`, `v` `JSON::Value`;
 //! - `?N` nil or node N; `aN` an `Array`, `eN` a `Set` of node N; `hN`,
 //!   `HN` a `Hash` of `String` or `Symbol` keys to node N;
 //! - `dC:N,N,...` a `data` type: its class id, and its fields' nodes in
@@ -155,6 +157,20 @@ impl Builder<'_> {
                 if is_date(w, id) {
                     return Ok(format!("D{id}"));
                 }
+                if is_decimal(w, id) {
+                    // (`Decimal.parse?(text)`: one grammar, the module's;
+                    // nil for text that is not a decimal, `ArgumentError`
+                    // past a limit.)
+                    let parse = w.class(id).singleton_methods.get("parse?").and_then(|ids| {
+                        ids.iter()
+                            .copied()
+                            .find(|&m| w.methods[m as usize].params.len() == 1)
+                    });
+                    return match parse {
+                        Some(m) => Ok(format!("x{id}:{m}")),
+                        None => refuse("has no `Decimal.parse?` of one argument"),
+                    };
+                }
                 if id == b.array || id == b.set {
                     let Some(e) = args.first() else {
                         return refuse("has no element type");
@@ -231,7 +247,7 @@ impl Builder<'_> {
         let mut by_kind: Vec<(JsonKind, &Type, usize)> = Vec::new();
         for m in members {
             let n = self.node(m)?;
-            let kind = match self.kind(m) {
+            let kinds = match self.kind(m) {
                 // (Decided at the statement, where its descriptor is made:
                 // `check_with` keeps only the verdict of this one.)
                 Kind::Carried => continue,
@@ -248,18 +264,22 @@ impl Builder<'_> {
                         w.type_name(m)
                     ))
                 }
-                Kind::Of(k) => k,
+                Kind::Of(k) => vec![k],
+                // (A `Decimal`: a number and a string, #889.)
+                Kind::Both(a, b) => vec![a, b],
             };
-            if let Some((_, other, _)) = by_kind.iter().find(|(k, ..)| *k == kind) {
-                return Err(format!(
-                    "`{}` is a union JSON cannot tell apart: `{}` and `{}` are both decoded from {}",
-                    w.type_name(t),
-                    w.type_name(other),
-                    w.type_name(m),
-                    kind.noun()
-                ));
+            for kind in kinds {
+                if let Some((_, other, _)) = by_kind.iter().find(|(k, ..)| *k == kind) {
+                    return Err(format!(
+                        "`{}` is a union JSON cannot tell apart: `{}` and `{}` are both decoded from {}",
+                        w.type_name(t),
+                        w.type_name(other),
+                        w.type_name(m),
+                        kind.noun()
+                    ));
+                }
+                by_kind.push((kind, m, n));
             }
-            by_kind.push((kind, m, n));
         }
         by_kind.sort_by_key(|(k, ..)| *k);
         let entries: Vec<String> = by_kind
@@ -278,7 +298,9 @@ impl Builder<'_> {
             Type::Param(_) => Kind::Carried,
             Type::Class(id, _) => {
                 let id = *id;
-                if [b.string, b.symbol, b.time, b.bytes].contains(&id) || is_date(w, id) {
+                if is_decimal(w, id) {
+                    Kind::Both(JsonKind::String, JsonKind::Number)
+                } else if [b.string, b.symbol, b.time, b.bytes].contains(&id) || is_date(w, id) {
                     Kind::Of(JsonKind::String)
                 } else if [b.int, b.integer, b.float].contains(&id) {
                     Kind::Of(JsonKind::Number)
@@ -300,6 +322,13 @@ impl Builder<'_> {
     }
 }
 
+/// Whether class `id` is the `decimal` module's `Decimal` (#889),
+/// decoded from a JSON number's text or a string, not as an object.
+fn is_decimal(w: &World, id: ClassId) -> bool {
+    let c = w.class(id);
+    c.name == "Decimal" && w.std_files.contains(&c.file)
+}
+
 /// Whether class `id` is the prelude's `Date` (#884), decoded from its
 /// ISO 8601 text, not as a `data` type's object.
 fn is_date(w: &World, id: ClassId) -> bool {
@@ -310,6 +339,8 @@ fn is_date(w: &World, id: ClassId) -> bool {
 /// What a union's member is decoded from.
 enum Kind {
     Of(JsonKind),
+    /// Two kinds: a `Decimal`, from a number or a string.
+    Both(JsonKind, JsonKind),
     /// Every JSON value: `JSON::Value`.
     Any,
     /// Not known yet: a type parameter the generated method carries.

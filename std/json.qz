@@ -354,7 +354,12 @@ module JSON
   # `Float` (any number), `String`, `Bool`, `Symbol` (from a string),
   # `Nil`, `U?` (`null` gives nil), `Array[U]`, `Set[U]`, `Hash[String, U]`
   # and `Hash[Symbol, U]` (from an object), `Time` (an RFC 3339 string),
-  # `Bytes` (a standard Base64 string), `JSON::Value` (the sub-tree as it
+  # `Date` (an ISO 8601 date string, `YYYY-MM-DD`), `Bytes` (a standard
+  # Base64 string), `Decimal` (the decimal module's,
+  # from a number's digits as the text writes them, or a string of one;
+  # from an already parsed `JSON::Value`, an integer exactly and a
+  # fraction through its `Float`'s shortest text: decode the text to keep
+  # the digits), `JSON::Value` (the sub-tree as it
   # is), a union whose members the kind of the JSON value tells apart
   # (below), and a `data` type whose fields are of these types (its type
   # arguments applied), from an object. A field the object does not have
@@ -365,10 +370,11 @@ module JSON
   # call.
   #
   # A union takes at most one member from each kind of JSON value:
-  # strings (`String`, `Symbol`, `Time`, `Bytes`), numbers (`Int`,
+  # strings (`String`, `Symbol`, `Time`, `Date`, `Bytes`), numbers (`Int`,
   # `Integer`, `Float`), `true` and `false` (`Bool`), arrays (`Array`,
   # `Set`) and objects (a `data` type or a `Hash`), and nil for `null`
-  # as in `U?`; the value's kind picks the member. A union with two
+  # as in `U?`; a `Decimal` takes both numbers and strings. The value's
+  # kind picks the member. A union with two
   # members of one kind (`String | Time`, `Int | Float`, two `data`
   # types), or `JSON::Value` beside another member, is refused at the
   # call.

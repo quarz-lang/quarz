@@ -3,7 +3,7 @@
 
 use crate::rc::Rc;
 
-use quarz_ir::{ClassId, RtClassKind};
+use quarz_ir::{ClassId, MethodId, RtClassKind};
 use smallvec::smallvec;
 
 use crate::interp::{EvalResult, Flow, Interp, NativeFn};
@@ -21,6 +21,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             src: text.as_bytes(),
             pos: 0,
             depth: 0,
+            raw: false,
         };
         p.skip_ws();
         let v = p.value()?;
@@ -111,6 +112,10 @@ enum Node {
     /// string, built by `Date`'s `initialize` (which refuses a day that
     /// does not exist).
     Date(ClassId),
+    /// A `Decimal` (#889), of the class it names: a JSON number's text as
+    /// the document writes it (the parser's raw mode keeps it), or a
+    /// string, built by `Decimal.parse`.
+    Decimal(ClassId, MethodId),
     Bytes,
     Value,
     Opt(usize),
@@ -145,6 +150,10 @@ fn descriptor(text: &str, classes: usize) -> Option<Vec<Node>> {
                 "n" => Node::Nil,
                 "t" => Node::Time,
                 "D" => Node::Date(rest.parse().ok()?),
+                "x" => {
+                    let (c, m) = rest.split_once(':')?;
+                    Node::Decimal(c.parse().ok()?, m.parse().ok()?)
+                }
                 "B" => Node::Bytes,
                 "v" => Node::Value,
                 "?" => Node::Opt(num(rest)?),
@@ -208,6 +217,10 @@ fn decode(interp: &Interp, args: &crate::interp::Args, maybe: bool) -> EvalResul
     let Some(nodes) = descriptor(&text, interp.program.world.classes.len()) else {
         return Err(interp.err_type("JSON.decode: a malformed type descriptor"));
     };
+    // (A `Decimal` reads a number's digits as written: the parser keeps
+    // the text of a number with a fraction or an exponent, which only the
+    // decoder sees, `Decoder::cooked`.)
+    let raw = nodes.iter().any(|n| matches!(n, Node::Decimal(..)));
     let doc = match args.arg(0) {
         v @ (Value::Str(_) | Value::Short(_)) => {
             let text = string(interp, v, "text")?;
@@ -217,6 +230,7 @@ fn decode(interp: &Interp, args: &crate::interp::Args, maybe: bool) -> EvalResul
                 src: text.as_bytes(),
                 pos: 0,
                 depth: 0,
+                raw,
             };
             p.skip_ws();
             let parsed = p.value().and_then(|v| {
@@ -268,8 +282,24 @@ impl Decoder<'_> {
         };
         let c = self.classes;
         let is_null = class == c.null;
+        // (A raw number, `Parser::raw`, as the parser makes it otherwise:
+        // every node but a `Decimal` sees it so; a nullable node and a
+        // union pass it on to their member as it is.)
+        let (v, inner) = match (&node, &inner) {
+            (Node::Decimal(..) | Node::Opt(_) | Node::Union(_), _) => (v.clone(), inner),
+            (_, Some(Value::Str(_) | Value::Short(_))) if class == c.number => {
+                let cooked = self.cooked(v)?;
+                let inner = match &cooked {
+                    Value::Object(o) => o.field(0),
+                    _ => None,
+                };
+                (cooked, inner)
+            }
+            _ => (v.clone(), inner),
+        };
+        let v = &v;
         match node {
-            Node::Value => Ok(v.clone()),
+            Node::Value => self.cooked(v),
             Node::Union(ref entries) => {
                 let kind = if class == c.string {
                     b's'
@@ -367,6 +397,43 @@ impl Decoder<'_> {
                         other => DecodeFail::Raised(other),
                     })
             }
+            Node::Decimal(decimal, parse) if class == c.number || class == c.string => {
+                // The number's text as written (raw), an integer's digits,
+                // a parsed `Float`'s shortest text, or the string.
+                let text = match &inner {
+                    Some(Value::Int(i)) => i.to_string(),
+                    Some(Value::BigInt(b)) => b.to_string(),
+                    Some(Value::Float(f)) => crate::interp::format_float(*f),
+                    Some(s @ (Value::Str(_) | Value::Short(_))) => {
+                        string(self.interp, s, "number")?.to_string()
+                    }
+                    _ => return Err(self.shape(&node, &self.found(v))),
+                };
+                // (`Decimal.parse?`, which the descriptor names: one
+                // grammar, the module's. Nil for text that is not a
+                // decimal: the shape's error; an `ArgumentError` past a
+                // limit: its message at the path; anything else goes
+                // through as it is.)
+                match self.interp.invoke(
+                    parse,
+                    Value::Class(decimal),
+                    smallvec![Value::string(text)],
+                    Vec::new(),
+                    None,
+                ) {
+                    Ok(Value::Nil) => Err(self.shape(&node, &self.found(v))),
+                    Ok(d) => Ok(d),
+                    Err(Flow::Raise(exc))
+                        if self
+                            .interp
+                            .exception_is_a(&exc, self.interp.program.exc.argument_error) =>
+                    {
+                        let m = self.interp.exception_message(&exc);
+                        Err(DecodeFail::Shape(format!("{}: {m}", self.path)))
+                    }
+                    Err(other) => Err(DecodeFail::Raised(other)),
+                }
+            }
             Node::Bytes if class == c.string => {
                 use base64::Engine;
                 let s = string(self.interp, &inner.unwrap_or(Value::Nil), "string")?.to_string();
@@ -449,6 +516,42 @@ impl Decoder<'_> {
             }
             _ => Err(self.shape(&node, &self.found(v))),
         }
+    }
+
+    /// `v` with every raw number in it (`Parser::raw`) a `Float`, as the
+    /// parser makes it otherwise: what a `JSON::Value` the decode gives
+    /// holds, and what every node but a `Decimal` reads.
+    fn cooked(&self, v: &Value) -> Result<Value, DecodeFail> {
+        let c = self.classes;
+        let Value::Object(o) = v else {
+            return Ok(v.clone());
+        };
+        Ok(match o.field(0) {
+            Some(Value::Str(_) | Value::Short(_)) if o.class == c.number => {
+                let text =
+                    string(self.interp, &o.field(0).unwrap_or(Value::Nil), "number")?.to_string();
+                // (The parser's conversion, which checked the text.)
+                let f = number_float(&text).ok_or_else(|| {
+                    DecodeFail::Raised(self.interp.raise(c.parse_error, "invalid number"))
+                })?;
+                variant(c.number, Value::Float(f))
+            }
+            Some(Value::Array(items)) if o.class == c.array => {
+                let mut out = Vec::with_capacity(items.len());
+                for item in items.values().iter() {
+                    out.push(self.cooked(item)?);
+                }
+                variant(c.array, Value::array(out))
+            }
+            Some(Value::Hash(h)) if o.class == c.object => {
+                let mut members = ValueMap::default();
+                for (k, item) in h.as_map().iter() {
+                    members.insert(k.clone(), self.cooked(item)?);
+                }
+                variant(c.object, Value::Hash(Rc::new(HashData::from(members))))
+            }
+            _ => v.clone(),
+        })
     }
 
     /// An object's members, by key.
@@ -535,6 +638,7 @@ impl Decoder<'_> {
             Node::Nil => "null".to_string(),
             Node::Time => "an RFC 3339 time string".to_string(),
             Node::Date(_) => "an ISO 8601 date string (YYYY-MM-DD)".to_string(),
+            Node::Decimal(..) => "a decimal (a number, or a string of one)".to_string(),
             Node::Bytes => "a Base64 string".to_string(),
             Node::Value => "a JSON value".to_string(),
             Node::Opt(_) => "a value or null".to_string(),
@@ -566,6 +670,13 @@ impl Decoder<'_> {
 
 // ----- parsing ------------------------------------------------------------------
 
+/// A JSON number's text with a fraction or an exponent as a `Float`: the
+/// one conversion, for the parser and for a raw number cooked
+/// (`Decoder::cooked`).
+fn number_float(text: &str) -> Option<f64> {
+    text.parse().ok()
+}
+
 const MAX_NESTING: usize = 100;
 
 struct Parser<'a> {
@@ -574,6 +685,10 @@ struct Parser<'a> {
     src: &'a [u8],
     pos: usize,
     depth: usize,
+    /// Whether a number with a fraction or an exponent keeps its text (a
+    /// `Number` holding a string, for `JSON.decode` into a `Decimal`):
+    /// such a value never leaves the native (`Decoder::cooked`).
+    raw: bool,
 }
 
 impl Parser<'_> {
@@ -756,8 +871,14 @@ impl Parser<'_> {
             }
         }
         let text = std::str::from_utf8(&self.src[start..self.pos]).unwrap_or("0");
+        if is_float && self.raw {
+            return Ok(variant(
+                self.classes.number,
+                Value::string(text.to_string()),
+            ));
+        }
         if is_float {
-            let f: f64 = text.parse().map_err(|_| self.error("invalid number"))?;
+            let f = number_float(text).ok_or_else(|| self.error("invalid number"))?;
             Ok(variant(self.classes.number, Value::Float(f)))
         } else {
             // An integer: an `Int`, or an `Integer` (exact) when too large.

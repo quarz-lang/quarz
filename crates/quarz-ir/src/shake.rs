@@ -424,8 +424,9 @@ fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
             Constant::Symbol(s) => visit(Ref::Name(s)),
             Constant::Regexp { .. } => visit(Ref::Regexp),
             // A `JSON.decode[T]` descriptor: the native builds values of
-            // the `data` classes it names (`dC:...`), and of `Date` (`DC`,
-            // by its `initialize`, a runtime name).
+            // the `data` classes it names (`dC:...`), of `Date` (`DC`, by
+            // its `initialize`, a runtime name), and of `Decimal` (`xC:M`,
+            // by `Decimal.parse?`, the method `M`).
             Constant::Str(s) if s.starts_with(crate::JSON_TYPE_PREFIX) => {
                 for n in s[crate::JSON_TYPE_PREFIX.len()..].split(';') {
                     if let Some(c) = n
@@ -437,6 +438,14 @@ fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
                     }
                     if let Some(c) = n.strip_prefix('D').and_then(|c| c.parse::<ClassId>().ok()) {
                         visit(Ref::Class(c));
+                    }
+                    // (A `Decimal`, `xC:M`: built by `Decimal.parse?`, the
+                    // method `M`, which nothing else in the program may call.)
+                    if let Some((c, m)) = n.strip_prefix('x').and_then(|n| n.split_once(':')) {
+                        if let (Ok(c), Ok(m)) = (c.parse::<ClassId>(), m.parse::<MethodId>()) {
+                            visit(Ref::Class(c));
+                            visit(Ref::Method(m));
+                        }
                     }
                 }
             }
