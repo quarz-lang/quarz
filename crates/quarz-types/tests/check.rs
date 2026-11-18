@@ -3294,8 +3294,15 @@ fn static_declarations() {
     );
     // `Meta::ClassDef[X]` is a `Type[X]`.
     ok("class Model\n  static def self.me -> Type[Model] = self\n  static def self.named -> String = self.name\nend");
-    // `Type` is not for subclassing outside the prelude.
+    // `Type` is not for subclassing outside the prelude, nor `Class`, and
+    // a class is not included: `World::replaceable_type_classes` keys its
+    // kept result on the superclasses alone because of these (#717).
     err("class K < Type[Int]; end", "cannot inherit from `Type`");
+    err("class K < Class; end", "cannot inherit from `Type`");
+    err(
+        "class A; end\nclass B\n  include A\nend",
+        "only modules can be included",
+    );
 }
 
 #[test]
