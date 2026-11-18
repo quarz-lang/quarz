@@ -144,6 +144,11 @@ pub struct Generated {
     /// Made by `def_initialize` (docs/14 §5): an `initialize` overload.
     #[serde(default)]
     pub initialize: bool,
+    /// Made from a block given to `def_field` (#890, docs/14 §5): the
+    /// initializer of that field, whose result each generated
+    /// `initialize` of the class assigns to it at its end.
+    #[serde(default)]
+    pub initializes: Option<String>,
     /// Where the block is written: the class or module whose method it is
     /// in (`None`: a file's top level), its file and position. Its types
     /// were resolved, and its body checked, there; an inherited `new`'s
@@ -2922,6 +2927,24 @@ impl World {
                 out.push((f.clone(), subst.clone()));
             }
         }
+        out
+    }
+
+    /// The field initializers of class `id` (#890, docs/14 §5), its own,
+    /// in declaration order: each method with the field it initializes,
+    /// which every generated `initialize` of the class runs at its end.
+    pub fn field_initializers(&self, id: ClassId) -> Vec<(MethodId, &str)> {
+        let mut out: Vec<(MethodId, &str)> = self
+            .class(id)
+            .methods
+            .values()
+            .flatten()
+            .filter_map(|&m| {
+                let f = self.method(m).generated.as_ref()?.initializes.as_deref()?;
+                Some((m, f))
+            })
+            .collect();
+        out.sort_by_key(|(m, _)| *m);
         out
     }
 

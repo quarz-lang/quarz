@@ -754,7 +754,7 @@ impl<'a> FnBuilder<'a> {
                     && m.is_native
                     && matches!(
                         m.name.as_str(),
-                        "def_method" | "def_class_method" | "def_initialize"
+                        "def_method" | "def_class_method" | "def_initialize" | "def_field"
                     )
             })
         {
@@ -1389,6 +1389,11 @@ impl<'a> FnBuilder<'a> {
             let site = self.load_const(Constant::Int(call as i64));
             let s = self.sym_const(quarz_ir::FIELD_REF_SITE);
             a.kw.push((s, site));
+            // (`def_field`'s block, its field's initializer, is generated
+            // as a method's body is, #890.)
+            if info.name == "def_field" {
+                self.pass_carried_type_args(call, &mut a);
+            }
         } else if info.is_native {
             self.pass_carried_type_args(call, &mut a);
         }

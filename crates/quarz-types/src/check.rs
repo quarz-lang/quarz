@@ -3278,6 +3278,38 @@ impl Checker {
                 }
             }
         }
+        // A class with field initializers runs them from its generated
+        // `initialize`s (#890, docs/14 §5): it must have one of its own.
+        // (A written one, or one generated before them, is refused at
+        // the statement.)
+        for cid in 0..self.world.classes.len() as ClassId {
+            let Some(&(m, field)) = self.world.field_initializers(cid).first() else {
+                continue;
+            };
+            let Some((file, span)) = self.world.method(m).generated.as_ref().map(|g| g.by) else {
+                continue;
+            };
+            if !in_files(file) || failed.contains(&cid) {
+                continue;
+            }
+            if self
+                .world
+                .class(cid)
+                .methods
+                .get("initialize")
+                .is_none_or(|ms| ms.is_empty())
+            {
+                let cname = self.world.class(cid).name.clone();
+                let field = field.to_string();
+                self.error_in(
+                    file,
+                    format!(
+                        "`@{field}` of `{cname}` has an initializer, which only a generated `initialize` of `{cname}` runs, and `{cname}` has none: generate one (`def_initialize`)"
+                    ),
+                    span,
+                );
+            }
+        }
         // The conformance of these files' classes deferred past their
         // statements (docs/14 §5), which may have generated what they
         // lacked.

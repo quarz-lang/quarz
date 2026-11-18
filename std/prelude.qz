@@ -311,10 +311,20 @@ module Meta
     # `reader:` and `writer:` ask for (as `attr_reader`/`attr_writer`).
     # Its result is a handle to the field (`Meta::FieldRef`), for the
     # methods the statement generates to read and write it.
-    static native def def_field[U](name: Symbol, type: Type[U], default: U, *, var: Bool = false, reader: Bool = false, writer: Bool = false) -> FieldRef[T, U]
+    #
+    # With a block, the field's initializer: every generated `initialize`
+    # of the class (`def_initialize`) runs it on the new object at its
+    # end, after its own block, and assigns its result to the field, which
+    # holds `default` until then (`var` or not). The class's initializers
+    # run in the order their fields were declared, each with every field
+    # assigned, so one may read the fields an earlier one or the
+    # `initialize`'s block assigned. The class's `initialize`s must all be
+    # generated, after its initializers; a subclass's `initialize` runs
+    # them through `super`.
+    static native def def_field[U](name: Symbol, type: Type[U], default: U, *, var: Bool = false, reader: Bool = false, writer: Bool = false, &init: (T.() -> U)?) -> FieldRef[T, U]
     # The same for a field of type `U?` (`nullable: true`), whose
     # default may be `nil`.
-    static native def def_field[U](name: Symbol, type: Type[U], default: U?, *, nullable: Bool, var: Bool = false, reader: Bool = false, writer: Bool = false) -> FieldRef[T, U?]
+    static native def def_field[U](name: Symbol, type: Type[U], default: U?, *, nullable: Bool, var: Bool = false, reader: Bool = false, writer: Bool = false, &init: (T.() -> U?)?) -> FieldRef[T, U?]
     # A handle to the field `@name` of the class, its own, inherited or
     # generated (by this statement or another), whose declared type is
     # exactly `U` (written as the type argument: `field_ref[Int](:views)`),

@@ -778,6 +778,48 @@ end
     }
 }
 
+/// #890: a library's base class gives each of an application's classes
+/// a field per statement call, of the application's type, filled by its
+/// initializer when the constructor the library generates once runs (the
+/// class Shareable, the field not `var`). Interpreted and compiled.
+#[test]
+fn a_librarys_field_initializers_run_in_an_applications_classes() {
+    let w = World::new();
+    w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
+    w.write(
+        "lib/src/store.qz",
+        r##"abstract class Store
+  include Shareable
+  @raw: Hash[Symbol, String] = {}
+  def raw(n: Symbol) -> String? = @raw[n]?
+  static def self.document[T](name: Symbol, type: Type[T]) -> Void
+    n = name
+    def_field(name, type, nil, nullable: true, reader: true) do -> T?
+      (s = raw(n)) ? JSON.decode[T](s) : nil
+    end
+  end
+  static def self.table -> Void
+    def_initialize(:raw) do |raw: Hash[Symbol, String]|
+      @raw = raw
+    end
+  end
+end
+"##,
+    );
+    w.commit("lib", Some("v0.1.0"));
+    let dep = format!("Lib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("lib"));
+    w.app(
+        &dep,
+        "data Settings = (theme: String)\ndata Prefs = (lang: String, size: Int = 3)\nclass Page < Lib::Store\n  document :settings, Settings\n  document :prefs, Prefs\n  table\nend\np = Page.new({settings: \"{\\\"theme\\\":\\\"dark\\\"}\", prefs: \"{\\\"lang\\\":\\\"ja\\\"}\"})\nif (s = p.settings) && (q = p.prefs)\n  puts s.theme, q.lang, q.size\nend\nputs Page.new({}).settings.nil?\n",
+    );
+    let want = "dark\nja\n3\ntrue\n";
+    assert_eq!(w.ok("app", &["run"]), want);
+    let exe = w.path("app/app-bin");
+    w.ok("app", &["build", "-o", exe.to_str().unwrap()]);
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), want);
+}
+
 /// An inherited class method's `new` builds a subclass with the first of
 /// its `initialize` overloads that takes what `new` passes, asked under the
 /// extensions active where the overload is declared (docs/01 §3, #871):

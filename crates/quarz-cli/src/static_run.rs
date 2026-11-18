@@ -527,6 +527,8 @@ impl Runner {
             };
             let at = if g.initialize {
                 "`def_initialize`".to_string()
+            } else if let Some(f) = &g.initializes {
+                format!("the block given to `def_field(:{f})`")
             } else {
                 format!(
                     "`{}(:{})`",
@@ -652,6 +654,10 @@ impl Runner {
             } else {
                 ret.subst(&subst)
             };
+            if let Some(f) = &g.initializes {
+                field_initializer_refusal(world, g.class, f, &ret)
+                    .map_err(|why| fail(format!("{at}: {why}")))?;
+            }
             if let Some(p) = param_types
                 .iter()
                 .chain(std::iter::once(&ret))
@@ -820,6 +826,7 @@ impl Runner {
                     doc: g.doc,
                     keywords: keyword_hash,
                     initialize: g.initialize,
+                    initializes: g.initializes.clone(),
                     decode,
                     written_at: written_at(
                         world,
@@ -2689,6 +2696,45 @@ struct PendingGen {
     type_args: Vec<ClassId>,
     /// `override: true` (docs/14 §5).
     override_: bool,
+    /// `def_field`'s block: the initializer of that field (#890).
+    initializes: Option<String>,
+}
+
+/// Why `class` cannot take an initializer of its field `@field` whose
+/// block gives `ret` (#890, docs/14 §5), if it cannot: the field's type
+/// must take the block's result, and every `initialize` of the class must
+/// be generated and come after its initializers (each runs them at its
+/// end, in declaration order: one generated before would not, and a
+/// written one never does).
+fn field_initializer_refusal(
+    world: &World,
+    class: ClassId,
+    field: &str,
+    ret: &Type,
+) -> Result<(), String> {
+    let cname = &world.class(class).name;
+    if let Some(f) = world.class(class).fields.iter().find(|f| f.name == field) {
+        if !world.is_subtype(ret, &f.ty) {
+            return Err(format!(
+                "the block gives {}, but `@{field}` is {}",
+                world.type_name(ret),
+                world.type_name(&f.ty)
+            ));
+        }
+    }
+    let inits = world.class(class).methods.get("initialize");
+    let inits = inits.map(|ms| ms.as_slice()).unwrap_or_default();
+    if inits.iter().any(|&m| world.method(m).generated.is_none()) {
+        return Err(format!(
+            "`{cname}` has a written `initialize`, which does not run initializers: a class with field initializers has only generated `initialize`s (`def_initialize`)"
+        ));
+    }
+    if !inits.is_empty() {
+        return Err(format!(
+            "`{cname}` already has a generated `initialize`, which would not run the initializer: declare the fields with initializers before `def_initialize`"
+        ));
+    }
+    Ok(())
 }
 
 /// A compile-time value as a generated method embeds it (docs/14 §5),
@@ -3649,7 +3695,13 @@ impl Reflect for WorldReflect {
             visibility: request.visibility,
             func: request.func,
             captures,
-            doc: self.doc.borrow_mut().take(),
+            // (An initializer is no documented method: a `doc` before
+            // `def_field` stays for the next generation.)
+            doc: if request.initializes.is_some() {
+                None
+            } else {
+                self.doc.borrow_mut().take()
+            },
             keywords: request.keywords.map(|ks| {
                 ks.into_iter()
                     .map(|k| (k.name, k.ty, k.required, k.nullable, k.ty_ref))
@@ -3658,6 +3710,7 @@ impl Reflect for WorldReflect {
             initialize: request.initialize,
             type_args: request.type_args,
             override_: request.override_,
+            initializes: request.initializes,
         }));
         Ok(generated.len() - 1)
     }

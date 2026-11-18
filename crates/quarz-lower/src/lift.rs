@@ -274,6 +274,46 @@ impl Lowerer {
                         .extend(std::iter::repeat_n(line, b.insts.len() - before));
                 }
             }
+            // A generated `initialize` ends by running the class's field
+            // initializers, in declaration order, each result assigned to
+            // its field (#890, docs/14 §5): before each normal return of
+            // its body (the end, or a `next` at its top level).
+            if old == g.func && g.initialize {
+                let owner = world.method(mid).owner;
+                let inits: Vec<(MethodId, u32)> = world
+                    .field_initializers(owner)
+                    .into_iter()
+                    .filter_map(|(m, field)| Some((m, world.field_index(owner, field)? as u32)))
+                    .collect();
+                for b in &mut f.blocks {
+                    if inits.is_empty() || !matches!(b.term, Term::Return(_)) {
+                        continue;
+                    }
+                    let before = b.insts.len();
+                    let line = b.lines.last().copied().unwrap_or_default();
+                    for &(m, index) in &inits {
+                        let obj = baker.reg();
+                        b.insts.push(Inst::SelfRef { dst: obj });
+                        let value = baker.reg();
+                        b.insts.push(Inst::Call {
+                            dst: value,
+                            kind: CallKind::Method(m),
+                            recv: None,
+                            args: Vec::new(),
+                            splat: false,
+                            kw: Vec::new(),
+                            kw_splat: None,
+                            block: None,
+                            moved: 0,
+                            recv_classes: None,
+                            on_self: true,
+                        });
+                        baker.field_set(&mut b.insts, obj, owner, index, value);
+                    }
+                    b.lines
+                        .extend(std::iter::repeat_n(line, b.insts.len() - before));
+                }
+            }
             f.nregs = baker.nregs;
             f.consts = baker.consts;
             self.set_func(new, f);
