@@ -1194,13 +1194,17 @@ pub struct Checker {
     /// against every site and its new sites against every class, the
     /// pairs before it being checked already; and how many witnesses
     /// (`World::class_ext_impls`): a new one may pin an old site for an
-    /// old class, so every pair is checked again (#504).
+    /// old class, so every pair is checked again (#504). (A later
+    /// extension that makes an old class conform to a module of a site
+    /// adds its witnesses too.)
     repl_ctor_marks: (usize, usize, usize),
-    /// The same marks for the record-only pass before each compile-time
-    /// run (`record_inherited_constructors`), and the classes a statement
-    /// generated an `initialize` into since: it may change the choice for
-    /// a pair seen before of that class or a class below it.
+    /// The sites, classes and extensions the record-only pass before each
+    /// compile-time run has seen (`record_inherited_constructors`).
     static_ctor_marks: (usize, usize, usize),
+    /// The classes a statement generated an `initialize` into since the
+    /// last pass (before a run, or the REPL's after an input): it may
+    /// change the choice for a pair seen before of that class or of a
+    /// class below it, which the next pass checks again.
     static_ctor_inits: Vec<ClassId>,
     /// The run-time tests against a module accepted so far, for the REPL:
     /// a later input that makes one unanswerable is refused there (#515).
@@ -1788,20 +1792,24 @@ impl Checker {
     /// (`check_all`), which checks every pair again. Like the REPL's pass,
     /// it checks only the pairs not seen before, and those of the classes
     /// at or below one a statement generated an `initialize` into since
-    /// (`static_ctor_inits`); every pair when an extension's witness came
-    /// since (it may pin an old site for an old class).
+    /// (`static_ctor_inits`); every pair when an extension came since (a
+    /// later unit's: it may make an old class conform to a module of a
+    /// site, and a statement may run that site's `new` on it before the
+    /// unit's own pass).
+    /// (A witness of an extension's conformance, which the REPL's pass
+    /// also counts, changes what is reported, not what is recorded.)
     fn record_inherited_constructors_so_far(&mut self) {
         let now = (
             self.self_news.len(),
             self.world.classes.len(),
-            self.world.class_ext_impls.len(),
+            self.world.extensions.len(),
         );
         // (Nothing new since the last pass: a round's usual case.)
         if self.static_ctor_marks == now && self.static_ctor_inits.is_empty() {
             return;
         }
-        let (sites, classes, witnesses) = self.static_ctor_marks;
-        let marks = if self.world.class_ext_impls.len() == witnesses {
+        let (sites, classes, extensions) = self.static_ctor_marks;
+        let marks = if self.world.extensions.len() == extensions {
             (sites, classes)
         } else {
             (0, 0)
@@ -2706,7 +2714,11 @@ impl Checker {
         } else {
             (0, 0)
         };
-        self.check_inherited_constructors_from(marks, &[]);
+        // (And the pairs a generated `initialize` may change, generated
+        // since the last pass before a run: an input's statement may
+        // generate one into a class of an earlier input.)
+        let again = std::mem::take(&mut self.static_ctor_inits);
+        self.check_inherited_constructors_from(marks, &again);
         self.check_abstract_receivers();
         self.check_abstract_type_args();
         self.recheck_runtime_tests();
