@@ -1794,8 +1794,72 @@ pub fn range_to_vec(interp: &Interp, r: &RangeVal) -> Result<Vec<Value>, Flow> {
                 .map(Value::string)
                 .collect())
         }
-        _ => Err(interp.err_type("cannot iterate over an endless or non-integer range")),
+        _ => match date_steps(interp, r) {
+            Some(dates) => {
+                let (mut v, last) = dates?;
+                let mut out = Vec::new();
+                while let Some(d) = v {
+                    v = date_next(interp, &d, &last, r.exclusive)?;
+                    out.push(d);
+                }
+                Ok(out)
+            }
+            None => Err(interp.err_type(NOT_ITERABLE)),
+        },
     }
+}
+
+/// What a range that does not iterate says (`Range#each`, `#to_a`, an
+/// enumerator's `next`): which ranges do.
+pub(super) const NOT_ITERABLE: &str =
+    "cannot iterate over this range: a range of Ints (its end may be left out), of Strings or of Dates (both ends given) iterates";
+
+/// A range of two `Date`s (#884): its first date, if the range holds
+/// any, and its end. It steps by `Date#succ` and compares by `Date#<=>`,
+/// the prelude's own methods of that one class; `None` for a range of
+/// anything else.
+pub(super) fn date_steps(
+    interp: &Interp,
+    r: &RangeVal,
+) -> Option<Result<(Option<Value>, Value), Flow>> {
+    let date = interp.program.world.class_by_name("Date")?;
+    let is_date = |v: &Value| matches!(v, Value::Object(o) if o.class == date);
+    if !is_date(&r.lo) || !is_date(&r.hi) {
+        return None;
+    }
+    Some(
+        date_within(interp, &r.lo, &r.hi, r.exclusive)
+            .map(|inside| (inside.then(|| r.lo.clone()), r.hi.clone())),
+    )
+}
+
+/// Whether date `d` is within a range ending at `last`.
+fn date_within(interp: &Interp, d: &Value, last: &Value, exclusive: bool) -> Result<bool, Flow> {
+    let c = match interp.send(d, "<=>", smallvec![last.clone()], None)? {
+        Value::Int(c) => c,
+        _ => return Err(interp.err_type("Date#<=> gave no Int")),
+    };
+    Ok(if exclusive { c < 0 } else { c <= 0 })
+}
+
+/// The date after `d` in a range ending at `last`, if there is one.
+pub(super) fn date_next(
+    interp: &Interp,
+    d: &Value,
+    last: &Value,
+    exclusive: bool,
+) -> Result<Option<Value>, Flow> {
+    // (The last date of all has no next: the range ends there.)
+    if !exclusive
+        && matches!(
+            interp.send(d, "<=>", smallvec![last.clone()], None)?,
+            Value::Int(0)
+        )
+    {
+        return Ok(None);
+    }
+    let next = interp.send(d, "succ", smallvec![], None)?;
+    Ok(date_within(interp, &next, last, exclusive)?.then_some(next))
 }
 
 /// The integers from `lo` to `hi`, without `hi` when `exclusive`: an
@@ -1837,6 +1901,14 @@ pub(super) fn range_each(interp: &Interp, recv: &Value, args: Args) -> EvalResul
             if let Some(mut steps) = string_steps(r) {
                 while let Some(v) = steps.next() {
                     interp.call_block(&b, smallvec![Value::string(v)])?;
+                }
+                return Ok(Value::Nil);
+            }
+            if let Some(dates) = date_steps(interp, r) {
+                let (mut v, last) = dates?;
+                while let Some(d) = v {
+                    interp.call_block(&b, smallvec![d.clone()])?;
+                    v = date_next(interp, &d, &last, r.exclusive)?;
                 }
                 return Ok(Value::Nil);
             }

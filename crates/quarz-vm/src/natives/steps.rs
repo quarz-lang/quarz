@@ -37,6 +37,15 @@ pub(super) fn start(
         (Value::Range(r), "each") if super::collections::string_steps(r).is_some() => {
             super::collections::string_steps(r).map(|s| Stepper::Strings(Box::new(s)))
         }
+        // A range of dates, as `Range#each` steps it (#884).
+        (Value::Range(r), "each") if super::collections::date_steps(interp, r).is_some() => {
+            let (next, last) = super::collections::date_steps(interp, r).expect("dates")?;
+            Some(Stepper::Dates {
+                next,
+                last,
+                exclusive: r.exclusive,
+            })
+        }
         (Value::Range(r), "each" | "step") => {
             let step = if method == "step" {
                 int_arg(0)
@@ -208,6 +217,17 @@ pub(super) fn step(interp: &Interp, st: &mut Stepper, recv: &Value) -> Result<Op
             .downcast_mut::<super::text::StringSteps>()
             .and_then(|s| s.next())
             .map(Value::string),
+        Stepper::Dates {
+            next,
+            last,
+            exclusive,
+        } => match next.take() {
+            Some(d) => {
+                *next = super::collections::date_next(interp, &d, last, *exclusive)?;
+                Some(d)
+            }
+            None => None,
+        },
         Stepper::Done | Stepper::Running => None,
     };
     if v.is_none() {
@@ -359,6 +379,6 @@ fn not_integers(interp: &Interp, method: &str) -> Flow {
     interp.err_type(if method == "step" {
         "step needs an integer range"
     } else {
-        "cannot iterate over an endless or non-integer range"
+        super::collections::NOT_ITERABLE
     })
 }

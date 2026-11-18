@@ -90,6 +90,8 @@ pub const NATIVE_NAMES: &[&str] = &[
     "each",
     "next",
     "rewind",
+    // A range of dates steps by `Date#succ` (#884).
+    "succ",
     "to_json",
     "status",
     "each_with_index_pairs",
@@ -422,7 +424,8 @@ fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
             Constant::Symbol(s) => visit(Ref::Name(s)),
             Constant::Regexp { .. } => visit(Ref::Regexp),
             // A `JSON.decode[T]` descriptor: the native builds values of
-            // the `data` classes it names (`dC:...`).
+            // the `data` classes it names (`dC:...`), and of `Date` (`DC`,
+            // by its `initialize`, a runtime name).
             Constant::Str(s) if s.starts_with(crate::JSON_TYPE_PREFIX) => {
                 for n in s[crate::JSON_TYPE_PREFIX.len()..].split(';') {
                     if let Some(c) = n
@@ -430,6 +433,9 @@ fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
                         .and_then(|n| n.split_once(':'))
                         .and_then(|(c, _)| c.parse::<ClassId>().ok())
                     {
+                        visit(Ref::Class(c));
+                    }
+                    if let Some(c) = n.strip_prefix('D').and_then(|c| c.parse::<ClassId>().ok()) {
                         visit(Ref::Class(c));
                     }
                 }

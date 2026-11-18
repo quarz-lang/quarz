@@ -6,7 +6,9 @@
 //! first; a node refers to others by their index:
 //!
 //! - `i` `Int`, `I` `Integer`, `f` `Float`, `s` `String`, `b` `Bool`,
-//!   `y` `Symbol`, `n` `Nil`, `t` `Time`, `B` `Bytes`, `v` `JSON::Value`;
+//!   `y` `Symbol`, `n` `Nil`, `t` `Time`, `DC` `Date` (the prelude's,
+//!   class `C`, from an ISO 8601 date string), `B` `Bytes`, `v`
+//!   `JSON::Value`;
 //! - `?N` nil or node N; `aN` an `Array`, `eN` a `Set` of node N; `hN`,
 //!   `HN` a `Hash` of `String` or `Symbol` keys to node N;
 //! - `dC:N,N,...` a `data` type: its class id, and its fields' nodes in
@@ -150,6 +152,9 @@ impl Builder<'_> {
                 if let Some((_, c)) = simple.iter().find(|(c, _)| *c == id) {
                     return Ok(c.to_string());
                 }
+                if is_date(w, id) {
+                    return Ok(format!("D{id}"));
+                }
                 if id == b.array || id == b.set {
                     let Some(e) = args.first() else {
                         return refuse("has no element type");
@@ -273,7 +278,7 @@ impl Builder<'_> {
             Type::Param(_) => Kind::Carried,
             Type::Class(id, _) => {
                 let id = *id;
-                if [b.string, b.symbol, b.time, b.bytes].contains(&id) {
+                if [b.string, b.symbol, b.time, b.bytes].contains(&id) || is_date(w, id) {
                     Kind::Of(JsonKind::String)
                 } else if [b.int, b.integer, b.float].contains(&id) {
                     Kind::Of(JsonKind::Number)
@@ -293,6 +298,13 @@ impl Builder<'_> {
             _ => Kind::Unexpected,
         }
     }
+}
+
+/// Whether class `id` is the prelude's `Date` (#884), decoded from its
+/// ISO 8601 text, not as a `data` type's object.
+fn is_date(w: &World, id: ClassId) -> bool {
+    let c = w.class(id);
+    c.name == "Date" && c.file == 0
 }
 
 /// What a union's member is decoded from.

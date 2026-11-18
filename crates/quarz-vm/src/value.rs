@@ -2457,6 +2457,14 @@ pub enum Stepper {
     /// A `String` range's strings (`natives::text::StringSteps`, which
     /// holds no value).
     Strings(Box<dyn std::any::Any>),
+    /// A `Date` range's dates (#884): the next one, if any, and the end,
+    /// stepped as `Range#each` steps them
+    /// (`natives::collections::date_next`).
+    Dates {
+        next: Option<Value>,
+        last: Value,
+        exclusive: bool,
+    },
     /// Past the end.
     Done,
     /// Out of the enumerator, being stepped: a step may run a subclass's
@@ -2472,6 +2480,10 @@ impl Stepper {
             Stepper::Windows(base, _, window) => {
                 window.iter().for_each(&mut *f);
                 base.each_held(f);
+            }
+            Stepper::Dates { next, last, .. } => {
+                next.iter().for_each(&mut *f);
+                f(last);
             }
             Stepper::Pairs(base, _) | Stepper::Slices(base, _) | Stepper::Inner(base) => {
                 base.each_held(f)

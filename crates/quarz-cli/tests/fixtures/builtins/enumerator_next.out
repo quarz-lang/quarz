@@ -64,6 +64,6 @@ invalid size
 [2, 0]
 [1, 2]
 TypeError: step needs an integer range
-TypeError: cannot iterate over an endless or non-integer range
-TypeError: cannot iterate over an endless or non-integer range
-TypeError: cannot iterate over an endless or non-integer range
+TypeError: cannot iterate over this range: a range of Ints (its end may be left out), of Strings or of Dates (both ends given) iterates
+TypeError: cannot iterate over this range: a range of Ints (its end may be left out), of Strings or of Dates (both ends given) iterates
+TypeError: cannot iterate over this range: a range of Ints (its end may be left out), of Strings or of Dates (both ends given) iterates

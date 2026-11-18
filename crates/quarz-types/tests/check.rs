@@ -1918,6 +1918,10 @@ fn namespaces_are_added_to_not_reopened() {
         "class C\nend\nclass C\nend",
         "classes cannot be reopened (use `extension`)",
     );
+    // `Date` is built in (#884): a program's own top-level one is refused
+    // as any built-in class's name is; one in a namespace is its own.
+    err("data Date = (x: Int)", "`Date` is already defined");
+    ok("module M\n  class Date\n  end\nend\np M::Date.new");
     ok("module Geo\n  class Point\n  end\nend\nclass Geo::Line\n  @a: Point\n  def initialize(@a: Point); end\nend\nmodule Geo::Util\n  def self.f -> Point = Point.new\nend\np Geo::Line.new(Geo::Util.f)");
     // Declarations are hoisted: a qualified one may come before its
     // namespace.
