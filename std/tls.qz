@@ -2,9 +2,9 @@ require "socket"
 
 # (The overview is the comment of `module TLS`, below.)
 
-# A TLS connection over a TCP connection: `TLSSocket.connect` makes a
-# client's, `TLSSocket.accept` a server's. Every `IO` method works on it,
-# so whatever takes an `IO` takes it.
+# A TLS connection over a TCP connection: [TLSSocket.connect] makes a
+# client's, [TLSSocket.accept] a server's. Every [IO] method works on it,
+# so whatever takes an [IO] takes it.
 #
 # ```quarz no_run
 # sock = TCPSocket.new("example.com", 443)
@@ -15,24 +15,24 @@ require "socket"
 # ```
 class TLSSocket < IO
   # Takes `socket` over and runs the TLS handshake with its peer, as
-  # `server_name` (the name sent as SNI and the one its certificate is
+  # [server_name] (the name sent as SNI and the one its certificate is
   # verified against; an IP address is allowed). When it returns, the
   # handshake is done. `socket` is closed for the program from then on:
-  # its descriptor belongs to the `TLSSocket`. Only the calling task
-  # waits; `Task.timeout` and `cancel` interrupt the handshake, closing
-  # the connection. Raises `TLS::CertificateError` when the peer's
-  # certificate is refused, `TLS::Error` for another failure.
+  # its descriptor belongs to the [TLSSocket]. Only the calling task
+  # waits; [Task.timeout] and `cancel` interrupt the handshake, closing
+  # the connection. Raises [TLS::CertificateError] when the peer's
+  # certificate is refused, [TLS::Error] for another failure.
   def self.connect(socket: TCPSocket, server_name: String, config: TLS::Config = TLS::Config.default) -> TLSSocket = handshake(socket, server_name, config)
   private native def self.handshake(socket: TCPSocket, server_name: String, config: TLS::Config) -> TLSSocket
 
   # Takes `socket` (an accepted connection) over and runs the TLS
   # handshake with its peer as the server, as `config` says. As `connect`
   # does: when it returns, the handshake is done, `socket` is closed for
-  # the program, only the calling task waits, and `Task.timeout` and
-  # `cancel` interrupt it, closing the connection. Raises `TLS::Error`
+  # the program, only the calling task waits, and [Task.timeout] and
+  # `cancel` interrupt it, closing the connection. Raises [TLS::Error]
   # when the handshake fails (the client refused the certificate, spoke
   # something else than TLS, shared no protocol version), and the
-  # socket's `SystemCallError` or `IOError` when the connection does (a
+  # socket's [SystemCallError] or [IOError] when the connection does (a
   # reset); the connection is closed. The same as
   # `config.accept(socket)`.
   #
@@ -66,11 +66,11 @@ class TLSSocket < IO
   native def server_name -> String?
 end
 
-# TLS: `require "tls"`. A `TLSSocket` is a TLS connection over a
-# `TCPSocket`, through rustls, a client's or a server's; `TLS::Config`
-# says what a client trusts and offers, `TLS::ServerConfig` what a server
+# TLS: `require "tls"`. A [TLSSocket] is a TLS connection over a
+# [TCPSocket], through rustls, a client's or a server's; [TLS::Config]
+# says what a client trusts and offers, [TLS::ServerConfig] what a server
 # presents and offers. Reads, writes and the handshake suspend only the calling task,
-# as a socket's do, and a `TLSSocket` is Shareable as every `IO`: one
+# as a socket's do, and a [TLSSocket] is Shareable as every [IO]: one
 # write call goes out whole (in records of its own), one read call takes
 # a whole unit.
 module TLS
@@ -91,12 +91,12 @@ module TLS
     # The system's store, read once at the first connection that uses it
     # (the environment variables SSL_CERT_FILE and SSL_CERT_DIR override
     # where it is looked for).
-    # Without one, that connection raises `TLS::Error` naming the places
+    # Without one, that connection raises [TLS::Error] naming the places
     # tried.
     def self.system -> Roots = new(nil)
 
     # The certificates of a PEM bundle (a database's CA, say). Raises
-    # `TLS::Error` when it holds none, or one that does not parse.
+    # [TLS::Error] when it holds none, or one that does not parse.
     def self.from_pem(pem: Bytes) -> Roots = new(check(pem))
     # :ditto:
     def self.from_pem(pem: String) -> Roots = new(check(pem.to_bytes))
@@ -121,7 +121,7 @@ module TLS
     min_version: Symbol,
     # Whether the peer's certificate is verified. `false` keeps the
     # connection encrypted but drops the peer's authentication: for tests
-    # and local setups only (`TLSSocket#verified?` says so).
+    # and local setups only ([TLSSocket#verified?] says so).
     verify: Bool
   )
     def initialize(*, roots: Roots = Roots.system, alpn: Array[String] = [], min_version: Symbol = :tls12, verify: Bool = true)
@@ -145,7 +145,7 @@ module TLS
   # to resume (rustls's default). Client certificates, OCSP stapling and
   # settings for resumption are not supported yet.
   #
-  # Its `inspect` and `to_s` never show the private key.
+  # Its [inspect] and [to_s] never show the private key.
   #
   # ```quarz no_run
   # config = TLS::ServerConfig.new(certificate: File.read("server.pem"),
@@ -163,7 +163,7 @@ module TLS
     # The oldest version accepted: `:tls12` or `:tls13`.
     min_version: Symbol
   )
-    # Raises `TLS::Error` when the certificate or the key does not parse,
+    # Raises [TLS::Error] when the certificate or the key does not parse,
     # or the key is not the certificate's; the message names which.
     def initialize(*, certificate: Bytes | String, private_key: Bytes | String,
                    alpn: Array[String] = [], min_version: Symbol = :tls12)
@@ -177,7 +177,7 @@ module TLS
       check
     end
 
-    # Runs the TLS handshake as the server on `socket`: `TLSSocket.accept`.
+    # Runs the TLS handshake as the server on `socket`: [TLSSocket.accept].
     native def accept(socket: TCPSocket) -> TLSSocket
 
     # The config, its private key hidden.
@@ -215,7 +215,7 @@ module TLS
     # A self-signed certificate for `names`, valid from now (to the
     # second, rounded down) until `valid_for` from now (to the second,
     # rounded up), with a new ECDSA P-256 key. A name that
-    # `Socket::IP.parse` reads is an IP address, any other a DNS name
+    # [Socket::IP.parse] reads is an IP address, any other a DNS name
     # (`*.example.com` matches one label); the first is also the
     # subject's common name. The certificate is no CA, so that it can be
     # the server's own certificate and the client's only root at once:
@@ -230,10 +230,10 @@ module TLS
     #
     # ## Raises
     #
-    # `ArgumentError` for no names, a name that is neither an IP address
+    # [ArgumentError] for no names, a name that is neither an IP address
     # nor a DNS name (letters, digits and `-` in dot-separated labels,
     # ASCII only: `xn--` for others; `*.` first at most), or a
-    # `valid_for` that is not positive. `NotImplementedError` when TLS is
+    # `valid_for` that is not positive. [NotImplementedError] when TLS is
     # not built in.
     def self.self_signed(names: Array[String], valid_for: Duration = 1.day) -> Certificate
       raise ArgumentError, "self_signed: no names" if names.empty?

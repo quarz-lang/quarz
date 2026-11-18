@@ -115,7 +115,7 @@ fn relative(path: &Path, dir: &Path) -> Option<String> {
 
 /// A standard library file's name (`<prelude>`, `<std:json>`) as its
 /// path under `std/`.
-fn std_path(name: &str) -> Option<String> {
+pub(super) fn std_path(name: &str) -> Option<String> {
     if name == "<prelude>" {
         return Some("prelude.qz".to_string());
     }

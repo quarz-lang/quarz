@@ -5,9 +5,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use pulldown_cmark::{
-    html, CodeBlockKind, CowStr, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
-};
+use pulldown_cmark::{html, CodeBlockKind, CowStr, Event, HeadingLevel, Options, Tag, TagEnd};
 
 use super::{first_line, Api, Item, Kind, Loaded, Page, Target};
 use quarz_types::ClassId;
@@ -38,7 +36,7 @@ fn escape(s: &str) -> String {
 
 /// The href of a link target, from a page in the same directory; one of
 /// another site, when its API is published (#448).
-fn href(loaded: &Loaded, api: &Api, target: &Target) -> Option<String> {
+pub(super) fn href(loaded: &Loaded, api: &Api, target: &Target) -> Option<String> {
     match target {
         Target::Page(p, None) => Some(page_file(p)),
         Target::Page(p, Some(member)) => {
@@ -84,8 +82,9 @@ fn safe_url(url: CowStr) -> CowStr {
     }
 }
 
-/// A doc's Markdown as HTML: raw HTML shown as text, code spans that name
-/// a documented declaration linked, `NOTE:`-style paragraphs set off, and
+/// A doc's Markdown as HTML: raw HTML shown as text, a bracket that names
+/// a documented declaration linked (`[Array#push]`, docs/13 §3), a code
+/// span plain code, `NOTE:`-style paragraphs set off, and
 /// headings `shift` levels down (`##` is an `<h4>` in a member's doc,
 /// which sits under the member's `<h3>`).
 fn markdown_html(
@@ -96,7 +95,11 @@ fn markdown_html(
     shift: usize,
 ) -> String {
     let world = &loaded.world;
-    let events: Vec<Event> = Parser::new_ext(md, Options::ENABLE_TABLES).collect();
+    let events: Vec<Event> = super::brackets::rendered(md, Options::ENABLE_TABLES, |name, _| {
+        let target = api.resolve_link(world, scope, name)?;
+        href(loaded, api, &target)
+    })
+    .collect();
     let mut out: Vec<Event> = Vec::with_capacity(events.len());
     // A Quarz code block being read: its text, colored at its end.
     let mut quarz_block: Option<String> = None;
@@ -136,21 +139,6 @@ fn markdown_html(
             })),
             Event::End(TagEnd::Heading(level)) => {
                 out.push(Event::End(TagEnd::Heading(shifted(level, shift))))
-            }
-            Event::Code(code) => {
-                let target = if super::name_shaped(&code) {
-                    api.resolve(world, scope, &code)
-                } else {
-                    scope.and_then(|s| api.resolve_bare(world, s, &code))
-                };
-                match target.as_ref().and_then(|t| href(loaded, api, t)) {
-                    Some(h) => out.push(Event::Html(CowStr::from(format!(
-                        "<a href=\"{}\"><code>{}</code></a>",
-                        escape(&h),
-                        escape(&code)
-                    )))),
-                    None => out.push(Event::Code(code)),
-                }
             }
             Event::Start(Tag::Paragraph) => {
                 let note = match events.get(i + 1) {
@@ -437,13 +425,13 @@ fn member_html(loaded: &Loaded, api: &Api, page: &Page, m: &Item) -> String {
     s
 }
 
-fn summary_list(api: &Api, pages: &[&Page]) -> String {
+fn summary_list(loaded: &Loaded, api: &Api, pages: &[&Page]) -> String {
     let mut s = String::from("<ul>\n");
     for p in pages {
         let summary = p
             .doc
             .as_ref()
-            .map(|d| first_line(d.summary()))
+            .map(|d| first_line(d.summary(), &super::linker(loaded, api, Some(p.id))))
             .unwrap_or_default();
         let _ = writeln!(
             s,
@@ -547,7 +535,7 @@ fn page_html(loaded: &Loaded, api: &Api, page: &Page) -> String {
     }
     if !nested.is_empty() {
         s.push_str("<h2>Classes and modules</h2>\n");
-        s.push_str(&summary_list(api, &nested));
+        s.push_str(&summary_list(loaded, api, &nested));
     }
     for (title, kind) in [
         ("Variants", Kind::Variant),
@@ -592,7 +580,7 @@ fn index_html(loaded: &Loaded, api: &Api) -> String {
     }
     s.push_str("<h2>Classes and modules</h2>\n");
     let all: Vec<&Page> = api.pages.iter().collect();
-    s.push_str(&summary_list(api, &all));
+    s.push_str(&summary_list(loaded, api, &all));
     for (title, items) in [("Constants", &api.constants), ("Functions", &api.functions)] {
         if items.is_empty() {
             continue;

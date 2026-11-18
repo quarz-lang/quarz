@@ -1,8 +1,8 @@
 # Cryptography: `require "crypto"`. RSA keys (PEM and DER, PKCS#8, PKCS#1
 # and SPKI) and signatures (PKCS#1 v1.5 and PSS), as HTTP Signatures, JWT
 # RS256 and webhook signatures need; AES-GCM, to encrypt a secret at rest
-# or seal a cookie; argon2id (`Crypto::Argon2`), to store passwords; and
-# `Crypto.random_bytes`, for keys and nonces.
+# or seal a cookie; argon2id ([Crypto::Argon2]), to store passwords; and
+# [Crypto.random_bytes], for keys and nonces.
 #
 # ```
 # require "crypto"
@@ -19,7 +19,7 @@
 # Keys of 1024 to 8192 bits are read (`generate` makes 2048 to 4096).
 # There is no RSA encryption, no encrypted PEM, no EC or Ed25519 key, no
 # other cipher mode (CBC, CTR), and no key derivation but
-# `Digest::PBKDF2` (argon2id makes password hashes, not keys) yet.
+# [Digest::PBKDF2] (argon2id makes password hashes, not keys) yet.
 module Crypto
   # A key that does not parse, is of another kind, or is too small; a
   # PEM text that is not one key.
@@ -32,10 +32,10 @@ module Crypto
   class AuthenticationError < Error
   end
 
-  # `n` bytes (0 to 1 MiB, `ArgumentError` otherwise) from the operating
+  # `n` bytes (0 to 1 MiB, [ArgumentError] otherwise) from the operating
   # system's cryptographic random source (`getrandom`): for keys, nonces
-  # and tokens; `Crypto::Error` if that source fails. Not a replacement
-  # for `Random`, which is reproducible.
+  # and tokens; [Crypto::Error] if that source fails. Not a replacement
+  # for [Random], which is reproducible.
   #
   # ```
   # Crypto.random_bytes(16).size                               # => 16
@@ -43,7 +43,7 @@ module Crypto
   # ```
   native def self.random_bytes(n: Int) -> Bytes
 
-  # Whether `a` and `b` hold the same bytes, a `String` compared as its
+  # Whether `a` and `b` hold the same bytes, a [String] compared as its
   # UTF-8 bytes (so `"ab"` equals `b"ab"`). For a token, a MAC or a digest
   # received, compared with the one expected.
   #
@@ -65,8 +65,8 @@ module Crypto
   module AES
     # AES-GCM with one key: authenticated encryption, which keeps data
     # secret and detects any change to it. A `data` value holding the
-    # key: immutable and Shareable; `inspect` and `to_s` never show the
-    # key (`key` and `to_h` do, asked for explicitly).
+    # key: immutable and Shareable; [inspect] and [to_s] never show the
+    # key ([key] and [to_h] do, asked for explicitly).
     #
     # ```
     # aead = Crypto::AES::GCM.generate(256)
@@ -76,16 +76,16 @@ module Crypto
     # ```
     #
     # A nonce must never be used twice with one key: that is the one way
-    # to break GCM. `encrypt` draws a random 12-byte nonce each time and
+    # to break GCM. [encrypt] draws a random 12-byte nonce each time and
     # puts it in front of what it returns, which is safe for about 2^32
-    # messages per key; past that, rotate the key, or give `seal` a
-    # counter as the nonce. `seal` and `open` are for protocols that fix
+    # messages per key; past that, rotate the key, or give [seal] a
+    # counter as the nonce. [seal] and [open] are for protocols that fix
     # the nonce (a counter, one from the peer).
     data GCM(
       # The key: 16, 24 or 32 bytes (AES-128, -192, -256).
       key: Bytes
     )
-      # Raises `ArgumentError` for a key that is not 16, 24 or 32 bytes.
+      # Raises [ArgumentError] for a key that is not 16, 24 or 32 bytes.
       def initialize(key: Bytes)
         unless key.size == 16 || key.size == 24 || key.size == 32
           raise ArgumentError, "an AES key has 16, 24 or 32 bytes, not #{key.size}"
@@ -93,7 +93,7 @@ module Crypto
         @key = key
       end
 
-      # A fresh random key of `bits` bits: 128, 192 or 256.
+      # A fresh random key of [bits] bits: 128, 192 or 256.
       def self.generate(bits: Int = 256) -> GCM
         unless bits == 128 || bits == 192 || bits == 256
           raise ArgumentError, "an AES key has 128, 192 or 256 bits, not #{bits}"
@@ -111,8 +111,8 @@ module Crypto
         AES.seal_with(key, nonce, plaintext, aad)
       end
 
-      # The plaintext of `sealed` (what `seal` gave for `nonce` and `aad`);
-      # `Crypto::AuthenticationError` when it does not authenticate, and
+      # The plaintext of `sealed` (what [seal] gave for `nonce` and `aad`);
+      # [Crypto::AuthenticationError] when it does not authenticate, and
       # then nothing of it is returned.
       def open(nonce: Bytes, sealed: Bytes, *, aad: Bytes | String = "") -> Bytes
         opened = AES.open_with(key, nonce, sealed, aad)
@@ -120,22 +120,22 @@ module Crypto
         opened
       end
 
-      # As `open`, nil instead of raising: for a caller to whom a bad
+      # As [open], nil instead of raising: for a caller to whom a bad
       # token is a normal case (an expired cookie).
       def open?(nonce: Bytes, sealed: Bytes, *, aad: Bytes | String = "") -> Bytes?
         AES.open_with(key, nonce, sealed, aad)
       end
 
       # `plaintext` sealed with a fresh random nonce: the nonce (12
-      # bytes), the ciphertext and the tag (16 bytes), as one `Bytes` to
+      # bytes), the ciphertext and the tag (16 bytes), as one [Bytes] to
       # store or send.
       def encrypt(plaintext: Bytes | String, *, aad: Bytes | String = "") -> Bytes
         nonce = Crypto.random_bytes(12)
         nonce + seal(nonce, plaintext, aad: aad)
       end
 
-      # The plaintext of `token` (what `encrypt` gave for `aad`);
-      # `Crypto::AuthenticationError` when it does not authenticate.
+      # The plaintext of `token` (what [encrypt] gave for `aad`);
+      # [Crypto::AuthenticationError] when it does not authenticate.
       def decrypt(token: Bytes, *, aad: Bytes | String = "") -> Bytes
         opened = if token.size < 28
           nil
@@ -182,10 +182,10 @@ module Crypto
   #
   # Only argon2id, version 19, without a secret or associated data:
   # `verify?` refuses argon2i and argon2d hashes. bcrypt and scrypt are
-  # not here; `Digest::PBKDF2` is, where PBKDF2 is required.
+  # not here; [Digest::PBKDF2] is, where PBKDF2 is required.
   module Argon2
-    # The cost of a hash: `memory_kib` KiB of memory, `iterations` passes
-    # over it, `parallelism` lanes. A `data` value: immutable and
+    # The cost of a hash: [memory_kib] KiB of memory, [iterations] passes
+    # over it, [parallelism] lanes. A `data` value: immutable and
     # Shareable.
     #
     # ```
@@ -195,7 +195,7 @@ module Crypto
     # ```
     data Params(
       # The memory in KiB: 8 to 4_194_304 (4 GiB), and at least
-      # 8 * `parallelism`.
+      # 8 * [parallelism].
       memory_kib: Int,
       # The passes: 1 to 2^32 - 1.
       iterations: Int,
@@ -203,7 +203,7 @@ module Crypto
       # hash runs on one thread.)
       parallelism: Int
     )
-      # Raises `ArgumentError` for a parameter outside its bounds.
+      # Raises [ArgumentError] for a parameter outside its bounds.
       def initialize(memory_kib: Int, iterations: Int, parallelism: Int)
         unless memory_kib >= 8 && memory_kib <= 4_194_304
           raise ArgumentError, "memory_kib: 8 to 4194304, not #{memory_kib}"
@@ -225,8 +225,8 @@ module Crypto
       # OWASP's first recommended setting: m=19456 (19 MiB), t=2, p=1.
       DEFAULT = Params.new(19_456, 2, 1)
 
-      # The parameters of the argon2id PHC string `hash`;
-      # `Crypto::Error` when it is not one (another scheme, another
+      # The parameters of the argon2id PHC string [hash];
+      # [Crypto::Error] when it is not one (another scheme, another
       # version, a string that does not parse).
       def self.of(hash: String) -> Params
         found = Argon2.params_with(hash)
@@ -242,7 +242,7 @@ module Crypto
     end
 
     # The argon2id PHC string of `password` with `params`, and `salt`
-    # (16 to 48 bytes, `ArgumentError` otherwise), a fresh random 16 bytes
+    # (16 to 48 bytes, [ArgumentError] otherwise), a fresh random 16 bytes
     # unless given. Two hashes of one password differ by their salts.
     #
     # ```
@@ -261,9 +261,9 @@ module Crypto
     # Whether `password` is the one `hash` (an argon2id PHC string, with
     # the parameters it names) was made of: false for a wrong password,
     # and the comparison takes the same time wherever they differ.
-    # `Crypto::Error` for a string that is not an argon2id `v=19` hash
+    # [Crypto::Error] for a string that is not an argon2id `v=19` hash
     # (another scheme or variant, another version, a parameter other than
-    # m, t and p, one out of `Params`'s bounds, a string that does not
+    # m, t and p, one out of [Params]'s bounds, a string that does not
     # parse), so that stored garbage is noticed rather than taken for a
     # wrong password; its message never includes the password. Runs on a
     # helper thread, as `hash` does.
@@ -273,7 +273,7 @@ module Crypto
     # the password is at hand (after `verify?` succeeds): true when one of
     # its parameters is below `params`'s, and for a string of another
     # scheme (a `$pbkdf2-sha256$` one, argon2i), so that a caller rehashes
-    # whatever it finds. `Crypto::Error` for an argon2id string that does
+    # whatever it finds. [Crypto::Error] for an argon2id string that does
     # not parse.
     #
     # ```
@@ -302,7 +302,7 @@ module Crypto
 
   # RSA keys and signatures, through the RustCrypto `rsa` crate. A hash
   # is named by a symbol: `:sha256`, `:sha384` or `:sha512`
-  # (`ArgumentError` otherwise).
+  # ([ArgumentError] otherwise).
   module RSA
     # An RSA private key.
     #
@@ -315,13 +315,13 @@ module Crypto
       # The key as PKCS#8 DER, whatever it was read from.
       der: Bytes
     )
-      # Raises `Crypto::Error` when `der` is not an RSA private key
+      # Raises [Crypto::Error] when [der] is not an RSA private key
       # (PKCS#8 or PKCS#1); it is kept as PKCS#8.
       def initialize(der: Bytes)
         @der = RSA.private_der(der)
       end
 
-      # A new key of `bits` bits: 2048, 3072 or 4096 (`ArgumentError`
+      # A new key of [bits] bits: 2048, 3072 or 4096 ([ArgumentError]
       # otherwise). It is made on a helper thread: only the calling task
       # waits (hundreds of milliseconds for 4096 bits).
       def self.generate(bits: Int = 2048) -> PrivateKey
@@ -333,7 +333,7 @@ module Crypto
 
       # The key in `pem`: one PKCS#8 (`PRIVATE KEY`) or PKCS#1
       # (`RSA PRIVATE KEY`) block, alone but for whitespace, not encrypted
-      # (`Crypto::Error` otherwise, as for a key of another kind or size).
+      # ([Crypto::Error] otherwise, as for a key of another kind or size).
       #
       # ```
       # pem = File.read("std/test/fixtures/crypto/rsa2048_pkcs1.pem")
@@ -343,7 +343,7 @@ module Crypto
         PrivateKey.new(RSA.private_pem(pem.is_a?(String) ? pem.to_bytes : pem))
       end
 
-      # The key in `der`: PKCS#8 or PKCS#1.
+      # The key in [der]: PKCS#8 or PKCS#1.
       def self.from_der(der: Bytes) -> PrivateKey = PrivateKey.new(der)
 
       # The key as DER: PKCS#8.
@@ -359,10 +359,10 @@ module Crypto
       # The modulus's size in bits.
       native def bits -> Int
 
-      # The RSASSA-PKCS1-v1_5 signature of `data` with `hash`.
+      # The RSASSA-PKCS1-v1_5 signature of `data` with [hash].
       native def sign(data: Bytes | String, hash: Symbol) -> Bytes
 
-      # The RSASSA-PSS signature of `data` with `hash` (MGF1 with the same
+      # The RSASSA-PSS signature of `data` with [hash] (MGF1 with the same
       # hash, a salt as long as the hash). Each signature differs: the
       # salt is random.
       native def sign_pss(data: Bytes | String, hash: Symbol) -> Bytes
@@ -386,7 +386,7 @@ module Crypto
       # The key as SPKI DER, whatever it was read from.
       der: Bytes
     )
-      # Raises `Crypto::Error` when `der` is not an RSA public key (SPKI
+      # Raises [Crypto::Error] when [der] is not an RSA public key (SPKI
       # or PKCS#1); it is kept as SPKI.
       def initialize(der: Bytes)
         @der = RSA.public_der(der)
@@ -398,7 +398,7 @@ module Crypto
         PublicKey.new(RSA.public_pem(pem.is_a?(String) ? pem.to_bytes : pem))
       end
 
-      # The key in `der`: SPKI or PKCS#1.
+      # The key in [der]: SPKI or PKCS#1.
       def self.from_der(der: Bytes) -> PublicKey = PublicKey.new(der)
 
       # The key as DER: SPKI.
@@ -411,11 +411,11 @@ module Crypto
       native def bits -> Int
 
       # Whether `signature` is the RSASSA-PKCS1-v1_5 signature of `data`
-      # with `hash`: false for any wrong signature, never an exception.
+      # with [hash]: false for any wrong signature, never an exception.
       native def verify(data: Bytes | String, signature: Bytes, hash: Symbol) -> Bool
 
       # Whether `signature` is the RSASSA-PSS signature of `data` with
-      # `hash` (MGF1 with the same hash), whatever the salt's length: it
+      # [hash] (MGF1 with the same hash), whatever the salt's length: it
       # is read from the signature, as OpenSSL's saltlen:auto and Go's
       # PSSSaltLengthAuto verify. False for any wrong signature.
       native def verify_pss(data: Bytes | String, signature: Bytes, hash: Symbol) -> Bool

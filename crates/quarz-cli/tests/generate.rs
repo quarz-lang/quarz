@@ -1510,7 +1510,7 @@ class Model
   end
 
   static def self.named(n: Symbol) -> Void
-    doc "Names `Post#nope_#{n}`."
+    doc "Names [Post#nope_#{n}]."
     def_method(n) { n.to_s }
   end
 end
@@ -1564,17 +1564,21 @@ fn generated_values_and_docs_in_detail() {
     // statement's comment.
     let (ok, out, err) = quarz(&d.0, &["doc", "app.qz", "Post#title"], &[]);
     assert!(ok, "{err}");
-    assert!(out.contains("Names Post#nope_title."), "{out}");
+    // (A bracket that names nothing shows as written.)
+    assert!(out.contains("Names [Post#nope_title]."), "{out}");
     assert!(out.contains("(from Base)"), "{out}");
     assert!(!out.contains("statement's comment"), "{out}");
     // `--check` reads every generated doc, at its statement.
     let (_, out, err) = quarz(&d.0, &["doc", "app.qz", "--check"], &[]);
     let all = format!("{out}{err}");
     assert!(
-        all.contains("app.qz:5: warning: `Post#nope_title`"),
+        all.contains("app.qz:5: warning: `[Post#nope_title]`"),
         "{all}"
     );
-    assert!(all.contains("app.qz:6: warning: `Post#nope_body`"), "{all}");
+    assert!(
+        all.contains("app.qz:6: warning: `[Post#nope_body]`"),
+        "{all}"
+    );
 }
 
 #[test]

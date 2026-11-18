@@ -1,4 +1,4 @@
-# JSON: parsing into `JSON::Value` and generation from any value.
+# JSON: parsing into [JSON::Value] and generation from any value.
 #
 # ```
 # require "json"
@@ -9,9 +9,9 @@
 # JSON.generate({ a: 1, b: [true, nil] })   # => "{\"a\":1,\"b\":[true,null]}"
 # ```
 #
-# `JSON.generate` accepts `nil`, booleans, numbers, strings, symbols, arrays,
-# hashes, sets, `data` values and `JSON::Value`, a `Time` as an RFC 3339
-# string in UTC and `Bytes` as standard Base64 (what `JSON.decode` reads
+# [JSON.generate] accepts `nil`, booleans, numbers, strings, symbols, arrays,
+# hashes, sets, `data` values and [JSON::Value], a [Time] as an RFC 3339
+# string in UTC and [Bytes] as standard Base64 (what [JSON.decode] reads
 # back). Other objects are generated from their fields, unless they define
 # `to_json -> String`. `JSON.decode[T]` decodes into a type written at the
 # call: `JSON.decode[Args](text)`.
@@ -19,13 +19,13 @@ module JSON
   # The version of the library.
   VERSION = "0.1.0"
 
-  # Raised by `JSON.parse` on malformed input; the message gives the line
+  # Raised by [JSON.parse] on malformed input; the message gives the line
   # and column.
   class ParseError < StandardError
   end
 
-  # Raised by `JSON.generate` on a value JSON cannot represent, such as a
-  # `Float` infinity or NaN.
+  # Raised by [JSON.generate] on a value JSON cannot represent, such as a
+  # [Float] infinity or NaN.
   #
   # ```
   # JSON.generate(1.0 / 0.0)   # raises JSON::GeneratorError
@@ -33,7 +33,7 @@ module JSON
   class GeneratorError < StandardError
   end
 
-  # Raised by `JSON.decode` when the document does not have the shape of
+  # Raised by [JSON.decode] when the document does not have the shape of
   # the type asked for. The message gives where (`$.user.tags[2]`), what
   # was expected and what was found (a scalar as written; an array or an
   # object only by its kind).
@@ -41,8 +41,8 @@ module JSON
   end
 
   # A parsed JSON document, its variants named as Rust's serde_json
-  # names them. A `Number` holds any number: an `Int`, an `Integer` when
-  # too large for an `Int` (kept exact), or a `Float` when it has a
+  # names them. A [Number] holds any number: an [Int], an [Integer] when
+  # too large for an [Int] (kept exact), or a [Float] when it has a
   # fraction or an exponent. Inside the enum the names are the variants:
   # the types are `::Bool`, `::String` and so on.
   enum Value
@@ -50,8 +50,8 @@ module JSON
     variant Null
     # JSON `true` or `false`.
     variant Bool(value: ::Bool)
-    # A JSON number: an `Int`, an `Integer` when too large for an `Int`, or
-    # a `Float` when it has a fraction or an exponent.
+    # A JSON number: an [Int], an [Integer] when too large for an [Int], or
+    # a [Float] when it has a fraction or an exponent.
     variant Number(value: ::Int | ::Integer | ::Float)
     # A JSON string.
     variant String(value: ::String)
@@ -60,7 +60,7 @@ module JSON
     # A JSON object, its members in document order.
     variant Object(members: ::Hash[::String, Value])
 
-    # Whether the value is `Null`.
+    # Whether the value is [Null].
     def null? -> ::Bool
       case self
       in Null then true
@@ -68,7 +68,7 @@ module JSON
       end
     end
 
-    # Whether the value is a `Bool`.
+    # Whether the value is a [Bool].
     def bool? -> ::Bool
       case self
       in Bool then true
@@ -76,7 +76,7 @@ module JSON
       end
     end
 
-    # Whether the value is a `Number`.
+    # Whether the value is a [Number].
     def number? -> ::Bool
       case self
       in Number then true
@@ -84,7 +84,7 @@ module JSON
       end
     end
 
-    # Whether the value is a `String`.
+    # Whether the value is a [String].
     def string? -> ::Bool
       case self
       in String then true
@@ -92,7 +92,7 @@ module JSON
       end
     end
 
-    # Whether the value is an `Array`.
+    # Whether the value is an [Array].
     def array? -> ::Bool
       case self
       in Array then true
@@ -100,7 +100,7 @@ module JSON
       end
     end
 
-    # Whether the value is an `Object`.
+    # Whether the value is an [Object].
     def object? -> ::Bool
       case self
       in Object then true
@@ -112,8 +112,8 @@ module JSON
     #
     # ## Raises
     #
-    # `KeyError` when the object has no such member, `TypeError` when the
-    # value is not an `Object`.
+    # [KeyError] when the object has no such member, [TypeError] when the
+    # value is not an [Object].
     def [](key: ::String) -> Value
       case self
       in Object(members:) then members[key]
@@ -126,8 +126,8 @@ module JSON
     #
     # ## Raises
     #
-    # `IndexError` when `index` is out of range, `TypeError` when the
-    # value is not an `Array`.
+    # [IndexError] when `index` is out of range, [TypeError] when the
+    # value is not an [Array].
     #
     # ```
     # JSON.parse("[1, 2]")[-1]   # => JSON::Value::Number(value: 2)
@@ -141,7 +141,7 @@ module JSON
     end
 
     # Member of an object, or `nil` when it is missing or the value is not
-    # an `Object`.
+    # an [Object].
     #
     # ```
     # doc = JSON.parse('{"a": 1}')
@@ -157,7 +157,7 @@ module JSON
     end
 
     # Element of an array, or `nil` when out of range or the value is not an
-    # `Array`. A negative `index` counts from the end.
+    # [Array]. A negative `index` counts from the end.
     def []?(index: ::Int) -> Value?
       case self
       in Array(items:) then items[index]?
@@ -165,7 +165,7 @@ module JSON
       end
     end
 
-    # The boolean of a `Bool`; raises `TypeError` on any other value.
+    # The boolean of a [Bool]; raises [TypeError] on any other value.
     def as_bool -> ::Bool
       case self
       in Bool(value:) then value
@@ -173,7 +173,7 @@ module JSON
       end
     end
 
-    # The number as an `Int` (a `Float` truncated); `OverflowError` when
+    # The number as an [Int] (a [Float] truncated); [OverflowError] when
     # it does not fit.
     def as_i -> ::Int
       case self
@@ -182,7 +182,7 @@ module JSON
       end
     end
 
-    # The number as an `Integer`, exact whatever its size (a `Float`
+    # The number as an [Integer], exact whatever its size (a [Float]
     # truncated).
     def as_integer -> ::Integer
       case self
@@ -191,8 +191,8 @@ module JSON
       end
     end
 
-    # The number as a `Float`; raises `TypeError` on anything but a
-    # `Number`.
+    # The number as a [Float]; raises [TypeError] on anything but a
+    # [Number].
     def as_f -> ::Float
       case self
       in Number(value:) then value.to_f
@@ -200,7 +200,7 @@ module JSON
       end
     end
 
-    # The string of a `String`; raises `TypeError` on any other value.
+    # The string of a [String]; raises [TypeError] on any other value.
     def as_s -> ::String
       case self
       in String(value:) then value
@@ -208,7 +208,7 @@ module JSON
       end
     end
 
-    # The elements of an `Array`; raises `TypeError` on any other value.
+    # The elements of an [Array]; raises [TypeError] on any other value.
     def as_a -> ::Array[Value]
       case self
       in Array(items:) then items
@@ -216,7 +216,7 @@ module JSON
       end
     end
 
-    # The members of an `Object`; raises `TypeError` on any other value.
+    # The members of an [Object]; raises [TypeError] on any other value.
     def as_h -> ::Hash[::String, Value]
       case self
       in Object(members:) then members
@@ -224,7 +224,7 @@ module JSON
       end
     end
 
-    # The boolean of a `Bool`, or `nil` for any other value.
+    # The boolean of a [Bool], or `nil` for any other value.
     def as_bool? -> ::Bool?
       case self
       in Bool(value:) then value
@@ -232,9 +232,9 @@ module JSON
       end
     end
 
-    # The number as an `Int` (a `Float` truncated), or `nil` when the value
-    # is not a `Number`. A number too large for an `Int` still raises
-    # `OverflowError`.
+    # The number as an [Int] (a [Float] truncated), or `nil` when the value
+    # is not a [Number]. A number too large for an [Int] still raises
+    # [OverflowError].
     #
     # ```
     # JSON.parse("2.5").as_i?     # => 2
@@ -247,8 +247,8 @@ module JSON
       end
     end
 
-    # The number as an `Integer` (a `Float` truncated), or `nil` when the
-    # value is not a `Number`.
+    # The number as an [Integer] (a [Float] truncated), or `nil` when the
+    # value is not a [Number].
     def as_integer? -> ::Integer?
       case self
       in Number(value:) then JSON.integer_of(value)
@@ -256,7 +256,7 @@ module JSON
       end
     end
 
-    # The number as a `Float`, or `nil` when the value is not a `Number`.
+    # The number as a [Float], or `nil` when the value is not a [Number].
     def as_f? -> ::Float?
       case self
       in Number(value:) then value.to_f
@@ -264,7 +264,7 @@ module JSON
       end
     end
 
-    # The string of a `String`, or `nil` for any other value.
+    # The string of a [String], or `nil` for any other value.
     def as_s? -> ::String?
       case self
       in String(value:) then value
@@ -272,7 +272,7 @@ module JSON
       end
     end
 
-    # The elements of an `Array`, or `nil` for any other value.
+    # The elements of an [Array], or `nil` for any other value.
     def as_a? -> ::Array[Value]?
       case self
       in Array(items:) then items
@@ -280,7 +280,7 @@ module JSON
       end
     end
 
-    # The members of an `Object`, or `nil` for any other value.
+    # The members of an [Object], or `nil` for any other value.
     def as_h? -> ::Hash[::String, Value]?
       case self
       in Object(members:) then members
@@ -292,7 +292,7 @@ module JSON
     #
     # ## Raises
     #
-    # `TypeError` for any other value.
+    # [TypeError] for any other value.
     def size -> ::Int
       case self
       in Array(items:) then items.size
@@ -301,14 +301,14 @@ module JSON
       end
     end
 
-    # The compact JSON text of the value, as `JSON.generate` gives it.
+    # The compact JSON text of the value, as [JSON.generate] gives it.
     #
     # ```
     # JSON.parse("[1, true, null]").to_json   # => "[1,true,null]"
     # ```
     def to_json -> ::String = JSON.generate(self)
 
-    # The compact JSON text of the value, as `#to_json`.
+    # The compact JSON text of the value, as [#to_json].
     def to_s -> ::String = to_json
   end
 
@@ -322,12 +322,12 @@ module JSON
     end
   end
 
-  # The JSON document `text` as a `JSON::Value`; whitespace around the
+  # The JSON document `text` as a [JSON::Value]; whitespace around the
   # value is allowed.
   #
   # ## Raises
   #
-  # `JSON::ParseError` on malformed input (anything but one value
+  # [JSON::ParseError] on malformed input (anything but one value
   # included), with the line and column in its message.
   #
   # ```
@@ -350,33 +350,33 @@ module JSON
   # `T` is written at the call; in a block given to `def_method` and its
   # kin, it may mention a type parameter the generated method carries
   # (docs/14 §5), and is then decided at the statement, with its class.
-  # `T` is one of: `Int` (an integer that fits), `Integer` (any integer),
-  # `Float` (any number), `String`, `Bool`, `Symbol` (from a string),
-  # `Nil`, `U?` (`null` gives nil), `Array[U]`, `Set[U]`, `Hash[String, U]`
-  # and `Hash[Symbol, U]` (from an object), `Time` (an RFC 3339 string),
-  # `Date` (an ISO 8601 date string, `YYYY-MM-DD`), `Bytes` (a standard
-  # Base64 string), `Decimal` (the decimal module's,
+  # `T` is one of: [Int] (an integer that fits), [Integer] (any integer),
+  # [Float] (any number), [String], [Bool], [Symbol] (from a string),
+  # [Nil], `U?` (`null` gives nil), `Array[U]`, `Set[U]`, `Hash[String, U]`
+  # and `Hash[Symbol, U]` (from an object), [Time] (an RFC 3339 string),
+  # [Date] (an ISO 8601 date string, `YYYY-MM-DD`), [Bytes] (a standard
+  # Base64 string), [Decimal] (the decimal module's,
   # from a number's digits as the text writes them, or a string of one;
-  # from an already parsed `JSON::Value`, an integer exactly and a
-  # fraction through its `Float`'s shortest text: decode the text to keep
-  # the digits), `JSON::Value` (the sub-tree as it
+  # from an already parsed [JSON::Value], an integer exactly and a
+  # fraction through its [Float]'s shortest text: decode the text to keep
+  # the digits), [JSON::Value] (the sub-tree as it
   # is), a union whose members the kind of the JSON value tells apart
   # (below), and a `data` type whose fields are of these types (its type
   # arguments applied), from an object. A field the object does not have
   # takes its default, and one without a default is an error; keys the
   # type has no field for are ignored. A `data` value is built from its
   # fields: no `initialize` of its own runs. The checker refuses another
-  # `T` (a class, an enum, a procedure, `Object`, a type parameter) at the
+  # `T` (a class, an enum, a procedure, [Object], a type parameter) at the
   # call.
   #
   # A union takes at most one member from each kind of JSON value:
-  # strings (`String`, `Symbol`, `Time`, `Date`, `Bytes`), numbers (`Int`,
-  # `Integer`, `Float`), `true` and `false` (`Bool`), arrays (`Array`,
-  # `Set`) and objects (a `data` type or a `Hash`), and nil for `null`
-  # as in `U?`; a `Decimal` takes both numbers and strings. The value's
+  # strings ([String], [Symbol], [Time], [Date], [Bytes]), numbers ([Int],
+  # [Integer], [Float]), `true` and `false` ([Bool]), arrays ([Array],
+  # [Set]) and objects (a `data` type or a [Hash]), and nil for `null`
+  # as in `U?`; a [Decimal] takes both numbers and strings. The value's
   # kind picks the member. A union with two
   # members of one kind (`String | Time`, `Int | Float`, two `data`
-  # types), or `JSON::Value` beside another member, is refused at the
+  # types), or [JSON::Value] beside another member, is refused at the
   # call.
   #
   # ```
@@ -388,24 +388,24 @@ module JSON
   # # raises JSON::DecodeError
   # ```
   #
-  # `JSON.generate` is the inverse: `JSON.decode[T](JSON.generate(x)) == x`
+  # [JSON.generate] is the inverse: `JSON.decode[T](JSON.generate(x)) == x`
   # for a value `x` of such a type.
   #
   # ## Raises
   #
-  # `JSON::ParseError` on malformed text; `JSON::DecodeError` when the
+  # [JSON::ParseError] on malformed text; [JSON::DecodeError] when the
   # document does not have the shape of `T` (the message gives where).
   native def self.decode[T](text: String) -> T
 
   # Decodes a parsed document (or a part of one) into a value of type `T`,
-  # as `.decode` decodes text.
+  # as [.decode] decodes text.
   #
   # ## Raises
   #
-  # `JSON::DecodeError` when the value does not have the shape of `T`.
+  # [JSON::DecodeError] when the value does not have the shape of `T`.
   native def self.decode[T](value: Value) -> T
 
-  # As `.decode`, but nil for malformed text or a document that does not
+  # As [.decode], but nil for malformed text or a document that does not
   # have the shape of `T`.
   native def self.decode?[T](text: String) -> T?
 
@@ -415,10 +415,10 @@ module JSON
   # Indented JSON text (two spaces per level).
   native def self.pretty_generate(value: Object) -> String
 
-  # The compact JSON text of a value: `JSON.generate` under Ruby's other
+  # The compact JSON text of a value: [JSON.generate] under Ruby's other
   # name.
   def self.dump(value: Object) -> String = generate(value)
 
-  # Parses a document: `JSON.parse` under Ruby's other name.
+  # Parses a document: [JSON.parse] under Ruby's other name.
   def self.load(text: String) -> Value = parse(text)
 end

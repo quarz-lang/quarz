@@ -2425,7 +2425,7 @@ fn a_cogs_public_functions() {
     // `quarz doc --check` resolves a link to one.
     w.write(
         "lib/src/c.qz",
-        "# See `Lib.shout`.\npublic def linked -> Int = 1\n",
+        "# See [Lib.shout].\npublic def linked -> Int = 1\n",
     );
     let out = w.quarz("lib", &["doc", "--check"]);
     assert!(!out.stderr.contains("names nothing"), "{}", out.stderr);
@@ -2859,7 +2859,7 @@ fn doc_links_other_cogs_the_std_and_the_source() {
     );
     w.write(
         "lib/src/user.qz",
-        "# Uses `Dep::Thing#go` and `String`; `Dep::Color::Red`, `Dep::Hidden`, `Dep::Point.new`.\nclass User < Dep::Base\n  # Makes one.\n  def make(name: String) -> Dep::Thing = Dep::Thing.new\nend\n",
+        "# Uses [Dep::Thing#go] and [String]; [Dep::Color::Red], `Dep::Hidden`, [Dep::Point.new].\nclass User < Dep::Base\n  # Makes one.\n  def make(name: String) -> Dep::Thing = Dep::Thing.new\nend\n",
     );
     w.ok(
         "lib",

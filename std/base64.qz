@@ -7,9 +7,9 @@
 # Base64.urlsafe_encode(b"\xfb\xff")    # => "-_8="
 # ```
 #
-# Each encoder takes `Bytes` or a `String` (its UTF-8 bytes) and gives a
-# `String` without line breaks; each decoder gives `Bytes` and raises
-# `ArgumentError` on a character outside its alphabet or a malformed end.
+# Each encoder takes [Bytes] or a [String] (its UTF-8 bytes) and gives a
+# [String] without line breaks; each decoder gives [Bytes] and raises
+# [ArgumentError] on a character outside its alphabet or a malformed end.
 module Base64
   # `data` in the standard alphabet (`+` and `/`), padded with `=`.
   #
