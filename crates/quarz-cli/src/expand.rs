@@ -48,20 +48,34 @@ pub fn expand(world: &World, sources: &[SourceFile]) -> String {
     let mut out = String::new();
     for class in &world.classes {
         let mut members: Vec<Member> = Vec::new();
+        let initializers = world.field_initializers(class.id);
         for (i, f) in class.fields.iter().enumerate() {
             let Some(default) = &f.baked_default else {
                 continue;
             };
             let var = if f.mutable { "var " } else { "" };
+            let mut lines = vec![format!(
+                "{var}@{}: {} = {}",
+                f.name,
+                world.type_name(&f.ty),
+                baked(world, &layouts, default)
+            )];
+            // Its initializer (#890), which the generated `initialize`s
+            // run at their end.
+            if let Some(g) = initializers
+                .iter()
+                .find(|(_, field)| *field == f.name)
+                .and_then(|(m, _)| world.method(*m).generated.as_ref())
+            {
+                lines.push(format!(
+                    "  # then, at the end of each generated `initialize`: <block at {}>",
+                    location(g.block.start)
+                ));
+            }
             members.push(Member {
                 by: f.span,
                 order: (0, i),
-                lines: vec![format!(
-                    "{var}@{}: {} = {}",
-                    f.name,
-                    world.type_name(&f.ty),
-                    baked(world, &layouts, default)
-                )],
+                lines,
             });
         }
         let mut ids: Vec<MethodId> = class
@@ -79,6 +93,13 @@ pub fn expand(world: &World, sources: &[SourceFile]) -> String {
                 continue;
             };
             let m = world.method(mid);
+            // (A field's initializer is shown with its field.)
+            if m.generated
+                .as_ref()
+                .is_some_and(|g| g.initializes.is_some())
+            {
+                continue;
+            }
             let visibility = match m.visibility {
                 Visibility::Public => "",
                 Visibility::Private => "private ",

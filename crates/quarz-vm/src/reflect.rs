@@ -145,6 +145,10 @@ pub struct GenRequest {
     /// `override: true`: the method must override an inherited one of
     /// its name (docs/14 §5).
     pub override_: bool,
+    /// A block given to `def_field`: the initializer of that field (#890),
+    /// a method of no parameter whose result the class's generated
+    /// `initialize`s assign to it.
+    pub initializes: Option<String>,
 }
 
 /// A `Meta::Keyword`: name, type (a class), required, nullable, and the

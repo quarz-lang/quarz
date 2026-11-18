@@ -156,6 +156,26 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         reflect_of(i)?
             .def_field(i, request)
             .map_err(|m| i.err_runtime(&m))?;
+        // A block: the field's initializer (#890), a private method of no
+        // parameter under a name no program can write.
+        if a.block.is_some() {
+            let field = i.symbol_name(*name).to_string();
+            let mut init = gen_request(
+                i,
+                &a,
+                "def_field",
+                class,
+                initializer_name(&field),
+                a.pos.len(),
+                false,
+                false,
+            )?;
+            init.visibility = "private".to_string();
+            init.initializes = Some(field);
+            reflect_of(i)?
+                .generate(i, init)
+                .map_err(|m| i.err_runtime(&m))?;
+        }
         // (The call's node, which the lowering passes: where the checker
         // recorded `U`.)
         field_ref(i, class, *name, a.kw(i, quarz_ir::FIELD_REF_SITE))
@@ -591,7 +611,14 @@ fn gen_request(
         initialize,
         type_args,
         override_,
+        initializes: None,
     })
+}
+
+/// The name of the initializer of field `@field` (#890): one no program
+/// can write, so that only the class's generated `initialize`s call it.
+fn initializer_name(field: &str) -> String {
+    format!("__init_@{field}")
 }
 
 /// `Meta::ClassDef#method_ref`/`#class_method_ref` (docs/14 §5): resolved

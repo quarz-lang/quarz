@@ -1972,6 +1972,183 @@ fn field_handles_read_and_write_generated_and_declared_fields() {
     }
 }
 
+/// #890: field initializers, a library's base class generating, per
+/// statement call, a field of the type it was given with a block that
+/// fills it, and the constructors once, in another call.
+const FIELD_INIT_LIB: &str = r##"data Settings = (theme: String, per_page: Int = 20)
+data Prefs = (lang: String)
+
+abstract class Store
+  include Shareable
+  # (What the generated `initialize` assigns; a default for the class
+  # itself, which has no `initialize` of its own.)
+  @raw: Hash[Symbol, String] = {}
+  def raw(n: Symbol) -> String? = @raw[n]?
+
+  # A document field of type `T`, decoded once, when the object is made.
+  static def self.document[T](name: Symbol, type: Type[T]) -> Void
+    n = name
+    def_field(name, type, nil, nullable: true, reader: true) do -> T?
+      (s = raw(n)) ? JSON.decode[T](s) : nil
+    end
+  end
+
+  # The same through a helper: its `V` carried into the block.
+  static def self.document_via[T](name: Symbol, type: Type[T]) -> Void
+    add_document(name, type)
+  end
+
+  static def self.add_document[V](name: Symbol, type: Type[V]) -> Void
+    n = name
+    def_field(name, type, nil, nullable: true, reader: true) do -> V?
+      (s = raw(n)) ? JSON.decode[V](s) : nil
+    end
+  end
+
+  # A field read by a later initializer, and one that raises.
+  static def self.themed -> Void
+    ref = def_field(:look, Settings, nil, nullable: true) do -> Settings?
+      (s = raw(:look)) ? JSON.decode[Settings](s) : nil
+    end
+    def_field(:theme, String, "none", reader: true) do -> String
+      (s = ref.get(self)) ? s.theme : "unset"
+    end
+    def_field(:checked, Int, 0, reader: true) do -> Int
+      raise ArgumentError.new("refused: #{raw(:fail) || ""}") if raw(:fail)
+      @raw.size
+    end
+  end
+
+  # The constructor, generated once, after the fields.
+  static def self.table -> Void
+    def_initialize(:raw) do |raw: Hash[Symbol, String]|
+      @raw = raw
+    end
+  end
+end
+"##;
+
+const FIELD_INIT_APP: &str = r##"require_relative "lib"
+class Page < Store
+  document :settings, Settings
+  document_via :prefs, Prefs
+  themed
+  table
+end
+class Plain < Page
+end
+class Sub < Page
+  @extra: Int
+  def initialize(raw: Hash[Symbol, String], @extra: Int)
+    super(raw)
+  end
+  def extra -> Int = @extra
+end
+def show(s: Settings?) -> String = (x = s) ? "#{x.theme}/#{x.per_page}" : "nil"
+def lang(p: Prefs?) -> String = (x = p) ? x.lang : "nil"
+p = Page.new({settings: "{\"theme\":\"dark\"}", prefs: "{\"lang\":\"ja\"}", look: "{\"theme\":\"light\"}"})
+puts show(p.settings), lang(p.prefs), p.theme, p.checked
+# A second construction decodes again.
+q = Page.new({settings: "{\"theme\":\"blue\",\"per_page\":5}"})
+puts show(q.settings), lang(q.prefs), q.theme, q.checked
+puts lang(Plain.new({prefs: "{\"lang\":\"en\"}"}).prefs)
+s = Sub.new({look: "{\"theme\":\"sub\"}"}, 3)
+puts s.theme, s.extra
+begin
+  Page.new({fail: "x"})
+rescue ArgumentError => e
+  puts e.message
+end
+"##;
+
+const FIELD_INIT_EXPECTED: &str =
+    "dark/20\nja\nlight\n3\nblue/5\nnil\nunset\n1\nen\nsub\n3\nrefused: x\n";
+
+#[test]
+fn field_initializers_fill_generated_fields_when_constructed() {
+    let d = dir();
+    write(&d.0, "lib.qz", FIELD_INIT_LIB);
+    let app = write(&d.0, "app.qz", FIELD_INIT_APP);
+    let cache = d.0.join("cache");
+    let env = [("QUARZ_CACHE_DIR", cache.to_str().unwrap())];
+    let cold = quarz(&d.0, &["check", app.to_str().unwrap()], &env);
+    assert!(cold.0, "{}", cold.2);
+    let warm = quarz(&d.0, &["check", app.to_str().unwrap()], &env);
+    assert_eq!(warm, cold);
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &env);
+    assert!(ok, "{err}");
+    assert_eq!(out, FIELD_INIT_EXPECTED);
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &env,
+    );
+    assert!(ok, "{err}");
+    let out = std::process::Command::new(d.0.join("app.bin"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), FIELD_INIT_EXPECTED);
+    // `--expand` shows each field with its initializer, not as a method.
+    let (ok, out, err) = quarz(&d.0, &["check", "--expand", app.to_str().unwrap()], &env);
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("@settings: Settings? = nil\n    # then, at the end of each generated `initialize`: <block at lib.qz:14>"),
+        "{out}"
+    );
+    assert!(!out.contains("__init_@"), "{out}");
+    // A `next` that ends the `initialize`'s block early runs them too.
+    write(
+        &d.0,
+        "early.qz",
+        "class Base\n  include Shareable\n  @x: Int = 0\n  static def self.gen -> Void\n    def_field(:twice, Int, 0, reader: true) { @x * 2 }\n    def_initialize(:x) do |x: Int|\n      @x = x\n      next if x > 5\n      @x = x + 1\n    end\n  end\nend\n",
+    );
+    let early = write(
+        &d.0,
+        "early_app.qz",
+        "require_relative \"early\"\nclass C < Base\n  gen\nend\nputs C.new(2).twice, C.new(7).twice\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", early.to_str().unwrap()], &env);
+    assert!(ok, "{err}");
+    assert_eq!(out, "6\n14\n");
+    // What is refused.
+    let bad_lib = FIELD_INIT_LIB.replace(
+        "  # The constructor, generated once",
+        "  static def self.bad -> Void\n    def_field(:n, Int, 0) { \"no\" }\n  end\n\n  # The constructor, generated once",
+    );
+    for (lib, app, expected) in [
+        // The block's result is not the field's type.
+        (
+            bad_lib.as_str(),
+            "require_relative \"lib\"\nclass A < Store\n  bad\n  table\nend\n",
+            "`def_field` on Meta::ClassDef[Store] matches (Symbol, Type[Int], Int, { block }):\n    def_field(name: Symbol, type: Type[U], default: U, var: Bool = ..., reader: Bool = ..., writer: Bool = ..., &init: T.() -> U) -> Meta::FieldRef[T, U]: block returns String but Int was expected",
+        ),
+        // A generated `initialize` before the initializer.
+        (
+            FIELD_INIT_LIB,
+            "require_relative \"lib\"\nclass A < Store\n  table\n  document :settings, Settings\nend\n",
+            "`A` already has a generated `initialize`, which would not run the initializer",
+        ),
+        // A written `initialize`.
+        (
+            FIELD_INIT_LIB,
+            "require_relative \"lib\"\nclass A < Store\n  def initialize\n    @raw = {}\n  end\n  document :settings, Settings\nend\n",
+            "`A` has a written `initialize`, which does not run initializers",
+        ),
+        // No `initialize` of its own.
+        (
+            FIELD_INIT_LIB,
+            "require_relative \"lib\"\nclass A < Store\n  document :settings, Settings\nend\n",
+            "`@settings` of `A` has an initializer, which only a generated `initialize` of `A` runs, and `A` has none",
+        ),
+    ] {
+        write(&d.0, "lib.qz", lib);
+        let app = write(&d.0, "bad.qz", app);
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        assert!(!ok, "{app:?}");
+        assert!(err.contains(expected), "{err}");
+    }
+}
+
 const METHOD_HANDLES_LIB: &str = r##"class Model
   # Overridden by the generated `fact`, which its handle names.
   def fact(n: Int) -> Int = 0
