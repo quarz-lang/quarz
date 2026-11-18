@@ -207,6 +207,16 @@ fn and_or_with_an_exit_narrow_after_them() {
     ok(&format!(
         "{pre}[1, 0].each do |n|\n  z = maybe(n)\n  z and next\n  w: Nil = z\nend"
     ));
+    // The facts of a method test and of a negation go through the same
+    // two paths.
+    for exit in ["return \"\"", "raise ArgumentError, \"\""] {
+        ok(&format!(
+            "{pre}def f(n: Int) -> String\n  z = maybe(n)\n  z.nil? or {exit}\n  w: Nil = z\n  \"\"\nend\nputs f(0)"
+        ));
+        ok(&format!(
+            "{pre}def f(n: Int) -> String\n  z = maybe(n)\n  !z and {exit}\n  z.name\nend\nputs f(1)"
+        ));
+    }
     // A right operand that does not exit narrows nothing after it.
     err(
         &format!(
