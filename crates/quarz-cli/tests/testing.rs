@@ -147,6 +147,65 @@ fn an_exit_in_a_test_is_caught_in_it() {
     }
 }
 
+/// #877: `quarz test` and `quarz run` give the program the running
+/// `quarz` as `QUARZ` when it is not set (a test that runs `quarz` on a
+/// fixture then checks with the same binary), interpreted and compiled;
+/// one the caller set is kept. (On Linux the running executable's path
+/// is the canonical one, `/proc/self/exe`.)
+#[test]
+fn quarz_is_the_running_binary() {
+    let dir = std::env::temp_dir().join(format!("quarz-env-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_quarz")).unwrap();
+    let exe = exe.to_str().unwrap();
+    std::fs::write(
+        dir.join("env_test.qz"),
+        format!(
+            "class EnvTest < Test::Case\n  def test_quarz\n    assert_equal({exe:?}, Process.env[\"QUARZ\"]?)\n  end\nend\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("show.qz"),
+        "puts Process.env[\"QUARZ\"]? || \"unset\"\n",
+    )
+    .unwrap();
+    let run = |args: &[&str], quarz: Option<&str>| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_quarz"));
+        cmd.args(args).current_dir(&dir).env_remove("QUARZ");
+        if let Some(q) = quarz {
+            cmd.env("QUARZ", q);
+        }
+        cmd.output().unwrap()
+    };
+    for args in [
+        vec!["test", "env_test.qz"],
+        vec!["test", "--release", "env_test.qz"],
+    ] {
+        let out = run(&args, None);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}{}",
+            stdout(&out),
+            stderr(&out)
+        );
+    }
+    let out = run(&["run", "show.qz"], None);
+    let shown = stdout(&out);
+    assert_eq!(
+        std::fs::canonicalize(shown.trim())
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        exe,
+        "{shown}"
+    );
+    let out = run(&["run", "show.qz"], Some("/opt/other/quarz"));
+    assert_eq!(stdout(&out), "/opt/other/quarz\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The tasks a test leaves running are cancelled after it (their
 /// `ensure` runs), so a later `exit` in one does not end the run.
 #[test]
