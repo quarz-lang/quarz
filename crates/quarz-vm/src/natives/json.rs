@@ -409,34 +409,30 @@ impl Decoder<'_> {
                     }
                     _ => return Err(self.shape(&node, &self.found(v))),
                 };
-                // (`Decimal.parse`, which the descriptor names: one grammar
-                // for the text, the module's.)
-                self.interp
-                    .invoke(
-                        parse,
-                        Value::Class(decimal),
-                        smallvec![Value::string(text)],
-                        Vec::new(),
-                        None,
-                    )
-                    .map_err(|e| match e {
-                        // (Not a decimal, or beyond its limits: the
-                        // shape's error, with `parse`'s reason for a limit;
-                        // anything else goes through as it is.)
-                        Flow::Raise(exc)
-                            if self
-                                .interp
-                                .exception_is_a(&exc, self.interp.program.exc.argument_error) =>
-                        {
-                            let m = self.interp.exception_message(&exc);
-                            if m.starts_with("not a decimal") {
-                                self.shape(&node, &self.found(v))
-                            } else {
-                                DecodeFail::Shape(format!("{}: {m}", self.path))
-                            }
-                        }
-                        other => DecodeFail::Raised(other),
-                    })
+                // (`Decimal.parse?`, which the descriptor names: one
+                // grammar, the module's. Nil for text that is not a
+                // decimal: the shape's error; an `ArgumentError` past a
+                // limit: its message at the path; anything else goes
+                // through as it is.)
+                match self.interp.invoke(
+                    parse,
+                    Value::Class(decimal),
+                    smallvec![Value::string(text)],
+                    Vec::new(),
+                    None,
+                ) {
+                    Ok(Value::Nil) => Err(self.shape(&node, &self.found(v))),
+                    Ok(d) => Ok(d),
+                    Err(Flow::Raise(exc))
+                        if self
+                            .interp
+                            .exception_is_a(&exc, self.interp.program.exc.argument_error) =>
+                    {
+                        let m = self.interp.exception_message(&exc);
+                        Err(DecodeFail::Shape(format!("{}: {m}", self.path)))
+                    }
+                    Err(other) => Err(DecodeFail::Raised(other)),
+                }
             }
             Node::Bytes if class == c.string => {
                 use base64::Engine;
@@ -534,7 +530,10 @@ impl Decoder<'_> {
             Some(Value::Str(_) | Value::Short(_)) if o.class == c.number => {
                 let text =
                     string(self.interp, &o.field(0).unwrap_or(Value::Nil), "number")?.to_string();
-                let f: f64 = text.parse().unwrap_or(f64::NAN);
+                // (The parser's conversion, which checked the text.)
+                let f = number_float(&text).ok_or_else(|| {
+                    DecodeFail::Raised(self.interp.raise(c.parse_error, "invalid number"))
+                })?;
                 variant(c.number, Value::Float(f))
             }
             Some(Value::Array(items)) if o.class == c.array => {
@@ -670,6 +669,13 @@ impl Decoder<'_> {
 }
 
 // ----- parsing ------------------------------------------------------------------
+
+/// A JSON number's text with a fraction or an exponent as a `Float`: the
+/// one conversion, for the parser and for a raw number cooked
+/// (`Decoder::cooked`).
+fn number_float(text: &str) -> Option<f64> {
+    text.parse().ok()
+}
 
 const MAX_NESTING: usize = 100;
 
@@ -872,7 +878,7 @@ impl Parser<'_> {
             ));
         }
         if is_float {
-            let f: f64 = text.parse().map_err(|_| self.error("invalid number"))?;
+            let f = number_float(text).ok_or_else(|| self.error("invalid number"))?;
             Ok(variant(self.classes.number, Value::Float(f)))
         } else {
             // An integer: an `Int`, or an `Integer` (exact) when too large.

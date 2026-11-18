@@ -9,7 +9,7 @@
 //!   `y` `Symbol`, `n` `Nil`, `t` `Time`, `DC` `Date` (the prelude's,
 //!   class `C`, from an ISO 8601 date string), `xC:M` `Decimal` (the
 //!   `decimal` module's, class `C`, from a JSON number's text as written
-//!   or a string, built by `Decimal.parse`, the method `M`, which the
+//!   or a string, built by `Decimal.parse?`, the method `M`, which the
 //!   tree shake keeps), `B` `Bytes`, `v` `JSON::Value`;
 //! - `?N` nil or node N; `aN` an `Array`, `eN` a `Set` of node N; `hN`,
 //!   `HN` a `Hash` of `String` or `Symbol` keys to node N;
@@ -158,15 +158,17 @@ impl Builder<'_> {
                     return Ok(format!("D{id}"));
                 }
                 if is_decimal(w, id) {
-                    // (`Decimal.parse(text)`: one grammar, the module's.)
-                    let parse = w.class(id).singleton_methods.get("parse").and_then(|ids| {
+                    // (`Decimal.parse?(text)`: one grammar, the module's;
+                    // nil for text that is not a decimal, `ArgumentError`
+                    // past a limit.)
+                    let parse = w.class(id).singleton_methods.get("parse?").and_then(|ids| {
                         ids.iter()
                             .copied()
                             .find(|&m| w.methods[m as usize].params.len() == 1)
                     });
                     return match parse {
                         Some(m) => Ok(format!("x{id}:{m}")),
-                        None => refuse("has no `Decimal.parse` of one argument"),
+                        None => refuse("has no `Decimal.parse?` of one argument"),
                     };
                 }
                 if id == b.array || id == b.set {

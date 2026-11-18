@@ -354,7 +354,8 @@ module JSON
   # `Float` (any number), `String`, `Bool`, `Symbol` (from a string),
   # `Nil`, `U?` (`null` gives nil), `Array[U]`, `Set[U]`, `Hash[String, U]`
   # and `Hash[Symbol, U]` (from an object), `Time` (an RFC 3339 string),
-  # `Bytes` (a standard Base64 string), `Decimal` (the decimal module's,
+  # `Date` (an ISO 8601 date string, `YYYY-MM-DD`), `Bytes` (a standard
+  # Base64 string), `Decimal` (the decimal module's,
   # from a number's digits as the text writes them, or a string of one;
   # from an already parsed `JSON::Value`, an integer exactly and a
   # fraction through its `Float`'s shortest text: decode the text to keep
@@ -369,7 +370,7 @@ module JSON
   # call.
   #
   # A union takes at most one member from each kind of JSON value:
-  # strings (`String`, `Symbol`, `Time`, `Bytes`), numbers (`Int`,
+  # strings (`String`, `Symbol`, `Time`, `Date`, `Bytes`), numbers (`Int`,
   # `Integer`, `Float`), `true` and `false` (`Bool`), arrays (`Array`,
   # `Set`) and objects (a `data` type or a `Hash`), and nil for `null`
   # as in `U?`; a `Decimal` takes both numbers and strings. The value's
