@@ -942,20 +942,35 @@ fn a_symbol_argument_is_an_enums_variant() {
 }
 
 /// #915: a symbol literal searched for in a collection of an enum by the
-/// built-in searches that take an `Object` (`include?`, `index`,
-/// `count`, `delete`, `Set#include?`) is never found: the warning
-/// `==` gets, naming the variant. Not for a method a program defines,
-/// a collection of `Symbol`, a name no variant has, or the searches
-/// not decided (`rindex`, `Hash#value?`, `Set#delete`, ...).
+/// built-in searches that take an `Object` and compare by `==` is never
+/// found: the warning `==` gets, naming the variant. A `Hash`'s
+/// `value?`, `has_value?` and `key` search its values, a `Hash` builder
+/// its keys. Not `-` and `difference` (a collection argument), not a
+/// method a program defines, nor a collection of `Symbol`, nor a name
+/// no variant has. (A `Range` of an enum needs a `Comparable` enum; its
+/// `include?` is covered by the same table.)
 #[test]
 fn a_symbol_searched_for_in_an_enum_collection_warns() {
-    let pre = "enum Format = Json | Text\nfs: Array[Format] = [Format::Json]\nst: Set[Format] = Set.new(fs)\n";
+    let pre = "enum Format = Json | Text\nfs: Array[Format] = [Format::Json]\nst: Set[Format] = Set.new(fs)\nh: Hash[Symbol, Format] = {a: Format::Json}\nclass Coll\n  include Enumerable[Format]\n  def each(&: (Format) -> Void) -> Void\n    yield Format::Json\n  end\nend\n";
     for (call, method) in [
         ("fs.include?(:json)", "include?"),
         ("fs.index(:json)", "index"),
+        ("fs.rindex(:json)", "rindex"),
         ("fs.count(:json)", "count"),
         ("fs.delete(:json)", "delete"),
+        ("fs.member?(:json)", "member?"),
+        ("fs.find_index(:json)", "find_index"),
         ("st.include?(:json)", "include?"),
+        ("st.member?(:json)", "member?"),
+        ("st.delete(:json)", "delete"),
+        ("h.value?(:json)", "value?"),
+        ("h.has_value?(:json)", "has_value?"),
+        ("h.key(:json)", "key"),
+        ("Coll.new.include?(:json)", "include?"),
+        (
+            "Array.build { |b: Array::Builder[Format]| p b.include?(:json) }",
+            "include?",
+        ),
     ] {
         warns(
             &format!("{pre}p {call}"),
@@ -965,9 +980,8 @@ fn a_symbol_searched_for_in_an_enum_collection_warns() {
     for call in [
         "p fs.include?(Format::Json)",
         "p fs.include?(:jsno)",
-        "p fs.rindex(:json)",
-        "p st.delete(:json)",
-        "h: Hash[Symbol, Format] = {a: Format::Json}\np h.value?(:json)",
+        "p fs - [:json]",
+        "p fs.difference([:json])",
         "syms = [:json]\np syms.include?(:json)",
         "class Bag\n  def include?(value: Object) -> Bool = true\nend\np Bag.new.include?(:json)",
     ] {

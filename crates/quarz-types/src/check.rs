@@ -7201,23 +7201,19 @@ impl Checker {
                 // A symbol searched for in a collection of an enum: never
                 // found, by the `==` the search compares with (#915).
                 if let (Some(recv), [Arg::Positional(a)]) = (&call.recv, call.args.as_slice()) {
-                    let search = matches!(self.out.calls.get(&expr.id),
-                        Some(CallTarget::Method { method }) if self.searches_by_equality(*method));
-                    let element = match self
+                    let method = match self.out.calls.get(&expr.id) {
+                        Some(CallTarget::Method { method }) => Some(*method),
+                        _ => None,
+                    };
+                    let recv_ty = self
                         .out
                         .node_types
                         .get(&recv.id)
-                        .map(|t| self.infer.resolve(t))
-                    {
-                        Some(Type::Class(c, args))
-                            if [self.world.builtin.array, self.world.builtin.set].contains(&c)
-                                && args.len() == 1 =>
-                        {
-                            Some(args[0].clone())
-                        }
-                        _ => None,
-                    };
-                    if let (true, Some(t)) = (search, element) {
+                        .map(|t| self.infer.resolve(t));
+                    let element = method
+                        .zip(recv_ty)
+                        .and_then(|(m, t)| self.search_element(m, &t));
+                    if let Some(t) = element {
                         if let Some((name, v)) = self.symbol_never_equal(&t, a) {
                             self.warning(
                                 format!(
@@ -17318,22 +17314,45 @@ impl Checker {
         }
     }
 
-    /// Whether `m` is one of the built-in searches decided on #915:
-    /// `Array#include?`, `#index`, `#delete`, `Set#include?`, and
-    /// `Enumerable#count(value)` (as an `Array`'s), each taking an
-    /// `Object` it compares with the elements by `==`. Not a method a
-    /// program or an extension defines.
-    fn searches_by_equality(&self, m: MethodId) -> bool {
+    /// The element type a built-in search `m` (decided on #915) compares
+    /// its `Object` argument with by `==`, for a receiver of type `recv`;
+    /// `None` for any other method (a program's or an extension's, or a
+    /// built-in that does not search so). The searches: `Array#include?`,
+    /// `#index`, `#rindex`, `#delete`; `Set#include?`, `#member?`,
+    /// `#delete`; `Enumerable#include?`, `#member?`, `#find_index`,
+    /// `#count(value)` (the receiver's `Enumerable[T]`); `Range#include?`;
+    /// the `Array`, `Set` and `Hash` builders' `include?` (a `Hash`
+    /// builder's keys); `Hash#value?`, `#has_value?`, `#key` (its values).
+    /// Not `-` and `difference`, whose argument is a collection.
+    fn search_element(&self, m: MethodId, recv: &Type) -> Option<Type> {
         let info = self.world.method(m);
-        let b = &self.world.builtin;
-        let enumerable = self.world.top_class("Enumerable");
-        let decided = match info.name.as_str() {
-            "include?" => [b.array, b.set].contains(&info.owner),
-            "index" | "delete" => info.owner == b.array,
-            "count" => Some(info.owner) == enumerable && info.params.len() == 1,
-            _ => false,
+        if info.file != 0 || info.extension.is_some() {
+            return None;
+        }
+        let owner = self.world.class(info.owner).name.as_str();
+        let Type::Class(c, args) = recv else {
+            return None;
         };
-        decided && info.file == 0 && info.extension.is_none()
+        let nth = |i: usize| args.get(i).cloned();
+        match (owner, info.name.as_str()) {
+            ("Array", "include?" | "index" | "rindex" | "delete")
+            | ("Set", "include?" | "member?" | "delete")
+            | ("Range", "include?")
+            | ("Array::Builder" | "Set::Builder" | "Hash::Builder", "include?") => nth(0),
+            ("Hash", "value?" | "has_value?" | "key") => nth(1),
+            ("Enumerable", "include?" | "member?" | "find_index") | ("Enumerable", "count")
+                if info.params.len() == 1 =>
+            {
+                // (The receiver's own `Enumerable[T]`.)
+                let enumerable = info.owner;
+                self.world
+                    .ancestors(*c, args)
+                    .into_iter()
+                    .find(|(k, _)| *k == enumerable)
+                    .and_then(|(_, a)| a.first().cloned())
+            }
+            _ => None,
+        }
     }
 
     /// The hint for a symbol literal `e` where `expected` is an enum with
