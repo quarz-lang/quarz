@@ -208,6 +208,62 @@ fn static_statements_with_requires_and_failures() {
     assert_eq!(printed, ":v\n");
 }
 
+/// A subclass reached through an inherited class method's `new` is built
+/// with the `initialize` the checker recorded for it (#536 step 6), in
+/// the session too, where a later input may change what an earlier one's
+/// classes are built with. The expected values follow the rule (the first
+/// of the overloads, from the class up to the method's, that takes what
+/// `new` passes, docs/01 §3), not a run.
+#[test]
+fn inherited_constructors_follow_the_inputs() {
+    // An input's statement generates an `initialize` into a class of an
+    // earlier input: `Mid` and `Sub` below it are built with it from then
+    // on, at run time (the input's own pass checks their pairs again).
+    let (out, printed) = values(&[
+        "class Base; @n: Int; def initialize(@n: Int); end; def self.mk(n: Int) -> Self = new(n); def n -> Int = @n; end",
+        "class Mid < Base; static def self.gen_init -> Void; def_initialize(:n) do |n: Int|; puts \"gen\"; @n = n * 10; end; end; end",
+        "class Sub < Mid; end",
+        "Sub.mk(4).n",
+        "module Go; static def self.go -> Void; Mid.gen_init; end; end",
+        "class Driver; include Go; go; end",
+        "Sub.mk(4).n",
+        "Mid.mk(4).n",
+    ]);
+    assert_eq!(out[3], "=> 4", "{out:?}");
+    assert_eq!(out[6], "=> 40", "{out:?}");
+    assert_eq!(out[7], "=> 40", "{out:?}");
+    assert_eq!(printed, "gen\ngen\n");
+    // An extension and a statement in one input: the extension makes `X`,
+    // of an earlier input, conform to `M`, whose class method's `new`
+    // builds it at compile time (the pass before the run checks every
+    // pair again when an extension came since).
+    let (out, printed) = values(&[
+        "module M; def self.make -> Self = new; def hi -> String = \"hi\"; end",
+        "class X; def initialize; puts \"X\"; end; end",
+        "class Y; include M; def initialize; puts \"Y\"; end; end",
+        "class Runner; static def self.go_t(k: Type[M]) -> Void; k.make; def_class_method(:r) { 1 }; end; end",
+        "class W < Runner; go_t Y; end",
+        "extension X; include M; end; class Z < Runner; go_t X; end",
+        "X.make.hi",
+    ]);
+    assert_eq!(out[6], "=> \"hi\"", "{out:?}");
+    assert_eq!(printed, "Y\nX\nX\n");
+    // A failed input whose statement ran is rolled back with what the
+    // pass before the run had seen: the next input's classes take its
+    // classes' places and are checked as new.
+    let (out, _) = values(&[
+        "class Base; @n: Int; def initialize(@n: Int); end; def self.mk(n: Int) -> Self = new(n); def n -> Int = @n; static def self.probe -> Void; v = mk(4).n; def_class_method(:v) { v }; end; end",
+        "class P < Base; probe; end; class P2 < Base; end; class P3 < Base; end; nosuch",
+        "class Q < Base; probe; end",
+        "Q.v",
+    ]);
+    assert!(
+        out[1].contains("undefined local variable or method `nosuch`"),
+        "{out:?}"
+    );
+    assert_eq!(out[3], "=> 4", "{out:?}");
+}
+
 #[test]
 fn a_failed_inputs_classes_are_checked_with_it() {
     // A class whose conformance waits for its input's statements (docs/14

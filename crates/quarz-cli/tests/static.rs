@@ -343,6 +343,70 @@ fn a_construction_reaches_its_own_initialize() {
     }
 }
 
+/// A class method that calls `new`, run at compile time on a subclass
+/// whose statements are running, builds it with the `initialize` the
+/// checker records for it, as at run time: the first of its overloads
+/// that takes what `new` passes (docs/01 §3), here `(n: Object, &blk)`,
+/// not the first declared, which takes a `String` (#858).
+#[test]
+fn an_inherited_new_at_compile_time_builds_with_the_overload_that_fits() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Two\n  @n: Int\n  def initialize(@n: Int); end\n  def self.mk(n: Int) -> Self = new(n)\n  def n -> Int = @n\n  static def self.probe -> Void\n    v = mk(6).n\n    def_class_method(:v) { v }\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass TwoSub < Two\n  def initialize(n: String)\n    puts \"str\"\n    @n = n.size\n  end\n  def initialize(n: Object, &blk: (() -> Int)?)\n    puts \"obj\"\n    @n = 9\n  end\n  probe\nend\np TwoSub.v\np TwoSub.mk(6).n\n",
+    );
+    // (The statement's run, at compile time, prints to stderr.)
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!((out.as_str(), err.as_str()), ("9\nobj\n9\n", "obj\n"));
+    let exe = d.0.join("app-bin");
+    let (ok, out, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", exe.to_str().unwrap()],
+        &[],
+    );
+    assert!(ok, "{err}");
+    assert_eq!((out.as_str(), err.as_str()), ("", "obj\n"));
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "9\nobj\n9\n");
+}
+
+/// An `initialize` a statement generates into a class between a subclass
+/// and the class whose method calls `new` changes what that `new` builds
+/// the subclass with, for a run after it as at run time; a generated field
+/// (with its default) does not (#536 step 6). `X`'s statement runs `mk`
+/// first, so the pass before the runs has recorded `Sub`'s pair before
+/// `Mid`'s statement generates the `initialize` it now takes. Derived
+/// from the rule (docs/01 §3): `Sub` and `Mid` are built with `Mid`'s
+/// generated `initialize(n: Int)` (printing `gen`, `n * 10`), `X` and `F`
+/// with `Base`'s.
+#[test]
+fn a_generated_initialize_changes_what_an_inherited_new_builds() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Base\n  @n: Int\n  def initialize(@n: Int); end\n  def self.mk(n: Int) -> Self = new(n)\n  def n -> Int = @n\n  static def self.probe -> Void\n    v = mk(4).n\n    def_class_method(:v) { v }\n  end\n  static def self.gen_init -> Void\n    def_initialize(:n) do |n: Int|\n      puts \"gen\"\n      @n = n * 10\n    end\n  end\n  static def self.gen_field -> Void\n    def_field(:extra, Int, 5, reader: true)\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass X < Base\n  probe\nend\nclass Mid < Base\n  gen_field\n  gen_init\nend\nclass Sub < Mid\n  probe\nend\nclass F < Base\n  gen_field\n  probe\nend\np X.v\np Sub.v\np F.v\np Sub.mk(4).n\np Mid.mk(4).n\np F.mk(4).n\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(
+        (out.as_str(), err.as_str()),
+        ("4\n40\n4\ngen\n40\ngen\n40\n4\n", "gen\n")
+    );
+}
+
 /// A symbol is a method's name only where a call says so: a symbol value
 /// (`:count` as a hash key) reaches no method of its name, while a call
 /// by name (a union's members' methods, `&:name`) reaches them all

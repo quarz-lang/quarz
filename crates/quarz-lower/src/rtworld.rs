@@ -213,13 +213,13 @@ pub fn class_row(world: &World, out: &types::Output, id: ClassId) -> RtClass {
         },
         fields: Vec::new(),
         ivars: Vec::new(),
-        module_init: !world.has_fields_to_assign(c.id, true),
         inherited_inits: out
             .inherited_inits
             .iter()
             .filter(|(sub, _, _)| *sub == c.id)
             .map(|(_, init, chosen)| (*init, *chosen))
             .collect(),
+        with_init: world.with_initialize(c.id),
         methods: c
             .methods
             .iter()

@@ -6337,26 +6337,10 @@ impl<'ast> Declarer<'ast> {
             self.declare_data_init(id, &fields, span);
         }
         // `with` builds its value through `initialize`: the generated one,
-        // or the body's when it takes the fields, in order. With another
-        // `initialize` there is none (the body may define its own).
-        let init_takes_fields = |s: &Self| {
-            s.world
-                .class(id)
-                .methods
-                .get("initialize")
-                .is_some_and(|ms| {
-                    ms.iter().any(|m| {
-                        let ps = &s.world.method(*m).params;
-                        ps.len() == fields.len()
-                            && ps.iter().zip(&fields).all(|(p, f)| {
-                                p.kind == ParamKind::Positional
-                                    && p.name == f.name
-                                    && s.world.same_type(&p.ty, &f.ty)
-                            })
-                    })
-                })
-        };
-        if !own(self, "with") && (!own_init || init_takes_fields(self)) {
+        // or the body's when it takes the fields, in order
+        // (`World::with_initialize`). With another `initialize` there is
+        // none (the body may define its own).
+        if !own(self, "with") && (!own_init || self.world.with_initialize(id).is_some()) {
             self.declare_data_with(id, &fields, class_self, span);
         }
         if !own(self, "to_h") {

@@ -34,6 +34,14 @@
 //!   the class-side keys of every class. No statement generates one
 //!   (`Kept::sync` says why, and asserts it).
 //!
+//! - **No event:** a class row's `with_init` (`World::with_initialize`)
+//!   reads only a `data` type's (or variant's) own `initialize` overloads
+//!   and its fields, which no statement changes: `initialize` and fields
+//!   are generated into classes only (`tests/generate.rs`
+//!   `an_initialize_is_generated_into_a_class_only`,
+//!   `a_field_is_generated_into_a_class_only`). Allowing either into a
+//!   `data` type would need an edge here (#536 step 6).
+//!
 //! Every invalidation set is a superset; a row kept stale is a soundness
 //! bug, which the oracle (`QUARZ_VERIFY_STATIC_TABLES`, `verify`)
 //! compares every round against the tables built from nothing.
@@ -87,9 +95,10 @@ pub(crate) struct Kept {
     /// The checker's constructor choices the class rows were made with
     /// (`Output::inherited_inits`, which `class_row` reads): written by
     /// the check of a `new` site's class (`Checker::
-    /// check_inherited_constructors`, after a file's statements), with no
-    /// event, so compared at each sync.
-    inherited: Vec<(ClassId, Option<MethodId>, MethodId)>,
+    /// check_inherited_constructors`: before each compile-time round, for
+    /// what is declared and checked so far, and after a file's
+    /// statements), with no event, so compared at each sync.
+    inherited: Vec<(ClassId, Option<MethodId>, Option<MethodId>)>,
     /// The declared tables, assembled (`rtworld::declared`'s value).
     pub(crate) rt: RtWorld,
     /// The override table, by method (`World::overrides`).

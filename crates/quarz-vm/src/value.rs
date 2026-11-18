@@ -3993,8 +3993,8 @@ mod tests {
                 })
                 .collect(),
             ivars: Vec::new(),
-            module_init: false,
             inherited_inits: Vec::new(),
+            with_init: None,
             methods: Default::default(),
             singleton_methods: Default::default(),
             class_side: Vec::new(),

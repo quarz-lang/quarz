@@ -253,7 +253,7 @@ impl Interp {
                 self.catch_break(&block, r)
             }
             CallOp::ConstructRecv { class, init } => {
-                let (cid, init) = self.receiver_class_init(&recv, class, init);
+                let (cid, init) = self.receiver_class_init(&recv, class, init)?;
                 // A class method of an abstract class called through a
                 // `Type[J]` holding `J` itself (#423), or a module's through
                 // a `Type[M]` holding the module (#494; written `J.run` or

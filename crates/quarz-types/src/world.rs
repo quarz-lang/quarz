@@ -3610,6 +3610,31 @@ impl World {
         }
     }
 
+    /// The `initialize` a `data` type's (or an enum variant's) `with`
+    /// builds its value through when it is not the generated one: the
+    /// body's own overload taking the fields in order, positionally, by
+    /// name and by type (`same_type`), as docs/01 §4 says. `None`: the
+    /// generated `initialize`, or none takes the fields (the declarer then
+    /// generates no `with` for a type with an `initialize` of its own).
+    /// What `with` runs at run time (`RtClass::with_init`, #536 step 6).
+    pub fn with_initialize(&self, cid: ClassId) -> Option<MethodId> {
+        let class = self.class(cid);
+        if !matches!(class.kind, ClassKind::Data | ClassKind::Variant) {
+            return None;
+        }
+        let fields = &class.fields;
+        class.methods.get("initialize")?.iter().copied().find(|m| {
+            let m = self.method(*m);
+            m.synth != Synth::DataInit
+                && m.params.len() == fields.len()
+                && m.params.iter().zip(fields).all(|(p, f)| {
+                    p.kind == ParamKind::Positional
+                        && p.name == f.name
+                        && self.same_type(&p.ty, &f.ty)
+                })
+        })
+    }
+
     /// The class declaring field `name` of class `cid`: `cid` or the first
     /// up its superclass chain with the field among its own.
     pub fn field_declarer(&self, cid: ClassId, name: &str) -> ClassId {
