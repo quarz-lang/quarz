@@ -1511,10 +1511,11 @@ pub struct RtParam {
     pub name: String,
     pub kind: RtParamKind,
     pub has_default: bool,
-    /// The parameter's machine kind: `Int`, `Float` or `Bool` where it is
-    /// declared of that built-in class (`rtworld::rt_kind`), `None`
-    /// otherwise. Read as a kind only (`verify`, `live`, the AOT's
-    /// `unbox`); no signature is compared at run time (#536 step 5).
+    /// The parameter's machine kind: `Int`, `Float`, `Bool` or `Nil` where
+    /// it is declared of that built-in class (`rtworld::rt_kind`, which
+    /// lists the readers), `None` otherwise. Read as a kind only
+    /// (`verify`, `live`, the AOT's `unbox`); no signature is compared at
+    /// run time (#536 step 5).
     pub ty: Option<String>,
     /// A native's default when it is a literal: a call that names a later
     /// parameter by keyword passes it in its place (`Time.utc(2024, hour:

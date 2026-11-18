@@ -2,7 +2,9 @@
 # ancestor's of the same name and parameter types; "the same type" is the
 # checker's type equality (#536 step 5), so the same type written another
 # way is the same: a union in another order, `T?` and `Nil | T`, an alias.
-# Each `B` method replaces `A`'s, so a call through `A` runs `B`'s.
+# Each `B` method replaces `A`'s, so a call through a value typed `A` (a
+# parameter, which nothing narrows: the call is `A`'s method, and the
+# override table picks `B`'s for a `B`) runs `B`'s.
 type Num = Int
 class A
   def u(x: Int | String) -> String = "A#u"
@@ -14,5 +16,8 @@ class B < A
   def n(x: Nil | String) -> String = "B#n"
   def al(x: Int) -> String = "B#al"
 end
-a: A = B.new
-puts a.u(1), a.n(nil), a.al(2)
+def call(a: A) -> Void
+  puts a.u(1), a.n(nil), a.al(2)
+end
+call(B.new)
+call(A.new)

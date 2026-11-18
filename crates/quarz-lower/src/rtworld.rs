@@ -577,23 +577,29 @@ fn literal_constant(e: &quarz_syntax::ast::Expr) -> Option<Constant> {
     })
 }
 
-/// A parameter's machine kind (`RtParam::ty`): `Int`, `Float` or `Bool`
-/// for a parameter declared of that built-in class, by its id; `None`
-/// for any other type.
+/// A parameter's machine kind (`RtParam::ty`), from the class id: `Int`,
+/// `Float`, `Bool` or `Nil` for a parameter declared of that built-in
+/// class with no type arguments, `None` for any other type. The set is
+/// what the readers match, and no more:
+/// - `verify` (an `Int`/`Float` `BinOp`'s right operand through
+///   `has_type`, which answers for no other name; an `Arg`): `Int`,
+///   `Float`;
+/// - `quarz_ir::live::numeric_param_of`: `Int`, `Float`;
+/// - the AOT's `unbox`: `bin_types` and `param_num` `Int`, `Float`;
+///   `param_bool` `Bool`; `Mach::of` for `typed_sigs`' parameters `Int`,
+///   `Float`, `Bool`, `Nil` (`Nil`, as `None`, is boxed there).
 fn rt_kind(world: &World, t: &Type) -> Option<String> {
     let b = &world.builtin;
     match t {
-        Type::Class(c, args) if args.is_empty() => {
-            if *c == b.int {
-                Some("Int".to_string())
-            } else if *c == b.float {
-                Some("Float".to_string())
-            } else if *c == b.bool_ {
-                Some("Bool".to_string())
-            } else {
-                None
-            }
-        }
+        Type::Class(c, args) if args.is_empty() => [
+            (b.int, "Int"),
+            (b.float, "Float"),
+            (b.bool_, "Bool"),
+            (b.nil, "Nil"),
+        ]
+        .iter()
+        .find(|(k, _)| k == c)
+        .map(|(_, name)| name.to_string()),
         _ => None,
     }
 }
