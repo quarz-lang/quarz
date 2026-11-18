@@ -6,8 +6,8 @@ require "base64"
 
 # HTTP: `require "http"` (docs/11-http.md). An HTTP/1.1 server, for use
 # behind a reverse proxy or with `tls:`: a handler takes a
-# `Server::Request` and returns a `Server::Response`; the server runs a
-# task per connection. And an HTTP/1.1 client, `Client`, with a pool of
+# [Server::Request] and returns a [Server::Response]; the server runs a
+# task per connection. And an HTTP/1.1 client, [Client], with a pool of
 # kept connections, redirects and proxies.
 #
 # ```quarz no_run
@@ -27,7 +27,7 @@ module HTTP
   class Error < StandardError
     @status: Int
 
-    # An error answered with `status` and, unless it is empty, `message` as
+    # An error answered with [status] and, unless it is empty, [message] as
     # a text body (the reason phrase otherwise).
     #
     # ```
@@ -50,7 +50,7 @@ module HTTP
   end
 
   # A body over the server's `max_body_bytes`, or over the `max` a read
-  # was given (`Body#read`): answered `413`.
+  # was given ([Body#read]): answered `413`.
   class PayloadTooLarge < Error
     # An error with status 413.
     def initialize(message: String = "Payload Too Large")
@@ -97,14 +97,14 @@ module HTTP
     # The name, lowercased: `content-type`.
     name: String,
     # The value. In the headers of a parsed request it has no leading or
-    # trailing whitespace; `Headers.of`, `Headers#add` and `Headers#put`
+    # trailing whitespace; [Headers.of], [Headers#add] and [Headers#put]
     # keep the value as given.
     value: String
   )
 
   # Header fields in order, names lowercased; a name may repeat. Names
   # are case-insensitive, and written out in the conventional form
-  # (`Content-Type`). Immutable: `put`, `add` and `delete` return new
+  # (`Content-Type`). Immutable: [put], [add] and [delete] return new
   # headers.
   #
   # ```
@@ -122,16 +122,16 @@ module HTTP
     # Headers with no field.
     def self.empty -> Headers = Headers.new([])
 
-    # Headers with a field for each pair, in order. Raises `ArgumentError`
+    # Headers with a field for each pair, in order. Raises [ArgumentError]
     # for a name that is not a token or a value with a control character, as
-    # `#add` does.
+    # [#add] does.
     def self.of(pairs: Hash[String, String]) -> Headers
       Headers.new(pairs.map { |k, v| Headers.field(k, v) })
     end
 
     # A field that can be sent: its name a token, its value without CR,
     # LF or another control character but HTAB (which would split the
-    # response). An `ArgumentError` otherwise, where the header is set;
+    # response). An [ArgumentError] otherwise, where the header is set;
     # its message names the header but leaves the value out, which may
     # come from a request (a cookie, a token) and would end up in logs.
     def self.field(name: String, value: String) -> Field
@@ -166,7 +166,7 @@ module HTTP
     end
 
     # The headers with a field appended, keeping the other values of
-    # `name`. Raises `ArgumentError` for a name that is not a token or a
+    # `name`. Raises [ArgumentError] for a name that is not a token or a
     # value with CR, LF or another control character but HTAB (which would
     # split the response); the message leaves the value out.
     def add(name: String, value: String) -> Headers
@@ -337,7 +337,7 @@ module HTTP
     # A body read from `reader`: `length` bytes, or chunked, or (a
     # client's, `until_eof`) up to the end of the connection, accepting up
     # to `limit` bytes. The server and the client make it; a test uses
-    # `.of`.
+    # [.of].
     def initialize(@reader: Reader, @length: Int?, @chunked: Bool, @limit: Int,
                    @on_first_read: (() -> Void)? = nil, *, @until_eof: Bool = false,
                    @client: Bool = false)
@@ -387,7 +387,7 @@ module HTTP
 
     # The length of the body in bytes as its `Content-Length` gives it,
     # or nil when the request has none (a chunked body, or a parsed
-    # request with no body). A body made by `.of` has its bytes' size.
+    # request with no body). A body made by [.of] has its bytes' size.
     def size -> Int? = @length
 
     # Whether it has been read to the end.
@@ -462,15 +462,15 @@ module HTTP
     end
 
     # Yields the body's pieces as they arrive, until its end. Without
-    # `max`, unlike `#read`, it is not bounded by `max_body_bytes`. With
-    # `max`, it raises `PayloadTooLarge` (a client's:
-    # `Client::ResponseTooLarge`) before yielding a piece that would take
+    # `max`, unlike [#read], it is not bounded by `max_body_bytes`. With
+    # `max`, it raises [PayloadTooLarge] (a client's:
+    # [Client::ResponseTooLarge]) before yielding a piece that would take
     # the body past `max` bytes or past `max_body_bytes`, whichever is
     # smaller; a `Content-Length` over it raises before anything is read.
     #
     # ## Raises
     #
-    # `ArgumentError` for a negative `max`.
+    # [ArgumentError] for a negative `max`.
     def each_chunk(max: Int? = nil, &: (Bytes) -> Void) -> Void
       cap = cap_of(max)
       if cap
@@ -492,9 +492,9 @@ module HTTP
       end
     end
 
-    # The whole body; `PayloadTooLarge` past the server's
+    # The whole body; [PayloadTooLarge] past the server's
     # `max_body_bytes` or past `max` bytes, whichever is smaller (a
-    # client's: `Client::ResponseTooLarge` past its own `max_body_bytes` or
+    # client's: [Client::ResponseTooLarge] past its own `max_body_bytes` or
     # `max`). A `Content-Length` over the limit raises before anything is
     # read (no `100 Continue` is sent).
     #
@@ -505,7 +505,7 @@ module HTTP
     #
     # ## Raises
     #
-    # `ArgumentError` for a negative `max`.
+    # [ArgumentError] for a negative `max`.
     def read_bytes(max: Int? = nil) -> Bytes
       cap = cap_of(max) || @limit
       begin
@@ -542,10 +542,10 @@ module HTTP
       raise PayloadTooLarge.new
     end
 
-    # The whole body as a string. Raises `PayloadTooLarge` past the server's
+    # The whole body as a string. Raises [PayloadTooLarge] past the server's
     # `max_body_bytes` or past `max` bytes, whichever is smaller (`max`
-    # counts bytes, not characters), and `BadRequest` when it is not UTF-8
-    # (a client's: `Client::ResponseTooLarge` and `Client::ProtocolError`).
+    # counts bytes, not characters), and [BadRequest] when it is not UTF-8
+    # (a client's: [Client::ResponseTooLarge] and [Client::ProtocolError]).
     # What is read is gone: a second read gives `""`.
     #
     # ```
@@ -616,7 +616,7 @@ module HTTP
     def self.none -> Proxies = Proxies.new([])
 
     # The proxies at `specs`, each a numeric address (`127.0.0.1`, `::1`) or a
-    # network (`10.0.0.0/8`). Raises `ArgumentError` for anything else.
+    # network (`10.0.0.0/8`). Raises [ArgumentError] for anything else.
     def self.of(specs: Array[String]) -> Proxies
       Proxies.new(specs.map do |spec|
         addr, slash, bits = spec.partition("/")
@@ -815,7 +815,7 @@ module HTTP
   # ----- responses ------------------------------------------------------------------
 
   # Given to a Stream body's procedure (a server's response's, a client's
-  # request's): each `write` is a chunk.
+  # request's): each [write] is a chunk.
   class BodyWriter
     include Unshareable
 
@@ -824,7 +824,7 @@ module HTTP
     var @timeout: Duration
     var @head: Bool
 
-    # A writer on `io`; the server makes it for a `Content::Stream` body.
+    # A writer on `io`; the server makes it for a [Content::Stream] body.
     def initialize(@io: IO, @chunked: Bool, @timeout: Duration, @head: Bool = false); end
 
     # Sends `data` as one chunk, within the sender's `write_timeout`; empty
@@ -853,7 +853,7 @@ module HTTP
     end
 
     # Ends a chunked body (the last, empty chunk). The server calls it when
-    # the `Content::Stream` procedure returns.
+    # the [Content::Stream] procedure returns.
     def finish -> Void
       return nil if @head
       io = @io
@@ -861,9 +861,9 @@ module HTTP
     end
   end
 
-  # A body to send: a `Server::Response`'s or a `Client::Request`'s. The
+  # A body to send: a [Server::Response]'s or a [Client::Request]'s. The
   # sender adds the framing it implies: `Content-Length` for all but
-  # `Content::Stream`, which is sent chunked.
+  # [Content::Stream], which is sent chunked.
   enum Content
     # No body.
     variant Empty
@@ -972,10 +972,10 @@ module HTTP
 
   # ----- handlers -------------------------------------------------------------------
 
-  # What serves requests: a `Router`, a procedure (`HTTP.handler`) or a
+  # What serves requests: a [Router], a procedure ([HTTP.handler]) or a
   # class or `data` of one's own. Handlers are Shareable, since every
   # connection's task calls them: state shared between requests lives in
-  # an `Atom` or a `Channel`. Middleware is a handler holding the next.
+  # an [Atom] or a [Channel]. Middleware is a handler holding the next.
   #
   # ```
   # data DocLogged_HTTP(inner: HTTP::Handler)
@@ -992,8 +992,8 @@ module HTTP
   module Handler
     include Shareable
 
-    # The response to `req`. An `HTTP::Error` raised is answered with its
-    # status; another `StandardError` with a `500`.
+    # The response to `req`. An [HTTP::Error] raised is answered with its
+    # status; another [StandardError] with a `500`.
     abstract def call(req: Server::Request) -> Server::Response
   end
 
@@ -1016,7 +1016,7 @@ module HTTP
 
   # ----- the server -----------------------------------------------------------------
 
-  # A server's settings, as `Server.new` takes them.
+  # A server's settings, as [Server.new] takes them.
   data Options = (
     # The limit on reading a request's headers: from its first byte to
     # the end of its headers (and, for a connection's first request,
@@ -1027,13 +1027,13 @@ module HTTP
     # The limit on each read of a request's body (`408` when it runs out).
     read_timeout: Duration,
     # The limit on writing one response, or one chunk of a
-    # `Content::Stream` body.
+    # [Content::Stream] body.
     write_timeout: Duration,
     # The limit on the size of a request's line and headers together
     # (`431` past it).
     max_header_bytes: Int,
-    # The limit on the size of a body that `Body#read` and
-    # `Body#read_bytes` accept (`413` past it).
+    # The limit on the size of a body that [Body#read] and
+    # [Body#read_bytes] accept (`413` past it).
     max_body_bytes: Int,
     # The limit on connections served at once; beyond it, accepting
     # waits.
@@ -1041,7 +1041,7 @@ module HTTP
     # The peers whose `X-Forwarded-*` headers are believed.
     proxies: Proxies,
     # The procedure called with what a handler raised (other than an
-    # `HTTP::Error`) and the request; when nil, the error is written to
+    # [HTTP::Error]) and the request; when nil, the error is written to
     # STDERR.
     on_error: (shareable (Exception, Server::Request?) -> Void)?,
     # The TLS configuration connections are served with; nil for plain
@@ -1050,7 +1050,7 @@ module HTTP
   )
 
   # An HTTP/1.1 server: a task per connection, requests on one connection
-  # served in order. Shareable, so that a `Signal.trap` block or another
+  # served in order. Shareable, so that a [Signal.trap] block or another
   # task can shut it down.
   #
   # ```quarz no_run
@@ -1064,8 +1064,8 @@ module HTTP
     include Shareable
 
     # A request, as the server read it or as a test builds it
-    # (`HTTP::Server::Request.get`). A `data` value: `with` makes a
-    # changed copy. It is not Shareable, since its `Body` is not: copy the
+    # ([HTTP::Server::Request.get]). A `data` value: [with] makes a
+    # changed copy. It is not Shareable, since its [Body] is not: copy the
     # fields a task needs out of it before spawning one.
     #
     # ```
@@ -1120,7 +1120,7 @@ module HTTP
       # A DELETE request for a test.
       def self.delete(target: String, headers: Headers = Headers.empty) -> Request = build("DELETE", target, headers)
 
-      # A POST request for a test, its body `body`.
+      # A POST request for a test, its body [body].
       #
       # ```
       # req = HTTP::Server::Request.post("/users", "name=quarz",
@@ -1131,12 +1131,12 @@ module HTTP
         build("POST", target, headers, body)
       end
 
-      # A PUT request for a test, its body `body`.
+      # A PUT request for a test, its body [body].
       def self.put(target: String, body: String = "", headers: Headers = Headers.empty) -> Request
         build("PUT", target, headers, body)
       end
 
-      # A PATCH request for a test, its body `body`.
+      # A PATCH request for a test, its body [body].
       def self.patch(target: String, body: String = "", headers: Headers = Headers.empty) -> Request
         build("PATCH", target, headers, body)
       end
@@ -1153,7 +1153,7 @@ module HTTP
 
       # The target's path split at `/` into segments, then each
       # percent-decoded (so an escaped `/`, `%2F`, stays inside its
-      # segment), as `HTTP::Pattern#match` takes them; nil when a segment
+      # segment), as [HTTP::Pattern#match] takes them; nil when a segment
       # does not decode to UTF-8 text (a `%` not followed by two hex digits
       # is kept as it is). An absolute-form target (`http://host/a`) gives
       # its path's.
@@ -1181,8 +1181,8 @@ module HTTP
       end
 
       # The parameters of an `application/x-www-form-urlencoded` body, as
-      # `#query_params` decodes them; empty for another content type. Reads the
-      # body (`Body#read`), so it raises what that raises.
+      # [#query_params] decodes them; empty for another content type. Reads the
+      # body ([Body#read]), so it raises what that raises.
       def form_params -> Hash[String, Array[String]]
         ct = headers["content-type"] || ""
         return {} unless ct.downcase.start_with?("application/x-www-form-urlencoded")
@@ -1226,7 +1226,7 @@ module HTTP
       end
     end
 
-    # What a handler returns. A `data` value: `#header` and `with` make
+    # What a handler returns. A `data` value: [#header] and [with] make
     # changed copies. When it sends one, the server adds the framing
     # (`Content-Length` or `Transfer-Encoding`) and a Date header.
     #
@@ -1273,8 +1273,8 @@ module HTTP
         Response.new(status, Headers.empty.add("content-type", content_type), Content::Binary.new(body))
       end
 
-      # A redirection to `location` (`302 Found` unless `status` says
-      # otherwise), with no body. Raises `ArgumentError` for a `location` with a
+      # A redirection to `location` (`302 Found` unless [status] says
+      # otherwise), with no body. Raises [ArgumentError] for a `location` with a
       # control character.
       def self.redirect(location: String, status: Int = 302) -> Response
         Response.new(status, Headers.empty.add("location", location), Content::Empty)
@@ -1283,7 +1283,7 @@ module HTTP
       # A `404` text response.
       def self.not_found(message: String = "Not Found") -> Response = text(message, 404)
 
-      # A response whose body the block writes through a `BodyWriter`, sent
+      # A response whose body the block writes through a [BodyWriter], sent
       # chunked (unframed to an HTTP/1.0 client, the connection then closed).
       # The block runs on the connection's task after the headers are sent, so
       # it may run as long as the client stays; `write_timeout` applies to each
@@ -1304,7 +1304,7 @@ module HTTP
       end
 
       # The response with every value of `name` replaced by `value`
-      # (`Headers#put`).
+      # ([Headers#put]).
       def header(name: String, value: String) -> Response = with(headers: headers.put(name, value))
 
       # The status's reason phrase: `"OK"` for 200 (`""` for an unknown one).
@@ -1332,13 +1332,13 @@ module HTTP
 
     # A server on `host`:`port`, or on a UNIX socket at `path` (whose
     # peers count as trusted proxies). It listens at once, so that
-    # `local_address` gives the port of `port: 0`.
+    # [local_address] gives the port of `port: 0`.
     #
     # With `tls:`, it serves HTTPS: each connection's TLS handshake runs in
     # its own task, within `read_header_timeout` together with the wait
     # for the first request; a handshake that fails or runs out of time
     # closes that connection only. Not with `path:`, nor with an `alpn`
-    # other than `"http/1.1"` and `"http/1.0"` (`ArgumentError`: the
+    # other than `"http/1.1"` and `"http/1.0"` ([ArgumentError]: the
     # server speaks no HTTP/2).
     #
     # ```quarz no_run
@@ -1378,7 +1378,7 @@ module HTTP
       @done = Channel[Nil].new
     end
 
-    # A server on a UNIX socket at `path`, with the options of `.new`. Its
+    # A server on a UNIX socket at `path`, with the options of [.new]. Its
     # peers have no address and count as trusted proxies, so `remote_ip` and
     # `scheme` come from the `X-Forwarded-*` headers.
     def self.unix(handler: Handler, path: String, *,
@@ -1400,7 +1400,7 @@ module HTTP
       tcp.local_address
     end
 
-    # Accepts connections and serves them until `#shutdown` (or until the
+    # Accepts connections and serves them until [#shutdown] (or until the
     # calling task is cancelled, which cancels every connection at once).
     #
     # It returns at once when the server is already serving or was shut
@@ -1451,10 +1451,10 @@ module HTTP
     # Stops the server: it stops accepting, closes the connections waiting
     # for a request (with `tls:`, those in their TLS handshake too), lets
     # those in a handler finish for up to `timeout`, then cancels them, and
-    # `#serve` returns.
+    # [#serve] returns.
     #
-    # `shutdown` itself returns at once (so a handler may call it);
-    # `#wait` waits for `#serve` to return.
+    # [shutdown] itself returns at once (so a handler may call it);
+    # [#wait] waits for [#serve] to return.
     def shutdown(timeout: Duration = 30.seconds) -> Void
       loop do
         was = @state.value
@@ -1474,12 +1474,12 @@ module HTTP
       end
     end
 
-    # Waits until `#serve` has returned (after a `#shutdown`).
+    # Waits until [#serve] has returned (after a [#shutdown]).
     def wait -> Void
       @done.receive?
     end
 
-    # Whether `#shutdown` has been called.
+    # Whether [#shutdown] has been called.
     def stopping? -> Bool = @state.value == 2
 
     private def close_listener -> Void
@@ -1734,14 +1734,14 @@ module HTTP
   # - Any other segment matches itself only.
   #
   # A trailing slash is significant: `/users/` is not `/users`. A path is
-  # matched as `Server::Request#path_segments` gives it, each segment
+  # matched as [Server::Request#path_segments] gives it, each segment
   # percent-decoded, so an escaped `/` (`%2F`) stays inside its segment.
   # The rest a `{name...}` matched is its segments joined with `/`, `..`
   # segments kept as they are: a handler that maps it to files must check
   # them.
   #
   # When several patterns match a path, the most specific one is chosen
-  # (`#compare_specificity`, `Routes#find`).
+  # ([#compare_specificity], [Routes#find]).
   #
   # ```
   # p = HTTP::Pattern.parse("/users/{id}/posts/{rest...}")
@@ -1771,7 +1771,7 @@ module HTTP
       variant Rest(name: String)
     end
 
-    # The pattern written `source`. Raises `ArgumentError` when it does not
+    # The pattern written [source]. Raises [ArgumentError] when it does not
     # start with `/`, when `{name...}` is not its last segment, when a
     # parameter has no name (`{}`, `{...}`), or when two parameters have
     # the same name.
@@ -1810,7 +1810,7 @@ module HTTP
     end
 
     # The parameters of `path` by name, or nil when the pattern does not
-    # match it. `path` is a request's path as `Server::Request#path_segments`
+    # match it. `path` is a request's path as [Server::Request#path_segments]
     # gives it.
     def match(path: Array[String]) -> Hash[String, String]?
       params = Hash::Builder[String, String].new
@@ -1851,7 +1851,7 @@ module HTTP
     def compare_specificity(other: Pattern) -> Int = specificity <=> other.specificity
 
     # Whether both patterns match the same paths, being as specific: they
-    # differ in the names of their parameters at most. A `Routes` refuses
+    # differ in the names of their parameters at most. A [Routes] refuses
     # a second route of one method with such a pattern.
     #
     # ```
@@ -1888,14 +1888,14 @@ module HTTP
     end
   end
 
-  # Routes by method and path pattern (`Pattern`) to values of `T`: the
-  # matching rules of `Router`, for a router of another shape (a
+  # Routes by method and path pattern ([Pattern]) to values of `T`: the
+  # matching rules of [Router], for a router of another shape (a
   # framework's, whose routes are its own values).
   #
-  # A `Routes` value does not change: `#add` gives a new one. Each `add`
+  # A [Routes] value does not change: [#add] gives a new one. Each [add]
   # checks for a conflict with one hash lookup, but copies the routes
   # added before (#704), so building N routes copies O(N²) elements:
-  # about 35 ms for 1600 routes in a release build. `#find` looks at
+  # about 35 ms for 1600 routes in a release build. [#find] looks at
   # every route.
   #
   # ```
@@ -1923,7 +1923,7 @@ module HTTP
     # :nodoc:
     data Entry[U <: Shareable] = (method: String, pattern: Pattern, value: U)
 
-    # What `Routes#find` found.
+    # What [Routes#find] found.
     enum Found[U <: Shareable]
       # The route's value, and the parameters its pattern matched.
       variant Match(value: U, params: Hash[String, String])
@@ -1938,9 +1938,9 @@ module HTTP
     def self.empty -> Routes[T] = Routes[T].new([], {})
 
     # These routes and one more, for `method` requests matching `pattern`.
-    # Raises `ArgumentError` when the pattern does not parse
-    # (`Pattern.parse`), or when a route of the same method has a pattern
-    # that matches the same paths (`Pattern#same_paths?`).
+    # Raises [ArgumentError] when the pattern does not parse
+    # ([Pattern.parse]), or when a route of the same method has a pattern
+    # that matches the same paths ([Pattern#same_paths?]).
     def add(method: String, pattern: String, value: T) -> Routes[T]
       pat = Pattern.parse(pattern)
       key: [String, String] = [method, pat.shape]
@@ -1959,15 +1959,15 @@ module HTTP
     def size -> Int = entries.size
 
     # The route for a `method` request to `path` (as
-    # `Server::Request#path_segments` gives it):
+    # [Server::Request#path_segments] gives it):
     #
-    # - `Found::Match` with the most specific route of that method whose
-    #   pattern matches (`Pattern#compare_specificity`). A HEAD request is
+    # - [Found::Match] with the most specific route of that method whose
+    #   pattern matches ([Pattern#compare_specificity]). A HEAD request is
     #   served by a GET route too, and by a HEAD route of the same
     #   pattern rather than the GET one.
-    # - `Found::NotAllowed` when only routes of other methods match: those
+    # - [Found::NotAllowed] when only routes of other methods match: those
     #   methods, with HEAD where GET is.
-    # - `Found::NotFound` otherwise.
+    # - [Found::NotFound] otherwise.
     def find(method: String, path: Array[String]) -> Found[T]
       found: Entry[T]? = nil
       found_params: Hash[String, String] = {}
@@ -1997,8 +1997,8 @@ module HTTP
   end
 
   # Routes by method and path pattern (`/users/{id}`, `/files/{path...}`,
-  # `Pattern`): the most specific match wins; a path that only other
-  # methods have is answered 405 (`Routes#find`).
+  # [Pattern]): the most specific match wins; a path that only other
+  # methods have is answered 405 ([Routes#find]).
   #
   # ```
   # router = HTTP::Router.build do |r|
@@ -2015,15 +2015,15 @@ module HTTP
   data Router(
     # The routes, to their handlers.
     routes: Routes[Handler],
-    # The handler of a path no route has (`RouterBuilder#not_found`).
+    # The handler of a path no route has ([RouterBuilder#not_found]).
     fallback: Handler
   )
     include Handler
 
-    # A router of the routes the block adds to its `RouterBuilder`. Raises
-    # `ArgumentError` for two routes of a method that match the same paths
+    # A router of the routes the block adds to its [RouterBuilder]. Raises
+    # [ArgumentError] for two routes of a method that match the same paths
     # with equal specificity, or a pattern that does not parse
-    # (`Pattern.parse`).
+    # ([Pattern.parse]).
     def self.build(&: (RouterBuilder) -> Void) -> Router
       b = RouterBuilder.new
       yield b
@@ -2048,7 +2048,7 @@ module HTTP
     end
   end
 
-  # Collects routes for `Router.build`: patterns as `Pattern` reads them.
+  # Collects routes for [Router.build]: patterns as [Pattern] reads them.
   class RouterBuilder
     include Unshareable
 
@@ -2056,8 +2056,8 @@ module HTTP
     var @fallback: Handler = ProcHandler.new(->(r: Server::Request) { Server::Response.not_found })
 
     # Routes `method` requests matching `pattern` to `handler`. Raises
-    # `ArgumentError` for a pattern that does not parse (`Pattern.parse`),
-    # or one conflicting with a route already added (`Routes#add`).
+    # [ArgumentError] for a pattern that does not parse ([Pattern.parse]),
+    # or one conflicting with a route already added ([Routes#add]).
     def handle(method: String, pattern: String, handler: Handler) -> Void
       @routes = @routes.add(method, pattern, handler)
     end
@@ -2067,31 +2067,31 @@ module HTTP
       handle(method, pattern, ProcHandler.new(blk))
     end
 
-    # Routes GET requests matching `pattern`: `#handle`.
+    # Routes GET requests matching `pattern`: [#handle].
     def get(pattern: String, handler: Handler) -> Void = handle("GET", pattern, handler)
     # :ditto:
     def get(pattern: String, &blk: shareable (Server::Request) -> Server::Response) -> Void = handle("GET", pattern, ProcHandler.new(blk))
-    # Routes HEAD requests matching `pattern`: `#handle`.
+    # Routes HEAD requests matching `pattern`: [#handle].
     def head(pattern: String, handler: Handler) -> Void = handle("HEAD", pattern, handler)
     # :ditto:
     def head(pattern: String, &blk: shareable (Server::Request) -> Server::Response) -> Void = handle("HEAD", pattern, ProcHandler.new(blk))
-    # Routes POST requests matching `pattern`: `#handle`.
+    # Routes POST requests matching `pattern`: [#handle].
     def post(pattern: String, handler: Handler) -> Void = handle("POST", pattern, handler)
     # :ditto:
     def post(pattern: String, &blk: shareable (Server::Request) -> Server::Response) -> Void = handle("POST", pattern, ProcHandler.new(blk))
-    # Routes PUT requests matching `pattern`: `#handle`.
+    # Routes PUT requests matching `pattern`: [#handle].
     def put(pattern: String, handler: Handler) -> Void = handle("PUT", pattern, handler)
     # :ditto:
     def put(pattern: String, &blk: shareable (Server::Request) -> Server::Response) -> Void = handle("PUT", pattern, ProcHandler.new(blk))
-    # Routes PATCH requests matching `pattern`: `#handle`.
+    # Routes PATCH requests matching `pattern`: [#handle].
     def patch(pattern: String, handler: Handler) -> Void = handle("PATCH", pattern, handler)
     # :ditto:
     def patch(pattern: String, &blk: shareable (Server::Request) -> Server::Response) -> Void = handle("PATCH", pattern, ProcHandler.new(blk))
-    # Routes DELETE requests matching `pattern`: `#handle`.
+    # Routes DELETE requests matching `pattern`: [#handle].
     def delete(pattern: String, handler: Handler) -> Void = handle("DELETE", pattern, handler)
     # :ditto:
     def delete(pattern: String, &blk: shareable (Server::Request) -> Server::Response) -> Void = handle("DELETE", pattern, ProcHandler.new(blk))
-    # Routes OPTIONS requests matching `pattern`: `#handle`.
+    # Routes OPTIONS requests matching `pattern`: [#handle].
     def options(pattern: String, handler: Handler) -> Void = handle("OPTIONS", pattern, handler)
     # :ditto:
     def options(pattern: String, &blk: shareable (Server::Request) -> Server::Response) -> Void = handle("OPTIONS", pattern, ProcHandler.new(blk))
@@ -2105,7 +2105,7 @@ module HTTP
       end
     end
 
-    # The handler of a path no route has (by default, `Server::Response.not_found`).
+    # The handler of a path no route has (by default, [Server::Response.not_found]).
     def not_found(handler: Handler) -> Void
       @fallback = handler
     end
@@ -2122,8 +2122,8 @@ module HTTP
   # Serves HTTP on `host`:`port`, answering each request with the
   # block's response, until the calling task is cancelled.
   #
-  # A shorthand for `HTTP::Server.new` with a handler from the block
-  # (`HTTP.handler`) and `HTTP::Server#serve`.
+  # A shorthand for [HTTP::Server.new] with a handler from the block
+  # ([HTTP.handler]) and [HTTP::Server#serve].
   def self.serve(port: Int = 8080, host: String = "0.0.0.0",
                  &handler: shareable (Server::Request) -> Server::Response) -> Void
     Server.new(ProcHandler.new(handler), host: host, port: port).serve
@@ -2131,8 +2131,8 @@ module HTTP
 
   # ----- the client -----------------------------------------------------------------
 
-  # The proxy a client goes through: an `https` target through a CONNECT
-  # tunnel, an `http` one by sending the request to the proxy in absolute
+  # The proxy a client goes through: an [https] target through a CONNECT
+  # tunnel, an [http] one by sending the request to the proxy in absolute
   # form. The proxy URL's user information, if any, is sent as
   # `Proxy-Authorization: Basic`.
   #
@@ -2142,17 +2142,17 @@ module HTTP
   # proxy.proxy_for(URI.parse("http://db.internal/"))         # => nil
   # ```
   data Proxy(
-    # The proxy for `https` targets, nil for none.
+    # The proxy for [https] targets, nil for none.
     https: URI?,
-    # The proxy for `http` targets, nil for none.
+    # The proxy for [http] targets, nil for none.
     http: URI?,
     # The hosts reached directly, as curl reads NO_PROXY: a host, a
     # domain (`example.com` or `.example.com`: it and its subdomains), a
     # `host:port`, or `*` for every host.
     no_proxy: Array[String]
   )
-    # One proxy for both schemes. Raises `ArgumentError` when `url` is not
-    # an `http` URL with a host.
+    # One proxy for both schemes. Raises [ArgumentError] when `url` is not
+    # an [http] URL with a host.
     def initialize(url: String | URI, *, no_proxy: Array[String] = [])
       u = Proxy.check(url.is_a?(String) ? URI.parse(url) : url)
       @https = u
@@ -2167,14 +2167,14 @@ module HTTP
       @no_proxy = no_proxy
     end
 
-    # The proxies of the environment: `https_proxy` for `https` targets and
-    # `http_proxy` for `http` ones, `no_proxy` for the hosts reached
+    # The proxies of the environment: `https_proxy` for [https] targets and
+    # `http_proxy` for [http] ones, [no_proxy] for the hosts reached
     # directly (each name in lower case first, then in upper case); nil
     # when neither proxy is set. A URL without a scheme is taken as
-    # `http://`; one that is not an `http` URL with a host (`socks5://`)
+    # `http://`; one that is not an [http] URL with a host (`socks5://`)
     # is ignored, with a warning on STDERR (once). As Go does,
     # HTTP_PROXY is ignored when REQUEST_METHOD is set: in a CGI
-    # program, a request's `Proxy` header sets it (httpoxy).
+    # program, a request's [Proxy] header sets it (httpoxy).
     def self.from_env -> Proxy?
       https = env_url("https_proxy", true)
       http = env_url("http_proxy", ENV["REQUEST_METHOD"]?.nil?)
@@ -2231,7 +2231,7 @@ module HTTP
       proxy
     end
 
-    # Whether `target` is in `no_proxy`.
+    # Whether `target` is in [no_proxy].
     def direct?(target: URI) -> Bool
       host = URI.ascii_downcase(target.host || "")
       host = host[0, host.size - 1] if host.end_with?(".")
@@ -2276,7 +2276,7 @@ module HTTP
 
   # An HTTP/1.1 client: requests and responses are values, bodies are
   # streamed, and kept connections are pooled per origin. Shareable: one
-  # client serves a program's tasks (its pool lives in an `Atom`).
+  # client serves a program's tasks (its pool lives in an [Atom]).
   #
   # ```quarz no_run
   # client = HTTP::Client.new(timeout: 30.seconds)
@@ -2288,7 +2288,7 @@ module HTTP
   #
   # A response that is not 2xx is a value, not an error (`ensure_success`
   # raises for it). Redirects are followed (`max_redirects`), the proxy is
-  # the environment's (`Proxy.from_env`) unless given.
+  # the environment's ([Proxy.from_env]) unless given.
   class Client
     include Shareable
     include URLForms
@@ -2317,7 +2317,7 @@ module HTTP
     # Sent when a request names no `User-Agent`.
     USER_AGENT = "quarz-http/0.0.1"
 
-    # What went wrong with a request (not `HTTP::Error`, whose status is
+    # What went wrong with a request (not [HTTP::Error], whose status is
     # for a server to answer with).
     class Error < StandardError
     end
@@ -2351,7 +2351,7 @@ module HTTP
     end
 
     # A redirect that cannot be followed: no usable Location, or a
-    # `Content::Stream` body to send again.
+    # [Content::Stream] body to send again.
     class RedirectError < Error
     end
 
@@ -2374,7 +2374,7 @@ module HTTP
       def url -> URI = @url
     end
 
-    # The proxy refused the tunnel (CONNECT): `status` is its answer.
+    # The proxy refused the tunnel (CONNECT): [status] is its answer.
     class ProxyError < Error
       @status: Int
       def initialize(@status: Int)
@@ -2385,7 +2385,7 @@ module HTTP
       def status -> Int = @status
     end
 
-    # A response that is not 2xx, from `Response#ensure_success`. An
+    # A response that is not 2xx, from [Response#ensure_success]. An
     # exception is Shareable and a response's body is not, so it carries
     # the response's status, headers and URL, and its body when it could
     # be read (up to `max_body_bytes`). The message says the status and
@@ -2411,8 +2411,8 @@ module HTTP
 
 
     # A request: a value, so that a program (or a cog signing requests)
-    # can build it, change it with `#header` and `with`, and send it with
-    # `Client#request`.
+    # can build it, change it with [#header] and [with], and send it with
+    # [Client#request].
     #
     # ```
     # req = HTTP::Client::Request.post("https://example.com/inbox", body: "{}",
@@ -2435,7 +2435,7 @@ module HTTP
     )
       include URLForms
 
-      # Raises `ArgumentError` for a method that is not a token or a URL
+      # Raises [ArgumentError] for a method that is not a token or a URL
       # that is not `http` or `https` with a host (or holds whitespace or a
       # control character).
       def initialize(method: String, url: String | URI, *, headers: Headers | Hash[String, String] = Headers.empty,
@@ -2474,20 +2474,20 @@ module HTTP
         Request.new("DELETE", url, headers: headers)
       end
 
-      # A POST request with `body`, its `Content-Type` `content_type` when
+      # A POST request with [body], its `Content-Type` `content_type` when
       # given.
       def self.post(url: String | URI, body: String | Bytes = "", content_type: String? = nil,
                     headers: Headers | Hash[String, String] = Headers.empty) -> Request
         with_body("POST", url, body, content_type, headers)
       end
 
-      # A PUT request, as `.post`.
+      # A PUT request, as [.post].
       def self.put(url: String | URI, body: String | Bytes = "", content_type: String? = nil,
                    headers: Headers | Hash[String, String] = Headers.empty) -> Request
         with_body("PUT", url, body, content_type, headers)
       end
 
-      # A PATCH request, as `.post`.
+      # A PATCH request, as [.post].
       def self.patch(url: String | URI, body: String | Bytes = "", content_type: String? = nil,
                      headers: Headers | Hash[String, String] = Headers.empty) -> Request
         with_body("PATCH", url, body, content_type, headers)
@@ -2534,7 +2534,7 @@ module HTTP
 
       # The value of the Host header the client sends: the URL's host,
       # with its port when it is not the scheme's default, an IPv6 address
-      # in brackets. A Host header among `headers` is not sent: this one
+      # in brackets. A Host header among [headers] is not sent: this one
       # replaces it.
       #
       # ```
@@ -2555,7 +2555,7 @@ module HTTP
     # A response: its status and headers, and its body, read from the
     # connection as it is asked for. The connection goes back to the pool
     # when the body has been read to its end (`body.read`, `read_bytes`,
-    # `each_chunk`, `#close`); a response dropped with its body unread
+    # `each_chunk`, [#close]); a response dropped with its body unread
     # closes its connection.
     data Response(
       # The status code.
@@ -2582,7 +2582,7 @@ module HTTP
       # 308).
       def redirect? -> Bool = status == 301 || status == 302 || status == 303 || status == 307 || status == 308
 
-      # The response itself when it is 2xx; otherwise `StatusError`, with
+      # The response itself when it is 2xx; otherwise [StatusError], with
       # its status, headers, URL and body (read here).
       def ensure_success -> Response
         return self if success?
@@ -2677,19 +2677,19 @@ module HTTP
     # TLS handshake), `read_timeout` and `write_timeout` each read and
     # write. `tls` is what `https` connections trust (`alpn` defaults to
     # `http/1.1`); `proxy` defaults to the environment's. `fast_fallback`
-    # is `Socket.tcp`'s: false tries a name's addresses one after the
+    # is [Socket.tcp]'s: false tries a name's addresses one after the
     # other, without Happy Eyeballs.
     #
     # `allow_address` is called with each address a connection may go to,
     # after the name is resolved and before anything is sent to it (by
-    # `Socket.tcp`, so the address allowed is the one connected to):
+    # [Socket.tcp], so the address allowed is the one connected to):
     # for the first request, each redirect, and each new connection to a
     # host; a connection kept in the pool was checked when it was made.
     # A refused address is not tried; when every address is refused, the
-    # request raises `ForbiddenAddress`, and an exception the filter
+    # request raises [ForbiddenAddress], and an exception the filter
     # raises ends the request. Through a proxy, it is the proxy's address
     # that is checked: the target is resolved by the proxy, and this
-    # client does not check it. `Client.public_only` is one such filter.
+    # client does not check it. [Client.public_only] is one such filter.
     #
     # ```quarz no_run
     # client = HTTP::Client.new(allow_address: HTTP::Client.public_only)
@@ -2731,7 +2731,7 @@ module HTTP
     # addresses. The rule:
     #
     # - an IPv4 address (or an IPv4-mapped IPv6 one) is allowed when
-    #   `Socket::IP#global?` says so;
+    #   [Socket::IP#global?] says so;
     # - an IPv6 address must also be in `2000::/3`, the global unicast
     #   space, and not refused by `global?`. That refuses the deprecated
     #   IPv4-compatible `::a.b.c.d` and site-local `fec0::/10`, and what
@@ -2775,7 +2775,7 @@ module HTTP
     # :nodoc:
     DEFAULT = Atom[Client?].new(nil)
 
-    # The client `HTTP.get` and the other module functions use: one with
+    # The client [HTTP.get] and the other module functions use: one with
     # the defaults, made on first use.
     def self.default -> Client
       loop do
@@ -2788,7 +2788,7 @@ module HTTP
 
     # Sends `req` and returns the response, its headers read and its body
     # not yet: follows redirects (`max_redirects`). Raises a
-    # `Client::Error` (or `ArgumentError` for a request that cannot be
+    # [Client::Error] (or [ArgumentError] for a request that cannot be
     # sent); a response that is not 2xx is returned as any other.
     def request(req: Request) -> Response
       limit = @timeout
@@ -2825,13 +2825,13 @@ module HTTP
       request(Request.post(url, body, content_type, headers))
     end
 
-    # A PUT request, as `#post`.
+    # A PUT request, as [#post].
     def put(url: String | URI, body: String | Bytes = "", content_type: String? = nil,
             headers: Headers | Hash[String, String] = Headers.empty) -> Response
       request(Request.put(url, body, content_type, headers))
     end
 
-    # A PATCH request, as `#post`.
+    # A PATCH request, as [#post].
     def patch(url: String | URI, body: String | Bytes = "", content_type: String? = nil,
               headers: Headers | Hash[String, String] = Headers.empty) -> Response
       request(Request.patch(url, body, content_type, headers))
@@ -3225,7 +3225,7 @@ module HTTP
     h.is_a?(Headers) ? h : Headers.of(h)
   end
 
-  # A GET request on `HTTP::Client.default`.
+  # A GET request on [HTTP::Client.default].
   #
   # ```quarz no_run
   # HTTP.get("https://example.com/").body.read
@@ -3234,34 +3234,34 @@ module HTTP
     Client.default.get(url, headers)
   end
 
-  # A HEAD request on `HTTP::Client.default`.
+  # A HEAD request on [HTTP::Client.default].
   def self.head(url: String | URI, headers: Headers | Hash[String, String] = Headers.empty) -> Client::Response
     Client.default.head(url, headers)
   end
 
-  # A DELETE request on `HTTP::Client.default`.
+  # A DELETE request on [HTTP::Client.default].
   def self.delete(url: String | URI, headers: Headers | Hash[String, String] = Headers.empty) -> Client::Response
     Client.default.delete(url, headers)
   end
 
-  # A POST request on `HTTP::Client.default`.
+  # A POST request on [HTTP::Client.default].
   def self.post(url: String | URI, body: String | Bytes = "", content_type: String? = nil,
                 headers: Headers | Hash[String, String] = Headers.empty) -> Client::Response
     Client.default.post(url, body, content_type, headers)
   end
 
-  # A PUT request on `HTTP::Client.default`.
+  # A PUT request on [HTTP::Client.default].
   def self.put(url: String | URI, body: String | Bytes = "", content_type: String? = nil,
                headers: Headers | Hash[String, String] = Headers.empty) -> Client::Response
     Client.default.put(url, body, content_type, headers)
   end
 
-  # A PATCH request on `HTTP::Client.default`.
+  # A PATCH request on [HTTP::Client.default].
   def self.patch(url: String | URI, body: String | Bytes = "", content_type: String? = nil,
                  headers: Headers | Hash[String, String] = Headers.empty) -> Client::Response
     Client.default.patch(url, body, content_type, headers)
   end
 
-  # `req` sent on `HTTP::Client.default`.
+  # `req` sent on [HTTP::Client.default].
   def self.request(req: Client::Request) -> Client::Response = Client.default.request(req)
 end

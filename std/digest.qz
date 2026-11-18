@@ -6,8 +6,8 @@
 # Digest::HMAC.sha256("key", "message").size   # => 32
 # ```
 #
-# Each function takes its data as `Bytes` or as a `String` (its UTF-8
-# bytes) and gives the digest as `Bytes`, or as lowercase hexadecimal from
+# Each function takes its data as [Bytes] or as a [String] (its UTF-8
+# bytes) and gives the digest as [Bytes], or as lowercase hexadecimal from
 # `hexdigest`.
 module Digest
   # SHA-256 (FIPS 180-4).
@@ -59,7 +59,7 @@ module Digest
   # PBKDF2 (RFC 8018), the key derivation of SCRAM and of password storage.
   module PBKDF2
     # `length` bytes derived from `password` and `salt` with
-    # HMAC-SHA-256 over `iterations` rounds. Raises `ArgumentError` when
+    # HMAC-SHA-256 over `iterations` rounds. Raises [ArgumentError] when
     # `iterations` is not positive, or `length` is negative or larger than
     # RFC 8018 allows ((2^32 - 1) * 32 bytes) or memory holds.
     #

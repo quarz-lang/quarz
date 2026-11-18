@@ -1,5 +1,5 @@
 # Tests: `require "test"`, run by `quarz test` (docs/12-testing.md). A
-# test is a `test_*` method of a class that inherits `Test::Case`, and the
+# test is a `test_*` method of a class that inherits [Test::Case], and the
 # compiler finds them and generates the runner.
 module Test
   # ----- outcomes -------------------------------------------------------------------
@@ -19,11 +19,11 @@ module Test
 
   # ----- test cases -----------------------------------------------------------------
 
-  # The assertions, for `Test::Case` and for a module of tests or helpers
+  # The assertions, for [Test::Case] and for a module of tests or helpers
   # that test classes include (`module Sizes; include Test::Assertions`).
   module Assertions
     # Counts one assertion made: each assertion calls it once, and
-    # `Test::Case` counts its test's.
+    # [Test::Case] counts its test's.
     abstract def add_assertion -> Void
 
     # Passes when `value` is truthy (neither `nil` nor `false`).
@@ -64,7 +64,7 @@ module Test
       check(expected == actual, message) { Test.equal_failure(expected, actual) }
     end
 
-    # Passes when `expected != actual`; typed as `#assert_equal`.
+    # Passes when `expected != actual`; typed as [#assert_equal].
     def refute_equal[T](expected: T, actual: T?, message: String? = nil) -> Void
       check(expected != actual, message) { "<#{expected.inspect}> was expected to be != to\n<#{actual.inspect}>." }
     end
@@ -153,7 +153,7 @@ module Test
     #
     # ## Raises
     #
-    # `ArgumentError` for another `op` (an error of the test, not a
+    # [ArgumentError] for another `op` (an error of the test, not a
     # failure).
     def assert_compare[T <: Comparable[T]](lhs: T, op: Symbol, rhs: T, message: String? = nil) -> Void
       c = lhs <=> rhs
@@ -279,7 +279,7 @@ module Test
       raise Omitted.new(message)
     end
 
-    # Omits the test (as `#omit`) when `condition` is true.
+    # Omits the test (as [#omit]) when `condition` is true.
     #
     # ```
     # class DocOmit_Test < Test::Case
@@ -293,7 +293,7 @@ module Test
       raise Omitted.new(message) if condition
     end
 
-    # Omits the test (as `#omit`) unless `condition` is true.
+    # Omits the test (as [#omit]) unless `condition` is true.
     def omit_unless(condition: Bool, message: String = "omitted") -> Void
       raise Omitted.new(message) unless condition
     end
@@ -310,9 +310,9 @@ module Test
       fail_with(message, yield) unless ok
     end
 
-    # Fails the test: raises `Test::AssertionFailed` with `message` (when
+    # Fails the test: raises [Test::AssertionFailed] with `message` (when
     # given) and `detail`. For assertions of one's own, which call
-    # `add_assertion` first.
+    # [add_assertion] first.
     def fail_with(message: String?, detail: String) -> Nothing
       text = message ? "#{message}.\n#{detail}" : detail
       raise AssertionFailed.new(text)
@@ -348,13 +348,13 @@ module Test
     # unless a test class overrides it.
     def setup -> Void = nil
     # Runs after each test, on its instance, also after a failure or an
-    # error: it undoes what `#setup` did.
+    # error: it undoes what [#setup] did.
     def teardown -> Void = nil
 
     # Runs once before the class's first test; when it raises, every test
     # of the class is an error.
     def self.startup -> Void = nil
-    # Runs once after the class's last test, unless `.startup` raised.
+    # Runs once after the class's last test, unless [.startup] raised.
     def self.shutdown -> Void = nil
 
     # The class's limit per test (nil: the run's).
@@ -365,7 +365,7 @@ module Test
 
     # The number of assertions the test has made.
     def assertion_count -> Int = @assertion_count
-    # The notes `#notify` added, in order.
+    # The notes [#notify] added, in order.
     def notes -> Array[String] = @notes
 
     def add_assertion -> Void
@@ -403,10 +403,10 @@ module Test
     def self.never -> Bool = ARGV.size < 0
   end
 
-  # A module that gives `Test::Case` its Test::Unit name,
+  # A module that gives [Test::Case] its Test::Unit name,
   # `Test::Unit::TestCase`, for tests moved from Ruby.
   module Unit
-    # `Test::Case` under Test::Unit's name, for tests moved from Ruby.
+    # [Test::Case] under Test::Unit's name, for tests moved from Ruby.
     TestCase = Case
   end
 

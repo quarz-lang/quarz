@@ -1,6 +1,6 @@
 # The Quarz standard library
 
-The API of the standard library of [Quarz](https://quarz.dev/): the built-in classes (`Int`, `String`, `Array`, `Hash`, `Task`, `Channel`), and the modules a program requires (`JSON`, `HTTP`, `Socket`, `Crypto`, `Test`). The pages below come from the comments in the library's source ([docs/13](https://github.com/quarz-lang/quarz/blob/main/docs/13-doc-comments.md)).
+The API of the standard library of [Quarz](https://quarz.dev/): the built-in classes ([Int], [String], [Array], [Hash], [Task], [Channel]), and the modules a program requires ([JSON], [HTTP], [Socket], [Crypto], [Test]). The pages below come from the comments in the library's source ([docs/13](https://github.com/quarz-lang/quarz/blob/main/docs/13-doc-comments.md)).
 
 ## Cogs
 

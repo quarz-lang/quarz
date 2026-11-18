@@ -15,8 +15,8 @@ class TCPSocket < IO
   native def remote_address -> Socket::Address
 end
 
-# A listening TCP socket: `Socket.tcp_server` and `Socket.tcp_server_loop`
-# make one, or `TCPServer.new`.
+# A listening TCP socket: [Socket.tcp_server] and [Socket.tcp_server_loop]
+# make one, or [TCPServer.new].
 #
 # ```quarz no_run
 # server = TCPServer.new("127.0.0.1", 0)   # any free port
@@ -27,13 +27,13 @@ end
 # ```
 class TCPServer < IO
   # A server listening on `port` of every IPv4 address (`0.0.0.0`). Port 0
-  # picks a free port: `#local_address` tells which. Raises
-  # `SystemCallError` when the port is taken.
+  # picks a free port: [#local_address] tells which. Raises
+  # [SystemCallError] when the port is taken.
   native def self.new(port: Int) -> TCPServer
   # A server listening on `port` of `host`, a numeric address or a name.
   native def self.new(host: String, port: Int) -> TCPServer
   # The next connection, waiting for one (only the calling task waits).
-  # Raises `IOError` once the server is closed.
+  # Raises [IOError] once the server is closed.
   native def accept -> TCPSocket
   # The address and port the server listens on.
   native def local_address -> Socket::Address
@@ -49,13 +49,13 @@ end
 # data, from = server.recvfrom(512)   # "ping" and the client's address
 # ```
 class UDPSocket < IO
-  # A socket bound to a free port of every IPv4 address; `#bind` binds it
+  # A socket bound to a free port of every IPv4 address; [#bind] binds it
   # elsewhere.
   native def self.new -> UDPSocket
   # Binds the socket to `port` of `host` (port 0: a free one), replacing
-  # its address. Raises `SystemCallError` when the address is taken.
+  # its address. Raises [SystemCallError] when the address is taken.
   native def bind(host: String, port: Int) -> Void
-  # Sets the default destination of `#send` without a host, and receives
+  # Sets the default destination of [#send] without a host, and receives
   # only from it.
   native def connect(host: String, port: Int) -> Void
   # Sends `data` as one datagram to `host` at `port`; the number of bytes
@@ -63,7 +63,7 @@ class UDPSocket < IO
   native def send(data: String, host: String, port: Int) -> Int
   # :ditto:
   native def send(data: Bytes, host: String, port: Int) -> Int
-  # Sends `data` as one datagram to the address given to `#connect`; the
+  # Sends `data` as one datagram to the address given to [#connect]; the
   # number of bytes sent.
   native def send(data: String) -> Int
   # :ditto:
@@ -72,11 +72,11 @@ class UDPSocket < IO
   # replaced). At most `length` bytes are read: the rest of a longer
   # datagram is lost.
   native def recv(length: Int) -> String
-  # The next datagram as `Bytes`, as `#recv` reads it.
+  # The next datagram as [Bytes], as [#recv] reads it.
   native def recv_bytes(length: Int) -> Bytes
-  # The next datagram, as `#recv` reads it, and the sender's address.
+  # The next datagram, as [#recv] reads it, and the sender's address.
   native def recvfrom(length: Int) -> [String, Socket::Address]
-  # The next datagram as `Bytes` and the sender's address.
+  # The next datagram as [Bytes] and the sender's address.
   native def recvfrom_bytes(length: Int) -> [Bytes, Socket::Address]
   # The address and port the socket is bound to.
   native def local_address -> Socket::Address
@@ -84,7 +84,7 @@ end
 
 # A connection to a UNIX domain socket: `Socket.unix(path)` makes one.
 class UNIXSocket < IO
-  # A connection to the socket at `path`. Raises `SystemCallError` when
+  # A connection to the socket at [path]. Raises [SystemCallError] when
   # nothing listens there.
   native def self.new(path: String) -> UNIXSocket
   # The same, with the connection given to the block and closed after it;
@@ -94,11 +94,11 @@ end
 
 # A listening UNIX domain socket: `Socket.unix_server(path)` makes one.
 class UNIXServer < IO
-  # A server listening at `path`, which must not exist; the file is
+  # A server listening at [path], which must not exist; the file is
   # removed when the server is closed.
   native def self.new(path: String) -> UNIXServer
   # The next connection, waiting for one (only the calling task waits).
-  # Raises `IOError` once the server is closed.
+  # Raises [IOError] once the server is closed.
   native def accept -> UNIXSocket
 end
 
@@ -107,12 +107,12 @@ class SocketError < StandardError
 end
 
 # Sockets: `require "socket"`. Every operation that would block suspends
-# only the calling task; `Task.timeout` and `cancel` interrupt it.
-# Addresses are `Socket::Address`es; `Socket` has the ways to connect and
-# serve, and the classes `TCPSocket`, `TCPServer`, `UDPSocket`,
-# `UNIXSocket` and `UNIXServer` the connections.
+# only the calling task; [Task.timeout] and `cancel` interrupt it.
+# Addresses are [Socket::Address]es; [Socket] has the ways to connect and
+# serve, and the classes [TCPSocket], [TCPServer], [UDPSocket],
+# [UNIXSocket] and [UNIXServer] the connections.
 module Socket
-  # A name whose every address `Socket.tcp`'s `allow_address` refused.
+  # A name whose every address [Socket.tcp]'s `allow_address` refused.
   class ForbiddenAddress < SocketError
   end
 
@@ -133,8 +133,8 @@ module Socket
     # ```
     def to_s -> String = ipv6? ? "[#{host}]:#{port}" : "#{host}:#{port}"
 
-    # The host as an `IP`. Raises `ArgumentError` when it is not a numeric
-    # address (an `Address` made by hand from a name).
+    # The host as an [IP]. Raises [ArgumentError] when it is not a numeric
+    # address (an [Address] made by hand from a name).
     #
     # ```
     # Socket::Address.new("127.0.0.1", 80).ip.loopback?   # => true
@@ -148,10 +148,10 @@ module Socket
 
   # An IP address, IPv4 or IPv6, held as its bytes in network order.
   #
-  # `IP.parse` reads the textual forms; the predicates say which ranges
+  # [IP.parse] reads the textual forms; the predicates say which ranges
   # of the IANA special-purpose address registries the address is in. An
-  # IPv4-mapped IPv6 address (`::ffff:10.0.0.1`) answers them, and `in?`,
-  # as its IPv4 address does; `==` tells the two forms apart.
+  # IPv4-mapped IPv6 address (`::ffff:10.0.0.1`) answers them, and [in?],
+  # as its IPv4 address does; [==] tells the two forms apart.
   #
   # ```
   # Socket::IP.parse("10.1.2.3")&.private?           # => true
@@ -163,7 +163,7 @@ module Socket
     # 4 bytes for IPv4, 16 for IPv6.
     bytes: Bytes
   )
-    # Raises `ArgumentError` unless `bytes` has 4 or 16 bytes.
+    # Raises [ArgumentError] unless [bytes] has 4 or 16 bytes.
     def initialize(bytes: Bytes)
       unless bytes.size == 4 || bytes.size == 16
         raise ArgumentError, "an IP address has 4 or 16 bytes, not #{bytes.size}"
@@ -346,7 +346,7 @@ module Socket
       # The prefix length in bits: up to 32 for IPv4, 128 for IPv6.
       prefix: Int
     )
-      # Raises `ArgumentError` for a prefix below 0 or longer than the
+      # Raises [ArgumentError] for a prefix below 0 or longer than the
       # address.
       def initialize(address: IP, prefix: Int)
         if prefix < 0 || prefix > address.bytes.size * 8
@@ -429,7 +429,7 @@ module Socket
   # one is under way.
   RESOLUTION_DELAY = 50.ms
   # Happy Eyeballs: how long an attempt runs before the next is started
-  # (`Socket.tcp`'s `fallback_delay`).
+  # ([Socket.tcp]'s `fallback_delay`).
   CONNECTION_ATTEMPT_DELAY = 250.ms
 
   # :nodoc:
@@ -439,13 +439,13 @@ module Socket
 
   # The addresses of `host` for `port`, of family 4 or 6, or both: a
   # numeric host at once, a name looked up on a helper thread (only this
-  # task waits). A name with none raises `SocketError`.
+  # task waits). A name with none raises [SocketError].
   native def self.getaddrinfo(host: String, port: Int, family: Int? = nil) -> Array[Address]
 
   # A connection to `host` (a name or a numeric address) at `port`. The
-  # last failure is raised when no address connects (`SystemCallError`;
-  # `SocketError` when the name has no address). `connect_timeout` bounds
-  # it all (`Task::Timeout`).
+  # last failure is raised when no address connects ([SystemCallError];
+  # [SocketError] when the name has no address). `connect_timeout` bounds
+  # it all ([Task::Timeout]).
   #
   # A name's IPv6 and IPv4 addresses are looked up at once and tried by
   # Happy Eyeballs (RFC 8305), `fast_fallback` (the default): alternating
@@ -463,7 +463,7 @@ module Socket
   # resolves to before any is tried, and only those it returns true for
   # are: the address it was given is the one connected to, as the name is
   # looked up once. When it refuses every address found,
-  # `ForbiddenAddress` is raised; an exception it raises ends the call.
+  # [ForbiddenAddress] is raised; an exception it raises ends the call.
   #
   # ```quarz no_run
   # # Refuse loopback: "localhost" raises Socket::ForbiddenAddress.
@@ -491,9 +491,9 @@ module Socket
     end
   end
 
-  # A server listening on `port` of every IPv4 address: `TCPServer.new`.
+  # A server listening on `port` of every IPv4 address: [TCPServer.new].
   def self.tcp_server(port: Int) -> TCPServer = TCPServer.new(port)
-  # A server listening on `port` of `host`: `TCPServer.new`.
+  # A server listening on `port` of `host`: [TCPServer.new].
   def self.tcp_server(host: String, port: Int) -> TCPServer = TCPServer.new(host, port)
 
   # Listens on `port` of every address and serves each connection with
@@ -501,7 +501,7 @@ module Socket
   #
   # Each connection is handed to `handler` with the peer's address, in a
   # task of its own (so the handler is a shareable procedure), and closed
-  # when it returns. What the handler raises (a `StandardError`) goes to
+  # when it returns. What the handler raises (a [StandardError]) goes to
   # `on_error` with the peer's address, or to STDERR; the server goes on.
   # A failed accept (out of file descriptors, a connection reset before
   # it was taken) does not end the loop either: it goes to `on_error`
@@ -604,11 +604,11 @@ module Socket
     end
   end
 
-  # A connection to the UNIX socket at `path`: `UNIXSocket.new`.
+  # A connection to the UNIX socket at `path`: [UNIXSocket.new].
   def self.unix(path: String) -> UNIXSocket = UNIXSocket.new(path)
   # The same, with the connection given to the block and closed after it.
   def self.unix[R](path: String, &: (UNIXSocket) -> R) -> R = UNIXSocket.open(path, &)
-  # A server listening at `path`: `UNIXServer.new`.
+  # A server listening at `path`: [UNIXServer.new].
   def self.unix_server(path: String) -> UNIXServer = UNIXServer.new(path)
 
   # As `tcp_server_loop`, on a UNIX socket at `path` (removed when the

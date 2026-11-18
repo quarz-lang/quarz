@@ -1,5 +1,5 @@
 # Decimal: exact base-ten numbers, for amounts of money, a database's
-# `numeric` or a JSON number with more digits than a `Float` keeps.
+# `numeric` or a JSON number with more digits than a [Float] keeps.
 #
 # ```
 # require "decimal"
@@ -11,17 +11,17 @@
 # d == Decimal.parse("19.990")               # => true
 # ```
 #
-# A `Decimal` is an `Integer` unscaled value and a scale, the number of
+# A [Decimal] is an [Integer] unscaled value and a scale, the number of
 # its fraction digits: `19.99` is 1999 with the scale 2. It is exact:
-# `+`, `-` and `*` lose nothing, and there is no `/`, since a quotient
-# may not be a decimal; `div` takes the digits and the rounding. The
-# scale is kept (`19.990` prints so) while `==` and `hash` go by value.
-# A `Decimal` combines with an `Int` or an `Integer` on its right
-# (`d * 3`, `d + 1`), never with a `Float`: `d + 0.1` does not compile
+# [+], [-] and [*] lose nothing, and there is no `/`, since a quotient
+# may not be a decimal; [div] takes the digits and the rounding. The
+# scale is kept (`19.990` prints so) while [==] and [hash] go by value.
+# A [Decimal] combines with an [Int] or an [Integer] on its right
+# (`d * 3`, `d + 1`), never with a [Float]: `d + 0.1` does not compile
 # (convert on purpose: `Decimal.parse(f.to_s)` or `d.to_f`). There is no
 # literal.
 #
-# **A `Decimal` equals and orders only `Decimal`s.** `d == 3`, `3 == d`
+# **A [Decimal] equals and orders only [Decimal]s.** `d == 3`, `3 == d`
 # and `d == 3.0` are false, as for any two objects of different classes,
 # and `d < 3` does not compile: write `d == Decimal.new(3)`,
 # `d < Decimal.new(3)`, `d.zero?` or `d.negative?`. (Equality and order
@@ -34,12 +34,12 @@ class Decimal
   #
   # | mode       | 2.5 | -2.5 | 2.1 | -2.1 | 2.7 | -2.7 |
   # |------------|-----|------|-----|------|-----|------|
-  # | `HalfEven` | 2   | -2   | 2   | -2   | 3   | -3   |
-  # | `HalfUp`   | 3   | -3   | 2   | -2   | 3   | -3   |
-  # | `Down`     | 2   | -2   | 2   | -2   | 2   | -2   |
-  # | `Up`       | 3   | -3   | 3   | -3   | 3   | -3   |
-  # | `Floor`    | 2   | -3   | 2   | -3   | 2   | -3   |
-  # | `Ceiling`  | 3   | -2   | 3   | -2   | 3   | -2   |
+  # | [HalfEven] | 2   | -2   | 2   | -2   | 3   | -3   |
+  # | [HalfUp]   | 3   | -3   | 2   | -2   | 3   | -3   |
+  # | [Down]     | 2   | -2   | 2   | -2   | 2   | -2   |
+  # | [Up]       | 3   | -3   | 3   | -3   | 3   | -3   |
+  # | [Floor]    | 2   | -3   | 2   | -3   | 2   | -3   |
+  # | [Ceiling]  | 3   | -2   | 3   | -2   | 3   | -2   |
   enum Rounding
     # To the nearest, a tie to the even neighbour (the default).
     variant HalfEven
@@ -63,8 +63,8 @@ class Decimal
   @unscaled: Integer
   @scale: Int
 
-  # `unscaled` × 10^-`scale`: `Decimal.new(1999, scale: 2)` is 19.99.
-  # Raises `ArgumentError` for a negative scale, one beyond `MAX_SCALE`,
+  # [unscaled] × 10^-[scale]: `Decimal.new(1999, scale: 2)` is 19.99.
+  # Raises [ArgumentError] for a negative scale, one beyond `MAX_SCALE`,
   # or an unscaled value of more than `MAX_DIGITS` digits.
   #
   # ```
@@ -86,7 +86,7 @@ class Decimal
   # The value read from `text`: an optional sign, digits, optionally a
   # point and digits (their count is the scale), and optionally an
   # exponent (`1.5e3` is `1500`, `15e-2` is `0.15`). Nothing else: no
-  # space, no `_`, no `.5` or `5.`. Raises `ArgumentError` naming the
+  # space, no `_`, no `.5` or `5.`. Raises [ArgumentError] naming the
   # text when it is not one, or beyond the limits.
   #
   # ```
@@ -99,7 +99,7 @@ class Decimal
   end
 
   # As `parse`, nil for text that is not a decimal (beyond the limits it
-  # raises `ArgumentError` as `parse` does).
+  # raises [ArgumentError] as `parse` does).
   #
   # ```
   # Decimal.parse?("1,5")             # => nil
@@ -142,7 +142,7 @@ class Decimal
   #
   # ## Raises
   #
-  # `ArgumentError` when the sum has more than `MAX_DIGITS` digits.
+  # [ArgumentError] when the sum has more than `MAX_DIGITS` digits.
   #
   # ```
   # (Decimal.parse("1.5") + Decimal.parse("0.25")).to_s   # => "1.75"
@@ -158,7 +158,7 @@ class Decimal
   #
   # ## Raises
   #
-  # `ArgumentError` when the difference has more than `MAX_DIGITS`
+  # [ArgumentError] when the difference has more than `MAX_DIGITS`
   # digits.
   #
   # ```
@@ -174,7 +174,7 @@ class Decimal
   #
   # ## Raises
   #
-  # `ArgumentError` when the product has more than `MAX_DIGITS` digits,
+  # [ArgumentError] when the product has more than `MAX_DIGITS` digits,
   # or more than `MAX_SCALE` fraction digits (two values of 600).
   #
   # ```
@@ -202,7 +202,7 @@ class Decimal
   def positive? -> Bool = @unscaled.positive?
 
   # The value with `digits` fraction digits (0 to `MAX_SCALE`): more
-  # pad with zeros, fewer round by `mode` (`Rounding`).
+  # pad with zeros, fewer round by `mode` ([Rounding]).
   #
   # ```
   # Decimal.parse("2.5").round(0).to_s                            # => "2"
@@ -218,8 +218,8 @@ class Decimal
     Decimal.new(Decimal.divide(@unscaled, 10.to_integer ** (@scale - digits), mode), scale: digits)
   end
 
-  # The quotient `self / other` with `scale` fraction digits, rounded by
-  # `mode`. Raises `ZeroDivisionError` when `other` is zero.
+  # The quotient `self / other` with [scale] fraction digits, rounded by
+  # `mode`. Raises [ZeroDivisionError] when `other` is zero.
   #
   # ```
   # Decimal.parse("10").div(3, scale: 2).to_s                             # => "3.33"
@@ -245,7 +245,7 @@ class Decimal
     Decimal.new(Decimal.divide(n, d, mode), scale: scale)
   end
 
-  # Whether `other` is a `Decimal` of the same value, whatever the
+  # Whether `other` is a [Decimal] of the same value, whatever the
   # scales: `19.99` and `19.990` are equal. Another class's value, a
   # number too, is not equal (`Decimal.new(3) == 3` is false).
   #
@@ -265,7 +265,7 @@ class Decimal
   # :nodoc:
   def !=(other: Object) -> Bool = !(self == other)
 
-  # The order of the values (of `Decimal`s only).
+  # The order of the values (of [Decimal]s only).
   #
   # ```
   # Decimal.parse("1") < Decimal.parse("1.01")   # => true
@@ -286,7 +286,7 @@ class Decimal
     [u, s].hash
   end
 
-  # The value truncated toward zero, as an `Integer`.
+  # The value truncated toward zero, as an [Integer].
   def to_integer -> Integer
     return @unscaled if @scale == 0
     p = 10.to_integer ** @scale
@@ -294,14 +294,14 @@ class Decimal
     @unscaled.negative? ? -q : q
   end
 
-  # The value truncated toward zero, as an `Int`; `OverflowError` when
+  # The value truncated toward zero, as an [Int]; [OverflowError] when
   # it does not fit.
   def to_i -> Int = to_integer.to_i
 
-  # The nearest `Float` (`to_s` read as one).
+  # The nearest [Float] ([to_s] read as one).
   def to_f -> Float = to_s.to_f
 
-  # The value with `scale` fraction digits, never an exponent:
+  # The value with [scale] fraction digits, never an exponent:
   # `"19.99"`, `"-0.050"`, `"1500"`.
   def to_s -> String
     digits = @unscaled.abs.to_s
@@ -316,7 +316,7 @@ class Decimal
 
   # The value as a JSON number, its scale kept (`19.990`), never an
   # exponent: what JSON's generate writes, and its decode into a
-  # `Decimal` reads back with the same scale (the json module, #889).
+  # [Decimal] reads back with the same scale (the json module, #889).
   #
   # ```
   # require "json"
