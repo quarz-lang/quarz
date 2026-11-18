@@ -7198,6 +7198,37 @@ impl Checker {
                         }
                     }
                 }
+                // A symbol searched for in a collection of an enum: never
+                // found, by the `==` the search compares with (#915).
+                if let (Some(recv), [Arg::Positional(a)]) = (&call.recv, call.args.as_slice()) {
+                    let search = matches!(self.out.calls.get(&expr.id),
+                        Some(CallTarget::Method { method }) if self.searches_by_equality(*method));
+                    let element = match self
+                        .out
+                        .node_types
+                        .get(&recv.id)
+                        .map(|t| self.infer.resolve(t))
+                    {
+                        Some(Type::Class(c, args))
+                            if [self.world.builtin.array, self.world.builtin.set].contains(&c)
+                                && args.len() == 1 =>
+                        {
+                            Some(args[0].clone())
+                        }
+                        _ => None,
+                    };
+                    if let (true, Some(t)) = (search, element) {
+                        if let Some((name, v)) = self.symbol_never_equal(&t, a) {
+                            self.warning(
+                                format!(
+                                    "`{}` compares the symbol `:{name}` with enum values, which never equal it: write `{v}`",
+                                    call.name
+                                ),
+                                expr.span,
+                            );
+                        }
+                    }
+                }
                 // `x.is_a?(k)` with a class value (`Object#is_a?`): against
                 // a type parameter's class value, checked as a test against
                 // each module the parameter may be (#598).
@@ -17251,17 +17282,11 @@ impl Checker {
                 .map(|t| self.infer.resolve(t))
         };
         for (value, sym) in [(a, b), (b, a)] {
-            let ExprKind::Symbol(name) = &sym.kind else {
-                continue;
-            };
             let Some(t) = ty(value) else { continue };
-            if let Some((_, found)) = self.symbol_variants_for(name, &t) {
-                if let [(v, _)] = found.as_slice() {
-                    return Some(format!(
-                        "an enum value compared with the symbol `:{name}` is never equal: write `{}`",
-                        self.world.class(*v).name
-                    ));
-                }
+            if let Some((name, v)) = self.symbol_never_equal(&t, sym) {
+                return Some(format!(
+                    "an enum value compared with the symbol `:{name}` is never equal: write `{v}`"
+                ));
             }
         }
         let class_of = |e: &Expr| match ty(e)? {
@@ -17276,6 +17301,39 @@ impl Checker {
             ),
             _ => None,
         }
+    }
+
+    /// The symbol literal `sym` and the variant it names, when `sym` is
+    /// compared with a value of type `t`, an enum with that variant: never
+    /// equal, as nothing converts the literal there (`never_equal`, and a
+    /// search of a collection of the enum, #915).
+    fn symbol_never_equal(&self, t: &Type, sym: &Expr) -> Option<(String, String)> {
+        let ExprKind::Symbol(name) = &sym.kind else {
+            return None;
+        };
+        let (_, found) = self.symbol_variants_for(name, t)?;
+        match found.as_slice() {
+            [(v, _)] => Some((name.clone(), self.world.class(*v).name.clone())),
+            _ => None,
+        }
+    }
+
+    /// Whether `m` is one of the built-in searches decided on #915:
+    /// `Array#include?`, `#index`, `#delete`, `Set#include?`, and
+    /// `Enumerable#count(value)` (as an `Array`'s), each taking an
+    /// `Object` it compares with the elements by `==`. Not a method a
+    /// program or an extension defines.
+    fn searches_by_equality(&self, m: MethodId) -> bool {
+        let info = self.world.method(m);
+        let b = &self.world.builtin;
+        let enumerable = self.world.top_class("Enumerable");
+        let decided = match info.name.as_str() {
+            "include?" => [b.array, b.set].contains(&info.owner),
+            "index" | "delete" => info.owner == b.array,
+            "count" => Some(info.owner) == enumerable && info.params.len() == 1,
+            _ => false,
+        };
+        decided && info.file == 0 && info.extension.is_none()
     }
 
     /// The hint for a symbol literal `e` where `expected` is an enum with

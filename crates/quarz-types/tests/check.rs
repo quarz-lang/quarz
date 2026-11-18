@@ -941,6 +941,40 @@ fn a_symbol_argument_is_an_enums_variant() {
     ok("enum Proto\n  variant HTTP2\n  variant Plain\nend\ndef f(p: Proto) -> Proto = p\nf(:h_t_t_p2)");
 }
 
+/// #915: a symbol literal searched for in a collection of an enum by the
+/// built-in searches that take an `Object` (`include?`, `index`,
+/// `count`, `delete`, `Set#include?`) is never found: the warning
+/// `==` gets, naming the variant. Not for a method a program defines,
+/// a collection of `Symbol`, a name no variant has, or the searches
+/// not decided (`rindex`, `Hash#value?`, `Set#delete`, ...).
+#[test]
+fn a_symbol_searched_for_in_an_enum_collection_warns() {
+    let pre = "enum Format = Json | Text\nfs: Array[Format] = [Format::Json]\nst: Set[Format] = Set.new(fs)\n";
+    for (call, method) in [
+        ("fs.include?(:json)", "include?"),
+        ("fs.index(:json)", "index"),
+        ("fs.count(:json)", "count"),
+        ("fs.delete(:json)", "delete"),
+        ("st.include?(:json)", "include?"),
+    ] {
+        warns(
+            &format!("{pre}p {call}"),
+            &format!("`{method}` compares the symbol `:json` with enum values, which never equal it: write `Format::Json`"),
+        );
+    }
+    for call in [
+        "p fs.include?(Format::Json)",
+        "p fs.include?(:jsno)",
+        "p fs.rindex(:json)",
+        "p st.delete(:json)",
+        "h: Hash[Symbol, Format] = {a: Format::Json}\np h.value?(:json)",
+        "syms = [:json]\np syms.include?(:json)",
+        "class Bag\n  def include?(value: Object) -> Bool = true\nend\np Bag.new.include?(:json)",
+    ] {
+        no_warnings(&format!("{pre}{call}"));
+    }
+}
+
 #[test]
 fn methods_and_calls() {
     err(
