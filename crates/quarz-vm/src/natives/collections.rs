@@ -1804,18 +1804,24 @@ pub fn range_to_vec(interp: &Interp, r: &RangeVal) -> Result<Vec<Value>, Flow> {
                 }
                 Ok(out)
             }
-            None => Err(interp.err_type(
-                "cannot iterate over this range: a range of Ints (its end may be left out), of Strings or of Dates (both ends given) iterates",
-            )),
+            None => Err(interp.err_type(NOT_ITERABLE)),
         },
     }
 }
+
+/// What a range that does not iterate says (`Range#each`, `#to_a`, an
+/// enumerator's `next`): which ranges do.
+pub(super) const NOT_ITERABLE: &str =
+    "cannot iterate over this range: a range of Ints (its end may be left out), of Strings or of Dates (both ends given) iterates";
 
 /// A range of two `Date`s (#884): its first date, if the range holds
 /// any, and its end. It steps by `Date#succ` and compares by `Date#<=>`,
 /// the prelude's own methods of that one class; `None` for a range of
 /// anything else.
-fn date_steps(interp: &Interp, r: &RangeVal) -> Option<Result<(Option<Value>, Value), Flow>> {
+pub(super) fn date_steps(
+    interp: &Interp,
+    r: &RangeVal,
+) -> Option<Result<(Option<Value>, Value), Flow>> {
     let date = interp.program.world.class_by_name("Date")?;
     let is_date = |v: &Value| matches!(v, Value::Object(o) if o.class == date);
     if !is_date(&r.lo) || !is_date(&r.hi) {
@@ -1837,7 +1843,7 @@ fn date_within(interp: &Interp, d: &Value, last: &Value, exclusive: bool) -> Res
 }
 
 /// The date after `d` in a range ending at `last`, if there is one.
-fn date_next(
+pub(super) fn date_next(
     interp: &Interp,
     d: &Value,
     last: &Value,
