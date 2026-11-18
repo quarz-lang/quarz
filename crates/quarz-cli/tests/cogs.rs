@@ -725,6 +725,59 @@ fn same_named_classes_of_two_cogs_do_not_pair() {
     assert_eq!(w.ok("app", &["run"]), "Base#f\nSub#f\n");
 }
 
+/// A library generates keywords of the full types of an application's
+/// `data` type's fields, and an array of that type (`Meta::TypeRef`, #401,
+/// divider#33's shape): a call with a wrong element type is an error at
+/// the call, in the application. Interpreted and compiled.
+#[test]
+fn a_librarys_generated_keywords_take_full_types() {
+    let w = World::new();
+    w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
+    w.write(
+        "lib/src/job.qz",
+        r##"class Job
+  static def self.job_args(t: Type[Object]) -> Void
+    ks = t.fields.map { |f| Meta::Keyword.typed(f.name, f.type_ref, true) }
+    def_class_method(:enqueue, keywords: ks) do |given|
+      "enqueue #{given.keys.join(",")}"
+    end
+    all = [Meta::Keyword.typed(:args, Meta::TypeRef.of(Array, [Meta::TypeRef.of(t)]), true)]
+    def_class_method(:enqueue_all, keywords: all) do |given|
+      "enqueue_all"
+    end
+  end
+end
+"##,
+    );
+    w.commit("lib", Some("v0.1.0"));
+    let dep = format!("Lib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("lib"));
+    let main = "data ExportArgs = (ids: Array[Int], note: String?)\nclass Export < Lib::Job\n  job_args ExportArgs\nend\n";
+    w.app(
+        &dep,
+        &format!("{main}puts Export.enqueue(ids: [1, 2], note: nil)\nputs Export.enqueue_all(args: [ExportArgs.new([1], \"n\")])\n"),
+    );
+    let want = "enqueue ids,note\nenqueue_all\n";
+    assert_eq!(w.ok("app", &["run"]), want);
+    let exe = w.path("app/app-bin");
+    w.ok("app", &["build", "-o", exe.to_str().unwrap()]);
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), want);
+    for (call, expected) in [
+        (
+            "Export.enqueue(ids: [\"x\"], note: nil)",
+            "array elements have type String but Int was expected",
+        ),
+        (
+            "Export.enqueue_all(args: \"not an array\")",
+            "expects Array[ExportArgs] but found String",
+        ),
+    ] {
+        w.app(&dep, &format!("{main}{call}\n"));
+        let err = w.fails("app", &["check"]);
+        assert!(err.contains(expected), "{call}: {err}");
+    }
+}
+
 /// An extension's include at the top level of a library cog overrides the
 /// class's ancestors' methods as one at the application's top level does;
 /// one in a module body does not (docs/01 §7, #536).

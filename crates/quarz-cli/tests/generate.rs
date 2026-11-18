@@ -2574,6 +2574,193 @@ puts Person.make(name: "e", age: 1)
     }
 }
 
+/// A field's declared type in full (`Meta::Field#type_ref`, docs/14 §4)
+/// and a generated keyword of that type (`Meta::Keyword.typed`, §5,
+/// #401): type arguments, `nil` and unions kept, a call checked against
+/// them, and the type back through reflection the same `TypeRef` (the two
+/// conversions are each other's converse). A type parameter of the class
+/// generated into is one of its keywords' types too. Interpreted and
+/// compiled, cold and warm.
+#[test]
+fn generated_keywords_take_a_declared_type_in_full() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r##"class Model
+  static def self.show(d: Type[Object]) -> Void
+    s = d.fields.map { |f| "#{f.name}: #{f.type_ref} (#{f.type.name})" }.join(", ")
+    def_class_method(:shown) { s }
+  end
+  static def self.from_fields(d: Type[Object]) -> Void
+    ks = d.fields.map { |f| Meta::Keyword.typed(f.name, f.type_ref, false) }
+    def_method(:with, keywords: ks) do |given|
+      given.keys.map { |k| "#{k}=#{given[k].inspect}" }.join(" ")
+    end
+  end
+  static def self.round(d: Type[Object]) -> Void
+    sig = methods.find { |m| m.name == :with }
+    same = !sig.nil? && sig.params.map(&:type_ref) == d.fields.map(&:type_ref)
+    def_class_method(:round) { same }
+  end
+  static def self.own -> Void
+    ks = fields.map { |f| Meta::Keyword.typed(f.name, f.type_ref, true) }
+    def_method(:set_all, keywords: ks) do |given|
+      given.size
+    end
+  end
+end
+"##,
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        r#"require_relative "lib"
+data P = (ids: Array[Int], name: String?, tags: Hash[String, Array[Int]], v: Int | String)
+class K < Model
+  show P
+  from_fields P
+  round P
+end
+class G[T] < Model
+  @v: Array[T]
+  def initialize(@v: Array[T]); end
+  own
+end
+class Sub < G[Int]
+  own
+end
+class Sub2[U] < G[U]
+  own
+end
+class ShowSub < Model
+  show Sub
+end
+class ShowSub2 < Model
+  show Sub2
+end
+puts K.shown
+p K.round
+x = K.new
+puts x.with(ids: [1, 2], name: nil, v: "s")
+puts x.with(tags: {"a" => [1]}, v: 3)
+p G[Int].new([1]).set_all(v: [2, 3])
+puts ShowSub.shown, ShowSub2.shown
+p Sub.new([1]).set_all(v: [2]), Sub2[String].new(["a"]).set_all(v: ["b"])
+"#,
+    );
+    let expected = "ids: Array[Int] (Array), name: String? (Object), tags: Hash[String, Array[Int]] (Hash), v: Int | String (Object)\ntrue\nids=[1, 2] name=nil v=\"s\"\ntags={\"a\" => [1]} v=3\n1\nv: Array[Int] (Array)\nv: Array[U] (Array)\n1\n1\n";
+    let cache = d.0.join("cache");
+    let env = [("QUARZ_CACHE_DIR", cache.to_str().unwrap())];
+    let cold = quarz(&d.0, &["check", app.to_str().unwrap()], &env);
+    assert!(cold.0, "{}", cold.2);
+    let warm = quarz(&d.0, &["check", app.to_str().unwrap()], &env);
+    assert_eq!(warm, cold);
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &env);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &env,
+    );
+    assert!(ok, "{err}");
+    let out = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+    let (ok, out, err) = quarz(&d.0, &["check", "--expand", app.to_str().unwrap()], &env);
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("def with(*, ids: Array[Int] = …, name: String? = …, tags: Hash[String, Array[Int]] = …, v: Int | String = …) -> String"),
+        "{out}"
+    );
+    assert!(out.contains("def set_all(*, v: Array[T]) -> Int"), "{out}");
+    // An inherited field's type as the subclass has it: `G[Int]`'s `T` is
+    // `Int` in `Sub`, and `G[U]`'s is `Sub2`'s own `U`.
+    assert!(
+        out.contains("def set_all(*, v: Array[Int]) -> Int"),
+        "{out}"
+    );
+    assert!(out.contains("def set_all(*, v: Array[U]) -> Int"), "{out}");
+    // A call is checked against the types in full.
+    for (call, expected) in [
+        (
+            "K.new.with(ids: [\"x\"])",
+            "array elements have type String but Int was expected",
+        ),
+        ("K.new.with(v: 1.5)", "expects Int | String but found Float"),
+        (
+            "K.new.with(tags: {\"a\" => [\"b\"]})",
+            "array elements have type String but Int was expected",
+        ),
+        (
+            "G[Int].new([1]).set_all(v: [\"s\"])",
+            "array elements have type String but Int was expected",
+        ),
+        (
+            "Sub.new([1]).set_all(v: [\"s\"])",
+            "array elements have type String but Int was expected",
+        ),
+        (
+            "Sub2[Int].new([1]).set_all(v: [\"s\"])",
+            "array elements have type String but Int was expected",
+        ),
+    ] {
+        let bad = write(
+            &d.0,
+            "bad.qz",
+            &format!("require_relative \"lib\"\ndata P = (ids: Array[Int], name: String?, tags: Hash[String, Array[Int]], v: Int | String)\nclass K < Model\n  from_fields P\nend\nclass G[T] < Model\n  @v: Array[T]\n  def initialize(@v: Array[T]); end\n  own\nend\nclass Sub < G[Int]\n  own\nend\nclass Sub2[U] < G[U]\n  own\nend\n{call}\n"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", bad.to_str().unwrap()], &[]);
+        assert!(!ok, "{call}");
+        assert!(err.contains(expected), "{call}: {err}");
+    }
+    // What the statement refuses.
+    write(
+        &d.0,
+        "lib2.qz",
+        "class Lim[T <: Int]\nend\nclass Q\n  static def self.gen(ks: Array[Meta::Keyword]) -> Void\n    def_method(:m, keywords: ks) { |given| given.size }\n  end\nend\n",
+    );
+    for (ks, expected) in [
+        (
+            "[Meta::Keyword.typed(:t, Meta::TypeRef.of(Array), true)]",
+            "the keyword `t`'s `type_ref`: `Array` takes 1 type argument, not 0",
+        ),
+        (
+            "[Meta::Keyword.typed(:t, Meta::TypeRef::Union.new([]), true)]",
+            "an empty union is no type",
+        ),
+        (
+            "[Meta::Keyword.typed(:t, Meta::TypeRef::Other.new(\"(Int, Int)\"), true)]",
+            "`(Int, Int)` cannot be a generated keyword's type yet",
+        ),
+        (
+            "[Meta::Keyword.typed(:t, Meta::TypeRef::Param.new(Array, :T), true)]",
+            "the type parameter `T` of `Array` is not one of `R`, the class generated into",
+        ),
+        (
+            "[Meta::Keyword.new(:t, Int, true, false, Meta::TypeRef.of(String))]",
+            "the keyword `t` is typed `Int` with a `type_ref` of `String`, whose class is `String`",
+        ),
+        (
+            "[Meta::Keyword.new(:t, Object, true, true, Meta::TypeRef.of(String))]",
+            "the keyword `t` has a `type_ref` and `nullable: true`",
+        ),
+        (
+            "[Meta::Keyword.typed(:t, Meta::TypeRef.of(Lim, [Meta::TypeRef.of(String)]), true)]",
+            "type argument String for `T` of `Lim` must be Int",
+        ),
+    ] {
+        let bad = write(
+            &d.0,
+            "bad.qz",
+            &format!("require_relative \"lib2\"\nclass R < Q\n  gen {ks}\nend\n"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", bad.to_str().unwrap()], &[]);
+        assert!(!ok, "{ks}");
+        assert!(err.contains(expected), "{ks}: {err}");
+    }
+}
+
 /// `type` in a `static def` (docs/14 §4): the class the statement runs on
 /// as a plain class value, which a generated method captures to call the
 /// class's class methods, `Self` there being the class generated into

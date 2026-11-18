@@ -497,6 +497,10 @@ fn gen_request(
                 else {
                     return Err(interp.err_type("keywords: takes `Meta::Keyword` values"));
                 };
+                let ty_ref = match interp.logical_get(o, 4) {
+                    Value::Nil => None,
+                    r => Some(type_ref_of(interp, &r)?),
+                };
                 let name = interp.symbol_name(n).to_string();
                 if out.iter().any(|k| k.name == name) {
                     return Err(interp.err_arg(&format!("the keyword `{name}` is given twice")));
@@ -506,6 +510,7 @@ fn gen_request(
                     ty,
                     required,
                     nullable,
+                    ty_ref,
                 });
             }
             // (A method of no keyword would be one of no parameter, whose
@@ -698,9 +703,80 @@ fn meta_field(interp: &Interp, f: &crate::reflect::ReflectField) -> EvalResult {
             name,
             Value::Class(f.ty),
             Value::Bool(f.mutable),
-            Value::Bool(f.default)
+            Value::Bool(f.default),
+            type_ref_value(interp, &f.ty_ref)?
         ],
     )))
+}
+
+/// A `Meta::TypeRef` value for `t` (docs/14 §4).
+fn type_ref_value(interp: &Interp, t: &crate::reflect::ReflectType) -> EvalResult {
+    use crate::reflect::ReflectType;
+    let (variant, fields): (&str, smallvec::SmallVec<[Value; 4]>) = match t {
+        ReflectType::Of(c, args) => {
+            let args: Result<Vec<Value>, Flow> =
+                args.iter().map(|a| type_ref_value(interp, a)).collect();
+            (
+                "Meta::TypeRef::Of",
+                smallvec![Value::Class(*c), Value::array(args?)],
+            )
+        }
+        ReflectType::Union(ms) => {
+            let ms: Result<Vec<Value>, Flow> =
+                ms.iter().map(|m| type_ref_value(interp, m)).collect();
+            ("Meta::TypeRef::Union", smallvec![Value::array(ms?)])
+        }
+        ReflectType::Param(owner, name) => (
+            "Meta::TypeRef::Param",
+            smallvec![Value::Class(*owner), Value::Symbol(interp.intern(name))],
+        ),
+        ReflectType::Other(text) => ("Meta::TypeRef::Other", smallvec![Value::str(text)]),
+    };
+    Ok(Value::Object(Object::new(
+        meta_class(interp, variant)?,
+        fields,
+    )))
+}
+
+/// The type a `Meta::TypeRef` value says (`type_ref_value`'s converse).
+fn type_ref_of(interp: &Interp, v: &Value) -> Result<crate::reflect::ReflectType, Flow> {
+    use crate::reflect::ReflectType;
+    let bad = || interp.err_type("type_ref: takes a `Meta::TypeRef`");
+    let Value::Object(o) = v else {
+        return Err(bad());
+    };
+    let class = &interp.program.world.class(o.class).name;
+    let list = |v: Value| -> Result<Vec<ReflectType>, Flow> {
+        let Value::Array(items) = v else {
+            return Err(bad());
+        };
+        items.iter().map(|x| type_ref_of(interp, &x)).collect()
+    };
+    Ok(match class.as_str() {
+        "Meta::TypeRef::Of" => {
+            let Value::Class(c) = interp.logical_get(o, 0) else {
+                return Err(bad());
+            };
+            ReflectType::Of(c, list(interp.logical_get(o, 1))?)
+        }
+        "Meta::TypeRef::Union" => ReflectType::Union(list(interp.logical_get(o, 0))?),
+        "Meta::TypeRef::Param" => {
+            let (Value::Class(owner), Value::Symbol(name)) =
+                (interp.logical_get(o, 0), interp.logical_get(o, 1))
+            else {
+                return Err(bad());
+            };
+            ReflectType::Param(owner, interp.symbol_name(name).to_string())
+        }
+        "Meta::TypeRef::Other" => ReflectType::Other(
+            interp
+                .logical_get(o, 0)
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        ),
+        _ => return Err(bad()),
+    })
 }
 
 /// A `Meta::MethodSig` value, with its `Meta::Param`s.
@@ -721,7 +797,12 @@ fn meta_method(interp: &Interp, m: &crate::reflect::ReflectMethod) -> EvalResult
         let name = Value::Symbol(interp.intern(&p.name));
         params.push(Value::Object(Object::new(
             param,
-            smallvec![name, Value::Class(p.ty), kind],
+            smallvec![
+                name,
+                Value::Class(p.ty),
+                kind,
+                type_ref_value(interp, &p.ty_ref)?
+            ],
         )));
     }
     let name = Value::Symbol(interp.intern(&m.name));
@@ -731,7 +812,8 @@ fn meta_method(interp: &Interp, m: &crate::reflect::ReflectMethod) -> EvalResult
             name,
             Value::array(params),
             Value::Class(m.ret),
-            Value::Bool(m.is_static)
+            Value::Bool(m.is_static),
+            type_ref_value(interp, &m.ret_ref)?
         ],
     )))
 }
