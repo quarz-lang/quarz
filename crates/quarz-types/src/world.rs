@@ -2948,6 +2948,16 @@ impl World {
         out
     }
 
+    /// The procedure type of a `Quoted[P]` block parameter's type (docs/14
+    /// §6): `P`, what its block literal is checked as; `None` for any
+    /// other type.
+    pub fn quoted_procedure<'t>(&self, t: &'t Type) -> Option<&'t Type> {
+        match t {
+            Type::Class(c, args) if *c == self.builtin.quoted && args.len() == 1 => Some(&args[0]),
+            _ => None,
+        }
+    }
+
     pub fn field_index(&self, id: ClassId, name: &str) -> Option<usize> {
         self.all_fields(id).iter().position(|(f, _)| f.name == name)
     }

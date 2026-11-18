@@ -343,6 +343,101 @@ fn overloads_by_block_kind() {
     assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
 }
 
+/// #901: a block literal that declares no parameters takes the overload
+/// whose block has a receiver over one whose block takes an argument, a
+/// `Quoted` one as a procedure (the block's arity, `Checker::beats`):
+/// `{ |x| }`, `{ it }` take the argument's; a name both readings answer
+/// is the receiver's (the tree's `MethodRef`); a `Quoted` passed on with
+/// `&b` takes the overload its type fits; across owners the receiver's
+/// too, as for procedures (before #901, the subclass's: 2).
+#[test]
+fn a_block_without_parameters_takes_the_receiver_overload() {
+    let d = dir();
+    write(&d.0, "app.qz", APP_901);
+    let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, EXPECTED_901);
+    let (ok, _, err) = quarz(&d.0, &["build", "app.qz", "-o", "app.bin"], &[]);
+    assert!(ok, "{err}");
+    let run = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), EXPECTED_901);
+    // `&:name` is no block for a `Quoted` parameter, whichever overload.
+    write(
+        &d.0,
+        "sym.qz",
+        "class Q[T]\n  def where(&b: Quoted[T.() -> Bool]) -> Int = 1\n  def where(&b: Quoted[(T) -> Bool]) -> Int = 2\nend\np Q[String].new.where(&:empty?)\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "sym.qz"], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("`&:empty?` cannot be given for a `Quoted` block parameter"),
+        "{err}"
+    );
+}
+
+const APP_901: &str = r##"def show(e: Meta::Expr) -> String
+  case e
+  in Meta::Expr::Block(body: b) then "{ " + b.map { |x| show(x) }.join("; ") + " }"
+  in Meta::Expr::SelfRef(depth: d) then "self@#{d}"
+  in Meta::Expr::Call(recv: r, method: m, args: a, block: b)
+    "#{r ? show(r) + "." : ""}#{m.owner.name}##{m.name}(#{a.map { |x| show(x) }.join(", ")})"
+  else e.to_s
+  end
+end
+
+class Q[T]
+  def where(&b: Quoted[T.() -> Bool]) -> Int = 1
+  def where(&b: Quoted[(T) -> Bool]) -> Int = 2
+end
+q = Q[String].new
+p q.where { true }
+p q.where { |x| true }
+p q.where { size > 1 }
+p q.where { it.size > 1 }
+p q.where { || true }
+
+# A name the receiver and a function both answer: the receiver's reading.
+class Row
+  def now -> Int = 1
+end
+module Helpers
+  extension Kernel
+    private def self.now -> Int = 2
+  end
+end
+using Helpers
+class R
+  def update(&b: Quoted[Row.() -> Int]) -> String = "receiver " + show(b.expr)
+  def update(&b: Quoted[(Row) -> Int]) -> String = "argument " + show(b.expr)
+end
+puts R.new.update { now }
+# rotor's shape: the function alone.
+class Plain
+end
+class U
+  def update(&b: Quoted[Plain.() -> Hash[Symbol, Int]]) -> String = "receiver " + show(b.expr)
+  def update(&b: Quoted[(Plain) -> Hash[Symbol, Int]]) -> String = "argument " + show(b.expr)
+end
+puts U.new.update { {at: now} }
+
+# Across owners.
+class P1
+  def where(&b: Quoted[String.() -> Bool]) -> Int = 1
+end
+class P2 < P1
+  def where(&b: Quoted[(String) -> Bool]) -> Int = 2
+end
+p P2.new.where { true }
+
+# A `Quoted` passed on with `&b` takes the overload its type fits.
+def pass_r(&b: Quoted[String.() -> Bool]) -> Int = Q[String].new.where(&b)
+def pass_a(&b: Quoted[(String) -> Bool]) -> Int = Q[String].new.where(&b)
+p pass_r { true }
+p pass_a { |x| true }
+"##;
+
+const EXPECTED_901: &str = "1\n2\n1\n2\n1\nreceiver { self@0.Row#now() }\nreceiver { Meta::Expr::HashLit(pairs: [[Meta::Expr::Lit(value: :at, line: 44), Meta::Expr::Call(recv: nil, method: Meta::MethodRef(owner: Kernel, name: :now, singleton: true, index: 0, extension: Helpers), methods: [Meta::MethodRef(owner: Kernel, name: :now, singleton: true, index: 0, extension: Helpers)], args: [], block: nil, line: 44)]], line: 44) }\n1\n1\n2\n";
+
 #[test]
 fn the_tree_is_built_once_per_call_site() {
     // docs/14 §6: two calls of one site share the tree (a constant),
