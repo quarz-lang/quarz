@@ -785,6 +785,22 @@ pub unsafe extern "C" fn qz_call_static(
     }
 }
 
+/// An `Int` and a `Float` compared exactly (#888,
+/// `value::cmp_int_float`), for a typed comparison in compiled code
+/// whose integer does not convert to a float exactly: -1, 0 or 1 for the
+/// order of the left operand against the right, 2 when the float is NaN.
+/// `swapped` (not 0): the float is the left operand.
+#[no_mangle]
+pub extern "C" fn qz_cmp_int_float(i: i64, f: f64, swapped: u32) -> i32 {
+    match crate::value::cmp_int_float(i, f) {
+        None => 2,
+        Some(o) => {
+            let o = if swapped != 0 { o.reverse() } else { o };
+            o as i32
+        }
+    }
+}
+
 /// `h = h.put(k, v)` with `Int` key and value, when the hash in `slot`
 /// is uniquely referenced and holds only `Int`s (or nothing): inserted
 /// in place, 1. Anything else is left to `qz_owned_call` (0).

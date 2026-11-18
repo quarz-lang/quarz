@@ -184,3 +184,143 @@ class NumericEdgeTest < Test::Case
     assert_equal(0, 0.lcm(5))
   end
 end
+
+# An `Int` (or an `Integer`) and a `Float` compare exactly (#888): the
+# integer is not rounded to a float, so `2**53 + 1` is not `2**53 + 1.0`
+# (which is `2**53`), and equal numbers hash alike. The expected values
+# follow from the numbers' exact values.
+class ExactIntFloatTest < Test::Case
+  BIG = 9007199254740993
+  BIGF = 9007199254740992.0
+
+  # (Typed operands: compiled code compares them inline.)
+  def order(i: Int, f: Float) -> String
+    "#{i == f} #{i != f} #{i < f} #{i <= f} #{i > f} #{i >= f} #{i <=> f} #{f == i} #{f < i} #{f > i} #{f <=> i}"
+  end
+
+  def test_the_pair_two_to_the_53_plus_one
+    assert_equal("false true false false true true 1 false true false -1", order(BIG, BIGF))
+    assert_equal("false true true true false false -1 false false true 1", order(-BIG, -BIGF))
+    assert_equal("true false false true false true 0 true false false 0", order(9007199254740992, BIGF))
+    assert_equal("false true true true false false -1 false false true 1", order(BIG - 2, BIGF))
+  end
+
+  def test_the_ends_of_int
+    assert_equal("false true true true false false -1 false false true 1", order(9223372036854775807, 9223372036854775808.0))
+    assert_equal("true false false true false true 0 true false false 0", order(-9223372036854775807 - 1, -9223372036854775808.0))
+  end
+
+  def test_fractions_zeros_nan_and_infinities
+    assert_equal("false true true true false false -1 false false true 1", order(3, 3.5))
+    assert_equal("false true false false true true 1 false true false -1", order(-3, -3.5))
+    assert_equal("true false false true false true 0 true false false 0", order(0, -0.0))
+    assert_equal("false true false false false false -1 false false false 1", order(1, Float::NAN))
+    assert_equal("false true true true false false -1 false false true 1", order(BIG, Float::INFINITY))
+    assert_equal("false true false false true true 1 false true false -1", order(BIG, -Float::INFINITY))
+  end
+
+  def test_integer_against_float
+    b19 = 10000000000000000000
+    b30 = 1000000000000000000000000000000
+    assert_true(b19 == 1e19)
+    assert_true(1e19 == b19)
+    assert_equal(b19.hash, 1e19.hash)
+    # (1e30 is 1000000000000000019884624838656.)
+    assert_false(b30 == 1e30)
+    assert_true(b30 < 1e30)
+    assert_equal(1, {b19 => 1, 1e19 => 2}.size)
+  end
+
+  def test_integer_against_nan
+    b30 = 1000000000000000000000000000000
+    nan = Float::NAN
+    assert_false(b30 < nan)
+    assert_false(b30 <= nan)
+    assert_false(b30 > nan)
+    assert_false(b30 >= nan)
+    assert_false(b30 == nan)
+    assert_true(b30 != nan)
+    assert_equal(-1, b30 <=> nan)
+    # (`Float` has no `<`, `>` or `<=>` taking an `Integer`.)
+    assert_false(nan == b30)
+  end
+
+  # An `Int`-keyed hash found by an integral `Float` near the ends of
+  # `Int` (the largest floats below 2**63, and -2**63).
+  def test_int_keys_found_by_floats
+    h: Hash[Int | Float, Int] = {9223372036854774784 => 1, -9223372036854775807 - 1 => 2, 3 => 3}
+    assert_equal(1, h[9223372036854774784.0])
+    assert_equal(2, h[-9223372036854775808.0])
+    assert_equal(3, h[3.0])
+    assert_false(h.key?(3.5))
+    assert_false(h.key?(9223372036854775808.0))
+    assert_true(h.key?(9223372036854774784.0))
+    # Removing by an equal `Float` key, and putting one that replaces the
+    # `Int` key's value.
+    h1 = h.delete(9223372036854774784.0)
+    assert_equal(2, h1.size)
+    assert_false(h1.key?(9223372036854774784))
+    h2 = h.merge({3.0 => 30, -9223372036854775808.0 => 20})
+    assert_equal(3, h2.size)
+    assert_equal(30, h2[3])
+    assert_equal(20, h2[-9223372036854775807 - 1])
+  end
+
+  # A set holds one of two equal numbers, and finds either.
+  def test_sets_of_equal_numbers
+    s: Set[Int | Integer | Float] = Set.new
+    s = s.add(9223372036854774784)
+    s = s.add(9223372036854774784.0)
+    s = s.add(10000000000000000000)
+    s = s.add(1e19)
+    assert_equal(2, s.size)
+    assert_true(s.include?(9223372036854774784.0))
+    assert_true(s.include?(1e19))
+    assert_false(s.include?(9223372036854775808.0))
+  end
+
+  def test_collections_and_patterns
+    big: Int | Float = BIG
+    near: Int | Float = BIGF
+    a: Array[Int | Float] = [big, near, 1, 1.0]
+    assert_equal(3, a.uniq.size)
+    assert_equal(1, a.index(near))
+    assert_equal(1, a.count(near))
+    assert_equal(3, (a - [near]).size)
+    assert_equal(1, (a & [near]).size)
+    assert_equal(3, (a | [near]).size)
+    assert_equal(3, a.dup.tap { |x| x }.reject { |x| x == near }.size)
+    assert_false([big].include?(near))
+    assert_equal(2, {big => "i", near => "f"}.size)
+    st: Set[Int | Float] = Set.new
+    st = st.add(big)
+    st = st.add(near)
+    assert_equal(2, st.size)
+    assert_equal(3, a.tally.size)
+    assert_equal(3, a.group_by { |x| x }.size)
+    hit = case BIG
+          in 9007199254740992.0 then "rounded"
+          in 9007199254740993 then "exact"
+          in _ then "neither"
+          end
+    assert_equal("exact", hit)
+  end
+
+  # (`between?`, `clamp`, a range of `Float`s and `min`/`max` take one
+  # class of number: the checker refuses an `Int` against `Float`s there,
+  # so they never ask this comparison.)
+
+  # The property the comparison keeps: equal numbers hash alike, pairwise
+  # over the values above.
+  def test_equal_numbers_hash_alike
+    vals: Array[Object] = [0, -0.0, 0.0, 1, 1.0, BIG, BIGF, 9007199254740992, -BIG, -BIGF,
+                           9223372036854775807, 9223372036854775808.0, -9223372036854775807 - 1,
+                           -9223372036854775808.0, 10000000000000000000, 1e19,
+                           1000000000000000000000000000000, 1e30, 3.5, Float::INFINITY]
+    vals.each do |x|
+      vals.each do |y|
+        assert_equal(x.hash, y.hash, "#{x.inspect} == #{y.inspect}") if x == y
+      end
+    end
+  end
+end

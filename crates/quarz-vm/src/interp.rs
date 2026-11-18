@@ -166,13 +166,20 @@ pub fn int_binop_into(op: FastOp, x: i64, y: i64, slot: &mut Value) -> bool {
 }
 
 /// Two numbers of which one at least is a `Float`, as floats (what
-/// `fast_binop` computes with).
+/// `fast_binop` computes with), when an `Int` among them converts
+/// exactly (`exact_as_float`): its comparisons are then exact (#888);
+/// `None` sends a larger one to the generic path, which compares it
+/// exactly (and computes the same arithmetic).
 #[inline(always)]
 pub fn float_operands(a: &Value, b: &Value) -> Option<(f64, f64)> {
     match (a, b) {
         (Value::Float(x), Value::Float(y)) => Some((*x, *y)),
-        (Value::Int(x), Value::Float(y)) => Some((*x as f64, *y)),
-        (Value::Float(x), Value::Int(y)) => Some((*x, *y as f64)),
+        (Value::Int(x), Value::Float(y)) if crate::value::exact_as_float(*x) => {
+            Some((*x as f64, *y))
+        }
+        (Value::Float(x), Value::Int(y)) if crate::value::exact_as_float(*y) => {
+            Some((*x, *y as f64))
+        }
         _ => None,
     }
 }
@@ -216,16 +223,9 @@ pub fn fast_binop(op: FastOp, a: &Value, b: &Value) -> Option<Value> {
         (Value::Float(_), Value::Float(_))
         | (Value::Int(_), Value::Float(_))
         | (Value::Float(_), Value::Int(_)) => {
-            let x = match a {
-                Value::Int(i) => *i as f64,
-                Value::Float(f) => *f,
-                _ => return None,
-            };
-            let y = match b {
-                Value::Int(i) => *i as f64,
-                Value::Float(f) => *f,
-                _ => return None,
-            };
+            // (An `Int` that does not convert exactly: the generic path,
+            // `float_operands`.)
+            let (x, y) = float_operands(a, b)?;
             Some(match op {
                 FastOp::Add => Value::Float(x + y),
                 FastOp::Sub => Value::Float(x - y),
@@ -4050,8 +4050,16 @@ impl Interp {
         match (a, b) {
             (Value::Int(x), Value::Int(y)) => return Ok(x.cmp(y)),
             (Value::Float(x), Value::Float(y)) => return Ok(float_order(*x, *y)),
-            (Value::Int(x), Value::Float(y)) => return Ok(float_order(*x as f64, *y)),
-            (Value::Float(x), Value::Int(y)) => return Ok(float_order(*x, *y as f64)),
+            // (Exactly, #888; NaN ordered as `float_order` orders it.)
+            (Value::Int(x), Value::Float(y)) => {
+                return Ok(crate::value::cmp_int_float(*x, *y)
+                    .unwrap_or_else(|| float_order(*x as f64, *y)))
+            }
+            (Value::Float(x), Value::Int(y)) => {
+                return Ok(crate::value::cmp_int_float(*y, *x)
+                    .map(Ordering::reverse)
+                    .unwrap_or_else(|| float_order(*x, *y as f64)))
+            }
             (Value::Str(_) | Value::Short(_), Value::Str(_) | Value::Short(_)) => {
                 return Ok(a.as_str().unwrap_or("").cmp(b.as_str().unwrap_or("")))
             }

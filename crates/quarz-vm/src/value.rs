@@ -253,8 +253,11 @@ impl HashData {
             (HashData::Values(m), _) => m.get(k).cloned(),
             (HashData::Ints(m), Value::Int(k)) => m.get(k).map(|v| Value::Int(*v)),
             // An Int-keyed hash holds no other key (`1.0 == 1` is a key
-            // equal to 1).
-            (HashData::Ints(m), Value::Float(f)) if f.fract() == 0.0 && f.abs() < 9.2e18 => {
+            // equal to 1); an integral float of `Int`'s range is exactly
+            // one (#888).
+            (HashData::Ints(m), Value::Float(f))
+                if f.fract() == 0.0 && (-TWO_TO_63..TWO_TO_63).contains(f) =>
+            {
                 m.get(&(*f as i64)).map(|v| Value::Int(*v))
             }
             (HashData::Ints(_), _) => None,
@@ -3723,6 +3726,77 @@ impl Value {
     }
 }
 
+/// 2^63 as a float: the integers of `[-TWO_TO_63, TWO_TO_63)` are `i64`s.
+const TWO_TO_63: f64 = 9_223_372_036_854_775_808.0;
+
+/// The order of an `Int` and a `Float`, exactly (#888): the float's
+/// integer part compared with the integer, then its fraction. The
+/// integer is never rounded to a float (`2**53 + 1` is not `2**53 + 1.0`,
+/// which is `2**53`). `None` for NaN, which every caller orders or
+/// compares as it did.
+pub fn cmp_int_float(i: i64, f: f64) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+    if f.is_nan() {
+        return None;
+    }
+    if f >= TWO_TO_63 {
+        return Some(Ordering::Less);
+    }
+    if f < -TWO_TO_63 {
+        return Some(Ordering::Greater);
+    }
+    // (`t` is an integer in `[-2^63, 2^63)`: exactly an `i64`.)
+    let t = f.trunc();
+    Some(match i.cmp(&(t as i64)) {
+        Ordering::Equal => fraction_order(f - t),
+        o => o,
+    })
+}
+
+/// `cmp_int_float` for an integer of any size (`Integer`).
+pub fn cmp_big_float(b: &BigInt, f: f64) -> Option<std::cmp::Ordering> {
+    use num_traits::FromPrimitive;
+    use std::cmp::Ordering;
+    if f.is_nan() {
+        return None;
+    }
+    if f.is_infinite() {
+        return Some(if f > 0.0 {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        });
+    }
+    let t = f.trunc();
+    // (An integral float is exactly a `BigInt`.)
+    let tb = BigInt::from_f64(t)?;
+    Some(match b.cmp(&tb) {
+        Ordering::Equal => fraction_order(f - t),
+        o => o,
+    })
+}
+
+/// How an integer compares with a float whose integer part it equals:
+/// below a positive fraction, above a negative one.
+fn fraction_order(frac: f64) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    if frac > 0.0 {
+        Ordering::Less
+    } else if frac < 0.0 {
+        Ordering::Greater
+    } else {
+        Ordering::Equal
+    }
+}
+
+/// Whether `i` converts to a float exactly (`|i| <= 2^53`): there, the
+/// float comparison of the converted integer is the exact one, which the
+/// fast paths keep (#888).
+#[inline(always)]
+pub fn exact_as_float(i: i64) -> bool {
+    i.unsigned_abs() <= 1 << 53
+}
+
 /// Structural equality for immutable values (used for hash keys and as the
 /// default `==`). Mutable objects compare by identity; data types and enum
 /// variants compare field-wise.
@@ -3740,8 +3814,12 @@ impl PartialEq for Value {
         }
         match (self, other) {
             (Value::Int(a), Value::Int(b)) => a == b,
+            // (Exactly, #888: not as the integer rounded to a float.)
             (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) => {
-                (*a as f64) == *b
+                cmp_int_float(*a, *b) == Some(std::cmp::Ordering::Equal)
+            }
+            (Value::BigInt(a), Value::Float(b)) | (Value::Float(b), Value::BigInt(a)) => {
+                cmp_big_float(a, *b) == Some(std::cmp::Ordering::Equal)
             }
             (Value::Int(a), Value::BigInt(b)) | (Value::BigInt(b), Value::Int(a)) => {
                 **b == BigInt::from(*a)
@@ -3845,10 +3923,21 @@ impl Hash for Value {
                     Err(_) => b.hash(state),
                 }
             }
+            // (An integral float as the integer it is, of any magnitude, as
+            // an `Int` or a big `Integer` of that value hashes: equal
+            // numbers hash alike, #888.)
             Value::Float(f) => {
                 2u8.hash(state);
-                if f.fract() == 0.0 && f.abs() < 9.2e18 {
-                    (*f as i64).hash(state);
+                if f.fract() == 0.0 && f.is_finite() {
+                    if (-TWO_TO_63..TWO_TO_63).contains(f) {
+                        (*f as i64).hash(state);
+                    } else {
+                        use num_traits::FromPrimitive;
+                        match BigInt::from_f64(*f) {
+                            Some(b) => b.hash(state),
+                            None => f.to_bits().hash(state),
+                        }
+                    }
                 } else {
                     f.to_bits().hash(state);
                 }
