@@ -11588,14 +11588,21 @@ impl Checker {
                 if f.is_native { "built-in " } else { "" },
                 self.world.method_signature(f)
             );
-            let ext = self.world.method(g).extension.expect("an extension's");
+            let given = self.world.method(g);
+            let ext = given.extension.expect("an extension's");
             let by = self.extension_name(ext);
-            self.error(
+            // (A private one is called bare only, where the extension is
+            // active (#900): `Kernel.name` would be refused.)
+            let message = if given.visibility == Visibility::Private {
+                format!(
+                    "the call of `{name}` is ambiguous: {what} and the private function `{name}` that {by} gives, active here, have one name; the extension's is called bare only, where it is active: rename the program's function, or make the call where the extension is not active"
+                )
+            } else {
                 format!(
                     "the call of `{name}` is ambiguous: {what} and the function `Kernel.{name}` that {by} gives, active here, have one name; call the extension's as `Kernel.{name}`, or rename one"
-                ),
-                span,
-            );
+                )
+            };
+            self.error(message, span);
         }
     }
 

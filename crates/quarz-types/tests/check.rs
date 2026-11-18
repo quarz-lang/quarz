@@ -4373,6 +4373,12 @@ fn kernel_extension_functions_are_found_bare() {
         "{p}a: Int = hidden + ::hidden + pick(3)\nb: String = pick(\"s\")"
     ));
     err(&format!("{p}a: Int = Kernel.hidden"), "`hidden` is private");
+    // A program's function beside a private one: ambiguous, bare and as
+    // `::name`, and `Kernel.name` is not offered (#900).
+    let mine_p = "module P\n  extension Kernel\n    private def self.hidden -> Int = 1\n  end\nend\ndef hidden -> Int = 2\nusing P\n";
+    let msg_p = "the call of `hidden` is ambiguous: the function `hidden() -> Int` and the private function `hidden` that the extension of `Kernel` in `P` gives, active here, have one name; the extension's is called bare only, where it is active: rename the program's function, or make the call where the extension is not active";
+    err(&format!("{mine_p}a: Int = hidden"), msg_p);
+    err(&format!("{mine_p}a: Int = ::hidden"), msg_p);
     err(
         &format!("{h}{two}using H\nusing G\na: Int = answer"),
         "the call of `answer` is ambiguous: the extension of `Kernel` in `H` and the extension of `Kernel` in `G`, both active here, each define it with the same parameters; leave out one `using`",
