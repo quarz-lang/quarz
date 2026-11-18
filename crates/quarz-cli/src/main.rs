@@ -60,6 +60,17 @@ fn main() -> ExitCode {
         quarz_types::set_std_cache(states.iter().map(|(k, b)| (k.to_string(), *b)).collect());
         quarz_types::cache::set_build(include_str!(concat!(env!("OUT_DIR"), "/build_id.txt")));
     }
+    // A program `quarz run` or `quarz test` runs (or builds and starts)
+    // finds the `quarz` running it as `QUARZ`, unless it is set (#877,
+    // docs/12 §1): a test that runs `"${QUARZ:-quarz}" check` checks with
+    // this binary, not one on `PATH`. (Set before any thread starts.)
+    if matches!(args.first().map(String::as_str), Some("run" | "test"))
+        && std::env::var_os("QUARZ").is_none()
+    {
+        if let Ok(exe) = std::env::current_exe() {
+            std::env::set_var("QUARZ", exe);
+        }
+    }
     match args.first().map(String::as_str) {
         Some("tokens") => match args.get(1) {
             Some(path) => tokens(path),
