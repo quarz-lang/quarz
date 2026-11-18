@@ -3727,7 +3727,7 @@ impl Value {
 }
 
 /// 2^63 as a float: the integers of `[-TWO_TO_63, TWO_TO_63)` are `i64`s.
-const TWO_TO_63: f64 = 9_223_372_036_854_775_808.0;
+pub(crate) const TWO_TO_63: f64 = 9_223_372_036_854_775_808.0;
 
 /// The order of an `Int` and a `Float`, exactly (#888): the float's
 /// integer part compared with the integer, then its fraction. The
