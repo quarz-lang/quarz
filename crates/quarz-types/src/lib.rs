@@ -769,6 +769,10 @@ pub trait StaticHost {
     /// (#536 step 6). Records only: the errors are reported once, by the
     /// check after the statements.
     fn record_inherited_constructors(&mut self);
+    /// The pairs of a subclass and the `initialize` a `new` passes for
+    /// that the last check refused, with why (#870): a compile-time run
+    /// whose `new` meets one stops, and the statement did not run.
+    fn refused_constructors(&self) -> &[(ClassId, Option<MethodId>, String)];
 }
 
 /// Why a `static` statement could not run: reported at its position.

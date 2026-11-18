@@ -1013,6 +1013,7 @@ pub struct ReplSnapshot {
     repl_ctor_marks: (usize, usize, usize),
     static_ctor_marks: (usize, usize, usize),
     static_ctor_inits: Vec<ClassId>,
+    refused_ctors: Vec<(ClassId, Option<MethodId>, String)>,
     runtime_tests: Vec<RuntimeTest>,
     repl_test_marks: (usize, usize, usize),
 }
@@ -1206,6 +1207,13 @@ pub struct Checker {
     /// change the choice for a pair seen before of that class or of a
     /// class below it, which the next pass checks again.
     static_ctor_inits: Vec<ClassId>,
+    /// The pairs of a subclass and the `init` a `new` passes for that the
+    /// last check refused (no overload takes what `new` passes, or the
+    /// runtime builds the class), with why, as a compile-time run's
+    /// refusal says it (#870): a run that meets one is stopped
+    /// (`StaticHost::refused_constructors`). A pair recorded since is no
+    /// longer one.
+    refused_ctors: Vec<(ClassId, Option<MethodId>, String)>,
     /// The run-time tests against a module accepted so far, for the REPL:
     /// a later input that makes one unanswerable is refused there (#515).
     runtime_tests: Vec<RuntimeTest>,
@@ -1346,6 +1354,7 @@ impl Checker {
             repl_ctor_marks: (0, 0, 0),
             static_ctor_marks: (0, 0, 0),
             static_ctor_inits: Vec::new(),
+            refused_ctors: Vec::new(),
             runtime_tests: Vec::new(),
             repl_test_marks: (0, 0, 0),
             constructing_self: false,
@@ -2212,11 +2221,16 @@ impl Checker {
                             .iter()
                             .all(|&o| Self::first_super(self.world.method(o)).is_some()))
                 {
+                    let (sname, cname) = (
+                        self.world.class(sid).name.clone(),
+                        self.world.class(cid).name.clone(),
+                    );
+                    self.refuse_inherited_init(
+                        sid,
+                        init,
+                        format!("{new_in} in `{cname}{sep}{mname}` reaches `{sname}`, whose values the runtime makes"),
+                    );
                     if reported.insert((sid, method)) {
-                        let (sname, cname) = (
-                            self.world.class(sid).name.clone(),
-                            self.world.class(cid).name.clone(),
-                        );
                         // At the declaration that makes `sid` reach the
                         // method, which the program's author wrote: the
                         // extension or the class including the module, or
@@ -2259,6 +2273,15 @@ impl Checker {
                     if let (Some(Some(at)), true) =
                         (supers.first(), supers.iter().all(|s| s.is_some()))
                     {
+                        let (sname, cname) = (
+                            self.world.class(sid).name.clone(),
+                            self.world.class(cid).name.clone(),
+                        );
+                        self.refuse_inherited_init(
+                            sid,
+                            init,
+                            format!("it builds `{sname}` with {new_in} in `{cname}{sep}{mname}`, which no `initialize` of `{sname}` takes"),
+                        );
                         if reported.insert((sid, method)) {
                             let near = self.world.method(chain[0]).clone();
                             let (sname, cname, oname) = (
@@ -2280,7 +2303,20 @@ impl Checker {
                     }
                     continue;
                 }
+                // (Made only for a pair refused.)
+                let refusal = |this: &Self| {
+                    let (sname, cname) = (&this.world.class(sid).name, &this.world.class(cid).name);
+                    format!("it builds `{sname}` with {new_in} in `{cname}{sep}{mname}`, which no `initialize` of `{sname}` takes")
+                };
                 if reported.contains(&(sid, method)) {
+                    // (Reported for another `new` of the method.)
+                    if !sinit
+                        .iter()
+                        .any(|&o| self.inherited_init_fits(sid, init, o))
+                    {
+                        let why = refusal(self);
+                        self.refuse_inherited_init(sid, init, why);
+                    }
                     continue;
                 }
                 let s = self.world.method(sinit[0]).clone();
@@ -2293,6 +2329,8 @@ impl Checker {
                     self.record_inherited_init(sid, init, Some(chosen));
                     continue;
                 }
+                let why = refusal(self);
+                self.refuse_inherited_init(sid, init, why);
                 // (Each `new` of the method is checked; one error each.)
                 if reported.insert((sid, method)) {
                     let (sname, cname) = (
@@ -2369,6 +2407,19 @@ impl Checker {
         match list.iter_mut().find(|(c, i, _)| (*c, *i) == (sub, init)) {
             Some(entry) => entry.2 = chosen,
             None => list.push((sub, init, chosen)),
+        }
+        self.refused_ctors
+            .retain(|(c, i, _)| (*c, *i) != (sub, init));
+    }
+
+    /// Record that the check refused `sub` built where `new` passes what
+    /// `init` takes, with why (`refused_ctors`, #870): the last check's
+    /// reason, in place.
+    fn refuse_inherited_init(&mut self, sub: ClassId, init: Option<MethodId>, why: String) {
+        let list = &mut self.refused_ctors;
+        match list.iter_mut().find(|(c, i, _)| (*c, *i) == (sub, init)) {
+            Some(entry) => entry.2 = why,
+            None => list.push((sub, init, why)),
         }
     }
 
@@ -2746,6 +2797,7 @@ impl Checker {
             repl_ctor_marks: self.repl_ctor_marks,
             static_ctor_marks: self.static_ctor_marks,
             static_ctor_inits: self.static_ctor_inits.clone(),
+            refused_ctors: self.refused_ctors.clone(),
             runtime_tests: self.runtime_tests.clone(),
             repl_test_marks: self.repl_test_marks,
         }
@@ -2767,6 +2819,7 @@ impl Checker {
         self.repl_ctor_marks = s.repl_ctor_marks;
         self.static_ctor_marks = s.static_ctor_marks;
         self.static_ctor_inits = s.static_ctor_inits;
+        self.refused_ctors = s.refused_ctors;
         self.runtime_tests = s.runtime_tests;
         self.repl_test_marks = s.repl_test_marks;
         self.quoted_seen.clear();
@@ -18797,6 +18850,10 @@ impl crate::StaticHost for Checker {
 
     fn record_inherited_constructors(&mut self) {
         self.record_inherited_constructors_so_far();
+    }
+
+    fn refused_constructors(&self) -> &[(ClassId, Option<MethodId>, String)] {
+        &self.refused_ctors
     }
 }
 
