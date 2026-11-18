@@ -162,6 +162,27 @@ class NumericEdgeTest < Test::Case
     assert_equal("15.0", 15.5.floor(0).inspect)
   end
 
+  # An integral float converts exactly in `Int`'s range, [-2**63, 2**63),
+  # and overflows beyond it (#895).
+  def test_float_to_int_at_the_ends_of_int
+    min = -9223372036854775807 - 1
+    assert_equal(min, -9223372036854775808.0.to_i)
+    assert_equal(min, -9223372036854775808.0.floor)
+    assert_equal(min, -9223372036854775808.0.round)
+    assert_equal(9223372036854774784, 9223372036854774784.0.to_i)
+    assert_equal(9223372036854774784, 9223372036854774784.0.ceil)
+    assert_equal(9223372036854774784, 9223372036854774784.0.truncate)
+    assert_equal(9223372036854774784, 9223372036854774784.0.round)
+    assert_equal(9223372036854774784, Math.floor(9223372036854774784.0))
+    assert_equal(9223372036854774784, Math.ceil(9223372036854774784.0))
+    assert_equal(9223372036854774784, 9223372036854774784.0.divmod(1.0)[0])
+    assert_raise(OverflowError) { 9223372036854775808.0.to_i }
+    assert_raise(OverflowError) { 9223372036854775808.0.round }
+    assert_raise(OverflowError) { Math.ceil(9223372036854775808.0) }
+    assert_raise(OverflowError) { -9223372036854777856.0.to_i }
+    assert_raise(OverflowError) { -9223372036854777856.0.floor }
+  end
+
   def test_nan_orders_last
     nan = Float::NAN
     assert_equal(1, nan <=> 1.0)

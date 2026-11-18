@@ -796,7 +796,8 @@ pub(super) fn float_to_int(interp: &Interp, f: f64) -> EvalResult {
             },
         ));
     }
-    if f.abs() < 9.2e18 {
+    // Exactly `Int`'s range: an integral float in it converts exactly.
+    if (-crate::value::TWO_TO_63..crate::value::TWO_TO_63).contains(&f) {
         Ok(Value::Int(f as i64))
     } else {
         Err(interp.err_overflow())

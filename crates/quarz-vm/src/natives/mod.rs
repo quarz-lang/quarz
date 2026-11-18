@@ -521,7 +521,15 @@ fn owned_registry() -> Registry<OwnedNativeFn> {
 pub fn int(interp: &Interp, v: &Value, what: &str) -> Result<i64, Flow> {
     match v {
         Value::Int(i) => Ok(*i),
-        Value::Float(f) if f.fract() == 0.0 => Ok(*f as i64),
+        // An integral float in `Int`'s range, exactly; one beyond it
+        // overflows, as `Float#to_i` does, rather than saturating.
+        Value::Float(f) if f.fract() == 0.0 => {
+            if (-crate::value::TWO_TO_63..crate::value::TWO_TO_63).contains(f) {
+                Ok(*f as i64)
+            } else {
+                Err(interp.err_overflow())
+            }
+        }
         _ => Err(interp.err_type(&format!(
             "{what} must be an Int, got {}",
             interp.class_name(v)
