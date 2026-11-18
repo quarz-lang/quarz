@@ -2722,23 +2722,17 @@ fn field_initializer_refusal(
             ));
         }
     }
-    for &m in world
-        .class(class)
-        .methods
-        .get("initialize")
-        .into_iter()
-        .flatten()
-    {
-        let generated = world.method(m).generated.is_some();
-        return Err(if generated {
-            format!(
-                "`{cname}` already has a generated `initialize`, which would not run the initializer: declare the fields with initializers before `def_initialize`"
-            )
-        } else {
-            format!(
-                "`{cname}` has a written `initialize`, which does not run initializers: a class with field initializers has only generated `initialize`s (`def_initialize`)"
-            )
-        });
+    let inits = world.class(class).methods.get("initialize");
+    let inits = inits.map(|ms| ms.as_slice()).unwrap_or_default();
+    if inits.iter().any(|&m| world.method(m).generated.is_none()) {
+        return Err(format!(
+            "`{cname}` has a written `initialize`, which does not run initializers: a class with field initializers has only generated `initialize`s (`def_initialize`)"
+        ));
+    }
+    if !inits.is_empty() {
+        return Err(format!(
+            "`{cname}` already has a generated `initialize`, which would not run the initializer: declare the fields with initializers before `def_initialize`"
+        ));
     }
     Ok(())
 }
