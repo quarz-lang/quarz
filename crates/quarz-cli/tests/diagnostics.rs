@@ -309,6 +309,39 @@ fn field_errors_in_their_own_file_with_a_library_required() {
     assert_eq!(outs[0], outs[1]);
 }
 
+/// `Decimal` (std/decimal.qz, #889) is ordered against `Decimal`s only
+/// and combines with no `Float`, and an `Int` takes no `Decimal`: each a
+/// compile error (equality and order across the number classes are
+/// #891).
+#[test]
+fn decimal_mixes_with_no_float_and_orders_only_decimals() {
+    let dir = std::env::temp_dir().join(format!("quarz-decimal-mix-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("mix.qz"),
+        "d = Decimal.parse(\"1\")\np d < 3\np d + 0.1\np 3 + d\np d == 3\n",
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .args(["check", "mix.qz"])
+        .current_dir(&dir)
+        .env("QUARZ_NO_CACHE", "1")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    for expected in [
+        "mix.qz:2:7: error: argument `other` of <(other: T) -> Bool expects Decimal but found Int",
+        "mix.qz:3:7: error: argument `other` of +(other: Decimal | Int | Integer) -> Decimal expects Decimal | Int | Integer but found Float",
+        "mix.qz:4:3: error: no overload of `+` on Int matches (Decimal)",
+    ] {
+        assert!(err.contains(expected), "{expected}\n{err}");
+    }
+    // (`d == 3` compiles: `==` takes an `Object`, and is false.)
+    assert!(!err.contains("mix.qz:5:"), "{err}");
+}
+
 /// An extension's include brings the module's class methods (#504): an
 /// abstract one is required of the target class, implemented by the
 /// extension's own `def self.` or the class's, else an error at the

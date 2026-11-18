@@ -1,0 +1,195 @@
+require "decimal"
+require "test"
+
+# `Decimal` (quarz-lang/quarz#889): exact base-ten numbers.
+class DecimalTest < Test::Case
+  def d(text: String) -> Decimal = Decimal.parse(text)
+
+  def test_new
+    assert_equal("19.99", Decimal.new(1999, scale: 2).to_s)
+    assert_equal("5", Decimal.new(5).to_s)
+    assert_equal("-0.05", Decimal.new(-5, scale: 2).to_s)
+    big = Integer.parse("123456789012345678901234567890")
+    assert_equal("1234567890123456789012345678.90", Decimal.new(big, scale: 2).to_s)
+    assert_equal(big, Decimal.new(big, scale: 2).unscaled)
+    assert_equal(2, Decimal.new(big, scale: 2).scale)
+    e = assert_raise(ArgumentError) { Decimal.new(1, scale: -1) }
+    assert_equal("a Decimal's scale is 0 to 1000, not -1", e.message)
+    e = assert_raise(ArgumentError) { Decimal.new(1, scale: 1001) }
+    assert_equal("a Decimal's scale is 0 to 1000, not 1001", e.message)
+  end
+
+  def test_parse
+    [["19.99", "19.99", 2], ["-0.050", "-0.050", 3], ["+7", "7", 0], ["007.10", "7.10", 2],
+     ["0", "0", 0], ["-0", "0", 0], ["0.000", "0.000", 3],
+     ["1.50e1", "15.0", 1], ["1.5e3", "1500", 0], ["15e-2", "0.15", 2], ["1E+2", "100", 0], ["1.5e0", "1.5", 1],
+    ].each do |row|
+      text = row[0].as(String)
+      x = d(text)
+      assert_equal(row[1], x.to_s, text)
+      assert_equal(row[2], x.scale, text)
+    end
+    ["", "1,5", ".5", "5.", "1 ", " 1", "1_000", "+-1", "1e", "1e+", "Infinity", "NaN", "0x10", "1.2.3", "１"].each do |text|
+      assert_nil(Decimal.parse?(text), text.inspect)
+      e = assert_raise(ArgumentError) { Decimal.parse(text) }
+      assert_equal("not a decimal: #{text.inspect}", e.message)
+    end
+  end
+
+  def test_limits
+    # (Refused before anything is computed: the exponent's digits.)
+    e = assert_raise(ArgumentError) { Decimal.parse("1e1000000000") }
+    assert_equal("a Decimal's exponent is too large: \"1e1000000000\"", e.message)
+    e = assert_raise(ArgumentError) { Decimal.parse("1e-1001") }
+    assert_equal("a Decimal's scale is 0 to 1000: \"1e-1001\"", e.message)
+    assert_equal(1000, Decimal.parse("1e-1000").scale)
+    assert_equal(10_000, Decimal.parse("1e9999").to_s.size)
+    e = assert_raise(ArgumentError) { Decimal.parse("1e10000") }
+    assert_equal("a Decimal has at most 10000 digits", e.message)
+    e = assert_raise(ArgumentError) { Decimal.parse("9" * 10_001) }
+    assert_match(/\Aa Decimal has at most 10000 digits/, e.message)
+    nines = Decimal.parse("9" * 6_000)
+    e = assert_raise(ArgumentError) { nines * nines }
+    assert_equal("a Decimal has at most 10000 digits", e.message)
+    small = Decimal.parse("0." + "0" * 599 + "1")
+    e = assert_raise(ArgumentError) { small * small }
+    assert_equal("a Decimal's scale is 0 to 1000, not 1200", e.message)
+    e = assert_raise(ArgumentError) { d("1").round(1001) }
+    assert_equal("a Decimal's scale is 0 to 1000, not 1001", e.message)
+    e = assert_raise(ArgumentError) { d("1").div(3, scale: -1) }
+    assert_equal("a Decimal's scale is 0 to 1000, not -1", e.message)
+  end
+
+  def test_arithmetic
+    assert_equal("1.75", (d("1.5") + d("0.25")).to_s)
+    assert_equal("1.25", (d("1.5") - d("0.25")).to_s)
+    assert_equal("0.375", (d("1.5") * d("0.25")).to_s)
+    assert_equal("2.5", (d("1.5") + 1).to_s)
+    assert_equal("0.5", (d("1.5") - 1).to_s)
+    assert_equal("59.97", (d("19.99") * 3).to_s)
+    assert_equal("4.50", (d("1.50") * Integer.parse("3")).to_s)
+    assert_equal("0.30", (d("0.1") + d("0.20")).to_s)
+    assert_equal(d("0.3"), d("0.1") + d("0.2"))
+    assert_equal("-1.5", (-d("1.5")).to_s)
+    assert_equal("1.50", d("-1.50").abs.to_s)
+    assert(d("0.00").zero?)
+    assert(d("-0.01").negative?)
+    assert(d("0.01").positive?)
+    assert(!d("0").negative? && !d("0").positive?)
+  end
+
+  def test_round_table
+    modes = [Decimal::Rounding::HalfEven, Decimal::Rounding::HalfUp, Decimal::Rounding::Down,
+             Decimal::Rounding::Up, Decimal::Rounding::Floor, Decimal::Rounding::Ceiling]
+    # Each row: the value, then its rounding to 0 digits by each mode.
+    table = [
+      ["2.5", "2", "3", "2", "3", "2", "3"],
+      ["3.5", "4", "4", "3", "4", "3", "4"],
+      ["-2.5", "-2", "-3", "-2", "-3", "-3", "-2"],
+      ["2.1", "2", "2", "2", "3", "2", "3"],
+      ["-2.1", "-2", "-2", "-2", "-3", "-3", "-2"],
+      ["2.7", "3", "3", "2", "3", "2", "3"],
+      ["-2.7", "-3", "-3", "-2", "-3", "-3", "-2"],
+      ["0.4", "0", "0", "0", "1", "0", "1"],
+      ["-0.4", "0", "0", "0", "-1", "-1", "0"],
+      ["2", "2", "2", "2", "2", "2", "2"],
+    ]
+    table.each do |row|
+      modes.each_with_index do |m, i|
+        assert_equal(row[i + 1], d(row[0]).round(0, m).to_s, "#{row[0]} #{m}")
+      end
+    end
+    # At two digits, and the default.
+    assert_equal("1.24", d("1.235").round(2).to_s)
+    assert_equal("1.24", d("1.245").round(2).to_s)
+    assert_equal("1.25", d("1.245").round(2, Decimal::Rounding::HalfUp).to_s)
+    assert_equal("-1.24", d("-1.245").round(2).to_s)
+    assert_equal("20.0", d("19.99").round(1).to_s)
+    # More digits pad.
+    assert_equal("1.500", d("1.5").round(3).to_s)
+  end
+
+  def test_div
+    assert_equal("3.33", d("10").div(3, scale: 2).to_s)
+    assert_equal("0.67", d("2").div(3, scale: 2).to_s)
+    assert_equal("0.66", d("2").div(3, scale: 2, mode: Decimal::Rounding::Down).to_s)
+    assert_equal("-0.67", d("-2").div(3, scale: 2).to_s)
+    assert_equal("-0.66", d("-2").div(3, scale: 2, mode: Decimal::Rounding::Ceiling).to_s)
+    assert_equal("-0.67", d("-2").div(3, scale: 2, mode: Decimal::Rounding::Floor).to_s)
+    assert_equal("33.333", d("1").div(d("0.03"), scale: 3).to_s)
+    assert_equal("4", d("10").div(d("2.5"), scale: 0).to_s)
+    # Ties, per mode: 1 / 8 = 0.125 at two digits.
+    assert_equal("0.12", d("1").div(8, scale: 2).to_s)
+    assert_equal("0.13", d("1").div(8, scale: 2, mode: Decimal::Rounding::HalfUp).to_s)
+    assert_equal("-0.12", d("-1").div(8, scale: 2).to_s)
+    assert_equal("-0.13", d("-1").div(8, scale: 2, mode: Decimal::Rounding::HalfUp).to_s)
+    e = assert_raise(ZeroDivisionError) { d("1").div(d("0.00"), scale: 2) }
+    assert_equal("division of a Decimal by zero", e.message)
+  end
+
+  # Equality and order are `Decimal`'s alone (quarz-lang/quarz#891).
+  def test_equality
+    assert_equal(d("19.99"), d("19.990"))
+    assert_equal(d("19.99").hash, d("19.990").hash)
+    assert_equal(d("0").hash, d("0.000").hash)
+    assert(d("19.99") != d("19.98"))
+    three = Decimal.new(3)
+    assert(!(three == 3))
+    assert(!(3 == three))
+    assert(!(three == 3.0))
+    assert(!(three == nil))
+    assert(!(three == Integer.parse("3")))
+    h: Hash[Object, String] = {3 => "int", three => "decimal"}
+    assert_equal(2, h.size)
+    assert_equal("decimal", h[Decimal.parse("3.00")]?)
+    assert_equal("int", h[3]?)
+  end
+
+  def test_order
+    assert(d("1") < d("1.01"))
+    assert(d("-1") < d("0.00"))
+    assert_equal(0, d("2.50") <=> d("2.5"))
+    assert_equal([d("-1"), d("0.5"), d("2")], [d("2"), d("-1"), d("0.5")].sort)
+    assert_equal(d("2"), [d("2"), d("-1"), d("0.5")].max)
+  end
+
+  def test_conversions
+    assert_equal(-7, d("-7.9").to_i)
+    assert_equal(7, d("7.9").to_i)
+    big = Integer.parse("123456789012345678901234567890")
+    assert_equal(big, Decimal.new(big * 100 + 99, scale: 2).to_integer)
+    assert_raise(OverflowError) { Decimal.new(big).to_i }
+    assert_equal(19.99, d("19.99").to_f)
+    assert_equal(0.1, d("0.1000000000000000001").to_f)
+    assert_equal("19.99", d("19.99").inspect)
+  end
+
+  # Properties over seeded values.
+  def test_properties
+    r = Random.new(889)
+    values = (0...200).map do
+      digits = (0...r.rand(1..30)).map { r.rand(0..9).to_s }.join
+      u = Integer.parse(digits)
+      Decimal.new(r.rand(0..1) == 0 ? -u : u, scale: r.rand(0..12))
+    end
+    values.each_with_index do |a, i|
+      b = values[(i * 7 + 3) % values.size]
+      assert_equal(a, (a + b) - b)
+      assert_equal(a.scale > b.scale ? a.scale : b.scale, ((a + b) - b).scale)
+      assert_equal(a * b, b * a)
+      back = Decimal.parse(a.to_s)
+      assert_equal(a, back)
+      assert_equal(a.scale, back.scale)
+      # `round(n)` is within half a unit of the last digit kept.
+      n = a.scale / 2
+      half = Decimal.new(5, scale: n + 1)
+      assert((a - a.round(n)).abs <= half, "#{a} #{n}")
+      unless b.zero?
+        s = 6
+        q = a.div(b, scale: s, mode: Decimal::Rounding::Down)
+        # q * b is within one unit (at `s` digits) times |b| of a.
+        assert((a - q * b).abs <= (Decimal.new(1, scale: s) * b).abs, "#{a} / #{b}")
+      end
+    end
+  end
+end
