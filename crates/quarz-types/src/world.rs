@@ -4008,9 +4008,13 @@ impl World {
     /// class includes ("only modules can be included",
     /// `Declarer::resolve_headers`), and an extension includes modules
     /// only. Nor can a class outside the prelude inherit from `Class` or
-    /// `Type` ("cannot inherit from `Type`", there too). A change of
-    /// either rule makes the key incomplete; debug builds compute the
-    /// result again on every hit and panic on a difference.
+    /// `Type` ("cannot inherit from `Type`", there too). It also reads
+    /// `builtin.class_` and `builtin.cog`, fixed once the prelude is
+    /// declared (`Declarer`'s `Builtin`), and each class's ancestors
+    /// (`ancestors(k, &[])`: its includes and the active extensions,
+    /// which by the two rules never bring `Class`). A change of either
+    /// rule makes the key incomplete; debug builds compute the result
+    /// again on every hit and panic on a difference.
     pub(crate) fn replaceable_type_classes(&self) -> Vec<ClassId> {
         let key: Vec<Option<ClassId>> = self
             .classes
