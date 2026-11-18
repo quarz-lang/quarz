@@ -143,6 +143,10 @@ pub(crate) struct Helpers<F> {
     pub alloc_data: F,
     pub owned_call: F,
     pub hash_put_int: F,
+    /// `qz_cmp_int_float`: an `Int` and a `Float` compared exactly, on the
+    /// cold path of a typed comparison whose integer does not convert
+    /// exactly (#888, `Gen::mixed_compare`).
+    pub cmp_int_float: F,
 }
 
 /// A typed entry's exits: the block a status leaves through, the
@@ -1778,6 +1782,49 @@ impl<B: Builder> Gen<'_, B> {
         self.b.call(h, &[self.rt, self.regs, o, c, s, cell]);
         self.b.jump(on, &[]);
         self.b.switch_to_block(on);
+    }
+
+    /// An `Int` and a `Float` compared by `op`, exactly (#888): as floats
+    /// when the integer converts exactly (`|i| <= 2^53`, the inline path
+    /// the comparison always had), else by the runtime's
+    /// `qz_cmp_int_float` on a cold path. `int_left`: `x` is the `Int`.
+    fn mixed_compare(&mut self, op: FastOp, x: B::Value, y: B::Value, int_left: bool) -> B::Value {
+        let (i, f) = if int_left { (x, y) } else { (y, x) };
+        // (`|i| <= 2^53`: `i + 2^53`, unsigned, below `2^54 + 1`.)
+        let biased = self.b.iadd_imm(i, 1 << 53);
+        let small = self
+            .b
+            .icmp_imm(IntCC::UnsignedLessThan, biased, (1 << 54) + 1);
+        let fast = self.b.create_block();
+        let slow = self.b.create_block();
+        let done = self.b.create_block();
+        let r = self.b.append_block_param(done, Ty::I8);
+        self.b.brif(small, fast, &[], slow, &[]);
+        self.b.switch_to_block(fast);
+        let fi = self.b.fcvt_from_sint(i);
+        let (xf, yf) = if int_left { (fi, f) } else { (f, fi) };
+        let v = self.b.fcmp(float_cc(op), xf, yf);
+        self.b.jump(done, &[v]);
+        self.b.switch_to_block(slow);
+        self.b.set_cold(slow);
+        // (The order of `x` against `y`: -1, 0, 1, or 2 for a NaN.)
+        let swapped = self.b.iconst(Ty::I32, i64::from(!int_left));
+        let code = self.b.call(self.h.cmp_int_float, &[i, f, swapped])[0];
+        let v = match op {
+            FastOp::Lt => self.b.icmp_imm(IntCC::Equal, code, -1),
+            FastOp::Le => {
+                let lt = self.b.icmp_imm(IntCC::Equal, code, -1);
+                let eq = self.b.icmp_imm(IntCC::Equal, code, 0);
+                self.b.bor(lt, eq)
+            }
+            FastOp::Gt => self.b.icmp_imm(IntCC::Equal, code, 1),
+            FastOp::Ge => self.b.icmp_imm(IntCC::UnsignedLessThan, code, 2),
+            FastOp::Eq => self.b.icmp_imm(IntCC::Equal, code, 0),
+            _ => self.b.icmp_imm(IntCC::NotEqual, code, 0),
+        };
+        self.b.jump(done, &[v]);
+        self.b.switch_to_block(done);
+        r
     }
 
     /// The address of field `index` of the `class` object in `obj` (whose
@@ -3711,26 +3758,11 @@ impl<B: Builder> Gen<'_, B> {
                                 _ => IntCC::NotEqual,
                             };
                             self.b.icmp(cc, x, y)
+                        } else if t.lhs == t.rhs {
+                            let cc = float_cc(*op);
+                            self.b.fcmp(cc, x, y)
                         } else {
-                            let xf = if t.lhs == Num::Int {
-                                self.b.fcvt_from_sint(x)
-                            } else {
-                                x
-                            };
-                            let yf = if t.rhs == Num::Int {
-                                self.b.fcvt_from_sint(y)
-                            } else {
-                                y
-                            };
-                            let cc = match op {
-                                FastOp::Lt => FloatCC::LessThan,
-                                FastOp::Le => FloatCC::LessThanOrEqual,
-                                FastOp::Gt => FloatCC::GreaterThan,
-                                FastOp::Ge => FloatCC::GreaterThanOrEqual,
-                                FastOp::Eq => FloatCC::Equal,
-                                _ => FloatCC::NotEqual,
-                            };
-                            self.b.fcmp(cc, xf, yf)
+                            self.mixed_compare(*op, x, y, t.lhs == Num::Int)
                         };
                         self.store_bool(*dst, r);
                     }
@@ -5004,5 +5036,17 @@ impl<B: Builder> Gen<'_, B> {
             },
             _ => self.exec(block, index, unwind),
         }
+    }
+}
+
+/// The float comparison of a `BinOp`'s comparison operator.
+fn float_cc(op: FastOp) -> FloatCC {
+    match op {
+        FastOp::Lt => FloatCC::LessThan,
+        FastOp::Le => FloatCC::LessThanOrEqual,
+        FastOp::Gt => FloatCC::GreaterThan,
+        FastOp::Ge => FloatCC::GreaterThanOrEqual,
+        FastOp::Eq => FloatCC::Equal,
+        _ => FloatCC::NotEqual,
     }
 }

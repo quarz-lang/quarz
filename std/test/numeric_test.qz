@@ -184,3 +184,95 @@ class NumericEdgeTest < Test::Case
     assert_equal(0, 0.lcm(5))
   end
 end
+
+# An `Int` (or an `Integer`) and a `Float` compare exactly (#888): the
+# integer is not rounded to a float, so `2**53 + 1` is not `2**53 + 1.0`
+# (which is `2**53`), and equal numbers hash alike. The expected values
+# follow from the numbers' exact values.
+class ExactIntFloatTest < Test::Case
+  BIG = 9007199254740993
+  BIGF = 9007199254740992.0
+
+  # (Typed operands: compiled code compares them inline.)
+  def order(i: Int, f: Float) -> String
+    "#{i == f} #{i != f} #{i < f} #{i <= f} #{i > f} #{i >= f} #{i <=> f} #{f == i} #{f < i} #{f > i} #{f <=> i}"
+  end
+
+  def test_the_pair_two_to_the_53_plus_one
+    assert_equal("false true false false true true 1 false true false -1", order(BIG, BIGF))
+    assert_equal("false true true true false false -1 false false true 1", order(-BIG, -BIGF))
+    assert_equal("true false false true false true 0 true false false 0", order(9007199254740992, BIGF))
+    assert_equal("false true true true false false -1 false false true 1", order(BIG - 2, BIGF))
+  end
+
+  def test_the_ends_of_int
+    assert_equal("false true true true false false -1 false false true 1", order(9223372036854775807, 9223372036854775808.0))
+    assert_equal("true false false true false true 0 true false false 0", order(-9223372036854775807 - 1, -9223372036854775808.0))
+  end
+
+  def test_fractions_zeros_nan_and_infinities
+    assert_equal("false true true true false false -1 false false true 1", order(3, 3.5))
+    assert_equal("false true false false true true 1 false true false -1", order(-3, -3.5))
+    assert_equal("true false false true false true 0 true false false 0", order(0, -0.0))
+    assert_equal("false true false false false false -1 false false false 1", order(1, Float::NAN))
+    assert_equal("false true true true false false -1 false false true 1", order(BIG, Float::INFINITY))
+    assert_equal("false true false false true true 1 false true false -1", order(BIG, -Float::INFINITY))
+  end
+
+  def test_integer_against_float
+    b19 = 10000000000000000000
+    b30 = 1000000000000000000000000000000
+    assert_true(b19 == 1e19)
+    assert_true(1e19 == b19)
+    assert_equal(b19.hash, 1e19.hash)
+    # (1e30 is 1000000000000000019884624838656.)
+    assert_false(b30 == 1e30)
+    assert_true(b30 < 1e30)
+    assert_equal(1, {b19 => 1, 1e19 => 2}.size)
+  end
+
+  def test_collections_and_patterns
+    big: Int | Float = BIG
+    near: Int | Float = BIGF
+    a: Array[Int | Float] = [big, near, 1, 1.0]
+    assert_equal(3, a.uniq.size)
+    assert_equal(1, a.index(near))
+    assert_equal(1, a.count(near))
+    assert_equal(3, (a - [near]).size)
+    assert_equal(1, (a & [near]).size)
+    assert_equal(3, (a | [near]).size)
+    assert_equal(3, a.dup.tap { |x| x }.reject { |x| x == near }.size)
+    assert_false([big].include?(near))
+    assert_equal(2, {big => "i", near => "f"}.size)
+    st: Set[Int | Float] = Set.new
+    st = st.add(big)
+    st = st.add(near)
+    assert_equal(2, st.size)
+    assert_equal(3, a.tally.size)
+    assert_equal(3, a.group_by { |x| x }.size)
+    hit = case BIG
+          in 9007199254740992.0 then "rounded"
+          in 9007199254740993 then "exact"
+          in _ then "neither"
+          end
+    assert_equal("exact", hit)
+  end
+
+  # (`between?`, `clamp`, a range of `Float`s and `min`/`max` take one
+  # class of number: the checker refuses an `Int` against `Float`s there,
+  # so they never ask this comparison.)
+
+  # The property the comparison keeps: equal numbers hash alike, pairwise
+  # over the values above.
+  def test_equal_numbers_hash_alike
+    vals: Array[Object] = [0, -0.0, 0.0, 1, 1.0, BIG, BIGF, 9007199254740992, -BIG, -BIGF,
+                           9223372036854775807, 9223372036854775808.0, -9223372036854775807 - 1,
+                           -9223372036854775808.0, 10000000000000000000, 1e19,
+                           1000000000000000000000000000000, 1e30, 3.5, Float::INFINITY]
+    vals.each do |x|
+      vals.each do |y|
+        assert_equal(x.hash, y.hash, "#{x.inspect} == #{y.inspect}") if x == y
+      end
+    end
+  end
+end

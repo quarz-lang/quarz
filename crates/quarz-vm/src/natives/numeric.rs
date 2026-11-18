@@ -161,12 +161,21 @@ fn cmp_num(interp: &Interp, recv: &Value, args: &Args) -> Result<std::cmp::Order
     if matches!(recv, Value::BigInt(_)) || matches!(other, Value::BigInt(_)) {
         let a = Num::of(interp, recv)?;
         let b = Num::of(interp, other)?;
-        return Ok(match (&a, &b) {
-            (Num::F(_), _) | (_, Num::F(_)) => a
-                .to_f64()
-                .partial_cmp(&b.to_f64())
+        return Ok(match (recv, other) {
+            // (Exactly, #888; a NaN is handled before.)
+            (Value::BigInt(x), Value::Float(f)) => {
+                crate::value::cmp_big_float(x, *f).unwrap_or(Ordering::Equal)
+            }
+            (Value::Float(f), Value::BigInt(x)) => crate::value::cmp_big_float(x, *f)
+                .map(Ordering::reverse)
                 .unwrap_or(Ordering::Equal),
-            _ => a.to_big().cmp(&b.to_big()),
+            _ => match (&a, &b) {
+                (Num::F(_), _) | (_, Num::F(_)) => a
+                    .to_f64()
+                    .partial_cmp(&b.to_f64())
+                    .unwrap_or(Ordering::Equal),
+                _ => a.to_big().cmp(&b.to_big()),
+            },
         });
     }
     // Not a number: failed, not the generic `compare` (which would send
