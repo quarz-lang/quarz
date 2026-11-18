@@ -3337,7 +3337,29 @@ impl World {
             || if t.mentions_any_param() || u.mentions_any_param() {
                 t == u
             } else {
-                self.type_name(&t) == self.type_name(&u)
+                let by_name = self.type_name(&t) == self.type_name(&u);
+                // The oracle of #536 step 5 (removed with the by-name
+                // comparison): the checker's type equality gives the same
+                // answer at every call. `QUARZ_SIG_ORACLE=report` prints
+                // each comparison reached, for the corpora's counts.
+                #[cfg(debug_assertions)]
+                {
+                    let by_type = self.same_type(&t, &u);
+                    if std::env::var_os("QUARZ_SIG_ORACLE").is_some_and(|v| v == "report") {
+                        eprintln!(
+                            "sig-oracle: name={by_name} type={by_type} `{}` `{}`",
+                            self.type_name(&t),
+                            self.type_name(&u)
+                        );
+                    }
+                    assert!(
+                        by_name == by_type,
+                        "internal error (#536 step 5): `{}` and `{}` compare {by_name} by name, {by_type} by type",
+                        self.type_name(&t),
+                        self.type_name(&u)
+                    );
+                }
+                by_name
             }
     }
 
