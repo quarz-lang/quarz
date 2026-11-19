@@ -1546,7 +1546,11 @@ impl World {
         memo.verified.borrow_mut().insert(key.clone());
         memo.checked.set(memo.checked.get() + 1);
         // (Made again with no effect a release build would not have: what
-        // it counts or says is put back.)
+        // it counts or says is put back. The walk made again may keep
+        // walks of its own through `ancestors_under`; each passed the
+        // same test, so a release build would keep it too, at its first
+        // walk of that key. A debug build may only keep it sooner, and an
+        // entry kept sooner is checked at its own first hit.)
         let reads = self.context_reads.get();
         let refusals = self.undecided_refusals.get();
         let bound_refusals = self.undecided_bound_refusals.get();
