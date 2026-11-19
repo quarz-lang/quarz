@@ -95,6 +95,22 @@ fn updates_of_shared_collections_copy_once_each() {
     check("shared.qz", 3);
 }
 
+/// #927: a field or a captured local is updated in place only by a
+/// native that runs no code of the program; a plain local always is.
+#[test]
+fn fields_updated_by_natives_running_no_program_code_copy_nothing() {
+    check("owned_in_place.qz", 0);
+}
+
+/// #927: the forms whose native may run code of the program (an
+/// element's, a key's or the argument's own `==` or `hash`, a `data`
+/// type's own, an instance of a class in a `data` value) copy once each,
+/// the place keeping its value meanwhile.
+#[test]
+fn fields_updated_by_natives_running_program_code_copy_once_each() {
+    check("owned_copies.qz", 8);
+}
+
 #[test]
 fn an_early_exit_from_any_or_all_leaves_no_reference_behind() {
     check("early_exit.qz", 0);

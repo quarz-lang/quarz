@@ -2996,6 +2996,46 @@ impl<'a> FnBuilder<'a> {
         m.is_native && [b.array, b.hash, b.set].contains(&m.owner)
     }
 
+    /// Whether native `method` may update the value in place
+    /// (`Inst::OwnedCall`), `recv` being the expression read from the
+    /// place, `args` the call's arguments, `in_reg` whether the place is a
+    /// plain register. The value is taken out of its place while the
+    /// native runs, which leaves the place nil (#927): a plain register no
+    /// code of the program can read meanwhile may always be; a field or a
+    /// captured local (`VarLoc::Frame`, captured by a block before or
+    /// after) only when the native runs no code of the program
+    /// (`World::owned_native`, asked with the receiver's and the
+    /// arguments' types). A call with a block is never owned (the
+    /// callers' `block.is_none()`). A release in the native only queues an
+    /// element's `deinitialize`, which runs after the result is stored
+    /// back. The other producer of `OwnedCall`,
+    /// `quarz_ir::live::own_dying_receivers`, owns only a receiver in a
+    /// register read for the last time: no other code can read it, so it
+    /// needs no such check.
+    fn owned_in_place(
+        &self,
+        method: MethodId,
+        recv: &Expr,
+        args: &[ast::Arg],
+        in_reg: bool,
+    ) -> bool {
+        if !self.world.method(method).is_native {
+            return false;
+        }
+        if in_reg {
+            return true;
+        }
+        let arg_types: Vec<Option<&Type>> = args
+            .iter()
+            .map(|a| match a {
+                ast::Arg::Positional(e) => self.node_type(e.id),
+                _ => None,
+            })
+            .collect();
+        self.node_type(recv.id)
+            .is_some_and(|t| self.world.owned_native(method, t, &arg_types))
+    }
+
     /// `x.foo!(args)` as `x = x.foo(args)` (the checker resolved `foo`):
     /// an in-place update for a native, a call and a store otherwise.
     fn bang_assign(&mut self, e: &'a Expr, call: &'a ast::Call) -> Reg {
@@ -3047,8 +3087,10 @@ impl<'a> FnBuilder<'a> {
         match &root.kind {
             ExprKind::Local(_) => {
                 let r = self.var_ref(root.span);
-                if let (Some(r), true) = (r, owned) {
-                    let loc = self.var_loc(r);
+                let loc = r.filter(|_| owned).map(|r| self.var_loc(r));
+                if let Some(loc) = loc.filter(|loc| {
+                    self.owned_in_place(method, root, &call.args, matches!(loc, VarLoc::Reg(_)))
+                }) {
                     let dst = self.reg();
                     self.emit(Inst::OwnedCall {
                         dst,
@@ -3094,7 +3136,7 @@ impl<'a> FnBuilder<'a> {
                 let index = self.ivar_index(root.id, name);
                 let class = self.class_id.unwrap_or(u32::MAX);
                 let (slot, flat) = self.ivar_layout(class, index);
-                if owned && flat.is_none() {
+                if owned && flat.is_none() && self.owned_in_place(method, root, &call.args, false) {
                     let obj = self.self_reg();
                     let dst = self.reg();
                     self.emit(Inst::OwnedCall {
@@ -4524,8 +4566,18 @@ impl<'a> FnBuilder<'a> {
                             {
                                 let method = *method;
                                 let a = self.args(&call.args);
-                                if a.block.is_none() && !a.splat && a.kw_splat.is_none() {
-                                    let loc = self.var_loc(r);
+                                let loc = self.var_loc(r);
+                                let recv_expr = call.recv.as_ref().unwrap();
+                                if a.block.is_none()
+                                    && !a.splat
+                                    && a.kw_splat.is_none()
+                                    && self.owned_in_place(
+                                        method,
+                                        recv_expr,
+                                        &call.args,
+                                        matches!(loc, VarLoc::Reg(_)),
+                                    )
+                                {
                                     let dst = self.reg();
                                     self.emit(Inst::OwnedCall {
                                         dst,
@@ -4587,10 +4639,12 @@ impl<'a> FnBuilder<'a> {
                                 let a = self.args(&call.args);
                                 let class = self.class_id.unwrap_or(u32::MAX);
                                 let (slot, flat) = self.ivar_layout(class, index);
+                                let recv_expr = call.recv.as_ref().unwrap();
                                 if a.block.is_none()
                                     && !a.splat
                                     && a.kw_splat.is_none()
                                     && flat.is_none()
+                                    && self.owned_in_place(method, recv_expr, &call.args, false)
                                 {
                                     let obj = self.self_reg();
                                     let dst = self.reg();

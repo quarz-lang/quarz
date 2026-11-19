@@ -1,0 +1,152 @@
+# An update of a field or a captured local by a native that runs code of
+# the program (a key's or an element's own `==` or `hash`) is not done in
+# place: the place keeps its value while that code runs, and reads it
+# whole (#927). Before, the native took the value out of the place,
+# which held nil meanwhile. Each native that compares or hashes
+# (`quarz_ir::shake::native_calls`) is used, with a key whose methods
+# read the place being updated; a block given to a collection's native
+# reads it too.
+
+class Key
+  @id: Int
+  @probe: () -> String
+  @on_eq: Bool
+  def initialize(@id: Int, @probe: () -> String, @on_eq: Bool); end
+  def id -> Int = @id
+  def ==(other: Object) -> Bool
+    if @on_eq
+      puts "== sees #{@probe.call}"
+    end
+    other.is_a?(Key) && other.id == @id
+  end
+  def hash -> Int
+    seen = @probe.call
+    puts "hash sees #{seen}" unless seen.empty?
+    @id
+  end
+end
+
+def quiet(id: Int) -> Key = Key.new(id, -> { "" }, false)
+
+class Bag
+  var @items: Array[Key] = []
+  var @table: Hash[Key, Int] = {}
+  var @members: Set[Key] = Set[Key].new
+  def initialize
+    [0, 1, 2].each do |i|
+      @table = @table.put(quiet(i), i)
+      @members = @members.add(quiet(i))
+    end
+  end
+  def sizes -> String = "#{@items.size}/#{@table.size}/#{@members.size}"
+  def watched -> Key = Key.new(0, -> { sizes }, true)
+  def fill_items(first: Key) -> Void
+    @items = @items.push(first)
+    @items = @items.push(quiet(1))
+    @items = @items.push(quiet(2))
+  end
+  def array_delete(k: Key) -> Void
+    @items = @items.delete(k)
+  end
+  def hash_put(k: Key) -> Void
+    @table = @table.put(k, 0)
+  end
+  def hash_delete(k: Key) -> Void
+    @table.delete!(k)
+  end
+  def set_add(k: Key) -> Void
+    @members = @members.add(k)
+  end
+  def set_delete(k: Key) -> Void
+    @members.delete!(k)
+  end
+  def push_more -> String
+    @items = @items.push(quiet(9))
+    "pushed to #{@items.size}"
+  end
+  def reject_reading -> Void
+    @items.reject! { |k| k.id >= @items.size - 1 }
+  end
+end
+
+# The read form: each native's key reads the bag while the native runs.
+bag = Bag.new
+bag.fill_items(bag.watched)
+puts bag.sizes
+bag.array_delete(quiet(2))
+bag.hash_put(Key.new(7, -> { bag.sizes }, false))
+bag.hash_delete(Key.new(7, -> { bag.sizes }, false))
+bag.set_add(Key.new(7, -> { bag.sizes }, false))
+bag.set_delete(Key.new(7, -> { bag.sizes }, false))
+puts bag.sizes
+
+# The update form: the element's `==` updates the field the native
+# updates; the native's result is what the field holds after.
+bag = Bag.new
+bag.fill_items(Key.new(0, -> { bag.push_more }, true))
+bag.array_delete(quiet(1))
+puts bag.sizes
+
+# A block given to a collection's native reads the field it updates.
+bag = Bag.new
+bag.fill_items(quiet(0))
+bag.reject_reading
+puts bag.sizes
+
+# An argument of another type than the elements: `Set#delete` and
+# `Array#delete` take any object, whose own `hash` reads the fields being
+# updated (the elements' own run no code of the program).
+data Pt = (x: Int, y: Int)
+class Spy
+  @probe: () -> String
+  def initialize(@probe: () -> String); end
+  def ==(o: Object) -> Bool = false
+  def hash -> Int
+    puts "spy's hash sees #{@probe.call}"
+    1
+  end
+end
+class Points
+  var @set: Set[Pt] = Set[Pt].new
+  var @arr: Array[Pt] = []
+  def initialize
+    @set = @set.add(Pt.new(1, 2))
+    @arr = @arr.push(Pt.new(1, 2))
+  end
+  def sizes -> String = "#{@set.size}/#{@arr.size}"
+  def set_delete(v: Object) -> Void
+    @set = @set.delete(v)
+  end
+  def arr_delete(v: Object) -> Void
+    @arr = @arr.delete(v)
+  end
+end
+points = Points.new
+spy = Spy.new(-> { points.sizes })
+points.set_delete(spy)
+points.arr_delete(spy)
+puts points.sizes
+
+# Locals captured by a block before the update, and after it (read by
+# the next round's update), read by the element's `==`.
+def captured_before -> String
+  items: Array[Key] = []
+  size = -> { "#{items.size}" }
+  items = items.push(Key.new(0, size, true))
+  items = items.push(quiet(1))
+  items = items.delete(quiet(1))
+  "before #{size.call}"
+end
+def captured_later -> String
+  probe: () -> String = -> { "none" }
+  items: Array[Key] = [Key.new(0, -> { probe.call }, true)]
+  i = 0
+  while i < 2
+    items = items.delete(quiet(9))
+    probe = -> { "#{items.size}" }
+    i += 1
+  end
+  "later #{items.size}"
+end
+puts captured_before
+puts captured_later

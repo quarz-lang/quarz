@@ -147,6 +147,20 @@ pub fn native_calls(key: &str) -> &'static [&'static str] {
         ("Object", "to_s" | "inspect") => &["to_s", "inspect"],
         ("Object", "==" | "!=" | "hash") => &["==", "hash"],
         ("Object", _) => &[],
+        // The in-place updates that look at no element (read in
+        // `quarz-vm`'s `natives/collections.rs`, each `owned!` twin and
+        // its ordinary native, errors included: they name a class, never
+        // a value), and those that compare or hash elements or keys
+        // (`values_equal`, the keys' `==` and `hash`) and print none. The
+        // lowering reads these to keep a field updated in place only
+        // where no program code runs meanwhile (#927).
+        (
+            "Array",
+            "push" | "pop" | "shift" | "unshift" | "concat" | "+" | "set" | "compact" | "reverse",
+        ) => &[],
+        ("Array", "delete") | ("Hash", "put" | "delete") | ("Set", "add" | "delete") => {
+            &["==", "hash"]
+        }
         // A collection's elements are printed, compared, hashed and
         // ordered, not iterated by name (those taking a collection,
         // `Set#merge`, iterate a built-in one).
@@ -752,4 +766,52 @@ pub fn shake(module: &mut Module) -> usize {
         }
     }
     dropped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::native_calls;
+
+    #[test]
+    fn the_in_place_updates_call_only_what_they_compare_by() {
+        // #927: the lowering updates a field in place only through a
+        // native that runs no code of the program, which it reads here.
+        for key in [
+            "Array#push",
+            "Array#pop",
+            "Array#shift",
+            "Array#unshift",
+            "Array#concat",
+            "Array#+",
+            "Array#set",
+            "Array#compact",
+            "Array#reverse",
+        ] {
+            assert_eq!(native_calls(key), &[] as &[&str], "{key}");
+        }
+        for key in [
+            "Array#delete",
+            "Hash#put",
+            "Hash#delete",
+            "Set#add",
+            "Set#delete",
+        ] {
+            assert_eq!(native_calls(key), &["==", "hash"], "{key}");
+        }
+        // The collections' other natives keep the whole list: they print,
+        // compare, hash and order elements.
+        for key in [
+            "Array#sort",
+            "Array#to_s",
+            "Array#include?",
+            "Hash#merge",
+            "Set#to_s",
+        ] {
+            assert_eq!(
+                native_calls(key),
+                &["to_s", "inspect", "==", "hash", "<=>"],
+                "{key}"
+            );
+        }
+    }
 }

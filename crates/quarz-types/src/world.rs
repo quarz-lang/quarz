@@ -5745,6 +5745,127 @@ impl World {
         self.is_value_class(id) || self.class_is_a(id, b.class_) || runtime_made || native_new
     }
 
+    /// Whether the runtime's `==` and `hash` on a value of type `t` run
+    /// no code of the program, at any depth (#927): a built-in value class
+    /// (`is_value_class`) whose type arguments are such types; a `data`
+    /// type, an enum or an enum variant compared and hashed by the
+    /// built-in ones (`key_methods` finds no `==` nor `hash` of the
+    /// program's: its own, an included module's, one an unconditional
+    /// extension's module brings, the witness of an abstract one; an
+    /// extension's own method takes no part, docs/01 §7) whose fields
+    /// (with the type's arguments; every variant's, for an enum) are
+    /// such types; a tuple or union of such types. The runtime compares
+    /// such a value field by field in Rust (`quarz-vm`'s `Value` `Eq` and
+    /// `Hash`, which ask `keys::of`, built from `key_methods`, for each
+    /// object met; `Interp::values_equal`'s lookup of `==` finds only
+    /// `Object#==` for it). A type met again inside itself (a recursive
+    /// `data`) holds when the rest does: every answer is a conjunction.
+    ///
+    /// An approximation for the other types, which it refuses (the safe
+    /// direction: the caller copies): a class or module (a subclass may
+    /// define `==`, even where this one compares by identity), a type
+    /// parameter or inference variable, a procedure, a class object. A
+    /// generic `data` type's argument that no field uses is still asked.
+    ///
+    /// Not `Checker::equality_trusted`, which answers another question
+    /// (whether a value compares with the built-in `==`, for narrowing):
+    /// it looks at the outer class only (an `Array[Key]` is trusted,
+    /// though its `==` runs `Key#==`) and does not ask about `hash`.
+    pub fn equality_runs_no_user_code(&self, t: &Type) -> bool {
+        self.equality_runs_no_user_code_in(t, &mut Vec::new())
+    }
+
+    fn equality_runs_no_user_code_in(&self, t: &Type, seen: &mut Vec<Type>) -> bool {
+        match t {
+            Type::Nothing => true,
+            Type::Union(ms) | Type::Tuple(ms) => ms
+                .iter()
+                .all(|m| self.equality_runs_no_user_code_in(m, seen)),
+            Type::Class(id, args) => {
+                if !args
+                    .iter()
+                    .all(|a| self.equality_runs_no_user_code_in(a, seen))
+                {
+                    return false;
+                }
+                if self.is_value_class(*id) {
+                    return true;
+                }
+                let class = self.class(*id);
+                if !matches!(
+                    class.kind,
+                    ClassKind::Data | ClassKind::Enum | ClassKind::Variant
+                ) {
+                    return false;
+                }
+                if seen.contains(t) {
+                    return true;
+                }
+                seen.push(t.clone());
+                if self.key_methods(*id) != (None, None) {
+                    return false;
+                }
+                let mut by_args = self.class_subst(*id, args);
+                if let Some(e) = class.variant_of {
+                    by_args.extend(self.class_subst(e, args));
+                }
+                let fields_ok = self.all_fields(*id).into_iter().all(|(f, subst)| {
+                    let ty = f.ty.subst(&subst).subst(&by_args);
+                    self.equality_runs_no_user_code_in(&ty, seen)
+                });
+                fields_ok
+                    && (class.kind != ClassKind::Enum
+                        || class.variants.clone().into_iter().all(|v| {
+                            self.equality_runs_no_user_code_in(&Type::Class(v, args.clone()), seen)
+                        }))
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether native `method`, called on a receiver of type `recv` with
+    /// arguments of types `args` (`None`: not known, or not a positional
+    /// argument), runs no code of the program: it calls nothing by name
+    /// (`quarz_ir::shake::native_calls`, the one record of what a native
+    /// calls), or only `==` and `hash`, on the elements or keys of an
+    /// `Array`, `Set` or `Hash` (its first type argument) and on its first
+    /// argument, all of whose own run none (`equality_runs_no_user_code`).
+    /// The natives calling only `==` and `hash` (`Array#delete`, `Hash#put`
+    /// and `#delete`, `Set#add` and `#delete`) compare or hash their first
+    /// argument against the elements or keys and nothing else (`Hash#put`'s
+    /// second is stored, never compared or hashed); the argument's type is
+    /// the call's, not the parameter's (`Set#delete` takes any `Object`).
+    /// What lets the lowering update a field or a captured local in place
+    /// (`Inst::OwnedCall`), which leaves the place empty while the native
+    /// runs (#927). A native's block is not asked about: a call with one
+    /// is never owned.
+    pub fn owned_native(&self, method: MethodId, recv: &Type, args: &[Option<&Type>]) -> bool {
+        let m = self.method(method);
+        if !m.is_native {
+            return false;
+        }
+        let calls = quarz_ir::shake::native_calls(&m.native_key(self));
+        if calls.is_empty() {
+            return true;
+        }
+        if !calls.iter().all(|n| matches!(*n, "==" | "hash")) {
+            return false;
+        }
+        let b = &self.builtin;
+        let elements = match recv {
+            Type::Class(c, targs) if [b.array, b.set, b.hash].contains(c) => targs
+                .first()
+                .is_some_and(|t| self.equality_runs_no_user_code(t)),
+            _ => false,
+        };
+        elements
+            && args
+                .first()
+                .copied()
+                .flatten()
+                .is_some_and(|t| self.equality_runs_no_user_code(t))
+    }
+
     /// The built-in classes whose values are the runtime's own (no user
     /// fields, no `deinitialize`): what they hold is their type
     /// arguments.

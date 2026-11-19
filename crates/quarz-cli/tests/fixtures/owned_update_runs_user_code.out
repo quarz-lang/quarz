@@ -1,0 +1,17 @@
+3/3/3
+== sees 3/3/3
+hash sees 2/3/3
+hash sees 2/4/3
+hash sees 2/3/3
+hash sees 2/3/4
+2/3/3
+== sees pushed to 4
+2/3/3
+2/3/3
+spy's hash sees 1/1
+1/1
+== sees 2
+before 1
+== sees none
+== sees 1
+later 1
