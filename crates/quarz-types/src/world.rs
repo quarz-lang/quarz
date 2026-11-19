@@ -593,6 +593,35 @@ pub struct World {
     /// when no Shareable check refused.
     #[serde(skip)]
     pub undecided_bound_refusals: std::cell::Cell<u64>,
+    /// How many answers have been taken from the context of a question
+    /// rather than from the declarations: `ancestors_under` does not keep
+    /// a walk during which this moved, since its key does not hold that
+    /// context (#917). Each point counts where an answer depends on more
+    /// than the walk's key:
+    ///
+    /// 1. `param_bounds(SELF_PARAM)`: `Self`'s bound is `self_bound`, set
+    ///    per method checked (a module's `static def` keeps `Self` as a
+    ///    parameter); a narrowed parameter whose bounds mention `Self`
+    ///    reaches it through `param_bounds` too.
+    /// 2. `is_subtype`'s `false` for a pair already open (`subtype_open`):
+    ///    a coinductive assumption of the question enclosing the walk.
+    /// 3. `is_subtype`'s `false` at `SUBTYPE_DEPTH`: how deep the walk was
+    ///    entered.
+    /// 4. `data_fields_shareable`'s `true` for an instance being judged
+    ///    (`shareable_instances_seen`), and its answer by the arguments
+    ///    for the class met again with others: assumptions of the
+    ///    judgement enclosing the walk.
+    ///
+    /// The undecided bounds keep their own test (#519, in
+    /// `ancestors_under`). The extensions active where a bound's
+    /// `is_subtype` walks (`conformance_extensions`) are in the key
+    /// instead: every bound on a class reads them. Everything else a walk
+    /// reaches is fixed while the memo is on (the class graph, declared
+    /// bounds, `narrowed_params`, `lower_bounds`, the definite answers of
+    /// `shareable_seen_known`): an argument that the debug guard of
+    /// `ancestors_under` checks.
+    #[serde(skip)]
+    context_reads: std::cell::Cell<u64>,
     /// `replaceable_type_classes`' last result, with the input it was
     /// computed from: every class's superclass (#717).
     #[serde(skip)]
@@ -779,13 +808,23 @@ pub enum StaticEvent {
     Conformance(Vec<ClassId>),
 }
 
-type AncestorsKey = (ClassId, Vec<Type>, Vec<ExtensionId>);
+/// A walk's key: the class, its arguments, the view's extensions, and
+/// the extensions active where its bounds' `is_subtype` walks (#917).
+type AncestorsKey = (ClassId, Vec<Type>, Vec<ExtensionId>, Vec<ExtensionId>);
 type AncestorList = std::rc::Rc<Vec<(ClassId, Vec<Type>)>>;
 
 #[derive(Debug, Default)]
 struct AncestorsMemo {
     on: bool,
     map: std::cell::RefCell<HashMap<AncestorsKey, AncestorList>>,
+    /// (Debug builds.) The keys a hit has been checked for since the
+    /// method being checked began (`World::guard_new_method`).
+    verified: std::cell::RefCell<rustc_hash::FxHashSet<AncestorsKey>>,
+    /// (Debug builds.) Hits, hits checked, and the distinct keys hit, for
+    /// `QUARZ_GUARD_STATS`.
+    hits: std::cell::Cell<u64>,
+    checked: std::cell::Cell<u64>,
+    keys_hit: std::cell::RefCell<rustc_hash::FxHashSet<AncestorsKey>>,
 }
 
 /// A copy of the world starts with nothing remembered.
@@ -794,6 +833,39 @@ impl Clone for AncestorsMemo {
         AncestorsMemo {
             on: self.on,
             map: Default::default(),
+            verified: Default::default(),
+            hits: Default::default(),
+            checked: Default::default(),
+            keys_hit: Default::default(),
+        }
+    }
+}
+
+/// With `QUARZ_GUARD_STATS` naming a file, a debug build appends to it
+/// what the guard of `ancestors_under` did (#917): hits, hits made again
+/// and compared, distinct keys hit, walks stored.
+impl Drop for AncestorsMemo {
+    fn drop(&mut self) {
+        if !cfg!(debug_assertions) || self.hits.get() == 0 {
+            return;
+        }
+        let Some(path) = std::env::var_os("QUARZ_GUARD_STATS") else {
+            return;
+        };
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = writeln!(
+                f,
+                "hits={} checked={} keys_hit={} stored={}",
+                self.hits.get(),
+                self.checked.get(),
+                self.keys_hit.get_mut().len(),
+                self.map.get_mut().len()
+            );
         }
     }
 }
@@ -1430,13 +1502,25 @@ impl World {
         // counts the refusal each time, and answers otherwise when made
         // as if the types were known, #519.)
         let undecided = args.iter().any(|t| t.has_vars());
-        let key = (id, args.to_vec(), exts);
-        if let Some(found) = self.ancestors_memo.map.borrow().get(&key) {
+        let key = (id, args.to_vec(), exts, self.conformance_extensions());
+        let hit = self.ancestors_memo.map.borrow().get(&key).cloned();
+        if let Some(found) = hit {
+            if cfg!(debug_assertions) {
+                self.guard_hit(&key, &found);
+            }
             return found.as_ref().clone();
         }
         let refusals = self.undecided_refusals.get();
+        let reads = self.context_reads.get();
         let found = self.ancestors_with(id, args, &key.2);
         if undecided && (self.undecided_passes.get() || self.undecided_refusals.get() != refusals) {
+            return found;
+        }
+        // Nor one that took an answer from the context of the question
+        // (`context_reads`, #917): `Self`'s bound in a `static def`, an
+        // assumption of an enclosing `is_subtype` or shareability
+        // judgement. Its key does not hold that context.
+        if self.context_reads.get() != reads {
             return found;
         }
         self.ancestors_memo
@@ -1444,6 +1528,54 @@ impl World {
             .borrow_mut()
             .insert(key, std::rc::Rc::new(found.clone()));
         found
+    }
+
+    /// The debug guard of the memo (#917): a stored walk is made again
+    /// and compared, once per key in each method checked, so that an
+    /// input the key misses shows as a panic, not as a stale answer.
+    fn guard_hit(&self, key: &AncestorsKey, found: &AncestorList) {
+        let memo = &self.ancestors_memo;
+        memo.hits.set(memo.hits.get() + 1);
+        if memo.keys_hit.borrow().contains(key) {
+            if memo.verified.borrow().contains(key) {
+                return;
+            }
+        } else {
+            memo.keys_hit.borrow_mut().insert(key.clone());
+        }
+        memo.verified.borrow_mut().insert(key.clone());
+        memo.checked.set(memo.checked.get() + 1);
+        // (Made again with no effect a release build would not have: what
+        // it counts or says is put back.)
+        let reads = self.context_reads.get();
+        let refusals = self.undecided_refusals.get();
+        let bound_refusals = self.undecided_bound_refusals.get();
+        let bound = self.undecided_bound.borrow().clone();
+        let seen = self.undecided_bound_seen.borrow().clone();
+        let again = self.ancestors_with(key.0, &key.1, &key.2);
+        self.context_reads.set(reads);
+        self.undecided_refusals.set(refusals);
+        self.undecided_bound_refusals.set(bound_refusals);
+        *self.undecided_bound.borrow_mut() = bound;
+        *self.undecided_bound_seen.borrow_mut() = seen;
+        assert!(
+            again == **found,
+            "the ancestors memo answered otherwise than a walk made again (#917): {} {:?} under {:?} with {:?} active: kept {:?}, made again {:?}",
+            self.class(key.0).name,
+            key.1,
+            key.2,
+            key.3,
+            found,
+            again
+        );
+    }
+
+    /// A method's check begins (or ends): the debug guard checks each
+    /// stored walk again on its first hit in it.
+    pub fn guard_new_method(&self) {
+        if cfg!(debug_assertions) {
+            self.ancestors_memo.verified.borrow_mut().clear();
+        }
     }
 
     /// Remember `ancestors` from now on (`true`: the classes and their
@@ -3026,6 +3158,8 @@ impl World {
         if let Some(at) = hit {
             self.shareable_seen_floor
                 .set(self.shareable_seen_floor.get().min(at));
+            // (`context_reads` 4.)
+            self.context_reads.set(self.context_reads.get() + 1);
             return true;
         }
         // The class again with other arguments: by its arguments, as
@@ -3036,6 +3170,8 @@ impl World {
             .iter()
             .any(|t| matches!(t, Type::Class(c, _) if *c == id))
         {
+            // (`context_reads` 4.)
+            self.context_reads.set(self.context_reads.get() + 1);
             let shareable = Type::class(self.builtin.shareable);
             return args.iter().all(|a| {
                 if a.has_vars() {
@@ -3161,10 +3297,14 @@ impl World {
         }
         let depth = self.subtype_depth.get();
         if depth >= SUBTYPE_DEPTH {
+            // (`context_reads` 3.)
+            self.context_reads.set(self.context_reads.get() + 1);
             return false;
         }
         let key = (sub.clone(), sup.clone());
         if self.subtype_open.borrow().contains(&key) {
+            // (`context_reads` 2.)
+            self.context_reads.set(self.context_reads.get() + 1);
             return false;
         }
         self.subtype_open.borrow_mut().push(key);
@@ -4630,6 +4770,8 @@ impl World {
             return bounds.clone();
         }
         if id == u32::MAX {
+            // (Per method checked: `context_reads` 1.)
+            self.context_reads.set(self.context_reads.get() + 1);
             return self.self_bound.iter().cloned().collect();
         }
         for c in &self.classes {

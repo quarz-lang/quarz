@@ -3727,6 +3727,26 @@ fn a_conditional_extensions_include_beside_a_scoped_one_is_ambiguous() {
     assert!(amb[0].contains("the extension of `Box` in `S1`"), "{out:?}");
 }
 
+/// #917: a conditional extension's bound that holds only through a
+/// scoped extension is decided where the checker asks, not once for the
+/// program: the walk's memo keys the extensions active there. `g`, with
+/// no `using`, is refused whether `f`'s use under `using Sa` comes first
+/// or not (before, `f` first made `g`'s call accepted).
+#[test]
+fn a_bound_held_through_a_scoped_extension_is_decided_where_it_is_active() {
+    let lib = "class Box[T]\nend\nmodule Greet\n  def hi -> String = \"hi\"\nend\nmodule Cmp\nend\nclass X\nend\nmodule Sa\n  extension X\n    include Cmp\n  end\nend\nextension Box[T <: Cmp]\n  include Greet\nend\n";
+    let f = "def f -> String\n  using Sa\n  Box[X].new.hi\nend\n";
+    let g = "def g -> String = Box[X].new.hi\n";
+    for src in [format!("{lib}{f}{g}"), format!("{lib}{g}{f}")] {
+        let out = common::diagnostics(&src);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(
+            out[0].contains("undefined method `hi` for Box[X]"),
+            "{out:?}"
+        );
+    }
+}
+
 /// #577: the pair named is two the others do not override (M2 overrides
 /// M1, which it includes, but ties with M3), and a module that comes
 /// through an extension's include is said to be brought. (A third

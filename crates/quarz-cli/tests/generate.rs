@@ -1342,6 +1342,43 @@ fn a_constant_made_before_a_generated_field_is_made_again() {
     assert_eq!(out, "9\n3\n");
 }
 
+/// #917 (b): a class's shareability cannot change during a `static`
+/// phase, so a conditional extension bounded by `Shareable` applies to it
+/// before a statement and after alike: a class that includes `Shareable`
+/// gets no `var` field (refused at the statement), and a `data` type,
+/// whose shareability is derived from its fields, gets no generated
+/// field at all. A class that does not include `Shareable` is not one.
+#[test]
+fn a_generated_field_cannot_change_whether_a_class_is_shareable() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Box[T]\nend\nmodule Greet\n  def hi -> String = \"hi\"\nend\nextension Box[T <: Shareable]\n  include Greet\nend\nclass Holder\n  static def self.add -> Void\n    def_field(:n, Int, 0, var: true)\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass C < Holder\n  include Shareable\n  def before -> String = Box[C].new.hi\n  add\n  def after -> String = Box[C].new.hi\nend\np C.new.after\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains(
+            "`C` must be Shareable, since it includes `Shareable`, but its field `@n` is `var`"
+        ),
+        "{err}"
+    );
+    let plain = write(
+        &d.0,
+        "plain.qz",
+        "require_relative \"lib\"\nclass D < Holder\n  def before -> String = Box[D].new.hi\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", plain.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(err.contains("undefined method `hi` for Box[D]"), "{err}");
+}
+
 #[test]
 fn a_pending_class_is_reached_through_calls_and_later_by_name() {
     let d = dir();
