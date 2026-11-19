@@ -171,15 +171,16 @@ never use `pgrep -f` with a plain pattern).
   `tools/check-diff.sh target/debug/quarz-main target/debug/quarz
   [COG_DIR...]` prints them, with main's binary built in a second clone
   or `git worktree` with its own `CARGO_TARGET_DIR` and copied there.
-- A cog's own tests (`quarz test` in rotor, divider, bezel, ...) run
-  with a binary built here start `quarz` themselves, for the fixtures
-  they check (`exec "${QUARZ:-quarz}" check`): give them that binary,
-  `QUARZ=<target>/debug/quarz PATH=<target>/debug:$PATH
-  <target>/debug/quarz test`, or they fail with `quarz: not found`
-  (or test an installed `quarz`, not the branch's). A failure left
-  after that is compared with main's build of the same profile on the
-  same test before it is read as the branch's: a debug build misses
-  timing bounds a release build keeps (bezel's
+- A cog's own tests (`quarz test` in rotor, divider, bezel, ...) start
+  `quarz` themselves, for the fixtures they check (`exec
+  "${QUARZ:-quarz}" check`). Run them with a binary built here by its
+  full path, `<target>/debug/quarz test`: `quarz test` and `quarz run`
+  set `QUARZ` to the running binary when it is unset (#877), so the
+  fixtures are checked by the branch's `quarz` with nothing on `PATH`.
+  Do not leave a `QUARZ` in the environment that names another binary:
+  it is kept as given. A failure is compared with main's build of the
+  same profile on the same test before it is read as the branch's: a
+  debug build misses timing bounds a release build keeps (bezel's
   `test_large_forms_are_linear`).
 - `.cargo/config.toml` sets `QUARZ_THREADS=1` for `cargo test` (and
   `cargo run`), so tasks' output order is deterministic; the default is
