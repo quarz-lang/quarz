@@ -577,6 +577,48 @@ fn a_method_with_errors_does_not_run_through_the_runtime() {
     assert_eq!(out, "\"fine [1, 3] {1 => 2}\"\n");
 }
 
+/// What the natives that update a collection in place call by name
+/// (`shake::native_calls`, which the lowering also reads to update a
+/// field in place, #927) is reached: an element's `==` through
+/// `Array#delete`, a key's `hash` through `Hash#put` and `#delete`, each
+/// with errors, refuses the statement; an `Array#push` of the same
+/// elements reaches neither. (`Set#add` and `#delete` are not told apart
+/// here: making a set, `Set.new`, reaches every `==` and `hash`. The
+/// fixture `owned_update_runs_user_code.qz` fails if their entries, or
+/// these, were too small: the field would be updated in place.)
+#[test]
+fn the_in_place_updates_reach_what_they_compare_by() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class K\n  def ==(o: Object) -> Bool\n    n: Int = \"oops\"\n    true\n  end\n  def hash -> Int = 1\nend\nclass H\n  def ==(o: Object) -> Bool = true\n  def hash -> Int\n    n: Int = \"oops\"\n    1\n  end\nend\nclass Base\n  static def self.adel -> Void\n    [K.new].delete(K.new)\n    def_class_method(:a) { 1 }\n  end\n  static def self.hput -> Void\n    h: Hash[H, Int] = {}\n    h.put(H.new, 1)\n    def_class_method(:b) { 1 }\n  end\n  static def self.hdel -> Void\n    h: Hash[H, Int] = {}\n    h.delete(H.new)\n    def_class_method(:c) { 1 }\n  end\n  static def self.apush -> Void\n    [K.new].push(K.new)\n    def_class_method(:f) { 1 }\n  end\nend\n",
+    );
+    for (call, reached) in [
+        ("adel", Some("`K#==` (lib.qz:2)")),
+        ("hput", Some("`H#hash` (lib.qz:10)")),
+        ("hdel", Some("`H#hash` (lib.qz:10)")),
+        ("apush", None),
+    ] {
+        let app = write(
+            &d.0,
+            "app.qz",
+            &format!("require_relative \"lib\"\nclass C < Base\n  {call}\nend\n"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        // (The library's own errors fail the check in any case.)
+        assert!(!ok, "{call}");
+        let refused = format!("`{call}` did not run: it may reach ");
+        match reached {
+            Some(m) => assert!(
+                err.contains(&format!("{refused}{m}, which has errors")),
+                "{call}: {err}"
+            ),
+            None => assert!(!err.contains(&refused), "{call}: {err}"),
+        }
+    }
+}
+
 #[test]
 fn a_statement_reaches_call_targets_and_their_overrides() {
     // The statement's `String.build` reaches `String.build`, not every

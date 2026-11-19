@@ -1,0 +1,76 @@
+# Updates of fields in place by natives that run no code of the program
+# (#927): the test expects 0 copies. A native that compares or hashes
+# elements or keys updates a field in place only when their `==` and
+# `hash` are the runtime's at any depth (`World::equality_runs_no_user_code`):
+# built-in values, and `data` types and enums without their own whose
+# fields are such values, nested or recursive. A plain local (no block
+# captures it) is updated in place whatever its elements run.
+n = 200
+
+class K
+  @i: Int
+  def initialize(@i: Int); end
+  def i -> Int = @i
+  def ==(o: Object) -> Bool = o.is_a?(K) && o.i == @i
+  def hash -> Int = @i
+end
+
+data Pt = (x: Int, y: Int)
+data Line = (a: Pt, b: Pt)
+data Node = (v: Int, rest: Node?)
+data Box[T] = (v: T)
+enum Color
+  variant Red
+  variant Rgb(r: Int, g: Int, b: Int)
+end
+
+# A plain local, elements with their own `==`.
+def plain_local(n: Int) -> Int
+  ks: Array[K] = []
+  n.times { |i| ks = ks.push(K.new(i)) }
+  i = 0
+  while i < n
+    ks = ks.delete(K.new(i))
+    i += 2
+  end
+  ks.size
+end
+
+class Store
+  var @ints: Array[Int] = []
+  var @ks: Array[K] = []
+  var @pts: Hash[Pt, Int] = {}
+  var @pt_set: Set[Pt] = Set[Pt].new
+  var @colors: Hash[Color, Int] = {}
+  var @lines: Set[Line] = Set[Line].new
+  var @nodes: Hash[Node, Int] = {}
+  var @boxes: Set[Box[Int]] = Set[Box[Int]].new
+  def initialize; end
+  def run(n: Int) -> Int
+    n.times do |i|
+      @ints = @ints.push(i)
+      @ks = @ks.push(K.new(i))
+      @pts = @pts.put(Pt.new(i, i), i)
+      @pt_set = @pt_set.add(Pt.new(i, 0))
+      @colors = @colors.put(Color::Rgb.new(i, 0, 0), i)
+      @lines = @lines.add(Line.new(Pt.new(i, 0), Pt.new(0, i)))
+      @nodes = @nodes.put(Node.new(i, Node.new(i + 1, nil)), i)
+      @boxes = @boxes.add(Box.new(i))
+    end
+    @colors = @colors.put(Color::Red, 0)
+    i = 0
+    while i < n
+      @ints = @ints.delete(i)
+      @pts.delete!(Pt.new(i, i))
+      @pt_set = @pt_set.delete(Pt.new(i, 0))
+      @colors = @colors.delete(Color::Rgb.new(i, 0, 0))
+      @nodes = @nodes.delete(Node.new(i, Node.new(i + 1, nil)))
+      i += 2
+    end
+    @ints.size + @ks.size + @pts.size + @pt_set.size + @colors.size + @lines.size +
+      @nodes.size + @boxes.size
+  end
+end
+
+p plain_local(n)
+p Store.new.run(n)

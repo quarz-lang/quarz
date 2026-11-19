@@ -1,0 +1,66 @@
+# Updates of fields and captured locals by natives that may run code of
+# the program copy the collection (#927): the place keeps it while that
+# code runs. Each form below updates once and copies once (the test
+# expects exactly 8).
+
+class K
+  @i: Int
+  def initialize(@i: Int); end
+  def i -> Int = @i
+  def ==(o: Object) -> Bool = o.is_a?(K) && o.i == @i
+  def hash -> Int = @i
+end
+
+class C
+end
+
+# A `data` type with its own `==`, and one holding an instance of a
+# class (a subclass may define `==`).
+data Own(x: Int)
+  def ==(o: Object) -> Bool = o.is_a?(Own) && o.x == @x
+  def hash -> Int = @x
+end
+data Holder = (c: C)
+data Pt = (x: Int, y: Int)
+
+# Locals captured by a block before the update and after it.
+def captured_before -> Int
+  ks = [K.new(1), K.new(2)]
+  f = -> { ks.size }
+  ks = ks.delete(K.new(1))
+  f.call
+end
+def captured_after -> Int
+  ks = [K.new(1), K.new(2)]
+  ks = ks.delete(K.new(1))
+  f = -> { ks.size }
+  f.call
+end
+
+class Store
+  var @ks: Array[K] = [K.new(1), K.new(2)]
+  var @own: Hash[Own, Int] = {Own.new(1) => 1}
+  var @holders: Set[Holder] = Set[Holder].new
+  var @keyed: Hash[K, Int] = {K.new(1) => 1}
+  var @pt_set: Set[Pt] = Set[Pt].new
+  var @pts: Array[Pt] = [Pt.new(1, 2)]
+  def initialize; end
+  # An argument of a type whose `==` or `hash` may run code of the
+  # program: `Set#delete` hashes it, `Array#delete` compares with it.
+  def forget(v: Object) -> Void
+    @pt_set = @pt_set.delete(v)
+    @pts = @pts.delete(v)
+  end
+  def run -> Int
+    @ks = @ks.delete(K.new(1))
+    @own = @own.put(Own.new(2), 2)
+    @holders = @holders.add(Holder.new(C.new))
+    @keyed = @keyed.put(K.new(2), 2)
+    forget(K.new(1))
+    @ks.size + @own.size + @holders.size + @keyed.size
+  end
+end
+
+p captured_before
+p captured_after
+p Store.new.run

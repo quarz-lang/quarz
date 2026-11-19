@@ -8574,6 +8574,11 @@ impl Checker {
     /// of those classes has others, its own or an active extension's. A
     /// type that may be subclassed is not trusted: a subclass may be
     /// declared in a file compiled separately. A tuple is an `Array`.
+    ///
+    /// Not `World::equality_runs_no_user_code` (#927), which asks whether
+    /// a `==` or `hash` runs any program code at any depth: this one
+    /// trusts an `Array[Key]` (its `==` is native, `Key#==` runs inside
+    /// it), which narrowing may, and an in-place update may not.
     fn equality_trusted(&self, m: &Type) -> bool {
         let b = &self.world.builtin;
         let id = match m {
