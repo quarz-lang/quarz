@@ -6549,6 +6549,48 @@ fn a_conditional_extensions_pairs_where_the_bound_may_hold() {
     );
 }
 
+/// #917: whether a conditional extension applies to `Box[Self]` is
+/// decided in each module, not once for all: `Self`'s bound in a module's
+/// `static def` (the class side) and instance method differs between
+/// modules, and a walk that evaluated an extension's bound is not kept
+/// (`World::ancestors_under`). `Unsafe`'s uses are refused whichever
+/// module is checked first; `Safe`'s are accepted.
+#[test]
+fn a_conditional_extensions_bound_on_self_is_decided_per_module() {
+    let pre = "class Box[T]\nend\nmodule Greet\n  def hi -> String = \"hi\"\nend\nextension Box[T <: Shareable]\n  include Greet\nend\n";
+    let safe = "module Safe\n  include Shareable\n  static def self.g -> String = Box[Self].new.hi\n  def a -> String = Box[Self].new.hi\nend\n";
+    let unsafe_ = "module Unsafe\n  static def self.g -> String = Box[Self].new.hi\n  def b -> String = Box[Self].new.hi\nend\n";
+    for src in [
+        format!("{pre}{safe}{unsafe_}"),
+        format!("{pre}{unsafe_}{safe}"),
+    ] {
+        let class_side = "undefined method `hi` for Box[Self]";
+        let instance_side = "undefined method `hi` for Box[Unsafe]";
+        err(&src, class_side);
+        err(&src, instance_side);
+    }
+    ok(&format!("{pre}{safe}"));
+}
+
+/// #917: an ancestors walk made while a recursive data type's
+/// shareability is being judged (where the type counts as Shareable until
+/// its fields decide) is not kept with that assumption. `Node[Int]` is not
+/// Shareable (its `Array` field), so `Box[Node[Int]]` gets no method of
+/// the extension bounded by `Shareable`, whichever is asked first.
+#[test]
+fn a_walk_inside_a_shareability_judgement_keeps_no_assumption() {
+    let pre = "class Box[T]\nend\nmodule Greet\n  def hi -> String = \"hi\"\nend\nextension Box[T <: Shareable]\n  include Greet\n  include Shareable\nend\ndef need(x: Shareable) -> Int = 1\ndata Node[T] = (v: T, nx: Box[Node[T]]?, f: Array[Int])\n";
+    let judged = "p need(Node[Int].new(1, nil, [1]))\n";
+    let walked = "p Box[Node[Int]].new.hi\n";
+    for src in [
+        format!("{pre}{judged}{walked}"),
+        format!("{pre}{walked}{judged}"),
+    ] {
+        err(&src, "expects Shareable but found Node[Int]");
+        err(&src, "undefined method `hi` for Box[Node[Int]]");
+    }
+}
+
 #[test]
 fn refused_until_the_exact_may_hold() {
     // Refused until #556: the arguments mention a parameter but no

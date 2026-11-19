@@ -4017,6 +4017,7 @@ impl Checker {
             }
         });
         let saved_bound = std::mem::replace(&mut self.world.self_bound, bound);
+        self.world.guard_new_method();
         env.ret_expected = Some(info.ret.subst(&self_subst));
         env.block_type = info.block.as_ref().map(|(_, t)| t.subst(&self_subst));
         env.block_optional = info.block_optional;
@@ -4207,6 +4208,7 @@ impl Checker {
         *self.world.active_extensions.get_mut() = saved_active;
         self.world.self_bound = saved_bound;
         self.in_progress.pop();
+        self.world.guard_new_method();
         // What the body recorded is its own, checked once: a check that
         // needed it and is thrown away must not undo it.
         self.table_journal.truncate(body_mark.0);
