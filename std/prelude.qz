@@ -224,6 +224,23 @@ module Meta
   # reflection it does may not read a class whose statements are pending.)
   static native def self.__static_enter -> Void
   static native def self.__static_leave -> Void
+  # Raised by a compile-time run (a `static` statement's, a `static(...)`'s,
+  # docs/14) when it does what the compiler cannot run: call a method
+  # that has no body yet (one the runtime calls by name on a class whose
+  # statements have not all run), call a native that acts on the outside
+  # world, or run past the time limit. The message says which. Raised
+  # only in compile-time runs; a program never sees it when it runs.
+  #
+  # A direct subclass of [Exception], as [SystemExit] and [Task::Cancelled]
+  # are: a bare `rescue`, `rescue => e`, `rescue StandardError` and
+  # `rescue RuntimeError` do not take it, so the statement fails with the
+  # message rather than a `static def` hiding what the compiler could not
+  # do; `rescue Exception` takes it, and `ensure` runs as usual. Past the
+  # time limit it is raised again at every call, block call and loop
+  # iteration, so neither a handler nor an `ensure` can call anything
+  # then: the limit is per statement, and no handler extends it.
+  class CompileTimeError < Exception
+  end
   # A field of a class: its name, declared type's class (type arguments
   # erased), whether it is `var`, whether it has a default, and its
   # declared type in full ([type_ref]).

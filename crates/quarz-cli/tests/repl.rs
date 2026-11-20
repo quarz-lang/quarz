@@ -1550,6 +1550,39 @@ fn an_input_that_makes_a_refused_row_is_refused() {
     assert_eq!(out[4], "=> \"N!\"", "{out:?}");
 }
 
+/// A compile-time run's refusal in the REPL is a `Meta::CompileTimeError`
+/// (#959): `rescue RuntimeError` does not take it, so the input is
+/// refused with the message; `rescue Exception` does.
+#[test]
+fn a_compile_time_refusal_in_the_repl_is_not_a_runtime_error() {
+    let dir = std::env::temp_dir().join(format!("quarz-repl-959-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("lib.qz"),
+        "class Slow\n  include Comparable[Slow]\n  def <=>(o: Slow) -> Int = STDIN.read_bytes(1).size\nend\nstatic def sorted -> Int = [Slow.new, Slow.new].sort.size\nstatic def runtime -> Int\n  begin\n    sorted\n  rescue RuntimeError\n    0\n  end\nend\nstatic def exception -> Int\n  begin\n    sorted\n  rescue Exception => e\n    e.message.size\n  end\nend\n",
+    )
+    .unwrap();
+    let lib = dir.join("lib");
+    let (out, _) = values(&[
+        &format!("require_relative \"{}\"", lib.display()),
+        "static(runtime)",
+        "static(exception)",
+    ]);
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(
+        out[1].starts_with("error: ")
+            && out[1].contains(
+                "`runtime` raised Meta::CompileTimeError: `Process.stdin` cannot run at compile time"
+            ),
+        "{out:?}"
+    );
+    assert_eq!(
+        out[2],
+        format!("=> {}", "`Process.stdin` cannot run at compile time".len()),
+        "{out:?}"
+    );
+}
+
 #[test]
 fn a_compile_time_run_reaching_a_refused_row_does_not_run() {
     // #645: the REPL's compile-time runs (`static(...)` in an input) go
