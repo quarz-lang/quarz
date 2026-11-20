@@ -3920,9 +3920,12 @@ impl Interp {
                 }
                 format!("[{}]", parts.join(", "))
             }
+            // A copy, as the other builders': an element's `inspect` may
+            // change the builder, which a held borrow would refuse (#925).
             Value::ArrayBuilder(a) => {
                 let mut parts = Vec::new();
-                for x in a.borrow().iter() {
+                let items = a.borrow().clone();
+                for x in items.iter() {
                     parts.push(self.inspect(x)?);
                 }
                 format!("[{}]", parts.join(", "))
