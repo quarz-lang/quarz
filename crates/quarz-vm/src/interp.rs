@@ -632,6 +632,8 @@ pub struct RtClasses {
     pub unix_server: ClassId,
     pub tls_socket: ClassId,
     pub random: ClassId,
+    /// `crypto`'s `Crypto::Secret` (`ClassId::MAX` when not required).
+    pub secret: ClassId,
     pub file: ClassId,
     pub math: ClassId,
     pub process: ClassId,
@@ -1131,6 +1133,7 @@ impl Interp {
             unix_server: library_class("UNIXServer"),
             tls_socket: library_class("TLSSocket"),
             random: class_by_name("Random"),
+            secret: library_class("Crypto::Secret"),
             file: class_by_name("File"),
             math: class_by_name("Math"),
             process: class_by_name("Process"),
@@ -2504,6 +2507,9 @@ impl Interp {
             Value::BytesBuilder(_) => b.bytes_builder,
             Value::Time(_) => b.time,
             Value::Random(_) => self.program.rt.random,
+            Value::Secret(s) => match &**s {
+                crate::value::SecretVal::Bytes(_) => self.program.rt.secret,
+            },
             Value::Flow(_) => b.object,
         }
     }
@@ -4076,6 +4082,10 @@ impl Interp {
                 IoKind::Child(st) => natives::process::inspect_child(st),
             },
             Value::Random(r) => format!("#<Random seed={}>", r.borrow().seed),
+            // Nothing of it, not even its size (#963).
+            Value::Secret(s) => match &**s {
+                crate::value::SecretVal::Bytes(_) => "#<Crypto::Secret>".to_string(),
+            },
             Value::Bytes(b) => natives::bytes::inspect_bytes(b),
             Value::BytesBuilder(b) => natives::bytes::inspect_bytes(&b.borrow()),
             Value::Time(t) => natives::time::time_to_s(t, inspect),

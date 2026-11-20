@@ -387,6 +387,12 @@ fn export_value(
         count_move();
         return Ok(Node::Whole(SharedValue::new(v)));
     }
+    // A `Crypto::Secret` (#963): the helper thread gets the same buffer,
+    // shared, never a copy, so that one `wipe` or one release clears the
+    // only one there is.
+    if let Value::Secret(_) = &v {
+        return Ok(Node::Whole(SharedValue::new(v)));
+    }
     let v = match v {
         Value::Array(items) => {
             return Ok(export_array(
@@ -638,6 +644,8 @@ fn copyable_parts(v: &Value, work: &mut Vec<Value>) -> bool {
             work.push(r.hi.clone());
         }
         Value::Regexp(_) => {}
+        // Shared, not copied (`export_value`).
+        Value::Secret(_) => {}
         Value::Object(o) => {
             if crate::deinit::has(o.class) {
                 return false;

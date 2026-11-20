@@ -103,19 +103,24 @@ const PADDED: GeneralPurposeConfig = GeneralPurposeConfig::new();
 /// Decoders take the text padded as the encoder pads it, or without any
 /// padding: a partial padding (`Zg=`) is refused.
 fn decode(interp: &Interp, alphabet: &alphabet::Alphabet, text: &str) -> Result<Value, Flow> {
+    match decoder(alphabet, text).decode(text) {
+        Ok(bytes) => Ok(Value::bytes(bytes)),
+        Err(e) => Err(interp.err_arg(&format!("invalid base64: {e}"))),
+    }
+}
+
+/// The decoder of `text` (`decode`'s rule on padding), also for
+/// `Crypto::Secret.decode64`, which decodes into a buffer of its own.
+pub(super) fn decoder(alphabet: &alphabet::Alphabet, text: &str) -> GeneralPurpose {
     let padding = if text.ends_with('=') {
         DecodePaddingMode::RequireCanonical
     } else {
         DecodePaddingMode::RequireNone
     };
-    let engine = GeneralPurpose::new(
+    GeneralPurpose::new(
         alphabet,
         GeneralPurposeConfig::new().with_decode_padding_mode(padding),
-    );
-    match engine.decode(text) {
-        Ok(bytes) => Ok(Value::bytes(bytes)),
-        Err(e) => Err(interp.err_arg(&format!("invalid base64: {e}"))),
-    }
+    )
 }
 
 /// The bytes of a `Bytes | String` argument (a string's UTF-8).

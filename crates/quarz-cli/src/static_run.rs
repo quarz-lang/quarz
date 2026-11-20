@@ -2878,6 +2878,13 @@ fn bake(
         },
         Value::Class(c) => Baked::Class(*c),
         Value::Bytes(b) => Baked::Bytes(b.to_vec()),
+        // Written into the executable, it could never be cleared (#963).
+        Value::Secret(_) => {
+            return Err(format!(
+                "a `{}`: a secret written into the executable could never be wiped",
+                interp.class_name(v)
+            ))
+        }
         Value::Regexp(r) => Baked::Regexp {
             source: r.source.clone(),
             flags: r.flags.clone(),
