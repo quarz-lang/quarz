@@ -253,6 +253,20 @@ fn positional_after_keyword() {
     assert!(out.contains(":2:14:") && out.contains(":3:22:"), "{out}");
 }
 
+/// A conversion function's name with a space before `(` is the class's
+/// constant, and the `(` a parse error, as for `Integer` (#932: `Date`
+/// and `Time` became functions too).
+#[test]
+fn a_conversion_functions_name_and_a_space_before_the_parenthesis() {
+    for name in ["Integer", "Date", "Time"] {
+        let out = common::diagnostics(&format!("puts {name} (\"2026-11-20\")\n")).join("\n");
+        assert!(
+            out.contains("error: expected end of line, found `(`"),
+            "{out}"
+        );
+    }
+}
+
 /// What a procedure type's keywords and a block's or a lambda's keyword
 /// parameters cannot be (docs/02 §1): a default in a written type, a
 /// `*rest` in a type, `**` in a block, a duplicate, a missing `->`.

@@ -1,0 +1,39 @@
+# `Date(text)` and `Time(text)` (#932) are built-in `Kernel` functions as
+# `Integer(text)` is, and `Date` and `Time` stay the classes' names
+# everywhere else: alone, before `.` or `::`, in a type, a pattern, an
+# argument.
+puts Date("2026-11-20")
+puts ::Date("2026-11-21")
+puts Kernel.Date("2026-11-22")
+puts Time("2024-03-05 14:07:09Z")
+puts Date("2026-11-20") == Date.parse("2026-11-20")
+k = Date
+puts k.name
+v: Object = Date.new(2026, 1, 2)
+puts v.is_a?(Date)
+d: Date = Date.new(2026, 1, 3)
+puts d
+case v
+in Date => x then puts "pattern #{x}"
+else puts "no"
+end
+puts Date::parse("2026-01-05")
+def take(t: Type[Date]) -> String = t.name
+puts take(Date)
+puts Time("2024-03-05 14:07:09Z").class
+
+# A method of `self` named `Date` hides the function, which `::Date`
+# reaches.
+class K
+  def Date(text: String) -> String = "method #{text}"
+  def run -> Void
+    puts Date("x")
+    puts ::Date("2026-11-20")
+  end
+end
+K.new.run
+begin
+  Date("2026-02-30")
+rescue ArgumentError => e
+  puts e.message
+end

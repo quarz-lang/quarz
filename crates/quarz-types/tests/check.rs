@@ -4542,6 +4542,25 @@ fn kernel_functions_by_name() {
     ok("extension Kernel\n  def self.shout -> String = \"S\"\nend\nx: String = Kernel.shout");
 }
 
+/// `Date(text)` and `Time(text)` are built-in functions (#932), and the
+/// classes keep their names everywhere else: the constant alone, before
+/// `.` and `::`, in a type, a pattern, an argument, `is_a?` (with a space
+/// before `(`, a parse error as for `Integer`: tests/diagnostics.rs). A
+/// program's `def` of the signature hides the built-in; an extension
+/// cannot give one.
+#[test]
+fn conversion_functions_beside_their_classes() {
+    ok("d: Date = Date(\"2026-11-20\")\nt: Time = Time(\"2026-01-02T03:04:05Z\")\nx: Date = ::Date(\"2026-11-20\")\ny: Time = Kernel.Time(\"2026-01-02T03:04:05Z\")");
+    ok("k: Type[Date] = Date\nd: Date = Date.parse(\"2026-11-20\")\ne: Date = Date::parse(\"2026-11-20\")\nv: Object = d\nb: Bool = v.is_a?(Date)\ncase v\nin Date => x then puts x\nelse nil\nend\ndef take(t: Type[Date]) -> String = t.name\nputs take(Date)");
+    err("x: Int = Date(\"2026-11-20\")", "Date");
+    ok("def Date(text: String) -> String = text\ns: String = Date(\"x\")\nd: Date = Kernel.Date(\"2026-11-20\")");
+    ok("def Date(n: Int) -> String = n.to_s\ns: String = Date(3)\nd: Date = Date(\"2026-11-20\")");
+    err(
+        "extension Kernel\n  def self.Date(text: String) -> Date = Date.parse(text)\nend",
+        "`Date` is a built-in function: `Kernel.Date` always calls it; name the method otherwise",
+    );
+}
+
 /// A function an active `extension Kernel` gives (`def self.name`) is
 /// found by a bare call and by `::name`, after `self`'s methods and the
 /// program's functions (#885); a program's function of the name beside

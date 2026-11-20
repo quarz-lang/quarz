@@ -247,6 +247,8 @@ const PURITY_BY_CLASS: &[(&str, Purity)] = &[
     ("Duration", Pure),
     // `Time` values made from parts or parsed; reading the clock is not.
     ("Time", Pure),
+    // (`Date.parse` and `parse?`, natives since #932: a value of a text.)
+    ("Date", Pure),
     ("Type", Pure),
     ("Cog", Pure),
     ("Meta", Pure),
