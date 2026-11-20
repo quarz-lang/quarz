@@ -272,6 +272,7 @@ const PURITY_BY_CLASS: &[(&str, Purity)] = &[
     ("Crypto::RSA", Pure),
     ("Crypto::RSA::PrivateKey", Pure),
     ("Crypto::RSA::PublicKey", Pure),
+    ("Crypto::Secret", Pure),
     ("TLS::Roots", Pure),
     ("TLS::ServerConfig", Pure),
 ];
@@ -304,6 +305,7 @@ const PURITY_BY_KEY: &[(&str, Purity)] = &[
     ("Time.now", Denied),
     ("Time.monotonic", Denied),
     ("Crypto.random_bytes", Denied),
+    ("Crypto::Secret.random", Denied),
     ("Crypto::RSA.generate_der", Denied),
     // (A random salt.)
     ("Crypto::RSA::PrivateKey#sign_pss", Denied),
@@ -472,7 +474,16 @@ fn no_crypto(m: &mut Registry<NativeFn>) {
             "Crypto::RSA::PublicKey#bits",
             "Crypto::RSA::PublicKey#verify",
             "Crypto::RSA::PublicKey#verify_pss",
-            "Crypto::RSA::PublicKey#fingerprint"
+            "Crypto::RSA::PublicKey#fingerprint",
+            "Crypto::Secret.random",
+            "Crypto::Secret.decode64_with",
+            "Crypto::Secret.of",
+            "Crypto::Secret#size",
+            "Crypto::Secret#wipe",
+            "Crypto::Secret#wiped?",
+            "Crypto::Secret#==",
+            "Crypto::Secret#expose_bytes",
+            "Crypto::Secret#__cleared?"
         ],
         |i, _, _| {
             Err(i.raise(

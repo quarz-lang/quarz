@@ -2925,6 +2925,12 @@ pub enum Value {
     BytesBuilder(Rc<RefCell<Vec<u8>>>),
     Time(Rc<TimeVal>),
     Random(Rc<RefCell<RandomState>>),
+    /// Key material the runtime clears (`Crypto::Secret`, #963): its
+    /// buffer is overwritten when it is wiped and when the last reference
+    /// goes. Shareable: the allocation is the runtime's `Rc`, whose count
+    /// is atomic once the value is marked shared, and what it holds is
+    /// behind a lock, so tasks on any worker hold one buffer.
+    Secret(Rc<SecretVal>),
     /// Internal: a flow in transit through an `ensure` handler.
     Flow(Rc<FlowBox>),
 }
@@ -3270,6 +3276,10 @@ impl Value {
                     Value::Random(r) => {
                         mark_rc(immortal, r);
                     }
+                    // Holds no value: nothing further to mark.
+                    Value::Secret(r) => {
+                        mark_rc(immortal, r);
+                    }
                     Value::StringBuilder(r) => {
                         mark_rc(immortal, r);
                     }
@@ -3474,6 +3484,134 @@ pub use crate::layout::VALUE_SIZE;
 
 const _: () = assert!(std::mem::size_of::<Value>() == VALUE_SIZE);
 
+/// What a `Value::Secret` holds (#963), one case per class, as `IoKind`
+/// is for the `IO`s: `Crypto::Secret`'s bytes, and later the keys held
+/// natively.
+#[derive(Debug)]
+pub enum SecretVal {
+    /// `Crypto::Secret`.
+    Bytes(SecretBytes),
+}
+
+impl SecretVal {
+    /// Whether both hold the same bytes, compared in constant time for
+    /// equal sizes; false when either is wiped.
+    pub fn same_contents(&self, other: &SecretVal) -> bool {
+        let (SecretVal::Bytes(a), SecretVal::Bytes(b)) = (self, other);
+        a.with(|x| b.with(|y| constant_time_eq(x, y)))
+            .flatten()
+            .unwrap_or(false)
+    }
+}
+
+/// Secret bytes in one buffer, allocated at its final size and never
+/// grown (so no old copy is left behind by a reallocation), overwritten
+/// with zeros by `wipe` and when dropped (whichever worker drops the last
+/// reference). The lock orders a `wipe` against a read in progress on
+/// another worker: a read sees the whole contents or the wiped state,
+/// never a half-cleared buffer.
+pub struct SecretBytes {
+    inner: std::sync::Mutex<SecretInner>,
+    size: usize,
+}
+
+struct SecretInner {
+    bytes: Vec<u8>,
+    wiped: bool,
+}
+
+impl std::fmt::Debug for SecretBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SecretBytes(..)")
+    }
+}
+
+impl SecretBytes {
+    /// Takes `bytes` over (the caller made it at its final size).
+    pub fn new(bytes: Vec<u8>) -> SecretBytes {
+        SecretBytes {
+            size: bytes.len(),
+            inner: std::sync::Mutex::new(SecretInner {
+                bytes,
+                wiped: false,
+            }),
+        }
+    }
+
+    /// Its size in bytes, wiped or not.
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// `f` of the contents, under the lock; `None` once wiped.
+    pub fn with<R>(&self, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+        let inner = crate::sched::lock(&self.inner);
+        (!inner.wiped).then(|| f(&inner.bytes))
+    }
+
+    pub fn wiped(&self) -> bool {
+        crate::sched::lock(&self.inner).wiped
+    }
+
+    /// Overwrites the contents with zeros, now, for every holder.
+    pub fn wipe(&self) {
+        let mut inner = crate::sched::lock(&self.inner);
+        clear_bytes(&mut inner.bytes);
+        inner.wiped = true;
+    }
+
+    /// Whether every byte of the buffer is zero: what a test reads after
+    /// `wipe` (the buffer keeps its length, cleared, until the drop).
+    pub fn all_zero(&self) -> bool {
+        crate::sched::lock(&self.inner)
+            .bytes
+            .iter()
+            .all(|&b| b == 0)
+    }
+}
+
+impl Drop for SecretBytes {
+    fn drop(&mut self) {
+        let inner = self.inner.get_mut().unwrap_or_else(|e| e.into_inner());
+        clear_bytes(&mut inner.bytes);
+    }
+}
+
+/// Overwrites `buf` with zeros in a way the optimizer keeps (volatile
+/// writes, then a fence), as `zeroize` does, keeping its length.
+pub fn clear_bytes(buf: &mut [u8]) {
+    for b in buf.iter_mut() {
+        // SAFETY: a valid, aligned pointer to a byte of the buffer.
+        unsafe { std::ptr::write_volatile(b, 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+    CLEARS.with(|c| c.set(c.get() + 1));
+}
+
+thread_local! {
+    /// How many buffers this thread cleared (`clear_bytes`): read by the
+    /// unit test that a secret's drop clears it.
+    static CLEARS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// How many buffers this thread cleared so far.
+pub fn clears() -> u64 {
+    CLEARS.with(|c| c.get())
+}
+
+/// Equality of two byte strings in time that depends on their length
+/// only, not on where they differ.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut d = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        d |= x ^ y;
+    }
+    std::hint::black_box(d) == 0
+}
+
 /// A point in time: nanoseconds since the Unix epoch and the UTC offset
 /// it is displayed in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -3672,6 +3810,9 @@ impl Value {
             (Value::BytesBuilder(a), Value::BytesBuilder(b)) => Rc::ptr_eq(a, b),
             (Value::Time(a), Value::Time(b)) => a.ns == b.ns,
             (Value::Random(a), Value::Random(b)) => Rc::ptr_eq(a, b),
+            // By contents, in constant time (a wiped one equals only
+            // itself), so that collections agree with `Crypto::Secret#==`.
+            (Value::Secret(a), Value::Secret(b)) => Rc::ptr_eq(a, b) || a.same_contents(b),
             (Value::Flow(a), Value::Flow(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
@@ -4030,6 +4171,9 @@ impl Hash for Value {
                     Value::Atom(p) => (Rc::as_ptr(p) as usize).hash(state),
                     Value::BytesBuilder(p) => (Rc::as_ptr(p) as usize).hash(state),
                     Value::Random(p) => (Rc::as_ptr(p) as usize).hash(state),
+                    // Nothing of its contents: equal secrets hash alike by
+                    // their tag alone.
+                    Value::Secret(_) => {}
                     _ => {}
                 }
             }
@@ -4168,5 +4312,54 @@ mod tests {
         ] {
             assert!(!acyclic_type(ty), "{ty}");
         }
+    }
+}
+
+#[cfg(test)]
+mod secret_tests {
+    use super::*;
+
+    /// `wipe` zeroes the buffer it keeps; the drop of the last reference
+    /// runs the same clear (`clear_bytes`), on whichever thread drops it.
+    #[test]
+    fn a_secret_is_cleared_on_wipe_and_on_its_last_release() {
+        let s = SecretBytes::new(b"hunter2".to_vec());
+        assert!(!s.all_zero());
+        s.wipe();
+        assert!(s.wiped() && s.all_zero());
+        assert_eq!(s.with(|b| b.len()), None);
+        assert_eq!(s.size(), 7);
+
+        let before = clears();
+        drop(SecretBytes::new(b"hunter2".to_vec()));
+        assert_eq!(clears(), before + 1);
+
+        // Shared, then released by another thread.
+        let v = Value::Secret(Rc::new(SecretVal::Bytes(SecretBytes::new(b"k".to_vec()))));
+        let shared = SharedValue::new(v.clone());
+        drop(v);
+        let here = clears();
+        let there = std::thread::spawn(move || {
+            let before = clears();
+            drop(shared);
+            clears() - before
+        })
+        .join()
+        .unwrap();
+        assert_eq!((there, clears()), (1, here));
+    }
+
+    #[test]
+    fn secrets_compare_by_contents_in_constant_time() {
+        let a = SecretVal::Bytes(SecretBytes::new(b"same".to_vec()));
+        let b = SecretVal::Bytes(SecretBytes::new(b"same".to_vec()));
+        let c = SecretVal::Bytes(SecretBytes::new(b"diff".to_vec()));
+        assert!(a.same_contents(&b));
+        assert!(!a.same_contents(&c));
+        let SecretVal::Bytes(x) = &b;
+        x.wipe();
+        assert!(!a.same_contents(&b));
+        assert!(constant_time_eq(b"", b""));
+        assert!(!constant_time_eq(b"a", b"ab"));
     }
 }

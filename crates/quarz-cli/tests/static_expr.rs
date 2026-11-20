@@ -180,6 +180,36 @@ fn what_static_refuses() {
         err.contains("run.qz:3:10: error: `static(...)` gives a value that cannot be baked into the program: a value of class `Object`"),
         "{err}"
     );
+    // A `Crypto::Secret` is never baked: written into the executable, it
+    // could never be wiped (#963). Refused by its declared type, and,
+    // declared as a `Shareable`, by its value.
+    write(
+        &d.0,
+        "key.qz",
+        "require \"crypto\"\nmodule KeyLib\n  static def self.key -> Crypto::Secret = Crypto::Secret.of(b\"abc\")\n  static def self.any -> Shareable = Crypto::Secret.of(b\"abc\")\n  static def self.keys -> Array[Shareable] = [Crypto::Secret.of(b\"abc\")]\nend\n",
+    );
+    write(
+        &d.0,
+        "typed.qz",
+        "require_relative \"key\"\nK = static(KeyLib.key)\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "typed.qz"], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("typed.qz:2:5: error: `static(...)` gives a Crypto::Secret, which cannot be baked into the program"),
+        "{err}"
+    );
+    write(
+        &d.0,
+        "secret.qz",
+        "require_relative \"key\"\nA = static(KeyLib.any)\nL = static(KeyLib.keys)\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "secret.qz"], &[]);
+    assert!(!ok);
+    for line in [2, 3] {
+        let want = format!("secret.qz:{line}:12: error: `static(...)` gives a value that cannot be baked into the program: a `Crypto::Secret`: a secret written into the executable could never be wiped");
+        assert!(err.contains(&want), "{want}\n{err}");
+    }
 }
 
 #[test]
