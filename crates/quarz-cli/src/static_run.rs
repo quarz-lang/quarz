@@ -3829,6 +3829,27 @@ impl Reflect for WorldReflect {
         self.in_static
             .set(if enter { n + 1 } else { n.saturating_sub(1) });
     }
+    fn generated_named(&self, name: &str) -> Vec<(ClassId, bool, Option<usize>)> {
+        self.generated
+            .borrow()
+            .iter()
+            .filter_map(|p| match p {
+                Pending::Method(g) if g.name == name && !g.initialize => Some((
+                    g.class,
+                    g.singleton,
+                    g.keywords.is_none().then_some(g.params.len()),
+                )),
+                // A field's reader and writer are methods too.
+                Pending::Field(f) if f.reader && f.name == name => Some((f.class, false, Some(0))),
+                Pending::Field(f)
+                    if f.writer && name.strip_suffix('=') == Some(f.name.as_str()) =>
+                {
+                    Some((f.class, false, Some(1)))
+                }
+                _ => None,
+            })
+            .collect()
+    }
     fn reflect_refusal(&self, class: ClassId) -> Option<String> {
         if self.in_static.get() == 0 {
             return None;

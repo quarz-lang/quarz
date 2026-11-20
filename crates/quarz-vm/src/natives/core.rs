@@ -159,6 +159,8 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         reflect_of(i)?
             .def_field(i, request)
             .map_err(|m| i.err_runtime(&m))?;
+        // (Its reader and writer are generated methods, #967.)
+        i.generated_any.set(true);
         // A block: the field's initializer (#890), a private method of no
         // parameter under a name no program can write.
         if a.block.is_some() {
@@ -178,6 +180,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             reflect_of(i)?
                 .generate(i, init)
                 .map_err(|m| i.err_runtime(&m))?;
+            i.generated_any.set(true);
         }
         // (The call's node, which the lowering passes: where the checker
         // recorded `U`.)
@@ -444,11 +447,14 @@ fn def_method(interp: &Interp, recv: &Value, a: &Args, singleton: bool) -> EvalR
     };
     let symbol_name = *symbol_name;
     let name = interp.symbol_name(symbol_name).to_string();
+    let name_of_generated = name.clone();
     let request = gen_request(interp, a, what, class, name, 1, singleton, false)?;
     let keyword_form = request.keywords.is_some();
     let at = reflect_of(interp)?
         .generate(interp, request)
         .map_err(|m| interp.err_runtime(&m))?;
+    interp.generated_any.set(true);
+    interp.generated_key_method(class, singleton, &name_of_generated);
     // (The keyword form gives no handle: its signature is known only
     // when the statement runs, docs/14 §5.)
     if keyword_form {
@@ -476,6 +482,7 @@ fn def_initialize(interp: &Interp, recv: &Value, a: &Args) -> EvalResult {
     reflect_of(interp)?
         .generate(interp, request)
         .map_err(|m| interp.err_runtime(&m))?;
+    interp.generated_any.set(true);
     Ok(Value::Nil)
 }
 

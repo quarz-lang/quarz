@@ -1424,6 +1424,156 @@ fn a_pending_class_is_reached_through_calls_and_later_by_name() {
     );
 }
 
+/// A method the statement running has generated has no body until the
+/// class's statements have run, in that statement too (#967): a
+/// dispatch it would have answered (by type, by name, the runtime's own
+/// `to_s`, `==` and `hash`) is refused with the message a later
+/// statement's call gets, not answered by the method it replaces. A
+/// generated method that replaces nothing, or a receiver it is not a
+/// method of, changes nothing.
+#[test]
+fn a_method_generated_by_the_running_statement_has_no_body_yet() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r##"class Base
+  def describe -> String = "base"
+  static def self.me -> Meta::ClassDef[Base] = self
+  static def self.cls_to_s -> Void
+    def_class_method(:to_s) { "generated" }
+    k: Type = type
+    puts "cls: #{k.to_s}"
+  end
+  static def self.inst_to_s(x: Object) -> Void
+    def_method(:to_s) { "generated" }
+    puts "inst: #{x}"
+  end
+  static def self.inst_eq(x: Object, y: Object) -> Void
+    def_method(:==, :o) { |o: Object| true }
+    puts "eq: #{[x].include?(y)}"
+  end
+  static def self.inst_hash(x: Object, y: Object) -> Void
+    def_method(:hash) { 1 }
+    h = {x => 1, y => 2}
+    puts "hash: #{h.size}"
+  end
+  static def self.ordinary(x: Base) -> Void
+    def_method(:describe) { "generated" }
+    puts "ordinary: #{x.describe}"
+  end
+  static def self.fresh(x: Base) -> Void
+    def_method(:brand_new) { "generated" }
+    puts "fresh: #{x.describe}"
+  end
+  static def self.into_other(x: Base) -> Void
+    Other.me.def_method(:describe) { "generated" }
+    puts "other: #{x.describe}"
+  end
+  def kw(*, a: Int = 0) -> String = "base kw"
+  static def self.field_over(x: Base) -> Void
+    def_field(:describe, String, "field", reader: true)
+    puts "field: #{x.describe}"
+  end
+  static def self.kw_over(x: Base) -> Void
+    ks = [Meta::Keyword.new(:a, Int, false)]
+    def_method(:kw, keywords: ks) { |given| "generated kw" }
+    puts "kw: #{x.kw(a: 1)}"
+  end
+  static def self.texted -> Void
+    def_method(:to_s) { "texted" }
+  end
+  static def self.keyed -> Void
+    def_method(:==, :o) { |o: Object| true }
+    def_method(:hash) { 1 }
+  end
+  static def self.gen_and_show(x: Object, y: Object) -> Void
+    def_method(:to_s) { "mine" }
+    puts "shown: #{x} #{{x => 1, y => 2}.size}"
+  end
+end
+class Other < Base
+end
+"##,
+    );
+    let refused = |name: &str, class: &str| {
+        format!(
+            "raised Meta::CompileTimeError: `{name}` of `{class}` has no body at compile time: a method the runtime calls by name is lowered once the class's `static` statements ran, or when a call resolves to it (docs/14)"
+        )
+    };
+    for (statement, after, want) in [
+        // A class method over `Type`'s, called through a `Type`.
+        ("cls_to_s", "", Err(refused("to_s", "Post"))),
+        // The runtime's calls by name: an interpolation's `to_s`,
+        // `Array#include?`'s `==`, a `Hash` key's `hash`.
+        ("inst_to_s(Post.new)", "", Err(refused("to_s", "Post"))),
+        (
+            "inst_eq(Post.new, Post.new)",
+            "",
+            Err(refused("==", "Post")),
+        ),
+        (
+            "inst_hash(Post.new, Post.new)",
+            "",
+            Err(refused("hash", "Post")),
+        ),
+        // A superclass's ordinary method, by type.
+        ("ordinary(Post.new)", "", Err(refused("describe", "Post"))),
+        // A subclass of the class generated into.
+        (
+            "inst_to_s(Sub.new)",
+            "class Sub < Post
+end
+",
+            Err(refused("to_s", "Post")),
+        ),
+        // Generated into another class, then dispatched on it; on this
+        // one, nothing changes.
+        (
+            "into_other(Other.new)",
+            "",
+            Err(refused("describe", "Other")),
+        ),
+        ("into_other(Post.new)", "", Ok("other: base")),
+        // A field's reader; a method of the keyword form.
+        ("field_over(Post.new)", "", Err(refused("describe", "Post"))),
+        ("kw_over(Post.new)", "", Err(refused("kw", "Post"))),
+        // A method that replaces nothing; a receiver above the class.
+        ("fresh(Post.new)", "", Ok("fresh: base")),
+        ("inst_to_s(Base.new)", "", Ok("inst: #<Base>")),
+        // Each run starts with an empty record: a later class's statement
+        // that generates too gets Post's generated `to_s`, `==` and `hash`
+        // (its `==` from the lowering's rows, no entry of an earlier run).
+        (
+            "texted\n  keyed",
+            "class Later < Base\n  gen_and_show(Post.new, Post.new)\nend\n",
+            Ok("shown: texted 1"),
+        ),
+    ] {
+        let app = write(
+            &d.0,
+            "app.qz",
+            &format!("require_relative \"lib\"\nclass Post < Base\n  {statement}\nend\n{after}"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        match want {
+            Ok(printed) => {
+                assert!(ok, "{statement}: {err}");
+                assert!(err.contains(printed), "{statement}: {err}");
+            }
+            Err(message) => {
+                assert!(!ok, "{statement}");
+                assert!(err.contains(&message), "{statement}: {err}");
+                // (Not answered by the method it replaces first.)
+                assert!(
+                    !err.contains(": base") && !err.contains("#<"),
+                    "{statement}: {err}"
+                );
+            }
+        }
+    }
+}
+
 const SHOWN_LIB: &str = r##"class Model
   static def self.props(*names: Symbol) -> Void
     names.each do |n|

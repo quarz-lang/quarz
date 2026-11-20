@@ -54,6 +54,20 @@ pub fn set(interp: &std::rc::Rc<Interp>, table: Vec<Option<KeyMethods>>) {
     INTERP.with(|i| *i.borrow_mut() = std::rc::Rc::downgrade(interp));
 }
 
+/// Give `class` the methods its instances are compared and hashed by
+/// (a compile-time run that generated `==` or `hash` for it, #967:
+/// `Interp::generated_key_method`).
+pub fn add(class: ClassId, methods: KeyMethods) {
+    ANY.store(true, Ordering::Relaxed);
+    TABLE.with(|t| {
+        let mut t = t.borrow_mut();
+        if t.len() <= class as usize {
+            t.resize(class as usize + 1, None);
+        }
+        t[class as usize] = Some(methods);
+    });
+}
+
 /// The methods an instance of `class` is compared and hashed by, if any.
 #[inline]
 pub fn of(class: ClassId) -> Option<KeyMethods> {
@@ -149,6 +163,12 @@ pub fn hash(o: &Rc<Object>, mid: MethodId) -> Option<i64> {
         return None;
     }
     let interp = interp()?;
+    if interp.generated_any.get() {
+        if let Err(e) = interp.refuse_generated_over(&Value::Object(o.clone()), mid) {
+            keep(e);
+            return None;
+        }
+    }
     match interp.invoke(mid, Value::Object(o.clone()), smallvec![], Vec::new(), None) {
         Ok(Value::Int(n)) => Some(n),
         Ok(other) => {
@@ -177,6 +197,12 @@ pub fn eq(a: &Rc<Object>, b: &Value, mid: MethodId) -> bool {
     let Some(interp) = interp() else {
         return false;
     };
+    if interp.generated_any.get() {
+        if let Err(e) = interp.refuse_generated_over(&Value::Object(a.clone()), mid) {
+            keep(e);
+            return false;
+        }
+    }
     match interp.invoke(
         mid,
         Value::Object(a.clone()),
