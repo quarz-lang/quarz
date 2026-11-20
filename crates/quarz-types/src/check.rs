@@ -4308,6 +4308,50 @@ impl Checker {
         ok
     }
 
+    /// How a failed bound `b` on the type parameter `param` reads in the
+    /// list of candidates (#960): "`T <: Shareable`: `Owner` is not
+    /// Shareable (its field `@count` is `var`)", "`T <: Comparable[T]`:
+    /// `Owner` is not a `Comparable[Owner]`": the bound as declared, then
+    /// with the call's arguments. `note` is the bound's own note
+    /// (`bound_note`), if any.
+    fn bound_failure(
+        &mut self,
+        param: &str,
+        declared: &Type,
+        rt: &Type,
+        b: &Type,
+        note: &str,
+    ) -> String {
+        let (shown, bound, written) = (self.name(rt), self.name(b), self.name(declared));
+        let shareable = matches!(b, Type::Class(id, _) if *id == self.world.builtin.shareable);
+        let what = if shareable {
+            let why = match rt {
+                Type::Class(id, _) => {
+                    let id = *id;
+                    match self.world.shareable_violation(id) {
+                        Some(v) => format!(" ({v})"),
+                        None if self.world.class(id).kind == ClassKind::Class
+                            && self.world.shareable_promise(id).is_none() =>
+                        {
+                            " (a class that does not include `Shareable`)".to_string()
+                        }
+                        None => String::new(),
+                    }
+                }
+                _ => String::new(),
+            };
+            format!("`{shown}` is not Shareable{why}")
+        } else {
+            let article = if bound.starts_with(['A', 'E', 'I', 'O', 'U']) {
+                "an"
+            } else {
+                "a"
+            };
+            format!("`{shown}` is not {article} `{bound}`")
+        };
+        format!("`{param} <: {written}`: {what}{note}")
+    }
+
     /// What a mismatch that `coerce_noting` found adds when a conditional
     /// extension's bound was not known yet there (#519's decision (i)):
     /// which bound, and to write the type argument.
@@ -13328,6 +13372,9 @@ impl Checker {
         let single = cands.len() == 1;
         let diags_at_entry = self.diagnostics.len();
         let mut failures: Vec<String> = Vec::new();
+        // (The failures of candidates that fit but for a type bound,
+        // listed first, #960.)
+        let mut bound_failures: HashSet<String> = HashSet::default();
         // With several candidates, each is tried and its checks undone
         // (docs/01 §9), from the last to the first; `pick_overload` chooses
         // among those that fit, and the one chosen must be the last
@@ -13482,6 +13529,9 @@ impl Checker {
                     }
                     // Bounds of method type parameters.
                     let mut ok = true;
+                    // (What each failed bound says, for the list of
+                    // several candidates: the bound, the type, why.)
+                    let mut bound_why: Vec<String> = Vec::new();
                     for (tp, t) in &method_vars {
                         // A bound is a use: `?v | Int` sorted is an `Int`.
                         let rt = if tp.bounds.is_empty() {
@@ -13493,6 +13543,13 @@ impl Checker {
                             let lower = self.infer.resolve(&lower.subst(&subst));
                             if !self.coerce(&lower, &rt) {
                                 ok = false;
+                                bound_why.push(format!(
+                                    "`{} >: {}`: `{}` is not a supertype of `{}`",
+                                    tp.name,
+                                    self.name(&lower),
+                                    self.name(&rt),
+                                    self.name(&lower)
+                                ));
                                 self.error(
                                     format!(
                                         "type argument {} for `{}` is not a supertype of {}",
@@ -13504,8 +13561,8 @@ impl Checker {
                                 );
                             }
                         }
-                        for b in &tp.bounds {
-                            let b = b.subst(&subst);
+                        for declared in &tp.bounds {
+                            let b = declared.subst(&subst);
                             // (A bound is no holder: the call's result may
                             // be, so a literal is not decided here.)
                             self.checking_bound = true;
@@ -13513,13 +13570,16 @@ impl Checker {
                             self.checking_bound = false;
                             if !fits {
                                 ok = false;
+                                let note = self.bound_note();
+                                bound_why
+                                    .push(self.bound_failure(&tp.name, declared, &rt, &b, &note));
                                 self.error(
                                     format!(
                                         "type argument {} for `{}` does not satisfy the bound {}{}",
                                         self.name(&rt),
                                         tp.name,
                                         self.name(&b),
-                                        self.bound_note()
+                                        note
                                     ),
                                     expr.span,
                                 );
@@ -13538,10 +13598,12 @@ impl Checker {
                             } else {
                                 self.settle_vars(&t)
                             };
-                            for b in &tp.bounds {
-                                let b = b.subst(&subst);
+                            for declared in &tp.bounds {
+                                let b = declared.subst(&subst);
                                 if !self.coerce(&rt, &b) {
                                     ok = false;
+                                    bound_why
+                                        .push(self.bound_failure(&tp.name, declared, &rt, &b, ""));
                                     if single {
                                         self.error(
                                             format!(
@@ -13562,10 +13624,16 @@ impl Checker {
                         self.infer.restore(saved_infer);
                         self.truncate_diagnostics(saved_diags);
                         self.discard_tables(saved_diags_tables);
-                        failures.push(format!(
-                            "{}: type bounds not satisfied",
-                            self.world.method_signature(&m)
-                        ));
+                        // (Its arguments fit: the bound is why, said in
+                        // full and listed first, #960.)
+                        let why = if bound_why.is_empty() {
+                            "type bounds not satisfied".to_string()
+                        } else {
+                            bound_why.join("; ")
+                        };
+                        let text = format!("{}: {why}", self.world.method_signature(&m));
+                        bound_failures.insert(text.clone());
+                        failures.push(text);
                         continue;
                     }
                     if single {
@@ -13777,6 +13845,8 @@ impl Checker {
             // reason: say it once.
             let mut seen = HashSet::default();
             failures.retain(|f| seen.insert(f.clone()));
+            // Those that fit but for a bound first, in order (#960).
+            failures.sort_by_key(|f| !bound_failures.contains(f));
             let recv_name = self.name(recv_ty);
             let arg_desc = self.describe_args(call, pre);
             self.error(
