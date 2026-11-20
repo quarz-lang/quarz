@@ -1,0 +1,42 @@
+# A hash pattern with `**nil` matches a hash with no keys beyond the
+# pattern's, on the VM and compiled alike (#926: compiled code read the
+# hash as an array and raised an internal error).
+def kind(h: Hash[Symbol, Int]) -> String
+  case h
+  in {a: 1, **nil}
+    "exactly a: 1"
+  in {a: Int => x, b: Int => y, **nil}
+    "a and b only: #{x + y}"
+  in {a: Int => x}
+    "a and more: #{x}"
+  else
+    "other"
+  end
+end
+puts kind({a: 1})
+puts kind({a: 1, b: 2})
+puts kind({a: 3, b: 4})
+puts kind({a: 3, b: 4, c: 5})
+puts kind({z: 0})
+
+def empty?(h: Hash[String, Int]) -> Bool
+  case h
+  in {**nil} then true
+  else false
+  end
+end
+p empty?({}), empty?({"k" => 1})
+
+# A subject that is no hash falls through to the next arm: `**nil` is
+# asked only on the branch where the pattern's own test found a hash.
+def which(x: Object) -> String
+  case x
+  in {**nil} then "empty hash"
+  in {a: Int => n, **nil} then "only a: #{n}"
+  in Int => i then "int #{i}"
+  in [*] then "array"
+  else "other"
+  end
+end
+none: Hash[Symbol, Int] = {}
+puts which(none), which({a: 2}), which({a: 2, b: 3}), which(5), which([1, 2]), which("s")

@@ -758,7 +758,8 @@ pub enum Inst {
         dst: Reg,
         src: Reg,
     },
-    /// Length of an array or hash as an Int.
+    /// Length of an array as an Int: compiled code reads its operand as
+    /// an array (a hash's size is `Hash#size`, #926).
     Len {
         dst: Reg,
         src: Reg,

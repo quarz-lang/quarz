@@ -5650,8 +5650,31 @@ impl<'a> FnBuilder<'a> {
                         self.store_site(pat.span, dst);
                     }
                     Some(ast::HashPatternRest::Nil) => {
+                        // (`**nil`: no keys beyond the pattern's. The
+                        // hash's size by `Hash#size`, the native: `Len` is
+                        // an array's, which compiled code reads as one,
+                        // #926.)
+                        let size = self
+                            .world
+                            .class(self.world.builtin.hash)
+                            .methods
+                            .get("size")
+                            .and_then(|ids| ids.first().copied())
+                            .expect("the prelude's Hash#size");
                         let len = self.reg();
-                        self.emit(Inst::Len { dst: len, src: v });
+                        self.emit(Inst::Call {
+                            dst: len,
+                            kind: CallKind::Method(size),
+                            recv: Some(v),
+                            args: Vec::new(),
+                            splat: false,
+                            kw: Vec::new(),
+                            kw_splat: None,
+                            block: None,
+                            moved: 0,
+                            recv_classes: None,
+                            on_self: false,
+                        });
                         let n = self.load_const(Constant::Int(hp.pairs.len() as i64));
                         let t = self.reg();
                         self.emit(Inst::BinOp {
