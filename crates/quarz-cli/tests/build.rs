@@ -587,10 +587,11 @@ fn build_timings_print_every_stage_and_change_nothing() {
     assert!(lines[7].contains(" level="), "{err}");
 }
 
-/// #921: a `data` construction leaving trailing fields to literal
-/// defaults is lowered with every field, as one written in full (so the
-/// AOT's `alloc_data` and `sroa` make it inline); a non-literal default,
-/// keywords, or a type's own `initialize` leave the call as it was.
+/// #921: a `data` construction leaving fields to literal defaults is
+/// lowered with every field, as one written in full (so the AOT's
+/// `alloc_data` and `sroa` make it inline), by keywords too, in the
+/// constructor's order (#971); a non-literal default left out or a
+/// type's own `initialize` leave the call as it was.
 #[test]
 fn a_data_construction_with_literal_defaults_has_every_field() {
     let module = common::lower(
@@ -601,6 +602,8 @@ fn a_data_construction_with_literal_defaults_has_every_field() {
          enum Shape\n  variant Circle(r: Float = 1.0, filled: Bool = false)\nend\n\
          def literal -> Kind = Kind.new(Int)\n\
          def keyword -> Kind = Kind.new(Int, nils: true)\n\
+         def reordered -> Kind = Kind.new(nils: true, cls: Int)\n\
+         def keyword_constant -> Mixed = Mixed.new(a: 1)\n\
          def constant -> Mixed = Mixed.new(1)\n\
          def own -> Pt = Pt.new(\"s\")\n\
          def variant -> Shape = Shape::Circle.new\n\
@@ -610,7 +613,7 @@ fn a_data_construction_with_literal_defaults_has_every_field() {
          def collections -> Source = Source.new(\"t\")\n\
          def big -> Big = Big.new(1)\n\
          def interp -> Interp = Interp.new(1)\n\
-         p literal, keyword, constant, own, variant, collections, big, interp\n",
+         p literal, keyword, reordered, keyword_constant, constant, own, variant, collections, big, interp\n",
     );
     let construct_args = |name: &str| -> (usize, usize) {
         let f = module
@@ -634,7 +637,9 @@ fn a_data_construction_with_literal_defaults_has_every_field() {
     };
     assert_eq!(construct_args("literal"), (3, 0));
     assert_eq!(construct_args("variant"), (2, 0));
-    assert_eq!(construct_args("keyword"), (1, 1));
+    assert_eq!(construct_args("keyword"), (3, 0));
+    assert_eq!(construct_args("reordered"), (3, 0));
+    assert_eq!(construct_args("keyword_constant"), (0, 1));
     assert_eq!(construct_args("constant"), (1, 0));
     assert_eq!(construct_args("own"), (1, 0));
     // #940: strings without interpolation and small array and hash

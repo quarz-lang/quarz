@@ -17,3 +17,11 @@ Shape::Circle(r: 2.0, filled: false)
 Shape::Dot
 true
 true
+b
+a
+Lits(a: 1, b: 2, c: 1.0, d: 2.5, e: :sym, f: true, g: nil)
+Lits(a: 1, b: -3, c: 7.0, d: 2.5, e: :sym, f: true, g: 5)
+Mixed(a: 5, s: "str", k: 7, x: 3, z: false)
+true
+Shape::Circle(r: 1.0, filled: true)
+Outer(i: Inner(x: 4), n: 3)
