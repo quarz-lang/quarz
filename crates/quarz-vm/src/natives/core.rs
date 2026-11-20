@@ -1040,6 +1040,11 @@ pub(crate) fn raised(
 // ----- Kernel ---------------------------------------------------------------------
 
 pub fn puts_to(interp: &Interp, args: &[Value], out: &mut String) -> Result<(), Flow> {
+    // (An array is printed element by element, nested ones in turn: one
+    // nested too deeply for this stack raises, as `inspect` does, #923.)
+    if crate::sched::stack_exhausted() {
+        return Err(interp.too_deep("print"));
+    }
     if args.is_empty() {
         out.push('\n');
         return Ok(());

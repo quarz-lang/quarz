@@ -1,0 +1,45 @@
+require "json"
+# Natives that walk a value one nesting level (or one element chosen) at a
+# time raise `SystemStackError` for one too deep for the task's stack, as
+# `inspect` and `==` do (#437), instead of crashing the process (#923):
+# `Array#flatten`, `puts`, `Array#combination`/`#permutation` and
+# `JSON.decode[JSON::Value]` of a hand-built value. Each in a task (a
+# 16 MiB stack), rescued; a shallow value as before.
+def nest(n: Int) -> Array[Object]
+  a: Array[Object] = []
+  n.times { a = [a, 1] }
+  a
+end
+
+def jn(n: Int) -> JSON::Value
+  v: JSON::Value = JSON::Value::Null
+  n.times { v = JSON::Value::Array.new([v]) }
+  v
+end
+
+def guarded(what: String, &body: shareable () -> Int) -> Void
+  t = Task.spawn do
+    begin
+      body.call
+    rescue SystemStackError => e
+      -1
+    end
+  end
+  puts "#{what}: #{t.await}"
+end
+
+guarded("flatten") { nest(400_000).flatten.size }
+guarded("puts") do
+  puts nest(400_000)
+  1
+end
+guarded("combination") { (0...400_000).to_a.combination(400_000).size }
+guarded("permutation") { (0...400_000).to_a.permutation(400_000).size }
+guarded("decode") do
+  JSON.decode[JSON::Value](jn(400_000))
+  1
+end
+# Shallow ones, as before.
+p nest(3).flatten, [1, 2, 3].combination(2).size, [1, 2, 3].permutation(2).size
+puts [[1, [2]], 3]
+p JSON.decode[JSON::Value](jn(2))
