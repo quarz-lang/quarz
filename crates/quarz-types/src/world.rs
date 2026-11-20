@@ -734,7 +734,8 @@ pub struct World {
     /// requires); `file_groups` and `extensions` only grow (the declarer's
     /// `collect_*` and extension declarations), and an extension's
     /// `group` is set when it is made. A debug build checks each memo's
-    /// entry against a remake once per group and state.
+    /// entry against a remake once per group and state in each method
+    /// checked (`guard_new_method` re-arms it).
     pub std_use_version: u64,
     /// `group_std_modules` by group, made once per state of `file_std` and
     /// `file_groups` (it is asked for every file's active set, often).
@@ -1654,6 +1655,10 @@ impl World {
     pub fn guard_new_method(&self) {
         if cfg!(debug_assertions) {
             self.ancestors_memo.verified.borrow_mut().clear();
+            // (And the group memos' entries, checked again in this method:
+            // a write after the first check that forgot to bump
+            // `std_use_version` shows here, #942.)
+            self.group_memo_checked.borrow_mut().1.clear();
         }
     }
 
@@ -3071,7 +3076,9 @@ impl World {
 
     /// (Debug builds.) Whether memo `which` (0: `group_std_memo`, 1:
     /// `group_ext_memo`) has not been checked for `group` in its current
-    /// state; marks it checked.
+    /// state since the method being checked began (`guard_new_method`,
+    /// which re-arms it as it does the ancestors memo's guard); marks it
+    /// checked.
     fn group_memo_unchecked(&self, group: UnitGroup, which: u8) -> bool {
         let state = (
             self.std_use_version,
@@ -6460,5 +6467,25 @@ mod std_group_tests {
         assert_eq!(w.group_std_modules(21), vec!["json", "uri"]);
         // The prelude has no group.
         assert!(w.group_std_modules(0).is_empty());
+    }
+
+    /// The debug guard of the group memos (#942): a write that forgets to
+    /// bump `std_use_version` after an entry was checked is caught when the
+    /// next method is checked (`guard_new_method` re-arms it), not left as
+    /// a stale set.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "`group_std_memo` is stale")]
+    fn a_write_without_the_bump_is_caught_after_the_next_method() {
+        let mut w = World::default();
+        w.std_module_files.insert("json".to_string(), 23);
+        w.file_groups.insert(1, UnitGroup::App);
+        w.file_std.insert(1, file_std(&[], &[], &[]));
+        assert!(w.group_std_modules(1).is_empty());
+        assert!(w.group_std_modules(1).is_empty());
+        // (No `std_use_version += 1`.)
+        w.file_std.insert(1, file_std(&["json"], &[], &[]));
+        w.guard_new_method();
+        w.group_std_modules(1);
     }
 }
