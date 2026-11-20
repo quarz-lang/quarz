@@ -407,6 +407,44 @@ pub(super) fn secret_of<'a>(interp: &Interp, v: &'a Value) -> Result<&'a SecretB
     }
 }
 
+/// A copy of secret input (a key, a password) that is cleared when
+/// dropped: the bytes of a `Bytes::Secret`, copied under its lock so
+/// that no lock is held while a native hashes or derives from them, or
+/// of a `Bytes` or a `String` (#963).
+pub(super) struct Cleared(pub Vec<u8>);
+
+impl Drop for Cleared {
+    fn drop(&mut self) {
+        clear_bytes(&mut self.0);
+    }
+}
+
+impl std::ops::Deref for Cleared {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+/// The bytes of a secret input `v`: a `Bytes::Secret` (a wiped one
+/// raises `WipedError`), a `Bytes`, or a `String`'s UTF-8, as a
+/// `Cleared` copy.
+pub(super) fn secret_input(interp: &Interp, v: &Value, what: &str) -> Result<Cleared, Flow> {
+    match v {
+        Value::Secret(_) => secret_of(interp, v)?
+            .with(|b| Cleared(b.to_vec()))
+            .ok_or_else(|| wiped(interp)),
+        Value::Bytes(b) => Ok(Cleared(b.to_vec())),
+        v => match v.as_str() {
+            Some(s) => Ok(Cleared(s.as_bytes().to_vec())),
+            None => Err(interp.err_type(&format!(
+                "{what} must be Bytes, a String or a Bytes::Secret, got {}",
+                interp.class_name(v)
+            ))),
+        },
+    }
+}
+
 /// What a use of a wiped secret raises (but `size` and `wiped?`).
 pub(super) fn wiped(interp: &Interp) -> Flow {
     interp.raise(interp.program.exc.secret_wiped, "the secret was wiped")

@@ -68,18 +68,13 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     // nil when the data does not authenticate (nothing of it is returned).
     native!(m, "Crypto::AES.open_with", |i, _, a| {
-        let key = bytes(i, a.arg(0), "key")?;
-        let nonce = gcm_nonce(i, a.arg(1))?;
-        let sealed = bytes(i, a.arg(2), "sealed")?;
-        let aad = message(i, a.arg(3))?;
-        let payload = aes_gcm::aead::Payload { msg: sealed, aad };
-        let opened = match key.len() {
-            16 => gcm::<aes_gcm::Aes128Gcm>(key).decrypt(&nonce, payload),
-            24 => gcm::<Aes192Gcm>(key).decrypt(&nonce, payload),
-            32 => gcm::<aes_gcm::Aes256Gcm>(key).decrypt(&nonce, payload),
-            n => return Err(key_size_error(i, n)),
-        };
-        Ok(opened.map(Value::bytes).unwrap_or(Value::Nil))
+        Ok(gcm_open(i, &a)?.map(Value::bytes).unwrap_or(Value::Nil))
+    });
+    native!(m, "Crypto::AES.open_secret_with", |i, _, a| {
+        // The plaintext's buffer becomes the secret's: no copy is made.
+        Ok(gcm_open(i, &a)?
+            .map(super::bytes::secret)
+            .unwrap_or(Value::Nil))
     });
     native!(m, "Crypto::RSA.private_der", |i, _, a| {
         let key = private_from_der(bytes(i, a.arg(0), "der")?).map_err(|e| error(i, e))?;
@@ -290,7 +285,9 @@ fn register_argon2(m: &mut super::Registry<NativeFn>) {
     // The PHC string of `password` hashed with `salt` and the parameters
     // (all checked by `Crypto::Argon2.hash`, and again here).
     native!(m, "Crypto::Argon2.hash_with", |i, _, a| {
-        let password = Zeroizing::new(message(i, a.arg(0))?.to_vec());
+        // A `Bytes::Secret` too; the copy, cleared when dropped, goes to
+        // the helper thread.
+        let password = super::bytes::secret_input(i, a.arg(0), "password")?;
         let salt = bytes(i, a.arg(1), "salt")?.to_vec();
         let params = argon2_params(
             i,
@@ -320,7 +317,9 @@ fn register_argon2(m: &mut super::Registry<NativeFn>) {
     // Whether `password` matches the argon2id PHC string `hash`;
     // `Crypto::Error` for a string that is not one.
     native!(m, "Crypto::Argon2.verify_with", |i, _, a| {
-        let password = Zeroizing::new(message(i, a.arg(0))?.to_vec());
+        // A `Bytes::Secret` too; the copy, cleared when dropped, goes to
+        // the helper thread.
+        let password = super::bytes::secret_input(i, a.arg(0), "password")?;
         let (phc, params) = parse_argon2(string(i, a.arg(1), "hash")?).map_err(|e| error(i, e))?;
         let ok = i
             .block_on(move || {
@@ -515,6 +514,23 @@ const RANDOM_MAX: i64 = 1 << 20;
 type Aes192Gcm = aes_gcm::AesGcm<aes_gcm::aes::Aes192, aes_gcm::aead::consts::U12>;
 
 /// An AES-GCM cipher for `key` (its length checked by the caller).
+/// `open_with`'s arguments opened: the plaintext, `None` when it does
+/// not authenticate (then nothing of it is kept).
+fn gcm_open(i: &Interp, a: &crate::interp::Args) -> Result<Option<Vec<u8>>, Flow> {
+    let key = bytes(i, a.arg(0), "key")?;
+    let nonce = gcm_nonce(i, a.arg(1))?;
+    let sealed = bytes(i, a.arg(2), "sealed")?;
+    let aad = message(i, a.arg(3))?;
+    let payload = aes_gcm::aead::Payload { msg: sealed, aad };
+    let opened = match key.len() {
+        16 => gcm::<aes_gcm::Aes128Gcm>(key).decrypt(&nonce, payload),
+        24 => gcm::<Aes192Gcm>(key).decrypt(&nonce, payload),
+        32 => gcm::<aes_gcm::Aes256Gcm>(key).decrypt(&nonce, payload),
+        n => return Err(key_size_error(i, n)),
+    };
+    Ok(opened.ok())
+}
+
 fn gcm<C: aes_gcm::KeyInit>(key: &[u8]) -> C {
     C::new_from_slice(key).expect("the key's length was checked")
 }
