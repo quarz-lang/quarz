@@ -4308,9 +4308,6 @@ impl Checker {
         ok
     }
 
-    /// What a mismatch that `coerce_noting` found adds when a conditional
-    /// extension's bound was not known yet there (#519's decision (i)):
-    /// which bound, and to write the type argument.
     /// How a failed bound `b` on the type parameter `param` reads in the
     /// list of candidates (#960): "`T <: Shareable`: `Owner` is not
     /// Shareable (its field `@count` is `var`)", "`T <: Comparable[T]`:
@@ -4355,6 +4352,9 @@ impl Checker {
         format!("`{param} <: {written}`: {what}{note}")
     }
 
+    /// What a mismatch that `coerce_noting` found adds when a conditional
+    /// extension's bound was not known yet there (#519's decision (i)):
+    /// which bound, and to write the type argument.
     fn bound_note(&self) -> String {
         self.world
             .undecided_bound

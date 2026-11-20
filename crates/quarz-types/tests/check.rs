@@ -7017,6 +7017,16 @@ fn an_overload_failing_only_a_bound_is_named_first() {
         lines[3], "    rank(x: Int) -> Int has no parameter `desc`",
         "{errs:?}"
     );
+    // A bound whose name is no capitalized word (a tuple): "a", whatever
+    // its first character.
+    err(
+        "class A\nend\nxs = [[1, A.new], [2, A.new]]\np xs.sort",
+        "`[Int, A]` is not a `Comparable[[Int, A]]`",
+    );
+    err(
+        "class Box\n  def put(x: Int) -> Int = x\n  def put[T <: [Int, String]](x: T, *, kept: Bool) -> Int = 0\nend\nBox.new.put(1, kept: true)",
+        "`T <: [Int, String]`: `Int` is not a `[Int, String]`",
+    );
 }
 
 #[test]
