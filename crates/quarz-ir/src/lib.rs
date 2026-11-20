@@ -1808,6 +1808,130 @@ pub struct RtWorld {
     pub file_mains: Vec<Option<ClassId>>,
 }
 
+/// What `may_dispatch_to` reads of a program's classes and methods, so
+/// that one function answers for the lowering's static rounds (over
+/// `quarz_types::World`) and the compile-time runner (over `RtWorld`).
+pub trait DispatchView {
+    fn method_name(&self, m: MethodId) -> &str;
+    fn method_owner(&self, m: MethodId) -> ClassId;
+    fn method_singleton(&self, m: MethodId) -> bool;
+    fn method_abstract(&self, m: MethodId) -> bool;
+    fn class_is_module(&self, c: ClassId) -> bool;
+    /// Membership at run time (`RtWorld::class_is_a`,
+    /// `World::class_is_a_at_run_time`).
+    fn class_is_a_at_run_time(&self, sub: ClassId, sup: ClassId) -> bool;
+    fn class_count(&self) -> usize;
+    fn object_class(&self) -> ClassId;
+    /// `Type` (`Builtin::class_`).
+    fn type_class(&self) -> ClassId;
+    /// Whether the override table pairs `o` with `m` (`o` overrides `m`:
+    /// `RtMethod::overrides`, `World::overrides`).
+    fn table_overrides(&self, o: MethodId, m: MethodId) -> bool;
+}
+
+/// Whether a call resolved to `m` may run `o`, a method of its name, as a
+/// receiver's lookup may find it: what a static round must walk past a
+/// call (the lowering's walk of what a statement reaches, the runner's
+/// `bad_reach`).
+/// - For a module's method or `Object`'s: any method of the name (an
+///   including class's superclass may implement it, and a class may define
+///   its own `def self.`).
+/// - For `Type`'s (or a subclass's, `Meta::ClassDef`'s): a class method
+///   the override table pairs with it (exactly what dispatch through a
+///   class object reads: `Meta::ClassDef#type` is never a class's own
+///   `def self.type`, #553), or a method of a class below it.
+/// - For a class method: one of a class below it, or of a module a class
+///   below it includes (for a module's, one beside it in an includer).
+/// - For an abstract method: also an instance method of a class above its
+///   owner, whose method may implement it.
+/// - For another class's instance method: one of a class below it, or of
+///   a module a class below it includes.
+///
+/// An approximation that only widens, never consulted for which method
+/// runs (#536): by name and hierarchy, wider than the override table
+/// (`World::overrides`, `RtMethod::overrides`), except for `Type`'s
+/// methods, where it is the table's pairing. What would make the rest
+/// exact is the table itself for every method, which a static round
+/// cannot rely on for the members a statement generates, declared only
+/// after it has run. One function: it replaced the lowering's
+/// `is_override` and the runner's `may_dispatch_to`, two copies that
+/// differed for `Type`'s methods (#536).
+pub fn may_dispatch_to(w: &impl DispatchView, o: MethodId, m: MethodId) -> bool {
+    if w.method_name(o) != w.method_name(m) {
+        return false;
+    }
+    let owner = w.method_owner(m);
+    let o_owner = w.method_owner(o);
+    let o_singleton = w.method_singleton(o);
+    let below_both = |a: ClassId, b: ClassId| {
+        (0..w.class_count() as ClassId)
+            .any(|c| w.class_is_a_at_run_time(c, a) && w.class_is_a_at_run_time(c, b))
+    };
+    if w.method_singleton(m) {
+        if !o_singleton {
+            return false;
+        }
+        if !w.class_is_module(o_owner) && !w.class_is_module(owner) {
+            return w.class_is_a_at_run_time(o_owner, owner);
+        }
+        // (A module's class method: on a class that has both.)
+        return below_both(owner, o_owner);
+    }
+    // An abstract method's implementation may come from above its owner
+    // (a superclass's method of the name).
+    if w.method_abstract(m) && !o_singleton && w.class_is_a_at_run_time(owner, o_owner) {
+        return true;
+    }
+    // `Type`'s (or a subclass's, `Meta::ClassDef`'s), on class objects:
+    // a class method (a module's included too) the override table pairs
+    // with it.
+    if w.class_is_a_at_run_time(owner, w.type_class()) {
+        return (o_singleton && w.table_overrides(o, m))
+            || w.class_is_a_at_run_time(o_owner, owner);
+    }
+    if w.class_is_module(owner) || owner == w.object_class() {
+        return true;
+    }
+    if o_singleton {
+        return false;
+    }
+    w.class_is_a_at_run_time(o_owner, owner)
+        || (w.class_is_module(o_owner) && below_both(owner, o_owner))
+}
+
+impl DispatchView for RtWorld {
+    fn method_name(&self, m: MethodId) -> &str {
+        &self.methods[m as usize].name
+    }
+    fn method_owner(&self, m: MethodId) -> ClassId {
+        self.methods[m as usize].owner
+    }
+    fn method_singleton(&self, m: MethodId) -> bool {
+        self.methods[m as usize].singleton
+    }
+    fn method_abstract(&self, m: MethodId) -> bool {
+        self.methods[m as usize].is_abstract
+    }
+    fn class_is_module(&self, c: ClassId) -> bool {
+        self.classes[c as usize].kind == RtClassKind::Module
+    }
+    fn class_is_a_at_run_time(&self, sub: ClassId, sup: ClassId) -> bool {
+        self.class_is_a(sub, sup)
+    }
+    fn class_count(&self) -> usize {
+        self.classes.len()
+    }
+    fn object_class(&self) -> ClassId {
+        self.builtin.object
+    }
+    fn type_class(&self) -> ClassId {
+        self.builtin.class_
+    }
+    fn table_overrides(&self, o: MethodId, m: MethodId) -> bool {
+        self.methods[o as usize].overrides.contains(&m)
+    }
+}
+
 impl RtWorld {
     pub fn class(&self, id: ClassId) -> &RtClass {
         &self.classes[id as usize]
