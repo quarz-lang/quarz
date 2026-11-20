@@ -603,6 +603,10 @@ fn a_data_construction_with_literal_defaults_has_every_field() {
          def literal -> Kind = Kind.new(Int)\n\
          def keyword -> Kind = Kind.new(Int, nils: true)\n\
          def reordered -> Kind = Kind.new(nils: true, cls: Int)\n\
+         data Inner2 = (x: Int, y: Int = 1)\n\
+         data Outer2 = (i: Inner2, n: Int = 2)\n\
+         def nested -> Outer2 = Outer2.new(n: 3, i: Inner2.new(4))\n\
+         def nested_pos -> Outer2 = Outer2.new(Inner2.new(4), 3)\n\
          def keyword_constant -> Mixed = Mixed.new(a: 1)\n\
          def constant -> Mixed = Mixed.new(1)\n\
          def own -> Pt = Pt.new(\"s\")\n\
@@ -613,6 +617,7 @@ fn a_data_construction_with_literal_defaults_has_every_field() {
          def collections -> Source = Source.new(\"t\")\n\
          def big -> Big = Big.new(1)\n\
          def interp -> Interp = Interp.new(1)\n\
+         p nested, nested_pos\n\
          p literal, keyword, reordered, keyword_constant, constant, own, variant, collections, big, interp\n",
     );
     let construct_args = |name: &str| -> (usize, usize) {
@@ -640,6 +645,32 @@ fn a_data_construction_with_literal_defaults_has_every_field() {
     assert_eq!(construct_args("keyword"), (3, 0));
     assert_eq!(construct_args("reordered"), (3, 0));
     assert_eq!(construct_args("keyword_constant"), (0, 1));
+    // A `data` value held in place, given by keyword: flattened after the
+    // keywords are put in order, as the positional form is (the outer
+    // construction is the function's last).
+    let last_construct = |name: &str| -> (usize, usize) {
+        let f = module
+            .functions
+            .iter()
+            .find(|f| f.name == format!("main#{name}"))
+            .unwrap_or_else(|| panic!("no function {name}"));
+        f.blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .filter_map(|i| match i {
+                quarz_ir::Inst::Call {
+                    kind: quarz_ir::CallKind::Construct { .. },
+                    args,
+                    kw,
+                    ..
+                } => Some((args.len(), kw.len())),
+                _ => None,
+            })
+            .next_back()
+            .unwrap_or_else(|| panic!("no construction in {name}"))
+    };
+    assert_eq!(last_construct("nested"), last_construct("nested_pos"));
+    assert_eq!(last_construct("nested").1, 0);
     assert_eq!(construct_args("constant"), (1, 0));
     assert_eq!(construct_args("own"), (1, 0));
     // #940: strings without interpolation and small array and hash

@@ -11,6 +11,14 @@ data Box[T] = (v: T?, n: Int = 1)
 data Mixed = (a: Int, s: String = "str", k: Int = LIMIT, x: Int = 1 + 2, z: Bool = false)
 data Inner = (x: Int = 1)
 data Outer = (i: Inner, n: Int = 2)
+enum Hue
+  variant Red
+  variant Green
+end
+data FPt = (x: Float, y: Float = 0)
+data Painted = (c: Hue, n: Int = 1)
+data Maybe = (a: Int?, b: Int = 2)
+data Tags = (xs: Array[Float], k: Int = 0)
 
 # A `data` type with an `initialize` of its own, which `new` takes (not
 # the generated one): left as it is.
@@ -64,3 +72,12 @@ p Mixed.new(a: 5)
 p Lits.new(a: 1) == Lits.new(1)
 p Shape::Circle.new(filled: true)
 p Outer.new(n: 3, i: Inner.new(x: 4))
+# What a keyword's value is coerced to, as for the positional form: an
+# integer literal for a `Float` field, a symbol for an enum (#909), `nil`
+# for a nilable field, an array literal for an `Array[Float]` field; and
+# a `data` value held in place, given by keyword.
+p FPt.new(y: 2, x: 1), FPt.new(1, 2)
+p Painted.new(n: 3, c: :red), Painted.new(:red, 3)
+p Maybe.new(b: 5, a: nil), Maybe.new(nil, 5)
+p Tags.new(k: 1, xs: [1, 2]), Tags.new([1, 2], 1)
+p Outer.new(Inner.new(4), 3)
