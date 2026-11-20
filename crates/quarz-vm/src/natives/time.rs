@@ -496,7 +496,6 @@ fn time_parse(i: &Interp, a: &Args) -> EvalResult {
     }
 }
 
-
 /// The class `Date` (the prelude's).
 fn date_class(i: &Interp) -> Result<ClassId, Flow> {
     i.program
@@ -523,12 +522,17 @@ fn date_parse(i: &Interp, a: &Args) -> EvalResult {
 /// for any other text, or for a day that does not exist. The one rule
 /// of `Date.parse`, `Date.parse?`, `Date(text)` and `JSON.decode[Date]`.
 ///
-/// The shape is checked here; the calendar (the year 1 to 9999, the
-/// month, the month's days) is `Date#initialize`'s, which this calls by
-/// its runtime name with the year, month and day as three `Int`s, as
-/// `new` would (an `ArgumentError` from it is `None`; anything else it
-/// raises goes through). So a change to `Date`'s fields or to its
-/// `initialize`'s parameters breaks this, and the four readers with it.
+/// The shape is checked here, and the calendar too (the year 1 to 9999,
+/// the month, the month's days, `date_exists`), as the Quarz `parse?`
+/// did before #932: a text of a day that does not exist is `None`
+/// without `Date#initialize` raising, which costs ten times a read.
+/// The date is then made by `Date#initialize`, which checks the same
+/// calendar again (`test_parse_table` in std/test/date_test.qz pins
+/// that the two agree), called by its runtime name with the year,
+/// month and day as three `Int`s, as `new` would (an `ArgumentError`
+/// from it is `None` all the same; anything else it raises goes
+/// through). So a change to `Date`'s fields or to its `initialize`'s
+/// parameters breaks this, and the four readers with it.
 /// (`initialize` is a runtime name, which shake keeps for every class it
 /// keeps; the natives' result types, `Date` and `Date?`, keep `Date`.)
 pub(crate) fn date_from_text(i: &Interp, date: ClassId, text: &str) -> Result<Option<Value>, Flow> {
@@ -542,16 +546,26 @@ pub(crate) fn date_from_text(i: &Interp, date: ClassId, text: &str) -> Result<Op
     if !shaped {
         return Ok(None);
     }
-    let part = |r: std::ops::Range<usize>| Value::Int(text[r].parse::<i64>().unwrap_or(0));
-    let init = i.program.world.class(date).methods.get("initialize").and_then(|ids| {
-        ids.iter()
-            .copied()
-            .find(|&id| i.program.method(id).synth != quarz_ir::RtSynth::DataInit)
-    });
+    let num = |r: std::ops::Range<usize>| text[r].parse::<i64>().unwrap_or(0);
+    let (year, month, day) = (num(0..4), num(5..7), num(8..10));
+    if !date_exists(year, month, day) {
+        return Ok(None);
+    }
+    let init = i
+        .program
+        .world
+        .class(date)
+        .methods
+        .get("initialize")
+        .and_then(|ids| {
+            ids.iter()
+                .copied()
+                .find(|&id| i.program.method(id).synth != quarz_ir::RtSynth::DataInit)
+        });
     match i.construct(
         date,
         init,
-        smallvec![part(0..4), part(5..7), part(8..10)],
+        smallvec![Value::Int(year), Value::Int(month), Value::Int(day)],
         Vec::new(),
         None,
     ) {
@@ -559,4 +573,20 @@ pub(crate) fn date_from_text(i: &Interp, date: ClassId, text: &str) -> Result<Op
         Err(Flow::Raise(exc)) if i.exception_is_a(&exc, i.program.exc.argument_error) => Ok(None),
         Err(e) => Err(e),
     }
+}
+
+/// Whether `year`-`month`-`day` is a day of the proleptic Gregorian
+/// calendar in the years 1 to 9999: `Date#initialize`'s check, kept
+/// here so that `date_from_text` refuses a day that does not exist
+/// without an exception.
+fn date_exists(year: i64, month: i64, day: i64) -> bool {
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days = match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        1..=12 => 31,
+        _ => return false,
+    };
+    (1..=9999).contains(&year) && (1..=days).contains(&day)
 }

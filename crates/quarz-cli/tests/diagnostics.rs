@@ -260,7 +260,10 @@ fn positional_after_keyword() {
 fn a_conversion_functions_name_and_a_space_before_the_parenthesis() {
     for name in ["Integer", "Date", "Time"] {
         let out = common::diagnostics(&format!("puts {name} (\"2026-11-20\")\n")).join("\n");
-        assert!(out.contains("error: expected end of line, found `(`"), "{out}");
+        assert!(
+            out.contains("error: expected end of line, found `(`"),
+            "{out}"
+        );
     }
 }
 
