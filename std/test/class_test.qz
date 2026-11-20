@@ -109,6 +109,22 @@ end
 class ClsGen[X] < ClsAnimal
 end
 
+# #946's review: a generic module's class method that takes `Type#cast`'s
+# parameters only as an includer instantiates it (`include
+# ClsCastMod[Object]`) is not in the override table (paired by the
+# module's own types), so a call through a `Type[T]` runs `Type#cast`;
+# written on the class, it is the module's, typed by its own result.
+module ClsCastMod[U]
+  def self.cast(value: U) -> Object = value
+end
+class ClsCastA
+  include ClsCastMod[Object]
+end
+class ClsCastB < ClsCastA
+  @n: Int = 7
+  def n -> Int = @n
+end
+
 # #944: `Type[T]#cast?` and `#cast`, the value back as a `T` where its
 # class is the receiver's or below it.
 class TypeCastTest < Test::Case
@@ -154,6 +170,15 @@ class TypeCastTest < Test::Case
     # A class value typed by a module it includes: the class's test.
     sh: Type[Shareable] = ClsPoint
     assert_equal(ClsPoint.new(1, 1), sh.cast?(ClsPoint.new(1, 1)))
+  end
+
+  def through_cast[T](t: Type[T], v: Object) -> T = t.cast(v)
+
+  def test_a_generic_modules_cast_takes_no_place
+    e = assert_raise(TypeError) { through_cast(ClsCastB, 1); nil }
+    assert_equal("cannot cast Int to ClsCastB", e.message)
+    assert_equal(7, through_cast(ClsCastB, ClsCastB.new).n)
+    assert(ClsCastA.cast(1) == 1)
   end
 
   def test_errors

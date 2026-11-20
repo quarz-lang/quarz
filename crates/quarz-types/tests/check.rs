@@ -4579,6 +4579,20 @@ fn a_class_method_cannot_take_a_receiver_naming_methods_place() {
     ok("class A\n  def self.then[U](&: (Type[A]) -> U) -> U = yield(A)\nend");
 }
 
+/// #944 with #950: `Type#cast?` and `#cast` return `T?` and `T`, which
+/// name the class they are called on, so a class method of their
+/// signature is refused at its declaration (the hole #946's review found:
+/// `A.cast` inherited by `B` gave an `A` typed `B`); other parameters are
+/// an overload.
+#[test]
+fn a_class_method_cannot_take_type_casts_place() {
+    let errs = diagnostics("class A\n  def self.cast?(value: Object) -> A? = A.new\n  def self.cast(value: Object) -> A = A.new\nend\nclass B < A\nend\ndef f[T](t: Type[T], v: Object) -> T = t.cast(v)\n");
+    assert_eq!(errs.len(), 2, "{errs:?}");
+    assert!(errs[0].starts_with("`A.cast?` would take the place of `Type#cast?` on the class value, whose result (T?) names the class it is called on"), "{errs:?}");
+    assert!(errs[1].starts_with("`A.cast` would take the place of `Type#cast` on the class value, whose result (T) names the class it is called on"), "{errs:?}");
+    ok("class A\n  def self.cast(s: String) -> A = A.new\n  def self.cast?(s: String) -> A? = nil\nend");
+}
+
 /// `Kernel.name(...)` is the built-in function, wherever it is written
 /// (docs/01 §1); another name is a method of the module object.
 #[test]
