@@ -88,10 +88,10 @@ pub trait Reflect {
     /// otherwise than the program's (docs/14 §8).
     fn reflect_refusal(&self, class: ClassId) -> Option<String>;
     /// The methods named `name` this statement has generated so far
-    /// (`def_method`, `def_class_method`), each as its class, whether it
-    /// is a class method, and its number of parameters (none for the
-    /// keyword form): the runner's own record of the generation, which
-    /// the next round lowers. A run's dispatch reads it to refuse a call
+    /// (`def_method`, `def_class_method`, a `def_field`'s reader and
+    /// writer), each as its class, whether it is a class method, and its
+    /// number of positional parameters (`None` for the keyword form): the
+    /// runner's own record of the generation, which the next round lowers. A run's dispatch reads it to refuse a call
     /// one of them would have answered (#967).
     fn generated_named(&self, name: &str) -> Vec<(ClassId, bool, Option<usize>)>;
     /// `Meta::ClassDef#statement_values` (docs/14 §5) at the call node

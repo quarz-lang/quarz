@@ -3839,6 +3839,13 @@ impl Reflect for WorldReflect {
                     g.singleton,
                     g.keywords.is_none().then_some(g.params.len()),
                 )),
+                // A field's reader and writer are methods too.
+                Pending::Field(f) if f.reader && f.name == name => Some((f.class, false, Some(0))),
+                Pending::Field(f)
+                    if f.writer && name.strip_suffix('=') == Some(f.name.as_str()) =>
+                {
+                    Some((f.class, false, Some(1)))
+                }
                 _ => None,
             })
             .collect()

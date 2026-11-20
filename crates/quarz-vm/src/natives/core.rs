@@ -159,6 +159,8 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         reflect_of(i)?
             .def_field(i, request)
             .map_err(|m| i.err_runtime(&m))?;
+        // (Its reader and writer are generated methods, #967.)
+        i.generated_any.set(true);
         // A block: the field's initializer (#890), a private method of no
         // parameter under a name no program can write.
         if a.block.is_some() {

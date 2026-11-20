@@ -1470,6 +1470,27 @@ fn a_method_generated_by_the_running_statement_has_no_body_yet() {
     Other.me.def_method(:describe) { "generated" }
     puts "other: #{x.describe}"
   end
+  def kw(*, a: Int = 0) -> String = "base kw"
+  static def self.field_over(x: Base) -> Void
+    def_field(:describe, String, "field", reader: true)
+    puts "field: #{x.describe}"
+  end
+  static def self.kw_over(x: Base) -> Void
+    ks = [Meta::Keyword.new(:a, Int, false)]
+    def_method(:kw, keywords: ks) { |given| "generated kw" }
+    puts "kw: #{x.kw(a: 1)}"
+  end
+  static def self.texted -> Void
+    def_method(:to_s) { "texted" }
+  end
+  static def self.keyed -> Void
+    def_method(:==, :o) { |o: Object| true }
+    def_method(:hash) { 1 }
+  end
+  static def self.gen_and_show(x: Object, y: Object) -> Void
+    def_method(:to_s) { "mine" }
+    puts "shown: #{x} #{{x => 1, y => 2}.size}"
+  end
 end
 class Other < Base
 end
@@ -1514,9 +1535,20 @@ end
             Err(refused("describe", "Other")),
         ),
         ("into_other(Post.new)", "", Ok("other: base")),
+        // A field's reader; a method of the keyword form.
+        ("field_over(Post.new)", "", Err(refused("describe", "Post"))),
+        ("kw_over(Post.new)", "", Err(refused("kw", "Post"))),
         // A method that replaces nothing; a receiver above the class.
         ("fresh(Post.new)", "", Ok("fresh: base")),
         ("inst_to_s(Base.new)", "", Ok("inst: #<Base>")),
+        // Each run starts with an empty record: a later class's statement
+        // that generates too gets Post's generated `to_s`, `==` and `hash`
+        // (its `==` from the lowering's rows, no entry of an earlier run).
+        (
+            "texted\n  keyed",
+            "class Later < Base\n  gen_and_show(Post.new, Post.new)\nend\n",
+            Ok("shown: texted 1"),
+        ),
     ] {
         let app = write(
             &d.0,

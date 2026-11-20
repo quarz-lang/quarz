@@ -2762,11 +2762,15 @@ impl Interp {
     /// run is (#967, docs/14 §7): the generated method has no body until
     /// then. It would have answered when it is of `found`'s name and side,
     /// of a class `recv` is, below `found`'s owner (or, a class method on
-    /// a class object, standing in for a method of `Type`), and takes
-    /// exactly `found`'s positional calls (as many parameters, none
-    /// optional). The parameters' types are not compared: an approximation
-    /// that may refuse a generated overload of other types, never accept
-    /// a call a generated method would have answered.
+    /// a class object, standing in for a method of `Type`), and may take
+    /// `found`'s calls: as many positional parameters as `found` takes
+    /// (none optional), or, a keyword-form method, when `found` may be
+    /// called with no positional argument. Neither the parameters' types
+    /// nor the keywords' names are compared: an approximation that may
+    /// refuse a generated overload, never accept a call a generated method
+    /// would have answered (a generated method has no defaults: one that
+    /// takes `found`'s calls has exactly its positional count, or is of the
+    /// keyword form when `found` takes none).
     pub fn refuse_generated_over(&self, recv: &Value, found: MethodId) -> Result<(), Flow> {
         let Some(reflect) = self.reflect.borrow().clone() else {
             return Ok(());
@@ -2780,7 +2784,12 @@ impl Interp {
             _ => (self.class_of(recv), false, false),
         };
         for (a, a_singleton, params) in reflect.generated_named(&m.name) {
-            let takes = params.is_some_and(|n| min == n && max == n);
+            // (The keyword form takes keywords only: any call that passes
+            // no positional argument, refused whatever the keywords.)
+            let takes = match params {
+                Some(n) => min == n && max == n,
+                None => min == 0,
+            };
             if a_singleton == singleton
                 && takes
                 && world.class_is_a(class, a)
