@@ -344,10 +344,9 @@ fn register_secret(m: &mut super::Registry<NativeFn>) {
             return Ok(Value::Bool(false));
         };
         let SecretVal::Bytes(y) = &**other;
-        let same = x
-            .with(|x| y.with(|y| constant_time_eq(x, y)))
-            .ok_or_else(|| wiped(i))?
-            .ok_or_else(|| wiped(i))?;
+        // Raises for a wiped one, itself included (`Value`'s `==`, which
+        // cannot raise, differs there: `SecretVal::same_contents`).
+        let same = SecretBytes::equal(x, y).ok_or_else(|| wiped(i))?;
         Ok(Value::Bool(same))
     });
     native!(m, "Crypto::Secret#expose_bytes", |i, r, _| {

@@ -3494,13 +3494,18 @@ pub enum SecretVal {
 }
 
 impl SecretVal {
-    /// Whether both hold the same bytes, compared in constant time for
-    /// equal sizes; false when either is wiped.
-    pub fn same_contents(&self, other: &SecretVal) -> bool {
-        let (SecretVal::Bytes(a), SecretVal::Bytes(b)) = (self, other);
-        a.with(|x| b.with(|y| constant_time_eq(x, y)))
-            .flatten()
-            .unwrap_or(false)
+    /// `Value`'s `==` of two secrets: the same allocation is equal (wiped
+    /// or not), others by `SecretBytes::equal`, a wiped one equal to no
+    /// other. It cannot raise, and collections need a value equal to
+    /// itself (a `Hash` key found again, `uniq`), so a wiped secret is
+    /// equal to itself here, while `Crypto::Secret#==` raises for it
+    /// (#963: every use of a wiped secret raises).
+    pub fn same_contents(a: &Rc<SecretVal>, b: &Rc<SecretVal>) -> bool {
+        if Rc::ptr_eq(a, b) {
+            return true;
+        }
+        let (SecretVal::Bytes(x), SecretVal::Bytes(y)) = (&**a, &**b);
+        SecretBytes::equal(x, y).unwrap_or(false)
     }
 }
 
@@ -3543,10 +3548,47 @@ impl SecretBytes {
         self.size
     }
 
-    /// `f` of the contents, under the lock; `None` once wiped.
+    /// `f` of the contents, under the lock; `None` once wiped. `f` must
+    /// take no other secret's lock: for two secrets, `with2`.
     pub fn with<R>(&self, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
         let inner = crate::sched::lock(&self.inner);
         (!inner.wiped).then(|| f(&inner.bytes))
+    }
+
+    /// `f` of the contents of `a` and `b`, under both locks; `None` when
+    /// either is wiped. The one way to hold two secrets' locks: the same
+    /// secret twice is locked once (a second lock of it on this thread
+    /// would never be granted), and two are locked in the order of their
+    /// addresses, whatever the order of the arguments, so that `a == b`
+    /// on one worker and `b == a` on another cannot each wait for the
+    /// other.
+    pub fn with2<R>(
+        a: &SecretBytes,
+        b: &SecretBytes,
+        f: impl FnOnce(&[u8], &[u8]) -> R,
+    ) -> Option<R> {
+        if std::ptr::eq(a, b) {
+            let inner = crate::sched::lock(&a.inner);
+            return (!inner.wiped).then(|| f(&inner.bytes, &inner.bytes));
+        }
+        let a_first = (a as *const SecretBytes) < (b as *const SecretBytes);
+        let (first, second) = if a_first { (a, b) } else { (b, a) };
+        let first = crate::sched::lock(&first.inner);
+        let second = crate::sched::lock(&second.inner);
+        let (x, y) = if a_first {
+            (&first, &second)
+        } else {
+            (&second, &first)
+        };
+        (!x.wiped && !y.wiped).then(|| f(&x.bytes, &y.bytes))
+    }
+
+    /// Whether `a` and `b` hold the same bytes, compared in constant time
+    /// for equal sizes; `None` when either is wiped. Both `==`s of
+    /// secrets go through it (`SecretVal::same_contents`, the native
+    /// `Crypto::Secret#==`).
+    pub fn equal(a: &SecretBytes, b: &SecretBytes) -> Option<bool> {
+        SecretBytes::with2(a, b, constant_time_eq)
     }
 
     pub fn wiped(&self) -> bool {
@@ -3812,7 +3854,7 @@ impl Value {
             (Value::Random(a), Value::Random(b)) => Rc::ptr_eq(a, b),
             // By contents, in constant time (a wiped one equals only
             // itself), so that collections agree with `Crypto::Secret#==`.
-            (Value::Secret(a), Value::Secret(b)) => Rc::ptr_eq(a, b) || a.same_contents(b),
+            (Value::Secret(a), Value::Secret(b)) => SecretVal::same_contents(a, b),
             (Value::Flow(a), Value::Flow(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
@@ -4351,14 +4393,19 @@ mod secret_tests {
 
     #[test]
     fn secrets_compare_by_contents_in_constant_time() {
-        let a = SecretVal::Bytes(SecretBytes::new(b"same".to_vec()));
-        let b = SecretVal::Bytes(SecretBytes::new(b"same".to_vec()));
-        let c = SecretVal::Bytes(SecretBytes::new(b"diff".to_vec()));
-        assert!(a.same_contents(&b));
-        assert!(!a.same_contents(&c));
-        let SecretVal::Bytes(x) = &b;
-        x.wipe();
-        assert!(!a.same_contents(&b));
+        let new = |b: &[u8]| Rc::new(SecretVal::Bytes(SecretBytes::new(b.to_vec())));
+        let (a, b, c) = (new(b"same"), new(b"same"), new(b"diff"));
+        assert!(SecretVal::same_contents(&a, &b));
+        assert!(SecretVal::same_contents(&b, &a));
+        assert!(!SecretVal::same_contents(&a, &c));
+        assert!(SecretVal::same_contents(&a, &a));
+        let (SecretVal::Bytes(x), SecretVal::Bytes(y)) = (&*a, &*b);
+        assert_eq!(SecretBytes::equal(x, x), Some(true));
+        y.wipe();
+        assert!(!SecretVal::same_contents(&a, &b));
+        assert!(SecretVal::same_contents(&b, &b));
+        assert_eq!(SecretBytes::equal(y, y), None);
+        assert_eq!(SecretBytes::equal(x, y), None);
         assert!(constant_time_eq(b"", b""));
         assert!(!constant_time_eq(b"a", b"ab"));
     }
