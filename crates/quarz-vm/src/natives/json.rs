@@ -1032,7 +1032,7 @@ fn generate(
                 escape(&interp.to_s(v)?, out);
                 return Ok(());
             }
-            if let Some(mid) = interp.has_user_method(v, "to_json", 0) {
+            if let Some(mid) = interp.has_user_method(v, "to_json", 0)? {
                 let r = interp.invoke(mid, v.clone(), smallvec![], vec![], None)?;
                 out.push_str(&interp.to_s(&r)?);
                 return Ok(());

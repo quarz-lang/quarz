@@ -343,7 +343,7 @@ pub(super) fn rewind(interp: &Interp, recv: &Value) -> EvalResult {
         source = &inner.recv;
     }
     let own = interp
-        .has_user_method(source, "rewind", 0)
+        .has_user_method(source, "rewind", 0)?
         .is_some_and(|m| interp.program.method(m).owner != interp.program.rt.enumerator);
     if matches!(source, Value::Object(_)) && own {
         interp.send(source, "rewind", smallvec::smallvec![], None)?;

@@ -958,6 +958,10 @@ pub struct Interp {
     pub local_utc: Cell<bool>,
     /// The declarations a compile-time run reflects on (docs/14).
     pub reflect: RefCell<Option<std::rc::Rc<dyn crate::reflect::Reflect>>>,
+    /// Whether this compile-time run has generated a method: only then
+    /// does a dispatch ask the run's record whether a generated method
+    /// would have answered it (`refuse_generated_over`, #967).
+    pub generated_any: Cell<bool>,
     /// Those of the other tasks of this worker that are suspended while
     /// handling one, swapped in when they run (`resume_task`).
     parked_rescuing: RefCell<FxHashMap<TaskId, Vec<Value>>>,
@@ -1240,6 +1244,7 @@ impl Interp {
             deadline: Cell::new(None),
             local_utc: Cell::new(false),
             reflect: RefCell::new(None),
+            generated_any: Cell::new(false),
             parked_rescuing: RefCell::new(FxHashMap::default()),
             native_bt: Cell::new(false),
             pending_flow: RefCell::new(None),
@@ -2743,6 +2748,94 @@ impl Interp {
     /// called on a class object not below its owner (one no check saw,
     /// docs/05 §3) is a TypeError.
     pub fn resolve_dynamic(&self, recv: &Value, mid: MethodId) -> Result<MethodId, Flow> {
+        let found = self.resolve_dynamic_here(recv, mid)?;
+        if self.generated_any.get() {
+            self.refuse_generated_over(recv, found)?;
+        }
+        Ok(found)
+    }
+
+    /// In a compile-time run that has generated methods: a call that
+    /// found `found` for `recv` where a method this statement generated
+    /// would have answered it, had the class's statements run, is
+    /// refused as a call by name to a class whose statements have not all
+    /// run is (#967, docs/14 §7): the generated method has no body until
+    /// then. It would have answered when it is of `found`'s name and side,
+    /// of a class `recv` is, below `found`'s owner (or, a class method on
+    /// a class object, standing in for a method of `Type`), and takes
+    /// exactly `found`'s positional calls (as many parameters, none
+    /// optional). The parameters' types are not compared: an approximation
+    /// that may refuse a generated overload of other types, never accept
+    /// a call a generated method would have answered.
+    pub fn refuse_generated_over(&self, recv: &Value, found: MethodId) -> Result<(), Flow> {
+        let Some(reflect) = self.reflect.borrow().clone() else {
+            return Ok(());
+        };
+        let m = self.program.method(found);
+        let world = &self.program.world;
+        let (min, max) = m.positional_arity();
+        // (A class object takes class methods in place of `Type`'s.)
+        let (class, singleton, type_method) = match recv {
+            Value::Class(c) => (*c, true, !m.singleton),
+            _ => (self.class_of(recv), false, false),
+        };
+        for (a, a_singleton, params) in reflect.generated_named(&m.name) {
+            let takes = params.is_some_and(|n| min == n && max == n);
+            if a_singleton == singleton
+                && takes
+                && world.class_is_a(class, a)
+                && (type_method || (a != m.owner && world.class_is_a(a, m.owner)))
+            {
+                return Err(self.err_compile_time(&format!(
+                    "`{}` of `{}` has no body at compile time: a method the runtime calls by name is lowered once the class's `static` statements ran, or when a call resolves to it (docs/14)",
+                    m.name,
+                    world.class(a).name
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// A compile-time run generated instance method `name` into `class`:
+    /// when it is `==` (or `hash`), the instances of `class` and of the
+    /// classes below it that compare (hash) in Rust, by identity (no such
+    /// method of their own in `RtClass::key_methods`), are compared
+    /// (hashed) by calling `Object#==` (`Object#hash`) from then on
+    /// (`crate::keys`), so that a table holding one asks
+    /// `refuse_generated_over` as any other dispatch does (#967). A class
+    /// with its own keeps it. Nothing is looked up: the rows stay the
+    /// lowering's, and identity is what `Object`'s methods are.
+    pub fn generated_key_method(&self, class: ClassId, singleton: bool, name: &str) {
+        if singleton || !matches!(name, "==" | "hash") {
+            return;
+        }
+        let world = &self.program.world;
+        let object = world.class(world.builtin.object);
+        let own = |n: &str| {
+            object.methods.get(n).and_then(|ids| {
+                ids.iter()
+                    .copied()
+                    .find(|&m| self.program.method(m).owner == world.builtin.object)
+            })
+        };
+        // (Only the generated one: the other keeps hashing or comparing
+        // as before, in Rust, so that a table built before agrees.)
+        let by = own(name);
+        for c in 0..world.classes.len() as ClassId {
+            if !world.class_is_a(c, class) {
+                continue;
+            }
+            let mut methods = crate::keys::of(c).unwrap_or_default();
+            if name == "==" {
+                methods.eq = methods.eq.or(by);
+            } else {
+                methods.hash = methods.hash.or(by);
+            }
+            crate::keys::add(c, methods);
+        }
+    }
+
+    fn resolve_dynamic_here(&self, recv: &Value, mid: MethodId) -> Result<MethodId, Flow> {
         let m = self.program.method(mid);
         if m.singleton {
             let class_side = m.dispatch() == quarz_ir::Dispatch::ClassSide;
@@ -3145,19 +3238,34 @@ impl Interp {
                 ),
             ));
         };
+        if self.generated_any.get() {
+            self.refuse_generated_over(recv, mid)?;
+        }
         self.invoke(mid, recv.clone(), args, kw, block)
     }
 
     /// Whether the receiver's class defines `name` itself (not via Object's
     /// native default).
-    pub fn has_user_method(&self, recv: &Value, name: &str, argc: usize) -> Option<MethodId> {
+    /// (In a compile-time run, a method this statement generated that
+    /// would answer is refused: `refuse_generated_over`.)
+    pub fn has_user_method(
+        &self,
+        recv: &Value,
+        name: &str,
+        argc: usize,
+    ) -> Result<Option<MethodId>, Flow> {
         let cid = self.class_of(recv);
-        let mid = self.find_method(cid, name, argc, false, false)?;
+        let Some(mid) = self.find_method(cid, name, argc, false, false) else {
+            return Ok(None);
+        };
+        if self.generated_any.get() {
+            self.refuse_generated_over(recv, mid)?;
+        }
         let m = self.program.method(mid);
         if m.owner == self.program.world.builtin.object && m.native_key.is_some() {
-            return None;
+            return Ok(None);
         }
-        Some(mid)
+        Ok(Some(mid))
     }
 
     // ----- invocation --------------------------------------------------------------------
@@ -3849,7 +3957,7 @@ impl Interp {
             Value::Str(s) => Ok(Cow::Borrowed(s)),
             Value::Short(s) => Ok(Cow::Borrowed(s.as_str())),
             Value::Object(_) => {
-                if let Some(mid) = self.has_user_method(v, "to_s", 0) {
+                if let Some(mid) = self.has_user_method(v, "to_s", 0)? {
                     let r = self.invoke(mid, v.clone(), smallvec![], vec![], None)?;
                     return Ok(Cow::Owned(self.to_s(&r)?.into_owned()));
                 }
@@ -3881,7 +3989,7 @@ impl Interp {
 
     pub fn inspect(&self, v: &Value) -> Result<String, Flow> {
         if let Value::Object(_) = v {
-            if let Some(mid) = self.has_user_method(v, "inspect", 0) {
+            if let Some(mid) = self.has_user_method(v, "inspect", 0)? {
                 let r = self.invoke(mid, v.clone(), smallvec![], vec![], None)?;
                 return Ok(self.to_s(&r)?.to_string());
             }
@@ -4132,7 +4240,7 @@ impl Interp {
     /// `a == b` with user-defined equality.
     pub fn values_equal(&self, a: &Value, b: &Value) -> Result<bool, Flow> {
         if let Value::Object(_) = a {
-            if let Some(mid) = self.has_user_method(a, "==", 1) {
+            if let Some(mid) = self.has_user_method(a, "==", 1)? {
                 let r = self.invoke(mid, a.clone(), smallvec![b.clone()], vec![], None)?;
                 return Ok(r.is_truthy());
             }

@@ -355,6 +355,9 @@ impl Interp {
                 None => return self.send(recv, name, args.iter().cloned().collect(), None),
             },
         };
+        if self.generated_any.get() {
+            self.refuse_generated_over(recv, mid)?;
+        }
         if argc <= 3 {
             if let Some(fast) = self.program.fast_natives[mid as usize] {
                 let refs: SmallVec<[&Value; 3]> = args.iter().collect();
