@@ -225,4 +225,65 @@ class DateTest < Test::Case
     assert_raise(JSON::DecodeError) { JSON.decode[Date]("\"2026-2-3\"") }
     assert_raise(JSON::DecodeError) { JSON.decode[Date]("1") }
   end
+  # #932: `Date.parse`, `parse?` and `Date(text)` read one rule (a
+  # native, `date_from_text`). Each text with what `parse?` gives (nil, or
+  # the date's text) and `parse`'s error message (nil where it reads one),
+  # recorded from main before the rule moved (bd9cf4f1, where both were
+  # written in Quarz), compared byte for byte.
+  def test_parse_table
+    rows: Array[[String, String?, String?]] = [
+      ["2026-11-20", "2026-11-20", nil],
+      ["2024-02-29", "2024-02-29", nil],
+      ["2023-02-29", nil, "\"2023-02-29\" is not a date written YYYY-MM-DD"],
+      ["1900-02-29", nil, "\"1900-02-29\" is not a date written YYYY-MM-DD"],
+      ["2000-02-29", "2000-02-29", nil],
+      ["0001-01-01", "0001-01-01", nil],
+      ["0000-01-01", nil, "\"0000-01-01\" is not a date written YYYY-MM-DD"],
+      ["9999-12-31", "9999-12-31", nil],
+      ["2026-13-01", nil, "\"2026-13-01\" is not a date written YYYY-MM-DD"],
+      ["2026-00-10", nil, "\"2026-00-10\" is not a date written YYYY-MM-DD"],
+      ["2026-01-00", nil, "\"2026-01-00\" is not a date written YYYY-MM-DD"],
+      ["2026-01-32", nil, "\"2026-01-32\" is not a date written YYYY-MM-DD"],
+      ["2026-04-31", nil, "\"2026-04-31\" is not a date written YYYY-MM-DD"],
+      ["2026-04-30", "2026-04-30", nil],
+      ["2026-4-01", nil, "\"2026-4-01\" is not a date written YYYY-MM-DD"],
+      ["26-04-01", nil, "\"26-04-01\" is not a date written YYYY-MM-DD"],
+      [" 2026-11-20", nil, "\" 2026-11-20\" is not a date written YYYY-MM-DD"],
+      ["2026-11-20 ", nil, "\"2026-11-20 \" is not a date written YYYY-MM-DD"],
+      ["2026-11-20\n", nil, "\"2026-11-20\\n\" is not a date written YYYY-MM-DD"],
+      ["\n2026-11-20", nil, "\"\\n2026-11-20\" is not a date written YYYY-MM-DD"],
+      ["+2026-11-20", nil, "\"+2026-11-20\" is not a date written YYYY-MM-DD"],
+      ["-2026-11-20", nil, "\"-2026-11-20\" is not a date written YYYY-MM-DD"],
+      ["2026/11/20", nil, "\"2026/11/20\" is not a date written YYYY-MM-DD"],
+      ["２０２６-11-20", nil, "\"２０２６-11-20\" is not a date written YYYY-MM-DD"],
+      ["2026-11-2x", nil, "\"2026-11-2x\" is not a date written YYYY-MM-DD"],
+      ["", nil, "\"\" is not a date written YYYY-MM-DD"],
+      ["2026-11-20T00:00:00", nil, "\"2026-11-20T00:00:00\" is not a date written YYYY-MM-DD"],
+      ["20261120", nil, "\"20261120\" is not a date written YYYY-MM-DD"],
+      ["10000-01-01", nil, "\"10000-01-01\" is not a date written YYYY-MM-DD"],
+      ["2026-11-+1", nil, "\"2026-11-+1\" is not a date written YYYY-MM-DD"],
+      ["2026-+1-20", nil, "\"2026-+1-20\" is not a date written YYYY-MM-DD"],
+    ]
+    rows.each do |row|
+      text, date, error = row
+      assert_equal(date, Date.parse?(text)&.to_s, text.inspect)
+      [-> { Date.parse(text) }, -> { Date(text) }].each do |read|
+        if message = error
+          e = assert_raise(ArgumentError) { read.call }
+          assert_equal(message, e.message, text.inspect)
+        else
+          assert_equal(date, read.call.to_s, text.inspect)
+        end
+      end
+    end
+  end
+
+  # #932: `Date(text)`, a function of `Kernel` as `Integer(text)` is,
+  # wherever a function is called.
+  def test_date_function
+    assert_equal(Date.new(2026, 11, 20), Date("2026-11-20"))
+    assert_equal(Date.new(2026, 11, 20), ::Date("2026-11-20"))
+    assert_equal(Date.new(2026, 11, 20), Kernel.Date("2026-11-20"))
+    assert_equal("Date", Date("2026-11-20").class.name)
+  end
 end

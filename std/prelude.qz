@@ -2451,21 +2451,10 @@ data Date(year: Int, month: Int, day: Int)
   # Date.parse("2026-11-20")   # => 2026-11-20
   # Date.parse("2026-02-30")   # raises ArgumentError
   # ```
-  def self.parse(text: String) -> Date
-    d = parse?(text)
-    raise ArgumentError, "#{text.inspect} is not a date written YYYY-MM-DD" if d.nil?
-    d
-  end
+  native def self.parse(text: String) -> Date
 
   # As [Date.parse], `nil` where it raises.
-  def self.parse?(text: String) -> Date?
-    return nil unless text.match?(/\A[0-9]{4}-[0-9]{2}-[0-9]{2}\z/)
-    year = text[0, 4].to_i
-    month = text[5, 2].to_i
-    day = text[8, 2].to_i
-    return nil if year < 1 || month < 1 || month > 12 || day < 1 || day > days_in_month(year, month)
-    Date.new(year, month, day)
-  end
+  native def self.parse?(text: String) -> Date?
 
   # The day of the week, 0 (Sunday) to 6 (Saturday), as [Time#wday].
   def wday -> Int = (days % 7 + 11) % 7
@@ -7909,6 +7898,31 @@ module Kernel
   native def Float(text: String) -> Float
   # `value.to_s`.
   native def String(value: Object) -> String
+  # The date written in `text`: [Date.parse], the same value and the
+  # same error.
+  #
+  # ```
+  # Date("2026-11-20")      # => 2026-11-20
+  # Date("2026-02-30")      # raises ArgumentError
+  # ```
+  #
+  # ## Raises
+  #
+  # [ArgumentError] when `text` is not a date written `YYYY-MM-DD`.
+  native def Date(text: String) -> Date
+  # The time written in `text`: [Time.parse], the same value and the
+  # same error.
+  #
+  # ```
+  # Time("2024-03-05 14:07:09Z")   # => 2024-03-05 14:07:09 UTC
+  # Time("yesterday")              # raises ArgumentError
+  # ```
+  #
+  # ## Raises
+  #
+  # [ArgumentError] when `text` is in none of [Time.parse]'s forms,
+  # [RangeError] when it is a time outside the range a [Time] holds.
+  native def Time(text: String) -> Time
 end
 
 # The command-line arguments given to the program, without the program's

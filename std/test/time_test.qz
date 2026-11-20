@@ -74,6 +74,19 @@ class TimeParseTest < Test::Case
     e = assert_raise(ArgumentError) { Time.parse("garbage"); nil }
     assert_equal("no time information in \"garbage\"", e.message)
   end
+
+  # #932: `Time(text)`, `Time.parse`'s value and error, a function of
+  # `Kernel` as `Integer(text)` is.
+  def test_time_function
+    ["2026-01-02T03:04:05Z", "2026-01-02 03:04:05.5 +0900", "2024-03-05 14:07:09 UTC"].each do |text|
+      assert_equal(Time.parse(text), Time(text))
+      assert_equal(Time.parse(text).inspect, Time(text).inspect)
+    end
+    assert_equal(Time.parse("2026-01-02T03:04:05Z"), ::Time("2026-01-02T03:04:05Z"))
+    assert_equal(Time.parse("2026-01-02T03:04:05Z"), Kernel.Time("2026-01-02T03:04:05Z"))
+    e = assert_raise(ArgumentError) { Time("garbage"); nil }
+    assert_equal("no time information in \"garbage\"", e.message)
+  end
 end
 
 class TimeCompareTest < Test::Case

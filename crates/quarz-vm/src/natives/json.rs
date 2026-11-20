@@ -357,45 +357,14 @@ impl Decoder<'_> {
             }
             Node::Date(date) if class == c.string => {
                 let s = string(self.interp, &inner.unwrap_or(Value::Nil), "string")?.to_string();
-                // `YYYY-MM-DD` (`Date.parse?`'s form); the calendar is
-                // `Date#initialize`'s to check, whose error is the shape's.
-                let b = s.as_bytes();
-                let shaped = b.len() == 10
-                    && b[4] == b'-'
-                    && b[7] == b'-'
-                    && b.iter()
-                        .enumerate()
-                        .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit());
-                if !shaped {
-                    return Err(self.shape(&node, &self.found(v)));
+                // (`Date.parse?`'s reading, `date_from_text`: nil for a
+                // text of another shape or a day that does not exist,
+                // the shape's error here.)
+                match super::time::date_from_text(self.interp, date, &s) {
+                    Ok(Some(d)) => Ok(d),
+                    Ok(None) => Err(self.shape(&node, &self.found(v))),
+                    Err(e) => Err(DecodeFail::Raised(e)),
                 }
-                let part = |r: std::ops::Range<usize>| Value::Int(s[r].parse::<i64>().unwrap_or(0));
-                let world = &self.interp.program.world;
-                let init = world.class(date).methods.get("initialize").and_then(|ids| {
-                    ids.iter().copied().find(|&i| {
-                        self.interp.program.method(i).synth != quarz_ir::RtSynth::DataInit
-                    })
-                });
-                self.interp
-                    .construct(
-                        date,
-                        init,
-                        smallvec![part(0..4), part(5..7), part(8..10)],
-                        Vec::new(),
-                        None,
-                    )
-                    .map_err(|e| match e {
-                        // (A day that does not exist; anything else
-                        // `initialize` gives goes through as it is.)
-                        Flow::Raise(exc)
-                            if self
-                                .interp
-                                .exception_is_a(&exc, self.interp.program.exc.argument_error) =>
-                        {
-                            self.shape(&node, &self.found(v))
-                        }
-                        other => DecodeFail::Raised(other),
-                    })
             }
             Node::Decimal(decimal, parse) if class == c.number || class == c.string => {
                 // The number's text as written (raw), an integer's digits,

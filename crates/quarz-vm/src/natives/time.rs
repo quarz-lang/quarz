@@ -11,6 +11,9 @@ use chrono::{
 use crate::interp::{Args, EvalResult, Flow, Interp, NativeFn};
 use crate::value::*;
 
+use quarz_ir::ClassId;
+use smallvec::smallvec;
+
 use super::{float, int, string};
 
 const NS: i64 = 1_000_000_000;
@@ -31,15 +34,16 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "Time.utc", |i, _, a| make(i, &a, true));
     native!(m, "Time.local", |i, _, a| make(i, &a, false));
-    native!(m, "Time.parse", |i, _, a| {
+    native!(m, "Time.parse", |i, _, a| time_parse(i, &a));
+    // `Time(text)` (#932): `Time.parse`, the same value and error.
+    native!(m, "Kernel#Time", |i, _, a| time_parse(i, &a));
+    // `Date.parse`, `Date.parse?` and `Date(text)` (#932): one rule,
+    // `date_from_text`'s.
+    native!(m, "Date.parse", |i, _, a| date_parse(i, &a));
+    native!(m, "Kernel#Date", |i, _, a| date_parse(i, &a));
+    native!(m, "Date.parse?", |i, _, a| {
         let text = string(i, a.arg(0), "text")?;
-        match parse(text.trim(), i.local_utc.get()) {
-            Ok((ns, off, utc)) => Ok(time(ns, off, utc)),
-            Err(Parse::OutOfRange) => Err(i.raise(i.program.exc.range_error, "time out of range")),
-            // As `Time.local` for a time that does not exist there.
-            Err(Parse::Gap) => Err(i.err_arg("argument out of range")),
-            Err(Parse::NoTime) => Err(i.err_arg(&format!("no time information in {:?}", text))),
-        }
+        Ok(date_from_text(i, date_class(i)?, text)?.unwrap_or(Value::Nil))
     });
     native!(m, "Time.iso8601", |i, _, a| {
         let text = string(i, a.arg(0), "text")?;
@@ -478,4 +482,81 @@ fn strftime(t: &TimeVal, fmt: &str) -> Option<String> {
     let mut out = String::new();
     write!(out, "{}", dt.format(&translated)).ok()?;
     Some(out)
+}
+
+/// `Time.parse(text)`, and `Time(text)`.
+fn time_parse(i: &Interp, a: &Args) -> EvalResult {
+    let text = string(i, a.arg(0), "text")?;
+    match parse(text.trim(), i.local_utc.get()) {
+        Ok((ns, off, utc)) => Ok(time(ns, off, utc)),
+        Err(Parse::OutOfRange) => Err(i.raise(i.program.exc.range_error, "time out of range")),
+        // As `Time.local` for a time that does not exist there.
+        Err(Parse::Gap) => Err(i.err_arg("argument out of range")),
+        Err(Parse::NoTime) => Err(i.err_arg(&format!("no time information in {:?}", text))),
+    }
+}
+
+
+/// The class `Date` (the prelude's).
+fn date_class(i: &Interp) -> Result<ClassId, Flow> {
+    i.program
+        .world
+        .class_by_name("Date")
+        .ok_or_else(|| i.err_type("no class Date"))
+}
+
+/// `Date.parse(text)`, and `Date(text)`: the date `date_from_text`
+/// reads, else an `ArgumentError` naming the text.
+fn date_parse(i: &Interp, a: &Args) -> EvalResult {
+    let text = string(i, a.arg(0), "text")?;
+    match date_from_text(i, date_class(i)?, text)? {
+        Some(d) => Ok(d),
+        None => Err(i.err_arg(&format!(
+            "{} is not a date written YYYY-MM-DD",
+            crate::interp::inspect_str(text)
+        ))),
+    }
+}
+
+/// The `Date` (of the class `date`) written in `text` as ISO 8601's
+/// `YYYY-MM-DD`, exactly: ASCII digits, nothing before or after; `None`
+/// for any other text, or for a day that does not exist. The one rule
+/// of `Date.parse`, `Date.parse?`, `Date(text)` and `JSON.decode[Date]`.
+///
+/// The shape is checked here; the calendar (the year 1 to 9999, the
+/// month, the month's days) is `Date#initialize`'s, which this calls by
+/// its runtime name with the year, month and day as three `Int`s, as
+/// `new` would (an `ArgumentError` from it is `None`; anything else it
+/// raises goes through). So a change to `Date`'s fields or to its
+/// `initialize`'s parameters breaks this, and the four readers with it.
+/// (`initialize` is a runtime name, which shake keeps for every class it
+/// keeps; the natives' result types, `Date` and `Date?`, keep `Date`.)
+pub(crate) fn date_from_text(i: &Interp, date: ClassId, text: &str) -> Result<Option<Value>, Flow> {
+    let b = text.as_bytes();
+    let shaped = b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter()
+            .enumerate()
+            .all(|(k, c)| k == 4 || k == 7 || c.is_ascii_digit());
+    if !shaped {
+        return Ok(None);
+    }
+    let part = |r: std::ops::Range<usize>| Value::Int(text[r].parse::<i64>().unwrap_or(0));
+    let init = i.program.world.class(date).methods.get("initialize").and_then(|ids| {
+        ids.iter()
+            .copied()
+            .find(|&id| i.program.method(id).synth != quarz_ir::RtSynth::DataInit)
+    });
+    match i.construct(
+        date,
+        init,
+        smallvec![part(0..4), part(5..7), part(8..10)],
+        Vec::new(),
+        None,
+    ) {
+        Ok(d) => Ok(Some(d)),
+        Err(Flow::Raise(exc)) if i.exception_is_a(&exc, i.program.exc.argument_error) => Ok(None),
+        Err(e) => Err(e),
+    }
 }
