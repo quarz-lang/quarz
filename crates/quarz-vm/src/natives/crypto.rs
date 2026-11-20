@@ -269,120 +269,21 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
 }
 
-/// `Crypto::Secret` (#963): bytes the runtime clears on `wipe` and on
-/// the last release (`value::SecretBytes`).
+/// `Crypto.random_secret` (#963): random bytes straight into a
+/// `Bytes::Secret`.
 fn register_secret(m: &mut super::Registry<NativeFn>) {
-    native!(m, "Crypto::Secret.random", |i, _, a| {
+    native!(m, "Crypto.random_secret", |i, _, a| {
         let n = super::int(i, a.arg(0), "n")?;
         if !(0..=RANDOM_MAX).contains(&n) {
-            return Err(i.err_arg(&format!("random: 0 to {RANDOM_MAX} bytes, not {n}")));
+            return Err(i.err_arg(&format!("random_secret: 0 to {RANDOM_MAX} bytes, not {n}")));
         }
         let mut buf = vec![0u8; n as usize];
         if let Err(e) = getrandom::fill(&mut buf) {
             clear_bytes(&mut buf);
             return Err(error(i, format!("the system's random source failed: {e}")));
         }
-        Ok(secret(buf))
+        Ok(super::bytes::secret(buf))
     });
-    native!(m, "Crypto::Secret.decode64_with", |i, _, a| {
-        use base64::Engine;
-        let text = string(i, a.arg(0), "text")?;
-        let alphabet = if a.arg(1).is_truthy() {
-            &base64::alphabet::URL_SAFE
-        } else {
-            &base64::alphabet::STANDARD
-        };
-        // Decoded straight into a buffer of the most it can need, then
-        // shortened in place: no other copy of the bytes is made.
-        let mut buf = vec![0u8; base64::decoded_len_estimate(text.len())];
-        match super::digest::decoder(alphabet, text).decode_slice(text, &mut buf) {
-            Ok(n) => {
-                clear_bytes(&mut buf[n..]);
-                buf.truncate(n);
-                Ok(secret(buf))
-            }
-            Err(e) => {
-                clear_bytes(&mut buf);
-                Err(i.err_arg(&format!("invalid base64: {e}")))
-            }
-        }
-    });
-    native!(m, "Crypto::Secret.of", |i, _, a| match a.arg(0) {
-        Value::Bytes(b) => Ok(secret(b.to_vec())),
-        Value::BytesBuilder(b) => {
-            // The builder's contents, copied at their size, then cleared
-            // in the builder, which is left empty.
-            let mut taken = std::mem::take(&mut *b.borrow_mut());
-            let buf = taken.as_slice().to_vec();
-            clear_bytes(&mut taken);
-            Ok(secret(buf))
-        }
-        v => Err(i.err_type(&format!(
-            "a secret is made of Bytes or a Bytes::Builder, not {}",
-            i.class_name(v)
-        ))),
-    });
-    native!(m, "Crypto::Secret#size", |i, r, _| {
-        Ok(Value::Int(secret_of(i, r)?.size() as i64))
-    });
-    native!(m, "Crypto::Secret#wipe", |i, r, _| {
-        secret_of(i, r)?.wipe();
-        Ok(Value::Nil)
-    });
-    native!(m, "Crypto::Secret#wiped?", |i, r, _| {
-        Ok(Value::Bool(secret_of(i, r)?.wiped()))
-    });
-    native!(m, "Crypto::Secret#==", |i, r, a| {
-        let x = secret_of(i, r)?;
-        let Value::Secret(other) = a.arg(0) else {
-            unread(i, x)?;
-            return Ok(Value::Bool(false));
-        };
-        let SecretVal::Bytes(y) = &**other;
-        // Raises for a wiped one, itself included (`Value`'s `==`, which
-        // cannot raise, differs there: `SecretVal::same_contents`).
-        let same = SecretBytes::equal(x, y).ok_or_else(|| wiped(i))?;
-        Ok(Value::Bool(same))
-    });
-    native!(m, "Crypto::Secret#expose_bytes", |i, r, _| {
-        let x = secret_of(i, r)?;
-        x.with(|b| Value::bytes(b.to_vec())).ok_or_else(|| wiped(i))
-    });
-    native!(m, "Crypto::Secret#__cleared?", |i, r, _| {
-        let x = secret_of(i, r)?;
-        Ok(Value::Bool(x.wiped() && x.all_zero()))
-    });
-}
-
-/// A new `Crypto::Secret` holding `buf`.
-fn secret(buf: Vec<u8>) -> Value {
-    Value::Secret(crate::rc::Rc::new(SecretVal::Bytes(SecretBytes::new(buf))))
-}
-
-fn secret_of<'a>(interp: &Interp, v: &'a Value) -> Result<&'a SecretBytes, Flow> {
-    match v {
-        Value::Secret(s) => {
-            let SecretVal::Bytes(b) = &**s;
-            Ok(b)
-        }
-        v => Err(interp.err_type(&format!(
-            "a Crypto::Secret was expected, not {}",
-            interp.class_name(v)
-        ))),
-    }
-}
-
-/// Raises when `x` was wiped: every use of a wiped secret but `size` and
-/// `wiped?` does.
-fn unread(interp: &Interp, x: &SecretBytes) -> Result<(), Flow> {
-    if x.wiped() {
-        return Err(wiped(interp));
-    }
-    Ok(())
-}
-
-fn wiped(interp: &Interp) -> Flow {
-    error(interp, "the secret was wiped")
 }
 
 fn register_argon2(m: &mut super::Registry<NativeFn>) {

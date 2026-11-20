@@ -387,7 +387,7 @@ fn export_value(
         count_move();
         return Ok(Node::Whole(SharedValue::new(v)));
     }
-    // A `Crypto::Secret` (#963): the helper thread gets the same buffer,
+    // A `Bytes::Secret` (#963): the helper thread gets the same buffer,
     // shared, never a copy, so that one `wipe` or one release clears the
     // only one there is.
     if let Value::Secret(_) = &v {

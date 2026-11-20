@@ -88,6 +88,28 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Base64.urlsafe_decode", |i, _, a| {
         decode(i, &alphabet::URL_SAFE, string(i, a.arg(0), "text")?)
     });
+    native!(m, "Base64.decode_secret_with", |i, _, a| {
+        let text = string(i, a.arg(0), "text")?;
+        let alphabet = if a.arg(1).is_truthy() {
+            &alphabet::URL_SAFE
+        } else {
+            &alphabet::STANDARD
+        };
+        // Decoded straight into a buffer of the most it can need, then
+        // shortened in place: no other copy of the bytes is made (#963).
+        let mut buf = vec![0u8; base64::decoded_len_estimate(text.len())];
+        match decoder(alphabet, text).decode_slice(text, &mut buf) {
+            Ok(n) => {
+                clear_bytes(&mut buf[n..]);
+                buf.truncate(n);
+                Ok(super::bytes::secret(buf))
+            }
+            Err(e) => {
+                clear_bytes(&mut buf);
+                Err(i.err_arg(&format!("invalid base64: {e}")))
+            }
+        }
+    });
 }
 
 /// The longest key PBKDF2 derives with HMAC-SHA-256.
@@ -110,8 +132,8 @@ fn decode(interp: &Interp, alphabet: &alphabet::Alphabet, text: &str) -> Result<
 }
 
 /// The decoder of `text` (`decode`'s rule on padding), also for
-/// `Crypto::Secret.decode64`, which decodes into a buffer of its own.
-pub(super) fn decoder(alphabet: &alphabet::Alphabet, text: &str) -> GeneralPurpose {
+/// `Base64.decode_secret`, which decodes into a buffer of its own.
+fn decoder(alphabet: &alphabet::Alphabet, text: &str) -> GeneralPurpose {
     let padding = if text.ends_with('=') {
         DecodePaddingMode::RequireCanonical
     } else {

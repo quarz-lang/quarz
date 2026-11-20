@@ -604,6 +604,8 @@ pub struct ExcClasses {
     pub tls_error: ClassId,
     pub tls_certificate_error: ClassId,
     pub crypto_error: ClassId,
+    /// `Bytes::Secret::WipedError`: a use of a wiped secret.
+    pub secret_wiped: ClassId,
     pub eof_error: ClassId,
     pub not_implemented: ClassId,
     pub system_exit: ClassId,
@@ -634,7 +636,7 @@ pub struct RtClasses {
     pub unix_server: ClassId,
     pub tls_socket: ClassId,
     pub random: ClassId,
-    /// `crypto`'s `Crypto::Secret` (`ClassId::MAX` when not required).
+    /// `Bytes::Secret`.
     pub secret: ClassId,
     pub file: ClassId,
     pub math: ClassId,
@@ -1114,6 +1116,7 @@ impl Interp {
             tls_error: library_class("TLS::Error"),
             tls_certificate_error: library_class("TLS::CertificateError"),
             crypto_error: library_class("Crypto::Error"),
+            secret_wiped: class_by_name("Bytes::Secret::WipedError"),
             eof_error: class_by_name("EOFError"),
             not_implemented: class_by_name("NotImplementedError"),
             system_exit: class_by_name("SystemExit"),
@@ -1136,7 +1139,7 @@ impl Interp {
             unix_server: library_class("UNIXServer"),
             tls_socket: library_class("TLSSocket"),
             random: class_by_name("Random"),
-            secret: library_class("Crypto::Secret"),
+            secret: class_by_name("Bytes::Secret"),
             file: class_by_name("File"),
             math: class_by_name("Math"),
             process: class_by_name("Process"),
@@ -4095,7 +4098,7 @@ impl Interp {
             Value::Random(r) => format!("#<Random seed={}>", r.borrow().seed),
             // Nothing of it, not even its size (#963).
             Value::Secret(s) => match &**s {
-                crate::value::SecretVal::Bytes(_) => "#<Crypto::Secret>".to_string(),
+                crate::value::SecretVal::Bytes(_) => "#<Bytes::Secret>".to_string(),
             },
             Value::Bytes(b) => natives::bytes::inspect_bytes(b),
             Value::BytesBuilder(b) => natives::bytes::inspect_bytes(&b.borrow()),

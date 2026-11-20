@@ -10,6 +10,7 @@ use smallvec::smallvec;
 use super::{block, int, string};
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
+    register_secret(m);
     native!(m, "Bytes.new", |_, _, _| Ok(Value::bytes(Vec::new())));
     native!(m, "Bytes.[]", |i, _, a| {
         let mut out = Vec::with_capacity(a.pos.len());
@@ -332,4 +333,81 @@ pub fn inspect_bytes(data: &[u8]) -> String {
     }
     out.push('"');
     out
+}
+
+/// `Bytes::Secret` (#963): bytes the runtime clears on `wipe` and on the
+/// last release (`value::SecretBytes`). Its constructors that need a
+/// module are `Crypto.random_secret` and `Base64.decode_secret`.
+fn register_secret(m: &mut super::Registry<NativeFn>) {
+    native!(m, "Bytes::Secret.of", |i, _, a| match a.arg(0) {
+        Value::Bytes(b) => Ok(secret(b.to_vec())),
+        Value::BytesBuilder(b) => {
+            // The builder's contents, copied at their size, then cleared
+            // in the builder, which is left empty.
+            let mut taken = std::mem::take(&mut *b.borrow_mut());
+            let buf = taken.as_slice().to_vec();
+            clear_bytes(&mut taken);
+            Ok(secret(buf))
+        }
+        v => Err(i.err_type(&format!(
+            "a secret is made of Bytes or a Bytes::Builder, not {}",
+            i.class_name(v)
+        ))),
+    });
+    native!(m, "Bytes::Secret#size", |i, r, _| {
+        Ok(Value::Int(secret_of(i, r)?.size() as i64))
+    });
+    native!(m, "Bytes::Secret#wipe", |i, r, _| {
+        secret_of(i, r)?.wipe();
+        Ok(Value::Nil)
+    });
+    native!(m, "Bytes::Secret#wiped?", |i, r, _| {
+        Ok(Value::Bool(secret_of(i, r)?.wiped()))
+    });
+    native!(m, "Bytes::Secret#==", |i, r, a| {
+        let x = secret_of(i, r)?;
+        let Value::Secret(other) = a.arg(0) else {
+            if x.wiped() {
+                return Err(wiped(i));
+            }
+            return Ok(Value::Bool(false));
+        };
+        let SecretVal::Bytes(y) = &**other;
+        // Raises for a wiped one, itself included (`Value`'s `==`, which
+        // cannot raise, differs there: `SecretVal::same_contents`).
+        let same = SecretBytes::equal(x, y).ok_or_else(|| wiped(i))?;
+        Ok(Value::Bool(same))
+    });
+    native!(m, "Bytes::Secret#expose_bytes", |i, r, _| {
+        let x = secret_of(i, r)?;
+        x.with(|b| Value::bytes(b.to_vec())).ok_or_else(|| wiped(i))
+    });
+    native!(m, "Bytes::Secret#__cleared?", |i, r, _| {
+        let x = secret_of(i, r)?;
+        Ok(Value::Bool(x.wiped() && x.all_zero()))
+    });
+}
+
+/// A new `Bytes::Secret` holding `buf` (made at its final size).
+pub(super) fn secret(buf: Vec<u8>) -> Value {
+    Value::Secret(Rc::new(SecretVal::Bytes(SecretBytes::new(buf))))
+}
+
+/// The secret bytes of a `Bytes::Secret` receiver or argument.
+pub(super) fn secret_of<'a>(interp: &Interp, v: &'a Value) -> Result<&'a SecretBytes, Flow> {
+    match v {
+        Value::Secret(s) => {
+            let SecretVal::Bytes(b) = &**s;
+            Ok(b)
+        }
+        v => Err(interp.err_type(&format!(
+            "a Bytes::Secret was expected, not {}",
+            interp.class_name(v)
+        ))),
+    }
+}
+
+/// What a use of a wiped secret raises (but `size` and `wiped?`).
+pub(super) fn wiped(interp: &Interp) -> Flow {
+    interp.raise(interp.program.exc.secret_wiped, "the secret was wiped")
 }

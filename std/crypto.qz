@@ -61,111 +61,15 @@ module Crypto
   # ```
   native def self.secure_compare(a: Bytes | String, b: Bytes | String) -> Bool
 
-  # Key material that the runtime overwrites with zeros when it is no
-  # longer needed: on [wipe], and when the last reference to it goes
-  # (natively: no `deinitialize` to write). Use it for keys, decrypted
-  # key material and passwords, to shorten how long and in how many
-  # places a secret lives in memory.
-  #
-  # It is made without passing through a [Bytes] where it can be: drawn
-  # from the system's random source ([random]), decoded from Base64
-  # ([decode64]). [of] takes a [Bytes] (which stays, and is not cleared)
-  # or a [Bytes::Builder] (whose contents it takes and clears).
-  #
-  # Immutable but for [wipe], and Shareable: tasks, on any worker, and
-  # [Task.blocking]'s helper thread hold the same buffer, never a copy;
-  # `dup` and `clone` give the same secret too.
-  # So [wipe] ends the secret for every task holding it: any use but
-  # [size] and [wiped?] then raises [Crypto::Error], in every task.
-  #
-  # [inspect] and [to_s] show nothing of it, not even its size; [==]
-  # compares in constant time; [expose_bytes] gives a plain [Bytes] copy,
-  # which nothing clears. A secret cannot be baked into the program
-  # (`static`, a constant computed at compile time).
-  #
-  # What it cannot do: clear what held the secret before it was made (an
-  # HTTP response body, TLS's buffers, a JSON or Base64 text, a [String]
-  # or [Bytes] of the program, an [expose_bytes] copy), what the
-  # operating system keeps (swap, core dumps), or a secret in a constant
-  # initialized at run time before it is wiped (a constant lives as long
-  # as the program).
+  # [n] bytes (0 to 1 MiB, [ArgumentError] otherwise) from the
+  # operating system's cryptographic random source, as [random_bytes]
+  # draws them, straight into a [Bytes::Secret]: no [Bytes] of them is
+  # made.
   #
   # ```
-  # key = Crypto::Secret.random(32)
-  # key.size                                         # => 32
-  # key.inspect                                      # => "#<Crypto::Secret>"
-  # key == Crypto::Secret.of(key.expose_bytes)       # => true
-  # key.wipe
-  # key.wiped?                                       # => true
+  # Crypto.random_secret(32).size    # => 32
   # ```
-  class Secret
-    include Shareable
-
-    # [n] bytes (0 to 1 MiB, [ArgumentError] otherwise) from the
-    # operating system's cryptographic random source, as
-    # [Crypto.random_bytes] draws them.
-    native def self.random(n: Int) -> Secret
-
-    # The bytes [text] encodes in Base64 (RFC 4648; with [urlsafe], the
-    # URL-safe alphabet), decoded straight into the secret: padded as
-    # [Base64.encode] pads, or with no padding; [ArgumentError] otherwise.
-    #
-    # ```
-    # Crypto::Secret.decode64("a2V5") == Crypto::Secret.of(b"key")    # => true
-    # ```
-    def self.decode64(text: String, *, urlsafe: Bool = false) -> Secret = decode64_with(text, urlsafe)
-
-    # The bytes of [bytes] (which stays as it is: it is not cleared).
-    native def self.of(bytes: Bytes) -> Secret
-
-    # The bytes [builder] holds, taken: the builder is cleared and left
-    # empty. Only its current buffer is cleared: the buffers it outgrew
-    # while bytes were appended were given back uncleared, so make a
-    # secret with [random] or [decode64] rather than by appending.
-    #
-    # ```
-    # b = Bytes::Builder.new
-    # b << 1 << 2
-    # Crypto::Secret.of(b).size     # => 2
-    # b.size                        # => 0
-    # ```
-    native def self.of(builder: Bytes::Builder) -> Secret
-
-    # Its size in bytes, wiped or not.
-    native def size -> Int
-
-    # Overwrites the bytes with zeros now. Every reference, in every task,
-    # sees it wiped: a use but [size] and [wiped?] then raises
-    # [Crypto::Error]. Wiping again does nothing.
-    native def wipe -> Void
-
-    # Whether it was wiped.
-    native def wiped? -> Bool
-
-    # Whether [other] is a secret of the same bytes, compared in constant
-    # time when the sizes are equal ([Crypto.secure_compare]'s rule).
-    # Raises [Crypto::Error] when either was wiped, `s == s` included
-    # (collections, which cannot raise, still find a wiped secret equal
-    # to itself: a [Hash] key, `uniq`).
-    native def ==(other: Object) -> Bool
-
-    # A plain [Bytes] copy of the bytes, which nothing clears: asked for
-    # explicitly, for an API that takes [Bytes] only. Raises
-    # [Crypto::Error] when wiped.
-    native def expose_bytes -> Bytes
-
-    # Nothing of the secret.
-    def inspect -> String = "#<Crypto::Secret>"
-
-    # Nothing of the secret.
-    def to_s -> String = inspect
-
-    private native def self.decode64_with(text: String, urlsafe: Bool) -> Secret
-
-    # For the tests: whether it was wiped and its buffer, kept until the
-    # last release, holds zeros only.
-    native def __cleared? -> Bool
-  end
+  native def self.random_secret(n: Int) -> Bytes::Secret
 
   # AES, in its authenticated mode GCM.
   module AES
