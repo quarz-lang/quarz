@@ -286,4 +286,29 @@ class DateTest < Test::Case
     assert_equal(Date.new(2026, 11, 20), Kernel.Date("2026-11-20"))
     assert_equal("Date", Date("2026-11-20").class.name)
   end
+
+  # #932: the calendar is checked twice, by `Date.parse?`'s native
+  # (`date_exists`, so that a day that does not exist raises nothing)
+  # and by `Date#initialize`. For each year here, month 0 to 13 and day 0
+  # to 32: the text is refused exactly where `Date.new` raises, and read
+  # as the date `Date.new` makes where it does not.
+  def test_parse_agrees_with_new
+    [1, 4, 100, 400, 1900, 2000, 2023, 2024, 9998, 9999].each do |y|
+      (0..13).each do |m|
+        (0..32).each do |d|
+          text = "%04d-%02d-%02d" % [y, m, d]
+          made = begin
+                   Date.new(y, m, d)
+                 rescue ArgumentError
+                   nil
+                 end
+          read = Date.parse?(text)
+          assert_equal(made.nil?, read.nil?, text)
+          if (a = made) && (b = read)
+            assert_equal(a, b, text)
+          end
+        end
+      end
+    end
+  end
 end
