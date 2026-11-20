@@ -1,0 +1,10 @@
+# A program's own `def Date` of the built-in's signature hides it (#932,
+# docs/01 §1): `Date(...)` and `::Date(...)` are the program's,
+# `Kernel.Date(...)` the built-in. One of another signature is an
+# overload beside it.
+def Date(text: String) -> String = "mine #{text}"
+def Date(n: Int) -> String = "mine #{n}"
+puts Date("2026-11-20")
+puts ::Date("2026-11-20")
+puts Kernel.Date("2026-11-20")
+puts Date(3)
