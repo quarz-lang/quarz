@@ -25,9 +25,11 @@ rustc-hash = "2"
 chrono = "0.4"
 smallvec = "1"
 unicode-segmentation = "1"
-# `std/digest.qz` and `std/base64.qz`.
-sha2 = "0.11"
-hmac = "0.13"
+# `std/digest.qz` and `std/base64.qz`. `zeroize`: an HMAC key and the
+# hash states are cleared when dropped (#963), named here rather than
+# left to `rsa`'s own choice of features (which turns it on too).
+sha2 = { version = "0.11", features = ["zeroize"] }
+hmac = { version = "0.13", features = ["zeroize"] }
 pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
 md5 = { package = "md-5", version = "0.11" }
 base64 = "0.23"

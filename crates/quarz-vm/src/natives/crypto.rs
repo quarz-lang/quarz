@@ -83,7 +83,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "Crypto::RSA.private_der", |i, _, a| {
         let key = private_from_der(bytes(i, a.arg(0), "der")?).map_err(|e| error(i, e))?;
-        Ok(Value::bytes(private_pkcs8(i, &key)?))
+        Ok(cleared_into_bytes(private_pkcs8(i, &key)?))
     });
     native!(m, "Crypto::RSA.private_pem", |i, _, a| {
         let (label, der) = one_block(bytes(i, a.arg(0), "pem")?).map_err(|e| error(i, e))?;
@@ -94,7 +94,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             other => Err(format!("not a private key: {other}")),
         }
         .map_err(|e| error(i, e))?;
-        Ok(Value::bytes(private_pkcs8(i, &key)?))
+        Ok(cleared_into_bytes(private_pkcs8(i, &key)?))
     });
     native!(m, "Crypto::RSA.public_der", |i, _, a| {
         let key = public_from_der(bytes(i, a.arg(0), "der")?).map_err(|e| error(i, e))?;
@@ -123,11 +123,11 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 let key =
                     PrivateKey::new(&mut rand::rng(), bits as usize).map_err(|e| e.to_string())?;
                 key.to_pkcs8_der()
-                    .map(|d| d.as_bytes().to_vec())
+                    .map(|d| Zeroizing::new(d.as_bytes().to_vec()))
                     .map_err(|e| e.to_string())
             })?
             .map_err(|e| error(i, format!("generating a key failed: {e}")))?;
-        Ok(Value::bytes(der))
+        Ok(cleared_into_bytes(der))
     });
     native!(m, "Crypto::RSA::PrivateKey#to_pem", |i, r, a| {
         let key = private_key(i, r)?;
@@ -147,12 +147,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::string(pem))
     });
     native!(m, "Crypto::RSA.public_of", |i, _, a| {
-        let key = cached(
-            i,
-            &PRIVATE,
-            bytes(i, a.arg(0), "der")?.to_vec(),
-            private_from_pkcs8,
-        )?;
+        let key = cached(i, &PRIVATE, bytes(i, a.arg(0), "der")?, private_from_pkcs8)?;
         Ok(Value::bytes(public_spki(i, &key.to_public_key())?))
     });
     native!(m, "Crypto::RSA::PrivateKey#bits", |i, r, _| {
@@ -270,7 +265,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::string(pem))
     });
     native!(m, "Crypto::RSA::PublicKey#fingerprint", |i, r, _| {
-        Ok(Value::bytes(Sha256::digest(der_field(i, r)?).to_vec()))
+        Ok(Value::bytes(Sha256::digest(&*der_field(i, r)?).to_vec()))
     });
 }
 
@@ -732,7 +727,7 @@ fn usable(interp: &Interp, key: &PublicKey) -> Result<(), Flow> {
 
 /// The one PEM block of `text` (whitespace around it allowed): its label
 /// and DER.
-fn one_block(text: &[u8]) -> Result<(String, Vec<u8>), String> {
+fn one_block(text: &[u8]) -> Result<(String, Zeroizing<Vec<u8>>), String> {
     let text = std::str::from_utf8(text).map_err(|_| "a PEM text is ASCII".to_string())?;
     let text = text.trim();
     if text.contains("Proc-Type: 4,ENCRYPTED") {
@@ -752,7 +747,7 @@ fn one_block(text: &[u8]) -> Result<(String, Vec<u8>), String> {
     }
     let (label, der) =
         pem_rfc7468::decode_vec(text.as_bytes()).map_err(|e| format!("bad PEM: {e}"))?;
-    Ok((label.to_string(), der))
+    Ok((label.to_string(), Zeroizing::new(der)))
 }
 
 /// The algorithm of a PKCS#8 or SPKI envelope that is not RSA, by name
@@ -877,10 +872,18 @@ fn public_from_der(der: &[u8]) -> Result<PublicKey, String> {
     }
 }
 
-fn private_pkcs8(interp: &Interp, key: &PrivateKey) -> Result<Vec<u8>, Flow> {
+/// A private key's PKCS#8 DER, in a buffer cleared when dropped.
+fn private_pkcs8(interp: &Interp, key: &PrivateKey) -> Result<Zeroizing<Vec<u8>>, Flow> {
     key.to_pkcs8_der()
-        .map(|d| d.as_bytes().to_vec())
+        .map(|d| Zeroizing::new(d.as_bytes().to_vec()))
         .map_err(|e| error(interp, format!("encoding the key failed: {e}")))
+}
+
+/// A `Bytes` of `der`'s contents: `Value::bytes` would copy a `Vec` and
+/// give it back uncleared, this clears it (#963). The `Bytes` itself is
+/// what the caller asked for, and stays.
+fn cleared_into_bytes(der: Zeroizing<Vec<u8>>) -> Value {
+    Value::Bytes(crate::rc::Rc::from(&der[..]))
 }
 
 fn public_spki(interp: &Interp, key: &PublicKey) -> Result<Vec<u8>, Flow> {
@@ -889,49 +892,58 @@ fn public_spki(interp: &Interp, key: &PublicKey) -> Result<Vec<u8>, Flow> {
         .map_err(|e| error(interp, format!("encoding the key failed: {e}")))
 }
 
-/// The DER field of a key (`data PrivateKey(der: Bytes)`).
-fn der_field(interp: &Interp, v: &Value) -> Result<Vec<u8>, Flow> {
+/// The DER field of a key (`data PrivateKey(der: Bytes)`), shared, not
+/// copied.
+fn der_field(interp: &Interp, v: &Value) -> Result<crate::rc::Rc<[u8]>, Flow> {
     let Value::Object(o) = v else {
         return Err(interp.err_type("expected a Crypto::RSA key"));
     };
     match o.field(0) {
-        Some(Value::Bytes(b)) => Ok(b.to_vec()),
+        Some(Value::Bytes(b)) => Ok(b.clone()),
         _ => Err(interp.err_type("expected a Crypto::RSA key")),
     }
 }
 
-/// The keys parsed, by DER (a program uses a few; past `CACHED`, the
-/// cache starts again).
+/// The keys parsed, by the SHA-256 of their DER (a program uses a few;
+/// past `CACHED`, the cache starts again). By digest rather than by the
+/// DER itself, so that the cache holds no copy of a private key's DER
+/// (#963); the parsed keys clear themselves when dropped (`rsa`'s
+/// `ZeroizeOnDrop`). The DER is not compared again on a hit: two DERs
+/// with one SHA-256 would take one key for the other, and finding such
+/// a pair is SHA-256's collision resistance (about 2^128 work, which
+/// nobody has done); a digest found is the same DER, as Git's object
+/// names and certificate pinning take it.
 const CACHED: usize = 64;
 
-type Cache<K> = OnceLock<Mutex<quarz_ir::HashMap<Vec<u8>, Arc<K>>>>;
+type Cache<K> = OnceLock<Mutex<quarz_ir::HashMap<[u8; 32], Arc<K>>>>;
 
 fn cached<K>(
     interp: &Interp,
     cache: &'static Cache<K>,
-    der: Vec<u8>,
+    der: &[u8],
     parse: fn(&[u8]) -> Result<K, String>,
 ) -> Result<Arc<K>, Flow> {
     let cache = cache.get_or_init(Default::default);
-    if let Some(k) = crate::sched::lock(cache).get(&der) {
+    let id: [u8; 32] = Sha256::digest(der).into();
+    if let Some(k) = crate::sched::lock(cache).get(&id) {
         return Ok(k.clone());
     }
-    let key = Arc::new(parse(&der).map_err(|e| error(interp, e))?);
+    let key = Arc::new(parse(der).map_err(|e| error(interp, e))?);
     let mut c = crate::sched::lock(cache);
     if c.len() >= CACHED {
         c.clear();
     }
-    c.insert(der, key.clone());
+    c.insert(id, key.clone());
     Ok(key)
 }
 
 static PRIVATE: Cache<PrivateKey> = OnceLock::new();
 
 fn private_key(interp: &Interp, v: &Value) -> Result<Arc<PrivateKey>, Flow> {
-    cached(interp, &PRIVATE, der_field(interp, v)?, private_from_pkcs8)
+    cached(interp, &PRIVATE, &der_field(interp, v)?, private_from_pkcs8)
 }
 
 fn public_key(interp: &Interp, v: &Value) -> Result<Arc<PublicKey>, Flow> {
     static CACHE: Cache<PublicKey> = OnceLock::new();
-    cached(interp, &CACHE, der_field(interp, v)?, public_from_spki)
+    cached(interp, &CACHE, &der_field(interp, v)?, public_from_spki)
 }
