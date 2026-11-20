@@ -130,6 +130,11 @@ pub struct FnBuilder<'a> {
     /// marker, with their `Lowerer::decode_deferred` numbers: put in the
     /// block's function's record (`Lowerer::decode_markers`).
     decode_markers: Vec<(u32, usize)>,
+    /// The field handles' `get`/`set` on a captured variable in this
+    /// block, with the frame slot as its `FrameGet` reads it and the type
+    /// the checker gave the variable there: put in the block's function's
+    /// record (`Lowerer::handle_uses`, #918).
+    handle_uses: crate::HandleUses,
     /// Whether each enclosing function level (outermost first, this one
     /// last) allocates a heap frame.
     levels: Vec<bool>,
@@ -218,6 +223,7 @@ impl<'a> FnBuilder<'a> {
             dead: false,
             const_index: HashMap::default(),
             decode_markers: Vec::new(),
+            handle_uses: Vec::new(),
             levels,
             gaps,
             captured,
@@ -736,9 +742,13 @@ impl<'a> FnBuilder<'a> {
         let v = b.body(&block.body);
         b.term(Term::Return(v));
         let markers = std::mem::take(&mut b.decode_markers);
+        let uses = std::mem::take(&mut b.handle_uses);
         let f = b.finish();
         if !markers.is_empty() {
             self.lw.decode_markers.insert(id, markers);
+        }
+        if !uses.is_empty() {
+            self.lw.handle_uses.insert(id, uses);
         }
         self.lw
             .block_calls
@@ -1390,8 +1400,9 @@ impl<'a> FnBuilder<'a> {
             let s = self.sym_const(quarz_ir::FIELD_REF_SITE);
             a.kw.push((s, site));
             // (`def_field`'s block, its field's initializer, is generated
-            // as a method's body is, #890.)
-            if info.name == "def_field" {
+            // as a method's body is, #890; and its handle, like
+            // `field_ref`'s, is typed with them, #918.)
+            if matches!(info.name.as_str(), "def_field" | "field_ref") {
                 self.pass_carried_type_args(call, &mut a);
             }
         } else if info.is_native {
@@ -4229,6 +4240,22 @@ impl<'a> FnBuilder<'a> {
             }
             Some(CallTarget::Method { method }) => {
                 let m = self.world.method(*method);
+                // A field handle's `get`/`set` (on a variable the block
+                // captures, which the checker requires): the type the block
+                // was checked with, for the handle's check at its use
+                // (`Runner::check_handles`, #918).
+                if m.owner == self.world.builtin.meta_field_ref
+                    && matches!(m.name.as_str(), "get" | "set")
+                {
+                    if let Some(r) = call.recv.as_ref() {
+                        if let (ExprKind::Local(_), Some(v)) = (&r.kind, self.var_ref(r.span)) {
+                            if let VarLoc::Frame { depth, slot } = self.var_loc(v) {
+                                let ty = self.node_type(r.id).cloned();
+                                self.handle_uses.push((depth, slot, ty));
+                            }
+                        }
+                    }
+                }
                 // A generated field reader: a call, which `cha::rewrite`
                 // makes a field access once the whole program shows that
                 // nothing overrides it (a later unit may). Its receiver

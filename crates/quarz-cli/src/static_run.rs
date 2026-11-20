@@ -68,7 +68,19 @@ fn receiver_news(
 /// A method a statement generated, for its handles' check
 /// (`Runner::check_handles`): its function, its class, the method, its
 /// captures, and the call that made it, for messages.
-type GeneratedHandles = (Option<FuncId>, ClassId, Option<MethodId>, Captures, String);
+/// A generation's function, class generated into, method, captures, the
+/// call it is named by, and its handles' uses: each captured slot `get`
+/// or `set` is called on, with the type the block was checked with for it,
+/// substituted as the generated method's signature is (`None`: not
+/// known; #918).
+type GeneratedHandles = (
+    Option<FuncId>,
+    ClassId,
+    Option<MethodId>,
+    Captures,
+    String,
+    quarz_lower::HandleUses,
+);
 
 /// A generated method's captured values: frame depth, slot, value.
 type Captures = Vec<(u32, u32, Baked)>;
@@ -420,7 +432,14 @@ impl Runner {
                                 "method_ref"
                             };
                             let at = format!("`{call}(:{name})`");
-                            generated.push((None, *owner, None, vec![(0, 0, h.clone())], at));
+                            generated.push((
+                                None,
+                                *owner,
+                                None,
+                                vec![(0, 0, h.clone())],
+                                at,
+                                Vec::new(),
+                            ));
                         }
                     }
                     continue;
@@ -602,50 +621,15 @@ impl Runner {
             // carried by its `Type[T]` parameters: the classes they had
             // (where the statement's call does not give them).
             if let Some(carried) = self.lowerer.carried_type_params.get(&call_id) {
-                let mut checked: Vec<(TypeParamId, &Vec<Type>, ClassId)> = Vec::new();
-                for ((p, bounds), c) in carried.iter().zip(&g.type_args) {
-                    if subst.contains_key(p) {
-                        continue;
-                    }
-                    let k = world.class(*c);
-                    if !k.type_params.is_empty() {
-                        return Err(fail(format!(
-                            "{at}: `{}` is `{}`, whose type arguments are not known here: pass them at the statement's call or use a class without type arguments",
-                            world.type_name(&Type::Param(*p)),
-                            k.name
-                        )));
-                    }
-                    subst.insert(*p, Type::Class(*c, Vec::new()));
-                    checked.push((*p, bounds, *c));
-                }
+                let checked = add_carried(world, carried, &g.type_args, &mut subst, &own)
+                    .map_err(|why| fail(format!("{at}: {why}")))?;
                 // (Only when the signature says one of them.)
-                carried_gen[index] = checked.iter().any(|(p, _, _)| {
+                carried_gen[index] = checked.iter().any(|p| {
                     param_types
                         .iter()
                         .chain(std::iter::once(&*ret))
                         .any(|t| t.mentions_param(*p))
                 });
-                for (p, bounds, c) in checked {
-                    let t = Type::Class(c, Vec::new());
-                    // (A bound naming a type parameter nothing gives here, a
-                    // module's own `T` that `include` binds, holds of the
-                    // class the call was checked with: the class is one.
-                    // One naming only the target's own, `Self` of a generic
-                    // class, is decided with them as they are.)
-                    if let Some(b) = bounds
-                        .iter()
-                        .map(|b| b.subst(&subst))
-                        .filter(|b| free_param(b, &own).is_none())
-                        .find(|b| !world.is_subtype(&t, b))
-                    {
-                        return Err(fail(format!(
-                            "{at}: `{}` is `{}` here, which is not a `{}`",
-                            world.type_name(&Type::Param(p)),
-                            world.class(c).name,
-                            world.type_name(&b)
-                        )));
-                    }
-                }
             }
             let param_types: Vec<Type> = param_types.iter().map(|t| t.subst(&subst)).collect();
             // (An `initialize`'s result is discarded, as a written one's.)
@@ -890,7 +874,18 @@ impl Runner {
                 host.generated_new(class, from, mid, init, (stmt.file, stmt.span))
                     .map_err(|why| fail(format!("{at}: {why}")))?;
             }
-            generated.push((Some(func), class, Some(mid), captures, at.clone()));
+            // How the block uses the handles it captures, with this
+            // generation's own substitution (its statement's type
+            // arguments, `Self`, its call's carried classes).
+            let uses = quarz_lower::lift::handle_uses(
+                &self.lowerer.done,
+                g.func,
+                &self.lowerer.handle_uses,
+            )
+            .into_iter()
+            .map(|(d, s, t)| (d, s, t.map(|t| t.subst(&subst))))
+            .collect();
+            generated.push((Some(func), class, Some(mid), captures, at.clone(), uses));
             if !classes.contains(&g.class) {
                 classes.push(g.class);
             }
@@ -1044,7 +1039,7 @@ impl Runner {
             }
         }
         format!(
-            "{at}: the handle to `{shown}` is made with `{param}`, a type parameter of another method than the `static def` the statement calls: a handle's type is written as a type or one of that `static def`'s type parameters"
+            "{at}: the handle to `{shown}` is made with `{param}`, a type parameter of another method than the `static def` the statement calls, which does not carry it: a handle's type is written as a type, one of that `static def`'s type parameters, or one its generic method carries (#918: the class its `Type[T]` parameter holds, when no other parameter mentions `T`, no bound relates `T` to another type parameter, `T` has no lower bound, the parameter is never assigned, and the call is in its body)"
         )
     }
 
@@ -1074,7 +1069,7 @@ impl Runner {
             .filter_map(|m| world.method(*m).type_params.first().map(|p| p.id))
             .collect();
         let mut updates: Vec<(MethodId, Captures)> = Vec::new();
-        for (_, into, mid, captures, at) in generated {
+        for (_, into, mid, captures, at, _) in generated {
             let mut captures = captures.clone();
             let mut changed = false;
             for (_, _, value) in &mut captures {
@@ -1295,6 +1290,11 @@ impl Runner {
         else {
             return Ok(());
         };
+        let get = world
+            .class(handle)
+            .methods
+            .get("get")
+            .and_then(|ids| ids.first().copied());
         // `U` of `def_field[U]` and `field_ref[U]`, as recorded at the call.
         let own_u: Vec<TypeParamId> = ["def_field", "field_ref"]
             .iter()
@@ -1302,9 +1302,18 @@ impl Runner {
             .flatten()
             .filter_map(|m| world.method(*m).type_params.first().map(|p| p.id))
             .collect();
-        for (func, into, _, captures, at) in generated {
+        for (func, into, _, captures, at, uses) in generated {
             let sets = func
                 .map(|f| quarz_lower::lift::handle_sets(&self.lowerer.done, f, set))
+                .unwrap_or_default();
+            // Every slot the generated code calls `get` or `set` on has its
+            // uses recorded by the lowering (`Lowerer::handle_uses`): a
+            // missing one would leave a handle unchecked at its use.
+            let called = func
+                .map(|f| {
+                    let methods: Vec<MethodId> = get.into_iter().chain([set]).collect();
+                    quarz_lower::lift::handle_calls(&self.lowerer.done, f, &methods)
+                })
                 .unwrap_or_default();
             for (d, s, value) in captures {
                 let Baked::Data(c, fields) = value else {
@@ -1359,15 +1368,41 @@ impl Runner {
                     };
                     Some(u.subst(&call_args))
                 });
+                let fixed: Vec<TypeParamId> = world
+                    .class(*owner)
+                    .type_params
+                    .iter()
+                    .map(|p| p.id)
+                    .collect();
+                // A handle made in a generic method, with the classes its
+                // carried type parameters stood for when it was made, which
+                // the handle holds (#918): checked as a generated method's
+                // signature takes them (`add_carried`).
+                let wanted = match (wanted, self.lowerer.carried_type_params.get(&site_id)) {
+                    (Some(u), Some(carried)) => {
+                        let classes: Vec<ClassId> = match fields.get(3) {
+                            Some(Baked::Array(items)) => items
+                                .iter()
+                                .map(|b| match b {
+                                    Baked::Class(c) => Ok(*c),
+                                    _ => Err(format!(
+                                        "{at}: internal error: the handle to `@{name}` holds a carried type argument that is not a class"
+                                    )),
+                                })
+                                .collect::<Result<_, _>>()?,
+                            _ => Vec::new(),
+                        };
+                        let mut subst = call_args.clone();
+                        add_carried(world, carried, &classes, &mut subst, &fixed)
+                            .map_err(|why| format!("{at}: the handle to `@{name}`: {why}"))?;
+                        Some(u.subst(&subst))
+                    }
+                    (wanted, _) => wanted,
+                };
                 if let Some(u) = wanted {
-                    // `U` is concrete or the statement's own type arguments:
-                    // a helper's type parameter has no value here.
-                    let fixed: Vec<TypeParamId> = world
-                        .class(*owner)
-                        .type_params
-                        .iter()
-                        .map(|p| p.id)
-                        .collect();
+                    // `U` is concrete, the statement's own type arguments or
+                    // classes carried: another type parameter has no value
+                    // here.
                     if let Some(p) = free_param(&u, &fixed) {
                         return Err(self.unknown_handle_param(
                             host,
@@ -1381,6 +1416,56 @@ impl Runner {
                         return Err(format!(
                             "{at}: the handle to `@{name}` is a `Meta::FieldRef[{class}, {}]`, but the field is declared `{}`: a handle's type is the field's exactly",
                             world.type_name(&u),
+                            world.type_name(&field.ty)
+                        ));
+                    }
+                }
+                if called.contains(&(*d, *s)) && !uses.iter().any(|(ud, us, _)| (ud, us) == (d, s))
+                {
+                    return Err(format!(
+                        "{at}: internal error: the handle to `@{name}` is read or written with no type recorded for its use"
+                    ));
+                }
+                // At its use: the type each `get` or `set` of the generated
+                // method was checked with must be the field's too, with the
+                // generation's own substitution (#918). The check above,
+                // at its making, judges the handle as `def_field` or
+                // `field_ref` typed it (a handle written with a wrong type
+                // or an unknown type parameter); this one judges it as the
+                // code reading or writing it sees it (a handle whose static
+                // type was widened on its way, a helper's result typed
+                // with its caller's view of a carried parameter, or one
+                // made by another invocation of the helper). Both are
+                // needed: the first for a handle no method uses, the second
+                // for soundness.
+                for (_, _, ty) in uses.iter().filter(|(ud, us, _)| (ud, us) == (d, s)) {
+                    let used = match ty {
+                        Some(Type::Class(c, args)) if *c == handle && args.len() == 2 => {
+                            args[1].clone()
+                        }
+                        _ => {
+                            return Err(format!(
+                                "{at}: internal error: the handle to `@{name}` is used with no known `Meta::FieldRef` type"
+                            ))
+                        }
+                    };
+                    let fixed: Vec<TypeParamId> = world
+                        .class(*owner)
+                        .type_params
+                        .iter()
+                        .map(|p| p.id)
+                        .collect();
+                    if let Some(p) = free_param(&used, &fixed) {
+                        return Err(format!(
+                            "{at}: the handle to `@{name}` is used in the generated method as a `Meta::FieldRef[{class}, {}]`, whose `{}` has no class here: a handle is read and written with the type of the field",
+                            world.type_name(&used),
+                            world.type_name(&Type::Param(p))
+                        ));
+                    }
+                    if !world.same_type(&field.ty, &used) {
+                        return Err(format!(
+                            "{at}: the handle to `@{name}` is used in the generated method as a `Meta::FieldRef[{class}, {}]`, but the field is declared `{}`: a handle's type is the field's exactly where it is read or written (a handle returned by a generic helper is typed with its caller's view of the helper's type parameter)",
+                            world.type_name(&used),
                             world.type_name(&field.ty)
                         ));
                     }
@@ -3338,6 +3423,59 @@ fn override_misfit(
 }
 
 /// A type parameter `t` mentions that is not one of `own`.
+/// The classes `classes` that the carried type parameters `carried` of
+/// a call in a generic method stand for (`Lowerer::carried_type_params`,
+/// passed under `quarz_ir::TYPE_ARG_VALUES`), added to `subst` where it
+/// does not give them already: a class with type parameters is refused
+/// (its arguments are not known here), and each bound must hold of its
+/// class (a bound naming a type parameter nothing gives here, a module's
+/// own `T` that `include` binds, holds of the class the call was checked
+/// with: the class is one; one naming only `own`, `Self` of a generic
+/// class, is decided with them as they are). What a generated method's
+/// signature (`generate_members`) and a field handle's type
+/// (`check_handles`, #918) take. The parameters added.
+fn add_carried(
+    world: &World,
+    carried: &[(TypeParamId, Vec<Type>)],
+    classes: &[ClassId],
+    subst: &mut rustc_hash::FxHashMap<TypeParamId, Type>,
+    own: &[TypeParamId],
+) -> Result<Vec<TypeParamId>, String> {
+    let mut checked: Vec<(TypeParamId, &Vec<Type>, ClassId)> = Vec::new();
+    for ((p, bounds), c) in carried.iter().zip(classes) {
+        if subst.contains_key(p) {
+            continue;
+        }
+        let k = world.class(*c);
+        if !k.type_params.is_empty() {
+            return Err(format!(
+                "`{}` is `{}`, whose type arguments are not known here: pass them at the statement's call or use a class without type arguments",
+                world.type_name(&Type::Param(*p)),
+                k.name
+            ));
+        }
+        subst.insert(*p, Type::Class(*c, Vec::new()));
+        checked.push((*p, bounds, *c));
+    }
+    for (p, bounds, c) in &checked {
+        let t = Type::Class(*c, Vec::new());
+        if let Some(b) = bounds
+            .iter()
+            .map(|b| b.subst(subst))
+            .filter(|b| free_param(b, own).is_none())
+            .find(|b| !world.is_subtype(&t, b))
+        {
+            return Err(format!(
+                "`{}` is `{}` here, which is not a `{}`",
+                world.type_name(&Type::Param(*p)),
+                world.class(*c).name,
+                world.type_name(&b)
+            ));
+        }
+    }
+    Ok(checked.into_iter().map(|(p, _, _)| p).collect())
+}
+
 fn free_param(t: &Type, own: &[TypeParamId]) -> Option<TypeParamId> {
     match t {
         Type::Param(p) => (!own.contains(p)).then_some(*p),

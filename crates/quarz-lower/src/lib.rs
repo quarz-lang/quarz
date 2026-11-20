@@ -71,6 +71,10 @@ pub type BlockCall = (
     Option<MethodId>,
 );
 
+/// Field handles' `get`/`set` on captured variables: the frame depth and
+/// slot read, and the variable's type there (`None`: not known), #918.
+pub type HandleUses = Vec<(u32, u32, Option<quarz_types::Type>)>;
+
 #[derive(Default)]
 pub struct Lowerer {
     /// The tables the declarations decide, kept across the rounds and
@@ -165,8 +169,14 @@ pub struct Lowerer {
     /// The constants of block functions holding such a marker: by
     /// function, each constant's index and the marker's number.
     pub decode_markers: HashMap<FuncId, Vec<(u32, usize)>>,
+    /// By block function: the field handles' `get`/`set` on a captured
+    /// variable, its frame depth and slot as the function reads it, and the
+    /// variable's type there (`None`: not known), which a handle is
+    /// checked against at its use (`lift::handle_uses`, #918).
+    pub handle_uses: HashMap<FuncId, HandleUses>,
     /// A generating call (`def_method`, `def_class_method`,
-    /// `def_initialize`) written in the body of a generic method: the
+    /// `def_initialize`, `def_field`) or a `field_ref` written in the body
+    /// of a generic method: the
     /// type parameters the values it is passed under
     /// `quarz_ir::TYPE_ARG_VALUES` stand for, in order, with their
     /// bounds (docs/14 §5).

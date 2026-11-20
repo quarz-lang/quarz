@@ -78,10 +78,48 @@ pub fn check(functions: &[Function], root: FuncId) -> Result<Vec<(u32, u32)>, St
     Ok(reads)
 }
 
+/// The uses of field handles in the block function `root` and the blocks
+/// it makes (`Lowerer::handle_uses`): each captured slot, as `handle_sets`
+/// numbers it, with the type the block's code was checked with for the
+/// variable holding the handle (#918).
+pub fn handle_uses(
+    functions: &[Function],
+    root: FuncId,
+    uses: &rustc_hash::FxHashMap<FuncId, crate::HandleUses>,
+) -> crate::HandleUses {
+    let mut out = Vec::new();
+    let mut work: Vec<(FuncId, u32)> = vec![(root, 0)];
+    while let Some((fid, skip)) = work.pop() {
+        let Some(f) = functions.get(fid as usize) else {
+            continue;
+        };
+        let own = u32::from(f.frame_size > 0);
+        for b in &f.blocks {
+            for inst in &b.insts {
+                if let Inst::MakeBlock { func, .. } = inst {
+                    work.push((*func, skip + own));
+                }
+            }
+        }
+        for (depth, slot, ty) in uses.get(&fid).into_iter().flatten() {
+            if let Some(d) = captured(*depth, own, skip) {
+                out.push((d, *slot, ty.clone()));
+            }
+        }
+    }
+    out
+}
+
 /// The captured slots of the block function `root` (and the blocks it
 /// makes) that hold a field handle `set` is called on (docs/14 §5): a
 /// handle must name a `var` field for them. `set` is `Meta::FieldRef#set`.
 pub fn handle_sets(functions: &[Function], root: FuncId, set: MethodId) -> Vec<(u32, u32)> {
+    handle_calls(functions, root, &[set])
+}
+
+/// The captured slots of the block function `root` (and the blocks it
+/// makes) that one of `methods` is called on.
+pub fn handle_calls(functions: &[Function], root: FuncId, methods: &[MethodId]) -> Vec<(u32, u32)> {
     let mut out: Vec<(u32, u32)> = Vec::new();
     let mut work: Vec<(FuncId, u32)> = vec![(root, 0)];
     while let Some((fid, skip)) = work.pop() {
@@ -122,7 +160,7 @@ pub fn handle_sets(functions: &[Function], root: FuncId, set: MethodId) -> Vec<(
                     ..
                 } = inst
                 {
-                    if *m == set {
+                    if methods.contains(m) {
                         if let Some((_, at)) = loaded.iter().find(|(l, _)| l == r) {
                             if !out.contains(at) {
                                 out.push(*at);

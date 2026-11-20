@@ -404,6 +404,11 @@ module Meta
     @owner: Type[Object] = Object
     @name: Symbol = :name
     @site: Int = 0
+    # The classes the carried type parameters of the generic method
+    # making it stood for, in order (#918), which its type may mention:
+    # an immutable array of class objects only, so the handle stays
+    # `Shareable`. Empty for a handle made elsewhere.
+    @type_args: Array[Type[Object]] = []
     # The field's name.
     def name -> Symbol = @name
     # The class whose field it is.

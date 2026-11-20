@@ -178,7 +178,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         // (The call's node, which the lowering passes: where the checker
         // recorded `U`.)
-        field_ref(i, class, *name, a.kw(i, quarz_ir::FIELD_REF_SITE))
+        field_ref(i, class, *name, &a)
     });
     native!(m, "Meta::ClassDef#field_ref", |i, r, a| {
         let class = reflected_class(i, r)?;
@@ -187,7 +187,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         };
         // (Resolved when the statement has run: the field may be generated
         // after.)
-        let handle = field_ref(i, class, *name, a.kw(i, quarz_ir::FIELD_REF_SITE))?;
+        let handle = field_ref(i, class, *name, &a)?;
         reflect_of(i)?
             .made_handle(i, &handle)
             .map_err(|m| i.err_runtime(&m))?;
@@ -585,19 +585,7 @@ fn gen_request(
             captures.push((depth as u32, slot, frame.get(depth as u32, slot)));
         }
     }
-    // (The classes the calling method's type parameters stand for,
-    // which the lowering passes: `Lowerer::carried_type_params`.)
-    let type_args = match a.kw(interp, quarz_ir::TYPE_ARG_VALUES) {
-        None => Vec::new(),
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|v| match v {
-                Value::Class(c) => Ok(c),
-                _ => Err(interp.err_type("internal: a type argument that is not a class")),
-            })
-            .collect::<Result<_, _>>()?,
-        Some(_) => return Err(interp.err_type("internal: type arguments that are not an array")),
-    };
+    let type_args = carried_type_args(interp, a)?;
     let override_ = matches!(a.kw(interp, "override"), Some(Value::Bool(true)));
     Ok(crate::reflect::GenRequest {
         class,
@@ -707,16 +695,45 @@ fn statement_values_of(interp: &Interp, recv: &Value) -> Result<(ClassId, String
     Err(interp.err_type("not a Meta::StatementValues"))
 }
 
-/// A `Meta::FieldRef` to the field `name` of `class`, made at the call
-/// node `site` (where the checker recorded its `U`, docs/14 §5).
-fn field_ref(interp: &Interp, class: ClassId, name: Symbol, site: Option<&Value>) -> EvalResult {
-    let Some(Value::Int(site)) = site else {
+/// The classes the calling method's carried type parameters stand for,
+/// which the lowering passes under `quarz_ir::TYPE_ARG_VALUES`
+/// (`Lowerer::carried_type_params`): none when it passes none.
+fn carried_type_args(interp: &Interp, a: &Args) -> Result<Vec<ClassId>, Flow> {
+    match a.kw(interp, quarz_ir::TYPE_ARG_VALUES) {
+        None => Ok(Vec::new()),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| match v {
+                Value::Class(c) => Ok(c),
+                _ => Err(interp.err_type("internal: a type argument that is not a class")),
+            })
+            .collect(),
+        Some(_) => Err(interp.err_type("internal: type arguments that are not an array")),
+    }
+}
+
+/// A `Meta::FieldRef` to the field `name` of `class`, made by the call
+/// `a` at the node the lowering passes (where the checker recorded its
+/// `U`, docs/14 §5), with the classes the carried type parameters of
+/// the generic method making it stand for (`carried_type_args`, #918),
+/// which `Runner::check_handles` gives its `U`.
+fn field_ref(interp: &Interp, class: ClassId, name: Symbol, a: &Args) -> EvalResult {
+    let Some(Value::Int(site)) = a.kw(interp, quarz_ir::FIELD_REF_SITE) else {
         return Err(interp.err_runtime("internal: a field handle without its call"));
     };
+    let type_args = carried_type_args(interp, a)?
+        .into_iter()
+        .map(Value::Class)
+        .collect();
     let handle = meta_class(interp, "Meta::FieldRef")?;
     Ok(Value::Object(Object::new(
         handle,
-        smallvec![Value::Class(class), Value::Symbol(name), Value::Int(*site)],
+        smallvec![
+            Value::Class(class),
+            Value::Symbol(name),
+            Value::Int(*site),
+            Value::array(type_args)
+        ],
     )))
 }
 
