@@ -4107,6 +4107,7 @@ mod tests {
             key_methods: (None, None),
             is_exception: false,
             is_abstract: false,
+            generic: false,
             objects: true,
             file: 1,
             cog: None,

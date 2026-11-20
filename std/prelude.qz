@@ -160,6 +160,42 @@ class Type[T]
   # Whether the class is `other` or a subclass of it (or includes it,
   # for a module): `Int <= Comparable`. Type arguments are not compared.
   native def <=(other: Type[Object]) -> Bool
+  # `value` as a `T` when its class is this class or a subclass of it,
+  # else nil: the checked cast generic code writes with a class value
+  # (`t: Type[T]`), where `value.as(T)` cannot check `T` at run time
+  # (docs/02 §7). Sound because a `Type[T]` holds a class that is a `T`
+  # (`Type` is covariant), so a value of that class is a `T`.
+  #
+  # ```
+  # t: Type[Exception] = ArgumentError
+  # t.cast?(ArgumentError.new("x"))&.message   # => "x"
+  # t.cast?(TypeError.new("y"))                  # => nil
+  # ```
+  #
+  # ## Raises
+  #
+  # [ArgumentError] for a class with type parameters (`Array`, a generic
+  # `data` type, a variant of a generic enum): a class value carries no
+  # type arguments, so the value's could not be checked. And for a
+  # module, for now: an approximation that refuses more than needed (a
+  # module's membership can depend on what a test by class does not
+  # see: `Shareable`, a module a conditional extension brings; a plain
+  # module it would decide is refused too, quarz-lang/quarz#945).
+  native def cast?(value: Object) -> T?
+  # `value` as a `T`, as [cast?], raising [TypeError] as `as` does where
+  # [cast?] gives nil.
+  #
+  # ```
+  # t: Type[Exception] = ArgumentError
+  # t.cast(ArgumentError.new("x")).message   # => "x"
+  # t.cast(1)                                # raises TypeError
+  # ```
+  #
+  # ## Raises
+  #
+  # [TypeError] when `value` is not of the class; [ArgumentError] as
+  # [cast?].
+  native def cast(value: Object) -> T
   # Reflection, at compile time only (in a `static def` or a `static`
   # statement): the class's fields, its own and inherited, in
   # declaration order.

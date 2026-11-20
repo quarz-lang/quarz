@@ -1482,6 +1482,12 @@ pub struct RtClass {
     /// `abstract class`: never instantiated.
     #[serde(default)]
     pub is_abstract: bool,
+    /// The class has type parameters (a generic class, module or `data`
+    /// type, or a variant of a generic enum): its class value carries no
+    /// type arguments, so `Type#cast?` cannot check a value against it
+    /// (`World::class_takes_type_args`, #944).
+    #[serde(default)]
+    pub generic: bool,
     /// Every value of the class is an object (`World::instances_are_objects`).
     #[serde(default)]
     pub objects: bool,

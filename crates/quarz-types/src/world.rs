@@ -5704,6 +5704,18 @@ impl World {
         self.class_is_a(id, self.builtin.exception)
     }
 
+    /// Whether class `id` has type parameters: its own (a generic class,
+    /// module or `data` type), or, for a variant, its enum's. Its class
+    /// value then carries no type arguments at run time
+    /// (`RtClass::generic`, which `Type#cast?` reads, #944).
+    pub fn class_takes_type_args(&self, id: ClassId) -> bool {
+        let class = self.class(id);
+        !class.type_params.is_empty()
+            || class
+                .variant_of
+                .is_some_and(|e| !self.class(e).type_params.is_empty())
+    }
+
     /// Whether every value of class `id` (its subclasses' included) is an
     /// object, one allocation of a header and fields: a `data` type, an
     /// enum or a variant, an exception, or a class all of whose

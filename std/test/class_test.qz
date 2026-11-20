@@ -96,6 +96,85 @@ class ClsNode
   end
 end
 
+data ClsPoint = (x: Int, y: Int)
+data ClsBox[T] = (v: T)
+enum ClsLight
+  variant Red
+  variant Green(n: Int)
+end
+enum ClsMaybe[T]
+  variant Some(v: T)
+  variant None
+end
+class ClsGen[X] < ClsAnimal
+end
+
+# #944: `Type[T]#cast?` and `#cast`, the value back as a `T` where its
+# class is the receiver's or below it.
+class TypeCastTest < Test::Case
+  def through[T](t: Type[T], v: Object) -> T? = t.cast?(v)
+
+  def refused(&f: () -> Object?) -> String
+    begin
+      f.call
+      "not refused"
+    rescue ArgumentError => e
+      e.message
+    end
+  end
+
+  def test_classes
+    d = ClsDog.new("Rex")
+    assert(ClsAnimal.cast?(d).equal?(d))
+    assert_equal("Rex", ClsAnimal.cast(d).name)
+    assert_nil(ClsDog.cast?(ClsAnimal.new("Tom")))
+    # A `Type[Super]` holding a subclass: that subclass's test.
+    sup: Type[ClsAnimal] = ClsDog
+    assert_nil(sup.cast?(ClsAnimal.new("Tom")))
+    assert_equal("Woof", (sup.cast?(ClsPuppy.new("P")) || raise "nil").speak.sub("!", ""))
+    # An abstract class; an instance of a generic subclass of a plain
+    # class (it is a `ClsAnimal`).
+    assert_equal(4.0, ClsShape.cast(ClsSq.new(2.0)).area)
+    assert_equal("G", ClsAnimal.cast(ClsGen[Int].new("G")).name)
+    # `data` types, an enum and its variants.
+    assert_equal(ClsPoint.new(1, 2), ClsPoint.cast?(ClsPoint.new(1, 2)))
+    assert(ClsLight.cast?(ClsLight::Red) == ClsLight::Red)
+    assert_equal(ClsLight::Green.new(3), ClsLight::Green.cast?(ClsLight::Green.new(3)))
+    assert_nil(ClsLight::Green.cast?(ClsLight::Red))
+    # Built-in classes, `Object`, nil.
+    assert_equal(3, Int.cast?(3))
+    assert_nil(Int.cast?("3"))
+    assert_equal("s", String.cast("s"))
+    assert(Object.cast?(3) == 3)
+    assert_nil(ClsAnimal.cast?(nil))
+    assert_nil(Nil.cast?(nil))
+    # Through a type parameter: generic code gets its `T` back.
+    assert_equal(ClsPoint.new(5, 6), through(ClsPoint, ClsPoint.new(5, 6)))
+    assert_nil(through(ClsPoint, "x"))
+    # A class value typed by a module it includes: the class's test.
+    sh: Type[Shareable] = ClsPoint
+    assert_equal(ClsPoint.new(1, 1), sh.cast?(ClsPoint.new(1, 1)))
+  end
+
+  def test_errors
+    e = assert_raise(TypeError) { ClsDog.cast(3); nil }
+    assert_equal("cannot cast Int to ClsDog", e.message)
+    e = assert_raise(TypeError) { ClsDog.cast(Int); nil }
+    assert_equal("cannot cast Type[Int] to ClsDog", e.message)
+    # A class with type parameters: its values' type arguments are not
+    # seen at run time.
+    tp = "has type parameters, and a value's type arguments are not seen at run time"
+    assert_equal("ClsBox.cast?: ClsBox #{tp}", refused { ClsBox[Int].cast?(ClsBox.new(1)) })
+    assert_equal("ClsBox.cast: ClsBox #{tp}", refused { ClsBox[Int].cast(ClsBox.new(1)) })
+    assert_equal("Array.cast?: Array #{tp}", refused { Array[Int].cast?(["a"]) })
+    assert_equal("ClsMaybe::Some.cast?: ClsMaybe::Some #{tp}", refused { ClsMaybe::Some.cast?(ClsMaybe::Some.new(1)) })
+    assert_equal("Type.cast?: Type #{tp}", refused { Int.class.cast?(Int) })
+    # A module, for now (quarz-lang/quarz#945).
+    assert_equal("ClsGreeter.cast?: ClsGreeter is a module, which a test by class does not decide for every value (for now, quarz-lang/quarz#945)", refused { ClsGreeter.cast?(ClsP.new) })
+    assert_match(/\AShareable\.cast\?: Shareable is a module/, refused { Shareable.cast?([1]) })
+  end
+end
+
 class InheritanceTest < Test::Case
   def test_to_s_and_super
     assert_equal("ClsAnimal(a): ...", ClsAnimal.new("a").to_s)

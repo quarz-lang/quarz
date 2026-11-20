@@ -2378,6 +2378,83 @@ fn a_generated_class_method_cannot_take_dups_place() {
     );
 }
 
+/// #944: `Type[T]#cast?`, `#cast` in a generated method, with the
+/// `Type[T]` a generic helper's `def_method` block captures (baked): the
+/// value back as `T` from an untyped store, nil (or `TypeError`) for one
+/// of another class, `ArgumentError` for a class with type parameters;
+/// interpreted and compiled.
+const CAST_LIB: &str = r##"data Settings = (theme: String)
+data Box[T] = (v: T)
+
+abstract class Bag
+  include Shareable
+  @items: Hash[Symbol, Shareable] = {}
+  def item(n: Symbol) -> Shareable? = @items[n]?
+
+  static def self.typed[T](name: Symbol, type: Type[T]) -> Void
+    n = name
+    def_method(name) do -> T?
+      (v = item(n)) ? type.cast?(v) : nil
+    end
+    def_method("#{name}!".to_sym) do -> T
+      type.cast(item(n) || raise ArgumentError.new("none"))
+    end
+  end
+
+  static def self.table -> Void
+    def_initialize(:items) do |items: Hash[Symbol, Shareable]|
+      @items = items
+    end
+  end
+end
+"##;
+
+const CAST_APP: &str = r##"require_relative "lib"
+class Things < Bag
+  typed :settings, Settings
+  typed :count, Int
+  typed :box, Box[Int]
+  table
+end
+def show(s: Settings?) -> String = (x = s) ? x.theme : "nil"
+t = Things.new({settings: Settings.new("dark"), count: "not an Int", box: Box.new(1)})
+puts show(t.settings), t.count.inspect, t.settings!.theme
+begin
+  t.count!
+rescue TypeError => e
+  puts e.message
+end
+begin
+  t.box
+rescue ArgumentError => e
+  puts e.message
+end
+"##;
+
+const CAST_EXPECTED: &str = "dark\nnil\ndark\ncannot cast String to Int\nBox.cast?: Box has type parameters, and a value's type arguments are not seen at run time\n";
+
+#[test]
+fn a_class_value_a_generated_method_captured_casts() {
+    let d = dir();
+    write(&d.0, "lib.qz", CAST_LIB);
+    let app = write(&d.0, "app.qz", CAST_APP);
+    let cache = d.0.join("cache");
+    let env = [("QUARZ_CACHE_DIR", cache.to_str().unwrap())];
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &env);
+    assert!(ok, "{err}");
+    assert_eq!(out, CAST_EXPECTED);
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &env,
+    );
+    assert!(ok, "{err}");
+    let out = std::process::Command::new(d.0.join("app.bin"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), CAST_EXPECTED);
+}
+
 /// #918, the check at a handle's use: a handle a generic helper returns
 /// is typed with its caller's view of the helper's type parameter (here
 /// `Animal`, for a `Type[Animal]` value holding `Dog`), wider than the

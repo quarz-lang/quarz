@@ -86,6 +86,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         };
         Ok(Value::Bool(i.program.world.class_is_a(class, *m)))
     });
+    // `Type[T]#cast?` and `#cast` (#944): the value itself, typed `T`.
+    native!(m, "Type#cast?", |i, r, a| type_cast(i, r, a.arg(0), true));
+    native!(m, "Type#cast", |i, r, a| type_cast(i, r, a.arg(0), false));
     // Classes only: the values carry no type arguments.
     native!(m, "Type#<=", |i, r, a| match (r, a.arg(0)) {
         (Value::Class(c), Value::Class(d)) => Ok(Value::Bool(i.program.world.class_is_a(*c, *d))),
@@ -1364,4 +1367,50 @@ fn kernel_string(interp: &Interp, _: &Value, args: Args) -> EvalResult {
         return Ok(v.clone());
     }
     Ok(Value::str(&interp.to_s(v)?))
+}
+
+/// `Type[T]#cast?(value)` (`optional`) and `#cast(value)` (#944): `value`
+/// when its class is the receiver's class `C` or below it (`class_is_a`,
+/// as `Type#<=` and `is_a?` decide it), else nil, or the `TypeError` that
+/// `as` raises. Sound because a `Type[T]` value holds a class that is a
+/// `T` (`Type` is covariant), so a value of `C` is a `T`.
+///
+/// An approximation that errs toward refusing: `C` with type parameters
+/// (`RtClass::generic`) or a module raises `ArgumentError`. A class value
+/// carries no type arguments, so `Box[Int].cast?(Box.new("a"))` would
+/// pass; and a module's membership can depend on what a test by class
+/// does not see (`Shareable`, which an array includes whatever its
+/// elements; a module a conditional extension brings, #515). A plain
+/// module a test by class would decide is refused too: quarz-lang/quarz#945
+/// makes it exact, by the checker's own rule (`check_testable`).
+fn type_cast(i: &Interp, recv: &Value, value: &Value, optional: bool) -> EvalResult {
+    let Value::Class(c) = recv else {
+        return Err(i.err_type("Type#cast? on a value that is not a class"));
+    };
+    let class = i.program.world.class(*c);
+    let op = if optional { "cast?" } else { "cast" };
+    if class.generic {
+        return Err(i.err_arg(&format!(
+            "{}.{op}: {} has type parameters, and a value's type arguments are not seen at run time",
+            class.name, class.name
+        )));
+    }
+    if class.kind == quarz_ir::RtClassKind::Module {
+        return Err(i.err_arg(&format!(
+            "{}.{op}: {} is a module, which a test by class does not decide for every value (for now, quarz-lang/quarz#945)",
+            class.name, class.name
+        )));
+    }
+    if i.program.world.class_is_a(i.class_of(value), *c) {
+        return Ok(value.clone());
+    }
+    if optional {
+        return Ok(Value::Nil);
+    }
+    // (`as`'s message: a class value by its class, `Type[Int]`.)
+    let what = match value {
+        Value::Class(v) => format!("Type[{}]", i.program.world.class(*v).name),
+        v => i.class_name(v),
+    };
+    Err(i.err_type(&format!("cannot cast {what} to {}", class.name)))
 }
