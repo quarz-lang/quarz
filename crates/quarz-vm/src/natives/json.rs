@@ -274,6 +274,11 @@ struct Decoder<'a> {
 impl Decoder<'_> {
     /// The value `v` (a `JSON::Value`) decoded as node `n`.
     fn decode(&mut self, v: &Value, n: usize) -> Result<Value, DecodeFail> {
+        // (A recursive type walks a hand-built value as deep as it is:
+        // one nested too deeply for this stack raises, #923.)
+        if crate::sched::stack_exhausted() {
+            return Err(DecodeFail::Raised(self.interp.too_deep("decode")));
+        }
         let node = self.nodes[n].clone();
         // The variant and its field.
         let (class, inner) = match v {
@@ -491,6 +496,11 @@ impl Decoder<'_> {
     /// parser makes it otherwise: what a `JSON::Value` the decode gives
     /// holds, and what every node but a `Decimal` reads.
     fn cooked(&self, v: &Value) -> Result<Value, DecodeFail> {
+        // (A hand-built value nested too deeply for this stack raises,
+        // as `JSON.generate` of one does, #923.)
+        if crate::sched::stack_exhausted() {
+            return Err(DecodeFail::Raised(self.interp.too_deep("decode")));
+        }
         let c = self.classes;
         let Value::Object(o) = v else {
             return Ok(v.clone());

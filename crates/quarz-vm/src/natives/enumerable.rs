@@ -132,7 +132,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let mut out = Vec::new();
         if n >= 0 && n as usize <= items.len() {
             let mut current = Vec::new();
-            combinations(&items, n as usize, 0, &mut current, &mut out);
+            combinations(i, &items, n as usize, 0, &mut current, &mut out)?;
         }
         Ok(Value::array(out))
     });
@@ -146,7 +146,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         if n >= 0 && n as usize <= items.len() {
             let mut used = vec![false; items.len()];
             let mut current = Vec::new();
-            permutations(&items, n as usize, &mut used, &mut current, &mut out);
+            permutations(i, &items, n as usize, &mut used, &mut current, &mut out)?;
         }
         Ok(Value::array(out))
     });
@@ -725,34 +725,47 @@ fn range_bounds(interp: &Interp, len: usize, rg: &RangeVal) -> Result<(usize, us
     Ok((lo as usize, (hi - lo) as usize))
 }
 
+/// The `n`-element combinations of `items` from index `from`, extending
+/// `current`, into `out`: one level of recursion per element chosen, so a
+/// `SystemStackError` where `n` is too large for this stack (#923).
 fn combinations(
+    interp: &Interp,
     items: &[Value],
     n: usize,
     from: usize,
     current: &mut Vec<Value>,
     out: &mut Vec<Value>,
-) {
+) -> Result<(), Flow> {
+    if crate::sched::stack_exhausted() {
+        return Err(interp.too_deep("enumerate"));
+    }
     if current.len() == n {
         out.push(Value::array(current.clone()));
-        return;
+        return Ok(());
     }
     for k in from..items.len() {
         current.push(items[k].clone());
-        combinations(items, n, k + 1, current, out);
+        combinations(interp, items, n, k + 1, current, out)?;
         current.pop();
     }
+    Ok(())
 }
 
+/// `combinations`' counterpart for the `n`-element permutations.
 fn permutations(
+    interp: &Interp,
     items: &[Value],
     n: usize,
     used: &mut [bool],
     current: &mut Vec<Value>,
     out: &mut Vec<Value>,
-) {
+) -> Result<(), Flow> {
+    if crate::sched::stack_exhausted() {
+        return Err(interp.too_deep("enumerate"));
+    }
     if current.len() == n {
         out.push(Value::array(current.clone()));
-        return;
+        return Ok(());
     }
     for k in 0..items.len() {
         if used[k] {
@@ -760,10 +773,11 @@ fn permutations(
         }
         used[k] = true;
         current.push(items[k].clone());
-        permutations(items, n, used, current, out);
+        permutations(interp, items, n, used, current, out)?;
         current.pop();
         used[k] = false;
     }
+    Ok(())
 }
 
 fn builder_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> EvalResult {

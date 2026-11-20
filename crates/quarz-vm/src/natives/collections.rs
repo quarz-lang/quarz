@@ -381,7 +381,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             None => -1,
         };
         let mut out = Vec::new();
-        flatten_into(&arr(i, r)?, &mut out, depth);
+        flatten_into(i, &arr(i, r)?, &mut out, depth)?;
         Ok(Value::array(out))
     });
     native!(m, "Array#compact", |i, r, _| {
@@ -1282,13 +1282,25 @@ pub(super) fn index_opt(items: &[Value], i: i64) -> Value {
 }
 
 /// Flatten nested arrays `depth` levels deep (negative: fully).
-pub(super) fn flatten_into(items: &[Value], out: &mut Vec<Value>, depth: i64) {
+/// `items` flattened `depth` levels (all, when negative) into `out`; a
+/// `SystemStackError` for one nested too deeply to walk on this stack
+/// (#923), as `inspect` and `==` raise (#437).
+pub(super) fn flatten_into(
+    interp: &Interp,
+    items: &[Value],
+    out: &mut Vec<Value>,
+    depth: i64,
+) -> Result<(), Flow> {
+    if crate::sched::stack_exhausted() {
+        return Err(interp.too_deep("flatten"));
+    }
     for x in items {
         match x {
-            Value::Array(a) if depth != 0 => flatten_into(&a.values(), out, depth - 1),
+            Value::Array(a) if depth != 0 => flatten_into(interp, &a.values(), out, depth - 1)?,
             other => out.push(other.clone()),
         }
     }
+    Ok(())
 }
 
 /// Whether an element of `items` is `==` to `needle`, by the element's
