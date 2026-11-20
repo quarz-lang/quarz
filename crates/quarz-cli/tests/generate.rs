@@ -2352,6 +2352,32 @@ fn a_handle_made_in_a_generic_helper_takes_the_carried_class() {
     }
 }
 
+/// #950: a class method `def_class_method` generates in the place of
+/// `Object#dup` (no parameters, as `dup` has none) is refused as a
+/// written one is, at the statement that generates it.
+#[test]
+fn a_generated_class_method_cannot_take_dups_place() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Gen\n  static def self.gen -> Void\n    def_class_method(:dup) do -> Type[Gen]\n      Gen\n    end\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass A < Gen\n  gen\nend\nclass B < A\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains(
+            "app.qz:3:3: error: `A.dup` would take the place of `Object#dup` on the class value"
+        ),
+        "{err}"
+    );
+}
+
 /// #918, the check at a handle's use: a handle a generic helper returns
 /// is typed with its caller's view of the helper's type parameter (here
 /// `Animal`, for a `Type[Animal]` value holding `Dog`), wider than the

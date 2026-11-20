@@ -3618,6 +3618,22 @@ impl<'ast> Declarer<'ast> {
                     if within.is_some() && self.override_pairs.contains(&(mid, o)) {
                         break;
                     }
+                    // (#950: a method of the class object's class whose
+                    // result mentions that class's type parameter or `Self`
+                    // (`Object#dup`, `Type#cast`) gives the receiver's own
+                    // class at each call: a class method in its place would
+                    // be checked for this class alone, and its subclasses
+                    // inherit it, where the result is theirs. No override
+                    // is right for every subclass, so none is taken.)
+                    // (Decided by `o` alone, so a module's class method is
+                    // refused once, at the module, whose own class value
+                    // pairs it the same way; not again at each includer.)
+                    if self.result_names_receiver(o) {
+                        if within.is_none() {
+                            self.refuse_receiver_override(mid, o);
+                        }
+                        break;
+                    }
                     let mut subst = osubst;
                     subst.insert(SELF_PARAM, on.clone());
                     // (Their type parameters as the class method's, in order.)
@@ -3641,6 +3657,41 @@ impl<'ast> Declarer<'ast> {
                 }
             }
         }
+    }
+
+    /// Whether method `o` of a class object's class (`Type`,
+    /// `Meta::ClassDef`, or an ancestor of theirs, `Object`'s included)
+    /// returns something that names its receiver: its result, as declared,
+    /// mentions its owner's type parameters or `Self`. On a class value
+    /// those are the class itself (`Type[C]`'s `T` is `C`; `Self` is
+    /// `Type[C]`), which differs for each subclass (#950).
+    fn result_names_receiver(&self, o: MethodId) -> bool {
+        let om = self.world.method(o);
+        om.ret.mentions_param(SELF_PARAM)
+            || self
+                .world
+                .class(om.owner)
+                .type_params
+                .iter()
+                .any(|p| om.ret.mentions_param(p.id))
+    }
+
+    /// The error for class method `mid` taking the place of `o`, whose
+    /// result names its receiver (`result_names_receiver`, #950), at the
+    /// class method's declaration.
+    fn refuse_receiver_override(&mut self, mid: MethodId, o: MethodId) {
+        let (m, om) = (self.world.method(mid), self.world.method(o));
+        let owner = self.world.class(m.owner).name.clone();
+        let oname = format!("{}#{}", self.world.class(om.owner).name, om.name);
+        let shown = self.world.type_name(&om.ret);
+        let name = m.name.clone();
+        let span = m.span;
+        self.error(
+            format!(
+                "`{owner}.{name}` would take the place of `{oname}` on the class value, whose result ({shown}) names the class it is called on: a class method there would be checked for `{owner}` alone and inherited by its subclasses, for which it is wrong; give it another name or other parameters"
+            ),
+            span,
+        );
     }
 
     /// `check_override_pair` for the overrides class `id`'s includes make

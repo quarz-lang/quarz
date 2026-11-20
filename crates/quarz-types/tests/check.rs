@@ -4525,6 +4525,60 @@ fn function_calls() {
     ok("class D\n  @a: Int\n  def initialize\n    ::puts(\"early\")\n    @a = 1\n  end\nend");
 }
 
+/// #950: a class method in the place of a method of the class value's
+/// class whose result names the receiver (its owner's type parameter or
+/// `Self`: `Object#dup`, `#tap`, `Meta::ClassDef`'s generators and
+/// handles) would be checked for its class alone and inherited by its
+/// subclasses, where the result is theirs: refused at its declaration,
+/// whatever it returns, for a class (abstract, generic) and a module (at
+/// the module, once, not at its includers). Another name or other
+/// parameters are an ordinary class method; an extension's class method
+/// takes no part in dispatch and is not paired; `type` stays an ordinary
+/// class method (#553), and `then` (`-> U`) names no receiver.
+#[test]
+fn a_class_method_cannot_take_a_receiver_naming_methods_place() {
+    let refused = |owner: &str, name: &str, of: &str, ret: &str| {
+        format!("`{owner}.{name}` would take the place of `{of}` on the class value, whose result ({ret}) names the class it is called on: a class method there would be checked for `{owner}` alone and inherited by its subclasses, for which it is wrong; give it another name or other parameters")
+    };
+    err(
+        "class A\n  def self.dup -> Type[A] = A\nend\nclass B < A\nend",
+        &refused("A", "dup", "Object#dup", "Self"),
+    );
+    err(
+        "class A\n  def self.tap(&: (Type[A]) -> Void) -> Type[A] = A\nend",
+        &refused("A", "tap", "Object#tap", "Self"),
+    );
+    err(
+        "abstract class A\n  def self.dup -> Type[A] = A\nend",
+        &refused("A", "dup", "Object#dup", "Self"),
+    );
+    err(
+        "class G[X]\n  def self.dup -> Type[G[X]] = G[X]\nend",
+        &refused("G", "dup", "Object#dup", "Self"),
+    );
+    err(
+        "class A\n  def self.field_ref[U](name: Symbol) -> Meta::FieldRef[A, U] = raise \"x\"\nend",
+        &refused(
+            "A",
+            "field_ref",
+            "Meta::ClassDef#field_ref",
+            "Meta::FieldRef[T, U]",
+        ),
+    );
+    // A module's: at the module, once.
+    let errs = diagnostics("module M\n  def self.dup -> Type[M] = M\nend\nclass A\n  include M\nend\nclass B\n  include M\nend");
+    assert_eq!(
+        errs,
+        vec![refused("M", "dup", "Object#dup", "Self")],
+        "{errs:?}"
+    );
+    // Other parameters, another name, an extension's, `type`, `then`.
+    ok("class A\n  def self.dup(n: Int) -> Int = n\n  def self.tap -> Int = 1\nend");
+    ok("class A\nend\nextension A\n  def self.dup -> Type[A] = A\nend\nclass B < A\nend");
+    ok("class A\n  def self.type -> Int = 42\nend");
+    ok("class A\n  def self.then[U](&: (Type[A]) -> U) -> U = yield(A)\nend");
+}
+
 /// `Kernel.name(...)` is the built-in function, wherever it is written
 /// (docs/01 §1); another name is a method of the module object.
 #[test]
@@ -5893,12 +5947,18 @@ fn an_override_keeps_self() {
         "class Base\n  def initialize; end\n  def self.build -> Self = new\nend\nclass C < Base\n  def self.build -> C = C.new\nend",
         "`build` returns C but `Base.build`, which it overrides, returns Self",
     );
-    // A class method overriding `Object#dup` has the class value there.
+    // A class method in the place of `Object#dup`, whose result is the
+    // class value it is called on, is refused whatever it returns (#950:
+    // it would be checked for `C` alone, and `C`'s subclasses inherit it).
+    let dup = "`C.dup` would take the place of `Object#dup` on the class value, whose result (Self) names the class it is called on";
     err(
         "class C\n  def initialize; end\n  def self.dup -> Self = new\nend",
-        "`dup` returns C but `Object#dup`, which it overrides, returns Type[C]",
+        dup,
     );
-    ok("class C\n  def initialize; end\n  def self.dup -> Type[C] = self\nend");
+    err(
+        "class C\n  def initialize; end\n  def self.dup -> Type[C] = self\nend",
+        dup,
+    );
     // Another type is not told to write `Self`.
     let errs = diagnostics(&format!(
         "{base}class C < Base\n  def twice -> Int = 1\nend"
@@ -6513,8 +6573,10 @@ fn an_extensions_include_over_a_superclass_method_is_checked() {
 #[test]
 fn a_modules_class_method_is_checked_for_every_includer() {
     // #536: `Meta::ClassDef#method_ref` returns a method of the includer
-    // (`Meta::Method[T, P]`), so a module's `def self.method_ref` is
-    // checked for each class including it, whichever comes first.
+    // (`Meta::Method[T, P]`), so a module's `def self.method_ref` was
+    // checked for each class including it, whichever comes first; since
+    // #950 such a method is refused at the module itself, whatever the
+    // includers (its result names the receiver), once.
     let m = "module M\n  def self.method_ref[P](name: Symbol) -> Meta::Method[C1, P] = raise ArgumentError.new(\"no\")\nend\n";
     for classes in [
         "class C1\n  include M\nend\nclass C2\n  include M\nend",
@@ -6522,7 +6584,7 @@ fn a_modules_class_method_is_checked_for_every_includer() {
     ] {
         err(
             &format!("{m}{classes}"),
-            "`method_ref` returns Meta::Method[C1, P] but `Meta::ClassDef#method_ref`, which it overrides in `C2`, which includes `M`, returns Meta::Method[C2, P]",
+            "`M.method_ref` would take the place of `Meta::ClassDef#method_ref` on the class value, whose result (Meta::Method[T, P]) names the class it is called on",
         );
     }
 }
@@ -6537,10 +6599,11 @@ fn a_classs_own_method_over_a_conditional_extensions_module_is_checked() {
     );
     // A top-level unconditional extension's include puts the module's
     // class methods on the class object's dispatch (#681), over
-    // `Meta::ClassDef`'s: paired, and checked in `D`.
+    // `Meta::ClassDef`'s: paired, and (since #950, its result naming the
+    // receiver) refused at the module.
     err(
         "module M\n  def self.method_ref[P](name: Symbol) -> Meta::Method[M, P] = raise ArgumentError.new(\"no\")\nend\nclass D\n  def initialize; end\nend\nextension D\n  include M\nend",
-        "`method_ref` returns Meta::Method[M, P] but `Meta::ClassDef#method_ref`, which it overrides in `D`, which includes `M`, returns Meta::Method[D, P]",
+        "`M.method_ref` would take the place of `Meta::ClassDef#method_ref` on the class value, whose result (Meta::Method[T, P]) names the class it is called on",
     );
 }
 
