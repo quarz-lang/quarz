@@ -3565,8 +3565,17 @@ impl<'ast> Declarer<'ast> {
         // includes' and the top-level unconditional extensions' modules,
         // whose class methods may take a superclass's place, #681; a
         // scoped or conditional extension's put none there.)
-        for (anc, _) in self.world.class_modules_included(id, &args) {
+        // (Each module class method's include as written in this class,
+        // `M[Object]`, for #950's message.)
+        let mut included_as: HashMap<MethodId, String> = HashMap::default();
+        for (anc, aargs) in self.world.class_modules_included(id, &args) {
             let mc = self.world.class(anc);
+            let shown = self.world.type_name(&Type::Class(anc, aargs.clone()));
+            for x in mc.singleton_methods.values().flatten() {
+                if self.world.method(*x).owner == anc {
+                    included_as.insert(*x, shown.clone());
+                }
+            }
             mine.extend(
                 mc.singleton_methods
                     .values()
@@ -3618,6 +3627,34 @@ impl<'ast> Declarer<'ast> {
                     if within.is_some() && self.override_pairs.contains(&(mid, o)) {
                         break;
                     }
+                    // (#950: a method of the class object's class whose
+                    // result mentions that class's type parameter or `Self`
+                    // (`Object#dup`, `Type#cast`) gives the receiver's own
+                    // class at each call: a class method in its place would
+                    // be checked for this class alone, and its subclasses
+                    // inherit it, where the result is theirs. No override
+                    // is right for every subclass, so none is taken.)
+                    // (Wherever the pair is found: at the class method's own
+                    // class or module, or at an includer whose arguments
+                    // make it take the place (`include M[Object]` for a
+                    // `def self.cast(value: U)`). Reported once per pair, at
+                    // the class method, naming the includer when it is the
+                    // one that pairs it. The pairs are the override table's
+                    // (`World::overrides`, which the run time reads): what
+                    // is refused here is what would run in the method's
+                    // place.)
+                    if self.result_names_receiver(o) {
+                        if self.override_pairs.insert((mid, o)) {
+                            let by = within.as_ref().map(|c| {
+                                (
+                                    c.clone(),
+                                    included_as.get(&mid).cloned().unwrap_or_default(),
+                                )
+                            });
+                            self.refuse_receiver_override(mid, o, by);
+                        }
+                        break;
+                    }
                     let mut subst = osubst;
                     subst.insert(SELF_PARAM, on.clone());
                     // (Their type parameters as the class method's, in order.)
@@ -3641,6 +3678,55 @@ impl<'ast> Declarer<'ast> {
                 }
             }
         }
+    }
+
+    /// Whether method `o` of a class object's class (`Type`,
+    /// `Meta::ClassDef`, or an ancestor of theirs, `Object`'s included)
+    /// returns something that names its receiver: its result, as declared,
+    /// mentions its owner's type parameters or `Self`. On a class value
+    /// those are the class itself (`Type[C]`'s `T` is `C`; `Self` is
+    /// `Type[C]`), which differs for each subclass (#950).
+    fn result_names_receiver(&self, o: MethodId) -> bool {
+        let om = self.world.method(o);
+        om.ret.mentions_param(SELF_PARAM)
+            || self
+                .world
+                .class(om.owner)
+                .type_params
+                .iter()
+                .any(|p| om.ret.mentions_param(p.id))
+    }
+
+    /// The error for class method `mid` taking the place of `o`, whose
+    /// result names its receiver (`result_names_receiver`, #950), at the
+    /// class method's declaration; `by`, the includer (and its include as
+    /// written) whose arguments make a module's class method take the
+    /// place, when that is where the pair is found.
+    fn refuse_receiver_override(
+        &mut self,
+        mid: MethodId,
+        o: MethodId,
+        by: Option<(String, String)>,
+    ) {
+        let (m, om) = (self.world.method(mid), self.world.method(o));
+        let owner = self.world.class(m.owner).name.clone();
+        let oname = format!("{}#{}", self.world.class(om.owner).name, om.name);
+        let shown = self.world.type_name(&om.ret);
+        let name = m.name.clone();
+        let span = m.span;
+        let (place, checked) = match by {
+            Some((c, inc)) => (
+                format!(" in `{c}`, which includes `{inc}`,"),
+                format!("`{c}`"),
+            ),
+            None => (",".to_string(), format!("`{owner}`")),
+        };
+        self.error(
+            format!(
+                "`{owner}.{name}` would take the place of `{oname}` on the class value{place} whose result ({shown}) names the class it is called on: a class method there would be checked for {checked} alone and inherited by its subclasses, for which it is wrong; give it another name or other parameters"
+            ),
+            span,
+        );
     }
 
     /// `check_override_pair` for the overrides class `id`'s includes make

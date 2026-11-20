@@ -464,6 +464,22 @@ end
     assert_eq!(out.matches("error:").count(), 3, "{out}");
 }
 
+/// #950's reproducer: a class method in the place of `Object#dup` on
+/// the class value, which gave `g(B)` the class `A` typed `Type[B]`
+/// (`k <= B` false), is refused at its declaration.
+#[test]
+fn a_class_method_in_the_place_of_dup_is_refused() {
+    let out = common::diagnostics(
+        "class A\n  def self.dup -> Type[A] = A\nend\nclass B < A\nend\ndef g[T](t: Type[T]) -> Type[T] = t.dup\nk: Type[B] = g(B)\np k.name\np k <= B\n",
+    )
+    .join("\n");
+    assert!(
+        out.contains(":2:3: error: `A.dup` would take the place of `Object#dup` on the class value, whose result (Self) names the class it is called on"),
+        "{out}"
+    );
+    assert_eq!(out.matches("error:").count(), 1, "{out}");
+}
+
 #[test]
 fn a_conditional_extensions_include_brings_class_methods_where_its_bound_holds() {
     // #504: `extension Box[T <: Int]; include Parsable[Int]` gives
