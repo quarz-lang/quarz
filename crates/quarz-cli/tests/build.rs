@@ -587,6 +587,129 @@ fn build_timings_print_every_stage_and_change_nothing() {
     assert!(lines[7].contains(" level="), "{err}");
 }
 
+/// #921: a `data` construction leaving trailing fields to literal
+/// defaults is lowered with every field, as one written in full (so the
+/// AOT's `alloc_data` and `sroa` make it inline); a non-literal default,
+/// keywords, or a type's own `initialize` leave the call as it was.
+#[test]
+fn a_data_construction_with_literal_defaults_has_every_field() {
+    let module = common::lower(
+        "LIMIT = 7\n\
+         data Kind = (cls: Type[Object]?, item: Type[Object]? = nil, nils: Bool = false)\n\
+         data Mixed = (a: Int, k: Int = LIMIT)\n\
+         data Pt(x: Int, y: Int = 0)\n  def initialize(s: String)\n    @x = s.size\n    @y = 1\n  end\nend\n\
+         enum Shape\n  variant Circle(r: Float = 1.0, filled: Bool = false)\nend\n\
+         def literal -> Kind = Kind.new(Int)\n\
+         def keyword -> Kind = Kind.new(Int, nils: true)\n\
+         def constant -> Mixed = Mixed.new(1)\n\
+         def own -> Pt = Pt.new(\"s\")\n\
+         def variant -> Shape = Shape::Circle.new\n\
+         p literal, keyword, constant, own, variant\n",
+    );
+    let construct_args = |name: &str| -> (usize, usize) {
+        let f = module
+            .functions
+            .iter()
+            .find(|f| f.name == format!("main#{name}"))
+            .unwrap_or_else(|| panic!("no function {name}"));
+        f.blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .find_map(|i| match i {
+                quarz_ir::Inst::Call {
+                    kind: quarz_ir::CallKind::Construct { .. },
+                    args,
+                    kw,
+                    ..
+                } => Some((args.len(), kw.len())),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no construction in {name}"))
+    };
+    assert_eq!(construct_args("literal"), (3, 0));
+    assert_eq!(construct_args("variant"), (2, 0));
+    assert_eq!(construct_args("keyword"), (1, 1));
+    assert_eq!(construct_args("constant"), (1, 0));
+    assert_eq!(construct_args("own"), (1, 0));
+}
+
+/// #921 across files: the default's node is the declaring file's, lowered
+/// in the constructing file's function with the checker's tables for it.
+/// Filled, and the same output, interpreted and compiled, with both files
+/// checked afresh, both read back, and each read back while the other is
+/// checked.
+#[test]
+fn a_data_construction_fills_defaults_declared_in_another_file() {
+    let dir = std::env::temp_dir().join(format!("quarz-litdefaults-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let cache = dir.join("cache");
+    fs::write(
+        dir.join("lib.qz"),
+        "data D = (a: Int, b: Int = -3, c: Float = 1, e: Symbol = :s)\ndef note -> String = \"v1\"\n",
+    )
+    .unwrap();
+    let app_src =
+        "require_relative \"lib\"\nd = D.new(1)\np d, d.c + 0.5, d == D.new(1, -3, 1.0, :s)\n";
+    fs::write(dir.join("app.qz"), app_src).unwrap();
+    let want = "D(a: 1, b: -3, c: 1.0, e: :s)\n1.5\ntrue\n";
+    let quarz = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_quarz"))
+            .args(args)
+            .current_dir(&dir)
+            .env("QUARZ_CACHE_DIR", &cache)
+            .env("QUARZ_THREADS", "1")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "quarz {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let check = |state: &str| {
+        assert_eq!(quarz(&["run", "app.qz"]), want, "{state}: run");
+        // `D.new(1)` has its four fields.
+        let ir = quarz(&["ir", "app.qz"]);
+        let filled = ir
+            .lines()
+            .filter(|l| l.contains("Construct { class") && l.contains("args: ["))
+            .filter(|l| {
+                let args = l
+                    .split("args: [")
+                    .nth(1)
+                    .unwrap()
+                    .split(']')
+                    .next()
+                    .unwrap();
+                args.split(',').count() == 4
+            })
+            .count();
+        assert_eq!(filled, 2, "{state}: {ir}");
+        let exe = dir.join("app.bin");
+        let _ = fs::remove_file(&exe);
+        quarz(&["build", "app.qz", "-o", exe.to_str().unwrap()]);
+        let out = Command::new(&exe).output().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            want,
+            "{state}: compiled"
+        );
+    };
+    check("cold");
+    check("warm");
+    fs::write(dir.join("app.qz"), format!("{app_src}x = 1\n")).unwrap();
+    check("lib read back, app checked");
+    fs::write(
+        dir.join("lib.qz"),
+        "data D = (a: Int, b: Int = -3, c: Float = 1, e: Symbol = :s)\ndef note -> String = \"v2\"\n",
+    )
+    .unwrap();
+    check("app read back, lib checked");
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// #536 step 10b: a compiled `FieldGet`'s fast path reads a field where
 /// its class lays it out, trusting the object to be of that class. A
 /// program compiled with the checks (by a `quarz` that checks the facts

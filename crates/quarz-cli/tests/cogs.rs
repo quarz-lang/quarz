@@ -820,6 +820,34 @@ end
     assert_eq!(String::from_utf8_lossy(&run.stdout), want);
 }
 
+/// #921: a library's `data` type constructed in the application with
+/// literal defaults left out (filled at the call from the library's
+/// nodes), interpreted and compiled, twice (the second with the checks
+/// read back).
+#[test]
+fn a_librarys_data_literal_defaults_fill_an_applications_construction() {
+    let w = World::new();
+    w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
+    w.write(
+        "lib/src/d.qz",
+        "data D = (a: Int, b: Int = -3, c: Float = 1, e: Symbol = :s)\n",
+    );
+    w.commit("lib", Some("v0.1.0"));
+    let dep = format!("Lib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("lib"));
+    w.app(
+        &dep,
+        "d = Lib::D.new(1)\np d.b, d.c + 0.5, d.e, d == Lib::D.new(1, -3, 1.0, :s)\n",
+    );
+    let want = "-3\n1.5\n:s\ntrue\n";
+    for _ in 0..2 {
+        assert_eq!(w.ok("app", &["run"]), want);
+        let exe = w.path("app/app-bin");
+        w.ok("app", &["build", "-o", exe.to_str().unwrap()]);
+        let run = Command::new(&exe).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&run.stdout), want);
+    }
+}
+
 /// An inherited class method's `new` builds a subclass with the first of
 /// its `initialize` overloads that takes what `new` passes, asked under the
 /// extensions active where the overload is declared (docs/01 §3, #871):
