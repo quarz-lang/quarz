@@ -1570,17 +1570,10 @@ fn array_select(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 /// private, for `sort_by`).
 pub(super) fn enum_sort_pairs(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let mut items: Vec<Value> = arr(interp, args.arg(0))?.iter().cloned().collect();
-    interp.sort_values(&mut items, |a, b| {
-        let ka = match a {
-            Value::Array(p) => p.get(0).unwrap_or(Value::Nil),
-            _ => Value::Nil,
-        };
-        let kb = match b {
-            Value::Array(p) => p.get(0).unwrap_or(Value::Nil),
-            _ => Value::Nil,
-        };
-        // (`K <: Comparable[K]`: a witness, `Interp::find_method`, #579.)
-        interp.compare(&ka, &kb)
+    // (`K <: Comparable[K]`: a witness, `Interp::find_method`, #579.)
+    interp.sort_compared_by(&mut items, |pair| match pair {
+        Value::Array(p) => p.get(0).unwrap_or(Value::Nil),
+        _ => Value::Nil,
     })?;
     Ok(Value::array(items))
 }
@@ -1606,7 +1599,7 @@ pub(super) fn enum_sort(interp: &Interp, recv: &Value, args: Args) -> EvalResult
     }
     let mut items = collect(interp, recv)?;
     match &args.block {
-        None => interp.sort_values(&mut items, |a, b| interp.compare(a, b))?,
+        None => interp.sort_compared(&mut items)?,
         Some(b) => interp.sort_values(&mut items, |x, y| block_ordering(interp, b, x, y))?,
     }
     Ok(Value::array(items))

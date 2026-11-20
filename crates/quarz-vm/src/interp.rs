@@ -252,6 +252,37 @@ pub fn fast_binop(op: FastOp, a: &Value, b: &Value) -> Option<Value> {
     }
 }
 
+/// Whether `values` are all of one kind `Interp::native_order` orders by
+/// a total order of its own, which runs no code of the program (#953):
+/// strings, symbols, `Int`s, `Float`s, durations, bytes or times, each
+/// alone (an empty or one-element set too). Not mixed `Int`s and
+/// `Float`s (exact between them, `float_order` among floats: not shown
+/// to be one total order with NaN), nor arrays (their elements may be
+/// anything), nor booleans or nil (no native order: `<=>` raises for
+/// them): those are sorted by `sort_fallible`.
+pub(crate) fn native_kind<'v>(values: impl Iterator<Item = &'v Value>) -> bool {
+    fn kind(v: &Value) -> u8 {
+        match v {
+            Value::Str(_) | Value::Short(_) => 1,
+            Value::Symbol(_) => 2,
+            Value::Int(_) => 3,
+            Value::Float(_) => 4,
+            Value::Duration(_) => 5,
+            Value::Bytes(_) => 6,
+            Value::Time(_) => 7,
+            _ => 0,
+        }
+    }
+    let mut one = None;
+    for v in values {
+        let k = kind(v);
+        if k == 0 || *one.get_or_insert(k) != k {
+            return false;
+        }
+    }
+    true
+}
+
 /// Sort `v` by `cmp`, stably (equal ones keep their order): a merge sort
 /// that stops at `cmp`'s first error and takes any answer, so a comparison
 /// that raises or is not a total order (a user's block or `<=>`) cannot
@@ -4110,6 +4141,71 @@ impl Interp {
         self.compare_with(a, b, true)
     }
 
+    /// The order of two built-in values `compare_with` orders natively:
+    /// numbers (an `Int` and a `Float` exactly, #888; NaN as
+    /// `float_order` orders it), strings, symbols (by name), durations,
+    /// bytes, times. `None` for any other pair, which a `<=>` decides.
+    #[inline]
+    fn native_order(&self, a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
+        use std::cmp::Ordering;
+        Some(match (a, b) {
+            (Value::Int(x), Value::Int(y)) => x.cmp(y),
+            (Value::Float(x), Value::Float(y)) => float_order(*x, *y),
+            // (Exactly, #888; NaN ordered as `float_order` orders it.)
+            (Value::Int(x), Value::Float(y)) => {
+                crate::value::cmp_int_float(*x, *y).unwrap_or_else(|| float_order(*x as f64, *y))
+            }
+            (Value::Float(x), Value::Int(y)) => crate::value::cmp_int_float(*y, *x)
+                .map(Ordering::reverse)
+                .unwrap_or_else(|| float_order(*x, *y as f64)),
+            (Value::Str(_) | Value::Short(_), Value::Str(_) | Value::Short(_)) => {
+                a.as_str().unwrap_or("").cmp(b.as_str().unwrap_or(""))
+            }
+            (Value::Symbol(x), Value::Symbol(y)) => self.symbol_name(*x).cmp(&self.symbol_name(*y)),
+            (Value::Duration(x), Value::Duration(y)) => x.cmp(y),
+            (Value::Bytes(x), Value::Bytes(y)) => x.cmp(y),
+            (Value::Time(x), Value::Time(y)) => x.ns.cmp(&y.ns),
+            _ => return None,
+        })
+    }
+
+    /// Sort `items` as `compare` orders them (a sort without a block):
+    /// with the standard library's stable sort where every one is of one
+    /// kind `native_order` orders (`native_kind`), whose order is total
+    /// and runs no code of the program, so that it can neither raise nor
+    /// be inconsistent (#953); with `sort_values` otherwise (#924).
+    pub fn sort_compared(&self, items: &mut Vec<Value>) -> Result<(), Flow> {
+        if native_kind(items.iter()) {
+            items.sort_by(|a, b| {
+                self.native_order(a, b)
+                    .expect("a native order for one kind of built-in value")
+            });
+            return Ok(());
+        }
+        self.sort_values(items, |a, b| self.compare(a, b))
+    }
+
+    /// `sort_compared` by `key` of each item (`sort_by`'s pairs): the
+    /// keys compared, the items moved with them.
+    pub fn sort_compared_by(
+        &self,
+        items: &mut Vec<Value>,
+        key: impl Fn(&Value) -> Value,
+    ) -> Result<(), Flow> {
+        let mut keyed: Vec<(Value, Value)> = items.drain(..).map(|v| (key(&v), v)).collect();
+        let result = if native_kind(keyed.iter().map(|(k, _)| k)) {
+            keyed.sort_by(|(a, _), (b, _)| {
+                self.native_order(a, b)
+                    .expect("a native order for one kind of built-in value")
+            });
+            Ok(())
+        } else {
+            sort_fallible(&mut keyed, |(a, _), (b, _)| self.compare(a, b))
+        };
+        items.extend(keyed.into_iter().map(|(_, item)| item));
+        result
+    }
+
     /// `compare`, saying whether a `<=>` found by name may be a witness
     /// (`find_method`): `true` for the sorting natives, whose element type
     /// is bounded by `Comparable` (the checker allows them only on
@@ -4125,38 +4221,20 @@ impl Interp {
         if crate::sched::stack_exhausted() {
             return Err(self.too_deep("compare"));
         }
-        match (a, b) {
-            (Value::Int(x), Value::Int(y)) => return Ok(x.cmp(y)),
-            (Value::Float(x), Value::Float(y)) => return Ok(float_order(*x, *y)),
-            // (Exactly, #888; NaN ordered as `float_order` orders it.)
-            (Value::Int(x), Value::Float(y)) => {
-                return Ok(crate::value::cmp_int_float(*x, *y)
-                    .unwrap_or_else(|| float_order(*x as f64, *y)))
+        // (An object's order is its `<=>`'s: the built-ins' first.)
+        if !matches!(a, Value::Object(_)) {
+            if let Some(o) = self.native_order(a, b) {
+                return Ok(o);
             }
-            (Value::Float(x), Value::Int(y)) => {
-                return Ok(crate::value::cmp_int_float(*y, *x)
-                    .map(Ordering::reverse)
-                    .unwrap_or_else(|| float_order(*x, *y as f64)))
-            }
-            (Value::Str(_) | Value::Short(_), Value::Str(_) | Value::Short(_)) => {
-                return Ok(a.as_str().unwrap_or("").cmp(b.as_str().unwrap_or("")))
-            }
-            (Value::Symbol(x), Value::Symbol(y)) => {
-                return Ok(self.symbol_name(*x).cmp(&self.symbol_name(*y)))
-            }
-            (Value::Duration(x), Value::Duration(y)) => return Ok(x.cmp(y)),
-            (Value::Bytes(x), Value::Bytes(y)) => return Ok(x.cmp(y)),
-            (Value::Time(x), Value::Time(y)) => return Ok(x.ns.cmp(&y.ns)),
-            (Value::Array(x), Value::Array(y)) => {
-                for (p, q) in x.iter().zip(y.iter()) {
-                    let o = self.compare_with(&p, &q, witness)?;
-                    if o != Ordering::Equal {
-                        return Ok(o);
-                    }
+        }
+        if let (Value::Array(x), Value::Array(y)) = (a, b) {
+            for (p, q) in x.iter().zip(y.iter()) {
+                let o = self.compare_with(&p, &q, witness)?;
+                if o != Ordering::Equal {
+                    return Ok(o);
                 }
-                return Ok(x.len().cmp(&y.len()));
             }
-            _ => {}
+            return Ok(x.len().cmp(&y.len()));
         }
         let r = if witness {
             self.send_requirement(a, self.req_cmp, "<=>", smallvec![b.clone()], None)?
@@ -4453,6 +4531,26 @@ mod sort_tests {
         assert_eq!(r, Err(()));
         w.sort_unstable();
         assert_eq!(w, sorted_w);
+    }
+
+    /// #953: the standard library's sort only for values of one kind
+    /// `native_order` orders totally.
+    #[test]
+    fn a_native_kind_is_one_kind_of_built_in_value() {
+        use super::native_kind;
+        use crate::value::Value;
+        let strs = [
+            Value::string("b".to_string()),
+            Value::string("a".to_string()),
+        ];
+        assert!(native_kind(strs.iter()));
+        assert!(native_kind([Value::Int(1), Value::Int(2)].iter()));
+        assert!(native_kind([].iter()));
+        // Mixed numbers, and booleans or nil: not.
+        assert!(!native_kind([Value::Int(1), Value::Float(2.0)].iter()));
+        assert!(!native_kind([Value::Bool(true), Value::Bool(false)].iter()));
+        assert!(!native_kind([Value::Nil].iter()));
+        assert!(!native_kind([strs[0].clone(), Value::Int(1)].iter()));
     }
 
     #[test]

@@ -1,0 +1,28 @@
+# A sort without a block of built-in values of one kind (strings,
+# symbols, integers, floats, durations, bytes, times) takes the standard
+# library's stable sort; any other mix the runtime's own (#953, #924).
+# Both order as `<=>` does, and keep equal ones in order.
+p ["pear", "apple", "fig", "apple", "Zed", ""].sort
+p [:pear, :apple, :fig].sort
+p [3, -1, 2, 2, 0].map { |x| x }.sort
+p [2.5, -0.5, 1.0].sort
+p [3.seconds, 1.seconds, 2.minutes].sort
+p [b"b", b"a", b"ab"].sort
+p [Time.at(5), Time.at(1), Time.at(3)].map { |t| t.to_i }.sort
+# Stable: equal keys keep their order.
+words = ["bb", "a", "cc", "b", "aa"]
+p words.sort_by { |w| w.size }
+p words.sort_by { |w| w[0] }
+# Objects with their own `<=>`: the runtime's sort, stable too.
+class Item
+  include Comparable[Item]
+  @k: Int
+  @tag: String
+  def initialize(@k: Int, @tag: String); end
+  def k -> Int = @k
+  def tag -> String = @tag
+  def <=>(o: Item) -> Int = @k <=> o.k
+end
+p [Item.new(2, "a"), Item.new(1, "b"), Item.new(2, "c"), Item.new(1, "d")].sort.map { |i| i.tag }
+# Keys of one kind through `sort_by` of objects.
+p [Item.new(2, "x"), Item.new(1, "y")].sort_by { |i| i.tag }.map { |i| i.k }
