@@ -2925,7 +2925,7 @@ pub enum Value {
     BytesBuilder(Rc<RefCell<Vec<u8>>>),
     Time(Rc<TimeVal>),
     Random(Rc<RefCell<RandomState>>),
-    /// Key material the runtime clears (`Crypto::Secret`, #963): its
+    /// Key material the runtime clears (`Bytes::Secret`, #963): its
     /// buffer is overwritten when it is wiped and when the last reference
     /// goes. Shareable: the allocation is the runtime's `Rc`, whose count
     /// is atomic once the value is marked shared, and what it holds is
@@ -3485,11 +3485,11 @@ pub use crate::layout::VALUE_SIZE;
 const _: () = assert!(std::mem::size_of::<Value>() == VALUE_SIZE);
 
 /// What a `Value::Secret` holds (#963), one case per class, as `IoKind`
-/// is for the `IO`s: `Crypto::Secret`'s bytes, and later the keys held
+/// is for the `IO`s: `Bytes::Secret`'s bytes, and later the keys held
 /// natively.
 #[derive(Debug)]
 pub enum SecretVal {
-    /// `Crypto::Secret`.
+    /// `Bytes::Secret`.
     Bytes(SecretBytes),
 }
 
@@ -3498,7 +3498,7 @@ impl SecretVal {
     /// or not), others by `SecretBytes::equal`, a wiped one equal to no
     /// other. It cannot raise, and collections need a value equal to
     /// itself (a `Hash` key found again, `uniq`), so a wiped secret is
-    /// equal to itself here, while `Crypto::Secret#==` raises for it
+    /// equal to itself here, while `Bytes::Secret#==` raises for it
     /// (#963: every use of a wiped secret raises).
     pub fn same_contents(a: &Rc<SecretVal>, b: &Rc<SecretVal>) -> bool {
         if Rc::ptr_eq(a, b) {
@@ -3586,7 +3586,7 @@ impl SecretBytes {
     /// Whether `a` and `b` hold the same bytes, compared in constant time
     /// for equal sizes; `None` when either is wiped. Both `==`s of
     /// secrets go through it (`SecretVal::same_contents`, the native
-    /// `Crypto::Secret#==`).
+    /// `Bytes::Secret#==`).
     pub fn equal(a: &SecretBytes, b: &SecretBytes) -> Option<bool> {
         SecretBytes::with2(a, b, constant_time_eq)
     }
@@ -3853,7 +3853,7 @@ impl Value {
             (Value::Time(a), Value::Time(b)) => a.ns == b.ns,
             (Value::Random(a), Value::Random(b)) => Rc::ptr_eq(a, b),
             // By contents, in constant time (a wiped one equals only
-            // itself), so that collections agree with `Crypto::Secret#==`.
+            // itself), so that collections agree with `Bytes::Secret#==`.
             (Value::Secret(a), Value::Secret(b)) => SecretVal::same_contents(a, b),
             (Value::Flow(a), Value::Flow(b)) => Rc::ptr_eq(a, b),
             _ => false,
