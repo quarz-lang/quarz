@@ -1,0 +1,50 @@
+# A `data` construction that leaves trailing fields to literal defaults
+# (`nil`, booleans, numbers, symbols) is filled in at the call and made
+# as one written in full (#921); every other form keeps the constructor's
+# own binding. Each prints what it built, on the VM and compiled alike.
+LIMIT = 7
+
+data Kind = (cls: Type[Object]?, item: Type[Object]? = nil, nils: Bool = false)
+data Lits = (a: Int, b: Int = -3, c: Float = 1, d: Float = 2.5, e: Symbol = :sym, f: Bool = true, g: Int? = nil)
+data Box[T] = (v: T?, n: Int = 1)
+data Mixed = (a: Int, s: String = "str", k: Int = LIMIT, x: Int = 1 + 2, z: Bool = false)
+
+# A `data` type with an `initialize` of its own, which `new` takes (not
+# the generated one): left as it is.
+data Pt(x: Int, y: Int = 0)
+  def initialize(s: String)
+    @x = s.size
+    @y = 1
+  end
+end
+
+enum Shape
+  variant Circle(r: Float = 1.0, filled: Bool = false)
+  variant Dot
+end
+
+def show(k: Kind) -> String = "#{k.cls.inspect} #{k.item.inspect} #{k.nils}"
+
+puts show(Kind.new(Int))
+puts show(Kind.new(Int, String))
+puts show(Kind.new(Int, nil, true))
+puts show(Kind.new(nil))
+p Lits.new(1)
+p Lits.new(1, 2)
+p Lits.new(1, 2, 3.5, 4.0, :other, false, 9)
+# Keywords: the constructor binds them, as before. (A splat is refused
+# by a `data` type's constructor.)
+p Lits.new(1, f: false)
+p Lits.new(a: 4)
+p Box[String].new("s")
+p Box[Int].new(nil, 2)
+# Non-literal defaults: a string, a constant, an expression.
+p Mixed.new(1)
+p Mixed.new(1, "t")
+p Pt.new("four")
+p Shape::Circle.new
+p Shape::Circle.new(2.0)
+p Shape::Dot
+# Equal to one written in full.
+p Kind.new(Int) == Kind.new(Int, nil, false)
+p Lits.new(1) == Lits.new(1, -3, 1.0, 2.5, :sym, true, nil)

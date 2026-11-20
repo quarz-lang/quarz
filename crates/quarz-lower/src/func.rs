@@ -2672,6 +2672,44 @@ impl<'a> FnBuilder<'a> {
         }
     }
 
+    /// A `data` construction through the generated constructor (`init`,
+    /// `Synth::DataInit`) with trailing fields left out, each of whose
+    /// defaults is a literal (`rtworld::literal_constant`: `nil`, a
+    /// boolean, a number, a symbol): the defaults are lowered at the call,
+    /// so that the construction has every field and is made inline, as
+    /// one written in full is (`sroa`, the AOT's `alloc_data`), not
+    /// through the runtime's binding (#921). Such a default runs no code
+    /// and refers to nothing, so its value is the same at the call as in
+    /// the constructor; it is the same node, typed alike (an integer
+    /// literal for a `Float` field is a float there too), read from the
+    /// checker's tables for that node, which hold every unit's, whether
+    /// its file was checked now or read back from the cache. Any other
+    /// default (a string, which is a new one per construction either way
+    /// but is left to the constructor with the rest; a constant; a call;
+    /// an earlier field) leaves the call as it is.
+    fn fill_literal_defaults(&mut self, class: ClassId, init: MethodId, args: &mut Vec<Reg>) {
+        let fields = &self.world.class(class).fields;
+        let params = self.world.method(init).params.len();
+        if args.len() >= params || params != fields.len() {
+            return;
+        }
+        let defaults: Option<Vec<&'a Expr>> = fields[args.len()..]
+            .iter()
+            .map(|f| {
+                f.default
+                    .as_deref()
+                    .filter(|d| crate::rtworld::literal_constant(d).is_some())
+            })
+            .collect();
+        let Some(defaults) = defaults else {
+            return;
+        };
+        for d in defaults {
+            let r = self.expr(d);
+            args.push(r);
+        }
+    }
+
     /// The physical fields a data constructor of `class` takes, from
     /// the declared fields' values.
     fn flatten_args(&mut self, class: ClassId, args: Vec<Reg>) -> Vec<Reg> {
@@ -4332,6 +4370,7 @@ impl<'a> FnBuilder<'a> {
                 let data_init = init
                     .is_some_and(|m| self.world.method(m).synth == quarz_types::Synth::DataInit);
                 if data_init && !a.splat && a.kw.is_empty() && a.kw_splat.is_none() {
+                    self.fill_literal_defaults(*class, init.unwrap(), &mut a.pos);
                     a.pos = self.flatten_args(*class, std::mem::take(&mut a.pos));
                 }
                 // `new` on the receiver of a class method that subclasses

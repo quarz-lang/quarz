@@ -1,0 +1,19 @@
+Int nil false
+Int String false
+Int nil true
+nil nil false
+Lits(a: 1, b: -3, c: 1.0, d: 2.5, e: :sym, f: true, g: nil)
+Lits(a: 1, b: 2, c: 1.0, d: 2.5, e: :sym, f: true, g: nil)
+Lits(a: 1, b: 2, c: 3.5, d: 4.0, e: :other, f: false, g: 9)
+Lits(a: 1, b: -3, c: 1.0, d: 2.5, e: :sym, f: false, g: nil)
+Lits(a: 4, b: -3, c: 1.0, d: 2.5, e: :sym, f: true, g: nil)
+Box(v: "s", n: 1)
+Box(v: nil, n: 2)
+Mixed(a: 1, s: "str", k: 7, x: 3, z: false)
+Mixed(a: 1, s: "t", k: 7, x: 3, z: false)
+Pt(x: 4, y: 1)
+Shape::Circle(r: 1.0, filled: false)
+Shape::Circle(r: 2.0, filled: false)
+Shape::Dot
+true
+true
