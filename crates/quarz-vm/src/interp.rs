@@ -638,6 +638,9 @@ pub struct RtClasses {
     pub random: ClassId,
     /// `Bytes::Secret`.
     pub secret: ClassId,
+    /// `crypto`'s keys held natively (`ClassId::MAX` when not required).
+    pub rsa_private_key: ClassId,
+    pub aes_gcm: ClassId,
     pub file: ClassId,
     pub math: ClassId,
     pub process: ClassId,
@@ -1144,6 +1147,8 @@ impl Interp {
             tls_socket: library_class("TLSSocket"),
             random: class_by_name("Random"),
             secret: class_by_name("Bytes::Secret"),
+            rsa_private_key: library_class("Crypto::RSA::PrivateKey"),
+            aes_gcm: library_class("Crypto::AES::GCM"),
             file: class_by_name("File"),
             math: class_by_name("Math"),
             process: class_by_name("Process"),
@@ -2528,6 +2533,10 @@ impl Interp {
             Value::Random(_) => self.program.rt.random,
             Value::Secret(s) => match &**s {
                 crate::value::SecretVal::Bytes(_) => self.program.rt.secret,
+                crate::value::SecretVal::Key(k) => match k.kind() {
+                    crate::value::KeyKind::RsaPrivate => self.program.rt.rsa_private_key,
+                    crate::value::KeyKind::Aes => self.program.rt.aes_gcm,
+                },
             },
             Value::Flow(_) => b.object,
         }
@@ -4216,6 +4225,13 @@ impl Interp {
             // Nothing of it, not even its size (#963).
             Value::Secret(s) => match &**s {
                 crate::value::SecretVal::Bytes(_) => "#<Bytes::Secret>".to_string(),
+                // The size, never the key.
+                crate::value::SecretVal::Key(k) => match k.kind() {
+                    crate::value::KeyKind::RsaPrivate => {
+                        format!("#<Crypto::RSA::PrivateKey {} bits>", k.bits())
+                    }
+                    crate::value::KeyKind::Aes => format!("#<Crypto::AES::GCM {} bits>", k.bits()),
+                },
             },
             Value::Bytes(b) => natives::bytes::inspect_bytes(b),
             Value::BytesBuilder(b) => natives::bytes::inspect_bytes(&b.borrow()),

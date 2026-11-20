@@ -1,0 +1,51 @@
+# The keys held natively on several workers (#963): tasks sign and seal
+# in a loop while another wipes the key. Each operation completes with
+# the whole key (a signature that verifies, a box that opens) or raises
+# WipedError; none crashes or gives anything else.
+require "crypto"
+
+key = Crypto::RSA::PrivateKey.generate(2048)
+pub = key.public_key
+signed = (1..4).map do |k|
+  Task.spawn do
+    if k == 4
+      Task.sleep(2.ms)
+      key.wipe
+      Array[Symbol].new
+    else
+      (1..8).map do |_|
+        begin
+          pub.verify("m", key.sign("m", :sha256), :sha256) ? :ok : :bad
+        rescue Bytes::Secret::WipedError
+          :wiped
+        end
+      end
+    end
+  end
+end
+seen = signed.map(&:await).flatten.uniq
+p seen.include?(:bad), key.wiped?, (seen - [:ok, :wiped]).empty?
+
+raw = Crypto.random_secret(32)
+gcm = Crypto::AES::GCM.new(raw)
+check = Crypto::AES::GCM.new(raw)
+nonce = Bytes.from((0...12).to_a)
+sealed = (1..4).map do |k|
+  Task.spawn do
+    if k == 4
+      Task.sleep(1.ms)
+      gcm.wipe
+      Array[Symbol].new
+    else
+      (1..500).map do |_|
+        begin
+          check.open?(nonce, gcm.seal(nonce, "message")) == b"message" ? :ok : :bad
+        rescue Bytes::Secret::WipedError
+          :wiped
+        end
+      end
+    end
+  end
+end
+seen = sealed.map(&:await).flatten.uniq
+p seen.include?(:bad), gcm.wiped?, (seen - [:ok, :wiped]).empty?

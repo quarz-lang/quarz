@@ -1,0 +1,100 @@
+# The keys held natively (#963): Crypto::RSA::PrivateKey and
+# Crypto::AES::GCM made from a Bytes::Secret, exported as one, compared
+# in constant time, wiped for every holder, shared (not copied) by a
+# `data` field, Task.blocking and Task.spawn.
+require "base64"
+require "crypto"
+require "json"
+require "test"
+
+data KeyHolder = (key: Crypto::RSA::PrivateKey, gcm: Crypto::AES::GCM)
+
+class CryptoKeysTest < Test::Case
+  def fixture(name: String) -> String = File.read("std/test/fixtures/crypto/#{name}")
+
+  def key -> Crypto::RSA::PrivateKey = Crypto::RSA::PrivateKey.from_pem(fixture("rsa2048_pkcs8.pem"))
+
+  def test_made_from_and_exported_as_secrets
+    k = key
+    der = k.export_der
+    assert_equal(k, Crypto::RSA::PrivateKey.new(der))
+    assert_equal(k, Crypto::RSA::PrivateKey.from_pem(Bytes::Secret.of(fixture("rsa2048_pkcs1.pem").to_bytes)))
+    assert_equal(k, Crypto::RSA::PrivateKey.from_pem(k.export_pem(format: :pkcs1)))
+    assert_raise(Crypto::Error) { Crypto::RSA::PrivateKey.new(Bytes::Secret.of(b"not a key")) }
+
+    raw = Crypto.random_secret(32)
+    gcm = Crypto::AES::GCM.new(raw)
+    assert_equal(raw, gcm.export_key)
+    assert_equal(gcm, Crypto::AES::GCM.new(raw.expose_bytes))
+    assert_raise(ArgumentError) { Crypto::AES::GCM.new(Bytes::Secret.of(b"short")) }
+  end
+
+  def test_equality_by_key
+    k = key
+    assert(k == Crypto::RSA::PrivateKey.from_pem(fixture("rsa2048_pkcs1.pem")))
+    assert(!(k == Crypto::RSA::PrivateKey.generate(2048)))
+    assert(!(k == "key"))
+    a = Crypto::AES::GCM.new(Bytes.from((0...32).to_a))
+    assert(a == Crypto::AES::GCM.new(Bytes.from((0...32).to_a)))
+    assert(!(a == Crypto::AES::GCM.new(Bytes.from((1..32).to_a))))
+    assert(!(a == Crypto::AES::GCM.new(Bytes.from((0...16).to_a))))
+    assert(!(a == k))
+    assert(a == a)
+  end
+
+  def test_wipe_ends_the_key_for_every_holder
+    k = key
+    other = k
+    holder = KeyHolder.new(k, Crypto::AES::GCM.generate)
+    k.wipe
+    assert(other.wiped?)
+    assert(holder.key.wiped?)
+    assert_equal(2048, other.bits)
+    assert_equal("#<Crypto::RSA::PrivateKey 2048 bits>", other.inspect)
+    [-> { other.sign("x", :sha256); nil }, -> { other.sign_pss("x", :sha256); nil },
+     -> { other.export_der; nil }, -> { other.export_pem; nil },
+     -> { other.public_key; nil }, -> { other == key; nil }, -> { key == other; nil },
+     -> { other == other; nil }].each do |use|
+      assert_raise(Bytes::Secret::WipedError) { use.call }
+    end
+    k.wipe
+
+    g = holder.gcm
+    g.wipe
+    assert(holder.gcm.wiped?)
+    assert_equal(256, g.bits)
+    nonce = Bytes.from((0...12).to_a)
+    [-> { g.seal(nonce, "x"); nil }, -> { g.open?(nonce, b"0123456789abcdef"); nil },
+     -> { g.encrypt("x"); nil }, -> { g.export_key; nil }, -> { g == g; nil }].each do |use|
+      assert_raise(Bytes::Secret::WipedError) { use.call }
+    end
+    # Collections, which cannot raise, find a wiped key equal to itself.
+    assert_equal(1, [g, g].uniq.size)
+  end
+
+  def test_shared_not_copied
+    k = key
+    holder = KeyHolder.new(k, Crypto::AES::GCM.generate)
+    assert(holder.key.equal?(k))
+    assert(k.dup.equal?(k))
+    sig = Task.blocking { holder.key.sign("x", :sha256) }
+    assert(k.public_key.verify("x", sig, :sha256))
+    Task.blocking { holder.gcm.wipe }
+    assert(holder.gcm.wiped?)
+    t = Task.spawn { k.wipe }
+    t.await
+    assert(k.wiped?)
+    assert(holder.key.wiped?)
+  end
+
+  def test_shows_nothing_and_is_never_json
+    k = key
+    g = Crypto::AES::GCM.generate
+    assert_equal("#<Crypto::RSA::PrivateKey 2048 bits>", "#{k}")
+    assert_equal("#<Crypto::AES::GCM 256 bits>", [g].inspect[1...-1])
+    assert_raise(JSON::GeneratorError) { JSON.generate([k]) }
+    assert_raise(JSON::GeneratorError) { JSON.generate([g]) }
+    assert(k.shareable?)
+    assert(g.shareable?)
+  end
+end

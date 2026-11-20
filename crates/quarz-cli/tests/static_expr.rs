@@ -186,7 +186,7 @@ fn what_static_refuses() {
     write(
         &d.0,
         "key.qz",
-        "module KeyLib\n  static def self.key -> Bytes::Secret = Bytes::Secret.of(b\"abc\")\n  static def self.any -> Shareable = Bytes::Secret.of(b\"abc\")\n  static def self.keys -> Array[Shareable] = [Bytes::Secret.of(b\"abc\")]\nend\n",
+        "require \"crypto\"\nmodule KeyLib\n  static def self.key -> Bytes::Secret = Bytes::Secret.of(b\"abc\")\n  static def self.gcm -> Shareable = Crypto::AES::GCM.new(Bytes.from((0...32).to_a))\n  static def self.any -> Shareable = Bytes::Secret.of(b\"abc\")\n  static def self.keys -> Array[Shareable] = [Bytes::Secret.of(b\"abc\")]\nend\n",
     );
     write(
         &d.0,
@@ -202,7 +202,7 @@ fn what_static_refuses() {
     write(
         &d.0,
         "secret.qz",
-        "require_relative \"key\"\nA = static(KeyLib.any)\nL = static(KeyLib.keys)\n",
+        "require_relative \"key\"\nA = static(KeyLib.any)\nL = static(KeyLib.keys)\nG = static(KeyLib.gcm)\n",
     );
     let (ok, _, err) = quarz(&d.0, &["check", "secret.qz"], &[]);
     assert!(!ok);
@@ -210,6 +210,11 @@ fn what_static_refuses() {
         let want = format!("secret.qz:{line}:12: error: `static(...)` gives a value that cannot be baked into the program: a `Bytes::Secret`: a secret written into the executable could never be wiped");
         assert!(err.contains(&want), "{want}\n{err}");
     }
+    // A key held natively is one too (#963).
+    assert!(
+        err.contains("secret.qz:4:12: error: `static(...)` gives a value that cannot be baked into the program: a `Crypto::AES::GCM`: a secret written into the executable could never be wiped"),
+        "{err}"
+    );
 }
 
 #[test]

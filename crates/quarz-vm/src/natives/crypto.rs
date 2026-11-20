@@ -4,11 +4,12 @@
 //! through `getrandom`, and comparison in constant time through
 //! `subtle`.
 //!
-//! A key is a `data` value holding its DER (PKCS#8 for a private key,
-//! SPKI for a public one, whatever it was read from): the natives parse
-//! it per call, through a cache of the keys parsed by contents, so that
-//! signing again with one key does not parse it again. A message never
-//! holds key material.
+//! A private RSA key and an AES key are held natively (#963): a
+//! `Value::Secret` whose `KeyCell` holds the parsed key (`RsaKey`) or the
+//! key and its cipher (`AesKey`), parsed once, cleared when the last
+//! reference goes or wiped. A public key is a `data` value holding its
+//! SPKI DER, parsed per call through a cache by its digest. A message
+//! never holds key material.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -17,7 +18,7 @@ use rsa::pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey, EncodeRsaPrivateKey};
 use rsa::pkcs8::{
     DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, LineEnding,
 };
-use rsa::signature::{RandomizedSigner, SignatureEncoding, Verifier};
+use rsa::signature::Verifier;
 use rsa::traits::PublicKeyParts;
 use rsa::{PrivateKey, PublicKey};
 use sha2::{Digest, Sha256, Sha384, Sha512};
@@ -31,6 +32,7 @@ use super::string;
 pub fn register(m: &mut super::Registry<NativeFn>) {
     register_argon2(m);
     register_secret(m);
+    register_keys(m);
     native!(m, "Crypto.random_bytes", |i, _, a| {
         let n = super::int(i, a.arg(0), "n")?;
         if !(0..=RANDOM_MAX).contains(&n) {
@@ -48,49 +50,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         // `ct_eq` on slices answers false at once for different lengths.
         Ok(Value::Bool(x.ct_eq(y).into()))
     });
-    native!(m, "Crypto::AES.seal_with", |i, _, a| {
-        let key = bytes(i, a.arg(0), "key")?;
-        let nonce = gcm_nonce(i, a.arg(1))?;
-        let plaintext = message(i, a.arg(2))?;
-        let aad = message(i, a.arg(3))?;
-        let payload = aes_gcm::aead::Payload {
-            msg: plaintext,
-            aad,
-        };
-        let sealed = match key.len() {
-            16 => gcm::<aes_gcm::Aes128Gcm>(key).encrypt(&nonce, payload),
-            24 => gcm::<Aes192Gcm>(key).encrypt(&nonce, payload),
-            32 => gcm::<aes_gcm::Aes256Gcm>(key).encrypt(&nonce, payload),
-            n => return Err(key_size_error(i, n)),
-        }
-        .map_err(|_| error(i, "the data is too long for AES-GCM"))?;
-        Ok(Value::bytes(sealed))
-    });
-    // nil when the data does not authenticate (nothing of it is returned).
-    native!(m, "Crypto::AES.open_with", |i, _, a| {
-        Ok(gcm_open(i, &a)?.map(Value::bytes).unwrap_or(Value::Nil))
-    });
-    native!(m, "Crypto::AES.open_secret_with", |i, _, a| {
-        // The plaintext's buffer becomes the secret's: no copy is made.
-        Ok(gcm_open(i, &a)?
-            .map(super::bytes::secret)
-            .unwrap_or(Value::Nil))
-    });
-    native!(m, "Crypto::RSA.private_der", |i, _, a| {
-        let key = private_from_der(bytes(i, a.arg(0), "der")?).map_err(|e| error(i, e))?;
-        Ok(cleared_into_bytes(private_pkcs8(i, &key)?))
-    });
-    native!(m, "Crypto::RSA.private_pem", |i, _, a| {
-        let (label, der) = one_block(bytes(i, a.arg(0), "pem")?).map_err(|e| error(i, e))?;
-        let key = match label.as_str() {
-            "PRIVATE KEY" => private_from_pkcs8(&der),
-            "RSA PRIVATE KEY" => private_from_pkcs1(&der),
-            "ENCRYPTED PRIVATE KEY" => Err(ENCRYPTED.to_string()),
-            other => Err(format!("not a private key: {other}")),
-        }
-        .map_err(|e| error(i, e))?;
-        Ok(cleared_into_bytes(private_pkcs8(i, &key)?))
-    });
     native!(m, "Crypto::RSA.public_der", |i, _, a| {
         let key = public_from_der(bytes(i, a.arg(0), "der")?).map_err(|e| error(i, e))?;
         Ok(Value::bytes(public_spki(i, &key)?))
@@ -105,105 +64,8 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         .map_err(|e| error(i, e))?;
         Ok(Value::bytes(public_spki(i, &key)?))
     });
-    native!(m, "Crypto::RSA.generate_der", |i, _, a| {
-        let bits = super::int(i, a.arg(0), "bits")?;
-        if ![2048, 3072, 4096].contains(&bits) {
-            return Err(i.err_arg(&format!(
-                "an RSA key has 2048, 3072 or 4096 bits, not {bits}"
-            )));
-        }
-        // Hundreds of milliseconds for 4096 bits: on a helper thread.
-        let der = i
-            .block_on(move || {
-                let key =
-                    PrivateKey::new(&mut rand::rng(), bits as usize).map_err(|e| e.to_string())?;
-                key.to_pkcs8_der()
-                    .map(|d| Zeroizing::new(d.as_bytes().to_vec()))
-                    .map_err(|e| e.to_string())
-            })?
-            .map_err(|e| error(i, format!("generating a key failed: {e}")))?;
-        Ok(cleared_into_bytes(der))
-    });
-    native!(m, "Crypto::RSA::PrivateKey#to_pem", |i, r, a| {
-        let key = private_key(i, r)?;
-        let format = a.pos.first().map(|v| symbol(i, v, "format")).transpose()?;
-        let pem = match format.as_deref().unwrap_or("pkcs8") {
-            "pkcs8" => key
-                .to_pkcs8_pem(LineEnding::LF)
-                .map(|p| p.to_string())
-                .map_err(|e| e.to_string()),
-            "pkcs1" => key
-                .to_pkcs1_pem(LineEnding::LF)
-                .map(|p| p.to_string())
-                .map_err(|e| e.to_string()),
-            other => return Err(i.err_arg(&format!("format: :pkcs8 or :pkcs1, not :{other}"))),
-        }
-        .map_err(|e| error(i, format!("encoding the key failed: {e}")))?;
-        Ok(Value::string(pem))
-    });
-    native!(m, "Crypto::RSA.public_of", |i, _, a| {
-        let key = cached(i, &PRIVATE, bytes(i, a.arg(0), "der")?, private_from_pkcs8)?;
-        Ok(Value::bytes(public_spki(i, &key.to_public_key())?))
-    });
-    native!(m, "Crypto::RSA::PrivateKey#bits", |i, r, _| {
-        Ok(Value::Int(bits(&private_key(i, r)?.to_public_key())))
-    });
     native!(m, "Crypto::RSA::PublicKey#bits", |i, r, _| {
         Ok(Value::Int(bits(&*public_key(i, r)?)))
-    });
-    native!(m, "Crypto::RSA::PrivateKey#sign", |i, r, a| {
-        let key = private_key(i, r)?;
-        usable(i, &key.to_public_key())?;
-        let data = message(i, a.arg(0))?;
-        // The same (deterministic) signature, computed blinded.
-        let mut rng = rand::rng();
-        let sig = match hash(i, a.arg(1))? {
-            Hash::Sha256 => rsa::pkcs1v15::SigningKey::<Sha256>::new((*key).clone())
-                .try_sign_with_rng(&mut rng, data)
-                .map(|s| s.to_vec()),
-            Hash::Sha384 => rsa::pkcs1v15::SigningKey::<Sha384>::new((*key).clone())
-                .try_sign_with_rng(&mut rng, data)
-                .map(|s| s.to_vec()),
-            Hash::Sha512 => rsa::pkcs1v15::SigningKey::<Sha512>::new((*key).clone())
-                .try_sign_with_rng(&mut rng, data)
-                .map(|s| s.to_vec()),
-        }
-        .map_err(|e| error(i, format!("signing failed: {e}")))?;
-        Ok(Value::bytes(sig))
-    });
-    native!(m, "Crypto::RSA::PrivateKey#sign_pss", |i, r, a| {
-        let key = private_key(i, r)?;
-        usable(i, &key.to_public_key())?;
-        let data = message(i, a.arg(0))?;
-        let mut rng = rand::rng();
-        let h = hash(i, a.arg(1))?;
-        // EMSA-PSS needs the hash twice (the salt is as long) and 2 bytes
-        // in the modulus.
-        let need = 2 * h.size() + 2;
-        if key.size() < need {
-            return Err(error(
-                i,
-                format!(
-                    "a {}-bit key is too small for PSS with this hash ({} bits at least)",
-                    bits(&key.to_public_key()),
-                    need * 8
-                ),
-            ));
-        }
-        // The salt as long as the hash (`SigningKey::new`'s default).
-        let sig = match h {
-            Hash::Sha256 => rsa::pss::SigningKey::<Sha256>::new((*key).clone())
-                .try_sign_with_rng(&mut rng, data)
-                .map(|s| s.to_vec()),
-            Hash::Sha384 => rsa::pss::SigningKey::<Sha384>::new((*key).clone())
-                .try_sign_with_rng(&mut rng, data)
-                .map(|s| s.to_vec()),
-            Hash::Sha512 => rsa::pss::SigningKey::<Sha512>::new((*key).clone())
-                .try_sign_with_rng(&mut rng, data)
-                .map(|s| s.to_vec()),
-        }
-        .map_err(|e| error(i, format!("signing failed: {e}")))?;
-        Ok(Value::bytes(sig))
     });
     native!(m, "Crypto::RSA::PublicKey#verify", |i, r, a| {
         let key = public_key(i, r)?;
@@ -262,6 +124,385 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Crypto::RSA::PublicKey#fingerprint", |i, r, _| {
         Ok(Value::bytes(Sha256::digest(&*der_field(i, r)?).to_vec()))
     });
+}
+
+/// An RSA private key held natively (`KeyKind::RsaPrivate`): `rsa`'s
+/// key clears itself when dropped (`ZeroizeOnDrop`).
+struct RsaKey(PrivateKey);
+
+impl KeyMaterial for RsaKey {
+    /// The public parts compared as they are, the secret ones (`d`, the
+    /// primes) in constant time and all of them, without stopping at the
+    /// first difference (`rsa`'s own `==` stops between parts).
+    fn same_key(&self, other: &dyn KeyMaterial) -> bool {
+        use rsa::traits::PrivateKeyParts;
+        let Some(o) = other.as_any().downcast_ref::<RsaKey>() else {
+            return false;
+        };
+        let (a, b) = (&self.0, &o.0);
+        if a.n() != b.n() || a.e() != b.e() || a.primes().len() != b.primes().len() {
+            return false;
+        }
+        // The secret parts as big-endian bytes, each pair compared in
+        // constant time and every pair compared; the copies cleared.
+        let mut same = true;
+        let mut pair = |x: &rsa::BoxedUint, y: &rsa::BoxedUint| {
+            let (mut x, mut y) = (x.to_be_bytes(), y.to_be_bytes());
+            same &= constant_time_eq(&x, &y);
+            clear_bytes(&mut x);
+            clear_bytes(&mut y);
+        };
+        pair(a.d(), b.d());
+        for (p, q) in a.primes().iter().zip(b.primes()) {
+            pair(p.as_ref(), q.as_ref());
+        }
+        same
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// An AES key held natively (`KeyKind::Aes`): the key itself (for
+/// `export_key` and `==`), cleared when dropped, and its cipher with the
+/// key schedule built once (`aes-gcm`'s `zeroize`: cleared when dropped).
+struct AesKey {
+    raw: Zeroizing<Vec<u8>>,
+    cipher: AesCipher,
+}
+
+enum AesCipher {
+    A128(aes_gcm::Aes128Gcm),
+    A192(Aes192Gcm),
+    A256(aes_gcm::Aes256Gcm),
+}
+
+impl KeyMaterial for AesKey {
+    fn same_key(&self, other: &dyn KeyMaterial) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<AesKey>()
+            .is_some_and(|o| constant_time_eq(&self.raw, &o.raw))
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl AesKey {
+    fn new(interp: &Interp, raw: Zeroizing<Vec<u8>>) -> Result<AesKey, Flow> {
+        use aes_gcm::KeyInit;
+        let cipher = match raw.len() {
+            16 => AesCipher::A128(aes_gcm::Aes128Gcm::new_from_slice(&raw).expect("16 bytes")),
+            24 => AesCipher::A192(Aes192Gcm::new_from_slice(&raw).expect("24 bytes")),
+            32 => AesCipher::A256(aes_gcm::Aes256Gcm::new_from_slice(&raw).expect("32 bytes")),
+            n => return Err(key_size_error(interp, n)),
+        };
+        Ok(AesKey { raw, cipher })
+    }
+
+    fn seal(
+        &self,
+        nonce: &aes_gcm::Nonce<aes_gcm::aead::consts::U12>,
+        p: aes_gcm::aead::Payload,
+    ) -> Option<Vec<u8>> {
+        match &self.cipher {
+            AesCipher::A128(c) => c.encrypt(nonce, p),
+            AesCipher::A192(c) => c.encrypt(nonce, p),
+            AesCipher::A256(c) => c.encrypt(nonce, p),
+        }
+        .ok()
+    }
+
+    fn open(
+        &self,
+        nonce: &aes_gcm::Nonce<aes_gcm::aead::consts::U12>,
+        p: aes_gcm::aead::Payload,
+    ) -> Option<Vec<u8>> {
+        match &self.cipher {
+            AesCipher::A128(c) => c.decrypt(nonce, p),
+            AesCipher::A192(c) => c.decrypt(nonce, p),
+            AesCipher::A256(c) => c.decrypt(nonce, p),
+        }
+        .ok()
+    }
+}
+
+/// A new key value of `kind` holding `key`.
+fn key_value(kind: KeyKind, bits: usize, key: Arc<dyn KeyMaterial>) -> Value {
+    Value::Secret(crate::rc::Rc::new(SecretVal::Key(KeyCell::new(
+        kind, bits, key,
+    ))))
+}
+
+/// The `KeyCell` of a key receiver of `kind`.
+fn key_cell<'a>(interp: &Interp, v: &'a Value, kind: KeyKind) -> Result<&'a KeyCell, Flow> {
+    match v {
+        Value::Secret(s) => match &**s {
+            SecretVal::Key(k) if k.kind() == kind => Ok(k),
+            _ => Err(interp.err_type("a Crypto key was expected")),
+        },
+        _ => Err(interp.err_type("a Crypto key was expected")),
+    }
+}
+
+/// The material of a key receiver for one operation (a snapshot: the
+/// operation runs on its own reference, `KeyCell`); a wiped key raises.
+fn key_material(interp: &Interp, v: &Value, kind: KeyKind) -> Result<Arc<dyn KeyMaterial>, Flow> {
+    key_cell(interp, v, kind)?
+        .get()
+        .ok_or_else(|| super::bytes::wiped(interp))
+}
+
+fn rsa_key(interp: &Interp, v: &Value) -> Result<Arc<dyn KeyMaterial>, Flow> {
+    key_material(interp, v, KeyKind::RsaPrivate)
+}
+
+fn as_rsa(m: &Arc<dyn KeyMaterial>) -> &PrivateKey {
+    &m.as_any().downcast_ref::<RsaKey>().expect("an RSA key").0
+}
+
+fn as_aes(m: &Arc<dyn KeyMaterial>) -> &AesKey {
+    m.as_any().downcast_ref::<AesKey>().expect("an AES key")
+}
+
+/// A private key read and checked: a key value.
+fn private_value(_interp: &Interp, key: PrivateKey) -> Result<Value, Flow> {
+    let bits = bits(&key.to_public_key());
+    Ok(key_value(
+        KeyKind::RsaPrivate,
+        bits as usize,
+        Arc::new(RsaKey(key)),
+    ))
+}
+
+/// The keys held natively (#963): `Crypto::RSA::PrivateKey` and
+/// `Crypto::AES::GCM`, their `wipe`, `==` and exports.
+fn register_keys(m: &mut super::Registry<NativeFn>) {
+    native!(m, "Crypto::RSA::PrivateKey.new", |i, _, a| {
+        let der = super::bytes::secret_input(i, a.arg(0), "der")?;
+        let key = private_from_der(&der).map_err(|e| error(i, e))?;
+        private_value(i, key)
+    });
+    native!(m, "Crypto::RSA::PrivateKey.from_pem", |i, _, a| {
+        let pem = super::bytes::secret_input(i, a.arg(0), "pem")?;
+        let (label, der) = one_block(&pem).map_err(|e| error(i, e))?;
+        let key = match label.as_str() {
+            "PRIVATE KEY" => private_from_pkcs8(&der),
+            "RSA PRIVATE KEY" => private_from_pkcs1(&der),
+            "ENCRYPTED PRIVATE KEY" => Err(ENCRYPTED.to_string()),
+            other => Err(format!("not a private key: {other}")),
+        }
+        .map_err(|e| error(i, e))?;
+        private_value(i, key)
+    });
+    native!(m, "Crypto::RSA::PrivateKey.generate_with", |i, _, a| {
+        let bits = super::int(i, a.arg(0), "bits")?;
+        // Hundreds of milliseconds for 4096 bits: on a helper thread.
+        let key = i
+            .block_on(move || {
+                PrivateKey::new(&mut rand::rng(), bits as usize).map_err(|e| e.to_string())
+            })?
+            .map_err(|e| error(i, format!("generating a key failed: {e}")))?;
+        private_value(i, key)
+    });
+    native!(m, "Crypto::RSA::PrivateKey#export_der", |i, r, _| {
+        let key = rsa_key(i, r)?;
+        Ok(into_secret(private_pkcs8(i, as_rsa(&key))?))
+    });
+    native!(m, "Crypto::RSA::PrivateKey#export_pem", |i, r, a| {
+        let key = rsa_key(i, r)?;
+        let key = as_rsa(&key);
+        let format = a.pos.first().map(|v| symbol(i, v, "format")).transpose()?;
+        let pem = match format.as_deref().unwrap_or("pkcs8") {
+            "pkcs8" => key.to_pkcs8_pem(LineEnding::LF).map_err(|e| e.to_string()),
+            "pkcs1" => key.to_pkcs1_pem(LineEnding::LF).map_err(|e| e.to_string()),
+            other => return Err(i.err_arg(&format!("format: :pkcs8 or :pkcs1, not :{other}"))),
+        }
+        .map_err(|e| error(i, format!("encoding the key failed: {e}")))?;
+        Ok(into_secret(Zeroizing::new(pem.as_bytes().to_vec())))
+    });
+    native!(m, "Crypto::RSA::PrivateKey#public_der", |i, r, _| {
+        let key = rsa_key(i, r)?;
+        Ok(Value::bytes(public_spki(i, &as_rsa(&key).to_public_key())?))
+    });
+    native!(m, "Crypto::RSA::PrivateKey#bits", |i, r, _| {
+        Ok(Value::Int(
+            key_cell(i, r, KeyKind::RsaPrivate)?.bits() as i64
+        ))
+    });
+    native!(m, "Crypto::RSA::PrivateKey#sign", |i, r, a| {
+        let held = rsa_key(i, r)?;
+        let key = as_rsa(&held);
+        usable(i, &key.to_public_key())?;
+        let data = message(i, a.arg(0))?;
+        // The same (deterministic) signature, computed blinded, from the
+        // key as it is held: no copy of it.
+        let mut rng = rand::rng();
+        let sig = match hash(i, a.arg(1))? {
+            Hash::Sha256 => key.sign_with_rng(
+                &mut rng,
+                rsa::Pkcs1v15Sign::new::<Sha256>(),
+                &Sha256::digest(data),
+            ),
+            Hash::Sha384 => key.sign_with_rng(
+                &mut rng,
+                rsa::Pkcs1v15Sign::new::<Sha384>(),
+                &Sha384::digest(data),
+            ),
+            Hash::Sha512 => key.sign_with_rng(
+                &mut rng,
+                rsa::Pkcs1v15Sign::new::<Sha512>(),
+                &Sha512::digest(data),
+            ),
+        }
+        .map_err(|e| error(i, format!("signing failed: {e}")))?;
+        Ok(Value::bytes(sig))
+    });
+    native!(m, "Crypto::RSA::PrivateKey#sign_pss", |i, r, a| {
+        let held = rsa_key(i, r)?;
+        let key = as_rsa(&held);
+        usable(i, &key.to_public_key())?;
+        let data = message(i, a.arg(0))?;
+        let mut rng = rand::rng();
+        let h = hash(i, a.arg(1))?;
+        // EMSA-PSS needs the hash twice (the salt is as long) and 2 bytes
+        // in the modulus.
+        let need = 2 * h.size() + 2;
+        if key.size() < need {
+            return Err(error(
+                i,
+                format!(
+                    "a {}-bit key is too small for PSS with this hash ({} bits at least)",
+                    bits(&key.to_public_key()),
+                    need * 8
+                ),
+            ));
+        }
+        // The salt as long as the hash (`Pss::new`'s default).
+        let sig = match h {
+            Hash::Sha256 => key.sign_with_rng(
+                &mut rng,
+                rsa::pss::Pss::<Sha256>::new(),
+                &Sha256::digest(data),
+            ),
+            Hash::Sha384 => key.sign_with_rng(
+                &mut rng,
+                rsa::pss::Pss::<Sha384>::new(),
+                &Sha384::digest(data),
+            ),
+            Hash::Sha512 => key.sign_with_rng(
+                &mut rng,
+                rsa::pss::Pss::<Sha512>::new(),
+                &Sha512::digest(data),
+            ),
+        }
+        .map_err(|e| error(i, format!("signing failed: {e}")))?;
+        Ok(Value::bytes(sig))
+    });
+    native!(m, "Crypto::AES::GCM.new", |i, _, a| {
+        let raw = super::bytes::secret_input(i, a.arg(0), "key")?;
+        let key = AesKey::new(i, Zeroizing::new(raw.to_vec()))?;
+        let bits = key.raw.len() * 8;
+        Ok(key_value(KeyKind::Aes, bits, Arc::new(key)))
+    });
+    native!(m, "Crypto::AES::GCM#bits", |i, r, _| {
+        Ok(Value::Int(key_cell(i, r, KeyKind::Aes)?.bits() as i64))
+    });
+    native!(m, "Crypto::AES::GCM#seal", |i, r, a| {
+        let held = key_material(i, r, KeyKind::Aes)?;
+        let nonce = gcm_nonce(i, a.arg(0))?;
+        let plaintext = message(i, a.arg(1))?;
+        let aad = aad(i, &a)?;
+        let payload = aes_gcm::aead::Payload {
+            msg: plaintext,
+            aad,
+        };
+        let sealed = as_aes(&held)
+            .seal(&nonce, payload)
+            .ok_or_else(|| error(i, "the data is too long for AES-GCM"))?;
+        Ok(Value::bytes(sealed))
+    });
+    // nil when the data does not authenticate (nothing of it is returned).
+    native!(m, "Crypto::AES::GCM#open?", |i, r, a| {
+        Ok(gcm_open(i, r, &a)?.map(Value::bytes).unwrap_or(Value::Nil))
+    });
+    native!(m, "Crypto::AES::GCM#open_secret?", |i, r, a| {
+        // The plaintext's buffer becomes the secret's: no copy is made.
+        Ok(gcm_open(i, r, &a)?
+            .map(super::bytes::secret)
+            .unwrap_or(Value::Nil))
+    });
+    native!(m, "Crypto::AES::GCM#export_key", |i, r, _| {
+        let held = key_material(i, r, KeyKind::Aes)?;
+        Ok(super::bytes::secret(as_aes(&held).raw.to_vec()))
+    });
+    native!(
+        m,
+        ["Crypto::RSA::PrivateKey#wipe", "Crypto::AES::GCM#wipe"],
+        |i, r, _| {
+            any_key(i, r)?.wipe();
+            Ok(Value::Nil)
+        }
+    );
+    native!(
+        m,
+        ["Crypto::RSA::PrivateKey#wiped?", "Crypto::AES::GCM#wiped?"],
+        |i, r, _| Ok(Value::Bool(any_key(i, r)?.wiped()))
+    );
+    native!(
+        m,
+        ["Crypto::RSA::PrivateKey#==", "Crypto::AES::GCM#=="],
+        |i, r, a| {
+            let x = any_key(i, r)?;
+            let other = match a.arg(0) {
+                Value::Secret(s) => match &**s {
+                    SecretVal::Key(k) => Some(k),
+                    _ => None,
+                },
+                _ => None,
+            };
+            // Raises for a wiped key, itself included (`Value`'s `==`,
+            // which cannot raise, differs there).
+            match other {
+                Some(y) => Ok(Value::Bool(
+                    KeyCell::equal(x, y).ok_or_else(|| super::bytes::wiped(i))?,
+                )),
+                None if x.wiped() => Err(super::bytes::wiped(i)),
+                None => Ok(Value::Bool(false)),
+            }
+        }
+    );
+}
+
+/// The `KeyCell` of either kind of key.
+fn any_key<'a>(interp: &Interp, v: &'a Value) -> Result<&'a KeyCell, Flow> {
+    match v {
+        Value::Secret(s) => match &**s {
+            SecretVal::Key(k) => Ok(k),
+            _ => Err(interp.err_type("a Crypto key was expected")),
+        },
+        _ => Err(interp.err_type("a Crypto key was expected")),
+    }
+}
+
+/// The `aad:` keyword of `seal`/`open?` (`""` when absent).
+fn aad<'a>(interp: &Interp, a: &'a crate::interp::Args) -> Result<&'a [u8], Flow> {
+    match a.kw(interp, "aad") {
+        Some(v) => message(interp, v),
+        None => Ok(b""),
+    }
+}
+
+/// `open?`'s arguments opened with the receiver's key: the plaintext,
+/// `None` when it does not authenticate (then nothing of it is kept).
+fn gcm_open(i: &Interp, r: &Value, a: &crate::interp::Args) -> Result<Option<Vec<u8>>, Flow> {
+    let held = key_material(i, r, KeyKind::Aes)?;
+    let nonce = gcm_nonce(i, a.arg(0))?;
+    let sealed = bytes(i, a.arg(1), "sealed")?;
+    let aad = aad(i, a)?;
+    let payload = aes_gcm::aead::Payload { msg: sealed, aad };
+    Ok(as_aes(&held).open(&nonce, payload))
 }
 
 /// `Crypto.random_secret` (#963): random bytes straight into a
@@ -514,26 +755,6 @@ const RANDOM_MAX: i64 = 1 << 20;
 type Aes192Gcm = aes_gcm::AesGcm<aes_gcm::aes::Aes192, aes_gcm::aead::consts::U12>;
 
 /// An AES-GCM cipher for `key` (its length checked by the caller).
-/// `open_with`'s arguments opened: the plaintext, `None` when it does
-/// not authenticate (then nothing of it is kept).
-fn gcm_open(i: &Interp, a: &crate::interp::Args) -> Result<Option<Vec<u8>>, Flow> {
-    let key = bytes(i, a.arg(0), "key")?;
-    let nonce = gcm_nonce(i, a.arg(1))?;
-    let sealed = bytes(i, a.arg(2), "sealed")?;
-    let aad = message(i, a.arg(3))?;
-    let payload = aes_gcm::aead::Payload { msg: sealed, aad };
-    let opened = match key.len() {
-        16 => gcm::<aes_gcm::Aes128Gcm>(key).decrypt(&nonce, payload),
-        24 => gcm::<Aes192Gcm>(key).decrypt(&nonce, payload),
-        32 => gcm::<aes_gcm::Aes256Gcm>(key).decrypt(&nonce, payload),
-        n => return Err(key_size_error(i, n)),
-    };
-    Ok(opened.ok())
-}
-
-fn gcm<C: aes_gcm::KeyInit>(key: &[u8]) -> C {
-    C::new_from_slice(key).expect("the key's length was checked")
-}
 
 fn key_size_error(interp: &Interp, n: usize) -> Flow {
     interp.err_arg(&format!("an AES key has 16, 24 or 32 bytes, not {n}"))
@@ -796,11 +1017,9 @@ fn private_pkcs8(interp: &Interp, key: &PrivateKey) -> Result<Zeroizing<Vec<u8>>
         .map_err(|e| error(interp, format!("encoding the key failed: {e}")))
 }
 
-/// A `Bytes` of `der`'s contents: `Value::bytes` would copy a `Vec` and
-/// give it back uncleared, this clears it (#963). The `Bytes` itself is
-/// what the caller asked for, and stays.
-fn cleared_into_bytes(der: Zeroizing<Vec<u8>>) -> Value {
-    Value::Bytes(crate::rc::Rc::from(&der[..]))
+/// A `Bytes::Secret` of `buf`'s contents, `buf` cleared.
+fn into_secret(mut buf: Zeroizing<Vec<u8>>) -> Value {
+    super::bytes::secret(std::mem::take(&mut *buf))
 }
 
 fn public_spki(interp: &Interp, key: &PublicKey) -> Result<Vec<u8>, Flow> {
@@ -852,12 +1071,6 @@ fn cached<K>(
     }
     c.insert(id, key.clone());
     Ok(key)
-}
-
-static PRIVATE: Cache<PrivateKey> = OnceLock::new();
-
-fn private_key(interp: &Interp, v: &Value) -> Result<Arc<PrivateKey>, Flow> {
-    cached(interp, &PRIVATE, &der_field(interp, v)?, private_from_pkcs8)
 }
 
 fn public_key(interp: &Interp, v: &Value) -> Result<Arc<PublicKey>, Flow> {
