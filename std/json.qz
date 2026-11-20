@@ -327,17 +327,25 @@ module JSON
   # or low (half of a character cut in two), is read as U+FFFD and the
   # document goes on; [JSON.decode] reads strings the same way.
   #
+  # Arrays and objects nest at most [max_nesting] deep (1 to 100, the
+  # default 100): each array or object counts one level, a value at the
+  # top level none, so `max_nesting: 1` reads `[1]` and `{"a": 1}` but
+  # not `[[1]]`.
+  #
   # ## Raises
   #
   # [JSON::ParseError] on malformed input (anything but one value
-  # included), with the line and column in its message.
+  # included), with the line and column in its message, and for a
+  # document nested deeper than [max_nesting] (the message names the
+  # limit); [ArgumentError] for a [max_nesting] out of 1 to 100.
   #
   # ```
   # JSON.parse(" null ")       # => JSON::Value::Null
   # JSON.parse("[1,")          # raises JSON::ParseError
   # JSON.parse("1 2")          # raises JSON::ParseError
+  # JSON.parse("[[1]]", max_nesting: 1)   # raises JSON::ParseError
   # ```
-  native def self.parse(text: String) -> Value
+  native def self.parse(text: String, *, max_nesting: Int = 100) -> Value
 
   # Decodes the JSON document `text` into a value of type `T`, written at
   # the call:
@@ -395,9 +403,11 @@ module JSON
   #
   # ## Raises
   #
-  # [JSON::ParseError] on malformed text; [JSON::DecodeError] when the
-  # document does not have the shape of `T` (the message gives where).
-  native def self.decode[T](text: String) -> T
+  # [JSON::ParseError] on malformed text, or text nested deeper than
+  # [max_nesting] (as [.parse] counts it); [JSON::DecodeError] when the
+  # document does not have the shape of `T` (the message gives where);
+  # [ArgumentError] for a [max_nesting] out of 1 to 100.
+  native def self.decode[T](text: String, *, max_nesting: Int = 100) -> T
 
   # Decodes a parsed document (or a part of one) into a value of type `T`,
   # as [.decode] decodes text.
@@ -407,9 +417,10 @@ module JSON
   # [JSON::DecodeError] when the value does not have the shape of `T`.
   native def self.decode[T](value: Value) -> T
 
-  # As [.decode], but nil for malformed text or a document that does not
-  # have the shape of `T`.
-  native def self.decode?[T](text: String) -> T?
+  # As [.decode], but nil for malformed text (too deep included) or a
+  # document that does not have the shape of `T`; a [max_nesting] out of
+  # 1 to 100 still raises [ArgumentError].
+  native def self.decode?[T](text: String, *, max_nesting: Int = 100) -> T?
 
   # The compact JSON text of a value.
   native def self.generate(value: Object) -> String
