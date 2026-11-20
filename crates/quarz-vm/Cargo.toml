@@ -42,9 +42,8 @@ rcgen = { version = "0.14", default-features = false, features = ["pem", "ring",
 time = { version = "0.3", default-features = false, optional = true }
 # `std/crypto.qz` (the `crypto` feature): RustCrypto's RSA. Its 0.10
 # line is the one on `sha2` 0.11 (0.9 is on 0.10) and constant-time
-# (RUSTSEC-2023-0071): pinned while it is a release candidate (#357: move
-# to 0.10.0 when it is released).
-rsa = { version = "=0.10.0-rc.22", default-features = false, features = ["std", "encoding", "pkcs1v15"], optional = true }
+# (RUSTSEC-2023-0071), on `crypto-bigint`.
+rsa = { version = "=0.10.0", default-features = false, features = ["std", "encoding", "pkcs1v15"], optional = true }
 rand = { version = "0.10", optional = true }
 pem-rfc7468 = { version = "1", features = ["alloc"], optional = true }
 # AES-GCM (`Crypto::AES::GCM`), on the same crypto-common/rand_core line

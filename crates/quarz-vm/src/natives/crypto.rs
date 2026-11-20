@@ -598,7 +598,7 @@ fn hash(interp: &Interp, v: &Value) -> Result<Hash, Flow> {
 
 /// The modulus's size in bits.
 fn bits(key: &PublicKey) -> i64 {
-    key.n().bits() as i64
+    key.n().bit_width() as i64
 }
 
 /// A key of at least 1024 bits signs and verifies.
@@ -681,7 +681,7 @@ fn public_size_error(pkcs1: &[u8]) -> Option<String> {
 }
 
 fn checked_private(key: PrivateKey) -> Result<PrivateKey, String> {
-    let n = key.n().bits() as usize;
+    let n = key.n().bit_width() as usize;
     if !(MIN_BITS..=MAX_BITS).contains(&n) {
         return Err(size_error(n));
     }
