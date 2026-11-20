@@ -175,7 +175,45 @@ class JsonErrorTest < Test::Case
 
   def test_too_deep
     e = assert_raise(JSON::ParseError) { JSON.parse("[" * 101 + "]" * 101); nil }
-    assert_equal("nesting of 101 is too deep at line 1 column 101", e.message)
+    assert_equal("nesting of 101 is too deep (max_nesting: 100) at line 1 column 101", e.message)
+    assert_equal(100, JSON.parse("[" * 100 + "]" * 100).then { |v| depth(v) })
+  end
+
+  def depth(v: JSON::Value) -> Int
+    case v
+    in JSON::Value::Array(items) then 1 + (items.map { |x| depth(x) }.max || 0)
+    in JSON::Value::Object(members) then 1 + (members.values.map { |x| depth(x) }.max || 0)
+    else 0
+    end
+  end
+
+  # `max_nesting:` (#974): arrays and objects count one level each, a
+  # top-level scalar none; 1 to 100.
+  def test_max_nesting
+    assert_equal(1, JSON.parse("1", max_nesting: 1).as_i)
+    assert_equal(1, JSON.parse("[1]", max_nesting: 1)[0].as_i)
+    assert_equal(1, JSON.parse('{"a": 1}', max_nesting: 1)["a"].as_i)
+    e = assert_raise(JSON::ParseError) { JSON.parse("[[1]]", max_nesting: 1) }
+    assert_equal("nesting of 2 is too deep (max_nesting: 1) at line 1 column 2", e.message)
+    assert_raise(JSON::ParseError) { JSON.parse('{"a": {"b": 1}}', max_nesting: 1) }
+    assert_raise(JSON::ParseError) { JSON.parse('[{"a": 1}]', max_nesting: 1) }
+    deep = "[" * 33 + "]" * 33
+    assert_equal(1, JSON.parse("[" * 32 + "]" * 32, max_nesting: 32).size)
+    e = assert_raise(JSON::ParseError) { JSON.parse(deep, max_nesting: 32) }
+    assert_equal("nesting of 33 is too deep (max_nesting: 32) at line 1 column 33", e.message)
+    # A later value under a repeated key is counted while it is read.
+    assert_raise(JSON::ParseError) { JSON.parse('{"a": 1, "a": [[1]]}', max_nesting: 2) }
+    [0, -1, 101].each do |n|
+      e = assert_raise(ArgumentError) { JSON.parse("1", max_nesting: n) }
+      assert_equal("max_nesting: 1 to 100, not #{n}", e.message)
+    end
+
+    assert_equal([[1]], JSON.decode[Array[Array[Int]]]("[[1]]", max_nesting: 2))
+    assert_raise(JSON::ParseError) { JSON.decode[Array[Array[Int]]]("[[1]]", max_nesting: 1) }
+    assert_nil(JSON.decode?[Array[Array[Int]]]("[[1]]", max_nesting: 1))
+    assert_equal([[1]], JSON.decode?[Array[Array[Int]]]("[[1]]", max_nesting: 2))
+    assert_raise(ArgumentError) { JSON.decode[Int]("1", max_nesting: 0) }
+    assert_raise(ArgumentError) { JSON.decode?[Int]("1", max_nesting: 101) }
   end
 
   def test_nan

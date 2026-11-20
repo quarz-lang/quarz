@@ -14,6 +14,7 @@ use super::string;
 pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "JSON.parse", |i, _, a| {
         let text = string(i, a.arg(0), "text")?;
+        let max_nesting = max_nesting(i, &a)?;
         let classes = classes(i)?;
         let mut p = Parser {
             interp: i,
@@ -21,6 +22,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             src: text.as_bytes(),
             pos: 0,
             depth: 0,
+            max_nesting,
             raw: false,
         };
         p.skip_ws();
@@ -224,12 +226,14 @@ fn decode(interp: &Interp, args: &crate::interp::Args, maybe: bool) -> EvalResul
     let doc = match args.arg(0) {
         v @ (Value::Str(_) | Value::Short(_)) => {
             let text = string(interp, v, "text")?;
+            let max_nesting = max_nesting(interp, args)?;
             let mut p = Parser {
                 interp,
                 classes: &classes,
                 src: text.as_bytes(),
                 pos: 0,
                 depth: 0,
+                max_nesting,
                 raw,
             };
             p.skip_ws();
@@ -656,7 +660,26 @@ fn number_float(text: &str) -> Option<f64> {
     text.parse().ok()
 }
 
+/// The deepest nesting `JSON.generate` writes, and the most a parse may
+/// allow (`max_nesting:`, its default).
 const MAX_NESTING: usize = 100;
+
+/// A parse's `max_nesting:` (#974): 1 to `MAX_NESTING`, the default
+/// `MAX_NESTING`. Each array or object counts one level, a value at the
+/// top level none: `1` allows `[1]` and `{"a": 1}`, not `[[1]]`.
+fn max_nesting(interp: &Interp, args: &crate::interp::Args) -> Result<usize, Flow> {
+    match args.kw(interp, "max_nesting") {
+        None => Ok(MAX_NESTING),
+        Some(v) => {
+            let n = super::int(interp, v, "max_nesting")?;
+            if (1..=MAX_NESTING as i64).contains(&n) {
+                Ok(n as usize)
+            } else {
+                Err(interp.err_arg(&format!("max_nesting: 1 to {MAX_NESTING}, not {n}")))
+            }
+        }
+    }
+}
 
 struct Parser<'a> {
     interp: &'a Interp,
@@ -664,6 +687,8 @@ struct Parser<'a> {
     src: &'a [u8],
     pos: usize,
     depth: usize,
+    /// The deepest nesting allowed (`max_nesting`).
+    max_nesting: usize,
     /// Whether a number with a fraction or an exponent keeps its text (a
     /// `Number` holding a string, for `JSON.decode` into a `Decimal`):
     /// such a value never leaves the native (`Decoder::cooked`).
@@ -731,8 +756,11 @@ impl Parser<'_> {
 
     fn enter(&mut self) -> Result<(), Flow> {
         self.depth += 1;
-        if self.depth > MAX_NESTING {
-            return Err(self.error(&format!("nesting of {} is too deep", self.depth)));
+        if self.depth > self.max_nesting {
+            return Err(self.error(&format!(
+                "nesting of {} is too deep (max_nesting: {})",
+                self.depth, self.max_nesting
+            )));
         }
         Ok(())
     }
