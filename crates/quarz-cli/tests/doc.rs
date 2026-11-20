@@ -87,7 +87,8 @@ fn the_api_as_text() {
     // The standard library's names are found from a cog too.
     let out = quarz_in(&app(), &["doc", "JSON.parse"]);
     assert!(
-        stdout(&out).contains("def self.parse(text: String) -> JSON::Value"),
+        stdout(&out)
+            .contains("def self.parse(text: String, *, max_nesting: Int = …) -> JSON::Value"),
         "{}",
         stdout(&out)
     );
