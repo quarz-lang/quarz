@@ -1990,10 +1990,11 @@ fn field_handles_read_and_write_generated_and_declared_fields() {
             "    ref = field_ref[Int](:post_id)\n    def_method(:bad) do -> Int\n      ref.get(obj: self)\n    end\n",
             "takes its arguments by position",
         ),
-        // `U` a generic helper's type parameter.
+        // `U` a generic helper's type parameter it does not carry (two
+        // parameters mention it, #918).
         (
-            "    ref = mk(:post_id, Int)\n    def_method(:bad) do -> Int\n      ref.get(self)\n    end\n  end\n  static def self.mk[V](n: Symbol, t: Type[V]) -> Meta::FieldRef[Model, V]\n    field_ref[V](n)\n",
-            "a type parameter of another method than the `static def` the statement calls",
+            "    ref = mk(:post_id, Int, 0)\n    def_method(:bad) do -> Int\n      ref.get(self)\n    end\n  end\n  static def self.mk[V](n: Symbol, t: Type[V], d: V) -> Meta::FieldRef[Model, V]\n    field_ref[V](n)\n",
+            "a type parameter of another method than the `static def` the statement calls, which does not carry it",
         ),
         // A handle made for another class (here a sibling's).
         (
@@ -2205,6 +2206,253 @@ fn field_initializers_fill_generated_fields_when_constructed() {
         let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
         assert!(!ok, "{app:?}");
         assert!(err.contains(expected), "{err}");
+    }
+}
+
+/// #918: a field handle made in a generic helper with the helper's own
+/// type parameter, carried as its `def_method` blocks' is (the class its
+/// `Type[T]` parameter holds), is typed with the class the generating call
+/// passed: rotor's kept document field (`def_field(..., nullable: true)`,
+/// a `FieldRef[Self, T?]`, read by a generated method typed `T?`), a
+/// `field_ref[T]` read by one typed `T`, the helper called by two
+/// statements and twice in one statement with other classes (one site,
+/// two handles, each typed by its own), interpreted and compiled, cold and
+/// warm.
+const CARRIED_HANDLES_LIB: &str = r##"data Settings = (theme: String, per_page: Int = 20)
+data Prefs = (lang: String)
+
+abstract class Store
+  include Shareable
+  @raw: Hash[Symbol, String] = {}
+  @count: Int = 7
+  def raw(n: Symbol) -> String? = @raw[n]?
+
+  # The helper: a kept document field, decoded when the object is made,
+  # and its typed reader, through the handle `def_field` gives.
+  static def self.kept[T](field: Symbol, reader: Symbol, type: Type[T]) -> Void
+    n = field
+    ref = def_field(field, type, nil, nullable: true) do -> T?
+      (s = raw(n)) ? JSON.decode[T](s) : nil
+    end
+    def_method(reader) do -> T?
+      ref.get(self)
+    end
+    shown = ref.inspect
+    def_method("#{reader}_handle".to_sym) do -> String
+      shown
+    end
+  end
+
+  # A declared field read through `field_ref[T]` in a helper.
+  static def self.reads[T](field: Symbol, reader: Symbol, type: Type[T]) -> Void
+    ref = field_ref[T](field)
+    def_method(reader) do -> T
+      ref.get(self)
+    end
+  end
+
+  # One statement per class, and one calling the helper twice.
+  static def self.doc[T](field: Symbol, reader: Symbol, type: Type[T]) -> Void
+    kept(field, reader, type)
+  end
+
+  static def self.both -> Void
+    kept(:look, :look_doc, Settings)
+    kept(:lang, :lang_doc, Prefs)
+    reads(:count, :count_now, Int)
+  end
+
+  static def self.table -> Void
+    def_initialize(:raw) do |raw: Hash[Symbol, String]|
+      @raw = raw
+    end
+  end
+end
+"##;
+
+const CARRIED_HANDLES_APP: &str = r##"require_relative "lib"
+class Page < Store
+  doc :settings, :settings_doc, Settings
+  doc :prefs, :prefs_doc, Prefs
+  both
+  table
+end
+def show(s: Settings?) -> String = (x = s) ? "#{x.theme}/#{x.per_page}" : "nil"
+def lang(p: Prefs?) -> String = (x = p) ? x.lang : "nil"
+p = Page.new({settings: "{\"theme\":\"dark\"}", prefs: "{\"lang\":\"ja\"}", look: "{\"theme\":\"light\",\"per_page\":5}", lang: "{\"lang\":\"en\"}"})
+puts show(p.settings_doc), lang(p.prefs_doc), show(p.look_doc), lang(p.lang_doc), p.count_now
+q = Page.new({prefs: "{\"lang\":\"fr\"}"})
+puts show(q.settings_doc), lang(q.prefs_doc), show(q.look_doc), lang(q.lang_doc)
+puts p.look_doc_handle, p.lang_doc_handle
+"##;
+
+const CARRIED_HANDLES_EXPECTED: &str = "dark/20\nja\nlight/5\nen\n7\nnil\nfr\nnil\nnil\n#<Meta::FieldRef Page@look>\n#<Meta::FieldRef Page@lang>\n";
+
+#[test]
+fn a_handle_made_in_a_generic_helper_takes_the_carried_class() {
+    let d = dir();
+    write(&d.0, "lib.qz", CARRIED_HANDLES_LIB);
+    let app = write(&d.0, "app.qz", CARRIED_HANDLES_APP);
+    let cache = d.0.join("cache");
+    let env = [("QUARZ_CACHE_DIR", cache.to_str().unwrap())];
+    let cold = quarz(&d.0, &["check", app.to_str().unwrap()], &env);
+    assert!(cold.0, "{}", cold.2);
+    let warm = quarz(&d.0, &["check", app.to_str().unwrap()], &env);
+    assert_eq!(warm, cold);
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &env);
+    assert!(ok, "{err}");
+    assert_eq!(out, CARRIED_HANDLES_EXPECTED);
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &env,
+    );
+    assert!(ok, "{err}");
+    let out = std::process::Command::new(d.0.join("app.bin"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        CARRIED_HANDLES_EXPECTED
+    );
+    // What stays refused at the statement: a helper that does not carry
+    // its `T` (two parameters mention it), a carried class with type
+    // arguments, a carried class whose handle is not the field's type.
+    for (helper, call, expected) in [
+        (
+            "  static def self.two[T](field: Symbol, type: Type[T], d: T) -> Void\n    ref = field_ref[T](field)\n    def_method(:bad) do -> Int\n      ref.get(self)\n      0\n    end\n  end\n",
+            "    two(:count, Int, 0)\n",
+            "the handle to `@count` is made with `T`, a type parameter of another method than the `static def` the statement calls, which does not carry it",
+        ),
+        (
+            "  static def self.generic[T](field: Symbol, type: Type[T]) -> Void\n    ref = field_ref[T](field)\n    def_method(:bad) do -> Int\n      ref.get(self)\n      0\n    end\n  end\n",
+            "    generic(:count, Array)\n",
+            "`T` is `Array`, whose type arguments are not known here",
+        ),
+        (
+            "  static def self.other[T](field: Symbol, type: Type[T]) -> Void\n    ref = field_ref[T](field)\n    def_method(:bad) do -> Int\n      ref.get(self)\n      0\n    end\n  end\n",
+            "    other(:count, String)\n",
+            "the handle to `@count` is a `Meta::FieldRef[Bad, String]`, but the field is declared `Int`: a handle's type is the field's exactly",
+        ),
+    ] {
+        // (The helper called from the `static def` a statement runs.)
+        let lib = CARRIED_HANDLES_LIB.replace(
+            "  static def self.table -> Void",
+            &format!("{helper}  static def self.go -> Void\n{call}  end\n\n  static def self.table -> Void"),
+        );
+        write(&d.0, "badlib.qz", &lib);
+        write(
+            &d.0,
+            "bad.qz",
+            "require_relative \"badlib\"\nclass Bad < Store\n  go\nend\n",
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
+        assert!(!ok, "{call}");
+        assert!(err.contains(expected), "{call}: {err}");
+    }
+}
+
+/// #918, the check at a handle's use: a handle a generic helper returns
+/// is typed with its caller's view of the helper's type parameter (here
+/// `Animal`, for a `Type[Animal]` value holding `Dog`), wider than the
+/// field; a generated method that reads or writes it through that type is
+/// refused at the statement, whatever carried the handle there. Through
+/// the same helper with `Dog` written, it runs, interpreted and compiled.
+const USE_CHECK_LIB: &str = r##"class Animal
+  def name -> String = "animal"
+end
+class Dog < Animal
+  def name -> String = "dog"
+  def bark -> String = "woof"
+end
+class Cat < Animal
+  def name -> String = "cat"
+end
+class Base
+  var @pet: Dog = Dog.new
+  def bark -> String = @pet.bark
+  static def self.mk[V](n: Symbol, t: Type[V]) -> Meta::FieldRef[Base, V]
+    field_ref[V](n)
+  end
+  static def self.mk_tuple[V](n: Symbol, t: Type[V]) -> [Meta::FieldRef[Base, V], Int]
+    [field_ref[V](n), 1]
+  end
+  static def self.mk_array[V](n: Symbol, t: Type[V]) -> Array[Meta::FieldRef[Base, V]]
+    [field_ref[V](n)]
+  end
+  static def self.mk_lambda[V](n: Symbol, t: Type[V]) -> () -> Meta::FieldRef[Base, V]
+    r = field_ref[V](n)
+    -> { r }
+  end
+  static def self.mk_field[V](n: Symbol, t: Type[V]) -> Meta::FieldRef[Base, V?]
+    def_field(n, t, nil, nullable: true, var: true)
+  end
+  static def self.inner[W](r: Meta::FieldRef[Base, W]) -> Void
+    def_method(:swap) do -> Void
+      r.set(self, r.get(self))
+    end
+  end
+  static def self.outer[V](n: Symbol, t: Type[V]) -> Void
+    inner(field_ref[V](n))
+  end
+#GO#
+end
+"##;
+
+#[test]
+fn a_handle_is_checked_where_it_is_read_or_written() {
+    let d = dir();
+    let go = |body: &str| {
+        USE_CHECK_LIB.replace(
+            "#GO#",
+            &format!("  static def self.go -> Void\n    kinds: Array[Type[Animal]] = [Dog]\n{body}  end\n"),
+        )
+    };
+    let swap = |ref_expr: &str, write: &str| {
+        format!("    ref = {ref_expr}\n    def_method(:swap) do -> Void\n      {write}\n    end\n")
+    };
+    let app = "require_relative \"lib\"\nclass Home < Base\n  go\nend\nh = Home.new\nh.swap\nputs h.bark\n";
+    // Accepted: the helper given `Dog` itself.
+    write(
+        &d.0,
+        "lib.qz",
+        &go(&swap("mk(:pet, Dog)", "ref.set(self, Dog.new)")),
+    );
+    let app_path = write(&d.0, "app.qz", app);
+    let (ok, out, err) = quarz(&d.0, &["run", app_path.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "woof\n");
+    let (ok, _, err) = quarz(&d.0, &["build", "app.qz", "-o", "app.bin"], &[]);
+    assert!(ok, "{err}");
+    let run = std::process::Command::new(d.0.join("app.bin"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "woof\n");
+    let widened = |u: &str, field: &str| {
+        format!("the handle to `@{field}` is used in the generated method as a `Meta::FieldRef[Home, {u}]`, but the field is declared `")
+    };
+    for (body, expected) in [
+        // The helper's result, alone, in a tuple, in an array, through a
+        // procedure; read only; written from a block of the method's.
+        (swap("mk(:pet, kinds[0])", "ref.set(self, Cat.new)"), widened("Animal", "pet")),
+        (swap("mk_tuple(:pet, kinds[0])[0]", "ref.set(self, Cat.new)"), widened("Animal", "pet")),
+        (swap("mk_array(:pet, kinds[0])[0]", "ref.set(self, Cat.new)"), widened("Animal", "pet")),
+        (swap("mk_lambda(:pet, kinds[0]).call", "ref.set(self, Cat.new)"), widened("Animal", "pet")),
+        (swap("mk(:pet, kinds[0])", "puts ref.get(self).name"), widened("Animal", "pet")),
+        (swap("mk(:pet, kinds[0])", "[1, 2].each { |_| ref.set(self, Cat.new) }"), widened("Animal", "pet")),
+        // `def_field`'s handle alike.
+        (swap("mk_field(:pet2, kinds[0])", "ref.set(self, Cat.new)"), widened("Animal?", "pet2")),
+        // A handle of one helper's invocation captured in another's
+        // block, whose type parameter it does not carry.
+        (
+            "    outer(:pet, Dog)\n".to_string(),
+            "the handle to `@pet` is used in the generated method as a `Meta::FieldRef[Home, W]`, whose `W` has no class here".to_string(),
+        ),
+    ] {
+        write(&d.0, "lib.qz", &go(&body));
+        let (ok, _, err) = quarz(&d.0, &["check", "app.qz"], &[]);
+        assert!(!ok, "{body}");
+        assert!(err.contains(&expected), "{body}: {err}");
     }
 }
 
@@ -3733,6 +3981,9 @@ class User < Base
   rec String, 1, [Int]
   holder Box[Int]
   counted String, counted(Int, 5)
+  # (A handle typed with a carried `T`, in each invocation, #918.)
+  @x: String = "s"
+  handle String, 1
 end
 class Post
   include Macros[Post]
@@ -3742,10 +3993,10 @@ a: Type[String] = User.new.item1
 b: Type[Int] = User.new.item0
 c: Type[Int] = User.new.counted5
 e: Type[String] = User.new.counted6
-p a, b, User.new.held(Box[Int].new), c, e, Post.new.macro_class
+p a, b, User.new.held(Box[Int].new), c, e, Post.new.macro_class, User.new.read1, User.new.read0
 "#,
     );
-    let expected = "String\nInt\n\"Box\"\nInt\nString\nPost\n";
+    let expected = "String\nInt\n\"Box\"\nInt\nString\nPost\n\"s\"\n\"s\"\n";
     let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
     assert!(ok, "{err}");
     assert_eq!(out, expected);
@@ -3760,7 +4011,7 @@ p a, b, User.new.held(Box[Int].new), c, e, Post.new.macro_class
     let bad = write(
         &d.0,
         "bad.qz",
-        "require_relative \"lib\"\nclass User < Base\n  bounded String\n  assigned String\n  defaulted String\n  lower [Puppy]\n  @x: String = \"s\"\n  handle String, 1\nend\n",
+        "require_relative \"lib\"\nclass User < Base\n  bounded String\n  assigned String\n  defaulted String\n  lower [Puppy]\nend\n",
     );
     let (ok, _, err) = quarz(&d.0, &["check", bad.to_str().unwrap()], &[]);
     assert!(!ok);
@@ -3769,7 +4020,6 @@ p a, b, User.new.held(Box[Int].new), c, e, Post.new.macro_class
         "bad.qz:4:3: error: `def_method(:assigned_item)`: the block's type mentions `T`, a type parameter the generated method cannot carry",
         "bad.qz:5:3: error: `def_method(:zz)`: the block's type mentions `T`, a type parameter the generated method cannot carry",
         "bad.qz:6:3: error: `def_method(:lower_item)`: the block's type mentions `T`, a type parameter the generated method cannot carry",
-        "bad.qz:8:3: error: `field_ref(:x)`: the handle to `@x` is made with `T`",
     ] {
         assert!(err.contains(expected), "missing {expected:?} in\n{err}");
     }
