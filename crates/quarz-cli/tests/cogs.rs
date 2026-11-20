@@ -1264,6 +1264,66 @@ fn a_kernel_extensions_functions_are_found_where_it_is_active() {
     );
 }
 
+/// A standard module's top-level `extension Kernel` (`Decimal(...)`,
+/// `URI(...)`) gives its functions in a cog whose files name the module's
+/// constants or require it, the library's as the application's, as the
+/// prelude's are everywhere (docs/01 §7, #936); an application that
+/// declares the name itself loads no module, and has no such function.
+/// Interpreted and compiled.
+#[test]
+fn a_standard_modules_kernel_functions_are_active_where_it_is_named() {
+    let w = World::new();
+    w.write("lib/Cog.toml", "[cog]\nname = \"lib\"\n");
+    w.write(
+        "lib/src/money.qz",
+        "module Money\n  def self.total(texts: Array[String]) -> String\n    texts.reduce(Decimal(0)) { |s, t| s + Decimal(t) }.to_s\n  end\nend\n",
+    );
+    w.write("lib/src/net.qz", "require \"uri\"\nmodule Net\n  def self.host(u: String) -> String = URI(u).host || \"\"\nend\n");
+    w.commit("lib", Some("v0.1.0"));
+    let dep = format!("Lib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("lib"));
+    w.app(
+        &dep,
+        "puts Lib::Money.total([\"1.5\", \"2.25\"]), Lib::Net.host(\"http://example.com/\"), Decimal(\"0.10\")\n",
+    );
+    let want = "3.75\nexample.com\n0.10\n";
+    assert_eq!(w.ok("app", &["run"]), want);
+    let exe = w.path("app/app-bin");
+    w.ok("app", &["build", "-o", exe.to_str().unwrap()]);
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), want);
+    // The application's own `Decimal`: `decimal` is not loaded, and its
+    // function is not there.
+    w.app(
+        "",
+        "class Decimal\n  def initialize; end\nend\np Decimal(\"1\")\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(err.contains("undefined method `Decimal` for main"), "{err}");
+    // The application's own `extension Kernel` with the signature `uri`'s
+    // function has: two extensions' functions of one signature, ambiguous
+    // at a bare call and at `::URI`, the module named (only a program's
+    // function hides the module's); of another signature, an overload.
+    w.app(
+        "",
+        "extension Kernel\n  def self.URI(text: String) -> URI = URI.parse(\"http://mine/\")\nend\np URI(\"http://example.com/\").host\np ::URI(\"http://example.com/\").host\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert_eq!(
+        err.matches("the call of `URI` is ambiguous: the standard module `uri`'s `extension Kernel` and this program's top-level extension of `Kernel`, both active here, each define it with the same parameters")
+            .count(),
+        2,
+        "{err}"
+    );
+    w.app(
+        "",
+        "extension Kernel\n  def self.URI(n: Int) -> String = \"mine #{n}\"\nend\np URI(\"http://example.com/\").host\np URI(3)\np ::URI(4)\n",
+    );
+    assert_eq!(
+        w.ok("app", &["run"]),
+        "\"example.com\"\n\"mine 3\"\n\"mine 4\"\n"
+    );
+}
+
 #[test]
 fn versions_follow_minimal_version_selection() {
     let w = World::new();

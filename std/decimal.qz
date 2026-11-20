@@ -376,3 +376,24 @@ class Decimal
     negative ? -q : q
   end
 end
+
+# `Decimal(...)`, a function wherever the program requires `decimal` or
+# names one of its constants (docs/01 §7): a standard module's top-level
+# extensions are active there, as the prelude's are everywhere.
+extension Kernel
+  # The decimal `text` writes: the same value, and the same error, as
+  # [Decimal.parse].
+  #
+  # ```
+  # Decimal("1.10").to_s              # => "1.10"
+  # Decimal("1,5")                    # raises ArgumentError
+  # ```
+  def self.Decimal(text: String) -> Decimal = Decimal.parse(text)
+
+  # The integer `n` as a decimal.
+  #
+  # ```
+  # Decimal(3).to_s                   # => "3"
+  # ```
+  def self.Decimal(n: Int) -> Decimal = Decimal.of(n)
+end

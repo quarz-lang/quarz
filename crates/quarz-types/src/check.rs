@@ -10027,13 +10027,28 @@ impl Checker {
         // functions.
         let mut cands = self.function_candidates(&call.name);
         let given = self.extension_functions(&call.name);
-        // (No method of `self` hides either here.)
+        // (No method of `self` hides either here. A standard library
+        // module's function is of the built-ins' kind: hidden by a
+        // function of its signature, an overload beside the others, #936.)
+        let (std_given, given): (Vec<_>, Vec<_>) = given
+            .into_iter()
+            .partition(|g| self.world.std_kernel_function(g.0));
         self.function_ambiguity(
             &call.name,
             cands.first().map(|c| c.0),
             given.first().map(|g| g.0),
             expr.span,
         );
+        let functions = cands.len();
+        for g in std_given {
+            let gm = self.world.method(g.0);
+            if !cands[..functions]
+                .iter()
+                .any(|(id, _)| self.world.same_signature(self.world.method(*id), gm))
+            {
+                cands.push(g);
+            }
+        }
         cands.extend(given);
         if cands.is_empty() {
             self.error(
@@ -11419,8 +11434,25 @@ impl Checker {
                             cands.push(f);
                         }
                     }
+                    // (A standard library module's function is of the
+                    // built-ins' kind: hidden by a method of `self` or a
+                    // function of its signature, an overload beside the
+                    // others, never ambiguous with them, #936.)
+                    let functions_end = cands.len();
+                    for g in given.iter().filter(|g| self.world.std_kernel_function(g.0)) {
+                        let gm = self.world.method(g.0);
+                        if !cands[..functions_end]
+                            .iter()
+                            .any(|(id, _)| self.world.same_signature(self.world.method(*id), gm))
+                        {
+                            cands.push(g.clone());
+                        }
+                    }
                     let functions = cands.len();
-                    for g in given {
+                    for g in given
+                        .into_iter()
+                        .filter(|g| !self.world.std_kernel_function(g.0))
+                    {
                         let gm = self.world.method(g.0);
                         if !cands[..own]
                             .iter()
@@ -11433,7 +11465,7 @@ impl Checker {
                     // their signature hides both, #898.)
                     self.function_ambiguity(
                         name,
-                        cands[own..functions].first().map(|c| c.0),
+                        cands[own..functions_end].first().map(|c| c.0),
                         cands[functions..].first().map(|c| c.0),
                         expr.span,
                     );
@@ -13668,9 +13700,28 @@ impl Checker {
                 self.extension_ambiguity(&call.name, x, y, ea, eb, expr.span);
             } else if let Some((ea, eb)) = own_pair {
                 let (na, nb) = (self.extension_name(ea), self.extension_name(eb));
+                // (A standard module's beside the program's, named, since
+                // the program wrote only one of them, #936.)
+                let std_of = |e: ExtensionId| self.world.std_module_of_extension(e);
                 // (Two in one place have the same name; the `using` hint
                 // only where both are scoped.)
-                let who = if na == nb {
+                let who = if let Some((m, other)) = std_of(ea)
+                    .map(|m| (m, eb))
+                    .or_else(|| std_of(eb).map(|m| (m, ea)))
+                    .filter(|_| std_of(ea).is_none() || std_of(eb).is_none())
+                {
+                    let target = self
+                        .world
+                        .class(self.world.extensions[other as usize].target)
+                        .name
+                        .clone();
+                    let theirs = self.extension_name(other).replacen(
+                        "the top-level extension",
+                        "this program's top-level extension",
+                        1,
+                    );
+                    format!("the standard module `{m}`'s `extension {target}` and {theirs}")
+                } else if na == nb {
                     format!(
                         "two {}",
                         na.replacen("the extension", "extensions", 1).replacen(

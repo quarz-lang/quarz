@@ -54,6 +54,10 @@ pub struct Unit {
     pub requires: Vec<usize>,
     /// For a test file of a cog, the cog it tests (`LoadedUnit::tests`).
     pub tests: Option<u32>,
+    /// The standard library modules its text names and declares a name of
+    /// (`load::std_mentions`, #936): empty for a program given without
+    /// its text (`Unit::script`).
+    pub std_mentions: (Vec<&'static str>, Vec<&'static str>),
 }
 
 impl Unit {
@@ -67,12 +71,14 @@ impl Unit {
             declarations_only: false,
             requires: Vec::new(),
             tests: None,
+            std_mentions: Default::default(),
         }
     }
 }
 
 impl From<LoadedUnit> for Unit {
     fn from(u: LoadedUnit) -> Unit {
+        let std_mentions = u.std_mentions;
         Unit {
             name: u.name,
             program: u.program,
@@ -81,6 +87,7 @@ impl From<LoadedUnit> for Unit {
             declarations_only: u.declarations_only,
             requires: u.requires,
             tests: u.tests,
+            std_mentions,
         }
     }
 }
@@ -277,6 +284,19 @@ impl Session {
         span: quarz_syntax::Span,
         mut runner: Option<&mut (dyn StaticRunner + '_)>,
     ) -> Result<Vec<CheckedUnit>, Vec<FileDiagnostic>> {
+        // (A standard module required, by a `require` or by being named in
+        // the REPL's input: its top-level extensions are active in the
+        // requiring file's group, #936.)
+        if !relative {
+            self.checker.world.std_use_version += 1;
+            self.checker
+                .world
+                .file_std
+                .entry(from)
+                .or_default()
+                .required
+                .push(path.to_string());
+        }
         let (key, name, text, module_dir) = if relative {
             let mut target = dir.join(path);
             if target.extension().is_none() {
@@ -323,6 +343,7 @@ impl Session {
         self.inputs += 1;
         let source = SourceFile::with_base(name.clone(), text, base);
         let parsed = parse_with_bases(&source.text, base, base);
+        let text_of_unit = source.text.clone();
         if let Some(r) = runner.as_deref_mut() {
             r.add_file(file, source.clone());
         }
@@ -359,6 +380,12 @@ impl Session {
         if name.starts_with("<std:") {
             declarer.world.std_files.insert(file);
         }
+        declarer.note_std_use(
+            file,
+            &name,
+            &parsed.program,
+            load::std_mentions(&text_of_unit),
+        );
         declarer.collect_unit(&parsed.program, file);
         declarer.resolve_headers();
         diagnostics.append(&mut declarer.diagnostics);
@@ -1016,9 +1043,11 @@ pub fn std_state(prelude: &Program, modules: &[&str]) -> (PreludeState, Vec<File
         .collect();
     let mut declarer = declare::Declarer::new();
     declarer.collect_prelude(prelude);
-    for (i, (_, program)) in parsed.iter().enumerate() {
+    for (i, (name, program)) in parsed.iter().enumerate() {
         let file = i as u32 + 1;
         declarer.world.std_files.insert(file);
+        let module = &name[5..name.len() - 1];
+        declarer.note_std_use(file, name, program, load::std_module_mentions(module));
         declarer.collect_unit(program, file);
     }
     declarer.resolve_headers();
@@ -1171,6 +1200,15 @@ pub fn check_with_extra(
         if unit.name.starts_with("<std:") {
             declarer.world.std_files.insert(file);
         }
+        let mentions = match unit
+            .name
+            .strip_prefix("<std:")
+            .and_then(|n| n.strip_suffix('>'))
+        {
+            Some(m) => load::std_module_mentions(m),
+            None => unit.std_mentions.clone(),
+        };
+        declarer.note_std_use(file, &unit.name, &unit.program, mentions);
         match unit.cog {
             Some(cog) if !cogs.is_empty() => {
                 declarer.collect_cog_unit(&unit.program, file, cog, unit.statements)
@@ -1318,9 +1356,13 @@ pub fn check_with_extra(
                     ns
                 })
                 .unwrap_or_default();
+            // (And the standard library modules whose top-level extensions
+            // are active in its group: another file's `require` or name
+            // decides that too, #936.)
+            let std_active = checker.world.group_std_modules(file);
             let Some(key) = cache::key(
                 &u.program,
-                cache::hash(&(all, u.cog, u.statements, &scope_names)),
+                cache::hash(&(all, u.cog, u.statements, &scope_names, &std_active)),
             ) else {
                 continue;
             };
@@ -1434,6 +1476,12 @@ pub fn check_with_extra(
                                 scope.extend(s.sees.iter().copied().filter(|f| *f != file));
                                 declarer.world.function_scopes.insert(file, scope);
                             }
+                            declarer.note_std_use(
+                                file,
+                                &s.source.name,
+                                &p.program,
+                                load::std_mentions(&s.source.text),
+                            );
                             match s.cog {
                                 Some(cog) if !cogs.is_empty() => {
                                     declarer.collect_cog_unit(&p.program, file, cog, true)

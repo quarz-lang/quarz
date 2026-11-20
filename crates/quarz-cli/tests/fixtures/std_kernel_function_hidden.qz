@@ -1,0 +1,9 @@
+# A program's function of the signature a standard module's `Kernel`
+# function has hides it, as it hides a built-in; the module's other
+# overloads stay (#936). Not an ambiguity.
+def Decimal(text: String) -> String = "mine #{text}"
+
+puts Decimal("1.0")
+puts Decimal(4)
+puts ::Decimal("2")
+puts Kernel.Decimal("3.5")

@@ -128,6 +128,10 @@ pub struct LoadedUnit {
     /// its own top-level `def`s, those of what it requires and that cog's,
     /// and neither that cog nor the other test files see its.
     pub tests: Option<u32>,
+    /// The standard library modules its text names and declares a name of
+    /// (`std_mentions`, scanned once when it is loaded): what loads a
+    /// module without `require`, and activates its extensions (#936).
+    pub std_mentions: (Vec<&'static str>, Vec<&'static str>),
 }
 
 /// A cog of a movement to load: where its files are and what it calls its
@@ -393,48 +397,94 @@ fn qz_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The standard library modules a program names without requiring them:
-/// those declaring a constant that some file mentions and that no file of
-/// the program declares itself (`declared`). `texts` are the files'
-/// sources.
+/// The standard library modules a file's text names and those it
+/// declares a name of, by their top-level constants (`std_exports`):
+/// one file's part of `std_named`.
+pub fn std_mentions(text: &str) -> (Vec<&'static str>, Vec<&'static str>) {
+    let mut mentioned = HashSet::default();
+    let mut declared = HashSet::default();
+    let lexed = tokenize(text);
+    let mut prev_declares = false;
+    for (i, tok) in lexed.tokens.iter().enumerate() {
+        if let TokenKind::Const(name) = &tok.kind {
+            // `class JSON::Mine` declares `Mine` in `JSON`, which it
+            // names.
+            let qualified = matches!(
+                lexed.tokens.get(i + 1).map(|t| &t.kind),
+                Some(TokenKind::ColonColon)
+            );
+            if prev_declares && !qualified {
+                declared.insert(name.clone());
+            } else {
+                mentioned.insert(name.clone());
+            }
+        }
+        prev_declares = match &tok.kind {
+            TokenKind::Keyword(Keyword::Class | Keyword::Module) => true,
+            TokenKind::Ident(word) => word == "data" || word == "enum",
+            _ => false,
+        };
+    }
+    let of = |set: &HashSet<String>| -> Vec<&'static str> {
+        std_exports()
+            .iter()
+            .filter(|(_, names)| names.iter().any(|n| set.contains(n)))
+            .map(|(module, _)| *module)
+            .collect()
+    };
+    (of(&mentioned), of(&declared))
+}
+
+/// `std_mentions` of standard library module `module`'s own text, made
+/// once per process, when a program declares the module from its source
+/// (not from a prebuilt state).
+pub fn std_module_mentions(module: &str) -> (Vec<&'static str>, Vec<&'static str>) {
+    type Scans = Vec<(&'static str, (Vec<&'static str>, Vec<&'static str>))>;
+    static SCANS: OnceLock<std::sync::Mutex<Scans>> = OnceLock::new();
+    let scans = SCANS.get_or_init(Default::default);
+    let mut scans = scans.lock().unwrap();
+    if let Some((_, s)) = scans.iter().find(|(m, _)| *m == module) {
+        return s.clone();
+    }
+    let Some((name, text)) = STD_MODULES.iter().find(|(n, _)| *n == module) else {
+        return Default::default();
+    };
+    let s = std_mentions(text);
+    scans.push((name, s.clone()));
+    s
+}
+
+/// The standard library modules a set of files names without declaring
+/// one of their names (`std_mentions` of each): what loads a module
+/// without `require` (`implicit_std`, over every loaded file), and what
+/// activates its top-level extensions in a group, with its `require`s
+/// (`World::group_std_modules`, over the group's files; #936).
+pub fn std_named<'s>(
+    scans: impl Iterator<Item = &'s (Vec<&'static str>, Vec<&'static str>)>,
+) -> Vec<&'static str> {
+    let mut mentioned: Vec<&'static str> = Vec::new();
+    let mut declared: Vec<&'static str> = Vec::new();
+    for (m, d) in scans {
+        mentioned.extend(m.iter().copied());
+        declared.extend(d.iter().copied());
+    }
+    std_exports()
+        .iter()
+        .map(|(module, _)| *module)
+        .filter(|module| mentioned.contains(module) && !declared.contains(module))
+        .collect()
+}
+
+/// The standard library modules the loaded files name without a
+/// `require` (`std_named`), not loaded yet.
 pub fn implicit_std<'a>(
     texts: impl Iterator<Item = &'a str>,
     loaded: &dyn Fn(&str) -> bool,
 ) -> Vec<&'static str> {
-    let mut mentioned = HashSet::default();
-    let mut declared = HashSet::default();
-    for text in texts {
-        let lexed = tokenize(text);
-        let mut prev_declares = false;
-        for (i, tok) in lexed.tokens.iter().enumerate() {
-            if let TokenKind::Const(name) = &tok.kind {
-                // `class JSON::Mine` declares `Mine` in `JSON`, which it
-                // names.
-                let qualified = matches!(
-                    lexed.tokens.get(i + 1).map(|t| &t.kind),
-                    Some(TokenKind::ColonColon)
-                );
-                if prev_declares && !qualified {
-                    declared.insert(name.clone());
-                } else {
-                    mentioned.insert(name.clone());
-                }
-            }
-            prev_declares = match &tok.kind {
-                TokenKind::Keyword(Keyword::Class | Keyword::Module) => true,
-                TokenKind::Ident(word) => word == "data" || word == "enum",
-                _ => false,
-            };
-        }
-    }
-    std_exports()
-        .iter()
-        .filter(|(module, names)| {
-            !loaded(module)
-                && names.iter().any(|n| mentioned.contains(n))
-                && !names.iter().any(|n| declared.contains(n))
-        })
-        .map(|(module, _)| *module)
+    let scans: Vec<_> = texts.map(std_mentions).collect();
+    std_named(scans.iter())
+        .into_iter()
+        .filter(|module| !loaded(module))
         .collect()
 }
 
@@ -515,10 +565,11 @@ impl Loader {
     /// Load the standard library modules the loaded files name without a
     /// `require`, before them (they depend on nothing but each other).
     fn load_implicit_std(&mut self) {
-        let wanted = implicit_std(
-            self.units.iter().map(|u| u.source.text.as_str()),
-            &|module| self.visited.contains(&format!("<std:{module}>")),
-        );
+        // (Each unit's scan, made when it was loaded.)
+        let wanted: Vec<&'static str> = std_named(self.units.iter().map(|u| &u.std_mentions))
+            .into_iter()
+            .filter(|module| !self.visited.contains(&format!("<std:{module}>")))
+            .collect();
         if wanted.is_empty() {
             return;
         }
@@ -600,6 +651,7 @@ impl Loader {
                 }
             }
         }
+        let std_mentions = std_mentions(&source.text);
         self.units.push(LoadedUnit {
             name,
             source,
@@ -609,6 +661,7 @@ impl Loader {
             declarations_only: false,
             requires: Vec::new(),
             tests: None,
+            std_mentions,
         });
     }
 
@@ -721,6 +774,10 @@ impl Loader {
                 }
             }
         }
+        let std_mentions = match key.strip_prefix("<std:").and_then(|n| n.strip_suffix('>')) {
+            Some(module) => std_module_mentions(module),
+            None => std_mentions(&source.text),
+        };
         self.in_progress.pop();
         self.index_of.insert(key, self.units.len());
         self.units.push(LoadedUnit {
@@ -732,6 +789,7 @@ impl Loader {
             declarations_only: false,
             requires,
             tests: None,
+            std_mentions,
         });
     }
 

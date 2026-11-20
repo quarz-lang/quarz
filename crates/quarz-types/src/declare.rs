@@ -432,6 +432,40 @@ impl<'ast> Declarer<'ast> {
         }
     }
 
+    /// Record what file `file` (loaded as `name`, `<std:json>` for a
+    /// standard library module) uses of the standard library: the modules
+    /// its `require`s name, and those its text names and declares a name
+    /// of (`mentioned`, `declared`: `load::std_mentions`), from which `World::group_std_modules`
+    /// decides whose top-level extensions its group has active (#936).
+    pub fn note_std_use(
+        &mut self,
+        file: u32,
+        name: &str,
+        program: &Program,
+        (mentioned, declared): (Vec<&'static str>, Vec<&'static str>),
+    ) {
+        if let Some(m) = name.strip_prefix("<std:").and_then(|n| n.strip_suffix('>')) {
+            self.world.std_module_files.insert(m.to_string(), file);
+        }
+        self.world.std_use_version += 1;
+        let entry = self.world.file_std.entry(file).or_default();
+        for e in &program.body {
+            if let ExprKind::Require {
+                path,
+                relative: false,
+            } = &e.kind
+            {
+                entry.required.push(path.clone());
+            }
+        }
+        entry
+            .mentioned
+            .extend(mentioned.into_iter().map(String::from));
+        entry
+            .declared
+            .extend(declared.into_iter().map(String::from));
+    }
+
     /// Register the declarations of a user file (file index `file`, 1 or
     /// more); its other statements become the unit's body.
     pub fn collect_unit(&mut self, program: &'ast Program, file: u32) {

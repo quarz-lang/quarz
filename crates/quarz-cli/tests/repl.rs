@@ -65,6 +65,31 @@ fn require_loads_libraries_once() {
     assert_eq!(printed, "geometry loaded\n");
 }
 
+/// A standard module's `Kernel` functions in the REPL (#936): an input
+/// naming the module's constant loads it and has them, as a `require`
+/// does.
+#[test]
+fn a_standard_modules_kernel_functions_follow_what_an_input_names() {
+    let (out, _) = values(&[
+        "Decimal(\"1.50\").to_s",
+        "Decimal(2).to_s",
+        "require \"uri\"",
+        "URI(\"http://example.com/a\").host",
+    ]);
+    assert_eq!(
+        out,
+        vec!["=> \"1.50\"", "=> \"2\"", "", "=> \"example.com\""]
+    );
+    // A module loaded already (`http` requires `uri`), required by an
+    // input afterwards: no file is added, the input's group gains it.
+    let (out, _) = values(&[
+        "require \"http\"",
+        "require \"uri\"",
+        "Kernel.URI(\"http://example.com/a\").host",
+    ]);
+    assert_eq!(out, vec!["", "", "=> \"example.com\""]);
+}
+
 #[test]
 fn static_statements_run_in_the_session() {
     // docs/14 §2: an input's statements run when it is entered, with the
