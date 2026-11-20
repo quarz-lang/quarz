@@ -1445,7 +1445,7 @@ fn tuple_inference() {
     ok("xs = [[2, \"b\"], [1, \"z\"]]\np xs.sort, xs.max\np [[\"x\", 2]].sort_by { |pr| [pr[1], pr[0]] }");
     err(
         "class A\nend\nxs = [[1, A.new], [2, A.new]]\np xs.sort",
-        "type bounds not satisfied",
+        "`T <: Comparable[T]`: `[Int, A]` is not a `Comparable[[Int, A]]`",
     );
     // ... and with the comparison operators, as are arrays of one
     // comparable element type.
@@ -6987,6 +6987,38 @@ fn two_argument_sets_on_a_module_with_no_includer() {
     );
 }
 
+/// #960: when no overload matches and one fits but for a type bound,
+/// the list leads with it, naming the bound as declared, the type that
+/// fails it with the call's arguments, and, for `Shareable`, why; the
+/// other candidates follow as before; several such candidates are each
+/// listed with their bounds.
+#[test]
+fn an_overload_failing_only_a_bound_is_named_first() {
+    let store = "class Store\n  def put(name: Symbol, value: Int) -> Void = nil\n  def put(name: Symbol, value: String) -> Void = nil\n  def put[T <: Shareable](name: Symbol, value: T, *, kept: Bool) -> Void = nil\nend\n";
+    let errs = diagnostics(&format!(
+        "{store}class Owner\n  var @count: Int = 0\nend\nStore.new.put(:o, Owner.new, kept: true)"
+    ));
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert_eq!(
+        errs[0],
+        "no overload of `put` on Store matches (Symbol, Owner, kept: Bool):\n    put(name: Symbol, value: T, kept: Bool) -> Void: `T <: Shareable`: `Owner` is not Shareable (its field `@count` is `var`)\n    put(name: Symbol, value: Int) -> Void has no parameter `kept`\n    put(name: Symbol, value: String) -> Void has no parameter `kept`"
+    );
+    err(
+        &format!("{store}class Plain\nend\nStore.new.put(:o, Plain.new, kept: true)"),
+        "`T <: Shareable`: `Plain` is not Shareable (a class that does not include `Shareable`)",
+    );
+    // Another bound; two candidates failing bounds, each listed, first.
+    let errs = diagnostics("class Owner\nend\nclass Ranker\n  def rank(x: Int) -> Int = x\n  def rank[T <: Comparable[T]](x: T, *, desc: Bool) -> Int = 0\n  def rank[T <: Shareable](x: T, *, desc: Bool, up: Bool = true) -> Int = 1\nend\nRanker.new.rank(Owner.new, desc: true)");
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    let lines: Vec<&str> = errs[0].lines().collect();
+    assert_eq!(lines[1], "    rank(x: T, desc: Bool) -> Int: `T <: Comparable[T]`: `Owner` is not a `Comparable[Owner]`", "{errs:?}");
+    assert!(lines[2].starts_with("    rank(x: T, desc: Bool, up: Bool = ...) -> Int: `T <: Shareable`: `Owner` is not Shareable"), "{errs:?}");
+    assert_eq!(
+        lines[3], "    rank(x: Int) -> Int has no parameter `desc`",
+        "{errs:?}"
+    );
+}
+
 #[test]
 fn builder_sort_without_a_block_takes_comparable_elements_only() {
     // #560: `Array::Builder#sort!` without a block is bounded as
@@ -6995,14 +7027,14 @@ fn builder_sort_without_a_block_takes_comparable_elements_only() {
     // refused; with a block it sorts any elements.
     err(
         "class C\n  include Comparable[C]\n  def initialize; end\n  def <=>(other: C) -> Int = 0\nend\nb = Array::Builder[Object].new\nb << 1\nb << C.new\nb.sort!",
-        "type bounds not satisfied",
+        "`T <: Comparable[T]`: `Object` is not a `Comparable[Object]`",
     );
     ok("b = Array::Builder[Object].new\nb << 1\nb.sort! { |x, y| 0 }");
     // Comparable only through a scoped extension, which is not active
     // where `sort!` is called.
     err(
         "class S\n  def initialize; end\nend\nmodule Sc\n  extension S\n    include Comparable[S]\n    def <=>(o: S) -> Int = 0\n  end\nend\nb = Array::Builder[S].new\nb << S.new\nb.sort!",
-        "type bounds not satisfied",
+        "`T <: Comparable[T]`: `S` is not a `Comparable[S]`",
     );
 }
 
