@@ -252,6 +252,84 @@ pub fn fast_binop(op: FastOp, a: &Value, b: &Value) -> Option<Value> {
     }
 }
 
+/// Sort `v` by `cmp`, stably (equal ones keep their order): a merge sort
+/// that stops at `cmp`'s first error and takes any answer, so a comparison
+/// that raises or is not a total order (a user's block or `<=>`) cannot
+/// make it panic, as the standard library's sort may (#924). On an error
+/// `v` holds its elements still, in an order not specified. The elements
+/// are moved, never cloned. The runtime's sorts of values go through it
+/// (`Interp::sort_values`, `Array::Builder#sort_by!`).
+pub(crate) fn sort_fallible<T, E>(
+    v: &mut Vec<T>,
+    mut cmp: impl FnMut(&T, &T) -> Result<std::cmp::Ordering, E>,
+) -> Result<(), E> {
+    use std::cmp::Ordering::Greater;
+    // (A slot being compared always holds its element.)
+    fn held<T>(x: &Option<T>) -> &T {
+        x.as_ref().expect("a sorted element")
+    }
+    /// `a[lo..hi]` sorted, `buf[lo..hi]` its scratch: top down, so that a
+    /// part is sorted whole while its values are in the cache.
+    fn sort<T, E>(
+        a: &mut [Option<T>],
+        buf: &mut [Option<T>],
+        lo: usize,
+        hi: usize,
+        cmp: &mut impl FnMut(&T, &T) -> Result<std::cmp::Ordering, E>,
+    ) -> Result<(), E> {
+        // Short runs by insertion.
+        if hi - lo <= 16 {
+            for k in lo + 1..hi {
+                let mut j = k;
+                while j > lo && cmp(held(&a[j - 1]), held(&a[j]))? == Greater {
+                    a.swap(j - 1, j);
+                    j -= 1;
+                }
+            }
+            return Ok(());
+        }
+        let mid = lo + (hi - lo) / 2;
+        sort(a, buf, lo, mid, cmp)?;
+        sort(a, buf, mid, hi, cmp)?;
+        // (Already in order: nothing to merge.)
+        if cmp(held(&a[mid - 1]), held(&a[mid]))? != Greater {
+            return Ok(());
+        }
+        let (mut l, mut r, mut o) = (lo, mid, lo);
+        while l < mid && r < hi {
+            // (The left one first unless it comes after: stable.)
+            if cmp(held(&a[l]), held(&a[r]))? == Greater {
+                buf[o] = a[r].take();
+                r += 1;
+            } else {
+                buf[o] = a[l].take();
+                l += 1;
+            }
+            o += 1;
+        }
+        // (What is left of either half, in order.)
+        let (left, right) = a.split_at_mut(mid);
+        for x in left[l..]
+            .iter_mut()
+            .chain(right[r - mid..hi - mid].iter_mut())
+        {
+            buf[o] = x.take();
+            o += 1;
+        }
+        for (to, from) in a[lo..hi].iter_mut().zip(&mut buf[lo..hi]) {
+            *to = from.take();
+        }
+        Ok(())
+    }
+    let n = v.len();
+    let mut a: Vec<Option<T>> = v.drain(..).map(Some).collect();
+    let mut buf: Vec<Option<T>> = (0..n).map(|_| None).collect();
+    let result = sort(&mut a, &mut buf, 0, n, &mut cmp);
+    // (On an error part of the elements may be in `buf`: all are kept.)
+    v.extend(a.into_iter().chain(buf).flatten());
+    result
+}
+
 /// `Float#<=>`: a total order, NaN after every other number (and equal to
 /// itself), so that sorting an array with a NaN is well defined.
 pub fn float_order(x: f64, y: f64) -> std::cmp::Ordering {
@@ -4095,29 +4173,17 @@ impl Interp {
         }
     }
 
-    /// Sort with a fallible comparator.
+    /// Sort with a fallible comparator: stably (`sort_fallible`), stopping
+    /// at the first error, which is returned with `items` holding its
+    /// values still, in an order not specified. Any comparison is taken,
+    /// a total order or not (an inconsistent block gives some
+    /// permutation), never a panic (#924).
     pub fn sort_values(
         &self,
-        items: &mut [Value],
-        mut cmp: impl FnMut(&Value, &Value) -> Result<std::cmp::Ordering, Flow>,
+        items: &mut Vec<Value>,
+        cmp: impl FnMut(&Value, &Value) -> Result<std::cmp::Ordering, Flow>,
     ) -> Result<(), Flow> {
-        let mut error = None;
-        items.sort_by(|a, b| {
-            if error.is_some() {
-                return std::cmp::Ordering::Equal;
-            }
-            match cmp(a, b) {
-                Ok(o) => o,
-                Err(e) => {
-                    error = Some(e);
-                    std::cmp::Ordering::Equal
-                }
-            }
-        });
-        match error {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
+        sort_fallible(items, cmp)
     }
 
     pub fn write_out(&self, s: &str) {
@@ -4314,4 +4380,97 @@ fn requirement(program: &Program, module: ClassId, name: &str) -> Option<MethodI
             let m = program.method(m);
             m.owner == module && m.name == name && m.is_abstract
         })
+}
+
+#[cfg(test)]
+mod sort_tests {
+    use super::sort_fallible;
+
+    /// `sort_fallible` of the indices `0..n` by `cmp`.
+    fn sort_indices<E>(
+        n: usize,
+        mut cmp: impl FnMut(usize, usize) -> Result<Ordering, E>,
+    ) -> Result<Vec<usize>, E> {
+        let mut v: Vec<usize> = (0..n).collect();
+        sort_fallible(&mut v, |a, b| cmp(*a, *b)).map(|()| v)
+    }
+    use std::cmp::Ordering;
+
+    /// A small deterministic generator for the inputs.
+    fn values(n: usize, seed: u64, range: u64) -> Vec<u64> {
+        let mut x = seed;
+        (0..n)
+            .map(|_| {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (x >> 33) % range
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sorts_as_the_standard_stable_sort() {
+        for n in [0, 1, 2, 15, 16, 17, 33, 100, 1000, 4097] {
+            for range in [3, 1000] {
+                let v = values(n, n as u64 + range, range);
+                let order = sort_indices(n, |a, b| Ok::<_, ()>(v[a].cmp(&v[b]))).unwrap();
+                let mut want: Vec<usize> = (0..n).collect();
+                want.sort_by(|&a, &b| v[a].cmp(&v[b]));
+                assert_eq!(order, want, "n={n} range={range}");
+            }
+        }
+    }
+
+    #[test]
+    fn stops_at_the_first_error() {
+        let v = values(500, 7, 50);
+        let mut calls = 0;
+        let r = sort_indices(v.len(), |a, b| {
+            calls += 1;
+            if calls == 123 {
+                Err("stop")
+            } else {
+                Ok(v[a].cmp(&v[b]))
+            }
+        });
+        assert_eq!(r, Err("stop"));
+        assert_eq!(calls, 123);
+        // Stopped in a merge (past the 16-element runs' insertions): the
+        // values are all kept.
+        let mut w: Vec<u64> = values(500, 9, 50);
+        let mut sorted_w = w.clone();
+        sorted_w.sort_unstable();
+        let mut calls = 0;
+        let r = sort_fallible(&mut w, |a, b| {
+            calls += 1;
+            if calls == 2000 {
+                Err(())
+            } else {
+                Ok(a.cmp(b))
+            }
+        });
+        assert_eq!(r, Err(()));
+        w.sort_unstable();
+        assert_eq!(w, sorted_w);
+    }
+
+    #[test]
+    fn takes_an_order_that_is_not_total() {
+        for n in [20, 300, 3000] {
+            let mut c = 0u64;
+            let order = sort_indices(n, |_, _| {
+                c += 1;
+                Ok::<_, ()>(match (c * 7) % 3 {
+                    0 => Ordering::Less,
+                    1 => Ordering::Equal,
+                    _ => Ordering::Greater,
+                })
+            })
+            .unwrap();
+            let mut seen = order.clone();
+            seen.sort_unstable();
+            assert_eq!(seen, (0..n).collect::<Vec<_>>(), "a permutation");
+        }
+    }
 }

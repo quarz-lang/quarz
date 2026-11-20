@@ -242,18 +242,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         for x in items {
             keyed.push((i.call_block(&bl, smallvec![x.clone()])?, x));
         }
+        // (Stops at the first error; any order taken: #924.)
         let mut indices: Vec<usize> = (0..keyed.len()).collect();
-        let mut failure = None;
-        indices.sort_by(|&x, &y| match i.compare(&keyed[x].0, &keyed[y].0) {
-            Ok(o) => o,
-            Err(e) => {
-                failure.get_or_insert(e);
-                std::cmp::Ordering::Equal
-            }
-        });
-        if let Some(e) = failure {
-            return Err(e);
-        }
+        crate::interp::sort_fallible(&mut indices, |&x, &y| i.compare(&keyed[x].0, &keyed[y].0))?;
         *b.borrow_mut() = indices.into_iter().map(|k| keyed[k].1.clone()).collect();
         Ok(r.clone())
     });
