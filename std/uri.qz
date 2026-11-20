@@ -367,3 +367,17 @@ data URI(
     -1
   end
 end
+
+# `URI(...)`, a function wherever the program requires `uri` or names one
+# of its constants (docs/01 §7): a standard module's top-level extensions
+# are active there, as the prelude's are everywhere.
+extension Kernel
+  # The URI `text` writes: the same value, and the same error, as
+  # [URI.parse].
+  #
+  # ```
+  # URI("http://example.com/a").host  # => "example.com"
+  # URI("1http://x")                  # raises ArgumentError
+  # ```
+  def self.URI(text: String) -> URI = URI.parse(text)
+end

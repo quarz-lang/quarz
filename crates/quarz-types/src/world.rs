@@ -719,6 +719,35 @@ pub struct World {
     pub std_files: rustc_hash::FxHashSet<u32>,
     /// Each user file's group (`UnitGroup`); the prelude has none.
     pub file_groups: HashMap<u32, UnitGroup>,
+    /// The standard library modules loaded, by name (`json`), with their
+    /// files.
+    pub std_module_files: HashMap<String, u32>,
+    /// By file: the standard library modules it `require`s, and those its
+    /// text names and declares a name of (`load::std_mentions`), which
+    /// decide the modules whose top-level extensions are active in its
+    /// group (`group_std_modules`, #936).
+    pub file_std: HashMap<u32, FileStd>,
+    /// Bumped at each change of `file_std` and `std_module_files`: with
+    /// the numbers of files and extensions, what `group_std_memo` and
+    /// `group_ext_memo` are valid for. Their writers: `Declarer::
+    /// note_std_use` (both maps) and `Session::require_unit` (a file's
+    /// requires); `file_groups` and `extensions` only grow (the declarer's
+    /// `collect_*` and extension declarations), and an extension's
+    /// `group` is set when it is made. A debug build checks each memo's
+    /// entry against a remake once per group and state.
+    pub std_use_version: u64,
+    /// `group_std_modules` by group, made once per state of `file_std` and
+    /// `file_groups` (it is asked for every file's active set, often).
+    #[serde(skip)]
+    group_std_memo: std::cell::RefCell<(u64, usize, HashMap<UnitGroup, Vec<String>>)>,
+    /// `group_extensions` by group, made once per state of `file_std`,
+    /// `file_groups` and `extensions`.
+    #[serde(skip)]
+    group_ext_memo: std::cell::RefCell<GroupExtMemo>,
+    /// (Debug builds.) The memos' entries checked against a remake
+    /// (`group_memo_unchecked`), in the state they were made for.
+    #[serde(skip)]
+    group_memo_checked: std::cell::RefCell<GroupMemoChecked>,
     /// The pseudo-class of each file's top-level methods, by file index
     /// (set by the checker for the files of a run).
     #[serde(skip)]
@@ -806,6 +835,24 @@ pub enum StaticEvent {
     /// passes over a missing implementation of theirs
     /// (`witness_net::errors`).
     Conformance(Vec<ClassId>),
+}
+
+/// `World::group_ext_memo`: the state it was made for (`std_use_version`,
+/// the numbers of files and extensions) and each group's extensions.
+type GroupExtMemo = (u64, usize, usize, HashMap<UnitGroup, Vec<ExtensionId>>);
+
+/// `World::group_memo_checked`: the state, and the (group, memo) pairs
+/// checked in it.
+type GroupMemoChecked = ((u64, usize, usize), HashSet<(UnitGroup, u8)>);
+
+/// A file's use of the standard library (`World::file_std`): the modules
+/// it `require`s, and those its text names and declares a name of
+/// (`load::std_mentions`).
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct FileStd {
+    pub required: Vec<String>,
+    pub mentioned: Vec<String>,
+    pub declared: Vec<String>,
 }
 
 /// A walk's key: the class, its arguments, the view's extensions, and
@@ -2964,16 +3011,173 @@ impl World {
     }
 
     /// The extensions active throughout `file`: those declared at the top
-    /// level of its group's files.
+    /// level of its group's files, and of the standard library modules
+    /// its group requires or names (`group_std_modules`, #936), as the
+    /// prelude's are everywhere (`always_active`).
     pub fn group_extensions(&self, file: u32) -> Vec<ExtensionId> {
         let Some(group) = self.file_groups.get(&file) else {
             return Vec::new();
         };
+        {
+            let mut memo = self.group_ext_memo.borrow_mut();
+            let state = (
+                self.std_use_version,
+                self.file_groups.len(),
+                self.extensions.len(),
+            );
+            if (memo.0, memo.1, memo.2) != state {
+                *memo = (state.0, state.1, state.2, HashMap::default());
+            }
+            if let Some(found) = memo.3.get(group) {
+                let found = found.clone();
+                drop(memo);
+                if cfg!(debug_assertions) && self.group_memo_unchecked(*group, 1) {
+                    assert_eq!(
+                        found,
+                        self.group_extensions_of(group, file),
+                        "internal error: `group_ext_memo` is stale for {group:?}: a writer of `file_std`, `std_module_files`, `file_groups`, `extensions` or an extension's `group` did not bump `std_use_version`"
+                    );
+                }
+                return found;
+            }
+        }
+        let out = self.group_extensions_of(group, file);
+        self.group_ext_memo
+            .borrow_mut()
+            .3
+            .insert(*group, out.clone());
+        out
+    }
+
+    /// `group_extensions`, made.
+    fn group_extensions_of(&self, group: &UnitGroup, file: u32) -> Vec<ExtensionId> {
+        let std: Vec<UnitGroup> = self
+            .group_std_modules(file)
+            .iter()
+            .filter_map(|m| self.std_module_files.get(m))
+            .map(|f| UnitGroup::Std(*f))
+            .filter(|g| g != group)
+            .collect();
         self.extensions
             .iter()
-            .filter(|e| e.group.as_ref() == Some(group))
+            .filter(|e| {
+                e.group
+                    .as_ref()
+                    .is_some_and(|g| g == group || std.contains(g))
+            })
             .map(|e| e.id)
             .collect()
+    }
+
+    /// (Debug builds.) Whether memo `which` (0: `group_std_memo`, 1:
+    /// `group_ext_memo`) has not been checked for `group` in its current
+    /// state; marks it checked.
+    fn group_memo_unchecked(&self, group: UnitGroup, which: u8) -> bool {
+        let state = (
+            self.std_use_version,
+            self.file_groups.len(),
+            self.extensions.len(),
+        );
+        let mut checked = self.group_memo_checked.borrow_mut();
+        if checked.0 != state {
+            *checked = (state, HashSet::default());
+        }
+        checked.1.insert((group, which))
+    }
+
+    /// The standard library module whose top-level extension `e` is, by
+    /// name.
+    pub fn std_module_of_extension(&self, e: ExtensionId) -> Option<&str> {
+        let Some(UnitGroup::Std(file)) = self.extensions[e as usize].group else {
+            return None;
+        };
+        self.std_module_files
+            .iter()
+            .find(|(_, f)| **f == file)
+            .map(|(m, _)| m.as_str())
+    }
+
+    /// Whether method `mid` is a function a standard library module's
+    /// top-level `extension Kernel` gives: one of the built-ins' kind,
+    /// hidden by a function of the program of its signature, not
+    /// ambiguous beside one (#936).
+    pub fn std_kernel_function(&self, mid: MethodId) -> bool {
+        self.kernel_extension_function(mid)
+            && self.method(mid).extension.is_some_and(|e| {
+                matches!(self.extensions[e as usize].group, Some(UnitGroup::Std(_)))
+            })
+    }
+
+    /// The standard library modules whose top-level extensions are active
+    /// in `file`'s group: those one of its files `require`s, or names
+    /// without declaring one of their names (`load::std_named`, the rule
+    /// that loads a module without `require`), loaded; not those of a
+    /// module they require in turn. A cog's, an application's, a script's
+    /// and a standard module's own (#936). Sorted.
+    pub fn group_std_modules(&self, file: u32) -> Vec<String> {
+        let Some(group) = self.file_groups.get(&file) else {
+            return Vec::new();
+        };
+        {
+            let mut memo = self.group_std_memo.borrow_mut();
+            let state = (self.std_use_version, self.file_groups.len());
+            if (memo.0, memo.1) != state {
+                *memo = (state.0, state.1, HashMap::default());
+            }
+            if let Some(found) = memo.2.get(group) {
+                let found = found.clone();
+                drop(memo);
+                // (Debug builds: made again once per group and state, and
+                // compared, so that a writer that forgets to bump
+                // `std_use_version` shows, not a stale set.)
+                if cfg!(debug_assertions) && self.group_memo_unchecked(*group, 0) {
+                    assert_eq!(
+                        found,
+                        self.group_std_modules_of(group),
+                        "internal error: `group_std_memo` is stale for {group:?}: a writer of `file_std`, `std_module_files` or `file_groups` did not bump `std_use_version`"
+                    );
+                }
+                return found;
+            }
+        }
+        let out = self.group_std_modules_of(group);
+        self.group_std_memo
+            .borrow_mut()
+            .2
+            .insert(*group, out.clone());
+        out
+    }
+
+    /// `group_std_modules`, made.
+    fn group_std_modules_of(&self, group: &UnitGroup) -> Vec<String> {
+        let files: Vec<&FileStd> = self
+            .file_groups
+            .iter()
+            .filter(|(_, g)| *g == group)
+            .filter_map(|(f, _)| self.file_std.get(f))
+            .collect();
+        let scans: Vec<(Vec<&'static str>, Vec<&'static str>)> = files
+            .iter()
+            .map(|f| {
+                let known = |names: &[String]| -> Vec<&'static str> {
+                    crate::load::STD_MODULES
+                        .iter()
+                        .map(|(m, _)| *m)
+                        .filter(|m| names.iter().any(|n| n == m))
+                        .collect()
+                };
+                (known(&f.mentioned), known(&f.declared))
+            })
+            .collect();
+        let mut out: Vec<String> = crate::load::std_named(scans.iter())
+            .into_iter()
+            .map(String::from)
+            .chain(files.iter().flat_map(|f| f.required.iter().cloned()))
+            .filter(|m| self.std_module_files.contains_key(m))
+            .collect();
+        out.sort();
+        out.dedup();
+        out
     }
 
     /// `f` evaluated with `set` as the active extensions (`active_extensions`),
@@ -6205,5 +6409,56 @@ impl World {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod std_group_tests {
+    use super::*;
+
+    fn file_std(required: &[&str], mentioned: &[&str], declared: &[&str]) -> FileStd {
+        let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect();
+        FileStd {
+            required: v(required),
+            mentioned: v(mentioned),
+            declared: v(declared),
+        }
+    }
+
+    /// Which standard modules' top-level extensions a group has active
+    /// (#936): those one of its files requires, or names without its
+    /// group declaring one of their names; loaded ones only; not those a
+    /// required module requires in turn; a standard module's own alike.
+    #[test]
+    fn a_groups_standard_modules_are_its_files_requires_and_names() {
+        let mut w = World::default();
+        for (m, f) in [("decimal", 20), ("http", 21), ("uri", 22), ("json", 23)] {
+            w.std_module_files.insert(m.to_string(), f);
+        }
+        let groups = [
+            (1, UnitGroup::App, file_std(&["http"], &["decimal"], &[])),
+            (2, UnitGroup::App, file_std(&[], &[], &[])),
+            (3, UnitGroup::Cog(0), file_std(&["json"], &[], &[])),
+            (4, UnitGroup::Cog(1), file_std(&[], &["decimal"], &[])),
+            (5, UnitGroup::Cog(1), file_std(&[], &[], &["decimal"])),
+            (6, UnitGroup::Cog(2), file_std(&[], &["digest"], &[])),
+            (21, UnitGroup::Std(21), file_std(&["json"], &["uri"], &[])),
+        ];
+        for (f, g, s) in groups {
+            w.file_groups.insert(f, g);
+            w.file_std.insert(f, s);
+        }
+        // Another file of the group names `decimal`, and `http` is
+        // required; `http`'s own `json` and `uri` are not the group's.
+        assert_eq!(w.group_std_modules(2), vec!["decimal", "http"]);
+        assert_eq!(w.group_std_modules(3), vec!["json"]);
+        // Named in one file, a name of it declared in another.
+        assert!(w.group_std_modules(4).is_empty());
+        // Named, but not loaded.
+        assert!(w.group_std_modules(6).is_empty());
+        // A standard module's own requires and names.
+        assert_eq!(w.group_std_modules(21), vec!["json", "uri"]);
+        // The prelude has no group.
+        assert!(w.group_std_modules(0).is_empty());
     }
 }

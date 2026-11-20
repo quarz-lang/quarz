@@ -1,0 +1,41 @@
+# A standard module's top-level `extension Kernel` gives its functions
+# wherever the program requires the module or names one of its constants
+# (docs/01 §7, #936): `Decimal(...)` and `URI(...)` with no `require`
+# (the call names the module's class), bare, `::`, `Kernel.`, at the top
+# level, in a function and in a method, each the same value and the same
+# error as `parse`.
+def total(texts: Array[String]) -> String
+  texts.reduce(Decimal(0)) { |s, t| s + Decimal(t) }.to_s
+end
+
+class Price
+  @amount: Decimal
+  def initialize(text: String)
+    @amount = ::Decimal(text)
+  end
+  def to_s -> String = "#{@amount}"
+end
+
+puts Decimal("1.10")
+puts Decimal(3)
+puts Kernel.Decimal("-0.50")
+puts total(["1.25", "2.5", "0.25"])
+puts Price.new("9.99")
+puts Decimal("1.5") == Decimal.parse("1.5")
+puts URI("http://example.com:8080/a?b").host
+puts URI("http://example.com:8080/a?b").port.inspect
+puts ::URI("/p?q").query.inspect
+begin
+  Decimal("1,5")
+rescue ArgumentError => e
+  begin
+    Decimal.parse("1,5")
+  rescue ArgumentError => f
+    puts e.message == f.message
+  end
+end
+begin
+  URI("1http://x")
+rescue ArgumentError => e
+  puts e.message
+end
