@@ -1,0 +1,72 @@
+# A sort whose comparison raises part-way, or is not a total order, raises
+# or gives some permutation; it never aborts the process (#924, where the
+# standard library's sort panicked, and a compiled program aborted).
+xs = (0...300).map { |i| "s#{(i * 7919) % 300}" }
+
+# A comparator block raising at its first, fifth, 50th or 299th call
+# (sorting 300 values takes at least 299): rescued each time.
+raised = 0
+[1, 5, 50, 299].each do |at|
+  c = 0
+  begin
+    xs.sort do |a, b|
+      c += 1
+      raise ArgumentError.new("stop") if c == at
+      a <=> b
+    end
+  rescue ArgumentError => e
+    raised += 1 if e.message == "stop"
+  end
+end
+puts raised
+
+# An inconsistent block: some permutation of the values.
+c = 0
+ys = xs.sort do |a, b|
+  c += 1
+  (c * 7) % 3 - 1
+end
+puts ys.size, ys.sort == xs.sort
+
+# A `<=>` that raises, through `sort`, `sort_by` and a builder's
+# `sort!` and `sort_by!`.
+class Bad
+  include Comparable[Bad]
+  @n: Int
+  def initialize(@n: Int); end
+  def n -> Int = @n
+  def <=>(o: Bad) -> Int
+    raise ArgumentError.new("bad #{@n}") if @n == 7 || o.n == 7
+    @n <=> o.n
+  end
+end
+bads = (0...40).map { |i| Bad.new((i * 13) % 40) }
+begin
+  bads.sort
+rescue ArgumentError => e
+  puts "sort: #{e.message.start_with?("bad")}"
+end
+begin
+  (0...40).to_a.sort_by { |i| Bad.new((i * 13) % 40) }
+rescue ArgumentError => e
+  puts "sort_by: #{e.message.start_with?("bad")}"
+end
+b = Array::Builder[Bad].new
+bads.each { |x| b << x }
+begin
+  b.sort! { |x, y| x <=> y }
+rescue ArgumentError => e
+  puts "builder sort!: #{e.message.start_with?("bad")}"
+end
+k = Array::Builder[Int].new
+(0...40).each { |i| k << i }
+begin
+  k.sort_by! { |i| Bad.new((i * 13) % 40) }
+rescue ArgumentError => e
+  puts "builder sort_by!: #{e.message.start_with?("bad")}"
+end
+
+# A consistent sort is stable and as before.
+pairs = [[2, "a"], [1, "b"], [2, "c"], [1, "d"]]
+p pairs.sort_by { |pr| pr[0] }
+p [3, 1, 2].sort { |a, b| b <=> a }
