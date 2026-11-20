@@ -2880,21 +2880,28 @@ def program (j : Json) : M Program := do
       (kind == "Class" || kind == "Data" || kind == "Enum" || kind == "Variant") &&
       !mainClasses.contains (← nat (← field c "id")))
   -- The built-in exception classes: `Exception` and the classes below it
-  -- outside the program's files (in Rust id order: a superclass first).
+  -- outside the program's files, a superclass first: by depth below
+  -- `Exception`, then in Rust id order. (Not by id alone: a class
+  -- declared in the prelude before `Exception`, `Meta::CompileTimeError`
+  -- in `Meta`, has a smaller id than its superclass, #959.)
   let some excJ := classes.find? fun c => (c.getObjValAs? String "name").toOption == some "Exception"
     | throw "no Exception"
   let excRoot ← nat (← field excJ "id")
-  let below (c : Json) : M Bool := do
+  -- (How many superclass steps from `c` to `Exception`, if it is below.)
+  let depth (c : Json) : M (Option Nat) := do
     let mut x ← nat (← field c "id")
-    for _ in [0:classes.size + 1] do
-      if x == excRoot then return true
+    for n in [0:classes.size + 1] do
+      if x == excRoot then return some n
       match ← field (← match classes.find? fun d => (d.getObjValAs? Nat "id").toOption == some x with
           | some d => pure d | none => throw "class") "superclass" with
-      | .null => return false
+      | .null => return none
       | sj => x ← nat (← field sj "id")
-    pure false
-  let excs ← classes.toList.filterM fun c => do
-    pure (!files.contains (← nat (← field c "file")) && (← below c))
+    pure none
+  let excsD ← classes.toList.filterMapM fun c => do
+    if files.contains (← nat (← field c "file")) then return none
+    pure ((← depth c).map (·, c))
+  -- (`mergeSort` is stable: the Rust id order within a depth.)
+  let excs := (excsD.mergeSort fun a b => a.1 ≤ b.1).map (·.2)
   let excIds ← excs.mapM fun c => do nat (← field c "id")
   -- The built-in classes the program's types name (design §18): right
   -- below `Object`, outside the program's files, not a value class, `Array`

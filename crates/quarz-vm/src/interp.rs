@@ -611,6 +611,8 @@ pub struct ExcClasses {
     pub float_domain_error: ClassId,
     pub overflow_error: ClassId,
     pub system_stack: ClassId,
+    /// `Meta::CompileTimeError`: a compile-time run's refusals.
+    pub compile_time: ClassId,
 }
 
 /// Ids of runtime value classes.
@@ -1119,6 +1121,7 @@ impl Interp {
             float_domain_error: class_by_name("FloatDomainError"),
             overflow_error: class_by_name("OverflowError"),
             system_stack: class_by_name("SystemStackError"),
+            compile_time: class_by_name("Meta::CompileTimeError"),
         };
         let rt = RtClasses {
             shareable: class_by_name("Shareable"),
@@ -2371,12 +2374,20 @@ impl Interp {
         self.raise(self.program.exc.runtime_error, message)
     }
 
+    /// A compile-time run's refusal (a method with no body yet, a native
+    /// acting on the outside world, the time limit): a
+    /// `Meta::CompileTimeError`, which no `rescue` short of `rescue
+    /// Exception` takes (#959).
+    pub fn err_compile_time(&self, message: &str) -> Flow {
+        self.raise(self.program.exc.compile_time, message)
+    }
+
     /// A compile-time run past its time limit raises (docs/14 §5).
     #[inline]
     pub fn check_deadline(&self) -> Result<(), Flow> {
         match self.deadline.get() {
             Some(d) if std::time::Instant::now() > d => {
-                Err(self.err_runtime("compile-time evaluation took too long"))
+                Err(self.err_compile_time("compile-time evaluation took too long"))
             }
             _ => Ok(()),
         }
@@ -3173,7 +3184,7 @@ impl Interp {
                 if let Some(key) = m.native_key.as_deref() {
                     if !crate::natives::compile_time_allowed(key) {
                         return Err(
-                            self.err_runtime(&format!("`{key}` cannot run at compile time"))
+                            self.err_compile_time(&format!("`{key}` cannot run at compile time"))
                         );
                     }
                 }
@@ -3322,7 +3333,7 @@ impl Interp {
             if self.deadline.get().is_some() {
                 // A compile-time run: a body not lowered is a bug of the
                 // compiler, not a nil (docs/14).
-                return Err(self.err_runtime(&format!(
+                return Err(self.err_compile_time(&format!(
                     "`{}` of `{}` has no body at compile time: a method the runtime calls by name is lowered once the class's `static` statements ran, or when a call resolves to it (docs/14)",
                     m.name,
                     self.program.world.class(m.owner).name

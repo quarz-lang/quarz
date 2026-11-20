@@ -138,7 +138,7 @@ fn what_a_static_statement_may_not_do() {
     );
     assert!(!ok);
     assert!(
-        err.contains("`spin` raised RuntimeError: compile-time evaluation took too long"),
+        err.contains("`spin` raised Meta::CompileTimeError: compile-time evaluation took too long"),
         "{err}"
     );
     // A `static def` of the same file.
@@ -252,7 +252,9 @@ fn what_a_statement_reaches_is_checked_and_lowered_on_demand() {
     );
     assert!(!ok);
     assert!(
-        err.contains("`forever` raised RuntimeError: compile-time evaluation took too long"),
+        err.contains(
+            "`forever` raised Meta::CompileTimeError: compile-time evaluation took too long"
+        ),
         "{err}"
     );
     // A statement that is not a call of a `static def` class method.
@@ -536,15 +538,15 @@ fn a_method_with_errors_does_not_run_through_the_runtime() {
     for (call, want) in [
         (
             "sorting",
-            "`sorting` raised RuntimeError: `Process.stdin` cannot run at compile time",
+            "`sorting` raised Meta::CompileTimeError: `Process.stdin` cannot run at compile time",
         ),
         (
             "interp",
-            "`interp` raised RuntimeError: `Process.stdin` cannot run at compile time",
+            "`interp` raised Meta::CompileTimeError: `Process.stdin` cannot run at compile time",
         ),
         (
             "hashing",
-            "`hashing` raised RuntimeError: `Process.stdin` cannot run at compile time",
+            "`hashing` raised Meta::CompileTimeError: `Process.stdin` cannot run at compile time",
         ),
         (
             "broken",
@@ -575,6 +577,142 @@ fn a_method_with_errors_does_not_run_through_the_runtime() {
     let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
     assert!(ok, "{err}");
     assert_eq!(out, "\"fine [1, 3] {1 => 2}\"\n");
+}
+
+/// The refusals of a compile-time run (a native acting on the outside
+/// world, reached at run time; a method with no body yet; the time
+/// limit) raise `Meta::CompileTimeError`, a direct subclass of
+/// `Exception` (#959): no `rescue` short of `rescue Exception` takes it,
+/// so the statement fails with the message, and `ensure` runs. Past the
+/// time limit every call raises again: neither a handler nor an `ensure`
+/// can call anything, and the statement fails.
+#[test]
+fn a_compile_time_refusal_is_not_rescued_by_standard_error() {
+    let d = dir();
+    // One `static def` per refusal and per form around it, so that what
+    // one refusal's code reaches does not refuse another's statement.
+    let kinds = [
+        ("native", "[Slow.new, Slow.new].sort.size"),
+        ("nobody", "\"#{x}\".size"),
+        ("time", "while true\n    end\n    0"),
+    ];
+    let forms = [
+        ("bare", "rescue", "puts \"taken\"\n      0"),
+        ("any", "rescue => e", "puts \"taken\"\n      0"),
+        (
+            "standard",
+            "rescue StandardError",
+            "puts \"taken\"\n      0",
+        ),
+        ("runtime", "rescue RuntimeError", "puts \"taken\"\n      0"),
+        (
+            "exception",
+            "rescue Exception => e",
+            "puts \"taken: #{e.class.name}: #{e.message}\"\n      1",
+        ),
+        ("quiet", "rescue Exception", "1"),
+        ("cleanup", "ensure", "puts \"ensure ran\""),
+    ];
+    let mut lib = String::from(
+        "class Slow\n  include Comparable[Slow]\n  def <=>(o: Slow) -> Int = STDIN.read_bytes(1).size\nend\nclass Gen\n",
+    );
+    for (kind, body) in kinds {
+        lib += &format!("  static def self.{kind}(x: Object) -> Int\n    {body}\n  end\n");
+        for (form, clause, handler) in forms {
+            lib += &format!(
+                "  static def self.{kind}_{form}(x: Object) -> Int\n    begin\n      {kind}(x)\n    {clause}\n      {handler}\n    end\n  end\n"
+            );
+        }
+        // (A statement goes on past what it rescued: it generates.)
+        lib += &format!(
+            "  static def self.{kind}_on(x: Object) -> Void\n    k = {kind}_quiet(x)\n    def_class_method(:k) {{ k }}\n  end\n"
+        );
+    }
+    lib += "end\n";
+    write(&d.0, "lib.qz", &lib);
+    let message = |kind: &str| {
+        match kind {
+        "native" => "`Process.stdin` cannot run at compile time",
+        "nobody" => "`to_s` of `Post` has no body at compile time: a method the runtime calls by name is lowered once the class's `static` statements ran, or when a call resolves to it (docs/14)",
+        _ => "compile-time evaluation took too long",
+    }
+    };
+    for (kind, _) in kinds {
+        for call in [
+            "bare",
+            "any",
+            "standard",
+            "runtime",
+            "exception",
+            "cleanup",
+            "on",
+        ] {
+            let app = write(
+                &d.0,
+                "app.qz",
+                &format!(
+                    "require_relative \"lib\"\nclass Post < Gen\n  def to_s -> String = \"post\"\n  {kind}_{call}(Post.new)\nend\n"
+                ),
+            );
+            let (ok, _, err) = quarz(
+                &d.0,
+                &["check", app.to_str().unwrap()],
+                &[("QUARZ_STATIC_LIMIT_MS", "200")],
+            );
+            let failed = format!(
+                "app.qz:4:3: error: `{kind}_{call}` raised Meta::CompileTimeError: {}",
+                message(kind)
+            );
+            // `rescue Exception` takes it: the statement goes on, but past
+            // the time limit, whose next call raises again.
+            let rescued = matches!(call, "exception" | "on") && kind != "time";
+            assert_eq!(ok, rescued, "{kind}_{call}: {err}");
+            if rescued {
+                if call == "exception" {
+                    assert!(
+                        err.contains(&format!("taken: Meta::CompileTimeError: {}", message(kind))),
+                        "{kind}_{call}: {err}"
+                    );
+                }
+            } else {
+                assert!(err.contains(&failed), "{kind}_{call}: {err}");
+                assert!(!err.contains("taken"), "{kind}_{call}: {err}");
+            }
+            // `ensure` runs; past the time limit, its first call raises.
+            if call == "cleanup" {
+                assert_eq!(err.contains("ensure ran"), kind != "time", "{kind}: {err}");
+            }
+        }
+    }
+    // `static(...)` runs the same way (a value of a `static def` of a
+    // required file, docs/14 §8).
+    for (call, value) in [
+        ("native_bare", None),
+        ("native_runtime", None),
+        ("native_exception", Some("1")),
+    ] {
+        let app = write(
+            &d.0,
+            "value.qz",
+            &format!("require_relative \"lib\"\nX = static(Gen.{call}(0))\nputs X\n"),
+        );
+        let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+        match value {
+            Some(v) => {
+                assert!(ok, "{call}: {err}");
+                assert_eq!(out, format!("{v}\n"), "{call}");
+            }
+            None => {
+                assert!(!ok, "{call}");
+                assert!(
+                    err.contains(&format!(
+                        "value.qz:2:12: error: `{call}` raised Meta::CompileTimeError: `Process.stdin` cannot run at compile time"
+                    )),
+                    "{call}: {err}"
+                );
+            }
+        }
+    }
 }
 
 /// What the natives that update a collection in place call by name
