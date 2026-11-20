@@ -4109,7 +4109,6 @@ impl<'a> FnBuilder<'a> {
                 });
                 return dst;
             }
-            Some(CallTarget::Constant(b)) => return self.load_const(Constant::Bool(*b)),
             // `raise K, m`: `K.new(m)` raised (`K.new("K")` or `K.new()`
             // without a message), its `initialize` and field defaults run.
             Some(CallTarget::Raise {
@@ -4401,9 +4400,7 @@ impl<'a> FnBuilder<'a> {
             Some(CallTarget::InstanceExec) => CallKind::InstanceExec,
             Some(CallTarget::Raise { .. }) => CallKind::Raise,
             Some(CallTarget::Super { method }) => CallKind::Super(*method),
-            Some(CallTarget::IsA(_))
-            | Some(CallTarget::As { .. })
-            | Some(CallTarget::Constant(_)) => {
+            Some(CallTarget::IsA(_)) | Some(CallTarget::As { .. }) => {
                 unreachable!()
             }
             None => CallKind::Send(call.name.clone()),

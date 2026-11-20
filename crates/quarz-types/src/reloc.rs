@@ -116,7 +116,7 @@ impl Remap for CallTarget {
                     method(m, i);
                 }
             }
-            CallTarget::ProcCall | CallTarget::InstanceExec | CallTarget::Constant(_) => {}
+            CallTarget::ProcCall | CallTarget::InstanceExec => {}
         }
     }
 }

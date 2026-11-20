@@ -348,13 +348,19 @@ fn what_cannot_be_generated() {
   static def self.sealed -> Void
     def_method(:nil?) { true }
   end
+  static def self.sealed_class -> Void
+    def_class_method(:is_a?) { true }
+  end
+  static def self.sealed_new -> Void
+    def_method(:class) { 1 }
+  end
 end
 "##,
     );
     let app = write(
         &d.0,
         "app.qz",
-        "require_relative \"lib\"\nclass A < Model\n  init\n  ctor\n  untyped :u\n  dup :d\n  big :b\n  eq\n  sealed\nend\nclass B < Model\n  splat :s\nend\n",
+        "require_relative \"lib\"\nclass A < Model\n  init\n  ctor\n  untyped :u\n  dup :d\n  big :b\n  eq\n  sealed\nend\nclass B < Model\n  splat :s\nend\nclass C < Model\n  sealed_class\nend\nclass D < Model\n  sealed_new\nend\n",
     );
     let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
     assert!(!ok);
@@ -365,6 +371,9 @@ end
         "app.qz:6:3: error: `def_method(:d)`: the parameter name `x` is given twice",
         "app.qz:8:3: error: `def_method(:==)`: `==` takes one parameter of type `Object`",
         "app.qz:9:3: error: `def_method(:nil?)`: `nil?` cannot be redefined: types are narrowed by it",
+        // (A class method too, #948: it was let through before.)
+        "app.qz:15:3: error: `def_class_method(:is_a?)`: `is_a?` cannot be redefined: types are narrowed by it",
+        "app.qz:18:3: error: `def_method(:class)`: `class` cannot be redefined: it is the value's class, which the runtime knows",
         "a block given to `def_method` takes plain parameters only (no `*rest`, keywords, defaults or `&block`)",
     ] {
         assert!(err.contains(expected), "missing {expected:?} in\n{err}");

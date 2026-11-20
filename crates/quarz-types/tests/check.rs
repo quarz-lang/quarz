@@ -2559,6 +2559,77 @@ fn checks_the_types_it_cannot_take_on_trust() {
     ok("def tup(t: [Int, String]?) -> Int = t ? t[0] : 0\np tup([1, \"a\"])");
 }
 
+/// #948: `as`, `as?`, `class`, `shareable?` and `frozen?` cannot be
+/// defined by a program either, each with its reason, however the method
+/// would come to exist: a class's or a module's `def`, a class method, an
+/// extension's, an alias, `attr_reader`, a data field (whose message says
+/// to name the field otherwise); the prelude's own stay.
+#[test]
+fn as_class_shareable_and_frozen_are_sealed() {
+    let cast =
+        "`as` cannot be redefined: `x.as(T)` and `x.as?(T)` are casts, which never call a method";
+    let class = "`class` cannot be redefined: it is the value's class, which the runtime knows";
+    let knows =
+        |n: &str| format!("`{n}` cannot be redefined: it is what the runtime knows of the value");
+    err("class A\n  def as(x: Int) -> Int = x\nend", cast);
+    err(
+        "class A\n  def as?(x: Int) -> Int = x\nend",
+        "`as?` cannot be redefined: `x.as(T)` and `x.as?(T)` are casts, which never call a method",
+    );
+    err("class A\n  def class -> Type[Object] = Int\nend", class);
+    err(
+        "class A\n  def shareable? -> Bool = true\nend",
+        &knows("shareable?"),
+    );
+    err(
+        "class A\n  def frozen? -> Bool = true\nend",
+        &knows("frozen?"),
+    );
+    err("module M\n  def class -> Type[Object] = Int\nend", class);
+    err(
+        "class A\n  def self.frozen? -> Bool = true\nend",
+        &knows("frozen?"),
+    );
+    err(
+        "class A\nend\nextension A\n  def shareable? -> Bool = true\nend",
+        &knows("shareable?"),
+    );
+    err(
+        "class A\nend\nextension A\n  def self.as(x: Int) -> Int = x\nend",
+        cast,
+    );
+    err(
+        "class A\n  def k -> Type[Object] = Int\n  alias class k\nend",
+        class,
+    );
+    err(
+        "class A\n  @class: Int = 1\n  attr_reader :class\nend",
+        &format!("{class}; name the field otherwise"),
+    );
+    err(
+        "data D = (as: Int)",
+        &format!("{cast}; name the field otherwise"),
+    );
+    err(
+        "data D = (frozen?: Bool)",
+        &format!("{}; name the field otherwise", knows("frozen?")),
+    );
+    // The names stay callable: the prelude's own methods.
+    ok("o: Object = 1\nk: Type[Object] = o.class\nb: Bool = o.frozen? || o.shareable?");
+}
+
+/// #948: `respond_to?` is no special form: a class's own method of the
+/// name is an ordinary one, called; where there is none, the
+/// undefined-method error says what to write instead.
+#[test]
+fn respond_to_is_an_ordinary_name() {
+    ok("class A\n  def respond_to?(name: Symbol) -> Bool = name == :x\nend\nb: Bool = A.new.respond_to?(:x)");
+    err(
+        "b: Bool = 1.respond_to?(:even?)",
+        "undefined method `respond_to?` for Int; Quarz has no `respond_to?`: test the type (`x.is_a?(T)`, a pattern, a module the class includes), or use `Type#method?` in compile-time code",
+    );
+}
+
 #[test]
 fn nil_p_and_is_a_are_sealed() {
     // Types are narrowed by them: a definition of its own would let a
@@ -2591,6 +2662,12 @@ fn nil_p_and_is_a_are_sealed() {
         "`equal?` cannot be redefined",
     );
     err("data Q = (equal?: Bool)", "`equal?` cannot be redefined");
+    // #948: a class method alike (a class value's `is_a?` is the same
+    // form).
+    err(
+        "class Any\n  def self.is_a?(c: Class) -> Bool = true\nend",
+        "`is_a?` cannot be redefined",
+    );
     // `&.nil?` may not call it: no narrowing.
     err(
         "x: Int? = nil\nif x&.nil?\n  p 0\nelse\n  p x + 1\nend",
@@ -4337,9 +4414,10 @@ def f -> String = inspect(1)");
         "def inspect(x: Int) -> String = x.to_s\ndef f -> String = inspect",
         "a function has no `self`: `inspect` is a method of an object, not a function; call it on one (`x.inspect`); the functions `inspect` take other arguments: inspect(x: Int) -> String",
     );
+    // (`respond_to?` is no method of an object since #948.)
     err(
         "def f -> Bool = respond_to?(:size)",
-        "a function has no `self`: `respond_to?` is a method of an object, not a function; call it on one (`x.respond_to?(...)`)",
+        "undefined method `respond_to?` for main; Quarz has no `respond_to?`: test the type (`x.is_a?(T)`, a pattern, a module the class includes), or use `Type#method?` in compile-time code",
     );
     err(
         "def f -> String = to_s(16)",
@@ -4705,7 +4783,7 @@ fn kernel_extension_functions_are_found_bare() {
 fn kernel_functions_are_no_methods() {
     ok("class C\n  def rand -> Int = 4\n  def go -> Int = rand\nend");
     ok("class C\n  def exit(status: Int = 0) -> Void = nil\nend");
-    ok("x: Bool = 1.respond_to?(:puts)");
+    ok("x: Bool = 1.is_a?(Kernel)");
     err(
         "class C\n  def puts(*values: Object) -> Void = super\nend",
         "no superclass method `puts`: `puts` is a built-in function, called as `Kernel.puts`",

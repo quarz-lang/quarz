@@ -46,7 +46,7 @@ A summary of the things someone who knows Ruby will first stumble on when starti
 | `puts`, `p` and the other `Kernel` functions | Private methods of every object: a subclass's `def puts` takes over its superclass's calls of `puts` | Functions: a call is resolved where it is written, and a subclass's `def puts` does not take it over. `::puts` calls the function where a method `puts` of `self` hides it, and `Kernel.puts` (private in Ruby) always the built-in |
 | Top-level `def` | Private method of `Object`: `self` in it is the caller's | A function of its cog (in a script, of the file and those that require it), without a `self`: `self`, `@x`, `super` and implicit calls of `Object`'s methods (`inspect`) are errors in it |
 | Arbitrary expressions in a class body | Executed | Declarations only (constant initializers are allowed) |
-| `respond_to?` | Runtime | Compile-time constant |
+| `respond_to?` | Runtime | None: test the type (`is_a?`, a pattern, a module), or `Type#method?` in compile-time code (#948) |
 | `obj.method(:foo)` | `Method` | `obj.:foo` (a procedure) |
 | `Comparable`, `Enumerable` | Modules | Same, but generic (`Comparable[T]`, `Enumerable[T]`) |
 | `<` between classes | `A < B` is strict: `Object < Object` is false | In a type parameter's bound, `T <: X` is reflexive: `T` may be `X` itself (02-types.md §3) |

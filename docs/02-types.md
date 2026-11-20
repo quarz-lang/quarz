@@ -192,7 +192,7 @@ Generic code that holds a class as a value casts with it: `t.cast?(v)` and `t.ca
 - When a method name is overloaded, the most specific overload is chosen by the number of arguments, keywords and types. Ambiguity is an error. (Currently the first declared overload that matches is chosen, and ambiguity is not reported.)
 - Methods that may be overridden in a subclass become virtual calls (vtable). Because the class hierarchy is fixed for the whole program, methods without overrides are replaced by static calls at link time (class hierarchy analysis).
 - Calls on a receiver of module type are interface calls (a per-class module implementation table).
-- `respond_to?` is folded to a compile-time constant. `send`/`public_send`/`method`/`define_method`/`method_missing`/`instance_variable_get` do not exist.
+- There is no `respond_to?` (#948): a call of it is the undefined-method error, with a hint to test the type instead (`x.is_a?(T)`, a pattern, a module the class includes) or, in compile-time code, `Type#method?`; a class may define a method of the name, an ordinary one. `send`/`public_send`/`method`/`define_method`/`method_missing`/`instance_variable_get` do not exist.
 
 ## 9. Shareable
 

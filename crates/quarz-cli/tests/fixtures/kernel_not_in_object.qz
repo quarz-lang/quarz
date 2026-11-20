@@ -16,7 +16,7 @@ p o == 1, [o] == [2]
 h: Hash[Object, Int] = {}
 h = h.put(self, 1)
 p h.size
-p 1.respond_to?(:puts), self.respond_to?(:to_s)
+p 1.is_a?(Kernel), self.is_a?(Object)
 
 # A class's method of a built-in's name is its own, of any signature.
 class Dice

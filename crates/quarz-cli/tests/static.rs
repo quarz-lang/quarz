@@ -1908,11 +1908,11 @@ fn class_def_calls_through_a_union_receiver() {
     let app = write(
         &d.0,
         "main2.qz",
-        "require_relative \"lib2\"\nclass A < Base\n  gen(true)\nend\nclass B < Base\n  gen(false)\nend\np A.new.respond_to?(:hostname), B.new.respond_to?(:hostname)\n",
+        "require_relative \"lib2\"\nclass A < Base\n  gen(true)\nend\nclass B < Base\n  gen(false)\nend\np B.new.hostname\n",
     );
     let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
     assert!(ok, "{err}");
-    assert_eq!(out, "false\ntrue\n");
+    assert_eq!(out, "\"h\"\n");
     assert!(
         err.starts_with("Runner.def_method\nref 0\nmethod ref\n"),
         "{err}"
