@@ -287,7 +287,7 @@ fn register_argon2(m: &mut super::Registry<NativeFn>) {
     native!(m, "Crypto::Argon2.hash_with", |i, _, a| {
         // A `Bytes::Secret` too; the copy, cleared when dropped, goes to
         // the helper thread.
-        let password = super::bytes::secret_input(i, a.arg(0), "password")?;
+        let password = super::bytes::secret_input(i, a.arg(0), "password")?.into_owned();
         let salt = bytes(i, a.arg(1), "salt")?.to_vec();
         let params = argon2_params(
             i,
@@ -319,7 +319,7 @@ fn register_argon2(m: &mut super::Registry<NativeFn>) {
     native!(m, "Crypto::Argon2.verify_with", |i, _, a| {
         // A `Bytes::Secret` too; the copy, cleared when dropped, goes to
         // the helper thread.
-        let password = super::bytes::secret_input(i, a.arg(0), "password")?;
+        let password = super::bytes::secret_input(i, a.arg(0), "password")?.into_owned();
         let (phc, params) = parse_argon2(string(i, a.arg(1), "hash")?).map_err(|e| error(i, e))?;
         let ok = i
             .block_on(move || {

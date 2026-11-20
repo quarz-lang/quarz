@@ -426,17 +426,51 @@ impl std::ops::Deref for Cleared {
     }
 }
 
+/// A secret input (a key, a password): the bytes of a `Bytes` or a
+/// `String`'s UTF-8, borrowed as they are (the plain path copies
+/// nothing), or of a `Bytes::Secret`, copied under its lock into a
+/// `Cleared` buffer, so that no lock is held while a native hashes or
+/// derives from them (#963).
+pub(super) enum SecretInput<'a> {
+    Borrowed(&'a [u8]),
+    Copied(Cleared),
+}
+
+impl std::ops::Deref for SecretInput<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            SecretInput::Borrowed(b) => b,
+            SecretInput::Copied(c) => c,
+        }
+    }
+}
+
+impl SecretInput<'_> {
+    /// An owned copy, cleared when dropped (for a helper thread): the
+    /// secret's copy as it is, a borrowed input copied.
+    pub(super) fn into_owned(self) -> Cleared {
+        match self {
+            SecretInput::Borrowed(b) => Cleared(b.to_vec()),
+            SecretInput::Copied(c) => c,
+        }
+    }
+}
+
 /// The bytes of a secret input `v`: a `Bytes::Secret` (a wiped one
-/// raises `WipedError`), a `Bytes`, or a `String`'s UTF-8, as a
-/// `Cleared` copy.
-pub(super) fn secret_input(interp: &Interp, v: &Value, what: &str) -> Result<Cleared, Flow> {
+/// raises `WipedError`), a `Bytes`, or a `String`'s UTF-8.
+pub(super) fn secret_input<'a>(
+    interp: &Interp,
+    v: &'a Value,
+    what: &str,
+) -> Result<SecretInput<'a>, Flow> {
     match v {
         Value::Secret(_) => secret_of(interp, v)?
-            .with(|b| Cleared(b.to_vec()))
+            .with(|b| SecretInput::Copied(Cleared(b.to_vec())))
             .ok_or_else(|| wiped(interp)),
-        Value::Bytes(b) => Ok(Cleared(b.to_vec())),
+        Value::Bytes(b) => Ok(SecretInput::Borrowed(b)),
         v => match v.as_str() {
-            Some(s) => Ok(Cleared(s.as_bytes().to_vec())),
+            Some(s) => Ok(SecretInput::Borrowed(s.as_bytes())),
             None => Err(interp.err_type(&format!(
                 "{what} must be Bytes, a String or a Bytes::Secret, got {}",
                 interp.class_name(v)
