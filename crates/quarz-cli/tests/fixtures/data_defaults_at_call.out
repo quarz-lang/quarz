@@ -1,0 +1,16 @@
+Source(table: "posts", on: ["id"], keep: [], left: false)
+Source(table: "users", on: [], keep: [], left: false)
+[:x]
+[]
+[]
+true
+Opts(name: "a", tags: {}, label: "none")
+{z: 1}
+{}
+Nested(a: 1, grid: [[1, 2], [3]], map: {"k" => [:a, :b]})
+true
+Box(items: [], n: 0)
+[1]
+9
+"n=2"
+1..3

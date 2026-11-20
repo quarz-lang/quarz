@@ -564,9 +564,9 @@ fn later_positional(m: &types::MethodInfo, name: &str) -> bool {
 }
 
 /// A default written as a literal, as a constant: what a native's
-/// skipped parameter takes (`RtParam::default`), and what a `data`
-/// construction fills in for its omitted fields (`FnBuilder`'s
-/// `fill_literal_defaults`, #921).
+/// skipped parameter takes (`RtParam::default`), and the first case of
+/// what a `data` construction fills in for its omitted fields
+/// (`func::default_at_call`, #921, #940).
 pub(crate) fn literal_constant(e: &quarz_syntax::ast::Expr) -> Option<Constant> {
     use quarz_syntax::ast::ExprKind;
     Some(match &e.kind {

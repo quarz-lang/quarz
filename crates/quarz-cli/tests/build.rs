@@ -604,7 +604,13 @@ fn a_data_construction_with_literal_defaults_has_every_field() {
          def constant -> Mixed = Mixed.new(1)\n\
          def own -> Pt = Pt.new(\"s\")\n\
          def variant -> Shape = Shape::Circle.new\n\
-         p literal, keyword, constant, own, variant\n",
+         data Source = (table: String, keep: Array[Symbol] = [], tags: Hash[Symbol, Int] = {}, s: String = \"x\")\n\
+         data Big = (a: Int, xs: Array[Int] = [1, 2, 3, 4, 5, 6, 7, 8, 9])\n\
+         data Interp = (a: Int, s: String = \"n=#{1 + 1}\")\n\
+         def collections -> Source = Source.new(\"t\")\n\
+         def big -> Big = Big.new(1)\n\
+         def interp -> Interp = Interp.new(1)\n\
+         p literal, keyword, constant, own, variant, collections, big, interp\n",
     );
     let construct_args = |name: &str| -> (usize, usize) {
         let f = module
@@ -631,6 +637,11 @@ fn a_data_construction_with_literal_defaults_has_every_field() {
     assert_eq!(construct_args("keyword"), (1, 1));
     assert_eq!(construct_args("constant"), (1, 0));
     assert_eq!(construct_args("own"), (1, 0));
+    // #940: strings without interpolation and small array and hash
+    // literals too; not nine elements, nor an interpolation.
+    assert_eq!(construct_args("collections"), (4, 0));
+    assert_eq!(construct_args("big"), (1, 0));
+    assert_eq!(construct_args("interp"), (1, 0));
 }
 
 /// #921 across files: the default's node is the declaring file's, lowered
@@ -646,13 +657,12 @@ fn a_data_construction_fills_defaults_declared_in_another_file() {
     let cache = dir.join("cache");
     fs::write(
         dir.join("lib.qz"),
-        "data D = (a: Int, b: Int = -3, c: Float = 1, e: Symbol = :s)\ndef note -> String = \"v1\"\n",
+        "data D = (a: Int, b: Int = -3, c: Float = 1, e: Symbol = :s, k: Array[Symbol] = [], h: Hash[Symbol, Int] = {})\ndef note -> String = \"v1\"\n",
     )
     .unwrap();
-    let app_src =
-        "require_relative \"lib\"\nd = D.new(1)\np d, d.c + 0.5, d == D.new(1, -3, 1.0, :s)\n";
+    let app_src = "require_relative \"lib\"\nd = D.new(1)\np d, d.c + 0.5, d == D.new(1, -3, 1.0, :s, [], {})\nk = d.k.push(:x)\np k, d.h.put(:y, 2)\n";
     fs::write(dir.join("app.qz"), app_src).unwrap();
-    let want = "D(a: 1, b: -3, c: 1.0, e: :s)\n1.5\ntrue\n";
+    let want = "D(a: 1, b: -3, c: 1.0, e: :s, k: [], h: {})\n1.5\ntrue\n[:x]\n{y: 2}\n";
     let quarz = |args: &[&str]| {
         let out = Command::new(env!("CARGO_BIN_EXE_quarz"))
             .args(args)
@@ -670,7 +680,7 @@ fn a_data_construction_fills_defaults_declared_in_another_file() {
     };
     let check = |state: &str| {
         assert_eq!(quarz(&["run", "app.qz"]), want, "{state}: run");
-        // `D.new(1)` has its four fields.
+        // `D.new(1)` has its six fields.
         let ir = quarz(&["ir", "app.qz"]);
         let filled = ir
             .lines()
@@ -683,7 +693,7 @@ fn a_data_construction_fills_defaults_declared_in_another_file() {
                     .split(']')
                     .next()
                     .unwrap();
-                args.split(',').count() == 4
+                args.split(',').count() == 6
             })
             .count();
         assert_eq!(filled, 2, "{state}: {ir}");
@@ -703,7 +713,7 @@ fn a_data_construction_fills_defaults_declared_in_another_file() {
     check("lib read back, app checked");
     fs::write(
         dir.join("lib.qz"),
-        "data D = (a: Int, b: Int = -3, c: Float = 1, e: Symbol = :s)\ndef note -> String = \"v2\"\n",
+        "data D = (a: Int, b: Int = -3, c: Float = 1, e: Symbol = :s, k: Array[Symbol] = [], h: Hash[Symbol, Int] = {})\ndef note -> String = \"v2\"\n",
     )
     .unwrap();
     check("app read back, lib checked");
