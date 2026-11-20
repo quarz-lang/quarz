@@ -58,8 +58,6 @@ pub enum CallTarget {
     IsA(Type),
     /// `x.as(T)` / `x.as?(T)`
     As { ty: Type, optional: bool },
-    /// `respond_to?` folded to a constant.
-    Constant(bool),
     /// `raise ...`; with a class written by name (`raise K` or `raise K,
     /// m`), the class and its `initialize`, which builds the exception
     /// from the message (`K.new(m)`); without one, `K.new("K")` when the
@@ -10319,24 +10317,6 @@ impl Checker {
                 "is_a?" | "as" | "as?" if call.args.len() == 1 && call.block.is_none() => {
                     return self.check_type_test(expr, call, recv);
                 }
-                "respond_to?" if call.args.len() == 1 => {
-                    let rt = self.check_expr(recv, None);
-                    let rt = self.resolve(&rt);
-                    let Arg::Positional(a) = &call.args[0] else {
-                        self.error("respond_to? takes a symbol", expr.span);
-                        return self.world.bool_();
-                    };
-                    let answer = match &a.kind {
-                        ExprKind::Symbol(name) => !self.world.lookup_methods(&rt, name).is_empty(),
-                        _ => {
-                            self.error("respond_to? takes a symbol literal", a.span);
-                            false
-                        }
-                    };
-                    self.check_expr(a, None);
-                    self.out.calls.insert(expr.id, CallTarget::Constant(answer));
-                    return self.world.bool_();
-                }
                 _ => {}
             }
         }
@@ -11477,8 +11457,7 @@ impl Checker {
                 }
                 // (An `Object` method the call would have meant, which the
                 // functions of the name do not take: `inspect` beside a
-                // `def inspect(x: Int)`; `respond_to?(:x)`, which `self`
-                // answers only written.)
+                // `def inspect(x: Int)`.)
                 let meant_method = !self_methods.is_empty()
                     && (cands.is_empty()
                         || self_methods.iter().any(|(m, _)| self.shape_fits(*m, call)))
@@ -11486,11 +11465,10 @@ impl Checker {
                         && call.recv.is_none()
                         && self_methods.is_empty()
                         && self.in_outer_self != Some(expr.id)
-                        && (name == "respond_to?"
-                            || !self
-                                .world
-                                .lookup_methods(&self.world.object(), name)
-                                .is_empty());
+                        && !self
+                            .world
+                            .lookup_methods(&self.world.object(), name)
+                            .is_empty();
                 if meant_method && !cands.iter().any(|(m, _)| self.shape_fits(*m, call)) {
                     let args = if call.args.is_empty() { "" } else { "(...)" };
                     let others = if cands.is_empty() {
@@ -11525,6 +11503,11 @@ impl Checker {
                         format!("undefined method `it` for {}: {it}", self.name(recv_ty))
                     } else {
                         let mut hint = self.immutable_hint(recv_ty, name, call.recv.as_ref());
+                        // (Not Ruby's run-time test, nor a compile-time one
+                        // since #948: what to write instead.)
+                        if name == "respond_to?" {
+                            hint = "; Quarz has no `respond_to?`: test the type (`x.is_a?(T)`, a pattern, a module the class includes), or use `Type#method?` in compile-time code".to_string();
+                        }
                         if let Some(plain) = name.strip_suffix('!') {
                             if call.recv.is_some()
                                 && !plain.is_empty()

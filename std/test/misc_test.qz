@@ -26,14 +26,12 @@ class TypeTest < Test::Case
   # An Object the checker does not narrow.
   def object(v: Object) -> Object = v
 
-  def test_is_a_as_and_respond_to
+  def test_is_a_and_as
     x: Object = 5
     assert_true(x.is_a?(Int))
     assert_false(x.is_a?(String))
     assert_equal(6, x.as(Int) + 1)
     assert_equal("nil", x.as?(String).inspect)
-    assert_true(5.respond_to?(:even?))
-    assert_false(5.respond_to?(:nope))
     assert_raise(TypeError) { object(x).as(String); nil }
   end
 

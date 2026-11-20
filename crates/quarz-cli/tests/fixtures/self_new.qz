@@ -41,8 +41,3 @@ data Pt(x: Int)
   def moved -> Pt = Self.new(x + 1)
 end
 p Pt.new(1).moved
-# A class overriding `class` still builds its own instances.
-class Liar < Base
-  def class -> Class = Base
-end
-p Liar.new(2).twice.is_a?(Liar)

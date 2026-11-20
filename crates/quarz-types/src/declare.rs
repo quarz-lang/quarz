@@ -6360,11 +6360,17 @@ impl<'ast> Declarer<'ast> {
     /// wrong. `equal?` is identity, the one comparison a class cannot
     /// change.
     fn check_sealed(&mut self, file: u32, name: &str, span: Span) {
+        self.check_sealed_as(file, name, span, "");
+    }
+
+    /// `check_sealed` with `hint` after the message (a field's reader:
+    /// name the field otherwise).
+    fn check_sealed_as(&mut self, file: u32, name: &str, span: Span, hint: &str) {
         if file == 0 {
             return;
         }
         if let Some(message) = sealed_name(name) {
-            self.error(message, span);
+            self.error(format!("{message}{hint}"), span);
         }
     }
 
@@ -6394,7 +6400,13 @@ impl<'ast> Declarer<'ast> {
         span: Span,
         visibility: Visibility,
     ) {
-        self.check_sealed(self.world.class(owner).file, &name, span);
+        // (A field's reader: the field's name is what to change.)
+        let hint = if matches!(synth, Synth::FieldGet(_)) {
+            "; name the field otherwise"
+        } else {
+            ""
+        };
+        self.check_sealed_as(self.world.class(owner).file, &name, span, hint);
         self.world.add_method(MethodInfo {
             id: 0,
             name,
@@ -7194,12 +7206,19 @@ fn self_against_variance(t: &TypeExpr, covariant: bool) -> Option<Span> {
     }
 }
 
-/// `nil?`, `is_a?` and `equal?` cannot be redefined by a program: why,
-/// when `name` is one.
+/// The names a program cannot define a method of (#948): why, when
+/// `name` is one. `nil?` and `is_a?` narrow types; `equal?` is
+/// identity; `x.as(T)` and `x.as?(T)` are casts the checker reads before
+/// any method lookup, so a method of the name is never called with one
+/// argument; `class`, `shareable?` and `frozen?` say what the runtime
+/// knows of a value, which no method of a class may answer otherwise.
 fn sealed_name(name: &str) -> Option<String> {
     let why = match name {
         "nil?" | "is_a?" => "types are narrowed by it",
         "equal?" => "it is identity",
+        "as" | "as?" => "`x.as(T)` and `x.as?(T)` are casts, which never call a method",
+        "class" => "it is the value's class, which the runtime knows",
+        "shareable?" | "frozen?" => "it is what the runtime knows of the value",
         _ => return None,
     };
     Some(format!("`{name}` cannot be redefined: {why}"))
@@ -7299,10 +7318,12 @@ pub fn method_name_rule(
         };
         return Some(format!("`{name}` cannot be generated{hint}"));
     }
+    // (Either side, as a written `def` and `def self.` are: a class value
+    // is a value, whose `class`, `is_a?`, `as` are the same forms, #948.)
+    if let Some(m) = sealed_name(name) {
+        return Some(m);
+    }
     if !singleton {
-        if let Some(m) = sealed_name(name) {
-            return Some(m);
-        }
         if let Some(m) = equality_params_rule(world, name, params, block.is_some()) {
             return Some(m);
         }

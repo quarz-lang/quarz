@@ -385,7 +385,6 @@ fn call(c: &CallTarget, methods: &mut Vec<MethodId>) -> Value {
         CallTarget::As { ty: t, optional } => {
             json!({ "t": "as", "type": ty(t), "optional": optional })
         }
-        CallTarget::Constant(b) => json!({ "t": "constant", "value": b }),
         CallTarget::Raise { new } => {
             methods.extend(new.map(|(_, i, _)| i));
             json!({ "t": "raise" })
