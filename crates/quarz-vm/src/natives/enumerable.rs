@@ -227,7 +227,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let result = match &a.block {
             // (`T <: Comparable[T]`, `extension Array::Builder`: through
             // the conformance's witness, `Interp::find_method`, #560.)
-            None => i.sort_values(&mut items, |x, y| i.compare(x, y)),
+            None => i.sort_compared(&mut items),
             Some(cmp) => i.sort_values(&mut items, |x, y| block_ordering(i, cmp, x, y)),
         };
         *b.borrow_mut() = items;
