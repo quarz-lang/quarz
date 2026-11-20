@@ -1,0 +1,42 @@
+# A builder's `to_s`/`inspect` shows the elements it held when called; an
+# element's `inspect` may change the builder meanwhile, and the change is
+# seen by the next call (#925: `Array::Builder#to_s` held the builder's
+# borrow, and a change aborted the process).
+class Ctx
+  var @b: Array::Builder[El]? = nil
+  var @mode: Int = 0
+  def initialize; end
+  def set(b: Array::Builder[El], mode: Int) -> Void
+    @b = b
+    @mode = mode
+  end
+  def hit -> Void
+    b = @b
+    return if b.nil?
+    case @mode
+    when 0 then b.clear
+    when 1 then b << El.new(self)
+    when 2 then b.pop
+    else b.reverse!
+    end
+  end
+end
+
+class El
+  @ctx: Ctx
+  def initialize(@ctx: Ctx); end
+  def inspect -> String
+    @ctx.hit
+    "#<El>"
+  end
+end
+
+[0, 1, 2, 3].each do |mode|
+  ctx = Ctx.new
+  b = Array::Builder[El].new
+  3.times { b << El.new(ctx) }
+  ctx.set(b, mode)
+  puts b.to_s
+  ctx.set(b, 9)
+  puts b.size
+end
