@@ -910,19 +910,20 @@ impl Parser<'_> {
                         b'u' => {
                             let mut code = self.hex4()?;
                             if (0xD800..0xDC00).contains(&code) {
-                                // A surrogate pair.
-                                if self.src[self.pos..].starts_with(b"\\u") {
-                                    self.pos += 2;
-                                    let low = self.hex4()?;
-                                    if (0xDC00..0xE000).contains(&low) {
+                                // A high surrogate: with the low one that
+                                // follows, a pair; unpaired, U+FFFD, and
+                                // what follows is read on its own (#973),
+                                // as an unpaired low one is below.
+                                match self.low_surrogate_next() {
+                                    Some(low) => {
+                                        self.pos += 6;
                                         code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
-                                    } else {
-                                        return Err(self.error("invalid surrogate pair"));
                                     }
-                                } else {
-                                    return Err(self.error("invalid surrogate pair"));
+                                    None => code = 0xFFFD,
                                 }
                             }
+                            // An unpaired low surrogate is no `char`:
+                            // U+FFFD.
                             out.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
                         }
                         _ => return Err(self.error("invalid escape")),
@@ -932,6 +933,19 @@ impl Parser<'_> {
                 None => return Err(self.error("unexpected end of input")),
             }
         }
+    }
+
+    /// The low surrogate a `\uDC00`–`\uDFFF` escape at the position
+    /// holds, without moving past it; `None` for anything else.
+    fn low_surrogate_next(&self) -> Option<u32> {
+        let rest = self.src.get(self.pos..self.pos + 6)?;
+        if &rest[..2] != b"\\u" {
+            return None;
+        }
+        let code = rest[2..]
+            .iter()
+            .try_fold(0u32, |n, &b| Some(n * 16 + (b as char).to_digit(16)?))?;
+        (0xDC00..0xE000).contains(&code).then_some(code)
     }
 
     fn hex4(&mut self) -> Result<u32, Flow> {

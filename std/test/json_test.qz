@@ -95,6 +95,34 @@ class JsonParseTest < Test::Case
     assert_equal("\"a\\tb\"", JSON.parse('"a\\tb"').as_s.inspect)
   end
 
+  # An unpaired surrogate escape, high or low, is read as U+FFFD and the
+  # document goes on (#973); a pair is one character.
+  def test_unpaired_surrogates
+    r = "\u{FFFD}"
+    assert_equal(r, JSON.parse('"\ud83d"').as_s)
+    assert_equal("x#{r}A", JSON.parse('"x\ud800A"').as_s)
+    assert_equal(r, JSON.parse('"\udc00"').as_s)
+    assert_equal("😀", JSON.parse('"\ud83d\ude00"').as_s)
+    assert_equal("#{r}😀", JSON.parse('"\udc00\ud83d\ude00"').as_s)
+    assert_equal("#{r}#{r}", JSON.parse('"\udc00\ud83d"').as_s)
+    # A high one followed by another escape, which is read on its own.
+    assert_equal("#{r}A", JSON.parse('"\ud83d\u0041"').as_s)
+    assert_equal("#{r}\n", JSON.parse('"\ud83d\n"').as_s)
+    # Two highs in a row, the second paired.
+    assert_equal("#{r}😀", JSON.parse('"\ud83d\ud83d\ude00"').as_s)
+    assert_equal("#{r}#{r}", JSON.parse('"\ud83d\ud83d"').as_s)
+    # At the end of a string followed by more of the document, and in a key.
+    doc = JSON.parse('["a\ud83d", 1]')
+    assert_equal("a#{r}", doc[0].as_s)
+    assert_equal(1, doc[1].as_i)
+    assert_equal(1, JSON.parse('{"k\ud83d": 1}')["k#{r}"].as_i)
+    # A bad escape after a high surrogate is still refused.
+    assert_raise(JSON::ParseError) { JSON.parse('"\ud83d\uZZZZ"') }
+    # JSON.decode reads through the same decoder.
+    assert_equal("x#{r}", JSON.decode[String]('"x\ud83d"'))
+    assert_equal({"k#{r}" => 1}, JSON.decode[Hash[String, Int]]('{"k\udc00": 1}'))
+  end
+
   def test_equality_ignores_spacing
     assert_true(JSON.parse("[1,2,3]") == JSON.parse(" [1, 2, 3] "))
   end

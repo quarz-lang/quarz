@@ -323,7 +323,9 @@ module JSON
   end
 
   # The JSON document `text` as a [JSON::Value]; whitespace around the
-  # value is allowed.
+  # value is allowed. A `\u` escape of an unpaired UTF-16 surrogate, high
+  # or low (half of a character cut in two), is read as U+FFFD and the
+  # document goes on; [JSON.decode] reads strings the same way.
   #
   # ## Raises
   #
