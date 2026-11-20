@@ -2227,63 +2227,12 @@ fn overrides_of(
                 .filter(|&o| {
                     o != m
                         && !denied_owner(world, o)
-                        && may_dispatch_to(world, o, m)
+                        && quarz_ir::may_dispatch_to(world, o, m)
                         && bound.is_none_or(|b| may_receive(world, o, b))
                 })
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// Whether a call resolved to `m` may run `o` (of its name), as a
-/// receiver's lookup may find it (`is_override` in the lowering, alike):
-/// for a module's method or `Object`'s, any; for `Type`'s, a class
-/// method (a module's too); for a class method, one of a class below it,
-/// or of a module a class below it includes (or, for a module's class
-/// method, one of a class or module beside it in an includer); for
-/// another class's instance method, one of a class below it, or of a
-/// module a class below it includes.
-///
-/// A reachability superset for static runs only (by name and hierarchy,
-/// wider than the override table `RtMethod::overrides`): never consulted
-/// for which method runs (#536).
-fn may_dispatch_to(world: &RtWorld, o: MethodId, m: MethodId) -> bool {
-    let (om, rm) = (&world.methods[o as usize], &world.methods[m as usize]);
-    let owner = rm.owner;
-    let module = |c: ClassId| world.classes[c as usize].kind == RtClassKind::Module;
-    if rm.singleton {
-        if !om.singleton {
-            return false;
-        }
-        if !module(om.owner) && !module(owner) {
-            return world.class_is_a(om.owner, owner);
-        }
-        // (A module's class method: on a class that has both.)
-        return (0..world.classes.len() as ClassId)
-            .any(|c| world.class_is_a(c, owner) && world.class_is_a(c, om.owner));
-    }
-    // An abstract method's implementation may come from above its owner
-    // (a superclass's method of the name).
-    if rm.is_abstract && !om.singleton && world.class_is_a(owner, om.owner) {
-        return true;
-    }
-    // `Type`'s (or a subclass's, `Meta::ClassDef`'s), on class objects: a
-    // class method (a module's included too) the override table pairs
-    // with it (`RtMethod::overrides`: never with `Meta::ClassDef#type`,
-    // always the reflection's, #553).
-    if world.class_is_a(owner, world.builtin.class_) {
-        return (om.singleton && om.overrides.contains(&m)) || world.class_is_a(om.owner, owner);
-    }
-    if module(owner) || owner == world.builtin.object {
-        return true;
-    }
-    if om.singleton {
-        return false;
-    }
-    world.class_is_a(om.owner, owner)
-        || (world.classes[om.owner as usize].kind == RtClassKind::Module
-            && (0..world.classes.len() as ClassId)
-                .any(|c| world.class_is_a(c, owner) && world.class_is_a(c, om.owner)))
 }
 
 /// Whether a receiver that is an instance of one of `classes` or of a

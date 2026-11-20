@@ -6431,6 +6431,40 @@ impl World {
     }
 }
 
+/// `quarz_ir::may_dispatch_to`'s view of the declared world (#536).
+impl quarz_ir::DispatchView for World {
+    fn method_name(&self, m: MethodId) -> &str {
+        &self.method(m).name
+    }
+    fn method_owner(&self, m: MethodId) -> ClassId {
+        self.method(m).owner
+    }
+    fn method_singleton(&self, m: MethodId) -> bool {
+        self.method(m).singleton
+    }
+    fn method_abstract(&self, m: MethodId) -> bool {
+        self.method(m).is_abstract
+    }
+    fn class_is_module(&self, c: ClassId) -> bool {
+        self.class(c).kind == ClassKind::Module
+    }
+    fn class_is_a_at_run_time(&self, sub: ClassId, sup: ClassId) -> bool {
+        World::class_is_a_at_run_time(self, sub, sup)
+    }
+    fn class_count(&self) -> usize {
+        self.classes.len()
+    }
+    fn object_class(&self) -> ClassId {
+        self.builtin.object
+    }
+    fn type_class(&self) -> ClassId {
+        self.builtin.class_
+    }
+    fn table_overrides(&self, o: MethodId, m: MethodId) -> bool {
+        self.overrides(o).contains(&m)
+    }
+}
+
 #[cfg(test)]
 mod std_group_tests {
     use super::*;
