@@ -2674,19 +2674,19 @@ impl<'a> FnBuilder<'a> {
 
     /// A `data` construction through the generated constructor (`init`,
     /// `Synth::DataInit`) with trailing fields left out, each of whose
-    /// defaults is a literal (`rtworld::literal_constant`: `nil`, a
-    /// boolean, a number, a symbol): the defaults are lowered at the call,
-    /// so that the construction has every field and is made inline, as
-    /// one written in full is (`sroa`, the AOT's `alloc_data`), not
-    /// through the runtime's binding (#921). Such a default runs no code
-    /// and refers to nothing, so its value is the same at the call as in
-    /// the constructor; it is the same node, typed alike (an integer
-    /// literal for a `Float` field is a float there too), read from the
-    /// checker's tables for that node, which hold every unit's, whether
-    /// its file was checked now or read back from the cache. Any other
-    /// default (a string, which is a new one per construction either way
-    /// but is left to the constructor with the rest; a constant; a call;
-    /// an earlier field) leaves the call as it is.
+    /// defaults may be evaluated at the call (`default_at_call`): the
+    /// defaults are lowered at the call, so that the construction has
+    /// every field and is made inline, as one written in full is
+    /// (`sroa`, the AOT's `alloc_data`), not through the runtime's binding
+    /// (#921, #940). Such a default runs no code of the program and names
+    /// nothing, so its value is the one the constructor would make (a new
+    /// array, hash or string each time, as the constructor's would be);
+    /// it is the same node, typed alike (an integer literal for a `Float`
+    /// field is a float, `[]` for an `Array[Symbol]` field an
+    /// `Array[Symbol]`), read from the checker's tables for that node,
+    /// which hold every unit's, whether its file was checked now or read
+    /// back from the cache. Any other default (a constant, a call, an
+    /// interpolation) leaves the call as it is.
     fn fill_literal_defaults(&mut self, class: ClassId, init: MethodId, args: &mut Vec<Reg>) {
         let fields = &self.world.class(class).fields;
         let params = self.world.method(init).params.len();
@@ -2695,11 +2695,7 @@ impl<'a> FnBuilder<'a> {
         }
         let defaults: Option<Vec<&'a Expr>> = fields[args.len()..]
             .iter()
-            .map(|f| {
-                f.default
-                    .as_deref()
-                    .filter(|d| crate::rtworld::literal_constant(d).is_some())
-            })
+            .map(|f| f.default.as_deref().filter(|d| default_at_call(d)))
             .collect();
         let Some(defaults) = defaults else {
             return;
@@ -5765,4 +5761,65 @@ impl<'a> FnBuilder<'a> {
             }
         }
     }
+}
+
+/// The most elements (an array's, a hash's entries, nested ones counted
+/// too) a default may hold and be evaluated at the call
+/// (`default_at_call`): each call site builds it, so a large literal
+/// would repeat its code at every construction that leaves it out.
+const AT_CALL_ELEMENTS: usize = 8;
+
+/// Whether a `data` field's default may be evaluated at a construction
+/// that leaves it out, instead of by the constructor (#940): what runs no
+/// code of the program and refers to nothing, so that its value is the
+/// one the constructor would make.
+/// - A literal `rtworld::literal_constant` takes (`nil`, a boolean, a
+///   number, a symbol): a constant.
+/// - A string literal without interpolation: a new string, as the
+///   constructor would make (an interpolation calls `to_s`).
+/// - An array literal (no splat) or a hash literal (no `**`) of such
+///   values, nested, with `AT_CALL_ELEMENTS` elements at most in all
+///   (`[]` and `{}` the empty case): a new collection, built by the
+///   runtime from those values. A hash literal's keys are hashed and
+///   compared by the runtime's own `hash` and `==`, which run no code of
+///   the program for these built-in values (`keys::is_custom` is false
+///   for them), as its values are only stored.
+///
+/// Not a constant (its initializer may run code, once, before), a call,
+/// a range, a regexp, a lambda or anything naming a variable or `self`.
+pub(crate) fn default_at_call(e: &Expr) -> bool {
+    fn walk(e: &Expr, budget: &mut usize) -> bool {
+        if crate::rtworld::literal_constant(e).is_some() {
+            return true;
+        }
+        fn take(budget: &mut usize, n: usize) -> bool {
+            if n > *budget {
+                return false;
+            }
+            *budget -= n;
+            true
+        }
+        match &e.kind {
+            ExprKind::Str(parts) => parts.iter().all(|p| matches!(p, StrPart::Lit(_))),
+            ExprKind::Array(items) => {
+                take(budget, items.len())
+                    && items.iter().all(|a| match a {
+                        ast::Arg::Positional(x) => walk(x, budget),
+                        _ => false,
+                    })
+            }
+            ExprKind::Hash(entries) => {
+                take(budget, entries.len())
+                    && entries.iter().all(|h| match h {
+                        ast::HashEntry::Pair { key, value } => {
+                            walk(key, budget) && walk(value, budget)
+                        }
+                        ast::HashEntry::DoubleSplat(_) => false,
+                    })
+            }
+            _ => false,
+        }
+    }
+    let mut budget = AT_CALL_ELEMENTS;
+    walk(e, &mut budget)
 }

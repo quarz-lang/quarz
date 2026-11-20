@@ -1,0 +1,30 @@
+# A `data` construction leaving out fields whose defaults may be
+# evaluated at the call (#940: literals, strings without interpolation,
+# and array and hash literals of such, nested, eight elements at most) is
+# filled at the call; each construction gets its own value, as from the
+# constructor. Other defaults keep the constructor's binding. Each prints
+# what it built, on the VM and compiled alike.
+data Source = (table: String, on: Array[String], keep: Array[Symbol] = [], left: Bool = false)
+data Opts = (name: String, tags: Hash[Symbol, Int] = {}, label: String = "none")
+data Nested = (a: Int, grid: Array[Array[Int]] = [[1, 2], [3]], map: Hash[String, Array[Symbol]] = {"k" => [:a, :b]})
+data Box[T] = (items: Array[T] = [], n: Int = 0)
+# Nine elements, an interpolation, a range: the constructor's.
+data Big = (a: Int, xs: Array[Int] = [1, 2, 3, 4, 5, 6, 7, 8, 9])
+data Interp = (a: Int, s: String = "n=#{1 + 1}")
+data Ranged = (a: Int, r: Range[Int] = 1..3)
+
+s1 = Source.new("posts", ["id"])
+s2 = Source.new("users", [])
+p s1, s2
+# Each its own value: one taken out and updated, the other unchanged.
+k = s1.keep
+k = k.push(:x)
+p k, s1.keep, s2.keep
+p s1 == Source.new("posts", ["id"], [], false)
+o = Opts.new("a")
+t = o.tags
+t = t.put(:z, 1)
+p o, t, Opts.new("b").tags
+p Nested.new(1), Nested.new(2).grid == [[1, 2], [3]]
+p Box[String].new, Box[Int].new([1]).items
+p Big.new(1).xs.size, Interp.new(1).s, Ranged.new(1).r
