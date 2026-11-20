@@ -3565,8 +3565,17 @@ impl<'ast> Declarer<'ast> {
         // includes' and the top-level unconditional extensions' modules,
         // whose class methods may take a superclass's place, #681; a
         // scoped or conditional extension's put none there.)
-        for (anc, _) in self.world.class_modules_included(id, &args) {
+        // (Each module class method's include as written in this class,
+        // `M[Object]`, for #950's message.)
+        let mut included_as: HashMap<MethodId, String> = HashMap::default();
+        for (anc, aargs) in self.world.class_modules_included(id, &args) {
             let mc = self.world.class(anc);
+            let shown = self.world.type_name(&Type::Class(anc, aargs.clone()));
+            for x in mc.singleton_methods.values().flatten() {
+                if self.world.method(*x).owner == anc {
+                    included_as.insert(*x, shown.clone());
+                }
+            }
             mine.extend(
                 mc.singleton_methods
                     .values()
@@ -3625,12 +3634,24 @@ impl<'ast> Declarer<'ast> {
                     // be checked for this class alone, and its subclasses
                     // inherit it, where the result is theirs. No override
                     // is right for every subclass, so none is taken.)
-                    // (Decided by `o` alone, so a module's class method is
-                    // refused once, at the module, whose own class value
-                    // pairs it the same way; not again at each includer.)
+                    // (Wherever the pair is found: at the class method's own
+                    // class or module, or at an includer whose arguments
+                    // make it take the place (`include M[Object]` for a
+                    // `def self.cast(value: U)`). Reported once per pair, at
+                    // the class method, naming the includer when it is the
+                    // one that pairs it. The pairs are the override table's
+                    // (`World::overrides`, which the run time reads): what
+                    // is refused here is what would run in the method's
+                    // place.)
                     if self.result_names_receiver(o) {
-                        if within.is_none() {
-                            self.refuse_receiver_override(mid, o);
+                        if self.override_pairs.insert((mid, o)) {
+                            let by = within.as_ref().map(|c| {
+                                (
+                                    c.clone(),
+                                    included_as.get(&mid).cloned().unwrap_or_default(),
+                                )
+                            });
+                            self.refuse_receiver_override(mid, o, by);
                         }
                         break;
                     }
@@ -3678,17 +3699,31 @@ impl<'ast> Declarer<'ast> {
 
     /// The error for class method `mid` taking the place of `o`, whose
     /// result names its receiver (`result_names_receiver`, #950), at the
-    /// class method's declaration.
-    fn refuse_receiver_override(&mut self, mid: MethodId, o: MethodId) {
+    /// class method's declaration; `by`, the includer (and its include as
+    /// written) whose arguments make a module's class method take the
+    /// place, when that is where the pair is found.
+    fn refuse_receiver_override(
+        &mut self,
+        mid: MethodId,
+        o: MethodId,
+        by: Option<(String, String)>,
+    ) {
         let (m, om) = (self.world.method(mid), self.world.method(o));
         let owner = self.world.class(m.owner).name.clone();
         let oname = format!("{}#{}", self.world.class(om.owner).name, om.name);
         let shown = self.world.type_name(&om.ret);
         let name = m.name.clone();
         let span = m.span;
+        let (place, checked) = match by {
+            Some((c, inc)) => (
+                format!(" in `{c}`, which includes `{inc}`,"),
+                format!("`{c}`"),
+            ),
+            None => (",".to_string(), format!("`{owner}`")),
+        };
         self.error(
             format!(
-                "`{owner}.{name}` would take the place of `{oname}` on the class value, whose result ({shown}) names the class it is called on: a class method there would be checked for `{owner}` alone and inherited by its subclasses, for which it is wrong; give it another name or other parameters"
+                "`{owner}.{name}` would take the place of `{oname}` on the class value{place} whose result ({shown}) names the class it is called on: a class method there would be checked for {checked} alone and inherited by its subclasses, for which it is wrong; give it another name or other parameters"
             ),
             span,
         );
