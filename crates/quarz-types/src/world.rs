@@ -812,6 +812,9 @@ pub enum StaticEvent {
 /// the extensions active where its bounds' `is_subtype` walks (#917).
 type AncestorsKey = (ClassId, Vec<Type>, Vec<ExtensionId>, Vec<ExtensionId>);
 type AncestorList = std::rc::Rc<Vec<(ClassId, Vec<Type>)>>;
+/// `AncestorsMemo::conformance`: the number of extensions, the active
+/// set, and the active conformance extensions made for them.
+type KeptConformance = (usize, Vec<ExtensionId>, Vec<ExtensionId>);
 
 #[derive(Debug, Default)]
 struct AncestorsMemo {
@@ -825,6 +828,12 @@ struct AncestorsMemo {
     hits: std::cell::Cell<u64>,
     checked: std::cell::Cell<u64>,
     keys_hit: std::cell::RefCell<rustc_hash::FxHashSet<AncestorsKey>>,
+    /// The key's fourth part, `World::conformance_extensions`, for the
+    /// active set it was made under and the number of extensions then
+    /// (#928): made again only when the active set changes, not on every
+    /// walk. An extension's includes do not change while the memo is on
+    /// (only the declarer adds them, with it off).
+    conformance: std::cell::RefCell<Option<KeptConformance>>,
 }
 
 /// A copy of the world starts with nothing remembered.
@@ -837,6 +846,7 @@ impl Clone for AncestorsMemo {
             hits: Default::default(),
             checked: Default::default(),
             keys_hit: Default::default(),
+            conformance: Default::default(),
         }
     }
 }
@@ -1502,7 +1512,7 @@ impl World {
         // counts the refusal each time, and answers otherwise when made
         // as if the types were known, #519.)
         let undecided = args.iter().any(|t| t.has_vars());
-        let key = (id, args.to_vec(), exts, self.conformance_extensions());
+        let key = (id, args.to_vec(), exts, self.memo_conformance_extensions());
         let hit = self.ancestors_memo.map.borrow().get(&key).cloned();
         if let Some(found) = hit {
             if cfg!(debug_assertions) {
@@ -1528,6 +1538,24 @@ impl World {
             .borrow_mut()
             .insert(key, std::rc::Rc::new(found.clone()));
         found
+    }
+
+    /// `conformance_extensions`, kept for the active set while the memo is
+    /// on (`AncestorsMemo::conformance`, #928).
+    fn memo_conformance_extensions(&self) -> Vec<ExtensionId> {
+        let memo = &self.ancestors_memo;
+        if let Some((n, set, list)) = &*memo.conformance.borrow() {
+            if *n == self.extensions.len() && *set == *self.active_extensions.borrow() {
+                return list.clone();
+            }
+        }
+        let list = self.conformance_extensions();
+        *memo.conformance.borrow_mut() = Some((
+            self.extensions.len(),
+            self.active_extensions.borrow().clone(),
+            list.clone(),
+        ));
+        list
     }
 
     /// The debug guard of the memo (#917): a stored walk is made again
@@ -1587,6 +1615,7 @@ impl World {
     pub fn freeze_ancestors(&mut self, on: bool) {
         self.ancestors_memo.on = on;
         self.ancestors_memo.map.get_mut().clear();
+        *self.ancestors_memo.conformance.get_mut() = None;
     }
 
     /// The modules class `id` itself brings to its class side's dispatch
