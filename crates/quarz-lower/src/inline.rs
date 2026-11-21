@@ -371,18 +371,8 @@ fn defaults_shape(f: &Function, given: usize) -> bool {
         let preds: Vec<&Block> = f
             .blocks
             .iter()
-            .filter(|p| {
-                let mut targets = Vec::new();
-                match &p.term {
-                    Term::Jump(t) => targets.push(*t),
-                    Term::Branch { then, els, .. } => {
-                        targets.push(*then);
-                        targets.push(*els);
-                    }
-                    _ => {}
-                }
-                targets.contains(&(b as BlockId))
-            })
+            // (The IR's own edges, a handler's included: `live::successors`.)
+            .filter(|p| quarz_ir::live::successors(p).contains(&(b as BlockId)))
             .collect();
         let [p] = preds.as_slice() else {
             return false;

@@ -40,7 +40,8 @@ begin
   risky(3)
 rescue RuntimeError => e
   puts "rescued #{e.message}"
-  puts e.backtrace.take(3).join("\n")
+  # (The file's name only: the path is where the test runs it from.)
+  puts e.backtrace.take(3).map { |l| l.split("/").last }.join("\n")
 end
 puts risky(3, 4)
 x1 = collect(1)
