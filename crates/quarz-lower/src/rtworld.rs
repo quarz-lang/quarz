@@ -52,8 +52,19 @@ pub fn fill(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<Strin
             .map(|(i, iv)| {
                 let default = lw.field_default(world, c.id, i);
                 // (Only for a default the program wrote: see `RtIvar::literal`.)
+                // (The layout's fields are the declared ones, in their order:
+                // a literal shipped for another field would be placed in it
+                // silently.)
+                let field = declared.get(i).map(|(f, _)| f);
+                assert!(
+                    field.is_some_and(|f| f.name == iv.name),
+                    "internal error: field {i} of `{}` is `{}` in the layout and {:?} declared",
+                    c.name,
+                    iv.name,
+                    field.map(|f| &f.name)
+                );
                 let literal = default.and_then(|_| {
-                    let e = declared.get(i)?.0.default.as_deref()?;
+                    let e = field?.default.as_deref()?;
                     crate::func::default_at_call(e)
                         .then(|| literal_constant(e))
                         .flatten()

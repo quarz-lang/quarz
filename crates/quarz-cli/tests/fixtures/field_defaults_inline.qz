@@ -88,6 +88,22 @@ class Sub < Base
   def show -> String = "#{@base} #{@own} #{@sum}"
 end
 
+# Literal defaults in a superclass and in a subclass that adds fields
+# after its superclass's: each value distinct, so a field taken for
+# another would print wrong.
+class Upper
+  @u1: Int = 11
+  @u2: Float = 2.5
+  @u3: Bool = false
+end
+
+class Lower < Upper
+  @l1: Int = 13
+  @l2: Bool = true
+  @l3: Int = 17
+  def show -> String = "#{@u1} #{@u2} #{@u3} #{@l1} #{@l2} #{@l3}"
+end
+
 # A collection and a string as defaults: each object its own value, one
 # updated in place leaving the others (and later ones) as they were.
 class Lister
@@ -110,6 +126,7 @@ rescue RuntimeError => e
 end
 puts Holder.new.show
 puts Sub.new.show
+puts Lower.new.show
 a1 = Lister.new
 a2 = Lister.new
 a1.add(1)
