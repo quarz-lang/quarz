@@ -19383,6 +19383,16 @@ impl crate::StaticHost for Checker {
         self.world.static_events.push(StaticEvent::Captures(method));
     }
     fn add_generated(&mut self, info: MethodInfo) -> Result<MethodId, String> {
+        // (A written method's rule, at the statement that generates it.
+        // Not for one generated with `keywords:`: it is bound as one hash
+        // of the keywords given, from `bind_params`' own record of them
+        // (`Given`), for any number of keywords, and runs no default.)
+        let keyword_hash = info.generated.as_ref().is_some_and(|g| g.keywords);
+        if !keyword_hash {
+            if let Some((_, why)) = crate::declare::late_default_rule(&info.params) {
+                return Err(why);
+            }
+        }
         // `def_initialize` (docs/14 §5): one more overload of
         // `initialize`, written or generated, of another signature.
         if info.generated.as_ref().is_some_and(|g| g.initialize) {
