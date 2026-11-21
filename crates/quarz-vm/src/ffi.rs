@@ -1091,9 +1091,9 @@ pub unsafe extern "C" fn qz_alloc_object(
     // reads (the QIR verifier's `construct_results`): what it held is
     // dropped here, and a raise before `initialize` returned leaves the
     // half-built object in it for the unwind to release, as any register.
-    *regs.add(dst as usize) = Value::Object(crate::value::Object::new(
+    *regs.add(dst as usize) = Value::Object(crate::value::Object::with_nil_fields(
         class,
-        smallvec::smallvec![Value::Nil; info.fields.len()],
+        info.fields.len(),
     ));
     STATUS_OK
 }

@@ -1326,6 +1326,55 @@ impl Object {
     /// `src` points at `n` initialized values that the caller gives up
     /// (they are moved, not cloned, and must not be dropped by it).
     pub unsafe fn with_fields_from(class: ClassId, src: *const Value, n: usize) -> Rc<Object> {
+        // SAFETY: as the caller promises.
+        unsafe {
+            Object::allocate(class, n, |layout_of, base| {
+                for (i, k) in layout_of.kinds.iter().enumerate() {
+                    let at = base.add(layout_of.offset(i));
+                    let v = std::ptr::read(src.add(i));
+                    match k {
+                        FieldKind::Value => std::ptr::write(at as *mut Value, v),
+                        _ => {
+                            // Marked first: what the word cannot hold goes
+                            // aside (the object is not yet shared).
+                            std::ptr::write(at as *mut u64, mark(*k));
+                            store_word(layout_of, base, i, *k, v);
+                        }
+                    }
+                }
+            })
+        }
+    }
+
+    /// An object of `n` fields, all nil (before its `initialize` runs),
+    /// built in its allocation: a word field holds its mark with nothing
+    /// aside, which reads as nil (#1000).
+    pub fn with_nil_fields(class: ClassId, n: usize) -> Rc<Object> {
+        // SAFETY: every field slot is written.
+        unsafe {
+            Object::allocate(class, n, |layout_of, base| {
+                for (i, k) in layout_of.kinds.iter().enumerate() {
+                    let at = base.add(layout_of.offset(i));
+                    match k {
+                        FieldKind::Value => std::ptr::write(at as *mut Value, Value::Nil),
+                        _ => std::ptr::write(at as *mut u64, mark(*k)),
+                    }
+                }
+            })
+        }
+    }
+
+    /// An object of class `class` and `n` fields, its header written
+    /// and its fields by `fill` (given the layout and the fields' base).
+    ///
+    /// # Safety
+    /// `fill` writes every field slot of the layout.
+    #[inline]
+    unsafe fn allocate(
+        class: ClassId,
+        n: usize,
+        fill: impl FnOnce(&FieldLayout, *mut u8),
+    ) -> Rc<Object> {
         type Header = crate::rc::Inner<ObjectOf<std::cell::UnsafeCell<[u64; 0]>>>;
         let layout_of = layout_for(class, n);
         let words = layout_of.words;
@@ -1361,19 +1410,7 @@ impl Object {
                     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
                 );
             }
-            for (i, k) in layout_of.kinds.iter().enumerate() {
-                let at = base.add(layout_of.offset(i));
-                let v = std::ptr::read(src.add(i));
-                match k {
-                    FieldKind::Value => std::ptr::write(at as *mut Value, v),
-                    _ => {
-                        // Marked first: what the word cannot hold goes
-                        // aside (the object is not yet shared).
-                        std::ptr::write(at as *mut u64, mark(*k));
-                        store_word(layout_of, base, i, *k, v);
-                    }
-                }
-            }
+            fill(layout_of, base);
             let rc = crate::rc::Rc::from_fresh(p);
             debug_assert_eq!(std::alloc::Layout::for_value(&*p), layout);
             if layout_of.cyclic {
