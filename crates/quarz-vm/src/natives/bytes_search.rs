@@ -107,14 +107,15 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         };
         let wants = wants_match(i, &b);
         let names = group_names(pattern);
+        let rb = i.repeated_block(&b);
         each_match(i, Hay::Bytes(&data), pattern, true, wants, |groups| {
             let (st, en) = groups[0].unwrap_or((0, 0));
             let matched = Value::bytes(data[st..en].to_vec());
             if wants {
                 let md = match_value(&data, groups, &names);
-                i.call_block(&b, smallvec![matched, md])?;
+                rb.call(i, smallvec![matched, md])?;
             } else {
-                i.call_block(&b, smallvec![matched])?;
+                rb.call(i, smallvec![matched])?;
             }
             Ok(())
         })?;
@@ -262,15 +263,16 @@ fn bytes_sub(interp: &Interp, recv: &Value, args: Args, global: bool) -> EvalRes
     } else {
         Vec::new()
     };
+    let rb = args.block.as_ref().map(|b| interp.repeated_block(b));
     let out = substitute(interp, hay, pattern, global, wants, |groups, out| {
         let (st, en) = groups[0].unwrap_or((0, 0));
         let matched = Value::bytes(data[st..en].to_vec());
-        if let Some(b) = &args.block {
+        if let Some(rb) = &rb {
             let v = if wants {
                 let md = match_value(&data, groups, &names);
-                interp.call_block(b, smallvec![matched, md])?
+                rb.call(interp, smallvec![matched, md])?
             } else {
-                interp.call_block(b, smallvec![matched])?
+                rb.call(interp, smallvec![matched])?
             };
             out.extend_from_slice(&bs(interp, &v)?);
         } else if let Value::Hash(h) = args.arg(1) {

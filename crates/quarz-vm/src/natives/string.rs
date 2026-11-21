@@ -684,8 +684,9 @@ pub(super) fn string_each_char(interp: &Interp, recv: &Value, args: Args) -> Eva
 fn string_each_line(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let text = s(interp, recv)?;
     let b = block(interp, &args)?;
+    let rb = interp.repeated_block(&b);
     for line in text.split_inclusive('\n') {
-        interp.call_block(&b, smallvec![Value::str(line)])?;
+        rb.call(interp, smallvec![Value::str(line)])?;
     }
     Ok(Value::Nil)
 }

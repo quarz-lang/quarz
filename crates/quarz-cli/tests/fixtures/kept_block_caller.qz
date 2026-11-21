@@ -1,0 +1,46 @@
+# A native that calls its block repeatedly keeps one activation across
+# the calls of one native call (#987). What the block sees and does is as
+# before: a block calling the same native again on the same block value
+# (through a method) gets a caller of its own; `break`, `next` and an
+# exception leave the native, and the next call starts afresh; a block
+# that destructures (`|k, v|` given `[k, v]`) is called the same way,
+# a shorter element padded with `nil`.
+def walk(h: Hash[String, Int], depth: Int, out: Array::Builder[String]) -> Void
+  h.each_pair do |k, v|
+    out << "#{depth}:#{k}=#{v}"
+    walk({"in" => v + 10}, depth + 1, out) if depth < 2
+  end
+end
+out = Array::Builder[String].new
+walk({"a" => 1, "b" => 2}, 0, out)
+p out.to_a
+
+def each_of(h: Hash[String, Int], &b: (String, Int) -> Void) -> Void = h.each_pair(&b)
+seen = Array::Builder[String].new
+blk_runs = 0
+each_of({"x" => 1, "y" => 2}) do |k, v|
+  blk_runs += 1
+  each_of({"#{k}#{k}" => v * 100}) { |k2, v2| seen << "#{k2}=#{v2}" }
+end
+p blk_runs, seen.to_a
+
+h = {"a" => 1, "b" => 2, "c" => 3}
+r = h.each { |k, v| break k if v == 2 }
+p r
+h.each do |k, v|
+  next if v == 1
+  puts "next: #{k}"
+end
+begin
+  h.each_pair { |k, v| raise ArgumentError, "at #{k}" if v == 2 }
+rescue ArgumentError => e
+  puts e.message
+end
+h.each_pair { |k, v| puts "again: #{k}=#{v}" }
+
+[[1], [2, 3], [4, 5, 6]].each { |a, b| p [a, b] }
+p [3, 1, 2].sort { |a, b| b <=> a }
+p [3, 1, 2].max { |a, b| a <=> b }
+p "a1b22c333".scan(/\d+/) { |m| puts "m=#{m}" }
+p h.select { |k, v| v > 1 }
+p h.transform_values { |v| v * 2 }

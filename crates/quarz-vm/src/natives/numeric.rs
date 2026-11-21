@@ -771,8 +771,9 @@ fn int_step(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     }
     let b = block(interp, &args)?;
     let mut i = from;
+    let rb = interp.repeated_block(&b);
     while (step > 0 && i <= limit) || (step < 0 && i >= limit) {
-        interp.call_block(&b, smallvec![Value::Int(i)])?;
+        rb.call(interp, smallvec![Value::Int(i)])?;
         // The last that fits: nothing after it.
         match i.checked_add(step) {
             Some(n) => i = n,

@@ -213,6 +213,9 @@ enum CallerKind {
         act: Activation,
         compiled: Option<crate::interp::CompiledFn>,
         nparams: usize,
+        /// A block that destructures (`|k, v|`): how many parameters it
+        /// pads to (`destructure_fixed`).
+        destructure: Option<usize>,
     },
     /// `&:name`: the method is called on the first argument.
     Named { closure: Rc<Closure> },
@@ -237,10 +240,7 @@ impl Interp {
             }
             _ => return None,
         };
-        if closure.destructure.is_some() {
-            return None;
-        }
-        let (frame_size, nparams, file) = {
+        let (frame_size, nparams, file, fixed) = {
             let funcs = self.funcs.borrow();
             let f = &funcs[fid as usize];
             if f.frame_size > 0
@@ -254,7 +254,14 @@ impl Interp {
             {
                 return None;
             }
-            (f.frame_size, f.param_kinds.len(), closure.file)
+            (
+                f.frame_size,
+                f.param_kinds.len(),
+                closure.file,
+                closure
+                    .destructure
+                    .map(|n| destructure_fixed(n, &f.param_kinds)),
+            )
         };
         debug_assert_eq!(frame_size, 0);
         let act = Activation {
@@ -291,6 +298,7 @@ impl Interp {
                 act,
                 compiled,
                 nparams,
+                destructure: fixed,
             },
         })
     }
@@ -386,6 +394,70 @@ fn own_cache<'a>(
     (!crate::rc::Rc::is_shared(closure)).then_some(cache)
 }
 
+/// A block's single array argument spread over its parameters (a block
+/// that destructures, `|k, v|` given `[k, v]`): the array's elements,
+/// padded with `nil` to `fixed` (`destructure_fixed`: the positional
+/// parameters, which the checker typed to admit it, #531; a `*rest`
+/// takes what is left, nothing when nothing is). `None` when the call is
+/// not one array. The rule `call_block_kw` and `BlockCaller::call` share.
+pub(crate) fn destructured(args: &[Value], fixed: usize) -> Option<ArgVec> {
+    let [Value::Array(a)] = args else {
+        return None;
+    };
+    let mut items: ArgVec = a.iter().collect();
+    items.resize(fixed.max(items.len()), Value::Nil);
+    Some(items)
+}
+
+/// For `destructured`: how many parameters a destructuring block of `n`
+/// pads to, its positional ones up to `n`.
+pub(crate) fn destructure_fixed(n: usize, param_kinds: &[RtParamKind]) -> usize {
+    param_kinds
+        .iter()
+        .filter(|k| matches!(k, RtParamKind::Positional))
+        .count()
+        .min(n)
+}
+
+/// A block a native calls repeatedly during one call of its own
+/// (`Interp::repeated_block`): through a `BlockCaller` when the block
+/// qualifies (its activation kept across the calls, #987), else through
+/// `call_block`, as before.
+pub enum RepeatedBlock<'a> {
+    Kept(BlockCaller),
+    General(&'a Value),
+}
+
+impl RepeatedBlock<'_> {
+    /// Call the block with `args`.
+    #[inline]
+    pub fn call(&self, interp: &Interp, args: ArgVec) -> EvalResult {
+        match self {
+            RepeatedBlock::Kept(c) => c.call(&args),
+            RepeatedBlock::General(b) => interp.call_block(b, args),
+        }
+    }
+}
+
+impl Interp {
+    /// `block`, to be called repeatedly by one native call: made once,
+    /// before the native's loop (`RepeatedBlock`).
+    pub fn repeated_block<'a>(&self, block: &'a Value) -> RepeatedBlock<'a> {
+        match self.block_caller(block) {
+            Some(c) => RepeatedBlock::Kept(c),
+            None => RepeatedBlock::General(block),
+        }
+    }
+}
+
+/// `check_deadline` out of `BlockCaller::call`'s path: a compile-time run
+/// only.
+#[cold]
+#[inline(never)]
+fn deadline_passed(interp: &Interp) -> Result<(), Flow> {
+    interp.check_deadline()
+}
+
 impl BlockCaller {
     /// Call the block with `args` (padded with nil or cut to the block's
     /// parameters).
@@ -393,14 +465,21 @@ impl BlockCaller {
         crate::keys::check()?;
         // SAFETY: a caller never outlives the interpreter that made it.
         let interp = unsafe { &*self.interp };
-        let (closure, fid, act, compiled, nparams) = match &self.kind {
+        // A block a native loops over has no back edge of its own: a
+        // compile-time run's time limit is checked here, as `call_block_kw`
+        // does (#987).
+        if interp.deadline.get().is_some() {
+            deadline_passed(interp)?;
+        }
+        let (closure, fid, act, compiled, nparams, destructure) = match &self.kind {
             CallerKind::Func {
                 closure,
                 fid,
                 act,
                 compiled,
                 nparams,
-            } => (closure, *fid, act, *compiled, *nparams),
+                destructure,
+            } => (closure, *fid, act, *compiled, *nparams, *destructure),
             CallerKind::Named { closure } => {
                 let ClosureBody::MethodName(name, cache, method, discard, among) = &closure.body
                 else {
@@ -418,6 +497,51 @@ impl BlockCaller {
         if sched::stack_exhausted() {
             return Err(interp.raise(interp.program.exc.system_stack, "stack level too deep"));
         }
+        // (A destructuring block given one array: called with its elements,
+        // apart, so that the common path keeps no list of its own.)
+        if let Some(fixed) = destructure {
+            if args.len() == 1 {
+                if let Some(items) = destructured(args, fixed) {
+                    return self.call_spread(&items);
+                }
+            }
+        }
+        self.call_view(interp, closure, fid, act, compiled, nparams, args)
+    }
+
+    /// `call` for a destructuring block, with the array's elements.
+    #[inline(never)]
+    fn call_spread(&self, items: &[Value]) -> EvalResult {
+        // SAFETY: as `call`.
+        let interp = unsafe { &*self.interp };
+        let CallerKind::Func {
+            closure,
+            fid,
+            act,
+            compiled,
+            nparams,
+            ..
+        } = &self.kind
+        else {
+            unreachable!("only a block with a body destructures")
+        };
+        self.call_view(interp, closure, *fid, act, *compiled, *nparams, items)
+    }
+
+    /// The rest of `call`: the parameter view pointed at `args` (padded
+    /// with nil or cut to the block's parameters), the body run.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn call_view(
+        &self,
+        interp: &Interp,
+        closure: &Rc<Closure>,
+        fid: FuncId,
+        act: &Activation,
+        compiled: Option<crate::interp::CompiledFn>,
+        nparams: usize,
+        args: &[Value],
+    ) -> EvalResult {
         let padded: ArgVec;
         let view: &[Value] = if args.len() == nparams {
             args
@@ -1455,22 +1579,8 @@ impl Interp {
                 };
                 // Destructure a single array argument over several parameters.
                 if let Some(n) = closure.destructure {
-                    if args.len() == 1 {
-                        if let Value::Array(a) = &args[0] {
-                            let mut items: ArgVec = a.iter().collect();
-                            // (A shorter element pads the positional
-                            // parameters with `nil`, which the checker typed
-                            // to admit it, #531; a `*rest` takes what is
-                            // left, nothing when nothing is.)
-                            let fixed = f
-                                .param_kinds
-                                .iter()
-                                .filter(|k| matches!(k, RtParamKind::Positional))
-                                .count()
-                                .min(n);
-                            items.resize(fixed.max(items.len()), Value::Nil);
-                            args = items;
-                        }
+                    if let Some(items) = destructured(&args, destructure_fixed(n, &f.param_kinds)) {
+                        args = items;
                     }
                 }
                 let file = closure.file;

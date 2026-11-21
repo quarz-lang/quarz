@@ -180,8 +180,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             return Ok(Value::Nil);
         }
         let mut k = 0.0;
+        let rb = i.repeated_block(&b);
         while k <= n {
-            i.call_block(&b, smallvec![Value::Float(from + k * step)])?;
+            rb.call(i, smallvec![Value::Float(from + k * step)])?;
             k += 1.0;
         }
         Ok(Value::Nil)
