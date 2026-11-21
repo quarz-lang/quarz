@@ -100,6 +100,55 @@ fn prelude_checks_cleanly() {
     assert!(checked.is_some());
 }
 
+/// #933: a `def` with a body in the prelude's `module Kernel` is refused at
+/// its declaration (only `native def`s there): no call would find it.
+/// An instance `def` and a `def self.` alike; a `native def` added beside
+/// them is accepted.
+#[test]
+fn prelude_kernel_takes_only_native_defs() {
+    let at = PRELUDE_SOURCE
+        .find("\nmodule Kernel\n")
+        .expect("module Kernel")
+        + "\nmodule Kernel\n".len();
+    let with = |added: &str| format!("{}{added}{}", &PRELUDE_SOURCE[..at], &PRELUDE_SOURCE[at..]);
+    let empty = parse("");
+    for (added, name) in [
+        ("  def Twice(n: Int) -> Int = n * 2\n", "Twice"),
+        (
+            "  def self.thrice(n: Int) -> Int\n    n * 3\n  end\n",
+            "thrice",
+        ),
+    ] {
+        let source = with(added);
+        let prelude = parse(&source);
+        assert!(prelude.diagnostics.is_empty(), "{:?}", prelude.diagnostics);
+        let (_, diags) = check(&prelude.program, &empty.program);
+        let want = format!(
+            "`{name}` has a body in the prelude's `module Kernel`, which takes only `native def`s"
+        );
+        let errors: Vec<_> = diags.iter().filter(|(_, d)| d.is_error()).collect();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].1.message.contains(&want), "{errors:?}");
+        // At the declaration, in the prelude.
+        let span = errors[0].1.span;
+        assert_eq!(errors[0].0, 0);
+        assert!(
+            source[span.start as usize..].starts_with(added.trim_start()),
+            "{}",
+            &source[span.start as usize..][..40]
+        );
+    }
+    let source = with("  native def Twice(n: Int) -> Int\n");
+    let prelude = parse(&source);
+    let (_, diags) = check(&prelude.program, &empty.program);
+    assert!(
+        !diags
+            .iter()
+            .any(|(_, d)| d.message.contains("module Kernel")),
+        "{diags:?}"
+    );
+}
+
 /// `World::user_method` (what a value is compared and hashed by, and so
 /// whether a `data` type is held in place, #809) walks the classes' own
 /// tables only: the runtime's lookup tries the prelude's extensions
