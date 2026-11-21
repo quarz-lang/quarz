@@ -100,7 +100,7 @@ A read given `max:` accepts at most that many bytes, and never more than `max_bo
 ### Headers
 
 ```crystal
-data Field = (name: String, value: String)        # a name lowercased
+data Field(name: String, value: String)          # a name lowercased; inspect hides a credential's value
 
 data Headers(entries: Array[Field])               # in order; a name may repeat
   def self.empty -> Headers
@@ -118,6 +118,8 @@ end
 ```
 
 Names are case-insensitive: they are stored lowercased and written out in the conventional form (`Content-Type`). Values are kept as received, except that leading and trailing whitespace is removed. `put`, `add` and `of` (and so `Server::Response#header` and `Server::Response.redirect`) raise `ArgumentError` for a name that is not a token or a value with CR, LF or another control character but HTAB, where the header is set: such a header would split the response (response splitting). The message names the header, not the value, which may come from a request (a cookie, a token) and would otherwise end up in logs.
+
+`inspect` and `to_s` of a `Field` show `[FILTERED]` for the value of `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` (`Field::CREDENTIALS`), so `Headers`, `Request` and `Response` printed (`p req`, a log line) show none of them; the values themselves are as given. A URL's password is shown `***` likewise (`URI#inspect`, `URI#redacted`, and every error message that quotes a URL), while `URI#to_s` writes it back.
 
 ## 4. Responses
 

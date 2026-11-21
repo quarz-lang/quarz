@@ -3,6 +3,7 @@ require "json"
 require "tls"
 require "uri"
 require "base64"
+require "digest"
 
 # HTTP: `require "http"` (docs/11-http.md). An HTTP/1.1 server, for use
 # behind a reverse proxy or with `tls:`: a handler takes a
@@ -92,8 +93,16 @@ module HTTP
 
   # ----- headers --------------------------------------------------------------------
 
-  # One header field, its name lowercased.
-  data Field = (
+  # One header field, its name lowercased. Its [inspect] and [to_s] hide
+  # the value of a field that carries a credential ([CREDENTIALS]), and so
+  # do those of [Headers] and of the requests and responses of
+  # [HTTP::Server] and [HTTP::Client], which show their fields through it.
+  #
+  # ```
+  # HTTP::Headers.field("Authorization", "Bearer abc").inspect
+  # # => "HTTP::Field(name: \"authorization\", value: [FILTERED])"
+  # ```
+  data Field(
     # The name, lowercased: `content-type`.
     name: String,
     # The value. In the headers of a parsed request it has no leading or
@@ -101,6 +110,18 @@ module HTTP
     # keep the value as given.
     value: String
   )
+    # The fields whose value [inspect] hides.
+    CREDENTIALS = ["authorization", "proxy-authorization", "cookie", "set-cookie"]
+
+    # The field, its value `[FILTERED]` for a field of [CREDENTIALS].
+    def inspect -> String
+      shown = CREDENTIALS.include?(name) ? "[FILTERED]" : value.inspect
+      "HTTP::Field(name: #{name.inspect}, value: #{shown})"
+    end
+
+    # :ditto:
+    def to_s -> String = inspect
+  end
 
   # Header fields in order, names lowercased; a name may repeat. Names
   # are case-insensitive, and written out in the conventional form
@@ -2212,7 +2233,7 @@ module HTTP
     # :nodoc:
     def self.check(u: URI) -> URI
       unless u.scheme.downcase == "http" && !(u.host || "").empty?
-        raise ArgumentError, "a proxy is an http URL with a host, not #{u.to_s.inspect}"
+        raise ArgumentError, "a proxy is an http URL with a host, not #{u.redacted.inspect}"
       end
       info = u.userinfo
       if info
@@ -2363,7 +2384,7 @@ module HTTP
       @headers: Headers
       @url: URI
       def initialize(@status: Int, @headers: Headers, @url: URI, max: Int)
-        super("more than #{max} redirects (the last from #{@url})")
+        super("more than #{max} redirects (the last from #{@url.redacted})")
       end
 
       # The last redirect's status.
@@ -2451,10 +2472,10 @@ module HTTP
       def self.check_url(u: URI) -> URI
         scheme = u.scheme.downcase
         unless (scheme == "http" || scheme == "https") && !(u.host || "").empty?
-          raise ArgumentError, "not an http or https URL with a host: #{u.to_s.inspect}"
+          raise ArgumentError, "not an http or https URL with a host: #{u.redacted.inspect}"
         end
         if u.to_s.match?(/[\x00-\x20\x7f]/)
-          raise ArgumentError, "a URL with whitespace or a control character: #{u.to_s.inspect}"
+          raise ArgumentError, "a URL with whitespace or a control character: #{u.redacted.inspect}"
         end
         u
       end
@@ -2875,7 +2896,7 @@ module HTTP
           Request.check_url(req.url.resolve(location).with(fragment: nil))
         rescue ArgumentError => e
           res.close
-          raise RedirectError.new("cannot follow Location #{location.inspect}: #{e.message}")
+          raise RedirectError.new("cannot follow Location #{URI.hide_password(location).inspect}: #{e.message}")
         end
         res.close
         req = redirected(req, res.status, target)
@@ -2910,7 +2931,9 @@ module HTTP
       proxy_url = @proxy&.proxy_for(req.url)
       absolute = !proxy_url.nil? && req.url.scheme.downcase == "http"
       head, chunked = request_head(req, absolute, proxy_url)
-      key = "#{req.url.origin}|#{proxy_url&.to_s || ""}"
+      # (The proxy by its origin and a digest of its whole URL: no
+      # password is kept in the pool's keys.)
+      key = "#{req.url.origin}|#{proxy_url ? "#{proxy_url.origin} #{Digest::SHA256.hexdigest(proxy_url.to_s)}" : ""}"
       io = take(key)
       if io
         begin

@@ -54,7 +54,7 @@ data URI(
   # ```
   def self.parse(text: String) -> URI
     m = text.match(SPLIT)
-    raise ArgumentError, "not a URI: #{text.inspect}" if m.nil?
+    raise ArgumentError, "not a URI: #{URI.hide_password(text).inspect}" if m.nil?
     scheme = m[1] || ""
     unless scheme.empty? || scheme.match?(SCHEME)
       raise ArgumentError, "not a URI scheme: #{scheme.inspect}"
@@ -72,7 +72,7 @@ data URI(
       end
       if hostport.start_with?("[")
         close = hostport.index("]")
-        raise ArgumentError, "unbalanced brackets in #{text.inspect}" if close.nil?
+        raise ArgumentError, "unbalanced brackets in #{URI.hide_password(text).inspect}" if close.nil?
         host = hostport[1, close - 1]
         # An IPv6 literal (IPvFuture is not taken).
         unless host.include?(":")
@@ -85,7 +85,7 @@ data URI(
         port = parse_port(rest.empty? ? nil : rest[1..], text)
       else
         if hostport.include?("]") || hostport.include?("[")
-          raise ArgumentError, "unbalanced brackets in #{text.inspect}"
+          raise ArgumentError, "unbalanced brackets in #{URI.hide_password(text).inspect}"
         end
         h, colon, p = hostport.rpartition(":")
         if colon.empty?
@@ -105,7 +105,7 @@ data URI(
   def self.parse_port(digits: String?, text: String) -> Int?
     return nil if digits.nil? || digits.empty?
     unless digits.match?(/\A[0-9]{1,5}\z/) && digits.to_i <= 65_535
-      raise ArgumentError, "not a port: #{digits.inspect} in #{text.inspect}"
+      raise ArgumentError, "not a port: #{digits.inspect} in #{URI.hide_password(text).inspect}"
     end
     digits.to_i
   end
@@ -116,14 +116,29 @@ data URI(
   # ```
   # URI.parse("http://u@[::1]:80/p?q#f").to_s   # => "http://u@[::1]:80/p?q#f"
   # ```
-  def to_s -> String
+  def to_s -> String = written(false)
+
+  # As [to_s], the password in the user information (after its first
+  # `:`) written `***`: for text meant for people, as [inspect] and the
+  # errors that quote a URI do.
+  #
+  # ```
+  # URI.parse("http://ann:s3cret@proxy:3128/").redacted   # => "http://ann:***@proxy:3128/"
+  # URI.parse("http://ann@proxy:3128/").redacted          # => "http://ann@proxy:3128/"
+  # ```
+  def redacted -> String = written(true)
+
+  private def written(hide: Bool) -> String
     out = String::Builder.new
     out << scheme << ":" unless scheme.empty?
     h = host
     if h
       out << "//"
       u = userinfo
-      out << u << "@" if u
+      if u
+        name, colon, _ = u.partition(":")
+        out << (hide && !colon.empty? ? "#{name}:***" : u) << "@"
+      end
       out << (h.include?(":") ? "[#{h}]" : h)
       pt = port
       out << ":" << pt.to_s if pt
@@ -139,8 +154,8 @@ data URI(
     out.to_s
   end
 
-  # `#<URI http://example.com/>`.
-  def inspect -> String = "#<URI #{to_s}>"
+  # `#<URI http://example.com/>`, a password written `***` ([redacted]).
+  def inspect -> String = "#<URI #{redacted}>"
 
   # Whether it has a scheme (it is not a relative reference).
   def absolute? -> Bool = !scheme.empty?
@@ -166,12 +181,25 @@ data URI(
   # ```
   def origin -> String
     h = host
-    raise ArgumentError, "no origin: #{to_s}" if scheme.empty? || h.nil?
+    raise ArgumentError, "no origin: #{redacted}" if scheme.empty? || h.nil?
     name = URI.ascii_downcase(h)
     name = "[#{name}]" if name.include?(":")
     pt = port
     tail = pt && pt != default_port ? ":#{pt}" : ""
     "#{URI.ascii_downcase(scheme)}://#{name}#{tail}"
+  end
+
+  # :nodoc:
+  # `text`, a URI reference that may not parse, with the password of an
+  # authority's user information written `***`, as [redacted] writes it:
+  # for an error that quotes it.
+  def self.hide_password(text: String) -> String
+    m = text.match(/\A([^\/?#]*\/\/)([^\/?#]*)@/)
+    return text if m.nil?
+    head = m[1] || ""
+    name, colon, _ = (m[2] || "").partition(":")
+    return text if colon.empty?
+    "#{head}#{name}:***@#{text[(m[0] || "").size..]}"
   end
 
   # :nodoc:
@@ -196,7 +224,7 @@ data URI(
   # base.resolve("//h/x").to_s   # => "http://h/x"
   # ```
   def resolve(reference: String) -> URI
-    raise ArgumentError, "not an absolute URI: #{to_s}" unless absolute?
+    raise ArgumentError, "not an absolute URI: #{redacted}" unless absolute?
     r = URI.parse(reference)
     return URI.new(r.scheme, r.userinfo, r.host, r.port, URI.remove_dot_segments(r.path), r.query, r.fragment) if r.absolute?
     if r.host
