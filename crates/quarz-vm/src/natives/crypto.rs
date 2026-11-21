@@ -455,15 +455,18 @@ fn register_keys(m: &mut super::Registry<NativeFn>) {
         ["Crypto::RSA::PrivateKey#==", "Crypto::AES::GCM#=="],
         |i, r, a| {
             let x = any_key(i, r)?;
+            // A key of the same class; anything else (a `Bytes::Secret`,
+            // the other kind of key, any other value) is not equal, and
+            // raises only when the receiver is wiped.
             let other = match a.arg(0) {
                 Value::Secret(s) => match &**s {
-                    SecretVal::Key(k) => Some(k),
+                    SecretVal::Key(k) if k.kind() == x.kind() => Some(k),
                     _ => None,
                 },
                 _ => None,
             };
-            // Raises for a wiped key, itself included (`Value`'s `==`,
-            // which cannot raise, differs there).
+            // Raises for a wiped key of the same class, itself included
+            // (`Value`'s `==`, which cannot raise, differs there).
             match other {
                 Some(y) => Ok(Value::Bool(
                     KeyCell::equal(x, y).ok_or_else(|| super::bytes::wiped(i))?,
@@ -753,8 +756,6 @@ fn parse_argon2(
 const RANDOM_MAX: i64 = 1 << 20;
 
 type Aes192Gcm = aes_gcm::AesGcm<aes_gcm::aes::Aes192, aes_gcm::aead::consts::U12>;
-
-/// An AES-GCM cipher for `key` (its length checked by the caller).
 
 fn key_size_error(interp: &Interp, n: usize) -> Flow {
     interp.err_arg(&format!("an AES key has 16, 24 or 32 bytes, not {n}"))

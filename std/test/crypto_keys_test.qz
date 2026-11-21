@@ -39,7 +39,23 @@ class CryptoKeysTest < Test::Case
     assert(!(a == Crypto::AES::GCM.new(Bytes.from((1..32).to_a))))
     assert(!(a == Crypto::AES::GCM.new(Bytes.from((0...16).to_a))))
     assert(!(a == k))
+    assert(!(k == a))
     assert(a == a)
+    # Another class, a Bytes::Secret or the other kind of key: not equal,
+    # raising only when the receiver is wiped.
+    s = Bytes::Secret.of(Bytes.from((0...32).to_a))
+    assert(!(a == s))
+    assert(!(s == a))
+    s.wipe
+    assert(!(a == s))
+    w = Crypto::AES::GCM.generate
+    w.wipe
+    assert(!(k == w))
+    assert_raise(Bytes::Secret::WipedError) { w == k }
+    assert_raise(Bytes::Secret::WipedError) { w == s }
+    assert_raise(Bytes::Secret::WipedError) { w == "x" }
+    assert_raise(Bytes::Secret::WipedError) { a == w }
+    assert_equal("#<Crypto::AES::GCM 256 bits>", w.inspect)
   end
 
   def test_wipe_ends_the_key_for_every_holder

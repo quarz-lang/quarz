@@ -191,11 +191,13 @@ module Crypto
       native def wiped? -> Bool
 
       # Whether [other] is an AES key of the same bytes, compared in
-      # constant time. Raises [Bytes::Secret::WipedError] when either was
-      # wiped.
+      # constant time. Raises [Bytes::Secret::WipedError] when either key
+      # was wiped; any other value (a [Bytes::Secret], an RSA key) is not
+      # equal, and raises only when this key was wiped.
       native def ==(other: Object) -> Bool
 
-      # `#<Crypto::AES::GCM 256 bits>`: never the key.
+      # `#<Crypto::AES::GCM 256 bits>`: never the key; the size still
+      # once wiped.
       def inspect -> String = "#<Crypto::AES::GCM #{bits} bits>"
 
       # :ditto:
@@ -430,11 +432,13 @@ module Crypto
 
       # Whether [other] is the same private key, whatever it was read from
       # (PKCS#8 or PKCS#1, DER or PEM), its secret parts compared in
-      # constant time. Raises [Bytes::Secret::WipedError] when either was
-      # wiped.
+      # constant time. Raises [Bytes::Secret::WipedError] when either key
+      # was wiped; any other value (a [Bytes::Secret], an AES key) is not
+      # equal, and raises only when this key was wiped.
       native def ==(other: Object) -> Bool
 
-      # `#<Crypto::RSA::PrivateKey 2048 bits>`: never the key.
+      # `#<Crypto::RSA::PrivateKey 2048 bits>`: never the key; the size
+      # still once wiped.
       def inspect -> String = "#<Crypto::RSA::PrivateKey #{bits} bits>"
 
       # :ditto:

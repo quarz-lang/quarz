@@ -7,7 +7,7 @@ dir = ARGV[0]
 key = Crypto::RSA::PrivateKey.generate(2048)
 message = "signed by quarz"
 File.write(File.join(dir, "pub.pem"), key.public_key.to_pem)
-File.write(File.join(dir, "key.pem"), key.to_pem(format: :pkcs1))
+File.write(File.join(dir, "key.pem"), key.export_pem(format: :pkcs1).expose_bytes)
 File.write(File.join(dir, "message.txt"), message)
 File.write(File.join(dir, "sig_pkcs1v15.bin"), key.sign(message, :sha256))
 File.write(File.join(dir, "sig_pss.bin"), key.sign_pss(message, :sha384))

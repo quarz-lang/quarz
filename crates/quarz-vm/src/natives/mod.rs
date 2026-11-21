@@ -760,7 +760,7 @@ mod compile_time_tests {
                     | "Kernel#exit"
                     | "Kernel#gets"
                     | "Crypto.random_bytes"
-                    | "Crypto::RSA.generate_der"
+                    | "Crypto::RSA::PrivateKey.generate_with"
                     | "Array#shuffle"
                     | "Array#sample"
             );
@@ -782,7 +782,7 @@ mod compile_time_tests {
                         | "Time#year"
                         | "Time.at"
                         | "Crypto::RSA::PublicKey#verify"
-                        | "Crypto::AES.seal_with"
+                        | "Crypto::AES::GCM#seal"
                 )
             {
                 assert!(
