@@ -1,0 +1,40 @@
+# A native called with its arguments borrowed (#988) copies no more than
+# with an argument list: the natives that keep the list itself
+# (`instance_exec`, `Set[...]`, `p` of several values) and those that
+# keep an argument (`Array#push`, `Hash#put`, `Set#add`), each argument
+# updated after the call, as on main.
+class Box
+  def initialize; end
+end
+n = 0
+100.times do |i|
+  row = [i]
+  r = Box.new.instance_exec(row) { |a| a.size }
+  row = row.push(1)
+  n += r + row.size
+end
+100.times do |i|
+  a = [i]
+  s = Set[a, [i + 1000]]
+  a = a.push(1)
+  n += s.size + a.size
+end
+100.times do |i|
+  a = [i]
+  b = [i, i]
+  p(a, b) if i == 0
+  a = a.push(1)
+  n += a.size + b.size
+end
+xs: Array[Array[Int]] = []
+h: Hash[Int, Array[Int]] = {}
+set: Set[Array[Int]] = Set.new
+100.times do |i|
+  row = [i]
+  xs = xs.push(row)
+  h = h.put(i, row)
+  set = set.add(row)
+  row = row.push(1)
+  n += row.size
+end
+p n, xs.size, h.size, set.size
