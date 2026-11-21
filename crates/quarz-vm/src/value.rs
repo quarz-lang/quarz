@@ -4453,6 +4453,60 @@ mod tests {
         assert!(!after.cyclic);
     }
 
+    /// `Object::with_nil_fields` makes the object `Object::new` makes
+    /// from nils (#1000): every field reads nil, word fields (`Int`,
+    /// `Float`, `Bool`) and value fields (`Int?`, `String`) alike, and a
+    /// later store and read round-trip the same on both, a value that
+    /// goes aside (`INT_MARK`) and a nil again included.
+    #[test]
+    fn nil_fields_are_those_of_an_object_made_from_nils() {
+        use super::{Object, Value, INT_MARK};
+        super::register_layouts(&[class("W", &["Int", "Float", "Bool", "Int?", "String"])]);
+        let n = 5;
+        let direct = Object::with_nil_fields(0, n);
+        let from_nils = Object::new(0, smallvec::smallvec![Value::Nil; n]);
+        let shown = |o: &Object| -> Vec<String> {
+            (0..n)
+                .map(|i| format!("{:?}", o.field(i).unwrap()))
+                .collect()
+        };
+        assert!(
+            shown(&direct).iter().all(|f| f == "Nil"),
+            "{:?}",
+            shown(&direct)
+        );
+        assert_eq!(shown(&direct), shown(&from_nils));
+        let values = || {
+            vec![
+                Value::Int(7),
+                Value::Float(1.5),
+                Value::Bool(true),
+                Value::Int(3),
+                Value::Nil,
+            ]
+        };
+        for o in [&direct, &from_nils] {
+            for (i, v) in values().into_iter().enumerate() {
+                o.set_field(i, v);
+            }
+        }
+        assert_eq!(shown(&direct), shown(&from_nils));
+        assert_eq!(
+            shown(&direct)[..4],
+            ["Int(7)", "Float(1.5)", "Bool(true)", "Int(3)"]
+        );
+        // A value the word cannot hold goes aside, and a nil comes back.
+        for o in [&direct, &from_nils] {
+            o.set_field(0, Value::Int(INT_MARK));
+            o.set_field(1, Value::Nil);
+        }
+        assert_eq!(shown(&direct), shown(&from_nils));
+        assert_eq!(
+            shown(&direct)[..2],
+            [format!("Int({INT_MARK})"), "Nil".to_string()]
+        );
+    }
+
     #[test]
     fn field_types_that_cannot_lead_back() {
         for ty in [
