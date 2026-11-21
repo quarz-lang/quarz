@@ -52,7 +52,6 @@ pub(crate) const OPS: &[(&str, &[Ty])] = {
     const P: Ty = Ty::Ptr;
     &[
         ("qz_op_load_const", &[I, I]),
-        ("qz_op_has_arg", &[I, I]),
         ("qz_op_field_get_by_name", &[I, I, I, I]),
         ("qz_op_const_get", &[I, I]),
         ("qz_op_variant_singleton", &[I, I]),
@@ -2217,8 +2216,7 @@ impl<B: Builder> Gen<'_, B> {
         );
         if matches!(
             inst,
-            Inst::HasArg { .. }
-                | Inst::Equal { .. }
+            Inst::Equal { .. }
                 | Inst::CaseEq { .. }
                 | Inst::IsArray { .. }
                 | Inst::IsHash { .. }
@@ -3415,7 +3413,6 @@ impl<B: Builder> Gen<'_, B> {
             Inst::LoadConst { dst, idx } => {
                 ("qz_op_load_const", vec![w(self, *dst), w(self, *idx)])
             }
-            Inst::HasArg { dst, index } => ("qz_op_has_arg", vec![w(self, *dst), w(self, *index)]),
             Inst::FieldGetByName {
                 dst,
                 found,
@@ -4892,6 +4889,28 @@ impl<B: Builder> Gen<'_, B> {
                         self.b.switch_to_block(join);
                         self.b.block_params(join)[0]
                     }
+                };
+                self.store_bool(*dst, v);
+            }
+            // Whether the call gave parameter `index` (#938): the
+            // activation's `provided` mask, as `Activation::has_arg` reads
+            // it (`index >= 64` is given: no method has a default there,
+            // #1002), instead of `qz_op_has_arg`.
+            Inst::HasArg { dst, index } => {
+                // (Only a typed entry may run without its activation,
+                // `lazy_act`: one never has a `HasArg`, `unbox`'s `plain`.)
+                assert!(
+                    self.typed.is_none() && self.entry_of.is_none(),
+                    "a `HasArg` in a typed entry, which may have no activation"
+                );
+                let v = if *index >= 64 {
+                    self.b.iconst(Ty::I8, 1)
+                } else {
+                    let mask = self.b.load(Ty::I64, self.act, L::ACT_PROVIDED as i32);
+                    let shifted = self.b.sshr_imm(mask, i64::from(*index));
+                    let one = self.b.iconst(Ty::I64, 1);
+                    let bit = self.b.band(shifted, one);
+                    self.b.ireduce(Ty::I8, bit)
                 };
                 self.store_bool(*dst, v);
             }
