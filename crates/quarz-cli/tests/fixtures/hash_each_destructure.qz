@@ -1,0 +1,26 @@
+# #993: `Hash#each` and `Hash::Builder#each` call a block that destructures
+# (`|k, v|`) with the key and the value apart, making no `[k, v]` per
+# entry; a block taking the pair as one value still gets `[k, v]`. What
+# each block binds is the same either way.
+h = {"a" => 1, "b" => 2}
+h.each { |k, v| puts "#{k}=#{v}" }
+h.each { |pair| p pair }
+h.each { |k, *rest| p k, rest }
+total = 0
+h.each { |k, v| total += v }
+p total
+def first_big(h: Hash[String, Int]) -> String?
+  h.each { |k, v| return k if v > 1 }
+  nil
+end
+p first_big(h)
+ints = {1 => 2, 3 => 4}
+ints.each { |k, v| p k + v }
+seen = Array::Builder[String].new
+h.each { |k, v| h.each { |k2, v2| seen << "#{k}#{k2}#{v * v2}" } }
+p seen.to_a
+b = Hash::Builder[String, Int].new
+b["x"] = 10
+b["y"] = 20
+b.each { |k, v| puts "#{k}:#{v + 1}" }
+b.each { |pair| p pair }

@@ -589,6 +589,15 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let b = block(i, &a)?;
         let h = hash(i, r)?.clone();
         let h = h.as_map();
+        // A block that destructures gets the key and the value apart, as
+        // `each_pair` gives them, without a `[k, v]` per entry (#993).
+        if i.spreads_pair(&b) {
+            let rb = i.repeated_block(&b);
+            for (k, v) in h.iter() {
+                rb.call(i, smallvec![k.clone(), v.clone()])?;
+            }
+            return Ok(Value::Nil);
+        }
         super::each_value(
             i,
             h.iter()
@@ -812,6 +821,14 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
+        // (A block that destructures: the key and the value apart, #993.)
+        if i.spreads_pair(&b) {
+            let rb = i.repeated_block(&b);
+            for (k, v) in items {
+                rb.call(i, smallvec![k, v])?;
+            }
+            return Ok(Value::Nil);
+        }
         for (k, v) in items {
             i.call_block(&b, smallvec![Value::array(vec![k, v])])?;
         }
