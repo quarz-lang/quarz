@@ -99,6 +99,13 @@ fn a_task_suspended_in_a_native_with_borrowed_arguments() {
     prints_its_out("borrowed_args.qz");
 }
 
+/// #939: classes constructed inline in compiled code, in tasks on several
+/// workers.
+#[test]
+fn constructions_inline_in_tasks() {
+    prints_its_out("construct_inline.qz");
+}
+
 #[test]
 fn a_kept_block_caller_across_suspensions_between_workers() {
     prints_its_out("kept_blocks.qz");

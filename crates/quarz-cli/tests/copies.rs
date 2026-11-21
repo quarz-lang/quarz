@@ -138,6 +138,14 @@ fn a_native_with_borrowed_arguments_copies_no_more_than_before() {
     check("borrowed_args.qz", 201);
 }
 
+/// #939: a construction compiled inline copies what the runtime's did: an
+/// argument kept in a field once when the caller's variable is updated
+/// after, and a fresh last value of `initialize` none.
+#[test]
+fn an_inline_construction_copies_no_more_than_before() {
+    check("construct_inline.qz", 200);
+}
+
 #[test]
 fn an_early_exit_from_any_or_all_leaves_no_reference_behind() {
     check("early_exit.qz", 0);

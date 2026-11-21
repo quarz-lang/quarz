@@ -17,6 +17,23 @@ class Pt
   def initialize(@x: Int); end
   def x -> Int = @x
 end
+# (#939's forms: three fields, the last two with defaults or not, and a
+# field default.)
+class Bare
+  @a: Int
+  @b: Int?
+  @c: Bool
+  def initialize(@a: Int, @b: Int?, @c: Bool); end
+  def a -> Int = @a
+end
+class Box3
+  @a: Int
+  @b: Int?
+  @c: Bool
+  @d: Int = 0
+  def initialize(@a: Int, @b: Int? = nil, @c: Bool = false); end
+  def a -> Int = @a
+end
 def plus(x: Int) -> Int = x + 1
 # (Recursive: not inlined.)
 def kept(x: Int) -> Int = x >= 0 ? x + 1 : kept(x + 1)
@@ -112,6 +129,21 @@ when "dynamic_call"
 when "new"
   while i < n
     acc = Pt.new(i).x
+    i += 1
+  end
+when "new_bare"
+  while i < n
+    acc = Bare.new(i, nil, false).a
+    i += 1
+  end
+when "new_defaults"
+  while i < n
+    acc = Box3.new(i).a
+    i += 1
+  end
+when "new_defaults_given"
+  while i < n
+    acc = Box3.new(i, nil, false).a
     i += 1
   end
 when "keywords"

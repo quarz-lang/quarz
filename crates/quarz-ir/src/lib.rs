@@ -1950,6 +1950,19 @@ impl DispatchView for RtWorld {
     }
 }
 
+/// The `deinitialize` instances of class `cid` run when released: by
+/// name, along `lookup` (not the membership `ancestors`). The runtime
+/// (`Interp::deinitializer`) and the AOT (a construction inline only for
+/// a class without one, #939) both read it here.
+pub fn deinitializer(classes: &[RtClass], cid: ClassId) -> Option<MethodId> {
+    classes[cid as usize].lookup.iter().find_map(|a| {
+        classes[*a as usize]
+            .methods
+            .get("deinitialize")
+            .and_then(|ms| ms.first().copied())
+    })
+}
+
 impl RtWorld {
     pub fn class(&self, id: ClassId) -> &RtClass {
         &self.classes[id as usize]

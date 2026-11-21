@@ -1350,15 +1350,7 @@ impl Interp {
 
     /// The `deinitialize` instances of class `cid` run when released.
     fn deinitializer(&self, cid: ClassId) -> Option<MethodId> {
-        let world = &self.program.world;
-        // (By name: `lookup`, not the membership `ancestors`.)
-        world.class(cid).lookup.iter().find_map(|a| {
-            world
-                .class(*a)
-                .methods
-                .get("deinitialize")
-                .and_then(|ms| ms.first().copied())
-        })
+        quarz_ir::deinitializer(&self.program.world.classes, cid)
     }
 
     /// Run the `deinitialize` of the objects released since the last
@@ -3896,6 +3888,23 @@ impl Interp {
         }
     }
 
+    /// Run the field defaults of `value`, a new object of a class (not a
+    /// data type), in order (`construct`, and compiled code's inline
+    /// construction through `qz_field_defaults`, #939).
+    pub fn field_defaults(&self, value: &Value) -> Result<(), Flow> {
+        let Value::Object(obj) = value else {
+            return Err(self.err_type("field defaults of a non-object"));
+        };
+        let info = self.program.world.class(obj.class);
+        for (i, f) in info.ivars.iter().enumerate() {
+            if let Some(d) = f.default {
+                let v = self.run_init(d, value.clone(), info.file)?;
+                self.logical_set(obj, i, v);
+            }
+        }
+        Ok(())
+    }
+
     /// Allocate an instance and run its initializer.
     pub fn construct(
         &self,
@@ -3935,12 +3944,7 @@ impl Interp {
         let made = (|| {
             // Field defaults (data types evaluate them in their constructor).
             if !matches!(info.kind, RtClassKind::Data | RtClassKind::Variant) {
-                for (i, f) in info.ivars.iter().enumerate() {
-                    if let Some(d) = f.default {
-                        let v = self.run_init(d, value.clone(), info.file)?;
-                        self.logical_set(&obj, i, v);
-                    }
-                }
+                self.field_defaults(&value)?;
             }
             if let Some(init) = init {
                 self.invoke(init, value.clone(), args, kw, block)?;

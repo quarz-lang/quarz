@@ -370,6 +370,12 @@ pub unsafe extern "C" fn qz_leave(
     }
     rt.call_ended(&r);
     match r {
+        // (`u32::MAX`: a result nobody reads, an inline construction's
+        // `initialize`, #939: released.)
+        Ok(v) if dst == u32::MAX => {
+            drop(v);
+            STATUS_OK
+        }
         Ok(v) => {
             *regs.add(dst as usize) = v;
             STATUS_OK
@@ -1055,6 +1061,52 @@ pub unsafe extern "C" fn qz_alloc_data(
         src,
         nfields as usize,
     ));
+}
+
+/// The object of a construction compiled code makes inline (#939): what
+/// `Interp::construct` allocates, every field nil (laid out by
+/// `quarz_ir::field_slots`, the runtime writing the word fields' marks),
+/// into `dst`. A key's pending `==`/`hash` error is raised first, as
+/// `invoke` does before `initialize`.
+///
+/// # Safety
+/// As for `qz_raise`; `regs` is the register file.
+#[no_mangle]
+pub unsafe extern "C" fn qz_alloc_object(
+    rt: *const Interp,
+    regs: *mut Value,
+    class: u32,
+    dst: u32,
+) -> u32 {
+    let rt = &*rt;
+    if let Err(flow) = crate::keys::check() {
+        return rt.park_flow(flow);
+    }
+    let info = rt.program.world.class(class);
+    debug_assert!(
+        !info.built_by_runtime,
+        "inline `new` of a class the runtime builds"
+    );
+    *regs.add(dst as usize) = Value::Object(crate::value::Object::new(
+        class,
+        smallvec::smallvec![Value::Nil; info.fields.len()],
+    ));
+    STATUS_OK
+}
+
+/// The field defaults of the object in `dst`, made by `qz_alloc_object`:
+/// `Interp::construct`'s own loop (#939).
+///
+/// # Safety
+/// As for `qz_raise`; `dst` holds an object of a class with defaults.
+#[no_mangle]
+pub unsafe extern "C" fn qz_field_defaults(rt: *const Interp, regs: *mut Value, dst: u32) -> u32 {
+    let rt = &*rt;
+    let value = (*regs.add(dst as usize)).clone();
+    match rt.field_defaults(&value) {
+        Ok(()) => STATUS_OK,
+        Err(flow) => rt.park_flow(flow),
+    }
 }
 
 /// `Class.new(args)` with positional arguments only.

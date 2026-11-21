@@ -1,0 +1,131 @@
+# #939: compiled code constructs a class inline (the runtime allocates the
+# object and runs its field defaults; the compiled `initialize` is called
+# directly, its result released) when the class has no `deinitialize` and
+# its `initialize` is a compiled body with positional parameters; the
+# rest goes through the runtime's construction. Both give what the VM
+# gives.
+class Res
+  @name: String
+  def initialize(@name: String); end
+  def deinitialize -> Void
+    puts "Res#deinitialize #{@name}"
+  end
+end
+
+class Plain
+  @n: Int = 7
+  @m: Int = 0
+  def n -> Int = @n + @m
+end
+
+class Pt
+  @x: Int
+  def initialize(@x: Int); end
+  def x -> Int = @x
+end
+
+class Box
+  @a: Int
+  @b: Int?
+  @c: Bool
+  @f: Float = 1.5
+  def initialize(@a: Int, @b: Int? = nil, @c: Bool = false); end
+  def show -> String = "#{@a} #{@b.inspect} #{@c} #{@f}"
+end
+
+class Cell[T]
+  @v: T
+  def initialize(@v: T); end
+  def v -> T = @v
+end
+
+class GS < Cell[Int]
+end
+
+class Base2
+  @a: Int
+  def initialize(@a: Int); end
+  def a -> Int = @a
+end
+
+class Sub2 < Base2
+  @b: Int
+  def initialize(a: Int, @b: Int)
+    super(a)
+  end
+  def sum -> Int = a + @b
+end
+
+class Kid < Pt
+end
+
+class Over < Pt
+  def initialize(x: Int)
+    super(x * 2)
+  end
+end
+
+data P2 = (x: Int, y: Int)
+
+class HasP
+  @p: P2
+  def initialize(@p: P2); end
+  def p2 -> P2 = @p
+end
+
+class Holder
+  @r: Res
+  def initialize(@r: Res)
+    raise ArgumentError, "no holder"
+  end
+end
+
+class MakesRes
+  def initialize
+    Res.new("last")
+  end
+end
+
+class Keep
+  @xs: Array[Int]
+  def initialize(@xs: Array[Int]); end
+  def xs -> Array[Int] = @xs
+end
+
+class Fac
+  @v: Int
+  def initialize(@v: Int); end
+  def self.make(v: Int) -> Fac = new(v)
+  def v -> Int = @v
+end
+
+class Deep
+  @n: Int
+  def initialize(@n: Int)
+    Deep.new(@n + 1)
+  end
+end
+
+p Plain.new.n, Pt.new(3).x
+puts Box.new(1).show, Box.new(2, 5, true).show
+p Cell.new("s").v, Cell[Int].new(4).v, GS.new(6).v
+p Sub2.new(1, 2).sum, Kid.new(5).x, Over.new(5).x, Pt.new(5).x
+p HasP.new(P2.new(1, 2)).p2.y
+begin
+  Holder.new(Res.new("held"))
+rescue ArgumentError => e
+  puts "rescued #{e.message}"
+end
+puts "after holder"
+MakesRes.new
+puts "after makes"
+xs = [1, 2]
+k = Keep.new(xs)
+p k.xs, Fac.make(9).v
+r = Res.new("kept")
+puts r.inspect.size > 0
+begin
+  Deep.new(0)
+rescue SystemStackError => e
+  puts "too deep"
+end

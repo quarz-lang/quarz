@@ -1,0 +1,18 @@
+# #939: constructions inline in tasks on several workers: each task's
+# objects are its own; the results are the same whatever the scheduling.
+class Pt
+  @x: Int
+  @tag: String = "pt"
+  def initialize(@x: Int); end
+  def x -> Int = @x
+  def tag -> String = @tag
+end
+
+tasks = (0...8).map do |t|
+  Task.spawn do
+    sum = 0
+    1000.times { |i| sum += Pt.new(t * 1000 + i).x }
+    [sum, Pt.new(t).tag.size]
+  end
+end
+p tasks.map { |t| t.await }
