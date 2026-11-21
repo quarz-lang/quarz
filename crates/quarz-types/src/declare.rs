@@ -6919,6 +6919,9 @@ impl<'ast> Declarer<'ast> {
                 span: p.span,
             });
         }
+        if let Some((i, message)) = late_default_rule(&params) {
+            self.error(message, params[i].span);
+        }
         let ret = match &def.ret {
             Some(t) => self.resolve_result_type(t, &scope).unwrap_or(Type::Nothing),
             None if def.name == "initialize" || def.name == "deinitialize" => Type::Void,
@@ -7407,6 +7410,28 @@ fn sealed_name(name: &str) -> Option<String> {
         _ => return None,
     };
     Some(format!("`{name}` cannot be redefined: {why}"))
+}
+
+/// A default on a parameter past the 64th (#1002, decided: an error at
+/// the declaration): an activation records the arguments given in a mask
+/// of 64 bits, so `HasArg` of a later parameter could not tell one left
+/// out from one given, and its default would never run. The first such
+/// parameter, with the message. (`data` constructors track the fields
+/// given themselves and are not declared through here.)
+pub(crate) fn late_default_rule(params: &[ParamInfo]) -> Option<(usize, String)> {
+    let (i, p) = params
+        .iter()
+        .enumerate()
+        .skip(64)
+        .find(|(_, p)| p.default.is_some())?;
+    Some((
+        i,
+        format!(
+            "parameter `{}` is parameter {} and has a default: only a method's first 64 parameters can have one; make the later ones required, or pass them in a `data` value or a hash",
+            p.name,
+            i + 1
+        ),
+    ))
 }
 
 /// `==` and `!=` take one parameter, an `Object`: the runtime calls a

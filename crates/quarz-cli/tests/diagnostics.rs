@@ -240,6 +240,34 @@ fn block_and_lambda_parameters_take_no_default() {
     assert!(!out.contains("expected"), "{out}");
 }
 
+/// #1002: a default on a parameter past the 64th is an error at its
+/// declaration, positional or keyword-only, in a method or `initialize`
+/// (an activation's `provided` mask has 64 bits). More than 64 parameters
+/// without a late default, and a `data` type's late defaults (its
+/// constructor tracks the fields given itself), are accepted.
+#[test]
+fn a_default_past_the_64th_parameter_is_refused() {
+    let ps: Vec<String> = (1..=64).map(|i| format!("a{i}: Int")).collect();
+    let ps = ps.join(", ");
+    let src = format!(
+        "def f({ps}, a65: Int = 7, a66: Int = 8) -> Int = a65\ndef g({ps}, *, a65: Int, a66: Int = 8) -> Int = a65\nclass C\n  def initialize({ps}, a65: Int = 1); end\nend\ndef ok({ps}, a65: Int, a66: Int) -> Int = a66\ndef ok64(a0: Int, {ps}) -> Int = a64\ndata D = ({ps}, a65: Int = 1, a66: Int = 2)\n"
+    );
+    let out = common::diagnostics(&src).join("\n");
+    let tail = "and has a default: only a method's first 64 parameters can have one; make the later ones required, or pass them in a `data` value or a hash";
+    for (at, name) in [
+        (":1:", "`a65` is parameter 65"),
+        (":2:", "`a66` is parameter 66"),
+        (":4:", "`a65` is parameter 65"),
+    ] {
+        let want = format!("error: parameter {name} {tail}");
+        assert!(
+            out.lines().any(|l| l.contains(at) && l.contains(&want)),
+            "{want}\n{out}"
+        );
+    }
+    assert_eq!(out.matches("only a method's first 64").count(), 3, "{out}");
+}
+
 /// A positional argument after a keyword argument is a syntax error: it
 /// would bind to the keyword's parameter, dropping the keyword's value.
 #[test]

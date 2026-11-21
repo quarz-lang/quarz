@@ -3732,6 +3732,55 @@ fn self_new_in_a_generated_method() {
 /// interpreted and compiled; a `super` in one, past a class that writes
 /// no `initialize` (whose field defaults still run first); `Self.new` in
 /// an inherited method, and `new` checked as for written overloads.
+/// #1002 (c): a method or `initialize` generated with `keywords:` binds
+/// any number of keywords: those past the 64th (beyond the activation's
+/// 64-bit `provided` mask) are in the hash when given, required or
+/// optional, and absent when an optional one is left out; the hash is in
+/// the order of the parameters. Interpreted and compiled.
+#[test]
+fn generated_keywords_past_the_64th_are_bound() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r##"class Wide
+  @seen: String = ""
+  def seen -> String = @seen
+  static def self.wide -> Void
+    keys = (1..66).map { |i| Meta::Keyword.new(:"k#{i}", Int, i == 1 || i == 65) }
+    def_method(:with, keywords: keys) do |given| -> String
+      given.keys.map { |k| "#{k}=#{given[k]}" }.join(" ")
+    end
+    def_initialize(keywords: keys) do |given|
+      @seen = given.keys.map { |k| "#{k}=#{given[k]}" }.join(" ")
+    end
+  end
+end
+"##,
+    );
+    let all = |base: i64| -> (String, String) {
+        let args: Vec<String> = (1..=66).map(|i| format!("k{i}: {}", base + i)).collect();
+        let seen: Vec<String> = (1..=66).map(|i| format!("k{i}={}", base + i)).collect();
+        (args.join(", "), seen.join(" "))
+    };
+    let (new_all, new_all_seen) = all(0);
+    let (with_all, with_all_seen) = all(100);
+    let app = format!(
+        "require_relative \"lib\"\nclass W < Wide\n  wide\nend\nw = W.new({new_all})\nputs w.seen\nputs W.new(k66: 66, k65: 65, k1: 1).seen\nputs W.new(k1: 1, k2: 2, k65: 65).seen\nputs w.with({with_all})\nputs w.with(k66: 166, k65: 165, k1: 101)\nputs w.with(k1: 101, k2: 102, k65: 165)\n"
+    );
+    write(&d.0, "app.qz", &app);
+    let expected = format!(
+        "{new_all_seen}\nk1=1 k65=65 k66=66\nk1=1 k2=2 k65=65\n{with_all_seen}\nk1=101 k65=165 k66=166\nk1=101 k2=102 k65=165\n"
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[("QUARZ_VERIFY", "moves")]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(&d.0, &["build", "app.qz", "-o", "app.bin"], &[]);
+    assert!(ok, "{err}");
+    let run = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+}
+
 const INIT_LIB: &str = r##"data Point = (x: Int, y: Int)
 class Base
   @point: Point

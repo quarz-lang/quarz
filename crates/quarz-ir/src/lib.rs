@@ -1972,7 +1972,9 @@ pub fn keyword_param(params: &[RtParam], name: &str) -> Option<usize> {
 /// refuses is never laid out with a nil in its place. Also `None` for a
 /// method of more than 64 parameters: an activation's `provided` mask has
 /// a bit for the first 64 only (`HasArg` takes a later one as given), so
-/// one left out there could not be told from one given (#1002).
+/// one left out there could not be told from one given. The checker
+/// refuses a default past the 64th (#1002), so such a method is legal
+/// only without one; the guard stays, the simpler rule for this layout.
 pub fn keyword_slots(params: &[RtParam], npos: usize, names: &[&str]) -> Option<Vec<usize>> {
     if params.len() > 64 {
         return None;

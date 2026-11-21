@@ -3758,21 +3758,26 @@ impl Interp {
         let m = self.program.method(mid);
         let n = m.params.len();
         let mut values: ArgVec = smallvec![Value::Nil; n + usize::from(m.has_block)];
-        let mut provided = 0u64;
-        let bit = |i: usize| if i < 64 { 1u64 << i } else { 0 };
+        // The parameters given: `provided`, the activation's mask, has a
+        // bit for the first 64 (a method declares no default past them,
+        // #1002); `Given` records every one, for the keyword binding
+        // below and a method generated with `keywords:`, which may have
+        // any number of keywords. (Past 64 only: nothing allocated for
+        // a method of 64 parameters or fewer.)
+        let mut given = Given::new(n + usize::from(m.has_block));
         let mut args = args.into_iter();
         for (i, p) in m.params.iter().enumerate() {
             match p.kind {
                 RtParamKind::Positional => {
                     if let Some(a) = args.next() {
                         values[i] = a;
-                        provided |= bit(i);
+                        given.set(i);
                     }
                 }
                 RtParamKind::Rest => {
                     let rest: Vec<Value> = args.by_ref().collect();
                     values[i] = Value::array(rest);
-                    provided |= bit(i);
+                    given.set(i);
                 }
                 _ => {}
             }
@@ -3794,21 +3799,21 @@ impl Interp {
                 }
                 let found = quarz_ir::keyword_param(&m.params, &name);
                 match found {
-                    Some(i) if provided & bit(i) == 0 => {
+                    Some(i) if !given.get(i) => {
                         values[i] = v;
-                        provided |= bit(i);
+                        given.set(i);
                     }
                     _ => kwrest.push((sym, v)),
                 }
             }
             for (i, p) in m.params.iter().enumerate() {
-                if p.kind == RtParamKind::KeywordRest && provided & bit(i) == 0 {
+                if p.kind == RtParamKind::KeywordRest && !given.get(i) {
                     let mut map = ValueMap::default();
                     for (sym, v) in kwrest.drain(..) {
                         map.insert(Value::Symbol(sym), v);
                     }
                     values[i] = Value::Hash(Rc::new(crate::value::HashData::from(map)));
-                    provided |= bit(i);
+                    given.set(i);
                 }
             }
         } else {
@@ -3816,14 +3821,14 @@ impl Interp {
                 if p.kind == RtParamKind::KeywordRest {
                     values[i] =
                         Value::Hash(Rc::new(crate::value::HashData::from(ValueMap::default())));
-                    provided |= bit(i);
+                    given.set(i);
                 }
             }
         }
         if m.has_block {
             if let Some(b) = block {
                 values[n] = b;
-                provided |= bit(n);
+                given.set(n);
             }
         }
         // A method generated with `keywords:` (docs/14 §5): its body takes
@@ -3831,7 +3836,7 @@ impl Interp {
         if m.keyword_hash {
             let mut map = ValueMap::default();
             for (i, p) in m.params.iter().enumerate() {
-                if provided & bit(i) != 0 {
+                if given.get(i) {
                     let v = std::mem::replace(&mut values[i], Value::Nil);
                     map.insert(Value::Symbol(self.intern(&p.name)), v);
                 }
@@ -3840,7 +3845,7 @@ impl Interp {
             return Ok((smallvec![hash], 1));
         }
         let _ = recv;
-        Ok((values, provided))
+        Ok((values, given.low))
     }
 
     /// For `new` on a class method's receiver: the class the receiver
@@ -4710,6 +4715,39 @@ fn requirement(program: &Program, module: ClassId, name: &str) -> Option<MethodI
             let m = program.method(m);
             m.owner == module && m.name == name && m.is_abstract
         })
+}
+
+/// The parameters a call gave (`Interp::bind_params`): the first 64 as the
+/// activation's `provided` mask, the others in a list of their own, empty
+/// for a method of 64 parameters or fewer.
+struct Given {
+    low: u64,
+    high: Vec<bool>,
+}
+
+impl Given {
+    fn new(n: usize) -> Given {
+        Given {
+            low: 0,
+            high: vec![false; n.saturating_sub(64)],
+        }
+    }
+
+    fn set(&mut self, i: usize) {
+        if i < 64 {
+            self.low |= 1u64 << i;
+        } else {
+            self.high[i - 64] = true;
+        }
+    }
+
+    fn get(&self, i: usize) -> bool {
+        if i < 64 {
+            self.low & (1u64 << i) != 0
+        } else {
+            self.high[i - 64]
+        }
+    }
 }
 
 #[cfg(test)]
