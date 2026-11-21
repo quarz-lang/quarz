@@ -1158,7 +1158,11 @@ fn layout_for(class: ClassId, n: usize) -> &'static FieldLayout {
 /// Whether `TAKEN` is in use: set once a `FieldTake` records a field,
 /// which it does only while the facts are checked (`Interp::verify`).
 /// Freeing an object reads it (a relaxed load) and touches `TAKEN` only
-/// when it is set, so no other program pays for the record (#704).
+/// when it is set (#704). The record exists only in a build with
+/// `debug_assertions` (where the facts are checked by default, and the
+/// tests run): a release build under `QUARZ_VERIFY` keeps none, and its
+/// `Drop` reads nothing for it.
+#[cfg(debug_assertions)]
 static TAKE_RECORD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The fields `FieldTake` took out of objects (#704), by the object's
@@ -1166,22 +1170,31 @@ static TAKE_RECORD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 /// read of one is a violation, and the object is freed with each still
 /// taken (nil). Process-wide: an object may be freed on another worker
 /// than the one that took its field, and its entry goes with it there.
+#[cfg(debug_assertions)]
 static TAKEN: std::sync::Mutex<Option<std::collections::HashSet<(usize, usize)>>> =
     std::sync::Mutex::new(None);
 
+#[cfg(debug_assertions)]
 fn taken_set<R>(f: impl FnOnce(&mut std::collections::HashSet<(usize, usize)>) -> R) -> R {
     let mut t = TAKEN.lock().unwrap_or_else(|e| e.into_inner());
     f(t.get_or_insert_with(std::collections::HashSet::default))
 }
 
-/// Record that field `i` of `o` was taken (`FieldTake`, under `verify`).
+/// Record that field `i` of `o` was taken (`FieldTake`, under `verify`;
+/// nothing in a release build).
+#[cfg(debug_assertions)]
 pub(crate) fn note_taken(o: &Object, i: usize) {
     let addr = o as *const Object as *const u8 as usize;
     TAKE_RECORD.store(true, std::sync::atomic::Ordering::Relaxed);
     taken_set(|t| t.insert((addr, i)));
 }
 
-/// Whether field `i` of `o` was taken (`FieldTake`, under `verify`).
+#[cfg(not(debug_assertions))]
+pub(crate) fn note_taken(_: &Object, _: usize) {}
+
+/// Whether field `i` of `o` was taken (`FieldTake`, under `verify`;
+/// never known in a release build).
+#[cfg(debug_assertions)]
 pub(crate) fn was_taken(o: &Object, i: usize) -> bool {
     if !TAKE_RECORD.load(std::sync::atomic::Ordering::Relaxed) {
         return false;
@@ -1190,11 +1203,17 @@ pub(crate) fn was_taken(o: &Object, i: usize) -> bool {
     taken_set(|t| t.contains(&(addr, i)))
 }
 
+#[cfg(not(debug_assertions))]
+pub(crate) fn was_taken(_: &Object, _: usize) -> bool {
+    false
+}
+
 /// The fields of the object at `addr` (fields at `base`) that `FieldTake`
 /// took: forgotten, each asserted still nil (#704).
 ///
 /// # Safety
 /// `base` is the fields of a live object laid out by `layout`.
+#[cfg(debug_assertions)]
 #[cold]
 #[inline(never)]
 unsafe fn check_taken_on_free(layout: &FieldLayout, base: *mut u8, addr: usize) {
@@ -1219,8 +1238,10 @@ impl<F: ?Sized + FieldTail> Drop for ObjectOf<F> {
     fn drop(&mut self) {
         let layout = self.layout;
         // (A field `FieldTake` took is freed still taken: nothing wrote it
-        // back, #704. Recorded only while the facts are checked: one
-        // relaxed load otherwise.)
+        // back, #704. Recorded only while the facts are checked, in a
+        // build with `debug_assertions`: one relaxed load otherwise, and
+        // nothing in a release build.)
+        #[cfg(debug_assertions)]
         if TAKE_RECORD.load(std::sync::atomic::Ordering::Relaxed) {
             let base = &raw mut self.fields as *mut u8;
             let addr = self as *const Self as *const u8 as usize;

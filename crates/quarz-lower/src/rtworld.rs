@@ -652,7 +652,6 @@ fn rt_kind(world: &World, t: &Type) -> Option<String> {
     }
 }
 
-/// The classes `t` names (as instances or as class objects).
 /// The classes a field's declared type is made of, itself first, when
 /// every node of it is a class (`Type::Class`), through unions and tuples
 /// (`Array[Int]?`, `Array[[Int, String]]`); `None` as soon as any node is
@@ -691,6 +690,7 @@ fn field_classes(t: &Type) -> Option<Vec<ClassId>> {
     Some(out)
 }
 
+/// The classes `t` names (as instances or as class objects).
 fn classes_in(t: &Type, out: &mut Vec<ClassId>) {
     match t {
         Type::Class(c, args) | Type::ClassObject(c, args) => {
