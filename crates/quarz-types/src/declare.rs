@@ -147,6 +147,9 @@ pub struct Declarer<'ast> {
     /// The modules extensions include, where (extension, module, span,
     /// file), checked once fields are known (`check_shareable_extensions`).
     ext_includes: Vec<(ExtensionId, Type, Span, u32)>,
+    /// Each class's own includes, where (module, type, span, file), for
+    /// the errors reported at one (`check_partial_includes`, #602).
+    class_includes: HashMap<ClassId, Vec<(ClassId, Type, Span, u32)>>,
     /// A library cog's top-level includes (root, module, span, file),
     /// checked once members are known (`check_cog_root_includes`).
     root_includes: Vec<(ClassId, ClassId, Span, u32)>,
@@ -263,6 +266,7 @@ impl<'ast> Declarer<'ast> {
             units: Vec::new(),
             class_usings: HashMap::default(),
             ext_includes: Vec::new(),
+            class_includes: HashMap::default(),
             root_includes: Vec::new(),
             in_app: false,
             deferred: Vec::new(),
@@ -1160,6 +1164,7 @@ impl<'ast> Declarer<'ast> {
             self.check_kept_blocks(p.id);
             self.check_quoted_overrides(p.id);
             self.check_override_returns(p.id);
+            self.check_partial_includes(p.id);
             self.check_include_overrides(p.id);
             self.check_class_include_overrides(p.id);
             self.check_class_side_overrides(p.id);
@@ -3114,6 +3119,131 @@ impl<'ast> Declarer<'ast> {
     /// subtype): a caller typed by the parent, or a native calling `to_s`
     /// or `==` by name, relies on it. A method without a return type
     /// returns nil, so it overrides none that returns a value.
+    /// #602: an include (the class's own, or an extension's) whose
+    /// method would replace another, or be replaced, only for some of the
+    /// type arguments the class (and the extension's bound) admits is an
+    /// error at that include (`World::partial_replacements`): a class value
+    /// carries no type arguments at run time, so the override table pairs
+    /// methods for every instantiation or for none.
+    fn check_partial_includes(&mut self, id: ClassId) {
+        let pairs = self.world.partial_replacements(id);
+        if pairs.is_empty() {
+            return;
+        }
+        let shown = |w: &World, m: MethodId| {
+            let mi = w.method(m);
+            let sep = if mi.singleton { "." } else { "#" };
+            format!("{}{sep}{}", w.class(mi.owner).name, w.method_signature(mi))
+        };
+        let instance = |w: &World, args: &[Type]| w.type_name(&Type::Class(id, args.to_vec()));
+        let mut said: HashSet<(MethodId, MethodId)> = HashSet::default();
+        for p in pairs {
+            if !said.insert((p.by, p.replaced)) {
+                continue;
+            }
+            // The include that brings the module (or a module including
+            // it): the extension's the walk named; else the class's own;
+            // else an extension of the class's (a top-level unconditional
+            // one's modules are in the walk's own part).
+            let brings = |m: &ClassId| self.world.class_is_a_at_run_time(*m, p.module);
+            let of_extension = |want: &dyn Fn(ExtensionId) -> bool| {
+                self.ext_includes.iter().find_map(|(x, ty, span, file)| {
+                    (want(*x) && matches!(ty, Type::Class(m, _) if brings(m)))
+                        .then(|| (ty.clone(), *span, *file))
+                })
+            };
+            let site = match p.extension {
+                Some(e) => of_extension(&|x| x == e),
+                None => self
+                    .class_includes
+                    .get(&id)
+                    .and_then(|v| {
+                        v.iter()
+                            .find(|(m, ..)| brings(m))
+                            .map(|(_, ty, span, file)| (ty.clone(), *span, *file))
+                    })
+                    .or_else(|| of_extension(&|x| self.world.extensions[x as usize].target == id)),
+            };
+            let Some((ty, span, file)) = site else {
+                // (No include of the class's own brings it: the class's own
+                // method against a method a superclass brings, its own or a
+                // module it includes. That is no include of this class, so
+                // outside #602's decision, and filed as #990.)
+                debug_assert!(
+                    self.world.class(id).superclass.as_ref().is_some_and(|s| matches!(
+                        s, Type::Class(sup, _) if self.world.class_is_a_at_run_time(*sup, p.module)
+                    )),
+                    "a partial pair no include of the class brings comes from a superclass"
+                );
+                continue;
+            };
+            let w = &self.world;
+            let include = format!("include {}", w.type_name(&ty));
+            // (`extension Box[T <: Int]`, as it is written.)
+            let header = p.extension.map(|e| {
+                let ext = &w.extensions[e as usize];
+                let tps: Vec<String> = ext
+                    .type_params
+                    .iter()
+                    .map(|tp| {
+                        let bounds: Vec<String> =
+                            tp.bounds.iter().map(|b| w.type_name(b)).collect();
+                        if bounds.is_empty() {
+                            tp.name.clone()
+                        } else {
+                            format!("{} <: {}", tp.name, bounds.join(" & "))
+                        }
+                    })
+                    .collect();
+                if tps.is_empty() {
+                    format!("extension {}", w.class(ext.target).name)
+                } else {
+                    format!("extension {}[{}]", w.class(ext.target).name, tps.join(", "))
+                }
+            });
+            let whose = match &header {
+                Some(h) => format!("`{h}`'s `{include}`"),
+                None => format!("`{include}`"),
+            };
+            let params: Vec<String> = w
+                .class(id)
+                .type_params
+                .iter()
+                .map(|tp| format!("`{}`", tp.name))
+                .collect();
+            let (by, replaced) = (shown(w, p.by), shown(w, p.replaced));
+            let class = &w.class(id).name;
+            let advice = format!(
+                "give one of them another name, or parameters that do not depend on {}",
+                params.join(", ")
+            );
+            let message = match (&p.replaces_for, &p.not_for, p.extension) {
+                (Some(yes), Some(no), _) => format!(
+                    "{whose} makes `{by}` replace `{replaced}` only for some type arguments of `{class}`: for `{}` it replaces it, for `{}` it does not. A method replaces another for every type argument or for none (a class value carries none at run time): {advice}",
+                    instance(w, yes),
+                    instance(w, no),
+                ),
+                // (It may hold for every argument the bound admits: an
+                // override the table cannot pair under a bound yet, #556.)
+                (Some(yes), None, Some(_)) => format!(
+                    "under `{}`, `{by}` replaces `{replaced}` for the type arguments the extension's bound admits (for `{}`, for one), a pair of methods the override table cannot make: {advice}",
+                    header.as_deref().unwrap_or_default(),
+                    instance(w, yes),
+                ),
+                (Some(yes), None, None) => format!(
+                    "{whose} makes `{by}` replace `{replaced}` only for some type arguments of `{class}`: for `{}` it replaces it, not for every one. A method replaces another for every type argument or for none (a class value carries none at run time): {advice}",
+                    instance(w, yes),
+                ),
+                _ => format!(
+                    "{whose} makes `{by}` replace `{replaced}` for some type arguments of `{class}` but perhaps not for all (their parameters' types depend on {} in a way this check does not decide). A method replaces another for every type argument or for none (a class value carries none at run time): {advice}",
+                    params.join(", ")
+                ),
+            };
+            self.diagnostics
+                .push((file, Diagnostic::error(message, span)));
+        }
+    }
+
     fn check_override_returns(&mut self, id: ClassId) {
         let class = self.world.class(id);
         // A file's top-level `def`s are functions: they override nothing
@@ -4768,6 +4898,7 @@ impl<'ast> Declarer<'ast> {
             self.check_kept_blocks(id);
             self.check_quoted_overrides(id);
             self.check_override_returns(id);
+            self.check_partial_includes(id);
             self.check_include_overrides(id);
             self.check_class_include_overrides(id);
             self.check_class_side_overrides(id);
@@ -4796,6 +4927,12 @@ impl<'ast> Declarer<'ast> {
                     continue;
                 };
                 included.push((mid, margs.clone(), t.span));
+                self.class_includes.entry(p.id).or_default().push((
+                    mid,
+                    Type::Class(mid, margs.clone()),
+                    t.span,
+                    self.file,
+                ));
                 let module = self.world.class(mid);
                 if module.kind != ClassKind::Module {
                     continue;

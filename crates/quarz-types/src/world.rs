@@ -528,6 +528,29 @@ enum Side {
     Class,
 }
 
+/// A pair the override table tests that does not hold with the class's
+/// type parameters as they are but would for some of their arguments
+/// (#602): `by` would replace `replaced` only for some instantiations of
+/// `class`, through the include of `module` (the class's own, or that of
+/// `extension`), which is an error at that include.
+#[derive(Clone, Debug)]
+pub struct PartialReplace {
+    pub class: ClassId,
+    pub by: MethodId,
+    pub replaced: MethodId,
+    /// The module whose include brings the pair (its method is `by` or
+    /// `replaced`).
+    pub module: ClassId,
+    /// The extension that includes `module`; `None` for the class's own.
+    pub extension: Option<ExtensionId>,
+    /// The class's type arguments for which the pair holds, and some for
+    /// which it does not; `None` where none was found (the fallback of
+    /// `replaces_for_some`, or no argument that fails it within the
+    /// bounds).
+    pub replaces_for: Option<Vec<Type>>,
+    pub not_for: Option<Vec<Type>>,
+}
+
 /// A method of a module a class includes over one of its superclass's
 /// (`World::include_overrides_of`), or a module's class method over a
 /// superclass's class method (`World::class_include_overrides_of`).
@@ -2477,7 +2500,7 @@ impl World {
     /// (`declaration_view`, #606).
     pub fn include_overrides_of(&self, id: ClassId) -> Vec<IncludeOverride> {
         self.with_active(self.declaration_view(id), || {
-            self.include_overrides_on(id, Side::Instance)
+            self.include_overrides_on(id, Side::Instance, None)
         })
     }
 
@@ -2505,7 +2528,16 @@ impl World {
     ///   class method that is an extension's (`mine`); on the instance
     ///   side, the module's always-active (prelude) extensions' methods
     ///   added to its own (`mine`);
-    fn include_overrides_on(&self, id: ClassId, side: Side) -> Vec<IncludeOverride> {
+    ///
+    /// `partial`: where to put the pairs the walk tests that do not hold
+    /// with the class's parameters as they are but would for some of
+    /// their arguments (`replaces_for_some`, #602).
+    fn include_overrides_on(
+        &self,
+        id: ClassId,
+        side: Side,
+        mut partial: Option<&mut Vec<PartialReplace>>,
+    ) -> Vec<IncludeOverride> {
         let instance = side == Side::Instance;
         let mut out: Vec<IncludeOverride> = Vec::new();
         let c = self.class(id);
@@ -2544,6 +2576,23 @@ impl World {
             self.own_ancestors(id)
         } else {
             self.resolution(id, &own, View::Lookup)
+        };
+        // (For `partial`: the extension whose include put each entry of
+        // the instance side's order there, `None` for the class's own; the
+        // same walk as `own_ancestors`'.)
+        let sources: Vec<Option<ExtensionId>> = match (&partial, instance) {
+            (Some(_), true) => {
+                let walked =
+                    self.ordered_sources(id, &own, &self.all_conformance_extensions(), true, false);
+                // (The same walk as `order`'s: a misalignment would take
+                // another extension's bound.)
+                debug_assert!(
+                    walked.iter().map(|x| x.0).eq(order.iter().map(|x| x.0)),
+                    "ordered_sources lists the order own_ancestors gives"
+                );
+                walked.into_iter().map(|(_, _, e)| e).collect()
+            }
+            _ => Vec::new(),
         };
         // The candidate set, the same on both sides (#733): after a
         // module, every later entry outside the module's own ancestry (a
@@ -2661,7 +2710,22 @@ impl World {
                         // (Not when something before the module in the
                         // order, the class's own method first, replaces
                         // `o`: that runs.)
-                        if self.replaces_seen(mm, msubst, o, &ssubst)
+                        let replaces = self.replaces_seen(mm, msubst, o, &ssubst);
+                        if !replaces {
+                            if let Some(sink) = partial.as_deref_mut() {
+                                if !out.iter().any(|e| e.overridden == o)
+                                    && !self.replaced_before(&order[..xpos], o, !instance)
+                                {
+                                    let ext = sources.get(xpos).copied().flatten();
+                                    if let Some(p) =
+                                        self.partial_replace(id, mm, msubst, o, &ssubst, *x, ext)
+                                    {
+                                        sink.push(p);
+                                    }
+                                }
+                            }
+                        }
+                        if replaces
                             && !out.iter().any(|e| e.overridden == o)
                             && !self.replaced_before(&order[..xpos], o, !instance)
                         {
@@ -2759,7 +2823,7 @@ impl World {
     /// view (`declaration_view`, #606).
     pub fn class_include_overrides_of(&self, id: ClassId) -> Vec<IncludeOverride> {
         self.with_active(self.declaration_view(id), || {
-            self.include_overrides_on(id, Side::Class)
+            self.include_overrides_on(id, Side::Class, None)
         })
     }
 
@@ -3813,6 +3877,422 @@ impl World {
         self.takes_calls_of(mi, msubst, oi, osubst) || self.same_signature_by_type_params(m, o)
     }
 
+    /// #602: the pairs of class `id`'s override table (its own includes'
+    /// on both sides, `include_overrides_on`; its own methods over its
+    /// ancestors', `overridden_methods_in_with`) that do not hold with the
+    /// class's type parameters as they are but would for some of their
+    /// arguments: each an error at the include that brings it. Asked
+    /// under the class's declaration view, as the table is.
+    pub fn partial_replacements(&self, id: ClassId) -> Vec<PartialReplace> {
+        if self.class(id).type_params.is_empty() {
+            return Vec::new();
+        }
+        self.with_active(self.declaration_view(id), || {
+            let mut out = Vec::new();
+            self.include_overrides_on(id, Side::Instance, Some(&mut out));
+            self.include_overrides_on(id, Side::Class, Some(&mut out));
+            let own = self.own_args(id);
+            let walked =
+                self.ordered_sources(id, &own, &self.all_conformance_extensions(), true, false);
+            let ancs = self.own_ancestors(id);
+            // (The same walk as `ancs`': a misalignment would take another
+            // extension's bound.)
+            debug_assert!(
+                walked.iter().map(|x| x.0).eq(ancs.iter().map(|x| x.0)),
+                "ordered_sources lists the order own_ancestors gives"
+            );
+            let sources: Vec<Option<ExtensionId>> = walked.into_iter().map(|(_, _, e)| e).collect();
+            let ext_methods = self.extension_methods_by_target();
+            let c = self.class(id);
+            for ids in c.methods.values() {
+                for &m in ids {
+                    let mi = self.method(m);
+                    if mi.owner == id && mi.extension.is_none() {
+                        self.overridden_methods_in_with(
+                            mi,
+                            &ancs,
+                            &ext_methods,
+                            Some((&mut out, &sources)),
+                        );
+                    }
+                }
+            }
+            let mut seen = HashSet::default();
+            out.retain(|p| seen.insert((p.by, p.replaced)));
+            out
+        })
+    }
+
+    /// A pair `replaces_seen` refused (`m` over `o`, seen through `msubst`
+    /// and `osubst`, in class `class`, brought by `module`'s include) as a
+    /// `PartialReplace` when it would hold for some arguments of the
+    /// class's type parameters (`replaces_for_some`).
+    #[allow(clippy::too_many_arguments)]
+    fn partial_replace(
+        &self,
+        class: ClassId,
+        m: MethodId,
+        msubst: &HashMap<TypeParamId, Type>,
+        o: MethodId,
+        osubst: &HashMap<TypeParamId, Type>,
+        module: ClassId,
+        extension: Option<ExtensionId>,
+    ) -> Option<PartialReplace> {
+        let found = self.replaces_for_some(class, m, msubst, o, osubst, extension)?;
+        let own = self.own_args(class);
+        let (replaces_for, not_for) = match found {
+            Some(sigma) => {
+                // (No admitted argument found for which it does not: for a
+                // conditional extension's include it may hold for every one
+                // its bound admits, which pairing under the bound would make
+                // an override, #556; refused all the same, saying so.)
+                let not = self.fails_for(class, m, msubst, o, osubst, extension, &sigma);
+                (
+                    Some(own.iter().map(|t| t.subst(&sigma)).collect()),
+                    not.map(|s| own.iter().map(|t| t.subst(&s)).collect()),
+                )
+            }
+            None => (None, None),
+        };
+        Some(PartialReplace {
+            class,
+            by: m,
+            replaced: o,
+            module,
+            extension,
+            replaces_for,
+            not_for,
+        })
+    }
+
+    /// #602: whether `m` would replace `o` (`replaces_seen`, both seen
+    /// through their substitutions) for some arguments of class `class`'s
+    /// type parameters within their bounds (and `extension`'s, for a pair
+    /// a conditional extension's include brings), given that it does not
+    /// with the parameters as they are. `Some(Some(σ))`: it does for σ,
+    /// checked by `replaces_seen` and the bounds. `Some(None)`: perhaps,
+    /// refused all the same (an approximation that may refuse a pair no
+    /// admitted argument makes hold, never accept one some does: #556's
+    /// exact "may hold" would decide it). `None`: no admitted argument
+    /// makes it hold.
+    ///
+    /// Why every pair some admitted σ makes hold ends in `Some(_)`. Each
+    /// position `takes_calls_of` compares asks `t <: u`, `t` the replaced
+    /// method's type and `u` the replacing one's (parameters, a block,
+    /// keywords and `**`; a kind or count that differs, which no argument
+    /// changes, ends in `None` first, as do two classes neither of which
+    /// is the other's, a procedure's or tuple's count). σ is matched from
+    /// the positions:
+    /// - a parameter on the replacing side, `t <: T` (a lower bound): every
+    ///   working `T` is above `t`, and `T := t` is the least, so if `t`
+    ///   fails the bounds every working `T` does (a bound is an upper one):
+    ///   exact, `None` when only such bindings fail the bounds;
+    /// - a parameter on the replaced side, `T <: u` (an upper bound): a
+    ///   smaller `T` may meet a bound `u` does not; the bounds themselves
+    ///   (the class's and the extension's) are tried in its place, and
+    ///   else the pair is `Some(None)` (refusing more); `Nothing`, below
+    ///   everything, would meet every upper constraint vacuously and is no
+    ///   witness;
+    /// - a parameter nested in a class's arguments, a tuple or a procedure
+    ///   (invariant, covariant or contravariant there): `T := x` is one
+    ///   solution among others, so a failure of the bounds is `Some(None)`
+    ///   as for an upper bound;
+    /// - anything else that mentions a parameter (a union, a parameter on
+    ///   both sides, one bound to two types): `unsure`, and the pair is
+    ///   `Some(None)` when every position that fails mentions a parameter.
+    ///
+    /// A σ `replaces_seen` refuses is no witness; the pair then goes by
+    /// `unsure` as above. So `None` comes only from a position no argument
+    /// changes, from no position depending on the parameters, or from a
+    /// least solution (lower bounds alone) that fails the bounds.
+    fn replaces_for_some(
+        &self,
+        class: ClassId,
+        m: MethodId,
+        msubst: &HashMap<TypeParamId, Type>,
+        o: MethodId,
+        osubst: &HashMap<TypeParamId, Type>,
+        extension: Option<ExtensionId>,
+    ) -> Option<Option<HashMap<TypeParamId, Type>>> {
+        let params: Vec<TypeParamId> = self
+            .class(class)
+            .type_params
+            .iter()
+            .map(|tp| tp.id)
+            .collect();
+        if params.is_empty() {
+            return None;
+        }
+        let (mi, oi) = (self.method(m), self.method(o));
+        let (ps, qs) = (oi.positional_params(), mi.positional_params());
+        // (What no argument changes: the counts and kinds, a block on one
+        // side.)
+        if ps.len() > qs.len()
+            || ps.iter().zip(&qs).any(|(p, q)| p.kind != q.kind)
+            || qs[ps.len()..]
+                .iter()
+                .any(|q| q.default.is_none() && q.kind != ParamKind::Rest)
+            || oi.block.is_some() != mi.block.is_some()
+        {
+            return None;
+        }
+        // The positions `takes_calls_of` compares: the overridden one's
+        // type, then the overriding one's (which must take it).
+        let mut pairs: Vec<(Type, Type)> = ps
+            .iter()
+            .zip(&qs)
+            .map(|(p, q)| (p.ty.subst(osubst), q.ty.subst(msubst)))
+            .collect();
+        if let (Some((_, b)), Some((_, c))) = (&oi.block, &mi.block) {
+            pairs.push((b.subst(osubst), c.subst(msubst)));
+        }
+        let keyword = |p: &ParamInfo, q: &ParamInfo| {
+            p.kind == q.kind
+                && (p.kind == ParamKind::KeywordRest
+                    || (p.kind == ParamKind::KeywordOnly && p.name == q.name))
+        };
+        for p in oi
+            .params
+            .iter()
+            .filter(|p| matches!(p.kind, ParamKind::KeywordOnly | ParamKind::KeywordRest))
+        {
+            if let Some(q) = mi.params.iter().find(|q| keyword(p, q)) {
+                pairs.push((p.ty.subst(osubst), q.ty.subst(msubst)));
+            }
+        }
+        let mentions = |t: &Type| params.iter().any(|p| t.mentions_param(*p));
+        if !pairs.iter().any(|(a, b)| mentions(a) || mentions(b)) {
+            return None;
+        }
+        let mut found = Matched::default();
+        for (a, b) in &pairs {
+            self.match_params(a, b, &params, &mut found, Side602::Top);
+        }
+        // (A shape no argument changes: σ replaces parameters, never a
+        // procedure's or a tuple's count of members, nor a class.)
+        if found.never {
+            return None;
+        }
+        let sigma = found.sigma;
+        if !sigma.is_empty() {
+            let (ms, os) = (compose(msubst, &sigma), compose(osubst, &sigma));
+            if self.replaces_seen(m, &ms, o, &os) {
+                if self.class_args_meet_bounds(class, &sigma, extension) {
+                    return Some(Some(sigma));
+                }
+                // σ holds but fails the bounds: a parameter bound from
+                // above (or nested) may take a smaller argument that meets
+                // them; the bounds themselves are tried in its place.
+                let movable: Vec<TypeParamId> = sigma
+                    .keys()
+                    .copied()
+                    .filter(|p| found.lower_only.get(p) != Some(&true))
+                    .collect();
+                if movable.is_empty() {
+                    // (Lower bounds alone: their least solution fails, so
+                    // every solution does.)
+                    return None;
+                }
+                for t in self.bound_candidates(class, extension) {
+                    let mut alt = sigma.clone();
+                    for p in &movable {
+                        alt.insert(*p, t.clone());
+                    }
+                    let (ms, os) = (compose(msubst, &alt), compose(osubst, &alt));
+                    if self.class_args_meet_bounds(class, &alt, extension)
+                        && self.replaces_seen(m, &ms, o, &os)
+                    {
+                        return Some(Some(alt));
+                    }
+                }
+                return Some(None);
+            }
+        }
+        // (No σ that holds: the fallback, when every failing position
+        // mentions a parameter.)
+        let failing: Vec<&(Type, Type)> = pairs
+            .iter()
+            .filter(|(t, u)| !(t == u || self.is_subtype(t, u)))
+            .collect();
+        let unsure = found.unsure || !sigma.is_empty();
+        (unsure && !failing.is_empty() && failing.iter().all(|(a, b)| mentions(a) || mentions(b)))
+            .then_some(None)
+    }
+
+    /// The bounds of class `class`'s parameters and of `extension`'s, with
+    /// no parameter in them: the arguments tried in place of a parameter
+    /// bound from above (`replaces_for_some`) and in the error's example
+    /// (`fails_for`). (`Nothing` is not among them: it meets every upper
+    /// constraint vacuously.)
+    fn bound_candidates(&self, class: ClassId, extension: Option<ExtensionId>) -> Vec<Type> {
+        let mut out: Vec<Type> = self
+            .class(class)
+            .type_params
+            .iter()
+            .flat_map(|tp| tp.bounds.iter().cloned())
+            .collect();
+        if let Some(e) = extension {
+            out.extend(
+                self.extensions[e as usize]
+                    .type_params
+                    .iter()
+                    .flat_map(|tp| tp.bounds.iter().cloned()),
+            );
+        }
+        out.retain(|t| !t.mentions_any_param() && !t.is_nothing());
+        out
+    }
+
+    /// `replaces_for_some`'s matching of a position `(a, b)`, `a` the
+    /// replaced method's type and `b` the replacing one's: a class
+    /// parameter of `params` on one side and a type without any on the
+    /// other binds it (noting whether only from the replacing side, at
+    /// the top: a lower bound); a class's arguments, a tuple's members and
+    /// a procedure's parameters and result are matched in turn (nested);
+    /// two tuples or procedures of different counts, or two classes
+    /// neither of which is the other's, are `never`; anything else that
+    /// mentions one (a union, a parameter bound twice) is `unsure`.
+    fn match_params(
+        &self,
+        a: &Type,
+        b: &Type,
+        params: &[TypeParamId],
+        found: &mut Matched,
+        side: Side602,
+    ) {
+        let mentions = |t: &Type| params.iter().any(|p| t.mentions_param(*p));
+        let bind = |p: TypeParamId, t: &Type, lower: bool, found: &mut Matched| {
+            if mentions(t) {
+                found.unsure = true;
+                return;
+            }
+            let entry = found.lower_only.entry(p).or_insert(true);
+            *entry &= lower;
+            match found.sigma.get(&p) {
+                Some(x) if x != t => found.unsure = true,
+                Some(_) => {}
+                None => {
+                    found.sigma.insert(p, t.clone());
+                }
+            }
+        };
+        match (a, b) {
+            // (The replacing side's parameter at the top: `a <: T`.)
+            (t, Type::Param(p)) if params.contains(p) => bind(*p, t, side == Side602::Top, found),
+            (Type::Param(p), t) if params.contains(p) => bind(*p, t, false, found),
+            (Type::Class(c, xs), Type::Class(d, ys)) if c == d && xs.len() == ys.len() => {
+                for (x, y) in xs.iter().zip(ys) {
+                    self.match_params(x, y, params, found, Side602::Nested);
+                }
+            }
+            // (Two classes neither of which is the other's: no argument
+            // makes one a subtype of the other.)
+            (Type::Class(c, _), Type::Class(d, _))
+                if c != d
+                    && !self.class_is_a_at_run_time(*c, *d)
+                    && !self.class_is_a_at_run_time(*d, *c) =>
+            {
+                found.never = true;
+            }
+            (Type::Tuple(xs), Type::Tuple(ys)) => {
+                if xs.len() != ys.len() {
+                    found.never = true;
+                    return;
+                }
+                for (x, y) in xs.iter().zip(ys) {
+                    self.match_params(x, y, params, found, Side602::Nested);
+                }
+            }
+            (Type::Proc(_, xs, r, _, _), Type::Proc(_, ys, s, _, _)) => {
+                if xs.len() != ys.len() {
+                    found.never = true;
+                    return;
+                }
+                for (x, y) in xs.iter().zip(ys) {
+                    self.match_params(x, y, params, found, Side602::Nested);
+                }
+                self.match_params(r, s, params, found, Side602::Nested);
+            }
+            _ => {
+                if mentions(a) || mentions(b) {
+                    found.unsure = true;
+                }
+            }
+        }
+    }
+
+    /// Whether `sigma`'s arguments meet class `class`'s parameters' bounds
+    /// (a parameter `sigma` leaves out taken as meeting them), and, for a
+    /// conditional extension's include, the extension's bounds on the
+    /// class's arguments so made.
+    fn class_args_meet_bounds(
+        &self,
+        class: ClassId,
+        sigma: &HashMap<TypeParamId, Type>,
+        extension: Option<ExtensionId>,
+    ) -> bool {
+        let own_ok = self
+            .class(class)
+            .type_params
+            .iter()
+            .all(|tp| match sigma.get(&tp.id) {
+                Some(t) => tp.bounds.iter().all(|b| {
+                    let b = b.subst(sigma);
+                    b.mentions_any_param() || self.is_subtype(t, &b)
+                }),
+                None => true,
+            });
+        own_ok
+            && extension.is_none_or(|e| {
+                let args: Vec<Type> = self
+                    .own_args(class)
+                    .iter()
+                    .map(|t| t.subst(sigma))
+                    .collect();
+                args.iter().any(|t| t.mentions_any_param())
+                    || self.extension_bounds_hold(&self.extensions[e as usize], &args)
+            })
+    }
+
+    /// For the error of a pair holding for `sigma` (#602): arguments of
+    /// the class's parameters within the bounds (the extension's too) for
+    /// which it does not, if one is found among a few: `Object`, `Nil`,
+    /// `Bool`, `String`, `Int`, `Float`, the parameters' bounds and the
+    /// extension's, in place of each one `sigma` binds. A search for an
+    /// example the error can show,
+    /// not a decision: a miss changes only the wording, never whether the
+    /// include is refused.
+    #[allow(clippy::too_many_arguments)]
+    fn fails_for(
+        &self,
+        class: ClassId,
+        m: MethodId,
+        msubst: &HashMap<TypeParamId, Type>,
+        o: MethodId,
+        osubst: &HashMap<TypeParamId, Type>,
+        extension: Option<ExtensionId>,
+        sigma: &HashMap<TypeParamId, Type>,
+    ) -> Option<HashMap<TypeParamId, Type>> {
+        let bi = &self.builtin;
+        // (The candidates: the fixed few, then each parameter's bounds and
+        // the extension's, whatever parameter they are written for.)
+        let mut candidates: Vec<Type> = [bi.object, bi.nil, bi.bool_, bi.string, bi.int, bi.float]
+            .into_iter()
+            .map(Type::class)
+            .collect();
+        candidates.extend(self.bound_candidates(class, extension));
+        for t in candidates {
+            let alt: HashMap<TypeParamId, Type> = sigma.keys().map(|p| (*p, t.clone())).collect();
+            let (ms, os) = (compose(msubst, &alt), compose(osubst, &alt));
+            if self.class_args_meet_bounds(class, &alt, extension)
+                && !self.replaces_seen(m, &ms, o, &os)
+            {
+                return Some(alt);
+            }
+        }
+        None
+    }
+
     /// Whether a method of one of `earlier` (ancestors before a module in a
     /// class's lookup order, on the instance or the class side) already
     /// replaces `o` there, by being it or by its own table entry: a later
@@ -4472,7 +4952,7 @@ impl World {
             .iter()
             .map(|tp| Type::Param(tp.id))
             .collect();
-        let mut out = self.overridden_methods_in_with(mi, ancs, ext_methods);
+        let mut out = self.overridden_methods_in_with(mi, ancs, ext_methods, None);
         // A class method replaces, on its class object, the instance methods
         // of `Type` (and a subclass's, `Meta::ClassDef`'s, whose value a
         // static def's `self` is; and their ancestors) of the name it takes
@@ -4551,14 +5031,19 @@ impl World {
         map
     }
 
+    /// `partial`: where to put the pairs that do not hold with the class's
+    /// parameters as they are but would for some of their arguments
+    /// (`replaces_for_some`, #602), with the extension whose include put
+    /// each of `ancs` there (`ordered_sources`).
     fn overridden_methods_in_with(
         &self,
         m: &MethodInfo,
         ancs: &[(ClassId, Vec<Type>)],
         ext_methods: &HashMap<(ClassId, &str), Vec<MethodId>>,
+        mut partial: Option<(&mut Vec<PartialReplace>, &[Option<ExtensionId>])>,
     ) -> Vec<MethodId> {
         let mut out = Vec::new();
-        for (anc, anc_args) in ancs {
+        for (at, (anc, anc_args)) in ancs.iter().enumerate() {
             let anc = *anc;
             if anc == m.owner {
                 continue;
@@ -4593,11 +5078,18 @@ impl World {
             let subst = self.class_subst(anc, anc_args);
             let mine = self.seen_from_owner(m);
             for pid in ids {
-                if pid != m.id
-                    && !out.contains(&pid)
-                    && self.replaces_seen(m.id, &mine, pid, &subst)
-                {
+                if pid == m.id || out.contains(&pid) {
+                    continue;
+                }
+                if self.replaces_seen(m.id, &mine, pid, &subst) {
                     out.push(pid);
+                } else if let Some((sink, sources)) = partial.as_mut() {
+                    let ext = sources.get(at).copied().flatten();
+                    if let Some(p) =
+                        self.partial_replace(m.owner, m.id, &mine, pid, &subst, anc, ext)
+                    {
+                        sink.push(p);
+                    }
                 }
             }
         }
@@ -6463,6 +6955,39 @@ impl quarz_ir::DispatchView for World {
     fn table_overrides(&self, o: MethodId, m: MethodId) -> bool {
         self.overrides(o).contains(&m)
     }
+}
+
+/// What `World::match_params` found over a pair's positions (#602): σ,
+/// whether each parameter was bound from the replacing side only at the
+/// top (a lower bound, whose least solution decides), and whether a
+/// position is undecided (`unsure`) or never holds (`never`).
+#[derive(Default)]
+struct Matched {
+    sigma: HashMap<TypeParamId, Type>,
+    lower_only: HashMap<TypeParamId, bool>,
+    unsure: bool,
+    never: bool,
+}
+
+/// Where `World::match_params` is: a position's top, or nested in a
+/// class's arguments, a tuple or a procedure.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side602 {
+    Top,
+    Nested,
+}
+
+/// `s` with `sigma` applied to its types, and `sigma`'s own entries for
+/// the parameters `s` does not map (#602's `replaces_for_some`).
+fn compose(
+    s: &HashMap<TypeParamId, Type>,
+    sigma: &HashMap<TypeParamId, Type>,
+) -> HashMap<TypeParamId, Type> {
+    let mut out: HashMap<TypeParamId, Type> = s.iter().map(|(k, v)| (*k, v.subst(sigma))).collect();
+    for (k, v) in sigma {
+        out.entry(*k).or_insert_with(|| v.clone());
+    }
+    out
 }
 
 #[cfg(test)]

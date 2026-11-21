@@ -3600,6 +3600,322 @@ puts via(A.new), via(B.new)
     );
 }
 
+/// #602: a pair no type argument makes hold is no error: a parameter's
+/// class that is not the other's (`Array[U]` for an `Int`) or a block of
+/// another count of parameters (one for two, as `Hash#select`'s
+/// `(K, V) -> Object` over `Enumerable[[K, V]]#select`'s
+/// `([K, V]) -> Object` in the prelude): no argument changes a class or a
+/// count, so neither the exact rule nor its approximation refuses it.
+#[test]
+fn a_pair_no_type_argument_makes_hold_is_not_refused() {
+    let out = common::diagnostics(
+        r##"class EA
+  def m(x: Int) -> String = "base"
+  def each_of(&b: (Int, Int) -> Void) -> String = "base"
+end
+module G[U]
+  def m(x: Array[U]) -> String = "module"
+  def each_of(&b: (U) -> Void) -> String = "module"
+end
+class Box[T] < EA
+  include G[T]
+end
+"##,
+    )
+    .join("\n");
+    assert!(!out.contains("error:"), "{out}");
+    // The prelude itself, which this holds of, checks (`Hash`).
+    let out = common::diagnostics("p({1 => 2}.select { |k, v| v > 1 })\n").join("\n");
+    assert!(!out.contains("error:"), "{out}");
+}
+
+/// #602 (the maintainer's decision of 2026-11-20, and of 2026-11-21 for
+/// a conditional extension's include): an include, the class's own or an
+/// extension's, whose method would replace another (or be replaced) only
+/// for some of the type arguments the class and the extension's bound
+/// admit is an error at that include; a class value carries none at run
+/// time, so the override table pairs for every instantiation or for none.
+/// The error names both methods and, when found, an instantiation of each
+/// kind; one that may hold for every argument the extension's bound admits
+/// says so; one no argument is found for says the check does not decide.
+#[test]
+fn an_include_replacing_only_for_some_type_arguments_is_refused() {
+    for (src, want) in [
+        (
+            r##"class EA
+  def initialize; end
+  def m(x: Int) -> String = "base"
+  def call_m -> String = m(1)
+end
+module G[U]
+  def m(x: U) -> String = "module"
+end
+class Box[T] < EA
+  include G[T]
+  def initialize; end
+end
+b = Box[Int].new
+puts b.m(1)
+puts b.call_m
+"##,
+            "10:11: error: `include G[T]` makes `G#m(x: U) -> String` replace `EA#m(x: Int) -> String` only for some type arguments of `Box`: for `Box[Int]` it replaces it, for `Box[Nil]` it does not. A method replaces another for every type argument or for none (a class value carries none at run time): give one of them another name, or parameters that do not depend on `T`",
+        ),
+        (
+            r##"module G[U]
+  def m(x: U) -> String = "module"
+end
+class Box[T]
+  def initialize; end
+  def m(x: Int) -> String = "box"
+end
+extension Box[T <: Int]
+  include G[T]
+end
+def via(g: G[Int]) -> String = g.m(1)
+b = Box[Int].new
+puts b.m(1)
+puts via(b)
+"##,
+            "9:11: error: under `extension Box[T <: Int]`, `Box#m(x: Int) -> String` replaces `G#m(x: U) -> String` for the type arguments the extension's bound admits (for `Box[Int]`, for one), a pair of methods the override table cannot make: give one of them another name, or parameters that do not depend on `T`",
+        ),
+        (
+            r##"module G[U]
+  def m(x: U) -> String = "module"
+end
+class Box[T]
+  def initialize; end
+  def m(x: Int) -> Int = 7
+end
+extension Box[T <: Int]
+  include G[T]
+end
+"##,
+            "9:11: error: under `extension Box[T <: Int]`, `Box#m(x: Int) -> Int` replaces `G#m(x: U) -> String` for the type arguments the extension's bound admits (for `Box[Int]`, for one), a pair of methods the override table cannot make: give one of them another name, or parameters that do not depend on `T`",
+        ),
+        (
+            r##"module Num
+end
+extension Int
+  include Num
+end
+extension Float
+  include Num
+end
+module G[U]
+  def m(x: U) -> String = "module"
+end
+class Box[T]
+  def initialize; end
+  def m(x: Int) -> String = "box"
+end
+extension Box[T <: Num]
+  include G[T]
+end
+"##,
+            "17:11: error: `extension Box[T <: Num]`'s `include G[T]` makes `Box#m(x: Int) -> String` replace `G#m(x: U) -> String` only for some type arguments of `Box`: for `Box[Int]` it replaces it, for `Box[Float]` it does not. A method replaces another for every type argument or for none (a class value carries none at run time): give one of them another name, or parameters that do not depend on `T`",
+        ),
+        (
+            r##"class EA
+  def m(*, k: Int) -> String = "base"
+end
+module G[U]
+  def m(*, k: U) -> String = "module"
+end
+class Box[T] < EA
+  include G[T]
+end
+"##,
+            "8:11: error: `include G[T]` makes `G#m(k: U) -> String` replace `EA#m(k: Int) -> String` only for some type arguments of `Box`: for `Box[Int]` it replaces it, for `Box[Nil]` it does not. A method replaces another for every type argument or for none (a class value carries none at run time): give one of them another name, or parameters that do not depend on `T`",
+        ),
+        (
+            r##"class EA
+  def m(&b: (Int) -> Void) -> String = "base"
+end
+module G[U]
+  def m(&b: (U) -> Void) -> String = "module"
+end
+class Box[T] < EA
+  include G[T]
+end
+"##,
+            "8:11: error: `include G[T]` makes `G#m(&b: (U) -> Void) -> String` replace `EA#m(&b: (Int) -> Void) -> String` only for some type arguments of `Box`: for `Box[Int]` it replaces it, for `Box[Object]` it does not. A method replaces another for every type argument or for none (a class value carries none at run time): give one of them another name, or parameters that do not depend on `T`",
+        ),
+        (
+            r##"class EA
+  def m(x: Array[Int]) -> String = "base"
+end
+module G[U]
+  def m(x: Array[U]) -> String = "module"
+end
+class Box[T] < EA
+  include G[T]
+end
+"##,
+            "8:11: error: `include G[T]` makes `G#m(x: Array[U]) -> String` replace `EA#m(x: Array[Int]) -> String` only for some type arguments of `Box`: for `Box[Int]` it replaces it, for `Box[Nil]` it does not. A method replaces another for every type argument or for none (a class value carries none at run time): give one of them another name, or parameters that do not depend on `T`",
+        ),
+        (
+            r##"class EA
+  def m(x: Int, y: String) -> String = "base"
+end
+module G[U]
+  def m(x: U, y: U) -> String = "module"
+end
+class Box[T] < EA
+  include G[T]
+end
+"##,
+            "8:11: error: `include G[T]` makes `G#m(x: U, y: U) -> String` replace `EA#m(x: Int, y: String) -> String` for some type arguments of `Box` but perhaps not for all (their parameters' types depend on `T` in a way this check does not decide). A method replaces another for every type argument or for none (a class value carries none at run time): give one of them another name, or parameters that do not depend on `T`",
+        ),
+        (
+            r##"class EA
+  def self.k(x: Int) -> String = "base"
+end
+module G[U]
+  def self.k(x: U) -> String = "module"
+end
+class Box[T] < EA
+  include G[T]
+end
+"##,
+            "8:11: error: `include G[T]` makes `G.k(x: U) -> String` replace `EA.k(x: Int) -> String` only for some type arguments of `Box`: for `Box[Int]` it replaces it, for `Box[Nil]` it does not. A method replaces another for every type argument or for none (a class value carries none at run time): give one of them another name, or parameters that do not depend on `T`",
+        ),
+        // A parameter bound from above (`T <: Animal` from `G#m(x: T)` under
+        // `Box#m(x: Animal)`) whose solution `Animal` the bound refuses: a
+        // smaller admitted argument, the bound `Dog`, makes it hold.
+        (
+            r##"class Animal
+  def initialize; end
+end
+class Dog < Animal
+  def initialize; end
+end
+module G[U]
+  def m(x: U) -> String = "module"
+end
+class Box[T]
+  def initialize; end
+  def m(x: Animal) -> String = "box"
+end
+extension Box[T <: Dog]
+  include G[T]
+end
+def via(g: G[Dog]) -> String = g.m(Dog.new)
+b = Box[Dog].new
+puts b.m(Dog.new)
+puts via(b)
+"##,
+            "15:11: error: under `extension Box[T <: Dog]`, `Box#m(x: Animal) -> String` replaces `G#m(x: U) -> String` for the type arguments the extension's bound admits (for `Box[Dog]`, for one), a pair of methods the override table cannot make: give one of them another name, or parameters that do not depend on `T`",
+        ),
+        // From above, with a bound that shares nothing with the type (`T <:
+        // String` and `T <: Int`): no argument is found, and the pair is
+        // refused all the same (the approximation, toward refusing, #556).
+        (
+            r##"module G[U]
+  def m(x: U) -> String = "module"
+end
+class Box[T]
+  def initialize; end
+  def m(x: Int) -> String = "box"
+end
+extension Box[T <: String]
+  include G[T]
+end
+"##,
+            "9:11: error: `extension Box[T <: String]`'s `include G[T]` makes `Box#m(x: Int) -> String` replace `G#m(x: U) -> String` for some type arguments of `Box` but perhaps not for all (their parameters' types depend on `T` in a way this check does not decide). A method replaces another for every type argument or for none (a class value carries none at run time): give one of them another name, or parameters that do not depend on `T`",
+        ),
+        // A `**` parameter, the one position that depends on `T`.
+        (
+            r##"class EA
+  def m(**opts: Int) -> String = "base"
+end
+module G[U]
+  def m(**opts: U) -> String = "module"
+end
+class Box[T] < EA
+  include G[T]
+end
+"##,
+            "8:11: error: `include G[T]` makes `G#m(**opts: U) -> String` replace `EA#m(**opts: Int) -> String` only for some type arguments of `Box`: for `Box[Int]` it replaces it, for `Box[Nil]` it does not. A method replaces another for every type argument or for none (a class value carries none at run time): give one of them another name, or parameters that do not depend on `T`",
+        ),
+    ] {
+        let out = common::diagnostics(src).join("\n");
+        assert!(out.contains(want), "{out}");
+        assert_eq!(out.matches("error:").count(), 1, "{out}");
+    }
+    // Accepted, as before: an argument the class's bound refuses (`T <:
+    // String` against `Int`); a pair that holds for every argument, an
+    // override; parameters of other kinds (no argument changes a kind);
+    // and the class's own method against one a superclass brings, which no
+    // include of the class makes (outside #602's decision: #990).
+    for src in [
+        r##"class EA
+  def m(x: Int) -> String = "base"
+end
+module G[U]
+  def m(*xs: U) -> String = "module"
+end
+class Box[T] < EA
+  include G[T]
+end
+"##,
+        r##"module G[U]
+  def m(x: U) -> String = "module"
+end
+class Base[T]
+  include G[T]
+  def initialize; end
+end
+class Sub[T] < Base[T]
+  def initialize; end
+  def m(x: Int) -> String = "sub"
+end
+def via(g: G[Int]) -> String = g.m(1)
+s = Sub[Int].new
+puts s.m(1)
+puts via(s)
+"##,
+        r##"class Base[T]
+  def initialize; end
+  def m(x: T) -> String = "base"
+  def call_m(x: T) -> String = m(x)
+end
+class Sub[T] < Base[T]
+  def initialize; end
+  def m(x: Int) -> String = "sub"
+end
+s = Sub[Int].new
+puts s.m(1)
+puts s.call_m(1)
+b: Base[Int] = s
+puts b.m(1)
+"##,
+        r##"class EA
+  def m(x: Int) -> String = "base"
+end
+module G[U]
+  def m(x: U) -> String = "module"
+end
+class Box[T <: String] < EA
+  include G[T]
+end
+"##,
+        r##"class EA
+  def m(x: Int) -> String = "base"
+end
+module G[U]
+  def m(x: Object) -> String = "module"
+end
+class Box[T] < EA
+  include G[T]
+end
+puts Box[Int].new.m(1)
+"##,
+    ] {
+        let out = common::diagnostics(src).join("\n");
+        assert!(!out.contains("error:"), "{out}");
+    }
+}
+
 #[test]
 fn the_class_relative_override_pairs_are_checked() {
     // #536 step 1: a later-included module's method over an earlier one's,
