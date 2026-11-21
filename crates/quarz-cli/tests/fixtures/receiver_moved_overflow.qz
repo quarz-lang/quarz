@@ -1,0 +1,25 @@
+# #704: a receiver moved into a lean method that recurses until the
+# native stack runs out: released exactly once, as on the interpreter,
+# "stack level too deep" rescued around the call.
+
+class Deep
+  @name: String
+  def initialize(@name: String); end
+  def deinitialize -> Void
+    puts "released #{@name}"
+  end
+  def dive(n: Int) -> Int = dive(n + 1) + 1
+end
+
+# (No handler here: `d`, read for the last time, moves into the call.)
+def plunge -> Int
+  d = Deep.new("deep")
+  d.dive(0)
+end
+
+begin
+  plunge
+rescue Exception => e
+  puts "rescued #{e.message}"
+end
+puts "end"
