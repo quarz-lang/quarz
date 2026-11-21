@@ -177,6 +177,9 @@ pub(crate) struct Target<'a, B: Builder> {
     pub h: Helpers<B::Func>,
     pub callees: HashMap<FuncId, B::Func>,
     pub callees_typed: HashMap<FuncId, B::Func>,
+    /// The `qzfc.` entries of the natives with a by-reference twin, by
+    /// method (#795): called directly where the call is statically bound.
+    pub fast_entries: HashMap<MethodId, B::Func>,
     pub body_sig: B::Sig,
     /// A typed entry pushes no activation until something needs one
     /// (the backend walks the native stack for backtraces).
@@ -285,6 +288,7 @@ pub(crate) fn gen_function<B: Builder>(
         h,
         callees,
         callees_typed,
+        fast_entries,
         body_sig,
         lazy_act,
         entry_of,
@@ -603,6 +607,7 @@ pub(crate) fn gen_function<B: Builder>(
         pushed_var,
         lazy_act,
         callees_typed,
+        fast_entries,
         typed: typed.clone(),
         typed_params,
         typed_self_ptr,
@@ -1445,6 +1450,7 @@ struct Gen<'a, B: Builder> {
     lazy_act: bool,
     /// The typed entries this function calls directly.
     callees_typed: HashMap<FuncId, B::Func>,
+    fast_entries: HashMap<MethodId, B::Func>,
     /// This body's own typed entry, when compiling it as such, and its
     /// parameters as the entry received them.
     typed: Option<unbox::TypedSig>,
@@ -5589,6 +5595,30 @@ impl<B: Builder> Gen<'_, B> {
                     if recv.is_none() {
                         self.materialize();
                     }
+                    // A native with a by-reference twin, bound statically
+                    // (what `qz_call_static` would reach without looking
+                    // anything up): its `qzfc.` entry, which answers with no
+                    // status (a twin never raises) or declines, and then
+                    // the call goes through `qz_call_static` as before, on
+                    // the same operands (the entry consumed nothing), #795.
+                    let fast = self.fast_entries.get(&mid).copied().filter(|_| {
+                        !function
+                            && blk.is_none()
+                            && args.len() <= 3
+                            && self.methods[mid as usize].dispatch() == Dispatch::Static
+                    });
+                    let cont = fast.map(|entry| {
+                        let answered = self.b.call(
+                            entry,
+                            &[self.rt, self.act, self.regs, recv_v, self.scratch, nargs, d],
+                        )[0];
+                        let cont = self.b.create_block();
+                        let declined = self.b.create_block();
+                        self.b.set_cold(declined);
+                        self.b.brif(answered, cont, &[], declined, &[]);
+                        self.b.switch_to_block(declined);
+                        cont
+                    });
                     let status = self.b.call(
                         self.h.call_static,
                         &[
@@ -5604,6 +5634,10 @@ impl<B: Builder> Gen<'_, B> {
                         ],
                     )[0];
                     self.check(status, unwind);
+                    if let Some(cont) = cont {
+                        self.b.jump(cont, &[]);
+                        self.b.switch_to_block(cont);
+                    }
                     self.drop_copied_moves(inst, dst);
                 }
                 None => self.exec(block, index, unwind),

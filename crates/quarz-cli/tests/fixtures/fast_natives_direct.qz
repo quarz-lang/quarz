@@ -1,0 +1,56 @@
+# #795: a call bound statically to a native with a by-reference twin is
+# made through the twin's entry, which answers or declines; a declined
+# call is made as before (and may raise). Every answer is the method's.
+
+def kind(c: String) -> Int
+  if c == "{"
+    1
+  elsif c != "}"
+    2
+  else
+    3
+  end
+end
+
+def word(c: String) -> String
+  case c
+  when "a" then "A"
+  when "" then "empty"
+  else "other"
+  end
+end
+
+class Key
+  @n: Int
+  def initialize(@n: Int); end
+  def ==(other: Object) -> Bool = other.is_a?(Key) && other.as(Key).n == @n
+  def hash -> Int = @n
+  def n -> Int = @n
+end
+
+p kind("{"), kind("}"), kind("x")
+p word("a"), word(""), word("é")
+p "héllo" == "héllo", "héllo" == "hello", "" == ""
+s = "x"
+p s == 1, s == nil, s != 1
+m: String? = nil
+p m == "x", "x" == m
+u: String | Int = 1
+p u == "x", u == 1
+xs = [1, 2, 3]
+p xs.size, xs[1], xs[-1], xs[5]?
+h = {"a" => 1}
+p h.size, h["a"]?, h["b"]?
+st = Set[1, 2]
+p st.include?(2), st.include?(9)
+p 42.to_s, "ab".start_with?("a"), "ab".upcase
+# Declined, then made as before: a custom key (its own `==`/`hash`).
+hk = {Key.new(1) => "one"}
+p hk[Key.new(1)]?, Set[Key.new(2)].include?(Key.new(2))
+# Declined, and the full native raises: an index out of range.
+begin
+  p xs[7]
+rescue IndexError => e
+  puts "rescued #{e.message}"
+  puts e.backtrace.take(1).map { |l| l.split("/").last }.join
+end

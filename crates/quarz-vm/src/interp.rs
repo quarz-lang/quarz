@@ -127,8 +127,10 @@ pub type NativeFn = fn(&Interp, &Value, Args) -> EvalResult;
 
 /// A native taking its receiver and arguments by reference (no copies,
 /// no argument list): `None` sends the call down the generic path (a
-/// receiver or argument it does not handle, or a case that raises).
-pub type FastNativeFn = fn(&Interp, &Value, &[&Value]) -> Option<EvalResult>;
+/// receiver or argument it does not handle, or a case that raises). It
+/// never raises itself: it answers or declines (#795), which compiled
+/// code relies on to call it with no status (`qzfc.`, `fast!`).
+pub type FastNativeFn = fn(&Interp, &Value, &[&Value]) -> Option<Value>;
 
 /// A native that takes ownership of the receiver so that it can update a
 /// uniquely referenced value in place. On failure it hands the receiver

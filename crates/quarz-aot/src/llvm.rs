@@ -1235,6 +1235,22 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
         (decls.len() - 1) as u32
     }
     let mut declare = |name: &str, params: &[Ty], rets: &[Ty]| push(&mut decls, name, params, rets);
+    // The `qzfc.` entries of the natives with a by-reference twin that the
+    // program's methods name (#795), by method: the twin's symbol `qzf.K`
+    // gives the entry's `qzfc.K` (one `fast!` line makes both).
+    let fast_symbols = &quarz_vm::natives::symbols()[1];
+    let mut fast_by_symbol: HashMap<&str, u32> = HashMap::new();
+    let mut fast_entries: HashMap<quarz_ir::MethodId, u32> = HashMap::new();
+    for (mid, m) in module.world.methods.iter().enumerate() {
+        let Some(sym) = m.native_key.as_deref().and_then(|k| fast_symbols.get(k)) else {
+            continue;
+        };
+        let entry = *fast_by_symbol.entry(sym).or_insert_with(|| {
+            let name = format!("\"qzfc.{}\"", sym.trim_start_matches("qzf."));
+            declare(&name, &[p, p, p, i32_, p, i32_, i32_], &[Ty::I8])
+        });
+        fast_entries.insert(mid as quarz_ir::MethodId, entry);
+    }
     let ops: Vec<u32> = gen::OPS
         .iter()
         .map(|(name, extra)| {
@@ -1459,6 +1475,7 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
                     h,
                     callees,
                     callees_typed,
+                    fast_entries: fast_entries.clone(),
                     body_sig: 0,
                     lazy_act: true,
                     entry_of,

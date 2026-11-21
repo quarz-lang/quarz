@@ -40,7 +40,9 @@ macro_rules! native {
     };
 }
 
-/// `native!` for a by-reference native (`qzf.`).
+/// `native!` for a by-reference native (`qzf.`), with the entry compiled
+/// code calls it through (`qzfc.`, #795): the twin and its entry come from
+/// this one line, under its first key.
 macro_rules! fast {
     ($m:expr, [$first:literal $(, $key:literal)* $(,)?], $f:expr $(,)?) => {{
         #[export_name = concat!("qzf.", $first)]
@@ -48,7 +50,7 @@ macro_rules! fast {
             i: &crate::interp::Interp,
             r: &crate::value::Value,
             a: &[&crate::value::Value],
-        ) -> Option<crate::interp::EvalResult> {
+        ) -> Option<crate::value::Value> {
             // (One that may run a key's `==` or `hash` leaves such a key
             // to the native. A walk over a key nested too deeply keeps a
             // `SystemStackError` (#437): the native runs instead, and
@@ -60,6 +62,46 @@ macro_rules! fast {
             }
             out
         }
+        /// Compiled code's call of the twin (#795): the receiver
+        /// (`recv`, or the caller's `self` for `u32::MAX`) and the
+        /// argument registers (`args`, `n` of them) borrowed, as
+        /// `qz_call_static` lends them. 1 when it answered, the value in
+        /// `regs[dst]`; 0 when it declined, nothing touched, and the
+        /// caller then makes the call through `qz_call_static`.
+        ///
+        /// # Safety
+        /// As for `qz_call_static`.
+        #[export_name = concat!("qzfc.", $first)]
+        unsafe extern "C" fn entry(
+            rt: *const crate::interp::Interp,
+            act: *const crate::vm::Activation,
+            regs: *mut crate::value::Value,
+            recv: u32,
+            args: *const u32,
+            n: u32,
+            dst: u32,
+        ) -> u8 {
+            // SAFETY: as the caller promises.
+            unsafe {
+                let recv_ref: &crate::value::Value = if recv == u32::MAX {
+                    &(*act).self_val
+                } else {
+                    &*regs.add(recv as usize)
+                };
+                let mut refs: [&crate::value::Value; 3] = [&crate::value::Value::Nil; 3];
+                for (i, slot) in refs.iter_mut().enumerate().take(n as usize) {
+                    *slot = &*regs.add(*args.add(i) as usize);
+                }
+                match native(&*rt, recv_ref, &refs[..n as usize]) {
+                    Some(v) => {
+                        *regs.add(dst as usize) = v;
+                        1
+                    }
+                    None => 0,
+                }
+            }
+        }
+        let _ = entry;
         $m.add(&[$first $(, $key)*], native, concat!("qzf.", $first));
     }};
     ($m:expr, $key:literal, $f:expr $(,)?) => {
