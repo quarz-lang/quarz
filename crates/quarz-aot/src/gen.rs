@@ -1630,6 +1630,7 @@ impl<B: Builder> Gen<'_, B> {
         callee: FuncId,
         file: u32,
         recv: Option<Reg>,
+        take_recv: bool,
         provided: u64,
         slots: usize,
         dst: Reg,
@@ -1667,6 +1668,11 @@ impl<B: Builder> Gen<'_, B> {
         self.b.store(file_v, act, L::ACT_FILE as i32);
         let self_dst = self.b.iadd_imm(act, L::ACT_SELF as i64);
         match recv {
+            // (A dying receiver moves in, its register left nil, #704.)
+            Some(r) if take_recv => {
+                self.move_reg_to_ptr(self_dst, r);
+                self.states[r as usize] = State::NonHeap;
+            }
             Some(r) => self.clone_reg_to_ptr(self_dst, r),
             None => {
                 let caller_self = self.b.iadd_imm(self.act, L::ACT_SELF as i64);
@@ -2793,8 +2799,42 @@ impl<B: Builder> Gen<'_, B> {
         if recv.is_none() {
             self.materialize();
         }
+        // A dying receiver moves into the callee's `self`, as the
+        // interpreter's call takes it (`Call::moved`'s bit 15, from
+        // `mark_moves`, #704): the call's own receiver register (not a
+        // construction's object, not the caller's `self`), when it is not
+        // borrowed, holds a boxed value, and is not passed again as an
+        // argument or the block.
+        let take_recv = allow_move
+            && match (recv, inst) {
+                (
+                    Some(r),
+                    Inst::Call {
+                        recv: Some(own),
+                        moved,
+                        ..
+                    },
+                ) => {
+                    r == *own
+                        && moved & (1 << 15) != 0
+                        && !self.borrowed[r as usize]
+                        && self.states[r as usize].boxed()
+                        && !args.contains(&Some(r))
+                        && blk != Some(r)
+                }
+                _ => false,
+            };
+        if take_recv {
+            if let Some(r) = recv {
+                self.ensure_home(r);
+            }
+        }
         let mid_v = self.i32(mid);
-        let recv_v = self.i32(recv.unwrap_or(u32::MAX));
+        let recv_v = self.i32(match recv {
+            Some(r) if take_recv => r | L::RECV_TAKE,
+            Some(r) => r,
+            None => u32::MAX,
+        });
         let blk_v = self.i32(blk.unwrap_or(u32::MAX));
         let d = self.i32(dst);
         // Build the activation, call the body, finish.
@@ -2876,7 +2916,9 @@ impl<B: Builder> Gen<'_, B> {
                 .iter()
                 .any(|b| b.insts.iter().any(|i| matches!(i, Inst::MakeBlock { .. })));
         if lean {
-            self.lean_call(body, callee, file, recv, provided, slots, dst, unwind);
+            self.lean_call(
+                body, callee, file, recv, take_recv, provided, slots, dst, unwind,
+            );
             return;
         }
         let total_v = self.i32(slots as u32);
@@ -2912,6 +2954,10 @@ impl<B: Builder> Gen<'_, B> {
         }
         self.b.jump(unwind, &[status]);
         self.b.switch_to_block(ok_blk);
+        // (The receiver moved into the activation: its register is nil.)
+        if let Some(r) = recv.filter(|_| take_recv) {
+            self.states[r as usize] = State::NonHeap;
+        }
         let call = self.b.call(body, &[self.rt, self.act_buf, self.out_buf]);
         let status = call[0];
         let status = self.b.call(
@@ -3020,7 +3066,7 @@ impl<B: Builder> Gen<'_, B> {
                 .iter()
                 .any(|b| b.insts.iter().any(|i| matches!(i, Inst::MakeBlock { .. })));
         if lean {
-            self.lean_call(body, fid, file, Some(obj), 0, 0, TO_OUT, unwind);
+            self.lean_call(body, fid, file, Some(obj), false, 0, 0, TO_OUT, unwind);
             return;
         }
         let none = self.i32(u32::MAX);
