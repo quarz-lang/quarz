@@ -216,6 +216,13 @@ op_entry!(
 );
 
 op_entry!(
+    /// `FieldTake` (#704): the interpreter's.
+    qz_op_field_take(dst: u32, obj: u32, index: u32) |rt, act, f, pool, regs| {
+        rt.op_field_take(regs, dst, obj, index)
+    }
+);
+
+op_entry!(
     qz_op_field_get_by_name(dst: u32, found: u32, obj: u32, name: u32) |rt, act, f, pool, regs| {
         rt.op_field_get_by_name(f, regs, dst, found, obj, name);
         Ok(())

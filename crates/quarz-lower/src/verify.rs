@@ -105,6 +105,15 @@ pub fn check_from(functions: &[Function], base: FuncId, world: &RtWorld, stage: 
             );
         }
         if stage == Stage::Moves {
+            if let Some((block, inst)) = field_take_not_allowed(f, world) {
+                let mut dump = String::new();
+                quarz_ir::dump::dump_function(&mut dump, id as u32, f);
+                panic!(
+                    "QIR verifier: {} after {}: block {block} inst {inst} is a FieldTake `live::field_take_allowed` does not allow (#704)\n{dump}",
+                    f.name,
+                    stage.name(),
+                );
+            }
             if let Some((g, block, inst, what)) = unused_read(functions, base, f, world) {
                 let mut dump = String::new();
                 quarz_ir::dump::dump_function(&mut dump, id as u32, f);
@@ -116,6 +125,31 @@ pub fn check_from(functions: &[Function], base: FuncId, world: &RtWorld, stage: 
             }
         }
     }
+}
+
+/// The first `FieldTake` of `f` that `live::field_take_allowed` does not
+/// allow (#704): a field of a statically known `data` class, takeable,
+/// through a register that holds a count of its own, read for the last
+/// time there into another register, in a function with no handler.
+fn field_take_not_allowed(f: &Function, world: &RtWorld) -> Option<(usize, usize)> {
+    let last = quarz_ir::live::last_reads(f);
+    for (b, blk) in f.blocks.iter().enumerate() {
+        for (i, inst) in blk.insts.iter().enumerate() {
+            if matches!(inst, Inst::FieldTake { .. })
+                && !quarz_ir::live::field_take_allowed(
+                    f,
+                    &world.classes,
+                    &world.builtin,
+                    &last,
+                    b,
+                    i,
+                )
+            {
+                return Some((b, i));
+            }
+        }
+    }
+    None
 }
 
 /// Whether a call without a receiver reads the caller's `self` at run
@@ -346,6 +380,9 @@ impl Checker<'_> {
                     }
                     Inst::Take { .. } if stage < Stage::Moves => {
                         self.report_early(bi, ii, "Take before mark_moves".into())
+                    }
+                    Inst::FieldTake { .. } if stage < Stage::Moves => {
+                        self.report_early(bi, ii, "FieldTake before mark_moves".into())
                     }
                     Inst::Call { moved, .. } if *moved != 0 && stage < Stage::Moves => {
                         self.report_early(bi, ii, "moved operands before mark_moves".into())

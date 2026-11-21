@@ -873,6 +873,22 @@ fn a_rolled_back_inputs_toplevel_object_is_not_reused() {
 
 /// Keyword parameters in procedure types (docs/02 §1) across inputs: a
 /// lambda, a method yielding keywords and a block given in a later input.
+/// #704: a `data` local's field read on one input is not that local's
+/// last read when a later input reads the local again: the field is not
+/// taken, and the later input sees the value as it was.
+#[test]
+fn a_data_fields_read_is_not_last_across_inputs() {
+    let (out, _) = values(&[
+        "data D = (xs: Array[Int])",
+        "d = D.new([1, 2])",
+        "ys = d.xs.push(3)",
+        "d.xs",
+        "ys",
+    ]);
+    assert_eq!(out[3], "=> [1, 2]", "{out:?}");
+    assert_eq!(out[4], "=> [1, 2, 3]", "{out:?}");
+}
+
 #[test]
 fn keyword_procedures_across_inputs() {
     let (out, _) = values(&[

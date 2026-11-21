@@ -1,0 +1,52 @@
+# #704: a field whose type names a class of the program is not taken,
+# whatever its name: a class `Time` in a module, and a top-level class
+# `Decimal` (the standard library's is not required here), each with a
+# `deinitialize`; and a type with such a class, or a procedure, nested in
+# it (a procedure frees what it captured). Released where they were
+# before.
+
+module M
+  class Time
+    @n: Int
+    def initialize(@n: Int); end
+    def deinitialize -> Void
+      puts "released M::Time #{@n}"
+    end
+  end
+end
+
+class Decimal
+  @n: Int
+  def initialize(@n: Int); end
+  def deinitialize -> Void
+    puts "released Decimal #{@n}"
+  end
+end
+
+data D = (ts: Array[M::Time])
+data E = (ds: Array[Decimal])
+data F = (fs: Array[() -> Int])
+data G = (h: Hash[String, Array[Decimal]])
+data H = (ps: Array[[Int, Decimal]])
+
+def round -> Void
+  d = D.new([M::Time.new(1)])
+  ys = d.ts.push(M::Time.new(2))
+  puts "pushed #{ys.size}"
+  e = E.new([Decimal.new(3)])
+  zs = e.ds.push(Decimal.new(4))
+  puts "pushed #{zs.size}"
+  kept = Decimal.new(5)
+  f = F.new([-> { kept.as(Decimal); 1 }])
+  kept = Decimal.new(6)
+  gs = f.fs.push(-> { 2 })
+  puts "pushed #{gs.size}"
+  g = G.new({"a" => [Decimal.new(7)]})
+  hs = g.h.put("b", [Decimal.new(8)])
+  puts "put #{hs.size}"
+  q = H.new([[1, Decimal.new(9)]])
+  qs = q.ps.push([2, Decimal.new(10)])
+  puts "pushed #{qs.size}"
+end
+round
+puts "end"

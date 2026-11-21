@@ -102,6 +102,26 @@ fn a_static_statement_runs_at_compile_time() {
     );
 }
 
+/// #704: a compile-time run takes a `data` value's field from its only
+/// holder as a run does (`FieldTake`), and gets the same value.
+#[test]
+fn a_compile_time_run_takes_a_field_as_a_run_does() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "data D = (xs: Array[Int])\nmodule Lib\n  def self.build -> Array[Int]\n    d = D.new([])\n    i = 0\n    while i < 5\n      d = D.new(d.xs.push(i))\n      i += 1\n    end\n    d.xs\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nXS = static(Lib.build)\np XS, Lib.build\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "[0, 1, 2, 3, 4]\n[0, 1, 2, 3, 4]\n");
+}
+
 #[test]
 fn what_a_static_statement_may_not_do() {
     let d = dir();

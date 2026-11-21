@@ -541,6 +541,19 @@ pub enum Inst {
         /// for the field's declared type.
         class: ClassId,
     },
+    /// A `FieldGet` that moves the field's value out instead of copying it
+    /// when `obj`, read for the last time here, holds the object's only
+    /// reference (the runtime's uniqueness test, `take_unique`), leaving
+    /// nil in the field, which nothing reads again: `obj` is dead and was
+    /// the only holder, and the object goes when `obj` is next written or
+    /// cleared, as after a `FieldGet` (#704). A `FieldGet` otherwise.
+    /// Where: `live::field_take_allowed`, which the QIR verifier checks.
+    FieldTake {
+        dst: Reg,
+        obj: Reg,
+        index: u32,
+        class: ClassId,
+    },
     FieldSet {
         obj: Reg,
         index: u32,
@@ -969,6 +982,7 @@ impl Inst {
             | Inst::BlockParam { dst }
             | Inst::FrameGet { dst, .. }
             | Inst::FieldGet { dst, .. }
+            | Inst::FieldTake { dst, .. }
             | Inst::ConstGet { dst, .. }
             | Inst::ClassRef { dst, .. }
             | Inst::VariantSingleton { dst, .. }
@@ -1066,7 +1080,9 @@ impl Inst {
             | Inst::Rescuing { src, .. }
             | Inst::MarkUsable { obj: src }
             | Inst::NoMatch { src, .. } => *src = f(*src),
-            Inst::FieldGet { obj, .. } | Inst::FieldGetByName { obj, .. } => *obj = f(*obj),
+            Inst::FieldGet { obj, .. }
+            | Inst::FieldTake { obj, .. }
+            | Inst::FieldGetByName { obj, .. } => *obj = f(*obj),
             Inst::FieldSet { obj, src, .. } => {
                 *obj = f(*obj);
                 *src = f(*src);
@@ -1225,7 +1241,9 @@ impl Inst {
             | Inst::Rescuing { src, .. }
             | Inst::MarkUsable { obj: src }
             | Inst::NoMatch { src, .. } => smallvec::smallvec![*src],
-            Inst::FieldGet { obj, .. } | Inst::FieldGetByName { obj, .. } => {
+            Inst::FieldGet { obj, .. }
+            | Inst::FieldTake { obj, .. }
+            | Inst::FieldGetByName { obj, .. } => {
                 smallvec::smallvec![*obj]
             }
             Inst::FieldSet { obj, src, .. } => smallvec::smallvec![*obj, *src],
@@ -1366,6 +1384,15 @@ pub struct RtField {
     pub default: Option<FuncId>,
     /// The declared type's name (`None` for a type parameter).
     pub ty: Option<String>,
+    /// The classes the declared type is made of, itself first, when it is
+    /// a class type every node of which is a class, through unions and
+    /// tuples (`Array[Int]`: `Array`, `Int`); empty when any node is not
+    /// (a procedure at any depth, a class object, a type parameter),
+    /// `rtworld::field_classes`. For `live::takeable_field` (#704):
+    /// resolved ids, which a program cannot make name another class as it
+    /// could a name.
+    #[serde(default)]
+    pub classes: Vec<ClassId>,
 }
 
 /// How an object stores a physical field: a value (two words), or,

@@ -155,6 +155,14 @@ fn inline_field_defaults_are_each_objects_own() {
     check("field_defaults.qz", 0);
 }
 
+/// #704: a `data` value's collection field updated with the old value
+/// given up each time is taken from its only holder, not copied (main:
+/// 399 on both).
+#[test]
+fn a_data_values_field_is_taken_from_its_only_holder() {
+    check("field_take.qz", 0);
+}
+
 /// #941: a direct call binding keywords in compiled code copies no more
 /// than the runtime's binding (main: 400 on both): the same on the VM,
 /// which binds them as before, and fewer compiled, where an argument

@@ -90,6 +90,10 @@ pub fn fill(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<Strin
                     .find(|iv| iv.flat.is_none() && iv.slot as usize == k)
                     .and_then(|iv| iv.default),
                 ty: ty_name(&s.ty),
+                classes: match &s.ty {
+                    Type::Class(..) => field_classes(&s.ty).unwrap_or_default(),
+                    _ => Vec::new(),
+                },
             })
             .collect();
         rc.ivars = ivars;
@@ -646,6 +650,44 @@ fn rt_kind(world: &World, t: &Type) -> Option<String> {
         .map(|(_, name)| name.to_string()),
         _ => None,
     }
+}
+
+/// The classes a field's declared type is made of, itself first, when
+/// every node of it is a class (`Type::Class`), through unions and tuples
+/// (`Array[Int]?`, `Array[[Int, String]]`); `None` as soon as any node is
+/// anything else: a procedure (whose release frees what it captured), a
+/// class object, a type parameter, an inference variable, `Void`,
+/// `Nothing`. Written to refuse, unlike `classes_in`: every variant is
+/// named, so a new one is a compile error here (`RtField::classes`,
+/// #704).
+fn field_classes(t: &Type) -> Option<Vec<ClassId>> {
+    fn walk(t: &Type, out: &mut Vec<ClassId>) -> Option<()> {
+        match t {
+            Type::Class(c, args) => {
+                out.push(*c);
+                for a in args {
+                    walk(a, out)?;
+                }
+                Some(())
+            }
+            Type::Union(ts) | Type::Tuple(ts) => {
+                for t in ts {
+                    walk(t, out)?;
+                }
+                Some(())
+            }
+            Type::Proc(..)
+            | Type::ClassObject(..)
+            | Type::TypeOf(_)
+            | Type::Param(_)
+            | Type::Var(_)
+            | Type::Void
+            | Type::Nothing => None,
+        }
+    }
+    let mut out = Vec::new();
+    walk(t, &mut out)?;
+    Some(out)
 }
 
 /// The classes `t` names (as instances or as class objects).

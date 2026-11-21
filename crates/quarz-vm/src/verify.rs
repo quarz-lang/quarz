@@ -196,6 +196,12 @@ impl Interp {
                     v => self.violated(format!("ArrayPushWord on {}", describe(v))),
                 }
             }
+            // A field `FieldTake` took is never read again (#704).
+            Inst::FieldGet { obj, index, .. } if matches!(&regs[*obj as usize], Value::Object(o) if crate::value::was_taken(o, *index as usize)) => {
+                self.violated(format!(
+                    "FieldGet of field {index}, which a FieldTake took (#704)"
+                ))
+            }
             Inst::FieldGet {
                 obj, index, class, ..
             }

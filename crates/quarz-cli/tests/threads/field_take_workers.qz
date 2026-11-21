@@ -1,0 +1,20 @@
+# #704: tasks update `data` values through their collection field
+# (`FieldTake`), yielding between updates, so that a value whose field
+# was taken on one worker may be freed on another. Under the fact checks
+# (`QUARZ_VERIFY`) the record of taken fields is the process's, so the
+# free finds it wherever it runs.
+data D = (xs: Array[Int])
+
+def grow(n: Int) -> Int
+  d = D.new([])
+  i = 0
+  while i < n
+    d = D.new(d.xs.push(i))
+    Task.yield
+    i += 1
+  end
+  d.xs.size
+end
+
+tasks = (1..8).map { |k| Task.spawn { grow(50 + k) } }
+p tasks.map { |t| t.await }

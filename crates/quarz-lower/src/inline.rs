@@ -381,6 +381,9 @@ pub(crate) fn rewrite_with(
             index: *index,
             class: *class,
         },
+        // (Made after inlining, `live::take_dying_fields`: a callee
+        // inlined never holds one.)
+        Inst::FieldTake { .. } => unreachable!("a FieldTake before inlining"),
         Inst::FieldSet {
             obj,
             index,
