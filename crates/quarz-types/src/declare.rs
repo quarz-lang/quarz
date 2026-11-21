@@ -3141,20 +3141,40 @@ impl<'ast> Declarer<'ast> {
             if !said.insert((p.by, p.replaced)) {
                 continue;
             }
-            // The include that brings the module (or a module including it).
+            // The include that brings the module (or a module including
+            // it): the extension's the walk named; else the class's own;
+            // else an extension of the class's (a top-level unconditional
+            // one's modules are in the walk's own part).
             let brings = |m: &ClassId| self.world.class_is_a_at_run_time(*m, p.module);
-            let site = match p.extension {
-                Some(e) => self.ext_includes.iter().find_map(|(x, ty, span, file)| {
-                    (*x == e && matches!(ty, Type::Class(m, _) if brings(m)))
+            let of_extension = |want: &dyn Fn(ExtensionId) -> bool| {
+                self.ext_includes.iter().find_map(|(x, ty, span, file)| {
+                    (want(*x) && matches!(ty, Type::Class(m, _) if brings(m)))
                         .then(|| (ty.clone(), *span, *file))
-                }),
-                None => self.class_includes.get(&id).and_then(|v| {
-                    v.iter()
-                        .find(|(m, ..)| brings(m))
-                        .map(|(_, ty, span, file)| (ty.clone(), *span, *file))
-                }),
+                })
+            };
+            let site = match p.extension {
+                Some(e) => of_extension(&|x| x == e),
+                None => self
+                    .class_includes
+                    .get(&id)
+                    .and_then(|v| {
+                        v.iter()
+                            .find(|(m, ..)| brings(m))
+                            .map(|(_, ty, span, file)| (ty.clone(), *span, *file))
+                    })
+                    .or_else(|| of_extension(&|x| self.world.extensions[x as usize].target == id)),
             };
             let Some((ty, span, file)) = site else {
+                // (No include of the class's own brings it: the class's own
+                // method against a method a superclass brings, its own or a
+                // module it includes. That is no include of this class, so
+                // outside #602's decision, and filed as #990.)
+                debug_assert!(
+                    self.world.class(id).superclass.as_ref().is_some_and(|s| matches!(
+                        s, Type::Class(sup, _) if self.world.class_is_a_at_run_time(*sup, p.module)
+                    )),
+                    "a partial pair no include of the class brings comes from a superclass"
+                );
                 continue;
             };
             let w = &self.world;

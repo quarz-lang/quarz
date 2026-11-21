@@ -2581,11 +2581,17 @@ impl World {
         // the instance side's order there, `None` for the class's own; the
         // same walk as `own_ancestors`'.)
         let sources: Vec<Option<ExtensionId>> = match (&partial, instance) {
-            (Some(_), true) => self
-                .ordered_sources(id, &own, &self.all_conformance_extensions(), true, false)
-                .into_iter()
-                .map(|(_, _, e)| e)
-                .collect(),
+            (Some(_), true) => {
+                let walked =
+                    self.ordered_sources(id, &own, &self.all_conformance_extensions(), true, false);
+                // (The same walk as `order`'s: a misalignment would take
+                // another extension's bound.)
+                debug_assert!(
+                    walked.iter().map(|x| x.0).eq(order.iter().map(|x| x.0)),
+                    "ordered_sources lists the order own_ancestors gives"
+                );
+                walked.into_iter().map(|(_, _, e)| e).collect()
+            }
             _ => Vec::new(),
         };
         // The candidate set, the same on both sides (#733): after a
@@ -3886,12 +3892,16 @@ impl World {
             self.include_overrides_on(id, Side::Instance, Some(&mut out));
             self.include_overrides_on(id, Side::Class, Some(&mut out));
             let own = self.own_args(id);
-            let sources: Vec<Option<ExtensionId>> = self
-                .ordered_sources(id, &own, &self.all_conformance_extensions(), true, false)
-                .into_iter()
-                .map(|(_, _, e)| e)
-                .collect();
+            let walked =
+                self.ordered_sources(id, &own, &self.all_conformance_extensions(), true, false);
             let ancs = self.own_ancestors(id);
+            // (The same walk as `ancs`': a misalignment would take another
+            // extension's bound.)
+            debug_assert!(
+                walked.iter().map(|x| x.0).eq(ancs.iter().map(|x| x.0)),
+                "ordered_sources lists the order own_ancestors gives"
+            );
+            let sources: Vec<Option<ExtensionId>> = walked.into_iter().map(|(_, _, e)| e).collect();
             let ext_methods = self.extension_methods_by_target();
             let c = self.class(id);
             for ids in c.methods.values() {
@@ -3960,16 +3970,41 @@ impl World {
     /// type parameters within their bounds (and `extension`'s, for a pair
     /// a conditional extension's include brings), given that it does not
     /// with the parameters as they are. `Some(Some(σ))`: it does for σ,
-    /// found by matching the positions `takes_calls_of` compares (a class
-    /// parameter on one side, a type without them on the other, nested in
-    /// a class's arguments too) and checked by `replaces_seen` and the
-    /// bounds. `Some(None)`: no σ found, but every position that fails
-    /// mentions a class parameter (one bound to two types, a union, a
-    /// subtype only some argument meets): an approximation that may
-    /// refuse a pair that holds for no argument, never accept one that
-    /// holds for some (#556's `bound_may_hold` makes it exact). `None`:
-    /// the pair does not depend on the class's arguments, or fails where
-    /// no argument changes it (the parameters' count, a block).
+    /// checked by `replaces_seen` and the bounds. `Some(None)`: perhaps,
+    /// refused all the same (an approximation that may refuse a pair no
+    /// admitted argument makes hold, never accept one some does: #556's
+    /// exact "may hold" would decide it). `None`: no admitted argument
+    /// makes it hold.
+    ///
+    /// Why every pair some admitted σ makes hold ends in `Some(_)`. Each
+    /// position `takes_calls_of` compares asks `t <: u`, `t` the replaced
+    /// method's type and `u` the replacing one's (parameters, a block,
+    /// keywords and `**`; a kind or count that differs, which no argument
+    /// changes, ends in `None` first, as do two classes neither of which
+    /// is the other's, a procedure's or tuple's count). σ is matched from
+    /// the positions:
+    /// - a parameter on the replacing side, `t <: T` (a lower bound): every
+    ///   working `T` is above `t`, and `T := t` is the least, so if `t`
+    ///   fails the bounds every working `T` does (a bound is an upper one):
+    ///   exact, `None` when only such bindings fail the bounds;
+    /// - a parameter on the replaced side, `T <: u` (an upper bound): a
+    ///   smaller `T` may meet a bound `u` does not; the bounds themselves
+    ///   (the class's and the extension's) are tried in its place, and
+    ///   else the pair is `Some(None)` (refusing more); `Nothing`, below
+    ///   everything, would meet every upper constraint vacuously and is no
+    ///   witness;
+    /// - a parameter nested in a class's arguments, a tuple or a procedure
+    ///   (invariant, covariant or contravariant there): `T := x` is one
+    ///   solution among others, so a failure of the bounds is `Some(None)`
+    ///   as for an upper bound;
+    /// - anything else that mentions a parameter (a union, a parameter on
+    ///   both sides, one bound to two types): `unsure`, and the pair is
+    ///   `Some(None)` when every position that fails mentions a parameter.
+    ///
+    /// A σ `replaces_seen` refuses is no witness; the pair then goes by
+    /// `unsure` as above. So `None` comes only from a position no argument
+    /// changes, from no position depending on the parameters, or from a
+    /// least solution (lower bounds alone) that fails the bounds.
     fn replaces_for_some(
         &self,
         class: ClassId,
@@ -3990,8 +4025,10 @@ impl World {
         }
         let (mi, oi) = (self.method(m), self.method(o));
         let (ps, qs) = (oi.positional_params(), mi.positional_params());
-        // (What no argument changes: the counts, a block on one side.)
+        // (What no argument changes: the counts and kinds, a block on one
+        // side.)
         if ps.len() > qs.len()
+            || ps.iter().zip(&qs).any(|(p, q)| p.kind != q.kind)
             || qs[ps.len()..]
                 .iter()
                 .any(|q| q.default.is_none() && q.kind != ParamKind::Rest)
@@ -4009,16 +4046,17 @@ impl World {
         if let (Some((_, b)), Some((_, c))) = (&oi.block, &mi.block) {
             pairs.push((b.subst(osubst), c.subst(msubst)));
         }
+        let keyword = |p: &ParamInfo, q: &ParamInfo| {
+            p.kind == q.kind
+                && (p.kind == ParamKind::KeywordRest
+                    || (p.kind == ParamKind::KeywordOnly && p.name == q.name))
+        };
         for p in oi
             .params
             .iter()
-            .filter(|p| p.kind == ParamKind::KeywordOnly)
+            .filter(|p| matches!(p.kind, ParamKind::KeywordOnly | ParamKind::KeywordRest))
         {
-            if let Some(q) = mi
-                .params
-                .iter()
-                .find(|q| q.kind == ParamKind::KeywordOnly && q.name == p.name)
-            {
+            if let Some(q) = mi.params.iter().find(|q| keyword(p, q)) {
                 pairs.push((p.ty.subst(osubst), q.ty.subst(msubst)));
             }
         }
@@ -4026,72 +4064,125 @@ impl World {
         if !pairs.iter().any(|(a, b)| mentions(a) || mentions(b)) {
             return None;
         }
-        let mut sigma: HashMap<TypeParamId, Type> = HashMap::default();
-        let mut unsure = false;
-        let mut never = false;
+        let mut found = Matched::default();
         for (a, b) in &pairs {
-            self.match_params(a, b, &params, &mut sigma, &mut unsure, &mut never);
+            self.match_params(a, b, &params, &mut found, Side602::Top);
         }
         // (A shape no argument changes: σ replaces parameters, never a
-        // procedure's or a tuple's count of members.)
-        if never {
+        // procedure's or a tuple's count of members, nor a class.)
+        if found.never {
             return None;
         }
+        let sigma = found.sigma;
         if !sigma.is_empty() {
             let (ms, os) = (compose(msubst, &sigma), compose(osubst, &sigma));
-            if self.replaces_seen(m, &ms, o, &os)
-                && self.class_args_meet_bounds(class, &sigma, extension)
-            {
-                return Some(Some(sigma));
+            if self.replaces_seen(m, &ms, o, &os) {
+                if self.class_args_meet_bounds(class, &sigma, extension) {
+                    return Some(Some(sigma));
+                }
+                // σ holds but fails the bounds: a parameter bound from
+                // above (or nested) may take a smaller argument that meets
+                // them; the bounds themselves are tried in its place.
+                let movable: Vec<TypeParamId> = sigma
+                    .keys()
+                    .copied()
+                    .filter(|p| found.lower_only.get(p) != Some(&true))
+                    .collect();
+                if movable.is_empty() {
+                    // (Lower bounds alone: their least solution fails, so
+                    // every solution does.)
+                    return None;
+                }
+                for t in self.bound_candidates(class, extension) {
+                    let mut alt = sigma.clone();
+                    for p in &movable {
+                        alt.insert(*p, t.clone());
+                    }
+                    let (ms, os) = (compose(msubst, &alt), compose(osubst, &alt));
+                    if self.class_args_meet_bounds(class, &alt, extension)
+                        && self.replaces_seen(m, &ms, o, &os)
+                    {
+                        return Some(Some(alt));
+                    }
+                }
+                return Some(None);
             }
         }
-        // (The fallback: every failing position mentions a parameter.)
+        // (No σ that holds: the fallback, when every failing position
+        // mentions a parameter.)
         let failing: Vec<&(Type, Type)> = pairs
             .iter()
             .filter(|(t, u)| !(t == u || self.is_subtype(t, u)))
             .collect();
+        let unsure = found.unsure || !sigma.is_empty();
         (unsure && !failing.is_empty() && failing.iter().all(|(a, b)| mentions(a) || mentions(b)))
             .then_some(None)
     }
 
-    /// `replaces_for_some`'s matching of a position: a class parameter of
-    /// `params` on one side and a type without any on the other binds it;
-    /// a class's arguments, a tuple's members and a procedure's parameters
-    /// and result are matched in turn; two tuples or procedures of
-    /// different counts, or two classes neither of which is the other's,
-    /// are `never` (no argument changes a count or a class); anything
-    /// else that mentions one (a union, two classes, a parameter bound
-    /// twice) is `unsure`.
-    #[allow(clippy::only_used_in_recursion)]
+    /// The bounds of class `class`'s parameters and of `extension`'s, with
+    /// no parameter in them: the arguments tried in place of a parameter
+    /// bound from above (`replaces_for_some`) and in the error's example
+    /// (`fails_for`). (`Nothing` is not among them: it meets every upper
+    /// constraint vacuously.)
+    fn bound_candidates(&self, class: ClassId, extension: Option<ExtensionId>) -> Vec<Type> {
+        let mut out: Vec<Type> = self
+            .class(class)
+            .type_params
+            .iter()
+            .flat_map(|tp| tp.bounds.iter().cloned())
+            .collect();
+        if let Some(e) = extension {
+            out.extend(
+                self.extensions[e as usize]
+                    .type_params
+                    .iter()
+                    .flat_map(|tp| tp.bounds.iter().cloned()),
+            );
+        }
+        out.retain(|t| !t.mentions_any_param() && !t.is_nothing());
+        out
+    }
+
+    /// `replaces_for_some`'s matching of a position `(a, b)`, `a` the
+    /// replaced method's type and `b` the replacing one's: a class
+    /// parameter of `params` on one side and a type without any on the
+    /// other binds it (noting whether only from the replacing side, at
+    /// the top: a lower bound); a class's arguments, a tuple's members and
+    /// a procedure's parameters and result are matched in turn (nested);
+    /// two tuples or procedures of different counts, or two classes
+    /// neither of which is the other's, are `never`; anything else that
+    /// mentions one (a union, a parameter bound twice) is `unsure`.
     fn match_params(
         &self,
         a: &Type,
         b: &Type,
         params: &[TypeParamId],
-        sigma: &mut HashMap<TypeParamId, Type>,
-        unsure: &mut bool,
-        never: &mut bool,
+        found: &mut Matched,
+        side: Side602,
     ) {
         let mentions = |t: &Type| params.iter().any(|p| t.mentions_param(*p));
-        let mut bind = |p: TypeParamId, t: &Type, sigma: &mut HashMap<TypeParamId, Type>| {
+        let bind = |p: TypeParamId, t: &Type, lower: bool, found: &mut Matched| {
             if mentions(t) {
-                *unsure = true;
+                found.unsure = true;
                 return;
             }
-            match sigma.get(&p) {
-                Some(x) if x != t => *unsure = true,
+            let entry = found.lower_only.entry(p).or_insert(true);
+            *entry &= lower;
+            match found.sigma.get(&p) {
+                Some(x) if x != t => found.unsure = true,
                 Some(_) => {}
                 None => {
-                    sigma.insert(p, t.clone());
+                    found.sigma.insert(p, t.clone());
                 }
             }
         };
         match (a, b) {
-            (Type::Param(p), t) if params.contains(p) => bind(*p, t, sigma),
-            (t, Type::Param(p)) if params.contains(p) => bind(*p, t, sigma),
+            // (The replacing side's parameter at the top: `a <: T`.)
+            (t, Type::Param(p)) if params.contains(p) => bind(*p, t, side == Side602::Top, found),
+            (Type::Param(p), t) if params.contains(p) => bind(*p, t, false, found),
             (Type::Class(c, xs), Type::Class(d, ys)) if c == d && xs.len() == ys.len() => {
                 for (x, y) in xs.iter().zip(ys) {
-                    self.match_params(x, y, params, sigma, unsure, never);
+                    self.match_params(x, y, params, found, Side602::Nested);
                 }
             }
             // (Two classes neither of which is the other's: no argument
@@ -4101,30 +4192,30 @@ impl World {
                     && !self.class_is_a_at_run_time(*c, *d)
                     && !self.class_is_a_at_run_time(*d, *c) =>
             {
-                *never = true;
+                found.never = true;
             }
             (Type::Tuple(xs), Type::Tuple(ys)) => {
                 if xs.len() != ys.len() {
-                    *never = true;
+                    found.never = true;
                     return;
                 }
                 for (x, y) in xs.iter().zip(ys) {
-                    self.match_params(x, y, params, sigma, unsure, never);
+                    self.match_params(x, y, params, found, Side602::Nested);
                 }
             }
             (Type::Proc(_, xs, r, _, _), Type::Proc(_, ys, s, _, _)) => {
                 if xs.len() != ys.len() {
-                    *never = true;
+                    found.never = true;
                     return;
                 }
                 for (x, y) in xs.iter().zip(ys) {
-                    self.match_params(x, y, params, sigma, unsure, never);
+                    self.match_params(x, y, params, found, Side602::Nested);
                 }
-                self.match_params(r, s, params, sigma, unsure, never);
+                self.match_params(r, s, params, found, Side602::Nested);
             }
             _ => {
                 if mentions(a) || mentions(b) {
-                    *unsure = true;
+                    found.unsure = true;
                 }
             }
         }
@@ -4183,23 +4274,13 @@ impl World {
         sigma: &HashMap<TypeParamId, Type>,
     ) -> Option<HashMap<TypeParamId, Type>> {
         let bi = &self.builtin;
-        let tps = &self.class(class).type_params;
         // (The candidates: the fixed few, then each parameter's bounds and
         // the extension's, whatever parameter they are written for.)
         let mut candidates: Vec<Type> = [bi.object, bi.nil, bi.bool_, bi.string, bi.int, bi.float]
             .into_iter()
             .map(Type::class)
             .collect();
-        candidates.extend(tps.iter().flat_map(|tp| tp.bounds.iter().cloned()));
-        if let Some(e) = extension {
-            candidates.extend(
-                self.extensions[e as usize]
-                    .type_params
-                    .iter()
-                    .flat_map(|tp| tp.bounds.iter().cloned()),
-            );
-        }
-        candidates.retain(|t| !t.mentions_any_param());
+        candidates.extend(self.bound_candidates(class, extension));
         for t in candidates {
             let alt: HashMap<TypeParamId, Type> = sigma.keys().map(|p| (*p, t.clone())).collect();
             let (ms, os) = (compose(msubst, &alt), compose(osubst, &alt));
@@ -6874,6 +6955,26 @@ impl quarz_ir::DispatchView for World {
     fn table_overrides(&self, o: MethodId, m: MethodId) -> bool {
         self.overrides(o).contains(&m)
     }
+}
+
+/// What `World::match_params` found over a pair's positions (#602): σ,
+/// whether each parameter was bound from the replacing side only at the
+/// top (a lower bound, whose least solution decides), and whether a
+/// position is undecided (`unsure`) or never holds (`never`).
+#[derive(Default)]
+struct Matched {
+    sigma: HashMap<TypeParamId, Type>,
+    lower_only: HashMap<TypeParamId, bool>,
+    unsure: bool,
+    never: bool,
+}
+
+/// Where `World::match_params` is: a position's top, or nested in a
+/// class's arguments, a tuple or a procedure.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side602 {
+    Top,
+    Nested,
 }
 
 /// `s` with `sigma` applied to its types, and `sigma`'s own entries for

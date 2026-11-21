@@ -3779,6 +3779,64 @@ end
 "##,
             "8:11: error: `include G[T]` makes `G.k(x: U) -> String` replace `EA.k(x: Int) -> String` only for some type arguments of `Box`: for `Box[Int]` it replaces it, for `Box[Nil]` it does not. A method replaces another for every type argument or for none (a class value carries none at run time): give one of them another name, or parameters that do not depend on `T`",
         ),
+        // A parameter bound from above (`T <: Animal` from `G#m(x: T)` under
+        // `Box#m(x: Animal)`) whose solution `Animal` the bound refuses: a
+        // smaller admitted argument, the bound `Dog`, makes it hold.
+        (
+            r##"class Animal
+  def initialize; end
+end
+class Dog < Animal
+  def initialize; end
+end
+module G[U]
+  def m(x: U) -> String = "module"
+end
+class Box[T]
+  def initialize; end
+  def m(x: Animal) -> String = "box"
+end
+extension Box[T <: Dog]
+  include G[T]
+end
+def via(g: G[Dog]) -> String = g.m(Dog.new)
+b = Box[Dog].new
+puts b.m(Dog.new)
+puts via(b)
+"##,
+            "15:11: error: under `extension Box[T <: Dog]`, `Box#m(x: Animal) -> String` replaces `G#m(x: U) -> String` for the type arguments the extension's bound admits (for `Box[Dog]`, for one), a pair of methods the override table cannot make: give one of them another name, or parameters that do not depend on `T`",
+        ),
+        // From above, with a bound that shares nothing with the type (`T <:
+        // String` and `T <: Int`): no argument is found, and the pair is
+        // refused all the same (the approximation, toward refusing, #556).
+        (
+            r##"module G[U]
+  def m(x: U) -> String = "module"
+end
+class Box[T]
+  def initialize; end
+  def m(x: Int) -> String = "box"
+end
+extension Box[T <: String]
+  include G[T]
+end
+"##,
+            "9:11: error: `extension Box[T <: String]`'s `include G[T]` makes `Box#m(x: Int) -> String` replace `G#m(x: U) -> String` for some type arguments of `Box` but perhaps not for all (their parameters' types depend on `T` in a way this check does not decide). A method replaces another for every type argument or for none (a class value carries none at run time): give one of them another name, or parameters that do not depend on `T`",
+        ),
+        // A `**` parameter, the one position that depends on `T`.
+        (
+            r##"class EA
+  def m(**opts: Int) -> String = "base"
+end
+module G[U]
+  def m(**opts: U) -> String = "module"
+end
+class Box[T] < EA
+  include G[T]
+end
+"##,
+            "8:11: error: `include G[T]` makes `G#m(**opts: U) -> String` replace `EA#m(**opts: Int) -> String` only for some type arguments of `Box`: for `Box[Int]` it replaces it, for `Box[Nil]` it does not. A method replaces another for every type argument or for none (a class value carries none at run time): give one of them another name, or parameters that do not depend on `T`",
+        ),
     ] {
         let out = common::diagnostics(src).join("\n");
         assert!(out.contains(want), "{out}");
@@ -3786,8 +3844,51 @@ end
     }
     // Accepted, as before: an argument the class's bound refuses (`T <:
     // String` against `Int`); a pair that holds for every argument, an
-    // override.
+    // override; parameters of other kinds (no argument changes a kind);
+    // and the class's own method against one a superclass brings, which no
+    // include of the class makes (outside #602's decision: #990).
     for src in [
+        r##"class EA
+  def m(x: Int) -> String = "base"
+end
+module G[U]
+  def m(*xs: U) -> String = "module"
+end
+class Box[T] < EA
+  include G[T]
+end
+"##,
+        r##"module G[U]
+  def m(x: U) -> String = "module"
+end
+class Base[T]
+  include G[T]
+  def initialize; end
+end
+class Sub[T] < Base[T]
+  def initialize; end
+  def m(x: Int) -> String = "sub"
+end
+def via(g: G[Int]) -> String = g.m(1)
+s = Sub[Int].new
+puts s.m(1)
+puts via(s)
+"##,
+        r##"class Base[T]
+  def initialize; end
+  def m(x: T) -> String = "base"
+  def call_m(x: T) -> String = m(x)
+end
+class Sub[T] < Base[T]
+  def initialize; end
+  def m(x: Int) -> String = "sub"
+end
+s = Sub[Int].new
+puts s.m(1)
+puts s.call_m(1)
+b: Base[Int] = s
+puts b.m(1)
+"##,
         r##"class EA
   def m(x: Int) -> String = "base"
 end
