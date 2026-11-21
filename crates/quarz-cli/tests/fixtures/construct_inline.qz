@@ -1,0 +1,276 @@
+# #939: compiled code constructs a class inline (the runtime allocates the
+# object and runs its field defaults; the compiled `initialize` is called
+# directly, its result released) when the class has no `deinitialize` and
+# its `initialize` is a compiled body with positional parameters; the
+# rest goes through the runtime's construction. Both give what the VM
+# gives.
+class Res
+  @name: String
+  def initialize(@name: String); end
+  def deinitialize -> Void
+    puts "Res#deinitialize #{@name}"
+  end
+end
+
+class Plain
+  @n: Int = 7
+  @m: Int = 0
+  def n -> Int = @n + @m
+end
+
+class Pt
+  @x: Int
+  def initialize(@x: Int); end
+  def x -> Int = @x
+end
+
+class Box
+  @a: Int
+  @b: Int?
+  @c: Bool
+  @f: Float = 1.5
+  def initialize(@a: Int, @b: Int? = nil, @c: Bool = false); end
+  def show -> String = "#{@a} #{@b.inspect} #{@c} #{@f}"
+end
+
+class Cell[T]
+  @v: T
+  def initialize(@v: T); end
+  def v -> T = @v
+end
+
+class GS < Cell[Int]
+end
+
+class Base2
+  @a: Int
+  def initialize(@a: Int); end
+  def a -> Int = @a
+end
+
+class Sub2 < Base2
+  @b: Int
+  def initialize(a: Int, @b: Int)
+    super(a)
+  end
+  def sum -> Int = a + @b
+end
+
+class Kid < Pt
+end
+
+class Over < Pt
+  def initialize(x: Int)
+    super(x * 2)
+  end
+end
+
+data P2 = (x: Int, y: Int)
+
+class HasP
+  @p: P2
+  def initialize(@p: P2); end
+  def p2 -> P2 = @p
+end
+
+class Holder
+  @r: Res
+  def initialize(@r: Res)
+    raise ArgumentError, "no holder"
+  end
+end
+
+class MakesRes
+  def initialize
+    Res.new("last")
+  end
+end
+
+class Keep
+  @xs: Array[Int]
+  def initialize(@xs: Array[Int]); end
+  def xs -> Array[Int] = @xs
+end
+
+class Fac
+  @v: Int
+  def initialize(@v: Int); end
+  def self.make(v: Int) -> Fac = new(v)
+  def v -> Int = @v
+end
+
+class Deep
+  @n: Int
+  def initialize(@n: Int)
+    Deep.new(@n + 1)
+  end
+end
+
+p Plain.new.n, Pt.new(3).x
+puts Box.new(1).show, Box.new(2, 5, true).show
+p Cell.new("s").v, Cell[Int].new(4).v, GS.new(6).v
+p Sub2.new(1, 2).sum, Kid.new(5).x, Over.new(5).x, Pt.new(5).x
+p HasP.new(P2.new(1, 2)).p2.y
+begin
+  Holder.new(Res.new("held"))
+rescue ArgumentError => e
+  puts "rescued #{e.message}"
+end
+puts "after holder"
+MakesRes.new
+puts "after makes"
+xs = [1, 2]
+k = Keep.new(xs)
+p k.xs, Fac.make(9).v
+r = Res.new("kept")
+puts r.inspect.size > 0
+begin
+  Deep.new(0)
+rescue SystemStackError => e
+  puts "too deep"
+end
+
+# A construction that raises leaves the variable it was to be assigned to
+# as it was, read after the rescue, in an `ensure`, in a loop, through a
+# block's capture and at the top level: the half-built object is never
+# seen (its register is not one the handler reads).
+class Neg
+  @x: Int
+  def initialize(x: Int)
+    raise ArgumentError, "neg" if x < 0
+    @x = x
+  end
+  def x -> Int = @x
+end
+class Base3
+  @x: Int = 1
+  def x -> Int = @x
+end
+class Bad < Base3
+  @y: Int = Bad.boom
+  def self.boom -> Int
+    raise ArgumentError, "default"
+  end
+end
+class Wrap
+  @n: Neg
+  def initialize(@n: Neg)
+    raise ArgumentError, "wrap" if @n.x == 1
+  end
+  def x -> Int = @n.x
+end
+def kept_on_raise(n: Int) -> Int
+  v = Neg.new(1)
+  begin
+    v = Neg.new(n)
+  rescue ArgumentError
+  end
+  v.x
+end
+def kept_on_default -> Int
+  d: Base3 = Base3.new
+  begin
+    d = Bad.new
+  rescue ArgumentError
+  end
+  d.x
+end
+def kept_wrapped -> Int
+  q = Neg.new(1)
+  w = Wrap.new(Neg.new(5))
+  begin
+    w = Wrap.new(q)
+  rescue ArgumentError
+  end
+  w.x + q.x
+end
+def kept_in_block -> Int
+  v = Neg.new(3)
+  begin
+    [1, -1].each { |i| v = Neg.new(i * 7) }
+  rescue ArgumentError
+  end
+  v.x
+end
+def kept_in_loop -> Int
+  v = Neg.new(3)
+  begin
+    i = 1
+    while i > -2
+      v = Neg.new(i * 9)
+      i -= 2
+    end
+  rescue ArgumentError
+  end
+  v.x
+end
+def kept_in_ensure -> Int
+  v = Neg.new(4)
+  begin
+    v = Neg.new(-1)
+  ensure
+    puts "ensure #{v.x}"
+  end
+  v.x
+end
+p kept_on_raise(-1), kept_on_default, kept_wrapped, kept_in_block, kept_in_loop
+begin
+  kept_in_ensure
+rescue ArgumentError
+  puts "rescued ensure"
+end
+top = Neg.new(6)
+begin
+  top = Neg.new(-6)
+rescue ArgumentError
+end
+p top.x
+
+# An `initialize` taking more parameters than the call passes (defaults
+# left out), in a function with no other call laying parameters out: the
+# argument area is sized for the `initialize`, not for the arguments; and
+# an exception class raised without a message (`SystemExit`'s two
+# defaults), rescued.
+class Many
+  @sum: Int
+  def initialize(a: Int = 1, b: Int = 2, c: Int = 3, d: Int = 4)
+    @sum = a + b + c + d
+  end
+  def sum -> Int = @sum
+end
+def many -> Int = Many.new.sum
+p many
+def exits -> String
+  raise SystemExit
+rescue SystemExit => s
+  "#{s.status} #{s.message}"
+end
+p exits
+
+# An `initialize` that makes a block is called through the entry that
+# builds its activation in the runtime (`qz_enter`/`qz_leave`), not the
+# lean one: with a default left out, its result dropped, and raising from
+# inside the block, the variable keeping its old value.
+class Summed
+  @s: Int = 0
+  @get: () -> Int
+  def initialize(xs: Array[Int], extra: Int = 0)
+    xs.each do |x|
+      raise ArgumentError, "negative" if x < 0
+      @s += x
+    end
+    @s += extra
+    base = @s
+    @get = -> { base }
+  end
+  def s -> Int = @get.call
+end
+def summed -> Int
+  a = Summed.new([1, 2, 3])
+  begin
+    a = Summed.new([4, -1])
+  rescue ArgumentError
+  end
+  a.s + Summed.new([1], 10).s
+end
+p summed

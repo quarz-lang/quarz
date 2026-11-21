@@ -145,6 +145,10 @@ pub(crate) struct Helpers<F> {
     pub yield_: F,
     pub construct: F,
     pub alloc_data: F,
+    /// `qz_alloc_object` and `qz_field_defaults`: an inline construction's
+    /// object and its field defaults (#939).
+    pub alloc_object: F,
+    pub field_defaults: F,
     pub owned_call: F,
     pub hash_put_int: F,
     /// `qz_cmp_int_float`: an `Int` and a `Float` compared exactly, on the
@@ -218,11 +222,20 @@ pub(crate) fn typed_entry_region(
 
 /// The compiled bodies `f` calls directly, and which of them have typed
 /// entries: what a backend imports before `gen_function`.
-pub(crate) fn direct_callees(f: &Function, methods: &[RtMethod]) -> Vec<FuncId> {
+pub(crate) fn direct_callees(
+    f: &Function,
+    methods: &[RtMethod],
+    classes: &[RtClass],
+) -> Vec<FuncId> {
     let mut out: Vec<FuncId> = Vec::new();
     for blk in &f.blocks {
         for inst in &blk.insts {
-            if let Some(target) = direct_target(inst, methods) {
+            let target = direct_target(inst, methods).or_else(|| {
+                construct_target(inst, methods, classes)
+                    .flatten()
+                    .map(|(_, f)| f)
+            });
+            if let Some(target) = target {
                 if !out.contains(&target) {
                     out.push(target);
                 }
@@ -307,11 +320,23 @@ pub(crate) fn gen_function<B: Builder>(
                 }
                 Some(m.params.len() + usize::from(m.has_block))
             }
+            // A data construction's fields; an inline construction's
+            // `initialize` parameters (#939), which may be more than
+            // the arguments (defaults left out).
             Inst::Call {
                 kind: CallKind::Construct { .. },
                 args,
                 ..
-            } => Some(args.len()),
+            } => {
+                let init = match construct_target(inst, methods, classes) {
+                    Some(Some((mid, _))) => {
+                        let m = &methods[mid as usize];
+                        m.params.len() + usize::from(m.has_block)
+                    }
+                    _ => 0,
+                };
+                Some(args.len().max(init))
+            }
             _ => None,
         })
         .max()
@@ -536,6 +561,7 @@ pub(crate) fn gen_function<B: Builder>(
         body_sig,
         ptrs,
         args_buf,
+        args_cap: max_direct_args,
         fid,
         f,
         methods,
@@ -968,6 +994,62 @@ fn direct_target(inst: &Inst, methods: &[RtMethod]) -> Option<FuncId> {
     m.func
 }
 
+/// A construction compiled code makes inline (#939): `Class.new(args)`
+/// with positional arguments only, of a class (not a data type, nor one
+/// the runtime builds) without a `deinitialize` (`quarz_ir::deinitializer`:
+/// a failure before the object is usable must keep it from running, which
+/// `Interp::construct` does), whose `initialize`, when it has one, is a
+/// compiled body with positional parameters. `Some(None)`: no
+/// `initialize`; `Some(Some((method, body)))`: the body called directly,
+/// the class being exact whatever overrides it (only `new` and `super`
+/// reach an `initialize`, and this names no new symbol of it). Anything
+/// else goes through `qz_construct`.
+pub(crate) fn construct_target(
+    inst: &Inst,
+    methods: &[RtMethod],
+    classes: &[RtClass],
+) -> Option<Option<(MethodId, FuncId)>> {
+    let Inst::Call {
+        kind: CallKind::Construct { class, init },
+        args,
+        splat: false,
+        kw,
+        kw_splat: None,
+        block: None,
+        ..
+    } = inst
+    else {
+        return None;
+    };
+    if !kw.is_empty() {
+        return None;
+    }
+    let c = classes.get(*class as usize)?;
+    if c.kind != RtClassKind::Class
+        || c.built_by_runtime
+        || quarz_ir::deinitializer(classes, *class).is_some()
+    {
+        return None;
+    }
+    let Some(i) = init else {
+        return Some(None);
+    };
+    let m = methods.get(*i as usize)?;
+    if m.synth != RtSynth::None
+        || m.native_key.is_some()
+        || m.is_abstract
+        || args.len() > m.params.len()
+        || !m.params.iter().all(|p| p.kind == RtParamKind::Positional)
+    {
+        return None;
+    }
+    Some(Some((*i, m.func?)))
+}
+
+/// A call's result nobody reads (`direct_call`): released, not stored
+/// (an inline construction's `initialize`, #939).
+const NO_DST: Reg = u32::MAX;
+
 /// The first word of an allocation that other threads may hold
 /// (`quarz_vm::rc`): its count is elsewhere, updated atomically by the
 /// runtime. Any other value is the count of a local allocation.
@@ -1203,6 +1285,9 @@ struct Gen<'a, B: Builder> {
     ptrs: B::Value,
     /// The argument area of direct calls.
     args_buf: B::Value,
+    /// How many values `args_buf` holds: a call laying out more would
+    /// write past it (`direct_call` asserts it).
+    args_cap: usize,
     fid: FuncId,
     f: &'a Function,
     methods: &'a [RtMethod],
@@ -1549,13 +1634,19 @@ impl<B: Builder> Gen<'_, B> {
         self.b.switch_to_block(popped);
         // Tear down: only `self` can hold a reference.
         self.release_ptr(self_dst);
-        // The result moves into `dst`; `out` is nil again.
-        self.release(dst);
-        for k in [0, 8] {
-            let w = self.b.load(Ty::I64, self.out_buf, k);
-            self.b.store(w, self.regs, reg_off(dst) + k);
+        if dst == NO_DST {
+            // A result nobody reads: released; `out` is nil again.
+            self.release_ptr(self.out_buf);
+            self.b.store(zero, self.out_buf, 0);
+        } else {
+            // The result moves into `dst`; `out` is nil again.
+            self.release(dst);
+            for k in [0, 8] {
+                let w = self.b.load(Ty::I64, self.out_buf, k);
+                self.b.store(w, self.regs, reg_off(dst) + k);
+            }
+            self.b.store(zero, self.out_buf, 0);
         }
-        self.b.store(zero, self.out_buf, 0);
         let ok = self.b.iconst(Ty::I32, 0);
         self.b.jump(done, &[ok]);
         self.b.switch_to_block(done);
@@ -2596,6 +2687,10 @@ impl<B: Builder> Gen<'_, B> {
         };
         // Lay the parameters out in the argument area:
         // the arguments, nil for missing ones, the block.
+        assert!(
+            nparams.max(args.len()) + usize::from(has_block) <= self.args_cap,
+            "a direct call lays out more parameters than the argument area holds"
+        );
         let mut provided: u64 = 0;
         let mut slots = 0usize;
         for (k, r) in args.iter().enumerate() {
@@ -4857,6 +4952,51 @@ impl<B: Builder> Gen<'_, B> {
                         self.h.alloc_data,
                         &[self.regs, class_v, self.args_buf, n, d],
                     );
+                    return;
+                }
+                // A class constructed inline (#939): the runtime allocates
+                // the object and runs its field defaults (it alone writes
+                // a field's mark or the aside list), and the compiled
+                // `initialize` is called directly on it, its result
+                // released.
+                if let Some(target) = construct_target(inst, self.methods, self.classes) {
+                    // (The line a backtrace shows for this frame, as a
+                    // direct method call records it.)
+                    self.set_call_line(block, index);
+                    let class_v = self.i32(*class);
+                    let d = self.i32(*dst);
+                    let status = self
+                        .b
+                        .call(self.h.alloc_object, &[self.rt, self.regs, class_v, d])[0];
+                    self.check(status, unwind);
+                    // `dst` holds the new object, counted: passed to
+                    // `initialize` as `self` with a count of its own.
+                    self.states[*dst as usize] = State::Unknown;
+                    let defaults = self.classes[*class as usize]
+                        .ivars
+                        .iter()
+                        .any(|f| f.default.is_some());
+                    if defaults {
+                        let status =
+                            self.b.call(self.h.field_defaults, &[self.rt, self.regs, d])[0];
+                        self.check(status, unwind);
+                    }
+                    if let Some((mid, callee)) = target {
+                        self.direct_call(
+                            inst,
+                            mid,
+                            callee,
+                            Some(*dst),
+                            args,
+                            None,
+                            NO_DST,
+                            block,
+                            index,
+                            unwind,
+                            true,
+                        );
+                        self.drop_copied_moves(inst, *dst);
+                    }
                     return;
                 }
                 for (k, r) in args.iter().enumerate() {

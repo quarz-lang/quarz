@@ -1290,6 +1290,8 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
             hash_put_int: declare("qz_hash_put_int", &[p, i64_, i64_], &[i32_]),
             cmp_int_float: declare("qz_cmp_int_float", &[i64_, Ty::F64, i32_], &[i32_]),
             alloc_data: declare("qz_alloc_data", &[p, i32_, p, i32_, i32_], &[]),
+            alloc_object: declare("qz_alloc_object", &[p, p, i32_, i32_], &[i32_]),
+            field_defaults: declare("qz_field_defaults", &[p, p, i32_], &[i32_]),
             construct: declare("qz_construct", &[p, p, i32_, i32_, p, i32_, i32_], &[i32_]),
         },
         main: declare(
@@ -1395,7 +1397,9 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
             text: String::new(),
             meta: Vec::new(),
             nmeta: 0,
-            calls: gen::direct_callees(f, methods).into_iter().collect(),
+            calls: gen::direct_callees(f, methods, &module.world.classes)
+                .into_iter()
+                .collect(),
         };
         let mut entries = vec![(None, funcs[i], None)];
         if let (Some(sig), Some(tf)) = (&typed[i], typed_funcs[i]) {
@@ -1443,6 +1447,8 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
                 yield_: rt.h.yield_,
                 construct: rt.h.construct,
                 alloc_data: rt.h.alloc_data,
+                alloc_object: rt.h.alloc_object,
+                field_defaults: rt.h.field_defaults,
                 owned_call: rt.h.owned_call,
                 hash_put_int: rt.h.hash_put_int,
                 cmp_int_float: rt.h.cmp_int_float,

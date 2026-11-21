@@ -1,0 +1,33 @@
+7
+3
+1 nil false 1.5
+2 5 true 1.5
+"s"
+4
+6
+3
+5
+10
+5
+2
+rescued no holder
+Res#deinitialize held
+after holder
+Res#deinitialize last
+after makes
+[1, 2]
+9
+true
+too deep
+1
+1
+6
+7
+9
+ensure 4
+rescued ensure
+6
+10
+"0 exit"
+17
+Res#deinitialize kept

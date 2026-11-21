@@ -222,6 +222,7 @@ pub fn verify(f: &Function, world: &RtWorld, nfuncs: usize, stage: Stage) -> Vec
     if v.out.is_empty() {
         v.words();
         v.resumes();
+        v.construct_results();
         if stage >= Stage::Release {
             v.moves(stage);
         }
@@ -582,6 +583,60 @@ impl Checker<'_> {
     }
 
     /// A5: what a `Resume` continues was caught by a `CatchAny`.
+    /// A construction's result register is not read by the handler its
+    /// block raises into (#939). Compiled code builds an object inline in
+    /// that register before its `initialize` runs, so a raise there leaves
+    /// the half-built object in it, where the interpreter's `op_call` (and
+    /// `qz_construct`) leave the old value; that is unobservable only when
+    /// nothing on the exceptional path reads the register. Lowering puts a
+    /// call's result in a fresh temporary (moved into the variable after),
+    /// copy propagation only redirects reads of a move's destination to its
+    /// source, and register sharing counts a handler's live set throughout
+    /// its region, so no pass makes the result a register the handler
+    /// reads: this checks it.
+    fn construct_results(&mut self) {
+        let f = self.f;
+        let calls = |b: &quarz_ir::Block| {
+            b.insts.iter().any(|i| {
+                matches!(
+                    i,
+                    Inst::Call {
+                        kind: CallKind::Construct { .. },
+                        ..
+                    }
+                )
+            })
+        };
+        if !f.blocks.iter().any(|b| b.handler.is_some() && calls(b)) {
+            return;
+        }
+        let live = quarz_ir::live::liveness(f);
+        for (bi, b) in f.blocks.iter().enumerate() {
+            let Some(h) = b.handler else {
+                continue;
+            };
+            for (ii, inst) in b.insts.iter().enumerate() {
+                if let Inst::Call {
+                    dst,
+                    kind: CallKind::Construct { .. },
+                    ..
+                } = inst
+                {
+                    if live[h.block as usize][0][*dst as usize] {
+                        self.report(
+                            bi,
+                            Some(ii),
+                            format!(
+                                "a construction's result r{dst} is read by its handler b{}: a raise in `initialize` would leave it half built",
+                                h.block
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     fn resumes(&mut self) {
         let f = self.f;
         if !f.blocks.iter().any(|b| matches!(b.term, Term::Resume(_))) {

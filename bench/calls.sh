@@ -28,7 +28,7 @@ for mode in $modes; do
   if [ $mode = vm ]; then n1=20000; n2=220000; else n1=100000; n2=1100000; fi
   base=$(per $mode empty $n1 $n2)
   echo "== $mode (empty loop: $base per iteration)"
-  for c in native0 fast0 native1 fast1 native2 owned block_value static_call static_call_kept dynamic_call new keywords keywords_left_out defaults; do
+  for c in native0 fast0 native1 fast1 native2 owned block_value static_call static_call_kept dynamic_call new new_bare new_defaults new_defaults_given keywords keywords_left_out defaults; do
     echo "$c $(( $(per $mode $c $n1 $n2) - base ))"
   done
   # (Per element: no outer loop to take away.)

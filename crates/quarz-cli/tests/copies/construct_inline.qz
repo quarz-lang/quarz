@@ -1,0 +1,28 @@
+# #939: a construction compiled inline copies what the runtime's did: an
+# argument `initialize` keeps in a field is shared with the caller's
+# variable, so updating that variable after copies once (200 below), and
+# an `initialize` whose last value is a fresh collection releases it
+# without a copy (0).
+class Keep
+  @xs: Array[Int]
+  def initialize(@xs: Array[Int]); end
+  def xs -> Array[Int] = @xs
+end
+
+class Fresh
+  @n: Int
+  def initialize(@n: Int)
+    [@n, @n + 1].map { |x| x * 2 }
+  end
+  def n -> Int = @n
+end
+
+n = 0
+200.times do |i|
+  row = [i]
+  k = Keep.new(row)
+  row = row.push(0)
+  n += row.size + k.xs.size
+end
+100.times { |i| n += Fresh.new(i).n }
+p n
