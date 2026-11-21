@@ -145,10 +145,11 @@ pub(crate) struct Helpers<F> {
     pub yield_: F,
     pub construct: F,
     pub alloc_data: F,
-    /// `qz_alloc_object` and `qz_field_defaults`: an inline construction's
-    /// object and its field defaults (#939).
+    /// `qz_alloc_object` and `qz_ivar_set`: an inline construction's
+    /// object (#939), and the store of a field default's value its
+    /// function computed (#1000).
     pub alloc_object: F,
-    pub field_defaults: F,
+    pub ivar_set: F,
     pub owned_call: F,
     pub hash_put_int: F,
     /// `qz_cmp_int_float`: an `Int` and a `Float` compared exactly, on the
@@ -240,6 +241,24 @@ pub(crate) fn direct_callees(
             if let Some(target) = target {
                 if !out.contains(&target) {
                     out.push(target);
+                }
+            }
+            // An inline construction's field defaults (`field_defaults`).
+            if let Inst::Call {
+                kind: CallKind::Construct { class, .. },
+                ..
+            } = inst
+            {
+                if construct_target(inst, &f.consts, methods, classes).is_some() {
+                    for d in classes[*class as usize]
+                        .ivars
+                        .iter()
+                        .filter_map(|iv| iv.default)
+                    {
+                        if !out.contains(&d) {
+                            out.push(d);
+                        }
+                    }
                 }
             }
         }
@@ -1152,6 +1171,9 @@ pub(crate) fn keyword_target(
 /// A call's result nobody reads (`direct_call`): released, not stored
 /// (an inline construction's `initialize`, #939).
 const NO_DST: Reg = u32::MAX;
+/// A call's result left in the result buffer (`L::LEAVE_TO_OUT`), for a
+/// field default (`field_defaults`, #1000).
+const TO_OUT: Reg = L::LEAVE_TO_OUT;
 
 /// The first word of an allocation that other threads may hold
 /// (`quarz_vm::rc`): its count is elsewhere, updated atomically by the
@@ -1741,6 +1763,8 @@ impl<B: Builder> Gen<'_, B> {
             // A result nobody reads: released; `out` is nil again.
             self.release_ptr(self.out_buf);
             self.b.store(zero, self.out_buf, 0);
+        } else if dst == TO_OUT {
+            // A field default's value: left in `out` for `qz_ivar_set`.
         } else {
             // The result moves into `dst`; `out` is nil again.
             self.release(dst);
@@ -2911,6 +2935,136 @@ impl<B: Builder> Gen<'_, B> {
                 .iadd_imm(self.args_buf, (k as i64) * i64::from(VALUE_SIZE));
             self.release_ptr(p);
         }
+        self.check(status, unwind);
+    }
+
+    /// The field defaults of the new object in `obj`, of class `class`, in
+    /// order, as `Interp::field_defaults` runs them for a construction
+    /// through the runtime (#1000): a constant one (`RtIvar::literal`)
+    /// placed in a word field as `SetField` stores a number or a boolean
+    /// there (nothing for nil: the field is nil already, the object being
+    /// new, `qz_alloc_object`), any other run by a direct call of its
+    /// function on the object, its value stored by the runtime
+    /// (`qz_ivar_set`). A raise leaves the object in `obj`, which no
+    /// handler reads (`construct_results`), for the unwind to release
+    /// with what earlier defaults stored.
+    fn field_defaults(&mut self, class: ClassId, obj: Reg, unwind: B::Block) {
+        assert!(
+            obj != NO_DST && obj != TO_OUT,
+            "an inline construction's object is in a register"
+        );
+        let ivars: Vec<(u32, quarz_ir::RtIvar)> = self.classes[class as usize]
+            .ivars
+            .iter()
+            .enumerate()
+            .filter(|(_, iv)| iv.default.is_some())
+            .map(|(i, iv)| (i as u32, iv.clone()))
+            .collect();
+        for (i, iv) in ivars {
+            if self.place_literal(class, obj, &iv) {
+                continue;
+            }
+            let Some(fid) = iv.default else { continue };
+            self.default_call(fid, obj, unwind);
+            let o = self.i32(obj);
+            let i_v = self.i32(i);
+            let status = self
+                .b
+                .call(self.h.ivar_set, &[self.rt, self.regs, o, i_v, self.out_buf])[0];
+            self.check(status, unwind);
+        }
+    }
+
+    /// Place `iv`'s constant default in the new object in `obj` when it
+    /// needs no code of the runtime: nil (the field holds it already), or
+    /// a number or boolean its word field holds (the word `SetField`'s
+    /// fast path stores: never a mark). False for anything else, which
+    /// the default's function then computes.
+    fn place_literal(&mut self, class: ClassId, obj: Reg, iv: &quarz_ir::RtIvar) -> bool {
+        let Some(c) = &iv.literal else {
+            return false;
+        };
+        // (A data value held in place is the runtime's to store.)
+        if iv.flat.is_some() {
+            return false;
+        }
+        if matches!(c, Constant::Nil) {
+            return true;
+        }
+        let (kind, _) = unbox::field_slot(self.classes, class, iv.slot);
+        let word = match (kind, c) {
+            (FieldKind::Int, Constant::Int(v)) if *v != L::FIELD_INT_MARK => *v,
+            (FieldKind::Float, Constant::Float(v)) if v.to_bits() != L::FIELD_FLOAT_MARK => {
+                v.to_bits() as i64
+            }
+            (FieldKind::Bool, Constant::Bool(b)) => i64::from(*b),
+            _ => return false,
+        };
+        let field = self.field_addr(obj, class, iv.slot);
+        let w = self.b.iconst(Ty::I64, word);
+        self.b.store(w, field, 0);
+        true
+    }
+
+    /// A direct call of the field default `fid` with `self` the object in
+    /// `obj` and no parameters, as `Interp::run_init` runs it (no method,
+    /// no block), its value left in the result buffer (`TO_OUT`): inline
+    /// when the function is lean, through `qz_enter`/`qz_leave` otherwise.
+    fn default_call(&mut self, fid: FuncId, obj: Reg, unwind: B::Block) {
+        let (frame_size, file) = {
+            let target = &self.functions[fid as usize];
+            (target.frame_size, target.file)
+        };
+        let body = self.callees[&fid];
+        let lean = frame_size == 0
+            && !self.functions[fid as usize]
+                .blocks
+                .iter()
+                .any(|b| b.insts.iter().any(|i| matches!(i, Inst::MakeBlock { .. })));
+        if lean {
+            self.lean_call(body, fid, file, Some(obj), 0, 0, TO_OUT, unwind);
+            return;
+        }
+        let none = self.i32(u32::MAX);
+        let callee_v = self.i32(fid);
+        let recv_v = self.i32(obj);
+        let zero32 = self.i32(0);
+        let frame_v = self.i32(frame_size);
+        let file_v = self.i32(file);
+        let provided_v = self.b.iconst(Ty::I64, 0);
+        let status = self.b.call(
+            self.h.enter,
+            &[
+                self.rt,
+                self.act,
+                self.act_buf,
+                none,
+                callee_v,
+                self.regs,
+                recv_v,
+                self.args_buf,
+                zero32,
+                none,
+                frame_v,
+                file_v,
+                provided_v,
+            ],
+        )[0];
+        self.check(status, unwind);
+        let status = self.b.call(body, &[self.rt, self.act_buf, self.out_buf])[0];
+        let to_out = self.i32(TO_OUT);
+        let status = self.b.call(
+            self.h.leave,
+            &[
+                self.rt,
+                self.act_buf,
+                status,
+                self.out_buf,
+                self.regs,
+                to_out,
+                none,
+            ],
+        )[0];
         self.check(status, unwind);
     }
 
@@ -5088,15 +5242,7 @@ impl<B: Builder> Gen<'_, B> {
                     // `dst` holds the new object, counted: passed to
                     // `initialize` as `self` with a count of its own.
                     self.states[*dst as usize] = State::Unknown;
-                    let defaults = self.classes[*class as usize]
-                        .ivars
-                        .iter()
-                        .any(|f| f.default.is_some());
-                    if defaults {
-                        let status =
-                            self.b.call(self.h.field_defaults, &[self.rt, self.regs, d])[0];
-                        self.check(status, unwind);
-                    }
+                    self.field_defaults(*class, *dst, unwind);
                     if let Some((mid, callee, slots)) = target {
                         self.direct_call(
                             inst,
