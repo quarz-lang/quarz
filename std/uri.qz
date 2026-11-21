@@ -118,13 +118,14 @@ data URI(
   # ```
   def to_s -> String = written(false)
 
-  # As [to_s], the password in the user information (after its first
-  # `:`) written `***`: for text meant for people, as [inspect] and the
-  # errors that quote a URI do.
+  # As [to_s], the whole user information written `***` (a password,
+  # and a user name, which may be a token): for text meant for people, as
+  # [inspect] and the errors that quote a URI do.
   #
   # ```
-  # URI.parse("http://ann:s3cret@proxy:3128/").redacted   # => "http://ann:***@proxy:3128/"
-  # URI.parse("http://ann@proxy:3128/").redacted          # => "http://ann@proxy:3128/"
+  # URI.parse("http://ann:s3cret@proxy:3128/").redacted   # => "http://***@proxy:3128/"
+  # URI.parse("https://t0ken@example.com/repo").redacted  # => "https://***@example.com/repo"
+  # URI.parse("https://example.com/").redacted            # => "https://example.com/"
   # ```
   def redacted -> String = written(true)
 
@@ -135,10 +136,7 @@ data URI(
     if h
       out << "//"
       u = userinfo
-      if u
-        name, colon, _ = u.partition(":")
-        out << (hide && !colon.empty? ? "#{name}:***" : u) << "@"
-      end
+      out << (hide ? "***" : u) << "@" if u
       out << (h.include?(":") ? "[#{h}]" : h)
       pt = port
       out << ":" << pt.to_s if pt
@@ -154,7 +152,8 @@ data URI(
     out.to_s
   end
 
-  # `#<URI http://example.com/>`, a password written `***` ([redacted]).
+  # `#<URI http://example.com/>`, the user information written `***`
+  # ([redacted]).
   def inspect -> String = "#<URI #{redacted}>"
 
   # Whether it has a scheme (it is not a relative reference).
@@ -190,16 +189,13 @@ data URI(
   end
 
   # :nodoc:
-  # `text`, a URI reference that may not parse, with the password of an
-  # authority's user information written `***`, as [redacted] writes it:
-  # for an error that quotes it.
+  # `text`, a URI reference that may not parse, with an authority's
+  # whole user information written `***`, as [redacted] writes it: for an
+  # error that quotes it.
   def self.hide_password(text: String) -> String
     m = text.match(/\A([^\/?#]*\/\/)([^\/?#]*)@/)
     return text if m.nil?
-    head = m[1] || ""
-    name, colon, _ = (m[2] || "").partition(":")
-    return text if colon.empty?
-    "#{head}#{name}:***@#{text[(m[0] || "").size..]}"
+    "#{m[1] || ""}***@#{text[(m[0] || "").size..]}"
   end
 
   # :nodoc:

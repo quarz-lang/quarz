@@ -146,32 +146,40 @@ class URIParseTest < Test::Case
     assert_equal("http://\u212Aa.com", URI.parse("http://\u212Aa.com/").origin)
   end
 
-  # quarz#1016: a password in the user information is shown `***` by
-  # inspect, redacted and every error that quotes the URI; to_s writes it
-  # back as it was.
-  def test_a_password_is_not_shown
+  # quarz#1016, #1022: the whole user information (a password, a user
+  # name that may be a token) is shown `***` by inspect, redacted and
+  # every error that quotes the URI; to_s writes it back as it was.
+  def test_the_user_information_is_not_shown
     u = URI.parse("http://ann:s3cret@proxy.example:3128/p?q")
     assert_equal("http://ann:s3cret@proxy.example:3128/p?q", u.to_s)
-    assert_equal("http://ann:***@proxy.example:3128/p?q", u.redacted)
-    assert_equal("#<URI http://ann:***@proxy.example:3128/p?q>", u.inspect)
-    assert_equal("#<URI http://ann:***@proxy.example:3128/p?q>", [u].inspect[1..-2])
-    # A user name alone, and a password with a `:` or an `@` in it.
-    assert_equal("#<URI http://ann@h/>", URI.parse("http://ann@h/").inspect)
-    assert_equal("http://ann:***@h/", URI.parse("http://ann:a:b@c@h/").redacted)
-    assert_equal("http://:***@h/", URI.parse("http://:pw@h/").redacted)
+    assert_equal("ann:s3cret", u.userinfo)
+    assert_equal("http://***@proxy.example:3128/p?q", u.redacted)
+    assert_equal("#<URI http://***@proxy.example:3128/p?q>", u.inspect)
+    assert_equal("#<URI http://***@proxy.example:3128/p?q>", [u].inspect[1..-2])
+    # A user name alone (a token), a password with a `:` or an `@` in
+    # it, an empty one, none.
+    t = URI.parse("https://s3cr3t-token@example.com/repo")
+    assert_equal("#<URI https://***@example.com/repo>", t.inspect)
+    assert_equal("https://s3cr3t-token@example.com/repo", t.to_s)
+    assert_equal("http://***@h/", URI.parse("http://ann:a:b@c@h/").redacted)
+    assert_equal("http://***@h/", URI.parse("http://:pw@h/").redacted)
+    assert_equal("http://***@h/", URI.parse("http://@h/").redacted)
+    assert_equal("http://h/", URI.parse("http://h/").redacted)
     # Errors quoting a text that does not parse, or a URI.
     ["http://ann:s3cret@h:80x/", "http://ann:s3cret@[::1/", "http://ann:s3cret@a[b/",
-     "http://ann:s3cret@h:99999/"].each do |t|
+     "http://ann:s3cret@h:99999/", "http://s3cret@h:80x/"].each do |t|
       e = assert_raise(ArgumentError) { URI.parse(t) }
       assert_false(e.message.include?("s3cret"), e.message)
-      assert_true(e.message.include?("ann:***@"), e.message)
+      assert_false(e.message.include?("ann"), e.message)
+      assert_true(e.message.include?("//***@"), e.message)
     end
     e = assert_raise(ArgumentError) { URI.parse("//ann:s3cret@h/x").resolve("y") }
-    assert_equal("not an absolute URI: //ann:***@h/x", e.message)
-    e = assert_raise(ArgumentError) { URI.new("", "ann:s3cret", "h", nil, "/", nil, nil).origin }
-    assert_equal("no origin: //ann:***@h/", e.message)
+    assert_equal("not an absolute URI: //***@h/x", e.message)
+    e = assert_raise(ArgumentError) { URI.new("", "s3cret", "h", nil, "/", nil, nil).origin }
+    assert_equal("no origin: //***@h/", e.message)
     assert_equal("no authority", URI.hide_password("no authority"))
     assert_equal("mailto:a:b@c", URI.hide_password("mailto:a:b@c"))
+    assert_equal("http://***@h/x", URI.hide_password("http://tok@h/x"))
   end
 end
 

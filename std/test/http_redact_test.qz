@@ -26,7 +26,8 @@ class HttpRedactTest < Test::Case
                                     headers: {"Authorization" => "Bearer #{SECRET}"})
     assert_false(req.inspect.include?(SECRET), req.inspect)
     assert_false(req.to_s.include?(SECRET), req.to_s)
-    assert_true(req.inspect.include?("ann:***@example.com"), req.inspect)
+    assert_true(req.inspect.include?("//***@example.com"), req.inspect)
+    assert_false(req.inspect.include?("ann"), req.inspect)
     # The URL itself keeps it.
     assert_equal("https://ann:#{SECRET}@example.com/a", req.url.to_s)
   end
@@ -48,7 +49,8 @@ class HttpRedactTest < Test::Case
     ]
     messages.each do |m|
       assert_false(m.include?(SECRET), m)
-      assert_true(m.include?("ann:***@"), m)
+      assert_true(m.include?("//***@"), m)
+      assert_false(m.include?("ann"), m)
     end
   end
 end
