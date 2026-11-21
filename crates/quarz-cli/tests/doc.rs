@@ -147,12 +147,13 @@ fn check_and_missing() {
 
 /// #881: `--convert-links` turns the code spans that link into brackets,
 /// leaves the others and lists those it cannot convert, and the pages
-/// then link as before.
+/// then link as before. A README span that links on the root module's
+/// page only (#920) is left, listed with the full name to write.
 #[test]
 fn convert_links_turns_linking_spans_into_brackets() {
     let d = Dir::new();
     d.write("Cog.toml", "[cog]\nname = \"bags\"\nversion = \"0.1.0\"\n");
-    d.write("README.md", "See `Bags::Bag` and `NOWAIT`.\n");
+    d.write("README.md", "See `Bags::Bag`, `Bag` and `NOWAIT`.\n");
     d.write(
         "src/bag.qz",
         "# A bag: `#size`, `size`, `Array#[]`, `x + 1`, `NOWAIT`, a`Bag`,\n# `Bag`(1) and `Bag\n# #size`.\nclass Bag\n  # The count; see `Bag`.\n  def size -> Int = 0\nend\n",
@@ -167,6 +168,7 @@ fn convert_links_turns_linking_spans_into_brackets() {
     for left in [
         "src/bag.qz:1: `Bag` follows a word character",
         "src/bag.qz:2: `Bag` is followed by a parenthesis",
+        "README.md:1: `Bag` links on the page of `Bags` only, not on the front page: write [Bags::Bag]",
     ] {
         assert!(err.contains(left), "{left}: {err}");
     }
@@ -177,7 +179,7 @@ fn convert_links_turns_linking_spans_into_brackets() {
     );
     assert_eq!(
         std::fs::read_to_string(d.0.join("README.md")).unwrap(),
-        "See [Bags::Bag] and `NOWAIT`.\n"
+        "See [Bags::Bag], `Bag` and `NOWAIT`.\n"
     );
     // The brackets link, as the spans did before #881; the spans left
     // are code.
@@ -186,7 +188,7 @@ fn convert_links_turns_linking_spans_into_brackets() {
     assert!(out.status.success(), "{}", stderr(&out));
     let index = std::fs::read_to_string(site.join("index.html")).unwrap();
     assert!(
-        index.contains("<p>See <a href=\"Bags--Bag.html\"><code>Bags::Bag</code></a> and <code>NOWAIT</code>.</p>"),
+        index.contains("<p>See <a href=\"Bags--Bag.html\"><code>Bags::Bag</code></a>, <code>Bag</code> and <code>NOWAIT</code>.</p>"),
         "{index}"
     );
     let bag = std::fs::read_to_string(site.join("Bags--Bag.html")).unwrap();

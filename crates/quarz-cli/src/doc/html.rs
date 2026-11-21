@@ -478,6 +478,13 @@ fn heading(page: &Page) -> &str {
     &sig[..end]
 }
 
+/// Whether `page` shows the README, with names resolved in the page, as
+/// the front page does with none: a library's root module without a doc
+/// comment.
+pub(crate) fn shows_readme(page: &Page) -> bool {
+    page.doc.is_none() && page.span.start == 0
+}
+
 fn page_html(loaded: &Loaded, api: &Api, page: &Page) -> String {
     let mut s = String::new();
     let _ = writeln!(
@@ -498,8 +505,7 @@ fn page_html(loaded: &Loaded, api: &Api, page: &Page) -> String {
     }
     match (&page.doc, &loaded.readme) {
         (Some(d), _) => s.push_str(&markdown_html(loaded, api, Some(page.id), &d.text, 1)),
-        // A library's root module: its README.
-        (None, Some(readme)) if page.span.start == 0 => {
+        (None, Some(readme)) if shows_readme(page) => {
             s.push_str(&markdown_html(loaded, api, Some(page.id), readme, 1))
         }
         _ => {}
