@@ -1,0 +1,17 @@
+# #993: `Hash#each` and `Hash::Builder#each` hand a destructuring block the
+# key and the value apart, not in a `[k, v]` per entry; a value the hash
+# still holds is shared either way, so a block's update of it copies once
+# per entry, as on main (200 + 100 below), and a `|pair|` block still gets
+# a fresh pair (200, as on main).
+src = Hash::Builder[Int, Array[Int]].new
+200.times { |i| src[i] = [i] }
+h = src.to_h
+n = 0
+h.each { |k, v| n += v.push(k).size }
+b = Hash::Builder[Int, Array[Int]].new
+100.times { |i| b[i] = [i] }
+b.each { |k, v| n += v.push(k).size }
+pairs = Hash::Builder[Int, Int].new
+200.times { |i| pairs[i] = i }
+pairs.to_h.each { |pair| n += pair.push(0).size }
+p n, h.size, b.size

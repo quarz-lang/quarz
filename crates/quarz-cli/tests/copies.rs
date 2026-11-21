@@ -121,6 +121,15 @@ fn a_kept_block_caller_copies_no_more_than_before() {
     check("kept_block_args.qz", 1100);
 }
 
+/// #993: `Hash#each` and `Hash::Builder#each` hand a destructuring block the
+/// key and the value apart: a value the hash holds still copies once when
+/// the block updates it, and a `|pair|` block's fresh pair once, as on
+/// main.
+#[test]
+fn hash_each_destructuring_copies_as_before() {
+    check("hash_each_pairs.qz", 500);
+}
+
 /// #988: a native called with its arguments borrowed copies no more
 /// than with an argument list, for the natives that keep the list itself
 /// and those that keep an argument.

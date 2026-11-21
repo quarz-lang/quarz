@@ -440,6 +440,18 @@ impl RepeatedBlock<'_> {
 }
 
 impl Interp {
+    /// Whether `block` spreads a single array argument over its
+    /// parameters (`|k, v|`, `Closure::destructure`): such a block given a
+    /// pair's two elements as two arguments binds what it would bind given
+    /// the pair (`destructured` pads to its positional parameters with nil,
+    /// as binding two arguments does), so a native iterating pairs may pass
+    /// them apart and make no array (#993). A block taking the pair as one
+    /// value, a `&:name` block, a native block: false.
+    pub fn spreads_pair(&self, block: &Value) -> bool {
+        matches!(block, Value::Proc(c)
+            if c.destructure.is_some() && matches!(c.body, ClosureBody::Func(_)))
+    }
+
     /// `block`, to be called repeatedly by one native call: made once,
     /// before the native's loop (`RepeatedBlock`).
     pub fn repeated_block<'a>(&self, block: &'a Value) -> RepeatedBlock<'a> {
