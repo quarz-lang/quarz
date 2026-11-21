@@ -600,6 +600,9 @@ impl<'ast> Declarer<'ast> {
                 else {
                     return true;
                 };
+                if prelude && namespace.is_none() && def.name.last() == "Kernel" {
+                    self.refuse_kernel_bodies(&def.body);
+                }
                 self.collect_body(id, &def.body, prelude);
                 self.pending.push(PendingClass {
                     id,
@@ -835,6 +838,26 @@ impl<'ast> Declarer<'ast> {
         self.collect_item(d.expr, d.namespace, d.prelude);
         self.collecting = None;
         self.in_app = false;
+    }
+
+    /// The prelude's `module Kernel` holds only `native def`s (#933): a
+    /// built-in function is found among `Kernel`'s natives (bare, `::name`,
+    /// `Kernel.name`), so a `def` with a body there would be declared and
+    /// never called.
+    fn refuse_kernel_bodies(&mut self, body: &'ast [Expr]) {
+        for e in body {
+            if let ExprKind::MethodDef(d) = &e.kind {
+                if !d.is_native && d.body.is_some() {
+                    self.error(
+                        format!(
+                            "`{}` has a body in the prelude's `module Kernel`, which takes only `native def`s: a function written in Quarz goes in an `extension Kernel` as `def self.{}` (as `std/decimal.qz`'s `Decimal(...)`)",
+                            d.name, d.name
+                        ),
+                        e.span,
+                    );
+                }
+            }
+        }
     }
 
     fn collect_body(&mut self, id: ClassId, body: &'ast [Expr], prelude: bool) {
