@@ -39,7 +39,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             i,
             r,
             &Args {
-                pos: smallvec![Value::Int(-1)],
+                pos: smallvec![Value::Int(-1)].into(),
                 ..Args::default()
             },
             "*",
@@ -49,7 +49,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             i,
             &q,
             &Args {
-                pos: smallvec![Value::Int(-1)],
+                pos: smallvec![Value::Int(-1)].into(),
                 ..Args::default()
             },
             "*",

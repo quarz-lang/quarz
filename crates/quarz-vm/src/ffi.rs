@@ -727,6 +727,43 @@ pub unsafe extern "C" fn qz_call_static(
             }
         }
     }
+    // A native: its receiver and arguments borrowed, a view of bitwise
+    // copies of their homes (#988). The homes are this frame's, flushed
+    // before the call and not written during it; compiled code clones
+    // the arguments it passes, so nothing is moved in to release.
+    if block == u32::MAX && nargs <= 3 {
+        if let Some(native) = rt.program.natives[mid as usize] {
+            let recv_ref: *const Value = if recv == u32::MAX {
+                &act.self_val
+            } else {
+                regs.add(recv as usize)
+            };
+            let mut view = [const { std::mem::MaybeUninit::<Value>::uninit() }; 4];
+            view[0].write(std::ptr::read(recv_ref));
+            for (k, slot) in view.iter_mut().enumerate().skip(1).take(nargs as usize) {
+                slot.write(std::ptr::read(regs.add(*arg_regs.add(k - 1) as usize)));
+            }
+            let n = nargs as usize + 1;
+            // SAFETY: the first `n` are written; the copies are never
+            // dropped (the homes keep the values).
+            let view: &[Value] = std::slice::from_raw_parts(view.as_ptr().cast::<Value>(), n);
+            let r = rt.invoke_native_borrowed(mid, native, &view[0], &view[1..]);
+            #[cfg(debug_assertions)]
+            for k in 0..nargs as usize {
+                debug_assert!(
+                    view[k + 1].identical(&*regs.add(*arg_regs.add(k) as usize)),
+                    "a home a native borrowed changed during the call"
+                );
+            }
+            return match r {
+                Ok(v) => {
+                    *regs.add(dst as usize) = v;
+                    STATUS_OK
+                }
+                Err(flow) => rt.park_flow(flow),
+            };
+        }
+    }
     let recv = if recv == u32::MAX {
         act.self_val.clone()
     } else {
@@ -749,7 +786,7 @@ pub unsafe extern "C" fn qz_call_static(
             rt,
             &recv,
             crate::interp::Args {
-                pos: args,
+                pos: args.into(),
                 kw: Vec::new(),
                 block: block.clone(),
             },

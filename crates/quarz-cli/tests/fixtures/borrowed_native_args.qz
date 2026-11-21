@@ -1,0 +1,35 @@
+# A native called with its receiver and arguments borrowed (#988): what
+# it computes, raises and releases is as before. An argument the caller
+# moves in is released once after the call, whether the native returned
+# or raised; a native calling back into the program (`==`, `hash`,
+# `to_s`) deep enough to grow the stacks sees the same arguments.
+class Tok
+  @name: String
+  def initialize(@name: String); end
+  def deinitialize -> Void = puts "released #{@name}"
+  def to_s -> String = "tok #{@name}"
+end
+
+def put_at(xs: Array[Object], t: Tok) -> Array[Object] = xs.insert(9, t)
+begin
+  put_at([1], Tok.new("a"))
+rescue IndexError => e
+  puts "rescued"
+end
+puts "after a"
+p [1, 2, 3].include?(2), "abc".start_with?("a"), 7.clamp(0, 5)
+
+class Deep
+  @n: Int
+  def initialize(@n: Int); end
+  def n -> Int = @n
+  def ==(other: Object) -> Bool
+    return false unless other.is_a?(Deep)
+    @n == 0 || [Deep.new(@n - 1)].include?(Deep.new(other.n - 1))
+  end
+  def hash -> Int = @n
+  def to_s -> String = @n == 0 ? "0" : "#{Deep.new(@n - 1)}+"
+end
+p [Deep.new(300)].include?(Deep.new(300))
+p({Deep.new(40) => 1}.key?(Deep.new(40)))
+p "#{Deep.new(5)}"

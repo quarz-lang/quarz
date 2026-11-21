@@ -1,0 +1,23 @@
+# A task suspended inside a native whose arguments are borrowed (#988):
+# `Channel#send` on a full channel waits with its argument a view of the
+# sender's registers, while other tasks run the same natives on other
+# workers; every value arrives once, whatever the scheduling.
+ch = Channel[String].new(1)
+producers = (1..4).map do |k|
+  Task.spawn do
+    25.times { |i| ch.send("#{k}:#{i}") }
+    :sent
+  end
+end
+closer = Task.spawn do
+  producers.each(&:await)
+  ch.close
+end
+got = Array::Builder[String].new
+ch.each do |s|
+  Task.sleep(1.ms) if s.end_with?("7")
+  got << s
+end
+closer.await
+xs = got.to_a
+p xs.size, xs.sort.first, xs.uniq.size

@@ -344,7 +344,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             // A negative count shifts left, as in Ruby (by 64 or more,
             // `int_shl` overflows without building the number).
             let left = Args {
-                pos: smallvec![Value::Int(n.checked_neg().unwrap_or(i64::MAX))],
+                pos: smallvec![Value::Int(n.checked_neg().unwrap_or(i64::MAX))].into(),
                 ..Args::default()
             };
             return int_shl(i, r, left);
@@ -363,7 +363,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             i,
             r,
             &Args {
-                pos: smallvec![Value::Int(1)],
+                pos: smallvec![Value::Int(1)].into(),
                 kw: a.kw,
                 block: None,
             },
@@ -375,7 +375,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             i,
             r,
             &Args {
-                pos: smallvec![Value::Int(1)],
+                pos: smallvec![Value::Int(1)].into(),
                 kw: a.kw,
                 block: None,
             },

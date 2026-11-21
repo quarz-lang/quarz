@@ -121,6 +121,14 @@ fn a_kept_block_caller_copies_no_more_than_before() {
     check("kept_block_args.qz", 1100);
 }
 
+/// #988: a native called with its arguments borrowed copies no more
+/// than with an argument list, for the natives that keep the list itself
+/// and those that keep an argument.
+#[test]
+fn a_native_with_borrowed_arguments_copies_no_more_than_before() {
+    check("borrowed_args.qz", 201);
+}
+
 #[test]
 fn an_early_exit_from_any_or_all_leaves_no_reference_behind() {
     check("early_exit.qz", 0);
