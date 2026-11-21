@@ -19,4 +19,12 @@ after makes
 9
 true
 too deep
+1
+1
+6
+7
+9
+ensure 4
+rescued ensure
+6
 Res#deinitialize kept

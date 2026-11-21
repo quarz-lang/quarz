@@ -129,3 +129,99 @@ begin
 rescue SystemStackError => e
   puts "too deep"
 end
+
+# A construction that raises leaves the variable it was to be assigned to
+# as it was, read after the rescue, in an `ensure`, in a loop, through a
+# block's capture and at the top level: the half-built object is never
+# seen (its register is not one the handler reads).
+class Neg
+  @x: Int
+  def initialize(x: Int)
+    raise ArgumentError, "neg" if x < 0
+    @x = x
+  end
+  def x -> Int = @x
+end
+class Base3
+  @x: Int = 1
+  def x -> Int = @x
+end
+class Bad < Base3
+  @y: Int = Bad.boom
+  def self.boom -> Int
+    raise ArgumentError, "default"
+  end
+end
+class Wrap
+  @n: Neg
+  def initialize(@n: Neg)
+    raise ArgumentError, "wrap" if @n.x == 1
+  end
+  def x -> Int = @n.x
+end
+def kept_on_raise(n: Int) -> Int
+  v = Neg.new(1)
+  begin
+    v = Neg.new(n)
+  rescue ArgumentError
+  end
+  v.x
+end
+def kept_on_default -> Int
+  d: Base3 = Base3.new
+  begin
+    d = Bad.new
+  rescue ArgumentError
+  end
+  d.x
+end
+def kept_wrapped -> Int
+  q = Neg.new(1)
+  w = Wrap.new(Neg.new(5))
+  begin
+    w = Wrap.new(q)
+  rescue ArgumentError
+  end
+  w.x + q.x
+end
+def kept_in_block -> Int
+  v = Neg.new(3)
+  begin
+    [1, -1].each { |i| v = Neg.new(i * 7) }
+  rescue ArgumentError
+  end
+  v.x
+end
+def kept_in_loop -> Int
+  v = Neg.new(3)
+  begin
+    i = 1
+    while i > -2
+      v = Neg.new(i * 9)
+      i -= 2
+    end
+  rescue ArgumentError
+  end
+  v.x
+end
+def kept_in_ensure -> Int
+  v = Neg.new(4)
+  begin
+    v = Neg.new(-1)
+  ensure
+    puts "ensure #{v.x}"
+  end
+  v.x
+end
+p kept_on_raise(-1), kept_on_default, kept_wrapped, kept_in_block, kept_in_loop
+begin
+  kept_in_ensure
+rescue ArgumentError
+  puts "rescued ensure"
+end
+top = Neg.new(6)
+begin
+  top = Neg.new(-6)
+rescue ArgumentError
+end
+p top.x

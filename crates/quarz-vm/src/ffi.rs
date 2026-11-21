@@ -1087,6 +1087,10 @@ pub unsafe extern "C" fn qz_alloc_object(
         !info.built_by_runtime,
         "inline `new` of a class the runtime builds"
     );
+    // `dst` is the construction's own result register, which no handler
+    // reads (the QIR verifier's `construct_results`): what it held is
+    // dropped here, and a raise before `initialize` returned leaves the
+    // half-built object in it for the unwind to release, as any register.
     *regs.add(dst as usize) = Value::Object(crate::value::Object::new(
         class,
         smallvec::smallvec![Value::Nil; info.fields.len()],

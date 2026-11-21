@@ -360,6 +360,61 @@ fn a_read_of_what_a_blocks_copy_drops_is_found() {
     assert!(err.contains("reads the method's block"), "{err}");
 }
 
+/// #939: a construction's result is never a register its handler reads
+/// (compiled code builds the object there before `initialize` runs): a
+/// lowered program passes, and one whose construction writes the
+/// variable the handler path reads is found.
+#[test]
+fn a_construction_into_a_register_its_handler_reads_is_found() {
+    const SRC: &str = "class Pt\n  @x: Int\n  def initialize(x: Int)\n    raise ArgumentError, \"neg\" if x < 0\n    @x = x\n  end\n  def x -> Int = @x\nend\ndef f(n: Int) -> Int\n  p = Pt.new(1)\n  begin\n    p = Pt.new(n)\n  rescue ArgumentError\n  end\n  p.x\nend\np f(-1)\n";
+    let mut module = common::lower(SRC);
+    let n = module.functions.len();
+    let fi = (module.functions.iter())
+        .position(|f| f.name == "main#f")
+        .expect("f");
+    assert!(verify(&module.functions[fi], &module.world, n, Stage::Moves).is_empty());
+    // The construction in the `begin` writes the variable itself.
+    let f = &mut module.functions[fi];
+    let (bi, ii) = (f.blocks.iter().enumerate())
+        .filter(|(_, b)| b.handler.is_some())
+        .find_map(|(bi, b)| {
+            b.insts
+                .iter()
+                .position(|i| {
+                    matches!(
+                        i,
+                        Inst::Call {
+                            kind: quarz_ir::CallKind::Construct { .. },
+                            ..
+                        }
+                    )
+                })
+                .map(|ii| (bi, ii))
+        })
+        .expect("a construction under a handler");
+    let var = f.blocks[bi].insts[ii + 1..]
+        .iter()
+        .find_map(|i| match i {
+            Inst::Take { dst, .. } | Inst::Move { dst, .. } => Some(*dst),
+            _ => None,
+        })
+        .expect("the move into the variable");
+    let Inst::Call { dst, .. } = &mut f.blocks[bi].insts[ii] else {
+        unreachable!()
+    };
+    *dst = var;
+    let found: Vec<String> = verify(&module.functions[fi], &module.world, n, Stage::Lowered)
+        .into_iter()
+        .map(|v| v.what)
+        .collect();
+    assert!(
+        found
+            .iter()
+            .any(|w| w.contains("a construction's result") && w.contains("is read by its handler")),
+        "{found:?}"
+    );
+}
+
 fn first_inst(f: &mut quarz_ir::Function, pick: impl Fn(&Inst) -> bool) -> &mut Inst {
     f.blocks
         .iter_mut()
