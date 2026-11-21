@@ -88,6 +88,7 @@ def show(e: Meta::Expr) -> String
   in Meta::Expr::If(cond: c, then_expr: t, else_expr: f) then "(#{show(c)} ? #{show(t)} : #{f ? show(f) : "nil"})"
   in Meta::Expr::ArrayLit(items: i) then "[#{i.map { |x| show(x) }.join(", ")}]"
   in Meta::Expr::HashLit(pairs: ps) then "{#{ps.map { |kv| show(kv[0]) + "=>" + show(kv[1]) }.join(", ")}}"
+  in Meta::Expr::RangeLit(lo: l, hi: h, exclusive: x) then "(#{l ? show(l) : ""}#{x ? "..." : ".."}#{h ? show(h) : ""})"
   in Meta::Expr::Interp(parts: ps) then "\"#{ps.map { |x| show(x) }.join}\""
   in Meta::Expr::Block(params: ps, body: b) then "{|#{ps.join(",")}| #{b.map { |x| show(x) }.join("; ")}}"
   end
@@ -152,7 +153,7 @@ r.where { |x| y = x; y > 1 }
 r.where { |x| while x > 1; end; true }
 r.where { |x| case x when 1 then true else false end }
 r.where { |x| return true }
-r.where { |x| (1..x).include?(2) }
+r.where { |x| :"a#{x}" == :a1 }
 r.where { |x| ->(y: Int) { y }.call(x) > 0 }
 r.where { |x| x&.even? || false }
 r.where { |x| raise "no" }
@@ -162,13 +163,13 @@ r.where { |x| x.even? }
     );
     let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
     assert!(!ok);
-    let tail = "cannot be quoted: a block given as a `Quoted` holds literals, variables, `self`, calls (`&.` too), `&&`, `||`, `!`, `if` and blocks (docs/14 §6)";
+    let tail = "cannot be quoted: a block given as a `Quoted` holds literals, ranges, variables, `self`, calls (`&.` too), `&&`, `||`, `!`, `if` and blocks (docs/14 §6)";
     for (at, what) in [
         ("8:15", "an assignment"),
         ("9:15", "a loop"),
         ("10:15", "`case`"),
         ("11:15", "`return`"),
-        ("12:15", "a range"),
+        ("12:15", "an interpolated symbol"),
         ("13:15", "`call` here"),
         ("15:15", "`raise` here"),
     ] {
@@ -465,7 +466,7 @@ fn a_safe_call_is_a_node_of_its_own() {
         2,
         "{err}"
     );
-    write(&d.0, "reader.qz", "def name(e: Meta::Expr) -> String\n  case e\n  in Meta::Expr::Lit then \"lit\"\n  in Meta::Expr::Capture then \"capture\"\n  in Meta::Expr::Arg then \"arg\"\n  in Meta::Expr::SelfRef then \"self\"\n  in Meta::Expr::Call then \"call\"\n  in Meta::Expr::And then \"and\"\n  in Meta::Expr::Or then \"or\"\n  in Meta::Expr::Not then \"not\"\n  in Meta::Expr::If then \"if\"\n  in Meta::Expr::ArrayLit then \"array\"\n  in Meta::Expr::HashLit then \"hash\"\n  in Meta::Expr::Interp then \"interp\"\n  in Meta::Expr::Block then \"block\"\n  end\nend\nputs name(Meta::Expr::Lit.new(1, 1))\n");
+    write(&d.0, "reader.qz", "def name(e: Meta::Expr) -> String\n  case e\n  in Meta::Expr::Lit then \"lit\"\n  in Meta::Expr::Capture then \"capture\"\n  in Meta::Expr::Arg then \"arg\"\n  in Meta::Expr::SelfRef then \"self\"\n  in Meta::Expr::Call then \"call\"\n  in Meta::Expr::And then \"and\"\n  in Meta::Expr::Or then \"or\"\n  in Meta::Expr::Not then \"not\"\n  in Meta::Expr::If then \"if\"\n  in Meta::Expr::ArrayLit then \"array\"\n  in Meta::Expr::HashLit then \"hash\"\n  in Meta::Expr::RangeLit then \"range\"\n  in Meta::Expr::Interp then \"interp\"\n  in Meta::Expr::Block then \"block\"\n  end\nend\nputs name(Meta::Expr::Lit.new(1, 1))\n");
     let (ok, _, err) = quarz(&d.0, &["check", "reader.qz"], &[]);
     assert!(!ok);
     assert!(
@@ -523,6 +524,79 @@ take { |c| [1].map { |n| c&.size }.first }
 "##;
 
 const EXPECTED_886: &str = "c&.String#size() [String]\n3\nnil\nxs&.Array#map() { x.Int#*(2) } [Array]\n[2, 4]\nnil\nv&.Array#size() [Array, String]\n2\n1\nnil\ns&.String#strip() [String]&.String#upcase() [String]\n\"A\"\nnil\nself@0.Row#name()&.String#size() [String]\n3\nMeta::Expr::ArrayLit(items: [Meta::Expr::Lit(value: 1, line: 44)], line: 44).Array#map() { c&.String#size() [String] }.Array#first()\n3\nnil\n";
+
+/// #653: a range literal in a quoted block is a `Meta::Expr::RangeLit`,
+/// its bounds quoted (literals, a capture, an argument, an expression)
+/// or nil when left out, `...` marked `exclusive`, always a node; a range
+/// in a constant stays the constant's `Lit`. The closure runs as written,
+/// interpreted and compiled. `Range`'s `Comparable` bound is checked at the
+/// literal as anywhere, and a reader's exhaustive `case` without the node
+/// is a compile error saying so.
+#[test]
+fn a_range_is_a_node_of_its_own() {
+    let d = dir();
+    write(&d.0, "app.qz", APP_653);
+    let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, EXPECTED_653);
+    let (ok, _, err) = quarz(&d.0, &["build", "app.qz", "-o", "app.bin"], &[]);
+    assert!(ok, "{err}");
+    let run = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), EXPECTED_653);
+    write(&d.0, "bound.qz", "class Box\nend\ndef take(&b: Quoted[(Box) -> Bool]) -> Bool = true\ntake { |x| (x..x).nil? }\n");
+    let (ok, _, err) = quarz(&d.0, &["check", "bound.qz"], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains(
+            "bound.qz:4:12: error: type argument Box for `T` of `Range` must be Comparable[Box]"
+        ),
+        "{err}"
+    );
+    write(&d.0, "reader.qz", "def name(e: Meta::Expr) -> String\n  case e\n  in Meta::Expr::Lit then \"lit\"\n  in Meta::Expr::Capture then \"capture\"\n  in Meta::Expr::Arg then \"arg\"\n  in Meta::Expr::SelfRef then \"self\"\n  in Meta::Expr::Call then \"call\"\n  in Meta::Expr::SafeCall then \"safe call\"\n  in Meta::Expr::And then \"and\"\n  in Meta::Expr::Or then \"or\"\n  in Meta::Expr::Not then \"not\"\n  in Meta::Expr::If then \"if\"\n  in Meta::Expr::ArrayLit then \"array\"\n  in Meta::Expr::HashLit then \"hash\"\n  in Meta::Expr::Interp then \"interp\"\n  in Meta::Expr::Block then \"block\"\n  end\nend\nputs name(Meta::Expr::Lit.new(1, 1))\n");
+    let (ok, _, err) = quarz(&d.0, &["check", "reader.qz"], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains(
+            "error: `case` does not cover: Meta::Expr::RangeLit (add an `in` arm or `else`)"
+        ),
+        "{err}"
+    );
+}
+
+const APP_653: &str = r##"def show(e: Meta::Expr) -> String
+  case e
+  in Meta::Expr::Block(body: b) then b.map { |x| show(x) }.join("; ")
+  in Meta::Expr::Arg(name: n) then n.to_s
+  in Meta::Expr::Capture(name: n) then "$#{n}"
+  in Meta::Expr::Lit(value: v) then v.inspect
+  in Meta::Expr::Call(recv: r, method: m, args: a)
+    "#{r ? show(r) + "." : ""}#{m.name}(#{a.map { |x| show(x) }.join(", ")})"
+  in Meta::Expr::RangeLit(lo: l, hi: h, exclusive: x, line: n)
+    "(#{l ? show(l) : ""}#{x ? "..." : ".."}#{h ? show(h) : ""})@#{n}"
+  else e.to_s
+  end
+end
+
+def take(&b: Quoted[(Int) -> Bool]) -> Void
+  puts show(b.expr)
+  p b.proc.call(18), b.proc.call(65), b.proc.call(70)
+end
+def take_range(a: Int, &b: Quoted[(Int) -> Range[Int]]) -> Void
+  puts show(b.expr)
+  p b.proc.call(a)
+end
+ADULT = 18..65
+
+take { |age| (18..65).include?(age) }
+take { |age| (18...65).include?(age) }
+lo = 20
+take { |age| (lo..age + 1).include?(age) }
+take_range(3) { |n| n.. }
+take_range(3) { |n| ..n }
+take { |age| ADULT.include?(age) }
+"##;
+
+const EXPECTED_653: &str = "(18..65)@25.include?(age)\ntrue\ntrue\nfalse\n(18...65)@26.include?(age)\ntrue\nfalse\nfalse\n($lo..age.+(1))@28.include?(age)\nfalse\ntrue\ntrue\n(n..)@29\n3..\n(..n)@30\n..3\n18..65.include?(age)\ntrue\ntrue\nfalse\n";
 
 #[test]
 fn the_tree_is_built_once_per_call_site() {
