@@ -3904,7 +3904,9 @@ impl World {
             let sources: Vec<Option<ExtensionId>> = walked.into_iter().map(|(_, _, e)| e).collect();
             let ext_methods = self.extension_methods_by_target();
             let c = self.class(id);
-            for ids in c.methods.values() {
+            // (Both sides: its instance methods, and its class methods over
+            // a superclass's or a module's class methods.)
+            for ids in c.methods.values().chain(c.singleton_methods.values()) {
                 for &m in ids {
                     let mi = self.method(m);
                     // (A constructor's chain is no override, as in

@@ -3167,6 +3167,13 @@ impl<'ast> Declarer<'ast> {
                     })
                     .or_else(|| of_extension(&|x| self.world.extensions[x as usize].target == id)),
             };
+            // (The class's own method against what an extension of another
+            // class brings, a superclass's: the method is what this class
+            // can change, so the error is there, as for #990's.)
+            let elsewhere = p
+                .extension
+                .is_some_and(|e| self.world.extensions[e as usize].target != id)
+                && self.world.method(p.by).owner == id;
             // (No include of the class's own brings it: the class's own
             // method against a method a superclass brings, its own or a
             // module's it includes, reported at the method, #990.)
@@ -3180,8 +3187,8 @@ impl<'ast> Declarer<'ast> {
             }
             let w = &self.world;
             let (span, file) = match &site {
-                Some((_, span, file)) => (*span, *file),
-                None => {
+                Some((_, span, file)) if !elsewhere => (*span, *file),
+                _ => {
                     let m = w.method(p.by);
                     (m.span, m.file)
                 }
@@ -3217,6 +3224,9 @@ impl<'ast> Declarer<'ast> {
             // (What makes the pair: the include, or the class's method.)
             let lead = match (&site, &header) {
                 (None, _) => format!("`{by}` replaces `{replaced}`, which `{class}` inherits,"),
+                (Some(_), Some(h)) if elsewhere => format!(
+                    "`{by}` replaces `{replaced}`, which `{class}` inherits through `{h}`'s `{include}`,"
+                ),
                 (Some(_), Some(h)) => {
                     format!("`{h}`'s `{include}` makes `{by}` replace `{replaced}`")
                 }

@@ -3877,6 +3877,62 @@ puts b.m(1)
 "##,
             "8:3: error: `Sub#m(x: Int) -> String` replaces `Base#m(x: T) -> String`, which `Sub` inherits, only for some type arguments of `Sub`: for `Sub[Int]` it replaces it, for `Sub[Object]` it does not. A method replaces another for every type argument or for none (a class value carries none at run time): give one of them another name, or parameters that do not depend on `T`",
         ),
+        // On the class side: a class method over a superclass's.
+        (
+            r##"class Base[T]
+  def self.m(x: T) -> String = "base"
+  def self.call_m(x: T) -> String = m(x)
+end
+class Sub[T] < Base[T]
+  def self.m(x: Int) -> String = "sub"
+end
+puts Sub[Int].m(1)
+puts Sub[Int].call_m(1)
+"##,
+            "6:3: error: `Sub.m(x: Int) -> String` replaces `Base.m(x: T) -> String`, which `Sub` inherits, only for some type arguments of `Sub`: for `Sub[Int]` it replaces it, for `Sub[Object]` it does not. A method replaces another for every type argument or for none (a class value carries none at run time): give one of them another name, or parameters that do not depend on `T`",
+        ),
+        // ... and over the class method of a module the superclass includes.
+        (
+            r##"module G[U]
+  def self.m(x: U) -> String = "module"
+end
+class Base[T]
+  include G[T]
+end
+class Sub[T] < Base[T]
+  def self.m(x: Int) -> String = "sub"
+end
+puts Sub[Int].m(1)
+"##,
+            "8:3: error: `Sub.m(x: Int) -> String` replaces `G.m(x: U) -> String`, which `Sub` inherits, only for some type arguments of `Sub`: for `Sub[Int]` it replaces it, for `Sub[Object]` it does not. A method replaces another for every type argument or for none (a class value carries none at run time): give one of them another name, or parameters that do not depend on `T`",
+        ),
+        // Through a superclass's conditional extension: at the method, which is
+        // what the class can change, the bound assumed (`Float` admitted).
+        (
+            r##"module Num
+end
+extension Int
+  include Num
+end
+extension Float
+  include Num
+end
+module G[U]
+  def m(x: U) -> String = "module"
+end
+class Base[T]
+  def initialize; end
+end
+extension Base[T <: Num]
+  include G[T]
+end
+class Sub[T] < Base[T]
+  def initialize; end
+  def m(x: Int) -> String = "sub"
+end
+"##,
+            "20:3: error: `Sub#m(x: Int) -> String` replaces `G#m(x: U) -> String`, which `Sub` inherits through `extension Base[T <: Num]`'s `include G[T]`, only for some type arguments of `Sub`: for `Sub[Int]` it replaces it, for `Sub[Float]` it does not. A method replaces another for every type argument or for none (a class value carries none at run time): give one of them another name, or parameters that do not depend on `T`",
+        ),
     ] {
         let out = common::diagnostics(src).join("\n");
         assert!(out.contains(want), "{out}");
