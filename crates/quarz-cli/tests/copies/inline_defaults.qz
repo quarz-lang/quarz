@@ -1,0 +1,10 @@
+# #938: a call left to its defaults, inlined, copies no more than the
+# call did: a fresh collection default updated in place by the body.
+def collect(x: Int, acc: Array[Int] = [0]) -> Array[Int] = acc.push(x)
+n = 0
+i = 0
+while i < 200
+  n += collect(i).size
+  i += 1
+end
+p n
