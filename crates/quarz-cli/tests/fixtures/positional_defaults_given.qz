@@ -1,0 +1,33 @@
+# #938: a parameter's default runs only where the call leaves the argument
+# out, whatever value is given (the given one equal to the default
+# included): `HasArg` compiled inline, reading the activation's mask.
+
+def note(s: String) -> Int
+  puts "default #{s}"
+  0
+end
+
+def f(a: Int, b: Int? = nil, c: Bool = false, d: Int = note("d")) -> String
+  "#{a} #{b.inspect} #{c} #{d}"
+end
+
+class K
+  @v: String
+  def initialize(a: Int, b: Int = note("b")); @v = "#{a} #{b}"; end
+  def v -> String = @v
+end
+
+puts f(1)
+puts f(1, nil, false)
+puts f(1, 2)
+puts f(1, nil, false, 0)
+puts f(1, 3, true, 4)
+puts K.new(1).v
+puts K.new(1, 0).v
+i = 0
+n = 0
+while i < 3
+  n += f(i, i, i.even?, i).size
+  i += 1
+end
+p n

@@ -215,11 +215,6 @@ op_entry!(
     }
 );
 
-op_entry!(qz_op_has_arg(dst: u32, index: u32) |rt, act, f, pool, regs| {
-    rt.op_has_arg(act, regs, dst, index);
-    Ok(())
-});
-
 op_entry!(
     qz_op_field_get_by_name(dst: u32, found: u32, obj: u32, name: u32) |rt, act, f, pool, regs| {
         rt.op_field_get_by_name(f, regs, dst, found, obj, name);
