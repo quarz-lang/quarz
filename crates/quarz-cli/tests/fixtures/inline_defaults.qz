@@ -1,0 +1,54 @@
+# #938: a call that leaves positional arguments to their defaults may be
+# inlined; the defaults then run in the caller, where the callee ran
+# them, and every program prints what it printed before.
+
+def note(s: String, v: Int) -> Int
+  puts "default #{s}"
+  v
+end
+
+def boom(a: Int) -> Int = raise "no default for #{a}"
+
+def f(a: Int, b: Int = note("b", a + 1), c: Int = note("c", b * 2)) -> String = "#{a} #{b} #{c}"
+def nilable(a: Int, b: Int? = nil) -> String = b.nil? ? "none" : "some #{b}"
+def risky(a: Int, b: Int = boom(a)) -> Int = a + b
+def collect(x: Int, acc: Array[Int] = []) -> Array[Int] = acc.push(x)
+def blocky(a: Int, b: Int = [1, 2].map { |v| v * a }.sum) -> Int = a + b
+def count(n: Int, acc: Int = 0) -> Int = n == 0 ? acc : count(n - 1, acc + 1)
+# A nilable parameter whose default is nil: given a value or left out.
+def opt(x: Int? = nil) -> String = x ? "got #{x}" : "nothing"
+
+class Shape
+  @side: Int
+  def initialize(@side: Int); end
+  def area(scale: Int = @side) -> Int = @side * scale
+  def m(x: Int, y: Int = 1) -> Int = x + y
+end
+
+class Square < Shape
+  def m(x: Int, y: Int = 2) -> Int = x * y
+end
+
+puts f(1)
+puts f(1, 5)
+puts f(1, 5, 7)
+puts nilable(1), nilable(1, 2)
+# A caller's local named as the callee's parameter: not the callee's.
+b = 100
+puts f(2), b
+begin
+  risky(3)
+rescue RuntimeError => e
+  puts "rescued #{e.message}"
+  # (The file's name only: the path is where the test runs it from.)
+  puts e.backtrace.take(3).map { |l| l.split("/").last }.join("\n")
+end
+puts risky(3, 4)
+x1 = collect(1)
+x2 = collect(2)
+p x1, x2, collect(3, x1)
+p blocky(3), blocky(3, 1)
+p count(5)
+puts opt(4), opt
+s: Shape = Square.new(3)
+p s.m(4), Shape.new(2).m(4), s.area, Shape.new(5).area(2)

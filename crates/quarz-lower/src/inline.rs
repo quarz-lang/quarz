@@ -62,7 +62,6 @@ fn eligible_callee(f: &Function) -> bool {
                         | Inst::BlockParam { .. }
                         | Inst::FrameGet { .. }
                         | Inst::FrameSet { .. }
-                        | Inst::HasArg { .. }
                         | Inst::CatchException { .. }
                         | Inst::CatchAny { .. }
                         | Inst::FieldGetByName { .. }
@@ -112,10 +111,11 @@ fn site(inst: &Inst, eligible: &[bool], methods: &[RtMethod]) -> Option<Site> {
         && !m.has_block
         && m.native_key.is_none()
         && m.dispatch() == Dispatch::Static
-        && m.params.len() == args.len()
-        && m.params
-            .iter()
-            .all(|p| p.kind == RtParamKind::Positional && !p.has_default);
+        && m.params.len() >= args.len()
+        && m.params.iter().all(|p| p.kind == RtParamKind::Positional)
+        // (A parameter the call leaves out takes its default, which the
+        // body runs where `HasArg` says it was not given, #938.)
+        && m.params[args.len()..].iter().all(|p| p.has_default);
     if !bound || !eligible.get(fid as usize).copied().unwrap_or(false) {
         return None;
     }
@@ -155,12 +155,29 @@ fn inline_into(
                 continue;
             };
             let f = &orig[s.fid as usize];
+            // (A call leaving parameters out is inlined only when the
+            // callee binds them as the lowering does, `defaults_shape`.)
+            if !defaults_shape(f, s.args.len()) {
+                debug_assert!(
+                    false,
+                    "`{}` binds a defaulted parameter in another shape than the lowering's: the inliner's mapping of `HasArg` would not hold (#938)",
+                    f.name
+                );
+                cur.insts.push(inst);
+                cur.lines.push(line);
+                continue;
+            }
             let base_reg = g.nregs;
             g.nregs += f.nregs;
             let cont_id = n + extra.len();
             extra.push(None);
             let base_blk = n + extra.len();
             let const_map: Vec<u32> = f.consts.iter().map(|c| const_index(g, c)).collect();
+            // (`HasArg`'s answers here, below.)
+            let has = [
+                const_index(g, &Constant::Bool(false)),
+                const_index(g, &Constant::Bool(true)),
+            ];
             // A line of the callee becomes an origin entry here; a line
             // the callee itself inlined (flagged) becomes a chain of them.
             let mut origin = |l: u32| -> u32 { map_line(g, &mut origins, f, s.fid, l, line) };
@@ -178,11 +195,33 @@ fn inline_into(
                     term_line: origin(cb.term_line),
                     ..Default::default()
                 };
+                // A block reading a parameter the call leaves out is the
+                // one a `HasArg` of it guards, which is false here (below):
+                // it never runs, and is `Unreachable` (an internal error
+                // if it ever did, rather than a nil read as the argument).
+                let given = s.args.len();
+                if cb
+                    .insts
+                    .iter()
+                    .any(|ci| matches!(ci, Inst::Arg { index, .. } if *index as usize >= given))
+                {
+                    nb.term = Term::Unreachable;
+                    extra.push(Some(nb));
+                    continue;
+                }
                 for (k, ci) in cb.insts.iter().enumerate() {
                     let copied = match ci {
                         Inst::Arg { dst, index } => Inst::Move {
                             dst: base_reg + dst,
                             src: s.args[*index as usize],
+                        },
+                        // Whether the call gave parameter `index`: the
+                        // call's own positional arguments fill the first
+                        // `given` parameters (the binding's rule,
+                        // `Activation::has_arg` on its mask, #938).
+                        Inst::HasArg { dst, index } => Inst::LoadConst {
+                            dst: base_reg + dst,
+                            idx: has[usize::from((*index as usize) < given)],
                         },
                         Inst::SelfRef { dst } => match s.recv {
                             Some(r) => Inst::Move {
@@ -300,6 +339,57 @@ fn store(out: &mut [Block], extra: &mut [Option<Block>], id: usize, b: Block) {
     } else {
         extra[id - out.len()] = Some(b);
     }
+}
+
+/// Whether `f`, called with `given` positional arguments, binds the
+/// parameters the call leaves out as the lowering does (`FnBuilder`'s
+/// parameter binding: `HasArg` → `Branch` → the given block reading the
+/// `Arg` and storing it, the missing block running the default): every
+/// block that reads an `Arg` of index `given` or more holds only that
+/// binding (the `Arg`, the moves and the release of storing it, then a
+/// `Jump`) and is entered only by the `then` edge of a `Branch` on the
+/// `HasArg` of the same index in its one predecessor. Then a constant
+/// `HasArg` (false) makes that block dead, and `inline_into` may leave it
+/// `Unreachable`. The mapping's own precondition, checked where the site
+/// is chosen, not a rule of the language (#938).
+fn defaults_shape(f: &Function, given: usize) -> bool {
+    for (b, blk) in f.blocks.iter().enumerate() {
+        let Some(index) = blk.insts.iter().find_map(|i| match i {
+            Inst::Arg { index, .. } if *index as usize >= given => Some(*index),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let only_binding = blk.insts.iter().all(|i| match i {
+            Inst::Arg { index: k, .. } => *k == index,
+            Inst::Move { .. } | Inst::Release { .. } => true,
+            _ => false,
+        }) && matches!(blk.term, Term::Jump(_));
+        if !only_binding {
+            return false;
+        }
+        let preds: Vec<&Block> = f
+            .blocks
+            .iter()
+            // (The IR's own edges, a handler's included: `live::successors`.)
+            .filter(|p| quarz_ir::live::successors(p).contains(&(b as BlockId)))
+            .collect();
+        let [p] = preds.as_slice() else {
+            return false;
+        };
+        let Term::Branch { cond, then, els } = &p.term else {
+            return false;
+        };
+        if *then != b as BlockId || *els == b as BlockId {
+            return false;
+        }
+        // The last definition of the condition in the predecessor.
+        let def = p.insts.iter().rev().find(|i| i.defs().contains(cond));
+        if !matches!(def, Some(Inst::HasArg { index: k, .. }) if *k == index) {
+            return false;
+        }
+    }
+    true
 }
 
 fn const_index(g: &mut Function, c: &Constant) -> u32 {

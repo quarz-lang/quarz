@@ -163,6 +163,14 @@ fn a_data_values_field_is_taken_from_its_only_holder() {
     check("field_take.qz", 0);
 }
 
+/// #938: a call left to its defaults, inlined, copies no more than the
+/// call did (main: 0 on both): a fresh collection default updated in
+/// place by the body.
+#[test]
+fn an_inlined_default_copies_no_more_than_the_call() {
+    check("inline_defaults.qz", 0);
+}
+
 /// #941: a direct call binding keywords in compiled code copies no more
 /// than the runtime's binding (main: 400 on both): the same on the VM,
 /// which binds them as before, and fewer compiled, where an argument
