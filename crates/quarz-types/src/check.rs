@@ -776,7 +776,11 @@ struct Assigned {
     /// and what is assigned there.
     repeat: u32,
     repeated: HashSet<String>,
-    /// The parameters of blocks and lambdas.
+    /// The parameters of blocks and lambdas that their own block assigns
+    /// (or rebinds by a bang): a closure inside that block sees them
+    /// change. (A parameter is the block's own variable, hiding an outer
+    /// local of its name, docs/01: what the block does to it is not the
+    /// outer local's, #1017.)
     closure_params: HashSet<String>,
     /// Inside a block or lambda, and what is assigned outside any.
     closure_depth: u32,
@@ -866,18 +870,45 @@ impl Assigned {
         });
     }
 
+    /// Scan with `f` code where each of `names` is a local of its own
+    /// (`scoped`, one name after another).
+    fn scoped_all(&mut self, names: &[String], f: &mut dyn FnMut(&mut Self)) {
+        match names.split_first() {
+            None => f(self),
+            Some((n, rest)) => self.scoped(n, |a| a.scoped_all(rest, f)),
+        }
+    }
+
     fn closure(&mut self, block: &Block, escapes: bool) {
         // (What it assigns first is its own: out of scope after it.)
         let known = self.known.clone();
-        for p in &block.params.list {
-            self.closure_params.insert(p.name.clone());
-            self.known.insert(p.name.clone());
+        let params: Vec<String> = block.params.list.iter().map(|p| p.name.clone()).collect();
+        for p in &params {
+            self.known.insert(p.clone());
         }
         // (A block's own locals are new each time it runs: its body does
         // not count as code that runs again, as a loop's does.)
         self.closure_depth += 1;
         self.escaping += escapes as u32;
-        Checker::assigned_names_scope(&block.body, self);
+        // (Its parameters are its own variables: what it assigns to them
+        // is not an outer local's, #1017. Which of them it assigns.)
+        let mut own: Vec<String> = Vec::new();
+        self.scoped_all(&params, &mut |a| {
+            let counts: Vec<u32> = params
+                .iter()
+                .map(|p| a.counts.get(p).copied().unwrap_or(0))
+                .collect();
+            let bangs = a.bangs.len();
+            Checker::assigned_names_scope(&block.body, a);
+            for (p, before) in params.iter().zip(counts) {
+                if a.counts.get(p).copied().unwrap_or(0) > before
+                    || a.bangs[bangs..].iter().any(|(n, _)| n == p)
+                {
+                    own.push(p.clone());
+                }
+            }
+        });
+        self.closure_params.extend(own);
         self.closure_depth -= 1;
         self.escaping -= escapes as u32;
         self.known = known;
@@ -6611,14 +6642,13 @@ impl Checker {
             .map(|(name, _)| name.clone())
             .collect();
         reassigned.extend(assigned.repeated.iter().cloned());
-        for p in params
-            .map(str::to_string)
-            .chain(assigned.closure_params.iter().cloned())
-        {
+        for p in params.map(str::to_string) {
             if assigned.names.contains(&p) {
                 reassigned.insert(p);
             }
         }
+        // (A block's or lambda's parameter its own block assigns.)
+        reassigned.extend(assigned.closure_params.iter().cloned());
         reassigned.extend(assigned.bangs.iter().map(|(n, _)| n.clone()));
         self.env.reassigned = Some(Rc::new(reassigned));
         // The same walk, counting any block as a closure that may run

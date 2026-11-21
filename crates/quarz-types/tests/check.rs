@@ -5164,6 +5164,19 @@ fn a_rescue_variable_reassigned_after_a_closure_captured_it() {
     err("class A < StandardError\n  @n: Int = 41\n  def a -> Int = @n + 1\nend\nclass B < StandardError\n  @s: String = \"str\"\n  def s -> String = @s\nend\ni = 0\nf: (() -> Int)? = nil\nbegin\n  i += 1\n  if i == 1\n    raise A.new(\"a\")\n  else\n    raise B.new(\"b\") if i == 2\n  end\nrescue A, B => e\n  if e.is_a?(A)\n    f = -> { e.a }\n  end\n  retry if i < 2\nend\np f.call if f", "undefined method `a` for B");
 }
 
+/// #1017: a block parameter is the block's own variable, hiding an outer
+/// local of its name (docs/01): it does not count as an assignment of the
+/// outer local, whose narrowing an earlier closure keeps. A block that
+/// assigns its own parameter, and an outer local assigned after a closure
+/// captured it, still lose theirs.
+#[test]
+fn a_block_parameter_does_not_reassign_an_outer_local() {
+    let twice = "def twice(&b: () -> Int) -> Int = b.call * 2\ndef later(&b: () -> Int) -> (() -> Int) = b\n";
+    no_warnings(&format!("{twice}def f(a: Int?, xs: Array[String]) -> Int\n  n = 0\n  if x = a\n    n = twice {{ x + 1 }}\n  end\n  n + (xs.all? {{ |x| x.empty? }} ? 1 : 0)\nend\np f(1, [\"a\"])"));
+    err(&format!("{twice}def g(a: Int?) -> Int\n  x = a\n  if x\n    f = later {{ x + 1 }}\n    x = nil\n    return f.call\n  end\n  0\nend"), "undefined method `+` for Nil");
+    err(&format!("{twice}def h(xs: Array[Int?]) -> Int\n  n = 0\n  xs.each do |x|\n    if x\n      f = later {{ x + 1 }}\n      x = nil\n      n = f.call\n    end\n  end\n  n\nend"), "undefined method `+` for Nil");
+}
+
 #[test]
 fn a_field_handle_is_made_by_def_field_or_field_ref_only() {
     // docs/14 §5: a handle names a field it reads in place.
