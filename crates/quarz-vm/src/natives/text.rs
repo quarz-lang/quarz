@@ -35,8 +35,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "String#each_byte", |i, r, a| {
         let b = block(i, &a)?;
+        let rb = i.repeated_block(&b);
         for byte in s(i, r)?.bytes() {
-            i.call_block(&b, smallvec![Value::Int(byte as i64)])?;
+            rb.call(i, smallvec![Value::Int(byte as i64)])?;
         }
         Ok(Value::Nil)
     });
@@ -48,8 +49,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "String#each_grapheme", |i, r, a| {
         let b = block(i, &a)?;
         let text = s(i, r)?;
+        let rb = i.repeated_block(&b);
         for g in text.graphemes(true) {
-            i.call_block(&b, smallvec![Value::str(g)])?;
+            rb.call(i, smallvec![Value::str(g)])?;
         }
         Ok(Value::Nil)
     });
@@ -115,8 +117,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let b = block(i, &a)?;
         let last = string(i, a.arg(0), "last")?;
         let mut steps = StringSteps::new(s(i, r)?, last, false);
+        let rb = i.repeated_block(&b);
         while let Some(v) = steps.next() {
-            i.call_block(&b, smallvec![Value::string(v)])?;
+            rb.call(i, smallvec![Value::string(v)])?;
         }
         Ok(Value::Nil)
     });
@@ -212,15 +215,16 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let wants = wants_match(i, &b);
         let names = group_names(pattern);
         let mut shared: Option<Rc<str>> = None;
+        let rb = i.repeated_block(&b);
         each_match(i, Hay::Str(text), pattern, true, wants, |groups| {
             let (st, en) = groups[0].unwrap_or((0, 0));
             let matched = Value::str(&text[st..en]);
             if wants {
                 let shared = shared.get_or_insert_with(|| Rc::from(text));
                 let md = match_value(shared, groups, &names);
-                i.call_block(&b, smallvec![matched, md])?;
+                rb.call(i, smallvec![matched, md])?;
             } else {
-                i.call_block(&b, smallvec![matched])?;
+                rb.call(i, smallvec![matched])?;
             }
             Ok(())
         })?;
@@ -642,6 +646,7 @@ fn string_sub_block(interp: &Interp, recv: &Value, args: Args, global: bool) -> 
     } else {
         Vec::new()
     };
+    let rb = args.block.as_ref().map(|b| interp.repeated_block(b));
     let mut shared: Option<Rc<str>> = None;
     let out = substitute(
         interp,
@@ -652,13 +657,13 @@ fn string_sub_block(interp: &Interp, recv: &Value, args: Args, global: bool) -> 
         |groups, out| {
             let (st, en) = groups[0].unwrap_or((0, 0));
             let matched = Value::str(&text[st..en]);
-            if let Some(b) = &args.block {
+            if let Some(rb) = &rb {
                 let v = if wants {
                     let shared = shared.get_or_insert_with(|| Rc::from(text));
                     let md = match_value(shared, groups, &names);
-                    interp.call_block(b, smallvec![matched, md])?
+                    rb.call(interp, smallvec![matched, md])?
                 } else {
-                    interp.call_block(b, smallvec![matched])?
+                    rb.call(interp, smallvec![matched])?
                 };
                 out.extend_from_slice(interp.to_s(&v)?.as_bytes());
             } else if let Value::Hash(h) = args.arg(1) {

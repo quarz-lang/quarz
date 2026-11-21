@@ -1,0 +1,40 @@
+# Natives that call their block repeatedly keep one activation across
+# the calls of one native call (#987): a task suspended in the block
+# (`Channel#each`'s, `loop`'s, `Atom#update`'s) while other tasks run the
+# same natives, on other workers, with their own blocks and with blocks of
+# the same method, prints as before, whatever the scheduling.
+def drain(c: Channel[Int], scale: Int) -> Int
+  total = 0
+  c.each do |v|
+    Task.sleep(1.ms) if v % 7 == 0
+    total += v * scale
+  end
+  total
+end
+chans = (1..4).map { |k| Channel[Int].new(2) }
+drains = chans.each_with_index.map { |c, k| Task.spawn { drain(c, k + 1) } }
+feeders = chans.map do |c|
+  Task.spawn do
+    50.times { |i| c.send(i) }
+    c.close
+  end
+end
+feeders.each(&:await)
+p drains.map(&:await)
+
+counter = Atom.new(0)
+workers = (1..4).map do |k|
+  Task.spawn do
+    n = 0
+    loop do
+      break if n == 25
+      counter.update do |c|
+        Task.sleep(1.ms) if n == 10
+        c + 1
+      end
+      n += 1
+    end
+    n
+  end
+end
+p workers.map(&:await), counter.get

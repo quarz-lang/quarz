@@ -383,8 +383,9 @@ fn atom<'a>(interp: &Interp, v: &'a Value) -> Result<&'a Rc<std::sync::Mutex<Val
 
 fn kernel_loop(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
+    let rb = interp.repeated_block(&b);
     loop {
-        match interp.call_block(&b, smallvec![]) {
+        match rb.call(interp, smallvec![]) {
             Ok(_) => {}
             Err(Flow::Raise(e)) if interp.exception_is_a(&e, interp.program.exc.stop_iteration) => {
                 return Ok(Value::Nil)
@@ -980,6 +981,7 @@ fn channel_close(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
 fn channel_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let c = chan(interp, recv)?.clone();
     let b = block(interp, &args)?;
+    let rb = interp.repeated_block(&b);
     loop {
         let v = channel_receive(interp, &c, false)?;
         if v.is_nil() {
@@ -988,7 +990,7 @@ fn channel_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
                 return Ok(Value::Nil);
             }
         }
-        interp.call_block(&b, smallvec![v])?;
+        rb.call(interp, smallvec![v])?;
     }
 }
 
@@ -996,9 +998,10 @@ fn channel_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 
 fn run_select(interp: &Interp, block: &Value, looping: bool) -> EvalResult {
     let mut unwaited: u32 = 0;
+    let rb = interp.repeated_block(block);
     loop {
         let state = Rc::new(RefCell::new(SelectorState::default()));
-        let built = interp.call_block(block, smallvec![Value::Selector(state.clone())]);
+        let built = rb.call(interp, smallvec![Value::Selector(state.clone())]);
         let how = match built {
             Ok(_) if !state.borrow().stopped => select_once(interp, &state),
             Ok(_) => Ok(Selected::Ready),
@@ -1205,12 +1208,13 @@ fn send_ready(c: &ChannelInner, st: &ChannelState) -> bool {
 fn atom_update(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let b = block(interp, &args)?;
     let cell = atom(interp, recv)?;
+    let rb = interp.repeated_block(&b);
     loop {
         let current = lock(cell).clone();
         // The block runs without the lock (it may suspend, or use the
         // atom); the update applies only if the value is still the one
         // the block saw (another task may have changed it meanwhile).
-        let new = interp.call_block(&b, smallvec![current.clone()])?;
+        let new = rb.call(interp, smallvec![current.clone()])?;
         new.share();
         let mut g = lock(cell);
         if g.identical(&current) {

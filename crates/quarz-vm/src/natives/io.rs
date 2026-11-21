@@ -143,11 +143,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "IO#each_line", |i, r, a| {
         let b = block(i, &a)?;
+        let rb = i.repeated_block(&b);
         loop {
             match io_gets(i, r, false)? {
                 Value::Nil => return Ok(Value::Nil),
                 line => {
-                    i.call_block(&b, smallvec![line])?;
+                    rb.call(i, smallvec![line])?;
                 }
             }
         }
@@ -583,8 +584,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Dir.each_child", |i, _, a| {
         let b = block(i, &a)?;
         let p = string(i, a.arg(0), "path")?;
+        let rb = i.repeated_block(&b);
         for name in dir_children(i, p)? {
-            i.call_block(&b, smallvec![Value::string(name)])?;
+            rb.call(i, smallvec![Value::string(name)])?;
         }
         Ok(Value::Nil)
     });
@@ -1427,8 +1429,9 @@ fn file_each_line(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     let text = interp
         .block_on(move || std::fs::read_to_string(&p))?
         .map_err(|e| os_error(interp, e, path))?;
+    let rb = interp.repeated_block(&b);
     for line in text.split_inclusive('\n') {
-        interp.call_block(&b, smallvec![Value::str(line)])?;
+        rb.call(interp, smallvec![Value::str(line)])?;
     }
     Ok(Value::Nil)
 }

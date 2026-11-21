@@ -45,6 +45,7 @@ arr = (0...1000).to_a
 h: Hash[Int, Int] = {}
 (0...1000).each { |k| h = h.put(k, k) }
 text = "x" * 1000
+lines = "x\n" * 1000
 xs = [0, 1, 2]
 f = ->(x: Int) { x + 1 }
 acc = 0
@@ -151,6 +152,16 @@ when "each_yield"
 when "hash_each"
   while i < reps
     h.each { |k, v| acc += v }
+    i += 1
+  end
+when "hash_each_pair"
+  while i < reps
+    h.each_pair { |k, v| acc += v }
+    i += 1
+  end
+when "each_line"
+  while i < reps
+    lines.each_line { |l| acc += 1 }
     i += 1
   end
 when "each_char"

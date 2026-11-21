@@ -111,6 +111,16 @@ fn fields_updated_by_natives_running_program_code_copy_once_each() {
     check("owned_copies.qz", 8);
 }
 
+/// #987: a native calling its block through a kept activation, which
+/// borrows the arguments, copies no more than the general path did: an
+/// element the collection still holds copies once when the block updates
+/// it, a fresh value made per call (a line, a match) none, and
+/// `Hash#each`'s `[k, v]` once when a `|pair|` block updates it.
+#[test]
+fn a_kept_block_caller_copies_no_more_than_before() {
+    check("kept_block_args.qz", 1100);
+}
+
 #[test]
 fn an_early_exit_from_any_or_all_leaves_no_reference_behind() {
     check("early_exit.qz", 0);

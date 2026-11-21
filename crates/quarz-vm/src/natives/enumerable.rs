@@ -154,10 +154,11 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let b = block(i, &a)?;
         let data = arr_data(i, r)?.clone();
         let (mut lo, mut hi) = (0usize, data.len());
+        let rb = i.repeated_block(&b);
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             let x = data.get(mid).unwrap_or(Value::Nil);
-            if i.call_block(&b, smallvec![x])?.is_truthy() {
+            if rb.call(i, smallvec![x])?.is_truthy() {
                 hi = mid;
             } else {
                 lo = mid + 1;
@@ -228,7 +229,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             // (`T <: Comparable[T]`, `extension Array::Builder`: through
             // the conformance's witness, `Interp::find_method`, #560.)
             None => i.sort_compared(&mut items),
-            Some(cmp) => i.sort_values(&mut items, |x, y| block_ordering(i, cmp, x, y)),
+            Some(cmp) => {
+                let rb = i.repeated_block(cmp);
+                i.sort_values(&mut items, |x, y| block_ordering(i, &rb, x, y))
+            }
         };
         *b.borrow_mut() = items;
         result?;
@@ -239,8 +243,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let b = ab(i, r)?;
         let items = b.borrow().clone();
         let mut keyed = Vec::with_capacity(items.len());
+        let rb = i.repeated_block(&bl);
         for x in items {
-            keyed.push((i.call_block(&bl, smallvec![x.clone()])?, x));
+            keyed.push((rb.call(i, smallvec![x.clone()])?, x));
         }
         // (Stops at the first error; any order taken: #924.)
         let mut indices: Vec<usize> = (0..keyed.len()).collect();
@@ -406,11 +411,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 }
             }
             Some(bl) => {
+                let rb = i.repeated_block(bl);
                 for (k, v) in other.iter() {
                     let existing = read(i, b)?.get(k).cloned();
                     crate::keys::check()?;
                     let merged = match existing {
-                        Some(old) => i.call_block(bl, smallvec![k.clone(), old, v.clone()])?,
+                        Some(old) => rb.call(i, smallvec![k.clone(), old, v.clone()])?,
                         None => v.clone(),
                     };
                     if crate::keys::is_custom(k) {
@@ -439,22 +445,25 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "Hash::Builder#each_pair", |i, r, a| {
         let b = block(i, &a)?;
+        let rb = i.repeated_block(&b);
         for (k, v) in builder_pairs(i, r)? {
-            i.call_block(&b, smallvec![k, v])?;
+            rb.call(i, smallvec![k, v])?;
         }
         Ok(Value::Nil)
     });
     native!(m, "Hash::Builder#each_key", |i, r, a| {
         let b = block(i, &a)?;
+        let rb = i.repeated_block(&b);
         for (k, _) in builder_pairs(i, r)? {
-            i.call_block(&b, smallvec![k])?;
+            rb.call(i, smallvec![k])?;
         }
         Ok(Value::Nil)
     });
     native!(m, "Hash::Builder#each_value", |i, r, a| {
         let b = block(i, &a)?;
+        let rb = i.repeated_block(&b);
         for (_, v) in builder_pairs(i, r)? {
-            i.call_block(&b, smallvec![v])?;
+            rb.call(i, smallvec![v])?;
         }
         Ok(Value::Nil)
     });
@@ -500,8 +509,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let bl = block(i, &a)?;
         let b = hb(i, r)?;
         let mut out = ValueMap::default();
+        let rb = i.repeated_block(&bl);
         for (k, v) in builder_pairs(i, r)? {
-            out.insert(k, i.call_block(&bl, smallvec![v])?);
+            out.insert(k, rb.call(i, smallvec![v])?);
         }
         *write(i, b)? = out;
         Ok(r.clone())
@@ -640,8 +650,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             super::each_value(i, span.rev().map(Value::Int), &b)?;
             return Ok(Value::Nil);
         }
+        let rb = i.repeated_block(&b);
         for v in range_to_vec(i, rg)?.into_iter().rev() {
-            i.call_block(&b, smallvec![v])?;
+            rb.call(i, smallvec![v])?;
         }
         Ok(Value::Nil)
     });
@@ -785,8 +796,9 @@ fn builder_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> Eval
     let b = ab(interp, recv)?;
     let items = b.borrow().clone();
     let mut out = Vec::new();
+    let rb = interp.repeated_block(&bl);
     for x in items {
-        if interp.call_block(&bl, smallvec![x.clone()])?.is_truthy() == keep {
+        if rb.call(interp, smallvec![x.clone()])?.is_truthy() == keep {
             out.push(x);
         }
     }
@@ -805,9 +817,10 @@ fn hash_builder_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) ->
     let bl = block(interp, &args)?;
     let b = hb(interp, recv)?;
     let mut out = ValueMap::default();
+    let rb = interp.repeated_block(&bl);
     for (k, v) in builder_pairs(interp, recv)? {
-        if interp
-            .call_block(&bl, smallvec![k.clone(), v.clone()])?
+        if rb
+            .call(interp, smallvec![k.clone(), v.clone()])?
             .is_truthy()
             == keep
         {
@@ -821,8 +834,9 @@ fn hash_builder_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) ->
 fn set_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> EvalResult {
     let bl = block(interp, &args)?;
     let mut out = ValueSet::default();
+    let rb = interp.repeated_block(&bl);
     for x in set(interp, recv)?.iter() {
-        if interp.call_block(&bl, smallvec![x.clone()])?.is_truthy() == keep {
+        if rb.call(interp, smallvec![x.clone()])?.is_truthy() == keep {
             out.insert(x.clone());
         }
     }
@@ -834,8 +848,9 @@ fn set_builder_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> 
     let b = sb(interp, recv)?;
     let items: Vec<Value> = read(interp, b)?.iter().cloned().collect();
     let mut out = ValueSet::default();
+    let rb = interp.repeated_block(&bl);
     for x in items {
-        if interp.call_block(&bl, smallvec![x.clone()])?.is_truthy() == keep {
+        if rb.call(interp, smallvec![x.clone()])?.is_truthy() == keep {
             out.insert(x);
         }
     }

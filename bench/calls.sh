@@ -32,7 +32,7 @@ for mode in $modes; do
     echo "$c $(( $(per $mode $c $n1 $n2) - base ))"
   done
   # (Per element: no outer loop to take away.)
-  for c in each_loop map_loop each_block_value each_yield hash_each each_char; do
+  for c in each_loop map_loop each_block_value each_yield hash_each hash_each_pair each_line each_char; do
     echo "$c $(per $mode $c $n1 $n2) (per element)"
   done
 done

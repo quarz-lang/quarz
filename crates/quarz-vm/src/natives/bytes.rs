@@ -256,8 +256,9 @@ fn offset(data: &[u8], idx: i64) -> Option<usize> {
 fn bytes_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let data = bs(interp, recv)?;
     let b = block(interp, &args)?;
+    let rb = interp.repeated_block(&b);
     for byte in data.iter() {
-        interp.call_block(&b, smallvec![Value::Int(*byte as i64)])?;
+        rb.call(interp, smallvec![Value::Int(*byte as i64)])?;
     }
     Ok(Value::Nil)
 }

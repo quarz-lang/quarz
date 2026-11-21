@@ -190,15 +190,17 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "Array#each_index", |i, r, a| {
         let b = block(i, &a)?;
+        let rb = i.repeated_block(&b);
         for k in 0..arr_data(i, r)?.len() {
-            i.call_block(&b, smallvec![Value::Int(k as i64)])?;
+            rb.call(i, smallvec![Value::Int(k as i64)])?;
         }
         Ok(Value::Nil)
     });
     native!(m, "Array#reverse_each", |i, r, a| {
         let b = block(i, &a)?;
+        let rb = i.repeated_block(&b);
         for x in arr_data(i, r)?.iter().rev() {
-            i.call_block(&b, smallvec![x])?;
+            rb.call(i, smallvec![x])?;
         }
         Ok(Value::Nil)
     });
@@ -322,8 +324,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Array#index", |i, r, a| {
         let items = arr(i, r)?.clone();
         if let Some(b) = &a.block {
+            let rb = i.repeated_block(b);
             for (k, x) in items.iter().enumerate() {
-                if i.call_block(b, smallvec![x.clone()])?.is_truthy() {
+                if rb.call(i, smallvec![x.clone()])?.is_truthy() {
                     return Ok(Value::Int(k as i64));
                 }
             }
@@ -336,8 +339,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Array#rindex", |i, r, a| {
         let items = arr(i, r)?.clone();
         if let Some(b) = &a.block {
+            let rb = i.repeated_block(b);
             for (k, x) in items.iter().enumerate().rev() {
-                if i.call_block(b, smallvec![x.clone()])?.is_truthy() {
+                if rb.call(i, smallvec![x.clone()])?.is_truthy() {
                     return Ok(Value::Int(k as i64));
                 }
             }
@@ -509,8 +513,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let b = ab(i, r)?;
         let items = b.borrow().clone();
         let mut out = Vec::with_capacity(items.len());
+        let rb = i.repeated_block(&bl);
         for x in items {
-            out.push(i.call_block(&bl, smallvec![x])?);
+            out.push(rb.call(i, smallvec![x])?);
         }
         *b.borrow_mut() = out;
         Ok(r.clone())
@@ -520,8 +525,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let b = ab(i, r)?;
         let items = b.borrow().clone();
         let mut out = Vec::new();
+        let rb = i.repeated_block(&bl);
         for x in items {
-            if i.call_block(&bl, smallvec![x.clone()])?.is_truthy() {
+            if rb.call(i, smallvec![x.clone()])?.is_truthy() {
                 out.push(x);
             }
         }
@@ -533,8 +539,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let b = ab(i, r)?;
         let items = b.borrow().clone();
         let mut out = Vec::new();
+        let rb = i.repeated_block(&bl);
         for x in items {
-            if !i.call_block(&bl, smallvec![x.clone()])?.is_truthy() {
+            if !rb.call(i, smallvec![x.clone()])?.is_truthy() {
                 out.push(x);
             }
         }
@@ -544,16 +551,18 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Array::Builder#each", |i, r, a| {
         let b = block(i, &a)?;
         let items = ab(i, r)?.borrow().clone();
+        let rb = i.repeated_block(&b);
         for x in items {
-            i.call_block(&b, smallvec![x])?;
+            rb.call(i, smallvec![x])?;
         }
         Ok(Value::Nil)
     });
     native!(m, "Array::Builder#each_with_index", |i, r, a| {
         let b = block(i, &a)?;
         let items = ab(i, r)?.borrow().clone();
+        let rb = i.repeated_block(&b);
         for (k, x) in items.into_iter().enumerate() {
-            i.call_block(&b, smallvec![x, Value::Int(k as i64)])?;
+            rb.call(i, smallvec![x, Value::Int(k as i64)])?;
         }
         Ok(Value::Nil)
     });
@@ -608,15 +617,17 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "Hash#each_key", |i, r, a| {
         let b = block(i, &a)?;
+        let rb = i.repeated_block(&b);
         for k in hash(i, r)?.as_map().keys() {
-            i.call_block(&b, smallvec![k.clone()])?;
+            rb.call(i, smallvec![k.clone()])?;
         }
         Ok(Value::Nil)
     });
     native!(m, "Hash#each_value", |i, r, a| {
         let b = block(i, &a)?;
+        let rb = i.repeated_block(&b);
         for v in hash(i, r)?.as_map().values() {
-            i.call_block(&b, smallvec![v.clone()])?;
+            rb.call(i, smallvec![v.clone()])?;
         }
         Ok(Value::Nil)
     });
@@ -687,16 +698,18 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Hash#transform_values", |i, r, a| {
         let b = block(i, &a)?;
         let mut out = ValueMap::default();
+        let rb = i.repeated_block(&b);
         for (k, v) in hash(i, r)?.as_map().iter() {
-            out.insert(k.clone(), i.call_block(&b, smallvec![v.clone()])?);
+            out.insert(k.clone(), rb.call(i, smallvec![v.clone()])?);
         }
         Ok(Value::Hash(Rc::new(crate::value::HashData::from(out))))
     });
     native!(m, "Hash#transform_keys", |i, r, a| {
         let b = block(i, &a)?;
         let mut out = ValueMap::default();
+        let rb = i.repeated_block(&b);
         for (k, v) in hash(i, r)?.as_map().iter() {
-            out.insert(i.call_block(&b, smallvec![k.clone()])?, v.clone());
+            out.insert(rb.call(i, smallvec![k.clone()])?, v.clone());
         }
         Ok(Value::Hash(Rc::new(crate::value::HashData::from(out))))
     });
@@ -935,8 +948,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Set::Builder#each", |i, r, a| {
         let b = block(i, &a)?;
         let items: Vec<Value> = read(i, sb(i, r)?)?.iter().cloned().collect();
+        let rb = i.repeated_block(&b);
         for x in items {
-            i.call_block(&b, smallvec![x])?;
+            rb.call(i, smallvec![x])?;
         }
         Ok(Value::Nil)
     });
@@ -1040,8 +1054,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         };
         let items = collect(i, r)?;
         let mut out = Vec::with_capacity(items.len());
+        let rb = i.repeated_block(&b);
         for (k, x) in items.into_iter().enumerate() {
-            out.push(i.call_block(&b, smallvec![x, Value::Int(k as i64 + offset)])?);
+            out.push(rb.call(i, smallvec![x, Value::Int(k as i64 + offset)])?);
         }
         Ok(Value::array(out))
     });
@@ -1395,8 +1410,9 @@ fn array_new(interp: &Interp, _: &Value, args: Args) -> EvalResult {
         (Some(n), Some(b)) => {
             let n = int(interp, n, "size")?.max(0);
             let mut out = Vec::with_capacity(n as usize);
+            let rb = interp.repeated_block(b);
             for i in 0..n {
-                out.push(interp.call_block(b, smallvec![Value::Int(i)])?);
+                out.push(rb.call(interp, smallvec![Value::Int(i)])?);
             }
             Ok(Value::array(out))
         }
@@ -1568,8 +1584,9 @@ fn array_select(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
             }
         }
         None => {
+            let rb = interp.repeated_block(&b);
             for x in items.iter() {
-                if interp.call_block(&b, smallvec![x.clone()])?.is_truthy() {
+                if rb.call(interp, smallvec![x.clone()])?.is_truthy() {
                     out.push(x.clone());
                 }
             }
@@ -1612,19 +1629,23 @@ pub(super) fn enum_sort(interp: &Interp, recv: &Value, args: Args) -> EvalResult
     let mut items = collect(interp, recv)?;
     match &args.block {
         None => interp.sort_compared(&mut items)?,
-        Some(b) => interp.sort_values(&mut items, |x, y| block_ordering(interp, b, x, y))?,
+        Some(b) => {
+            let rb = interp.repeated_block(b);
+            interp.sort_values(&mut items, |x, y| block_ordering(interp, &rb, x, y))?
+        }
     }
     Ok(Value::array(items))
 }
 
-/// The ordering a comparator block (`{ |a, b| ... }`) returns.
+/// The ordering a comparator block (`{ |a, b| ... }`) returns, the block
+/// made once for the comparisons of one call (`Interp::repeated_block`).
 pub(super) fn block_ordering(
     interp: &Interp,
-    block: &Value,
+    block: &crate::vm::RepeatedBlock<'_>,
     a: &Value,
     b: &Value,
 ) -> Result<std::cmp::Ordering, Flow> {
-    let v = interp.call_block(block, smallvec![a.clone(), b.clone()])?;
+    let v = block.call(interp, smallvec![a.clone(), b.clone()])?;
     Ok(int(interp, &v, "comparison result")?.cmp(&0))
 }
 
@@ -1655,11 +1676,12 @@ pub(super) fn enum_extreme(interp: &Interp, recv: &Value, args: &Args, min: bool
     }
     let items = collect(interp, recv)?;
     let mut best: Option<Value> = None;
+    let rb = args.block.as_ref().map(|b| interp.repeated_block(b));
     for x in items {
         best = Some(match best {
             None => x,
             Some(b) => {
-                let o = match &args.block {
+                let o = match &rb {
                     None => interp.compare(&x, &b)?,
                     Some(cmp) => block_ordering(interp, cmp, &x, &b)?,
                 };
@@ -1741,10 +1763,11 @@ fn hash_merge(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let mut rc = hash(interp, recv)?.clone();
     let block = args.block.clone();
     let map = crate::value::unique_mut(&mut rc).values_mut();
+    let rb = block.as_ref().map(|b| interp.repeated_block(b));
     for (k, v) in other.iter() {
-        let merged = match (map.get(k), &block) {
-            (Some(existing), Some(b)) => {
-                interp.call_block(b, smallvec![k.clone(), existing.clone(), v.clone()])?
+        let merged = match (map.get(k), &rb) {
+            (Some(existing), Some(rb)) => {
+                rb.call(interp, smallvec![k.clone(), existing.clone(), v.clone()])?
             }
             _ => v.clone(),
         };
@@ -1766,9 +1789,10 @@ fn hash_update_key(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
 fn hash_filter(interp: &Interp, recv: &Value, args: Args, keep: bool) -> EvalResult {
     let b = block(interp, &args)?;
     let mut out = ValueMap::default();
+    let rb = interp.repeated_block(&b);
     for (k, v) in hash(interp, recv)?.as_map().iter() {
-        if interp
-            .call_block(&b, smallvec![k.clone(), v.clone()])?
+        if rb
+            .call(interp, smallvec![k.clone(), v.clone()])?
             .is_truthy()
             == keep
         {
@@ -1904,21 +1928,24 @@ pub(super) fn range_each(interp: &Interp, recv: &Value, args: Args) -> EvalResul
         }
         _ => {
             if let Some(mut steps) = string_steps(r) {
+                let rb = interp.repeated_block(&b);
                 while let Some(v) = steps.next() {
-                    interp.call_block(&b, smallvec![Value::string(v)])?;
+                    rb.call(interp, smallvec![Value::string(v)])?;
                 }
                 return Ok(Value::Nil);
             }
             if let Some(dates) = date_steps(interp, r) {
                 let (mut v, last) = dates?;
+                let rb = interp.repeated_block(&b);
                 while let Some(d) = v {
-                    interp.call_block(&b, smallvec![d.clone()])?;
+                    rb.call(interp, smallvec![d.clone()])?;
                     v = date_next(interp, &d, &last, r.exclusive)?;
                 }
                 return Ok(Value::Nil);
             }
+            let rb = interp.repeated_block(&b);
             for v in range_to_vec(interp, r)? {
-                interp.call_block(&b, smallvec![v])?;
+                rb.call(interp, smallvec![v])?;
             }
         }
     }
@@ -1943,8 +1970,9 @@ pub(super) fn range_step(interp: &Interp, recv: &Value, args: Args) -> EvalResul
         _ => return Err(interp.err_type("step needs an integer range")),
     };
     let mut i = lo;
+    let rb = interp.repeated_block(&b);
     while last.is_none_or(|l| i <= l) {
-        interp.call_block(&b, smallvec![Value::Int(i)])?;
+        rb.call(interp, smallvec![Value::Int(i)])?;
         match i.checked_add(step) {
             Some(n) => i = n,
             None => break,

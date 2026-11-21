@@ -715,6 +715,40 @@ fn a_compile_time_refusal_is_not_rescued_by_standard_error() {
     }
 }
 
+/// A block a native calls repeatedly runs through a kept activation
+/// (`BlockCaller`, #987), which checks the compile-time time limit at each
+/// call as `call_block` does: a loop through it (`Int#step`'s block, with
+/// no back edge of its own; `loop { }`, whose only check it is) and one
+/// through `yield` raise
+/// `Meta::CompileTimeError` past the limit, and again at each later call
+/// after a `rescue Exception` (#969).
+#[test]
+fn a_kept_block_caller_keeps_the_time_limit() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Gen\n  static def self.kept -> Int\n    s = 0\n    0.step(1_000_000_000_000, 1) { |x| s += x }\n    s\n  end\n  static def self.each_forever(&b: (Int) -> Void) -> Void\n    i = 0\n    while true\n      yield i\n      i += 1\n    end\n  end\n  static def self.yielded -> Int\n    s = 0\n    each_forever { |x| s += x }\n    s\n  end\n  static def self.looped -> Int\n    s = 0\n    loop { s += 1 }\n    s\n  end\n  static def self.again -> Int\n    k = begin\n      kept\n    rescue Exception\n      0\n    end\n    k + kept\n  end\nend\n",
+    );
+    for call in ["kept", "yielded", "looped", "again"] {
+        let app = write(
+            &d.0,
+            "app.qz",
+            &format!("require_relative \"lib\"\nclass Post < Gen\n  {call}\nend\n"),
+        );
+        let (ok, _, err) = quarz(
+            &d.0,
+            &["check", app.to_str().unwrap()],
+            &[("QUARZ_STATIC_LIMIT_MS", "200")],
+        );
+        assert!(!ok, "{call}");
+        assert!(
+            err.contains("raised Meta::CompileTimeError: compile-time evaluation took too long"),
+            "{call}: {err}"
+        );
+    }
+}
+
 /// What the natives that update a collection in place call by name
 /// (`shake::native_calls`, which the lowering also reads to update a
 /// field in place, #927) is reached: an element's `==` through
