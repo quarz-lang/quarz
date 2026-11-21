@@ -3403,10 +3403,10 @@ fn static_declarations() {
     // A `static def` that does not reach `Meta` is also an ordinary
     // method, callable at run time.
     ok("class M\n  static def self.twice(x: Int) -> Int = x * 2\nend\np M.twice(2)");
-    // `static(...)` takes a call of a `static def` (docs/14 §8).
+    // `static(...)` takes a call (docs/14 §8).
     err(
         "x = static(1)",
-        "`static(...)` takes a call of a `static def`",
+        "`static(...)` takes a call of a method or function",
     );
     let parsed = quarz_syntax::parse("class A\n  static abstract def x -> Int\nend");
     assert!(

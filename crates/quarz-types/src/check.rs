@@ -15639,7 +15639,7 @@ impl Checker {
         self.static_expr_call = saved;
         let ExprKind::Call(call) = &inner.kind else {
             self.error(
-                "`static(...)` takes a call of a `static def`, run at compile time (docs/14 §8)",
+                "`static(...)` takes a call of a method or function, run at compile time (docs/14 §8)",
                 inner.span,
             );
             return t;
@@ -15648,7 +15648,7 @@ impl Checker {
         let Some(CallTarget::Method { method }) = self.out.calls.get(&inner.id).cloned() else {
             self.error(
                 format!(
-                    "`static(...)` takes a call of a `static def`; `{}` is not one",
+                    "`static(...)` takes a call of a method or function; `{}` is not one",
                     call.name
                 ),
                 inner.span,
@@ -15656,10 +15656,16 @@ impl Checker {
             return t;
         };
         let m = self.world.method(method).clone();
-        if !m.is_static || m.is_native {
+        // Any method or function the file may call (#981): the expression
+        // is the mark that the call runs while compiling, and what it
+        // reaches is checked when it runs (`Runner::execute`'s reach
+        // refusals, at the expression). Not a `static native def`, which
+        // reflects on or generates into a class being defined, through a
+        // `Meta::ClassDef` no constant is.
+        if m.is_static && m.is_native {
             self.error(
                 format!(
-                    "`static(...)` takes a call of a `static def`; `{}` is not one",
+                    "`static(...)` cannot call `{}`, which reflects on a class being defined: call it in a `static def`",
                     m.name
                 ),
                 inner.span,
@@ -15668,7 +15674,7 @@ impl Checker {
         }
         if let Err(why) = self.static_stage(&m) {
             self.error(
-                format!("`{}` is a `static def` of {why}: `static(...)` runs only those of the cogs (or required files) this file depends on", m.name),
+                format!("`{}` is a method of {why}: `static(...)` runs only those of the cogs (or required files) this file depends on", m.name),
                 inner.span,
             );
             return t;
@@ -15678,11 +15684,14 @@ impl Checker {
         let class = self.env.class_id.unwrap_or(self.world.builtin.object);
         match &call.recv {
             Some(r) => self.check_static_constant(r),
-            // (A function, docs/01 §2: no receiver.)
-            None if m.singleton || self.world.class(m.owner).kind == ClassKind::Main => {}
+            // (A function, docs/01 §2: no receiver; or one of `Kernel`'s,
+            // the functions every file calls without one, `Date(...)`.)
+            None if m.singleton
+                || self.world.class(m.owner).kind == ClassKind::Main
+                || m.owner == self.world.builtin.kernel => {}
             None => self.error(
                 format!(
-                    "`static({})`: the receiver of an instance `static def` is written, a constant",
+                    "`static({})`: the receiver of an instance method is written, a constant",
                     call.name
                 ),
                 inner.span,

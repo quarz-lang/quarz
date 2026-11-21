@@ -1,5 +1,6 @@
-//! `static(call)` (docs/14 §8): a call of a `static def` with constant
-//! arguments, run at compile time, its value baked into the program.
+//! `static(call)` (docs/14 §8): a call of a method or function (a
+//! `static def` or not, #981) with constant arguments, run at compile
+//! time, its value baked into the program.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -142,6 +143,100 @@ p twice(4), helper(1)
 
 const OUT_FUNCTIONS: &str = "8\n10\n\"n2\"\n\"m3\"\n12\n6\n4\n5\n8\n2\n";
 
+/// #981: `static(...)` calls any method or function of the cogs (or
+/// required files) the file depends on, `static def` or not, natives
+/// included; what the call reaches is judged when it runs, at the
+/// expression (a native acting on the outside world or nondeterministic),
+/// and a `static native def` (reflection) is refused there.
+#[test]
+fn static_calls_any_method_or_function() {
+    let d = dir();
+    write(
+        &d.0,
+        "util.qz",
+        "class Util\n  def self.slug(s: String) -> String = s.downcase.gsub(\" \", \"-\")\n  def self.read_it -> String = File.read(\"x\")\n  def self.random_it -> Int = Crypto.random_bytes(4).size\n  def self.now_it -> Int = Time.now.year\nend\nclass Post\n  def initialize; end\nend\n",
+    );
+    write(
+        &d.0,
+        "ok.qz",
+        "require_relative \"util\"\nA = static(Util.slug(\"Hello World\"))\nB = static(Digest::SHA256.hexdigest(\"abc\"))\nC = static(Date(\"2026-01-01\"))\nD = static(1 + 2)\np A, B, C, D\np Util.slug(\"Hello World\") == A, Digest::SHA256.hexdigest(\"abc\") == B\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", "ok.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(
+        out,
+        "\"hello-world\"\n\"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"\n2026-01-01\n3\ntrue\ntrue\n"
+    );
+    for (call, want) in [
+        (
+            "Util.read_it",
+            "`File.read`, which cannot run at compile time",
+        ),
+        (
+            "Util.random_it",
+            "`Crypto.random_bytes`, which cannot run at compile time",
+        ),
+        (
+            "Util.now_it",
+            "`Time.now`, which cannot run at compile time",
+        ),
+        (
+            "Post.methods",
+            "`static(...)` cannot call `methods`, which reflects on a class being defined",
+        ),
+    ] {
+        write(
+            &d.0,
+            "bad.qz",
+            &format!("require_relative \"util\"\nX = static({call})\np X\n"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", "bad.qz"], &[]);
+        assert!(!ok, "{call}");
+        assert!(err.contains("bad.qz:2:12: error: "), "{call}: {err}");
+        assert!(err.contains(want), "{call}: {err}");
+    }
+}
+
+/// #981: an ordinary generic callee of `static(...)` (a generic function
+/// with its arguments inferred, a generic class method with them inferred
+/// and written, one using its type parameter as a value through a
+/// `Type[T]`) gives the value it has at run time, run and built; and the
+/// `Kernel` functions a standard module's extension adds (#936): `URI(...)`
+/// is baked, `Decimal(...)` is refused as a value that cannot be baked.
+#[test]
+fn static_calls_generic_and_std_kernel_functions() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "def pair[A, B](a: A, b: B) -> Array[String] = [a.to_s, b.to_s]\nclass Box\n  def self.wrap[T](x: T) -> Array[T] = [x]\n  def self.named[T](t: Type[T]) -> String = t.name\n  def self.empty_of[T](t: Type[T]) -> Int = Array[T].new.size\nend\n",
+    );
+    write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nrequire \"uri\"\nA = static(pair(1, \"a\"))\nB = static(Box.wrap(3))\nE = static(Box.wrap[Int](4))\nC = static(Box.named(Int))\nD = static(Box.empty_of(String))\nU = static(URI(\"https://example.com/\"))\np A, B, E, C, D, U\np A == pair(1, \"a\"), B == Box.wrap(3), C == Box.named(Int), U == URI(\"https://example.com/\")\n",
+    );
+    let want = "[\"1\", \"a\"]\n[3]\n[4]\n\"Int\"\n0\n#<URI https://example.com/>\ntrue\ntrue\ntrue\ntrue\n";
+    let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, want);
+    let (ok, _, err) = quarz(&d.0, &["build", "app.qz", "-o", "app"], &[]);
+    assert!(ok, "{err}");
+    let built = Command::new(d.0.join("app")).output().expect("run app");
+    assert_eq!(String::from_utf8_lossy(&built.stdout), want);
+    write(
+        &d.0,
+        "dec.qz",
+        "require \"decimal\"\nX = static(Decimal(\"1.10\"))\np X\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "dec.qz"], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("dec.qz:2:5: error: `static(...)` gives a Decimal, which cannot be baked into the program"),
+        "{err}"
+    );
+}
+
 #[test]
 fn what_static_refuses() {
     let d = dir();
@@ -155,12 +250,10 @@ fn what_static_refuses() {
     assert!(!ok);
     for want in [
         "bad.qz:6:17: error: `static(...)`'s receiver and arguments are constants",
-        "bad.qz:7:10: error: `static(...)` takes a call of a `static def`; `plain` is not one",
-        "bad.qz:8:10: error: `static(...)` takes a call of a `static def`; `+` is not one",
         "bad.qz:9:3: error: `static(...)` gives a () -> Int, which cannot be baked",
-        "bad.qz:10:10: error: `mine` is a `static def` of this file",
+        "bad.qz:10:10: error: `mine` is a method of this file",
         "bad.qz:11:28: error: a block in `static(...)` captures nothing: `n` is not a constant",
-        "bad.qz:13:10: error: `own_fn` is a `static def` of this file",
+        "bad.qz:13:10: error: `own_fn` is a method of this file",
     ] {
         assert!(err.contains(want), "{want}\n{err}");
     }
