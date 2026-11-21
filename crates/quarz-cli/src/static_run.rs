@@ -15,6 +15,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::rc::Rc;
 
 use quarz_ir::{shake, ClassId, FuncId, MethodId, RtClassKind, RtWorld};
+use quarz_lower::erase;
 use quarz_lower::Lowerer;
 use quarz_syntax::ast::{ParamKind, Visibility};
 use quarz_syntax::{Diagnostic, SourceFile, Span};
@@ -3704,19 +3705,6 @@ fn mentions_class(t: &Type, cid: ClassId) -> bool {
                 || mentions_class(r, cid)
         }
         Type::Param(_) | Type::Var(_) | Type::Nothing | Type::Void => false,
-    }
-}
-
-/// The class a type shows as at compile time: arguments erased, `Object`
-/// for what is not one class.
-fn erase(world: &World, t: &Type) -> ClassId {
-    match t {
-        Type::Class(id, _) => *id,
-        Type::ClassObject(..) | Type::TypeOf(_) => world.builtin.class_,
-        Type::Tuple(_) => world.builtin.array,
-        Type::Proc(..) => world.builtin.proc_,
-        Type::Void => world.builtin.nil,
-        _ => world.builtin.object,
     }
 }
 

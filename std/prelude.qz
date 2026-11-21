@@ -510,7 +510,17 @@ module Meta
   # and which of the owner's methods of that name it is ([index], in
   # declaration order: stable within one compiled program), with the
   # extension it comes from, if any.
-  data MethodRef = (owner: Type[Object], name: Symbol, singleton: Bool, index: Int, extension: Type[Object]?)
+  data MethodRef(owner: Type[Object], name: Symbol, singleton: Bool, index: Int, extension: Type[Object]?)
+    # The method's declared result as [MethodSig#result] shows it: its
+    # class with type arguments erased, [Object] for what is not one
+    # class (a union, `T?` included, a type parameter), [Nil] for `Void`
+    # (an `initialize`, which a construction's `new` in a tree names).
+    # At run time too, unlike [MethodSig]: what a translator of a tree
+    # learns of what a call gives (`ms.all? { |m| m.result == Bool }`).
+    # [ArgumentError] for a reference that names no method of the
+    # program (one made with `MethodRef.new`).
+    native def result -> Type[Object]
+  end
 
   # A quoted block's body as a tree (docs/14 §6), each node with its line.
   enum Expr

@@ -274,6 +274,21 @@ pub fn class_row(world: &World, out: &types::Output, id: ClassId) -> RtClass {
     }
 }
 
+/// The class a type shows as, at compile time and at run time: arguments
+/// erased, `Object` for what is not one class (a union, `T?` included, a
+/// type parameter). `Meta::MethodSig#result` and the other reflected
+/// types, and `RtMethod::result` (`Meta::MethodRef#result`, #1011).
+pub fn erase(world: &World, t: &Type) -> ClassId {
+    match t {
+        Type::Class(id, _) => *id,
+        Type::ClassObject(..) | Type::TypeOf(_) => world.builtin.class_,
+        Type::Tuple(_) => world.builtin.array,
+        Type::Proc(..) => world.builtin.proc_,
+        Type::Void => world.builtin.nil,
+        _ => world.builtin.object,
+    }
+}
+
 /// Method `id`'s row of `RtWorld::methods`, with its override table entry
 /// `overrides` (`World::overrides`, a row of `override_table`); `func`
 /// and the lowering's `overridden` are left for `fill`.
@@ -357,6 +372,7 @@ pub fn method_row(world: &World, id: MethodId, overrides: &[MethodId]) -> RtMeth
                 overridden,
                 fast_op,
                 file: m.file,
+                result: erase(world, &m.ret),
                 ret: match &m.ret {
                     Type::Param(_) | Type::Var(_) => None,
                     t => Some(world.type_name(&world.devoid(t))),
@@ -404,6 +420,7 @@ fn declared_rest(
         {
             extensions.push(RtExtension {
                 target: e.target,
+                module: e.module,
                 methods: e
                     .methods
                     .iter()
