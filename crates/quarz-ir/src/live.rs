@@ -233,9 +233,21 @@ pub const IN_PLACE_NATIVES: [&str; 6] = [
 /// whose in-place updates test for a unique reference (#704).
 const TAKEN_COLLECTIONS: [&str; 5] = ["Array", "Hash", "Set", "String", "Bytes"];
 
+/// The classes a taken field's type may name in its arguments: built-in
+/// values that run nothing when released (no `deinitialize`, no IO), so
+/// that where the taken value's contents are released cannot be told
+/// from where the object's would have been. Conservative: any other name
+/// (a class of the program, a type parameter, a procedure) refuses the
+/// field (#704).
+const TAKEN_CONTENTS: [&str; 14] = [
+    "Array", "Hash", "Set", "String", "Bytes", "Int", "Float", "Bool", "Symbol", "Nil", "Time",
+    "Date", "Decimal", "Duration",
+];
+
 /// Whether field `index` of class `class` is one `FieldTake` may take: a
 /// `data` type's (its fields are set once, by its constructor) value field
-/// (`field_slots`) declared of one of `TAKEN_COLLECTIONS`.
+/// (`field_slots`) declared of one of `TAKEN_COLLECTIONS`, every name in
+/// its type one of `TAKEN_CONTENTS`.
 pub fn takeable_field(classes: &[crate::RtClass], class: crate::ClassId, index: u32) -> bool {
     let Some(c) = classes.get(class as usize) else {
         return false;
@@ -249,6 +261,9 @@ pub fn takeable_field(classes: &[crate::RtClass], class: crate::ClassId, index: 
         && c.fields[i].ty.as_deref().is_some_and(|t| {
             let head = t.split('[').next().unwrap_or(t);
             TAKEN_COLLECTIONS.contains(&head)
+                && t.split(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == ':'))
+                    .filter(|w| !w.is_empty())
+                    .all(|w| TAKEN_CONTENTS.contains(&w))
         })
 }
 

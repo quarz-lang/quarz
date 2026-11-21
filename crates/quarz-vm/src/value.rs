@@ -1155,27 +1155,39 @@ fn layout_for(class: ClassId, n: usize) -> &'static FieldLayout {
     FieldLayout::values(n)
 }
 
-thread_local! {
-    /// The fields `FieldTake` took out of objects (#704), by the object's
-    /// address and the field's index, while the facts are checked
-    /// (`Interp::verify`): a later read of one is a violation, and the
-    /// object is freed with each still taken (nil).
-    static TAKEN: std::cell::RefCell<std::collections::HashSet<(usize, usize)>> = Default::default();
+/// Whether `TAKEN` is in use: set once a `FieldTake` records a field,
+/// which it does only while the facts are checked (`Interp::verify`).
+/// Freeing an object reads it (a relaxed load) and touches `TAKEN` only
+/// when it is set, so no other program pays for the record (#704).
+static TAKE_RECORD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The fields `FieldTake` took out of objects (#704), by the object's
+/// address and the field's index, while the facts are checked: a later
+/// read of one is a violation, and the object is freed with each still
+/// taken (nil). Process-wide: an object may be freed on another worker
+/// than the one that took its field, and its entry goes with it there.
+static TAKEN: std::sync::Mutex<Option<std::collections::HashSet<(usize, usize)>>> =
+    std::sync::Mutex::new(None);
+
+fn taken_set<R>(f: impl FnOnce(&mut std::collections::HashSet<(usize, usize)>) -> R) -> R {
+    let mut t = TAKEN.lock().unwrap_or_else(|e| e.into_inner());
+    f(t.get_or_insert_with(std::collections::HashSet::default))
 }
 
 /// Record that field `i` of `o` was taken (`FieldTake`, under `verify`).
 pub(crate) fn note_taken(o: &Object, i: usize) {
     let addr = o as *const Object as *const u8 as usize;
-    TAKEN.with(|t| t.borrow_mut().insert((addr, i)));
+    TAKE_RECORD.store(true, std::sync::atomic::Ordering::Relaxed);
+    taken_set(|t| t.insert((addr, i)));
 }
 
 /// Whether field `i` of `o` was taken (`FieldTake`, under `verify`).
 pub(crate) fn was_taken(o: &Object, i: usize) -> bool {
+    if !TAKE_RECORD.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
     let addr = o as *const Object as *const u8 as usize;
-    TAKEN.with(|t| {
-        let t = t.borrow();
-        !t.is_empty() && t.contains(&(addr, i))
-    })
+    taken_set(|t| t.contains(&(addr, i)))
 }
 
 impl<F: ?Sized + FieldTail> Drop for ObjectOf<F> {
@@ -1183,17 +1195,16 @@ impl<F: ?Sized + FieldTail> Drop for ObjectOf<F> {
         let layout = self.layout;
         // (A field `FieldTake` took is freed still taken: nothing wrote it
         // back, #704. Recorded only while the facts are checked.)
-        let addr = self as *const Self as *const u8 as usize;
-        let taken: Vec<usize> = TAKEN.with(|t| {
-            let mut t = t.borrow_mut();
-            if t.is_empty() {
-                return Vec::new();
-            }
-            let mine: Vec<usize> = (0..layout.kinds.len())
-                .filter(|i| t.remove(&(addr, *i)))
-                .collect();
-            mine
-        });
+        let taken: Vec<usize> = if TAKE_RECORD.load(std::sync::atomic::Ordering::Relaxed) {
+            let addr = self as *const Self as *const u8 as usize;
+            taken_set(|t| {
+                (0..layout.kinds.len())
+                    .filter(|i| t.remove(&(addr, *i)))
+                    .collect()
+            })
+        } else {
+            Vec::new()
+        };
         for i in taken {
             // SAFETY: a value field slot of this object, still alive
             // (`FieldTake` takes only value fields).

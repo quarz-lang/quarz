@@ -52,6 +52,19 @@ t = Task.spawn { g.xs.size }
 h = g.add(5)
 p t.await, h.xs
 
+# Matched by a pattern, then updated in place: the value is unchanged.
+m = D.new([6])
+case m
+in D(xs)
+  zs = xs.push(7)
+  p zs
+end
+p m.xs
+
+# A value built inline, its field read at once (compiled: the object's
+# home holds it when the runtime reads it).
+p D.new([1, 2]).xs.push(3)
+
 # Another field with a `deinitialize`: released where it was before.
 def round -> Void
   q = P.new(Res.new("r1"), [1])

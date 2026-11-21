@@ -126,7 +126,13 @@ impl Interp {
                 }
                 v
             }
-            _ => return Err(self.err_type("a field taken from a value that is not an object")),
+            // (`FieldGet`'s error: a program's message is the same.)
+            _ => {
+                return Err(self.raise(
+                    self.program.exc.runtime_error,
+                    "instance variable access outside of an object",
+                ))
+            }
         };
         regs[dst as usize] = v;
         Ok(())
