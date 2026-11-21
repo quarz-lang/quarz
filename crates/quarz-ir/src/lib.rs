@@ -2233,9 +2233,20 @@ impl RtWorld {
     /// `shake` drops methods). Called by `quarz_lower::rtworld::build` and
     /// at the end of `shake`, never by the runtime.
     pub fn build_witness_rows(&mut self) {
-        let mut rows: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
-        let mut witnesses: Vec<(ClassId, MethodId, Option<MethodId>)> = Vec::new();
-        for cid in 0..self.classes.len() as ClassId {
+        self.build_witness_rows_from(0, Vec::new(), Vec::new());
+    }
+
+    /// `build_witness_rows` with the rows of the classes before `first`
+    /// given (`rows`, `witnesses`: a snapshot of the prelude's, made by
+    /// this same function, #551), the others made here.
+    #[allow(clippy::type_complexity)]
+    pub fn build_witness_rows_from(
+        &mut self,
+        first: ClassId,
+        mut rows: Vec<(ClassId, MethodId, MethodId)>,
+        mut witnesses: Vec<(ClassId, MethodId, Option<MethodId>)>,
+    ) {
+        for cid in first..self.classes.len() as ClassId {
             let (r, w) = self.witness_rows_of(cid);
             rows.extend(r);
             witnesses.extend(w);

@@ -2780,11 +2780,39 @@ impl World {
     /// (class, overridden, overriding). The runtime dispatches by it
     /// (`Interp::find_override`) and the checker checks it.
     pub fn include_overrides(&self) -> Vec<(ClassId, MethodId, MethodId)> {
-        self.classes
+        self.include_overrides_from(0)
+    }
+
+    /// `include_overrides`' entries of the classes from `first` on (the
+    /// classes after the prelude's, whose own entries a snapshot holds,
+    /// #551).
+    pub fn include_overrides_from(&self, first: ClassId) -> Vec<(ClassId, MethodId, MethodId)> {
+        self.classes[first as usize..]
             .iter()
             .flat_map(|c| self.include_overrides_of(c.id))
             .map(|o| (o.class, o.overridden, o.by))
             .collect()
+    }
+
+    /// Whether what the prelude's classes and methods contribute to the
+    /// runtime's tables (their rows, their override table entries, their
+    /// include overrides and witnesses) is what the prelude alone gives
+    /// (#551): no `extension` declared outside the prelude (in the
+    /// program, a cog or a std module) targets a prelude class or module,
+    /// and no method declared outside it has a prelude owner. Those are the
+    /// only ways a program reaches the prelude's entries: classes and
+    /// modules are not reopened (docs/01), and a program's classes add
+    /// entries of their own, keyed by them. Conservative: it answers no for
+    /// any such extension, even one whose names change nothing, never yes
+    /// for one that does; a no only costs the computation a yes saves.
+    pub fn prelude_unchanged(&self) -> bool {
+        self.extensions
+            .iter()
+            .all(|e| e.file == 0 || self.class(e.target).file != 0)
+            && self
+                .methods
+                .iter()
+                .all(|m| m.file == 0 || self.class(m.owner).file != 0)
     }
 
     /// `include_overrides` for class `id`, each side with how it is seen
@@ -5131,12 +5159,18 @@ impl World {
     /// The override table for every method (`overrides`), the classes that
     /// are `Type`s found once: what the lowering ships.
     pub fn override_table(&self) -> Vec<Vec<MethodId>> {
+        self.override_table_from(0)
+    }
+
+    /// `override_table`'s entries for the methods from `first` on (the
+    /// methods after the prelude's, whose entries a snapshot holds, #551).
+    pub fn override_table_from(&self, first: MethodId) -> Vec<Vec<MethodId>> {
         let types = self.type_classes();
         let exts = self.extension_methods_by_target();
         // (Each owner's ancestors once.)
         let conf = self.all_conformance_extensions();
         let mut ancs: HashMap<ClassId, Vec<(ClassId, Vec<Type>)>> = HashMap::default();
-        (0..self.methods.len() as MethodId)
+        (first..self.methods.len() as MethodId)
             .map(|m| {
                 let owner = self.method(m).owner;
                 let a = ancs

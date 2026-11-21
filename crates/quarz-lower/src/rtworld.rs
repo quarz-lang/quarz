@@ -157,7 +157,55 @@ pub(crate) fn fill_rest(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_name
 /// reads the rows) and completed by the lowering (`fill`); the lowering's
 /// fields are empty here.
 pub fn declared(world: &World, out: &types::Output) -> RtWorld {
-    declared_with(world, out, witness_record(world)).0
+    declared_table(world, out).0
+}
+
+/// `declared` with the override table it built the method rows with: the
+/// prelude's share from the snapshot made when `quarz` was built when the
+/// program changes none of it (`crate::prelude`, #551), the rest made
+/// here; otherwise everything made here (`declared_with`).
+pub fn declared_table(world: &World, out: &types::Output) -> (RtWorld, Vec<Vec<MethodId>>) {
+    let Some(snap) = crate::prelude::usable(world) else {
+        return declared_with(world, out, witness_record(world));
+    };
+    let made = declared_over(world, out, snap);
+    if crate::prelude::verify() {
+        crate::prelude::compare(&made, &declared_with(world, out, witness_record(world)));
+    }
+    made
+}
+
+/// `declared_with` over the prelude's snapshot `snap`: its rows and
+/// entries for the prelude's classes and methods, the same functions'
+/// for the others.
+fn declared_over(
+    world: &World,
+    out: &types::Output,
+    snap: &crate::prelude::PreludeRt,
+) -> (RtWorld, Vec<Vec<MethodId>>) {
+    let (pc, pm) = (snap.classes.len(), snap.methods.len());
+    let mut classes = snap.classes.clone();
+    classes.extend(
+        world.classes[pc..]
+            .iter()
+            .map(|c| class_row(world, out, c.id)),
+    );
+    let mut table = snap.table.clone();
+    table.extend(world.override_table_from(pm as MethodId));
+    let mut methods = snap.methods.clone();
+    methods.extend(
+        world.methods[pm..]
+            .iter()
+            .map(|m| method_row(world, m.id, &table[m.id as usize])),
+    );
+    let mut record = snap.record.clone();
+    for c in pc..world.classes.len() {
+        record.extend(witness_record_of(world, c as ClassId));
+    }
+    record.sort_unstable();
+    record.dedup();
+    let rt = declared_rest(world, classes, methods, &table, record, Some(snap));
+    (rt, table)
 }
 
 /// The checker's witness record as the rows read it
@@ -206,7 +254,7 @@ pub fn declared_with(
         .iter()
         .map(|m| method_row(world, m.id, &table[m.id as usize]))
         .collect();
-    let rt = declared_rest(world, classes, methods, &table, record);
+    let rt = declared_rest(world, classes, methods, &table, record, None);
     (rt, table)
 }
 
@@ -440,7 +488,10 @@ fn declared_rest(
     methods: Vec<RtMethod>,
     table: &[Vec<MethodId>],
     record: Vec<(ClassId, MethodId, Option<MethodId>)>,
+    snap: Option<&crate::prelude::PreludeRt>,
 ) -> RtWorld {
+    // (The prelude's classes' entries from the snapshot, `snap`, #551.)
+    let first = snap.map_or(0, |p| p.classes.len() as ClassId);
     // Every extension is listed: the always-active ones (the prelude's)
     // take part in dispatch by name and come first; any other only
     // through the modules it makes its target conform to (a module method
@@ -538,7 +589,14 @@ fn declared_rest(
         override_rows: Vec::new(),
         witness_rows: Vec::new(),
         class_override_rows: Vec::new(),
-        include_overrides: world.include_overrides(),
+        include_overrides: match snap {
+            Some(p) => {
+                let mut v = p.include_overrides.clone();
+                v.extend(world.include_overrides_from(first));
+                v
+            }
+            None => world.include_overrides(),
+        },
         top,
         builtin,
         file_names: Vec::new(),
@@ -546,9 +604,24 @@ fn declared_rest(
         // (Per round, `fill`.)
         deferred_conformance: Vec::new(),
     };
-    rt.class_override_rows = class_override_rows(world, &rt, table);
-    rt.build_witness_rows();
+    rt.class_override_rows = class_override_rows(world, &rt, table, first, snap);
+    match snap {
+        Some(p) => {
+            rt.build_witness_rows_from(first, p.override_rows.clone(), p.witness_rows.clone())
+        }
+        None => rt.build_witness_rows(),
+    }
     rt
+}
+
+/// `class_override_rows` for every class (the prelude's snapshot keeps
+/// them before `build_witness_rows` filters them, `crate::prelude`).
+pub(crate) fn class_override_rows_all(
+    world: &World,
+    rt: &RtWorld,
+    table: &[Vec<MethodId>],
+) -> Vec<(ClassId, MethodId, MethodId)> {
+    class_override_rows(world, rt, table, 0, None)
 }
 
 /// The rows of `RtWorld::class_override_rows`: for every key
@@ -562,10 +635,14 @@ fn class_override_rows(
     world: &World,
     rt: &RtWorld,
     table: &[Vec<MethodId>],
+    first: ClassId,
+    snap: Option<&crate::prelude::PreludeRt>,
 ) -> Vec<(ClassId, MethodId, MethodId)> {
     let type_owners = rt.type_side_owners();
-    let mut rows: Vec<(ClassId, MethodId, MethodId)> = Vec::new();
-    for cid in 0..rt.classes.len() as ClassId {
+    // (The classes before `first`: the snapshot's rows, as this made them.)
+    let mut rows: Vec<(ClassId, MethodId, MethodId)> =
+        snap.map_or_else(Vec::new, |p| p.class_override_rows.clone());
+    for cid in first..rt.classes.len() as ClassId {
         rows.extend(class_override_rows_of(world, rt, table, &type_owners, cid));
     }
     rows.sort_unstable();

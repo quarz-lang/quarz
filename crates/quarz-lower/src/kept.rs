@@ -200,7 +200,7 @@ impl Kept {
         layouts: &mut Vec<Layout>,
         epoch: u64,
     ) -> Kept {
-        let (rt, table) = rtworld::declared_with(world, out, rtworld::witness_record(world));
+        let (rt, table) = rtworld::declared_table(world, out);
         let n = world.classes.len();
         let by_class = |c: ClassId| c as usize;
         let pairs = group(&rt.include_overrides, n, |r| by_class(r.0));

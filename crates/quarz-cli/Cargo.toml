@@ -36,6 +36,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 [build-dependencies]
 quarz-syntax = { workspace = true }
 quarz-types = { workspace = true }
+quarz-lower = { workspace = true }
 
 [features]
 # mimalloc as the allocator of `quarz` and of the runtime library compiled
