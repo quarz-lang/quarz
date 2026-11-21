@@ -883,22 +883,88 @@ pub struct FileStd {
 /// the extensions active where its bounds' `is_subtype` walks (#917).
 type AncestorsKey = (ClassId, Vec<Type>, Vec<ExtensionId>, Vec<ExtensionId>);
 type AncestorList = std::rc::Rc<Vec<(ClassId, Vec<Type>)>>;
+/// An ordered walk's key (`ordered_sources`, #685): the class, its
+/// arguments, the view's extensions, `assume`, `lexical`, and the
+/// extensions active where its bounds' `is_subtype` walks, as
+/// `AncestorsKey`'s fourth part.
+type OrderedKey = (
+    ClassId,
+    Vec<Type>,
+    Vec<ExtensionId>,
+    bool,
+    bool,
+    Vec<ExtensionId>,
+);
+type OrderedList = std::rc::Rc<Vec<(ClassId, Vec<Type>, Option<ExtensionId>)>>;
 /// `AncestorsMemo::conformance`: the number of extensions, the active
 /// set, and the active conformance extensions made for them.
 type KeptConformance = (usize, Vec<ExtensionId>, Vec<ExtensionId>);
+
+/// (Debug builds.) What the memo's guard (#917) did for one kind of walk.
+#[derive(Debug)]
+struct Guarded<K> {
+    /// The keys a hit has been checked for since the method being checked
+    /// began (`World::guard_new_method`).
+    verified: std::cell::RefCell<rustc_hash::FxHashSet<K>>,
+    /// Hits, hits checked, and the distinct keys hit, for
+    /// `QUARZ_GUARD_STATS`.
+    hits: std::cell::Cell<u64>,
+    checked: std::cell::Cell<u64>,
+    keys_hit: std::cell::RefCell<rustc_hash::FxHashSet<K>>,
+}
+
+impl<K> Default for Guarded<K> {
+    fn default() -> Self {
+        Guarded {
+            verified: Default::default(),
+            hits: Default::default(),
+            checked: Default::default(),
+            keys_hit: Default::default(),
+        }
+    }
+}
+
+impl<K: std::hash::Hash + Eq + Clone> Guarded<K> {
+    /// A hit of `key`: whether it is to be made again and compared, its
+    /// first in the method being checked.
+    fn due(&self, key: &K) -> bool {
+        self.hits.set(self.hits.get() + 1);
+        if self.keys_hit.borrow().contains(key) {
+            if self.verified.borrow().contains(key) {
+                return false;
+            }
+        } else {
+            self.keys_hit.borrow_mut().insert(key.clone());
+        }
+        self.verified.borrow_mut().insert(key.clone());
+        self.checked.set(self.checked.get() + 1);
+        true
+    }
+}
+
+/// The views an ordered walk answers, by its `assume` and `lexical`
+/// (`World::resolution`): the index of its guard's record and its name in
+/// `QUARZ_GUARD_STATS`.
+fn ordered_view(assume: bool, lexical: bool) -> usize {
+    match (assume, lexical) {
+        (false, true) => 0,
+        (false, false) => 1,
+        (true, _) => 2,
+    }
+}
+const ORDERED_VIEWS: [&str; 3] = ["static", "runtime", "override"];
 
 #[derive(Debug, Default)]
 struct AncestorsMemo {
     on: bool,
     map: std::cell::RefCell<HashMap<AncestorsKey, AncestorList>>,
-    /// (Debug builds.) The keys a hit has been checked for since the
-    /// method being checked began (`World::guard_new_method`).
-    verified: std::cell::RefCell<rustc_hash::FxHashSet<AncestorsKey>>,
-    /// (Debug builds.) Hits, hits checked, and the distinct keys hit, for
-    /// `QUARZ_GUARD_STATS`.
-    hits: std::cell::Cell<u64>,
-    checked: std::cell::Cell<u64>,
-    keys_hit: std::cell::RefCell<rustc_hash::FxHashSet<AncestorsKey>>,
+    /// The ordered walks (`ordered_sources`: the static, run-time and
+    /// override views), kept as `map` is and with it (#685).
+    ordered: std::cell::RefCell<HashMap<OrderedKey, OrderedList>>,
+    /// (Debug builds.) The guard's record for `map`, and for `ordered` per
+    /// view (`ordered_view`).
+    guarded: Guarded<AncestorsKey>,
+    ordered_guarded: [Guarded<OrderedKey>; 3],
     /// The key's fourth part, `World::conformance_extensions`, for the
     /// active set it was made under and the number of extensions then
     /// (#928): made again only when the active set changes, not on every
@@ -913,40 +979,68 @@ impl Clone for AncestorsMemo {
         AncestorsMemo {
             on: self.on,
             map: Default::default(),
-            verified: Default::default(),
-            hits: Default::default(),
-            checked: Default::default(),
-            keys_hit: Default::default(),
+            ordered: Default::default(),
+            guarded: Default::default(),
+            ordered_guarded: Default::default(),
             conformance: Default::default(),
         }
     }
 }
 
 /// With `QUARZ_GUARD_STATS` naming a file, a debug build appends to it
-/// what the guard of `ancestors_under` did (#917): hits, hits made again
-/// and compared, distinct keys hit, walks stored.
+/// what the memo's guard did (#917), a line per kind of walk with a hit:
+/// the plain walks (`ancestors_under`), then the ordered walks per view
+/// (#685): hits, hits made again and compared, distinct keys hit, walks
+/// stored.
 impl Drop for AncestorsMemo {
     fn drop(&mut self) {
-        if !cfg!(debug_assertions) || self.hits.get() == 0 {
+        if !cfg!(debug_assertions) {
             return;
         }
         let Some(path) = std::env::var_os("QUARZ_GUARD_STATS") else {
             return;
         };
+        let mut lines = Vec::new();
+        if self.guarded.hits.get() > 0 {
+            lines.push(format!(
+                "walk=plain hits={} checked={} keys_hit={} stored={}",
+                self.guarded.hits.get(),
+                self.guarded.checked.get(),
+                self.guarded.keys_hit.get_mut().len(),
+                self.map.get_mut().len()
+            ));
+        }
+        for (i, g) in self.ordered_guarded.iter_mut().enumerate() {
+            if g.hits.get() == 0 {
+                continue;
+            }
+            let stored = self
+                .ordered
+                .get_mut()
+                .keys()
+                .filter(|k| ordered_view(k.3, k.4) == i)
+                .count();
+            lines.push(format!(
+                "walk={} hits={} checked={} keys_hit={} stored={}",
+                ORDERED_VIEWS[i],
+                g.hits.get(),
+                g.checked.get(),
+                g.keys_hit.get_mut().len(),
+                stored
+            ));
+        }
+        if lines.is_empty() {
+            return;
+        }
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
         {
-            let _ = writeln!(
-                f,
-                "hits={} checked={} keys_hit={} stored={}",
-                self.hits.get(),
-                self.checked.get(),
-                self.keys_hit.get_mut().len(),
-                self.map.get_mut().len()
-            );
+            for l in lines {
+                let _ = writeln!(f, "{l}");
+            }
         }
     }
 }
@@ -1579,9 +1673,6 @@ impl World {
         if !self.ancestors_memo.on {
             return self.ancestors_with(id, args, &exts);
         }
-        // (A walk that met a bound not known yet is not remembered: it
-        // counts the refusal each time, and answers otherwise when made
-        // as if the types were known, #519.)
         let undecided = args.iter().any(|t| t.has_vars());
         let key = (id, args.to_vec(), exts, self.memo_conformance_extensions());
         let hit = self.ancestors_memo.map.borrow().get(&key).cloned();
@@ -1591,21 +1682,79 @@ impl World {
             }
             return found.as_ref().clone();
         }
-        let refusals = self.undecided_refusals.get();
-        let reads = self.context_reads.get();
+        let before = self.walk_reads();
         let found = self.ancestors_with(id, args, &key.2);
-        if undecided && (self.undecided_passes.get() || self.undecided_refusals.get() != refusals) {
+        if !self.may_remember(undecided, before) {
             return found;
+        }
+        self.ancestors_memo
+            .map
+            .borrow_mut()
+            .insert(key, std::rc::Rc::new(found.clone()));
+        found
+    }
+
+    /// What `may_remember` compares around a walk: the refusals of
+    /// undecided bounds and the reads of the question's context so far.
+    fn walk_reads(&self) -> (u64, u64) {
+        (self.undecided_refusals.get(), self.context_reads.get())
+    }
+
+    /// Whether a walk just made may be remembered, given `walk_reads`
+    /// before it and whether its arguments hold inference variables
+    /// (`undecided`): the memo's one rule, for both kinds of walk.
+    fn may_remember(&self, undecided: bool, (refusals, reads): (u64, u64)) -> bool {
+        // (A walk that met a bound not known yet is not remembered: it
+        // counts the refusal each time, and answers otherwise when made
+        // as if the types were known, #519.)
+        if undecided && (self.undecided_passes.get() || self.undecided_refusals.get() != refusals) {
+            return false;
         }
         // Nor one that took an answer from the context of the question
         // (`context_reads`, #917): `Self`'s bound in a `static def`, an
         // assumption of an enclosing `is_subtype` or shareability
         // judgement. Its key does not hold that context.
-        if self.context_reads.get() != reads {
+        self.context_reads.get() == reads
+    }
+
+    /// `ordered_sources_walk`, remembered as `ancestors_under` remembers
+    /// its walks, under the same rule (`may_remember`), so that every
+    /// view of `resolution` is kept (#685): the static view, the run-time
+    /// view and the override view, and `resolution_sources`.
+    fn ordered_sources(
+        &self,
+        c: ClassId,
+        own: &[Type],
+        exts: &[ExtensionId],
+        assume: bool,
+        lexical: bool,
+    ) -> Vec<(ClassId, Vec<Type>, Option<ExtensionId>)> {
+        if !self.ancestors_memo.on {
+            return self.ordered_sources_walk(c, own, exts, assume, lexical);
+        }
+        let undecided = own.iter().any(|t| t.has_vars());
+        let key = (
+            c,
+            own.to_vec(),
+            exts.to_vec(),
+            assume,
+            lexical,
+            self.memo_conformance_extensions(),
+        );
+        let hit = self.ancestors_memo.ordered.borrow().get(&key).cloned();
+        if let Some(found) = hit {
+            if cfg!(debug_assertions) {
+                self.guard_ordered_hit(&key, &found);
+            }
+            return found.as_ref().clone();
+        }
+        let before = self.walk_reads();
+        let found = self.ordered_sources_walk(c, own, exts, assume, lexical);
+        if !self.may_remember(undecided, before) {
             return found;
         }
         self.ancestors_memo
-            .map
+            .ordered
             .borrow_mut()
             .insert(key, std::rc::Rc::new(found.clone()));
         found
@@ -1633,34 +1782,10 @@ impl World {
     /// and compared, once per key in each method checked, so that an
     /// input the key misses shows as a panic, not as a stale answer.
     fn guard_hit(&self, key: &AncestorsKey, found: &AncestorList) {
-        let memo = &self.ancestors_memo;
-        memo.hits.set(memo.hits.get() + 1);
-        if memo.keys_hit.borrow().contains(key) {
-            if memo.verified.borrow().contains(key) {
-                return;
-            }
-        } else {
-            memo.keys_hit.borrow_mut().insert(key.clone());
+        if !self.ancestors_memo.guarded.due(key) {
+            return;
         }
-        memo.verified.borrow_mut().insert(key.clone());
-        memo.checked.set(memo.checked.get() + 1);
-        // (Made again with no effect a release build would not have: what
-        // it counts or says is put back. The walk made again may keep
-        // walks of its own through `ancestors_under`; each passed the
-        // same test, so a release build would keep it too, at its first
-        // walk of that key. A debug build may only keep it sooner, and an
-        // entry kept sooner is checked at its own first hit.)
-        let reads = self.context_reads.get();
-        let refusals = self.undecided_refusals.get();
-        let bound_refusals = self.undecided_bound_refusals.get();
-        let bound = self.undecided_bound.borrow().clone();
-        let seen = self.undecided_bound_seen.borrow().clone();
-        let again = self.ancestors_with(key.0, &key.1, &key.2);
-        self.context_reads.set(reads);
-        self.undecided_refusals.set(refusals);
-        self.undecided_bound_refusals.set(bound_refusals);
-        *self.undecided_bound.borrow_mut() = bound;
-        *self.undecided_bound_seen.borrow_mut() = seen;
+        let again = self.made_again(|| self.ancestors_with(key.0, &key.1, &key.2));
         assert!(
             again == **found,
             "the ancestors memo answered otherwise than a walk made again (#917): {} {:?} under {:?} with {:?} active: kept {:?}, made again {:?}",
@@ -1673,11 +1798,57 @@ impl World {
         );
     }
 
+    /// `guard_hit` for an ordered walk (#685): made again by
+    /// `ordered_sources_walk` itself, not through the memo.
+    fn guard_ordered_hit(&self, key: &OrderedKey, found: &OrderedList) {
+        let (c, own, exts, assume, lexical, active) = key;
+        if !self.ancestors_memo.ordered_guarded[ordered_view(*assume, *lexical)].due(key) {
+            return;
+        }
+        let again = self.made_again(|| self.ordered_sources_walk(*c, own, exts, *assume, *lexical));
+        assert!(
+            again == **found,
+            "the ancestors memo answered otherwise than a walk made again (#685): {} {:?}, the {} view under {:?} with {:?} active: kept {:?}, made again {:?}",
+            self.class(*c).name,
+            own,
+            ORDERED_VIEWS[ordered_view(*assume, *lexical)],
+            exts,
+            active,
+            found,
+            again
+        );
+    }
+
+    /// A walk made again by the guard, with no effect a release build
+    /// would not have: what it counts or says is put back. The walk made
+    /// again may keep walks of its own through the memo; each passed the
+    /// same test, so a release build would keep it too, at its first walk
+    /// of that key. A debug build may only keep it sooner, and an entry
+    /// kept sooner is checked at its own first hit.
+    fn made_again<T>(&self, walk: impl FnOnce() -> T) -> T {
+        let reads = self.context_reads.get();
+        let refusals = self.undecided_refusals.get();
+        let bound_refusals = self.undecided_bound_refusals.get();
+        let bound = self.undecided_bound.borrow().clone();
+        let seen = self.undecided_bound_seen.borrow().clone();
+        let again = walk();
+        self.context_reads.set(reads);
+        self.undecided_refusals.set(refusals);
+        self.undecided_bound_refusals.set(bound_refusals);
+        *self.undecided_bound.borrow_mut() = bound;
+        *self.undecided_bound_seen.borrow_mut() = seen;
+        again
+    }
+
     /// A method's check begins (or ends): the debug guard checks each
     /// stored walk again on its first hit in it.
     pub fn guard_new_method(&self) {
         if cfg!(debug_assertions) {
-            self.ancestors_memo.verified.borrow_mut().clear();
+            let memo = &self.ancestors_memo;
+            memo.guarded.verified.borrow_mut().clear();
+            for g in &memo.ordered_guarded {
+                g.verified.borrow_mut().clear();
+            }
             // (And the group memos' entries, checked again in this method:
             // a write after the first check that forgot to bump
             // `std_use_version` shows here, #942.)
@@ -1690,6 +1861,7 @@ impl World {
     pub fn freeze_ancestors(&mut self, on: bool) {
         self.ancestors_memo.on = on;
         self.ancestors_memo.map.get_mut().clear();
+        self.ancestors_memo.ordered.get_mut().clear();
         *self.ancestors_memo.conformance.get_mut() = None;
     }
 
@@ -4685,8 +4857,9 @@ impl World {
     /// `ordered_under`, each entry with the extension whose include put it
     /// there after the walk (a scoped or conditional one; `None` for the
     /// walk itself: the class, its own includes, its top-level extensions'
-    /// modules, its superclasses').
-    fn ordered_sources(
+    /// modules, its superclasses'). Made each time; `ordered_sources`
+    /// remembers it.
+    fn ordered_sources_walk(
         &self,
         c: ClassId,
         own: &[Type],
