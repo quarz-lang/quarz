@@ -268,7 +268,6 @@ const PURITY_BY_CLASS: &[(&str, Purity)] = &[
     // Argon2's salted `hash`, draw it in Quarz through
     // `Crypto.random_bytes`).
     ("Crypto", Pure),
-    ("Crypto::AES", Pure),
     ("Crypto::AES::GCM", Pure),
     ("Crypto::Argon2", Pure),
     ("Crypto::RSA", Pure),
