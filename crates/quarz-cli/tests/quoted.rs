@@ -620,6 +620,47 @@ fn a_method_reference_tells_its_declared_result() {
     assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
 }
 
+/// #1011, in a compiled program after `shake`, at -O2: a method named only
+/// in a quoted block that never runs (a translator reads `expr` alone)
+/// gives its declared result, and of two overloads of one name, the
+/// second, named alone, gives its own (the reference's `index` still
+/// finds it in the per-name list `shake` keeps).
+#[test]
+fn a_method_reference_tells_its_result_after_shake() {
+    let d = dir();
+    write(&d.0, "app.qz", APP_1011_SHAKE);
+    let expected = "Bool\nBool\n";
+    let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", "app.qz", "-o", "app.bin"],
+        &[("QUARZ_AOT_OPT", "2")],
+    );
+    assert!(ok, "{err}");
+    let run = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+}
+
+const APP_1011_SHAKE: &str = r##"# Methods named only in quoted blocks that never run.
+class Row
+  def active? -> Bool = true
+  def pick(x: Int) -> Int = x
+  def pick(x: String) -> Bool = x.empty?
+end
+
+def first_result(&b: Quoted[Row.() -> Bool]) -> Type[Object]
+  case b.expr
+  in Meta::Expr::Block(body: [Meta::Expr::Call(method: m)]) then m.result
+  else Object
+  end
+end
+
+p first_result { active? }
+p first_result { pick("x") }
+"##;
+
 const LIB_1011: &str = r##"class Probe
   # The compile-time view: `MethodSig#result` of `name` in `cls`.
   static def self.sig(cls: Type[Object], name: Symbol) -> Type[Object]
