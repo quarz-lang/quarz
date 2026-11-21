@@ -1969,8 +1969,14 @@ pub fn keyword_param(params: &[RtParam], name: &str) -> Option<usize> {
 /// parameter already given, when there are more positional arguments
 /// than positional parameters, when the parameters have another kind,
 /// or when a parameter without a default is left out: what the checker
-/// refuses is never laid out with a nil in its place.
+/// refuses is never laid out with a nil in its place. Also `None` for a
+/// method of more than 64 parameters: an activation's `provided` mask has
+/// a bit for the first 64 only (`HasArg` takes a later one as given), so
+/// one left out there could not be told from one given (#1002).
 pub fn keyword_slots(params: &[RtParam], npos: usize, names: &[&str]) -> Option<Vec<usize>> {
+    if params.len() > 64 {
+        return None;
+    }
     let positional = params
         .iter()
         .take_while(|p| p.kind == RtParamKind::Positional)
