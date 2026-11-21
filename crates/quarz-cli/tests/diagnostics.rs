@@ -253,6 +253,54 @@ fn positional_after_keyword() {
     assert!(out.contains(":2:14:") && out.contains(":3:22:"), "{out}");
 }
 
+/// What binding keyword arguments refuses is refused by the checker, the
+/// same with `quarz run` and `quarz build` (#941: compiled code lays a
+/// direct call's keywords out itself and never sees these calls): a
+/// parameter without a default left out, one given by position and by
+/// keyword or twice by keyword, an unknown keyword.
+#[test]
+fn keyword_argument_errors_are_the_checkers_with_run_and_build() {
+    let dir = std::env::temp_dir().join(format!("quarz-kw-errors-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for (src, want) in [
+        (
+            "def f(a: Int, *, b: Int) -> Int = a + b\np f(1)\n",
+            "error: f(a: Int, b: Int) -> Int is missing the argument `b`",
+        ),
+        (
+            "def f(a: Int, b: Int = 0) -> Int = a + b\np f(1, 2, b: 3)\n",
+            "error: argument `b` given twice",
+        ),
+        (
+            "def f(a: Int, *, b: Int = 0) -> Int = a + b\np f(1, b: 2, b: 3)\n",
+            "error: argument `b` given twice",
+        ),
+        (
+            "def f(a: Int, *, b: Int = 0) -> Int = a + b\np f(1, c: 3)\n",
+            "error: f(a: Int, b: Int = ...) -> Int has no parameter `c`",
+        ),
+    ] {
+        let path = dir.join("bad.qz");
+        std::fs::write(&path, src).unwrap();
+        for args in [vec!["run"], vec!["build", "-o"]] {
+            let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"));
+            cmd.args(&args);
+            if args[0] == "build" {
+                cmd.arg(dir.join("bad"));
+            }
+            let out = cmd.arg(&path).output().expect("quarz");
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(!out.status.success(), "{args:?} {src}");
+            assert!(
+                err.contains("bad.qz:2:3: ") && err.contains(want),
+                "{args:?}: {err}"
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A conversion function's name with a space before `(` is the class's
 /// constant, and the `(` a parse error, as for `Integer` (#932: `Date`
 /// and `Time` became functions too).

@@ -146,6 +146,19 @@ fn an_inline_construction_copies_no_more_than_before() {
     check("construct_inline.qz", 200);
 }
 
+/// #941: a direct call binding keywords in compiled code copies no more
+/// than the runtime's binding (main: 400 on both): the same on the VM,
+/// which binds them as before, and fewer compiled, where an argument
+/// passed by keyword and not read again is moved into the call.
+#[test]
+fn keyword_calls_copy_no_more_than_before() {
+    let path = program("keyword_calls.qz");
+    assert_eq!(on_vm(&path, COPIES), 400, "on the VM");
+    let n = compiled(&path, COPIES);
+    assert!(n <= 400, "compiled: {n} copies, main's 400");
+    assert_eq!(n, 200, "compiled");
+}
+
 #[test]
 fn an_early_exit_from_any_or_all_leaves_no_reference_behind() {
     check("early_exit.qz", 0);

@@ -1,0 +1,88 @@
+# #941: compiled code binds a call's keyword arguments itself when the
+# callee is called directly (positional parameters, then keyword-only
+# ones, each name matched as the runtime's binding matches it,
+# `quarz_ir::keyword_param`); a parameter left out is nil and not given,
+# so the callee runs its default, as on the runtime's path. What prints
+# is what the VM prints.
+def say(n: Int) -> Int
+  puts "say #{n}"
+  n
+end
+
+def kw(a: Int, *, b: Int = 10, c: Int = 100) -> Int = a + b + c
+p kw(1), kw(1, b: 2), kw(1, c: 3), kw(1, c: 3, b: 2)
+
+# A keyword naming a positional parameter.
+def pos(a: Int, b: Int = 0) -> Int = a * 10 + b
+p pos(1, b: 3), pos(b: 3, a: 1)
+
+# Defaults that are not literals, run only when left out: one reading an
+# earlier parameter, one with an effect.
+def nl(a: Int, *, b: Int = a * 2, c: Int = say(7)) -> Int = a + b + c
+p nl(1), nl(1, c: 0), nl(1, b: 0, c: 0)
+
+# The arguments are evaluated in the order written, whatever the order
+# of the parameters.
+def ord(a: Int, b: Int = 0, c: Int = 0) -> Int = a * 100 + b * 10 + c
+p ord(c: say(3), a: say(1))
+p kw(say(5), c: say(6), b: say(4))
+
+# A block given with keywords.
+def steps(n: Int, *, step: Int = 1, &blk: (Int) -> Void) -> Void
+  i = 0
+  while i < n
+    blk.call(i)
+    i += step
+  end
+end
+steps(5, step: 2) { |i| puts "step #{i}" }
+steps(2) { |i| puts "one #{i}" }
+
+# Methods of a class, and an `initialize` with keywords (inline when the
+# class has no `deinitialize`, through the runtime when it has one).
+class K
+  @x: Int
+  @tag: String
+  def initialize(x: Int, *, tag: String = "k")
+    @x = x
+    @tag = tag
+  end
+  def self.make(*, x: Int = 1) -> K = K.new(x, tag: "made")
+  def scaled(*, by: Int = 2) -> Int = @x * by
+  def show -> String = "#{@tag}#{@x}"
+end
+p K.new(3).show, K.new(4, tag: "t").show, K.make.show, K.make(x: 9).show
+p K.new(2).scaled, K.new(2).scaled(by: 5)
+
+class R
+  @x: Int
+  def initialize(*, x: Int = 0)
+    @x = x
+  end
+  def deinitialize -> Void
+    puts "R#deinitialize #{@x}"
+  end
+end
+def make_r -> Int
+  r = R.new(x: 8)
+  1
+end
+p make_r
+
+# On the runtime's path: a callee with `**rest`.
+def rest(a: Int, **opts: Int) -> Int = a + opts.size
+p rest(1, x: 2, y: 3)
+
+# An argument passed by keyword and kept, the caller's variable updated
+# after.
+class Keep
+  @xs: Array[Int]
+  def initialize(*, xs: Array[Int])
+    @xs = xs
+  end
+  def xs -> Array[Int] = @xs
+end
+row = [1]
+k = Keep.new(xs: row)
+row = row.push(2)
+p row, k.xs
