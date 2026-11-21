@@ -13,7 +13,7 @@ default c
 rescued no default for 3
 crates/quarz-cli/tests/fixtures/inline_defaults.qz:10:in main#boom
 crates/quarz-cli/tests/fixtures/inline_defaults.qz:14:in main#risky
-crates/quarz-cli/tests/fixtures/inline_defaults.qz:38:in <main>
+crates/quarz-cli/tests/fixtures/inline_defaults.qz:40:in <main>
 7
 [1]
 [2]
@@ -21,6 +21,8 @@ crates/quarz-cli/tests/fixtures/inline_defaults.qz:38:in <main>
 12
 4
 5
+got 4
+nothing
 8
 5
 9

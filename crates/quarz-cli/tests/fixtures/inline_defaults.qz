@@ -15,6 +15,8 @@ def risky(a: Int, b: Int = boom(a)) -> Int = a + b
 def collect(x: Int, acc: Array[Int] = []) -> Array[Int] = acc.push(x)
 def blocky(a: Int, b: Int = [1, 2].map { |v| v * a }.sum) -> Int = a + b
 def count(n: Int, acc: Int = 0) -> Int = n == 0 ? acc : count(n - 1, acc + 1)
+# A nilable parameter whose default is nil: given a value or left out.
+def opt(x: Int? = nil) -> String = x ? "got #{x}" : "nothing"
 
 class Shape
   @side: Int
@@ -46,5 +48,6 @@ x2 = collect(2)
 p x1, x2, collect(3, x1)
 p blocky(3), blocky(3, 1)
 p count(5)
+puts opt(4), opt
 s: Shape = Square.new(3)
 p s.m(4), Shape.new(2).m(4), s.area, Shape.new(5).area(2)

@@ -155,6 +155,18 @@ fn inline_into(
                 continue;
             };
             let f = &orig[s.fid as usize];
+            // (A call leaving parameters out is inlined only when the
+            // callee binds them as the lowering does, `defaults_shape`.)
+            if !defaults_shape(f, s.args.len()) {
+                debug_assert!(
+                    false,
+                    "`{}` binds a defaulted parameter in another shape than the lowering's: the inliner's mapping of `HasArg` would not hold (#938)",
+                    f.name
+                );
+                cur.insts.push(inst);
+                cur.lines.push(line);
+                continue;
+            }
             let base_reg = g.nregs;
             g.nregs += f.nregs;
             let cont_id = n + extra.len();
@@ -327,6 +339,67 @@ fn store(out: &mut [Block], extra: &mut [Option<Block>], id: usize, b: Block) {
     } else {
         extra[id - out.len()] = Some(b);
     }
+}
+
+/// Whether `f`, called with `given` positional arguments, binds the
+/// parameters the call leaves out as the lowering does (`FnBuilder`'s
+/// parameter binding: `HasArg` → `Branch` → the given block reading the
+/// `Arg` and storing it, the missing block running the default): every
+/// block that reads an `Arg` of index `given` or more holds only that
+/// binding (the `Arg`, the moves and the release of storing it, then a
+/// `Jump`) and is entered only by the `then` edge of a `Branch` on the
+/// `HasArg` of the same index in its one predecessor. Then a constant
+/// `HasArg` (false) makes that block dead, and `inline_into` may leave it
+/// `Unreachable`. The mapping's own precondition, checked where the site
+/// is chosen, not a rule of the language (#938).
+fn defaults_shape(f: &Function, given: usize) -> bool {
+    for (b, blk) in f.blocks.iter().enumerate() {
+        let Some(index) = blk.insts.iter().find_map(|i| match i {
+            Inst::Arg { index, .. } if *index as usize >= given => Some(*index),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let only_binding = blk.insts.iter().all(|i| match i {
+            Inst::Arg { index: k, .. } => *k == index,
+            Inst::Move { .. } | Inst::Release { .. } => true,
+            _ => false,
+        }) && matches!(blk.term, Term::Jump(_));
+        if !only_binding {
+            return false;
+        }
+        let preds: Vec<&Block> = f
+            .blocks
+            .iter()
+            .filter(|p| {
+                let mut targets = Vec::new();
+                match &p.term {
+                    Term::Jump(t) => targets.push(*t),
+                    Term::Branch { then, els, .. } => {
+                        targets.push(*then);
+                        targets.push(*els);
+                    }
+                    _ => {}
+                }
+                targets.contains(&(b as BlockId))
+            })
+            .collect();
+        let [p] = preds.as_slice() else {
+            return false;
+        };
+        let Term::Branch { cond, then, els } = &p.term else {
+            return false;
+        };
+        if *then != b as BlockId || *els == b as BlockId {
+            return false;
+        }
+        // The last definition of the condition in the predecessor.
+        let def = p.insts.iter().rev().find(|i| i.defs().contains(cond));
+        if !matches!(def, Some(Inst::HasArg { index: k, .. }) if *k == index) {
+            return false;
+        }
+    }
+    true
 }
 
 fn const_index(g: &mut Function, c: &Constant) -> u32 {
