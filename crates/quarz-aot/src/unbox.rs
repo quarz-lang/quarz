@@ -557,6 +557,7 @@ pub fn transfer(
                 st[*dst as usize] = State::Unknown;
             }
         }
+        Inst::BytesIndex { dst, .. } => st[*dst as usize] = State::Int,
         Inst::ArrayIndex { dst, arr, word, .. } => {
             if arr != dst {
                 st[*arr as usize] = State::Arr;

@@ -37,6 +37,9 @@ const TAG_FLOAT: i64 = L::TAG_FLOAT as i64;
 const TAG_CLASS: i64 = L::TAG_CLASS as i64;
 const TAG_ARRAY: i64 = L::TAG_ARRAY as i64;
 const TAG_OBJECT: i64 = L::TAG_OBJECT as i64;
+const TAG_BYTES: i64 = L::TAG_BYTES as i64;
+const BYTES_LEN_BEFORE: i32 = L::BYTES_LEN_BEFORE as i32;
+const BYTES_DATA_OFF: i32 = L::BYTES_DATA_OFF as i32;
 /// Where an object's field layout pointer is, from its `Rc` allocation.
 const OBJECT_FIELDS_PTR_OFF: i32 = L::OBJECT_FIELDS_PTR_OFF as i32;
 
@@ -80,6 +83,7 @@ pub(crate) const OPS: &[(&str, &[Ty])] = {
         ("qz_op_array_get_reg", &[I, I, I]),
         ("qz_op_array_words", &[I, I, I]),
         ("qz_op_array_index", &[I, I, I]),
+        ("qz_op_bytes_index", &[I, I, I, I]),
         ("qz_op_array_new_words", &[I, I, I]),
         ("qz_op_array_slice", &[I, I, I, I]),
         ("qz_op_array_slice_reg", &[I, I, I, I]),
@@ -3360,6 +3364,20 @@ impl<B: Builder> Gen<'_, B> {
                 "qz_op_array_index",
                 vec![w(self, *dst), w(self, *arr), w(self, *index)],
             ),
+            Inst::BytesIndex {
+                dst,
+                bytes,
+                index,
+                method,
+            } => (
+                "qz_op_bytes_index",
+                vec![
+                    w(self, *dst),
+                    w(self, *bytes),
+                    w(self, *index),
+                    w(self, *method),
+                ],
+            ),
             Inst::ArrayNewWords {
                 dst,
                 capacity,
@@ -3495,6 +3513,7 @@ impl<B: Builder> Gen<'_, B> {
                 | Inst::ArrayGetReg { .. }
                 | Inst::ArrayGetWord { .. }
                 | Inst::ArrayIndex { .. }
+                | Inst::BytesIndex { .. }
                 | Inst::ArrayPush { .. }
                 | Inst::ArrayPushWord { .. }
         ) || matches!(inst, Inst::OwnedCall { kw, .. } if kw.is_empty());
@@ -4115,6 +4134,70 @@ impl<B: Builder> Gen<'_, B> {
                 if arr != dst {
                     self.arr_after_slow(*arr, block, index);
                 }
+                self.b.jump(cont, &[]);
+                self.b.switch_to_block(cont);
+            }
+            Inst::BytesIndex {
+                dst,
+                bytes,
+                index: idx,
+                ..
+            } => {
+                // A `Bytes` value and an Int index in `0...size`: the byte,
+                // loaded from the allocation (`L::BYTES_DATA_OFF`, its
+                // length the word `L::BYTES_LEN_BEFORE` before it);
+                // anything else through the runtime, which calls the
+                // native (#972). The result is an Int either way.
+                let check_b = self.b.create_block();
+                let fast = self.b.create_block();
+                let slow = self.b.create_block();
+                let cont = self.b.create_block();
+                let int_state = self.states[*idx as usize] == State::Int;
+                let tag = self.tag(*bytes);
+                let is_bytes = self.b.icmp_imm(IntCC::Equal, tag, TAG_BYTES);
+                let ok = if int_state {
+                    is_bytes
+                } else {
+                    let itag = self.tag(*idx);
+                    let is_int = self.b.icmp_imm(IntCC::Equal, itag, TAG_INT);
+                    self.b.band(is_bytes, is_int)
+                };
+                self.b.brif(ok, check_b, &[], slow, &[]);
+                self.b.switch_to_block(check_b);
+                let i = if int_state {
+                    self.b.use_var(self.ivar(*idx))
+                } else {
+                    self.payload(*idx)
+                };
+                let p = self.payload_ptr(*bytes);
+                let len = self.b.load(Ty::I64, p, -BYTES_LEN_BEFORE);
+                // (Unsigned: a negative index is past every length.)
+                let in_range = self.b.icmp(IntCC::UnsignedLessThan, i, len);
+                self.b.brif(in_range, fast, &[], slow, &[]);
+                self.b.switch_to_block(fast);
+                let at = self.b.iadd(p, i);
+                let byte = self.b.uload8(at, BYTES_DATA_OFF);
+                self.unbox(*dst, State::Int);
+                self.b.def_var(self.ivar(*dst), byte);
+                self.b.jump(cont, &[]);
+                self.b.switch_to_block(slow);
+                self.flush(*bytes);
+                self.flush(*idx);
+                // The runtime writes the number into the home: read it
+                // back into the variable.
+                self.unbox(*dst, State::Unknown);
+                self.exec(block, index, unwind);
+                let tag = self.tag(*dst);
+                let is_int = self.b.icmp_imm(IntCC::Equal, tag, TAG_INT);
+                let good = self.b.create_block();
+                let bad = self.b.create_block();
+                self.b.brif(is_int, good, &[], bad, &[]);
+                self.b.switch_to_block(bad);
+                self.unsound(block, index);
+                self.b.switch_to_block(good);
+                let w = self.payload(*dst);
+                self.states[*dst as usize] = State::Int;
+                self.b.def_var(self.ivar(*dst), w);
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(cont);
             }

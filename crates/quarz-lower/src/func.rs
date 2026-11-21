@@ -3671,6 +3671,30 @@ impl<'a> FnBuilder<'a> {
         }
     }
 
+    /// `Bytes#[](index: Int)`, the native `BytesIndex` calls for what it
+    /// does not read in place.
+    fn bytes_index_method(&self) -> MethodId {
+        self.bytes_method("[]", 1)
+    }
+
+    /// The prelude's `Bytes#name` taking `params` parameters, an `Int`
+    /// each (`each_byte`'s loop, #972).
+    fn bytes_method(&self, name: &str, params: usize) -> MethodId {
+        let bi = &self.world.builtin;
+        self.world
+            .class(bi.bytes)
+            .methods
+            .get(name)
+            .and_then(|ids| {
+                ids.iter().copied().find(|&m| {
+                    let ps = &self.world.method(m).params;
+                    ps.len() == params
+                        && ps.iter().all(|p| matches!(&p.ty, quarz_types::Type::Class(c, a) if *c == bi.int && a.is_empty()))
+                })
+            })
+            .unwrap_or_else(|| panic!("Bytes#{name}"))
+    }
+
     /// `n.times { }`, `xs.each { }`, `(lo..hi).map { }` and the other
     /// shapes of `iter`: a counted loop in this function, with the block
     /// body lowered in place (`break` and `next` become jumps).
@@ -3696,7 +3720,9 @@ impl<'a> FnBuilder<'a> {
                 hi = Some(self.expr(h.as_ref().unwrap()));
                 exclusive = *ex;
             }
-            Some(Source::Array) => arr = Some(self.expr(call.recv.as_ref().unwrap())),
+            Some(Source::Array | Source::Bytes) => {
+                arr = Some(self.expr(call.recv.as_ref().unwrap()))
+            }
             None => {
                 let r = match &call.recv {
                     Some(x) => self.expr(x),
@@ -3723,7 +3749,27 @@ impl<'a> FnBuilder<'a> {
         if kind == Kind::Upto {
             hi = Some(args[0]);
         }
-        if let Some(a) = arr {
+        if let (Some(a), Some(Source::Bytes)) = (arr, shape.source) {
+            // A `Bytes`'s size, once: the value is immutable. (`Len` is
+            // an array's: compiled code takes its operand for one after.)
+            let len = self.reg();
+            let size = self.bytes_method("size", 0);
+            self.emit(Inst::Call {
+                dst: len,
+                kind: CallKind::Method(size),
+                recv: Some(a),
+                args: Vec::new(),
+                splat: false,
+                kw: Vec::new(),
+                kw_splat: None,
+                block: None,
+                moved: 0,
+                recv_classes: None,
+                on_self: false,
+            });
+            hi = Some(len);
+            exclusive = true;
+        } else if let Some(a) = arr {
             let len = self.reg();
             self.emit(Inst::Len { dst: len, src: a });
             hi = Some(len);
@@ -3774,7 +3820,7 @@ impl<'a> FnBuilder<'a> {
             Kind::Select | Kind::Reject => match shape.source {
                 Some(Source::Array) => shape.words,
                 Some(Source::Range) => Some(false),
-                None => None,
+                Some(Source::Bytes) | None => None,
             },
             _ => None,
         };
@@ -3827,6 +3873,18 @@ impl<'a> FnBuilder<'a> {
         });
         self.switch(body_b);
         let elem = match (arr, shape.words) {
+            // A byte, read in place (`BytesIndex`; `i` is in range).
+            (Some(a), _) if shape.source == Some(Source::Bytes) => {
+                let x = self.reg();
+                let method = self.bytes_index_method();
+                self.emit(Inst::BytesIndex {
+                    dst: x,
+                    bytes: a,
+                    index: i,
+                    method,
+                });
+                x
+            }
             (Some(a), Some(float)) => {
                 let x = self.reg();
                 self.emit(Inst::ArrayGetWord {
@@ -4412,6 +4470,29 @@ impl<'a> FnBuilder<'a> {
                             arr,
                             index: a.pos[0],
                             word,
+                        });
+                        return dst;
+                    }
+                }
+                // `b[i]` with an Int on a `Bytes`: `BytesIndex`, the byte
+                // read in place, the native called otherwise (#972).
+                let bytes_index = m.is_native
+                    && m.owner == self.world.builtin.bytes
+                    && m.name == "[]"
+                    && matches!(&m.params[..], [p] if matches!(&p.ty, quarz_types::Type::Class(c, a) if *c == self.world.builtin.int && a.is_empty()));
+                if let (true, Some(b)) = (bytes_index, recv) {
+                    if a.pos.len() == 1
+                        && !a.splat
+                        && a.kw.is_empty()
+                        && a.kw_splat.is_none()
+                        && a.block.is_none()
+                    {
+                        let dst = self.reg();
+                        self.emit(Inst::BytesIndex {
+                            dst,
+                            bytes: b,
+                            index: a.pos[0],
+                            method: *method,
                         });
                         return dst;
                     }

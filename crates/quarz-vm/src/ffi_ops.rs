@@ -495,6 +495,12 @@ op_entry!(qz_op_array_index(dst: u32, arr: u32, index: u32) |rt, act, f, pool, r
     rt.op_array_index(regs, dst, arr, index)
 });
 
+op_entry!(
+    qz_op_bytes_index(dst: u32, bytes: u32, index: u32, method: u32) |rt, act, f, pool, regs| {
+        rt.op_bytes_index(regs, dst, bytes, index, method)
+    }
+);
+
 op_entry!(qz_op_array_words(dst: u32, arr: u32, float: u32) |rt, act, f, pool, regs| {
     rt.op_array_words(regs, dst, arr, float != 0)
 });

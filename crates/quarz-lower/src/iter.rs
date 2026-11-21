@@ -34,6 +34,9 @@ pub enum Source {
     Array,
     /// The receiver is a literal `lo..hi`/`lo...hi` over `Int`.
     Range,
+    /// The receiver is a `Bytes`, read by index (`BytesIndex`): only its
+    /// `each_byte` (#972).
+    Bytes,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -120,6 +123,7 @@ pub fn shape(e: &Expr, call: &ast::Call, out: &Output, world: &World) -> Option<
         }
         let source = match out.node_types.get(&recv.id)? {
             Type::Class(id, _) if *id == bi.array => Source::Array,
+            Type::Class(id, _) if *id == bi.bytes => Source::Bytes,
             Type::Class(id, args) if *id == bi.range => {
                 let int_range =
                     matches!(args.first(), Some(Type::Class(c, a)) if *c == bi.int && a.is_empty());
@@ -141,8 +145,11 @@ pub fn shape(e: &Expr, call: &ast::Call, out: &Output, world: &World) -> Option<
         let own = match source {
             Source::Array => bi.array,
             Source::Range => bi.range,
+            Source::Bytes => bi.bytes,
         };
         let kind = match (m.name.as_str(), nargs) {
+            ("each_byte", 0) if source == Source::Bytes && m.owner == own => Kind::Each,
+            _ if source == Source::Bytes => return None,
             ("each", 0) if m.owner == own => Kind::Each,
             ("map", 0) if m.owner == own || m.owner == bi.enumerable => Kind::Map,
             ("select", 0) if m.owner == own || m.owner == bi.enumerable => Kind::Select,

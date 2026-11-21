@@ -286,6 +286,13 @@ impl Interp {
     /// Check what `inst` trusts about its result, after it ran.
     pub(crate) fn verify_after(&self, f: &FuncInfo, regs: &[Value], inst: &Inst) {
         match inst {
+            // (Compiled code keeps the result as a machine word.)
+            Inst::BytesIndex { dst, .. } => {
+                let v = &regs[*dst as usize];
+                if !is_int(v) {
+                    self.violated(format!("BytesIndex gives {}", describe(v)));
+                }
+            }
             Inst::ArrayIndex {
                 dst,
                 word: Some(float),

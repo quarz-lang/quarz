@@ -524,6 +524,8 @@ fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
                     | CallKind::Raise => {}
                 },
                 Inst::OwnedCall { method, .. } => visit(Ref::Method(*method)),
+                // (The native it calls for what it does not read in place.)
+                Inst::BytesIndex { method, .. } => visit(Ref::Method(*method)),
                 Inst::BinOp { method, op, .. } => {
                     visit(Ref::Name(op.name()));
                     if let Some(m) = method {

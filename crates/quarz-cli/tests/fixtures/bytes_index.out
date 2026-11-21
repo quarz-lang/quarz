@@ -1,0 +1,18 @@
+97
+0
+255
+34
+122
+122
+97
+IndexError: index 5 out of bounds
+IndexError: index -6 out of bounds
+IndexError: index 9 out of bounds
+1
+508
+nil
+[97, 255]
+[97099, 97100, 98099, 98100]
+raised at 255
+508
+nil

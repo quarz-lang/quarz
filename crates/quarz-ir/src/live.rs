@@ -548,7 +548,7 @@ pub fn heap_possible_in(
                 | Inst::CatchException { dst }
                 | Inst::CatchAny { dst } => mark(*dst),
                 // A number.
-                Inst::ArrayGetWord { .. } => {}
+                Inst::ArrayGetWord { .. } | Inst::BytesIndex { .. } => {}
                 Inst::ArrayIndex { dst, word, .. } => {
                     if word.is_none() {
                         mark(*dst);
