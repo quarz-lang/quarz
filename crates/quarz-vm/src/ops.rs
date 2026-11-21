@@ -764,6 +764,31 @@ impl Interp {
         Ok(())
     }
 
+    /// `BytesIndex`: `Bytes#[]` with an Int (#972). A byte at an index in
+    /// `0...size` is read here; anything else (a negative or out-of-range
+    /// index) calls the native `method`, which counts from the end or
+    /// raises as before.
+    pub fn op_bytes_index(
+        &self,
+        regs: &mut [Value],
+        dst: Reg,
+        bytes: Reg,
+        index: Reg,
+        method: MethodId,
+    ) -> Result<(), Flow> {
+        if let (Value::Bytes(b), Value::Int(i)) = (&regs[bytes as usize], &regs[index as usize]) {
+            if let Some(&byte) = usize::try_from(*i).ok().and_then(|k| b.get(k)) {
+                regs[dst as usize] = Value::Int(i64::from(byte));
+                return Ok(());
+            }
+        }
+        let recv = regs[bytes as usize].clone();
+        let at = regs[index as usize].clone();
+        let v = self.invoke(method, recv, smallvec::smallvec![at], Vec::new(), None)?;
+        regs[dst as usize] = v;
+        Ok(())
+    }
+
     /// `ArrayWords`: the array with its elements stored as machine words
     /// (`Int`s, or `Float`s with `float`), copied only when they are not.
     pub fn op_array_words(

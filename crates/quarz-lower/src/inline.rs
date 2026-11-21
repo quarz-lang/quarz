@@ -674,6 +674,17 @@ pub(crate) fn rewrite_with(
             index: r(index),
             word: *word,
         },
+        Inst::BytesIndex {
+            dst,
+            bytes,
+            index,
+            method,
+        } => Inst::BytesIndex {
+            dst: r(dst),
+            bytes: r(bytes),
+            index: r(index),
+            method: *method,
+        },
         Inst::ArrayNewWords {
             dst,
             capacity,

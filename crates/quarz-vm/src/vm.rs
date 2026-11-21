@@ -1322,6 +1322,12 @@ impl Interp {
             Inst::ArrayIndex {
                 dst, arr, index, ..
             } => self.op_array_index(regs, *dst, *arr, *index)?,
+            Inst::BytesIndex {
+                dst,
+                bytes,
+                index,
+                method,
+            } => self.op_bytes_index(regs, *dst, *bytes, *index, *method)?,
             Inst::ArrayGetWord {
                 dst, arr, index, ..
             } => self.op_array_get_reg(regs, *dst, *arr, *index),

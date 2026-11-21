@@ -587,6 +587,52 @@ fn build_timings_print_every_stage_and_change_nothing() {
     assert!(lines[7].contains(" level="), "{err}");
 }
 
+/// #972: `b[i]` with an Int on a `Bytes` is `BytesIndex` (the byte read
+/// in place), and `each_byte` with a literal block a loop of them, with
+/// no block function and no call per byte; a block value stays a call.
+#[test]
+fn a_bytes_index_and_each_byte_read_in_place() {
+    let module = common::lower(
+        "def at(b: Bytes, i: Int) -> Int = b[i]\n\
+         def sum(b: Bytes) -> Int\n  s = 0\n  b.each_byte { |c| s += c }\n  s\nend\n\
+         def each_of(b: Bytes, &blk: (Int) -> Void) -> Void = b.each_byte(&blk)\n\
+         p at(b\"ab\", 1), sum(b\"ab\")\n\
+         each_of(b\"a\") { |c| p c }\n",
+    );
+    let insts = |name: &str| -> Vec<quarz_ir::Inst> {
+        let f = module
+            .functions
+            .iter()
+            .find(|f| f.name == format!("main#{name}"))
+            .unwrap_or_else(|| panic!("no function {name}"));
+        f.blocks
+            .iter()
+            .flat_map(|b| b.insts.iter().cloned())
+            .collect()
+    };
+    let index_reads = |name: &str| {
+        insts(name)
+            .iter()
+            .filter(|i| matches!(i, quarz_ir::Inst::BytesIndex { .. }))
+            .count()
+    };
+    let calls = |name: &str| {
+        insts(name)
+            .iter()
+            .filter(|i| {
+                matches!(
+                    i,
+                    quarz_ir::Inst::Call { .. } | quarz_ir::Inst::MakeBlock { .. }
+                )
+            })
+            .count()
+    };
+    assert_eq!((index_reads("at"), calls("at")), (1, 0));
+    // (The loop's one call: `Bytes#size`, before it.)
+    assert_eq!((index_reads("sum"), calls("sum")), (1, 1));
+    assert_eq!(index_reads("each_of"), 0);
+}
+
 /// #921: a `data` construction leaving fields to literal defaults is
 /// lowered with every field, as one written in full (so the AOT's
 /// `alloc_data` and `sroa` make it inline), by keywords too, in the

@@ -438,7 +438,9 @@ impl Checker<'_> {
                 }
                 _ => {}
             },
-            Inst::OwnedCall { method: m, .. } => method(*m, &mut bad),
+            Inst::OwnedCall { method: m, .. } | Inst::BytesIndex { method: m, .. } => {
+                method(*m, &mut bad)
+            }
             Inst::BinOp {
                 method: Some(m), ..
             } => method(*m, &mut bad),

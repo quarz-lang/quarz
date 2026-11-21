@@ -822,6 +822,18 @@ pub enum Inst {
         index: Reg,
         word: Option<bool>,
     },
+    /// `bytes[index]`, `Bytes#[]` with an Int (`method`): the byte, an
+    /// `Int`, for an index in `0...size`; anything else (a negative or
+    /// out-of-range index) calls `method`, which counts from the end or
+    /// raises as it does (#972). (A receiver typed `Bytes` is always a
+    /// `Bytes` value: `Bytes::Secret` is a class of its own.)
+    /// The result is always an `Int`, never a counted value.
+    BytesIndex {
+        dst: Reg,
+        bytes: Reg,
+        index: Reg,
+        method: MethodId,
+    },
     /// An array the checker types `Array[Int]` (or `Array[Float]` with
     /// `float`), with its elements stored as machine words: `arr` itself
     /// when they are, else a copy that stores them so. Before a loop
@@ -989,6 +1001,7 @@ impl Inst {
             | Inst::ArrayWords { dst, .. }
             | Inst::ArrayGetWord { dst, .. }
             | Inst::ArrayIndex { dst, .. }
+            | Inst::BytesIndex { dst, .. }
             | Inst::ArrayNewWords { dst, .. }
             | Inst::ArraySlice { dst, .. }
             | Inst::ArraySliceReg { dst, .. }
@@ -1154,6 +1167,10 @@ impl Inst {
                 *arr = f(*arr);
                 *index = f(*index);
             }
+            Inst::BytesIndex { bytes, index, .. } => {
+                *bytes = f(*bytes);
+                *index = f(*index);
+            }
             Inst::ArrayGetReg { arr, index, .. } => {
                 *arr = f(*arr);
                 *index = f(*index);
@@ -1265,6 +1282,7 @@ impl Inst {
             Inst::ArrayGetReg { arr, index, .. }
             | Inst::ArrayGetWord { arr, index, .. }
             | Inst::ArrayIndex { arr, index, .. } => smallvec::smallvec![*arr, *index],
+            Inst::BytesIndex { bytes, index, .. } => smallvec::smallvec![*bytes, *index],
             Inst::ArrayWords { arr, .. } => smallvec::smallvec![*arr],
             Inst::ArrayNewWords { capacity, .. } => smallvec::smallvec![*capacity],
             Inst::ArrayPushWord { arr, src, .. } => smallvec::smallvec![*arr, *src],

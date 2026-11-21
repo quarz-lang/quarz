@@ -2921,7 +2921,7 @@ pub enum Value {
     Selector(Rc<RefCell<SelectorState>>),
     Enumerator(Rc<EnumeratorVal>),
     Io(Rc<IoVal>),
-    Bytes(Rc<[u8]>),
+    Bytes(Rc<[u8]>) = crate::layout::TAG_BYTES,
     BytesBuilder(Rc<RefCell<Vec<u8>>>),
     Time(Rc<TimeVal>),
     Random(Rc<RefCell<RandomState>>),

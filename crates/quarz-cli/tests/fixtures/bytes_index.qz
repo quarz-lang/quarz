@@ -1,0 +1,61 @@
+# `b[i]` with an Int and `each_byte` with a literal block read a byte in
+# place (#972): an index in `0...size` here, anything else through the
+# native as before (counting from the end, raising out of range); the
+# loop keeps `break`, `next`, a raise in the block and nesting; a block
+# value goes through the native.
+b = b"a\x00\xff\"z"
+p b[0], b[1], b[2], b[3], b[4]
+p b[-1], b[-5]
+begin
+  p b[5]
+rescue IndexError => e
+  puts "IndexError: #{e.message}"
+end
+begin
+  p b[-6]
+rescue IndexError => e
+  puts "IndexError: #{e.message}"
+end
+# A read whose value nothing uses still raises (an optimizer must not
+# drop it).
+begin
+  _ = b[9]
+  puts "not raised"
+rescue IndexError => e
+  puts "IndexError: #{e.message}"
+end
+i = 0
+quotes = 0
+size = b.size
+while i < size
+  quotes += 1 if b[i] == 0x22
+  i += 1
+end
+p quotes
+sum = 0
+r = b.each_byte { |c| sum += c }
+p sum, r
+seen: Array[Int] = []
+b.each_byte do |c|
+  next if c == 0
+  break if c == 0x22
+  seen = seen.push(c)
+end
+p seen
+pairs: Array[Int] = []
+b"ab".each_byte { |x| b"cd".each_byte { |y| pairs = pairs.push(x * 1000 + y) } }
+p pairs
+begin
+  b.each_byte { |c| raise ArgumentError, "at #{c}" if c == 255 }
+rescue ArgumentError => e
+  puts "raised #{e.message}"
+end
+# A block value (not lowered in place): the native, as before.
+def total(b: Bytes) -> Int
+  n = 0
+  each_of(b) { |c| n += c }
+  n
+end
+def each_of(b: Bytes, &blk: (Int) -> Void) -> Void = b.each_byte(&blk)
+p total(b)
+p b"".each_byte { |c| puts "never" }

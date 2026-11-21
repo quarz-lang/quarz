@@ -69,6 +69,7 @@ pub const TAG_FLOAT: u8 = 3;
 pub const TAG_CLASS: u8 = 5;
 pub const TAG_ARRAY: u8 = 10;
 pub const TAG_OBJECT: u8 = 16;
+pub const TAG_BYTES: u8 = 29;
 /// Tags below this hold no reference-counted payload (`Value` puts the
 /// variants without reference counting first).
 pub const NEEDS_DROP_FROM: u64 = 8;
@@ -78,6 +79,13 @@ pub const NEEDS_DROP_FROM: u64 = 8;
 /// the next word.
 pub const BOOL_OFF: usize = 1;
 pub const CLASS_OFF: usize = 4;
+/// A `Bytes` value's payload is the pointer `Rc<[u8]>` keeps (`rc.rs`):
+/// its length is the word `BYTES_LEN_BEFORE` bytes before it (no ASCII
+/// bit: that is a string's, never a byte string's), and its first byte
+/// is `BYTES_DATA_OFF` after it, past the allocation's two counts
+/// (`BytesIndex`, #972; `check` verifies both).
+pub const BYTES_LEN_BEFORE: usize = 8;
+pub const BYTES_DATA_OFF: usize = offset_of!(crate::rc::Inner<[u8; 0]>, value);
 /// Where an object's field layout pointer is, from its allocation (the
 /// header's first word, after the allocation's two counts).
 pub const OBJECT_FIELDS_PTR_OFF: usize = offset_of!(
@@ -159,6 +167,9 @@ pub const SIGNATURE: u64 = {
         TAG_CLASS as usize,
         TAG_ARRAY as usize,
         TAG_OBJECT as usize,
+        TAG_BYTES as usize,
+        BYTES_LEN_BEFORE,
+        BYTES_DATA_OFF,
         NEEDS_DROP_FROM as usize,
         BOOL_OFF,
         CLASS_OFF,
@@ -252,6 +263,22 @@ pub fn check(sig: u64, vec: u64) {
         OBJECT_CLASS_OFF,
         "Object layout changed: class"
     );
+    // A `Bytes` value's length and bytes, as compiled code reads them
+    // (`BytesIndex`, #972).
+    {
+        let v = crate::value::Value::bytes(vec![7, 8, 255]);
+        assert_eq!(v.type_tag(), TAG_BYTES, "Value layout changed: Bytes tag");
+        // SAFETY: reading the payload word of a live value, then the words
+        // and bytes around the allocation it points into.
+        let (len, bytes) = unsafe {
+            let p = *(&v as *const crate::value::Value as *const usize).add(1) as *const u8;
+            let len = *(p.sub(BYTES_LEN_BEFORE) as *const usize);
+            let data = p.add(BYTES_DATA_OFF);
+            (len, [*data, *data.add(1), *data.add(2)])
+        };
+        assert_eq!(len, 3, "Bytes layout changed: length word");
+        assert_eq!(bytes, [7, 8, 255], "Bytes layout changed: data");
+    }
     // The array data layout compiled code reads.
     {
         use crate::value::{ArrayData, ARRAY_KIND_INTS};
