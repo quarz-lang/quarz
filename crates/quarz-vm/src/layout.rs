@@ -76,6 +76,7 @@ pub const TAG_BOOL: u8 = 1;
 pub const TAG_INT: u8 = 2;
 pub const TAG_FLOAT: u8 = 3;
 pub const TAG_CLASS: u8 = 5;
+pub const TAG_SHORT: u8 = 7;
 pub const TAG_ARRAY: u8 = 10;
 pub const TAG_OBJECT: u8 = 16;
 pub const TAG_BYTES: u8 = 29;
@@ -87,6 +88,14 @@ pub const NEEDS_DROP_FROM: u64 = 8;
 /// a word (`check` verifies both at start-up). Every other payload is at
 /// the next word.
 pub const BOOL_OFF: usize = 1;
+/// A short string's length byte and its bytes, from the value (its
+/// `ShortStr` payload is at the byte after the tag, as a `Bool`'s): what
+/// compiled code compares against a short literal (#795). Only the first
+/// `len` bytes are the string's; what follows them is not compared.
+pub const SHORT_LEN_OFF: usize = 1 + crate::value::ShortStr::LEN_OFF;
+pub const SHORT_BYTES_OFF: usize = 1 + crate::value::ShortStr::BYTES_OFF;
+pub const SHORT_MAX: usize = crate::value::ShortStr::MAX;
+const _: () = assert!(SHORT_BYTES_OFF + SHORT_MAX <= VALUE_SIZE);
 pub const CLASS_OFF: usize = 4;
 /// A `Bytes` value's payload is the pointer `Rc<[u8]>` keeps (`rc.rs`):
 /// its length is the word `BYTES_LEN_BEFORE` bytes before it (no ASCII

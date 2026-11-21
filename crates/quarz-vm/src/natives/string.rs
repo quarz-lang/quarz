@@ -52,9 +52,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             order(s(i, r)?, string(i, a.arg(0), "other")?).is_ge(),
         ))
     });
-    native!(m, "String#==", |i, r, a| {
-        Ok(Value::Bool(a.arg(0).as_str() == Some(s(i, r)?)))
-    });
+    native!(m, "String#==", |i, r, a| Ok(Value::Bool(equal(
+        s(i, r)?,
+        a.arg(0)
+    ))));
     native!(m, "String#size", |i, r, _| {
         Ok(Value::Int(char_count(r, s(i, r)?) as i64))
     });
@@ -239,6 +240,15 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     ));
     native!(m, "MatchData#end", |i, r, a| md_bound(i, r, a, true));
     native!(m, "Bytes::MatchData#end", |i, r, a| md_bound(i, r, a, true));
+}
+
+/// `String#==`: whether `other` is a string with the bytes of `s` (a
+/// `Short` or a `Str`, whichever holds them). The one definition of a
+/// string's equality: `String#==`, its by-reference twin and `!=`'s call
+/// it, and compiled code's inline compare against a short literal
+/// (`gen::short_literal_eq`, #795) is a fast path that must agree with it.
+pub fn equal(s: &str, other: &Value) -> bool {
+    other.as_str() == Some(s)
 }
 
 pub(super) fn s<'a>(interp: &Interp, v: &'a Value) -> Result<&'a str, Flow> {

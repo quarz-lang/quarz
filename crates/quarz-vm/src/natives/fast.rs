@@ -28,7 +28,7 @@ pub fn register(m: &mut super::Registry<FastNativeFn>) {
         _ => None,
     });
     fast!(m, "String#==", |_, r, a| match (r.as_str(), a) {
-        (Some(s), [o]) => Some(Value::Bool(o.as_str() == Some(s))),
+        (Some(s), [o]) => Some(Value::Bool(super::string::equal(s, o))),
         _ => None,
     });
     // (Comparable's would call `<=>` through dispatch for each, #836.)
@@ -57,7 +57,7 @@ pub fn register(m: &mut super::Registry<FastNativeFn>) {
         _ => None,
     });
     fast!(m, "String#!=", |_, r, a| match (r.as_str(), a) {
-        (Some(s), [o]) => Some(Value::Bool(o.as_str() != Some(s))),
+        (Some(s), [o]) => Some(Value::Bool(!super::string::equal(s, o))),
         _ => None,
     });
     fast!(m, "String#end_with?", |_, r, a| match (r.as_str(), a) {
