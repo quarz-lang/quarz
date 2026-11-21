@@ -3891,8 +3891,8 @@ impl Interp {
     }
 
     /// Run the field defaults of `value`, a new object of a class (not a
-    /// data type), in order (`construct`, and compiled code's inline
-    /// construction through `qz_field_defaults`, #939).
+    /// data type), in order (`construct`; compiled code's inline
+    /// construction runs them itself, `gen::field_defaults`, #1000).
     pub fn field_defaults(&self, value: &Value) -> Result<(), Flow> {
         let Value::Object(obj) = value else {
             return Err(self.err_type("field defaults of a non-object"));

@@ -44,16 +44,39 @@ pub fn fill(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<Strin
         // A declared field stored in one physical field keeps its
         // default there; a flattened one runs it through the
         // logical view.
+        let declared = world.all_fields(c.id);
         let ivars: Vec<RtIvar> = layout
             .ivars
             .iter()
             .enumerate()
-            .map(|(i, iv)| RtIvar {
-                name: iv.name.clone(),
-                ty: ty_name(&iv.ty),
-                slot: iv.slot,
-                flat: iv.flat,
-                default: lw.field_default(world, c.id, i),
+            .map(|(i, iv)| {
+                let default = lw.field_default(world, c.id, i);
+                // (Only for a default the program wrote: see `RtIvar::literal`.)
+                // (The layout's fields are the declared ones, in their order:
+                // a literal shipped for another field would be placed in it
+                // silently.)
+                let field = declared.get(i).map(|(f, _)| f);
+                assert!(
+                    field.is_some_and(|f| f.name == iv.name),
+                    "internal error: field {i} of `{}` is `{}` in the layout and {:?} declared",
+                    c.name,
+                    iv.name,
+                    field.map(|f| &f.name)
+                );
+                let literal = default.and_then(|_| {
+                    let e = field?.default.as_deref()?;
+                    crate::func::default_at_call(e)
+                        .then(|| literal_constant(e))
+                        .flatten()
+                });
+                RtIvar {
+                    name: iv.name.clone(),
+                    ty: ty_name(&iv.ty),
+                    slot: iv.slot,
+                    flat: iv.flat,
+                    default,
+                    literal,
+                }
             })
             .collect();
         let fields: Vec<RtField> = layout
