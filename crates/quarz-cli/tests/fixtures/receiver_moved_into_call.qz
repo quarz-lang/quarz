@@ -1,0 +1,53 @@
+# #704: a receiver read for the last time by a call moves into the
+# callee's `self` (compiled code as the interpreter): an object with a
+# `deinitialize` is released when the callee is done with it, the same
+# on both, and once when the callee raises.
+
+class Res
+  @name: String
+  def initialize(@name: String); end
+  def deinitialize -> Void
+    puts "released #{@name}"
+  end
+  def touch(n: Int) -> Int
+    puts "touch #{@name}"
+    n + 1
+  end
+  def keep -> Res = self
+  def fail -> Int
+    puts "fail #{@name}"
+    raise "no #{@name}"
+  end
+end
+
+def last_use -> Int
+  r = Res.new("a")
+  r.touch(1)
+end
+
+def kept -> Void
+  r = Res.new("b")
+  k = r.keep
+  puts "kept #{k.touch(0)}"
+end
+
+def raising -> Void
+  r = Res.new("c")
+  begin
+    r.fail
+  rescue RuntimeError => e
+    puts "rescued #{e.message}"
+  end
+end
+
+def used_after -> Void
+  r = Res.new("d")
+  r.touch(2)
+  puts "still #{r.touch(3)}"
+end
+
+p last_use
+kept
+raising
+used_after
+puts "end"

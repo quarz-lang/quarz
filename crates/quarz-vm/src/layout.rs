@@ -12,6 +12,11 @@ pub const ACT_SIZE: usize = size_of::<Activation>();
 /// buffer (`out`) for the caller to take: a field default's value, which
 /// `qz_ivar_set` then stores (#1000). (`u32::MAX` drops the result.)
 pub const LEAVE_TO_OUT: u32 = u32::MAX - 1;
+/// The bit of `qz_enter`'s receiver register that moves the receiver into
+/// the activation's `self` (a dying receiver, `Call::moved`'s bit 15, as
+/// the interpreter's call takes it) rather than copying it; `u32::MAX`
+/// (the caller's own `self`) is never taken (#704).
+pub const RECV_TAKE: u32 = 1 << 31;
 /// Space compiled code reserves for an `Activation` it builds itself
 /// (`qz_enter`): at least its size (asserted below).
 pub const ACT_BUF_SIZE: usize = 320;
@@ -142,6 +147,7 @@ pub const SIGNATURE: u64 = {
         ACT_METHOD_TAG,
         ACT_CLOSURE_TAG,
         ACT_PROVIDED,
+        RECV_TAKE as usize,
         ACT_ARGS_PTR,
         ACT_NARGS,
         ACT_YIELD_CALLER,

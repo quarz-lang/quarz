@@ -163,6 +163,15 @@ pub unsafe extern "C" fn qz_enter(
     if crate::sched::stack_exhausted() {
         return rt.park_flow(rt.raise(rt.program.exc.system_stack, "stack level too deep"));
     }
+    // (A dying receiver moves in, `L::RECV_TAKE`: its register is left
+    // nil, as the interpreter's call leaves it. Only now that the call
+    // goes ahead: on a refusal above the caller still holds it.)
+    let take = recv != u32::MAX && recv & crate::layout::RECV_TAKE != 0;
+    let recv = if take {
+        recv & !crate::layout::RECV_TAKE
+    } else {
+        recv
+    };
     let recv_src: &Value = if recv == u32::MAX {
         &caller.self_val
     } else {
@@ -183,7 +192,14 @@ pub unsafe extern "C" fn qz_enter(
     write(addr_of_mut!((*buf).fid), fid);
     write(addr_of_mut!((*buf).task), rt.current_task_id.get());
     write(addr_of_mut!((*buf).line), std::cell::Cell::new(0));
-    Value::clone_into(addr_of_mut!((*buf).self_val), recv_src);
+    if take {
+        write(
+            addr_of_mut!((*buf).self_val),
+            std::mem::replace(&mut *regs.add(recv as usize), Value::Nil),
+        );
+    } else {
+        Value::clone_into(addr_of_mut!((*buf).self_val), recv_src);
+    }
     write(addr_of_mut!((*buf).frame), frame);
     write(addr_of_mut!((*buf).block), block);
     write(addr_of_mut!((*buf).method_tag), rt.new_tag());

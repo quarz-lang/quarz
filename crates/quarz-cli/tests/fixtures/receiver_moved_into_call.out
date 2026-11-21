@@ -1,0 +1,14 @@
+touch a
+released a
+2
+touch b
+kept 1
+released b
+fail c
+rescued no c
+released c
+touch d
+touch d
+still 4
+released d
+end
