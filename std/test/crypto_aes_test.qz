@@ -59,7 +59,7 @@ class CryptoAESTest < Test::Case
     [128, 192, 256].each do |bits|
       aead = Crypto::AES::GCM.generate(bits)
       assert_equal(bits, aead.bits)
-      assert_equal(bits / 8, aead.key.size)
+      assert_equal(bits / 8, aead.export_key.size)
       nonce = Crypto.random_bytes(12)
       ["", "short", "x" * 100_000].each do |text|
         sealed = aead.seal(nonce, text)
@@ -145,7 +145,7 @@ class CryptoAESTest < Test::Case
       assert_false(text.include?("feffe9"), text)
       assert_false(text.include?("\\xfe"), text)
     end
-    assert_equal(hex(K256), aead.key)
+    assert_equal(hex(K256), aead.export_key.expose_bytes)
     assert_equal(aead, Crypto::AES::GCM.new(hex(K256)))
   end
 

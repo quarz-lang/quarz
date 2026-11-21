@@ -366,13 +366,15 @@ fn register_secret(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "Bytes::Secret#==", |i, r, a| {
         let x = secret_of(i, r)?;
-        let Value::Secret(other) = a.arg(0) else {
+        let Some(SecretVal::Bytes(y)) = (match a.arg(0) {
+            Value::Secret(other) => Some(&**other),
+            _ => None,
+        }) else {
             if x.wiped() {
                 return Err(wiped(i));
             }
             return Ok(Value::Bool(false));
         };
-        let SecretVal::Bytes(y) = &**other;
         // Raises for a wiped one, itself included (`Value`'s `==`, which
         // cannot raise, differs there: `SecretVal::same_contents`).
         let same = SecretBytes::equal(x, y).ok_or_else(|| wiped(i))?;
@@ -396,8 +398,10 @@ pub(super) fn secret(buf: Vec<u8>) -> Value {
 /// The secret bytes of a `Bytes::Secret` receiver or argument.
 pub(super) fn secret_of<'a>(interp: &Interp, v: &'a Value) -> Result<&'a SecretBytes, Flow> {
     match v {
-        Value::Secret(s) => {
-            let SecretVal::Bytes(b) = &**s;
+        Value::Secret(s) if matches!(&**s, SecretVal::Bytes(_)) => {
+            let SecretVal::Bytes(b) = &**s else {
+                unreachable!()
+            };
             Ok(b)
         }
         v => Err(interp.err_type(&format!(

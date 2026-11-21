@@ -3485,12 +3485,14 @@ pub use crate::layout::VALUE_SIZE;
 const _: () = assert!(std::mem::size_of::<Value>() == VALUE_SIZE);
 
 /// What a `Value::Secret` holds (#963), one case per class, as `IoKind`
-/// is for the `IO`s: `Bytes::Secret`'s bytes, and later the keys held
-/// natively.
+/// is for the `IO`s: `Bytes::Secret`'s bytes, and the keys held natively
+/// (`Crypto::RSA::PrivateKey`, `Crypto::AES::GCM`: `KeyKind`).
 #[derive(Debug)]
 pub enum SecretVal {
     /// `Bytes::Secret`.
     Bytes(SecretBytes),
+    /// A key held natively, of the class its `KeyKind` names.
+    Key(KeyCell),
 }
 
 impl SecretVal {
@@ -3504,8 +3506,95 @@ impl SecretVal {
         if Rc::ptr_eq(a, b) {
             return true;
         }
-        let (SecretVal::Bytes(x), SecretVal::Bytes(y)) = (&**a, &**b);
-        SecretBytes::equal(x, y).unwrap_or(false)
+        match (&**a, &**b) {
+            (SecretVal::Bytes(x), SecretVal::Bytes(y)) => SecretBytes::equal(x, y).unwrap_or(false),
+            (SecretVal::Key(x), SecretVal::Key(y)) => KeyCell::equal(x, y).unwrap_or(false),
+            _ => false,
+        }
+    }
+}
+
+/// The classes of the keys held natively (`SecretVal::Key`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyKind {
+    /// `Crypto::RSA::PrivateKey`.
+    RsaPrivate,
+    /// `Crypto::AES::GCM`.
+    Aes,
+}
+
+/// A key held natively: its material is the `crypto` natives' own type
+/// (an `rsa` private key, an AES key and its cipher), which clears itself
+/// when dropped.
+pub trait KeyMaterial: Send + Sync + std::any::Any {
+    /// Whether `other`, of the same kind, is the same key, compared in
+    /// constant time in its secret parts.
+    fn same_key(&self, other: &dyn KeyMaterial) -> bool;
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// A key held natively, which `wipe` ends for every holder at once
+/// (#963). The material is behind an `Arc` that only the cell and the
+/// operations in flight hold: an operation clones it under the lock (two
+/// atomic operations) and runs on its own reference, so no lock is held
+/// over a long `sign`; `wipe` sets `None` and returns at once. The
+/// material is cleared by its `Drop` when the last reference goes: at
+/// once when no operation is in flight, or when the last one begun before
+/// the wipe ends (about a `sign`'s time), never later. So an operation
+/// completes with the whole key or raises; none sees a half-cleared one.
+pub struct KeyCell {
+    key: std::sync::Mutex<Option<std::sync::Arc<dyn KeyMaterial>>>,
+    kind: KeyKind,
+    /// The key's size in bits, answerable once wiped.
+    bits: usize,
+}
+
+impl std::fmt::Debug for KeyCell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "KeyCell({:?}, {} bits)", self.kind, self.bits)
+    }
+}
+
+impl KeyCell {
+    pub fn new(kind: KeyKind, bits: usize, key: std::sync::Arc<dyn KeyMaterial>) -> KeyCell {
+        KeyCell {
+            key: std::sync::Mutex::new(Some(key)),
+            kind,
+            bits,
+        }
+    }
+
+    pub fn kind(&self) -> KeyKind {
+        self.kind
+    }
+
+    pub fn bits(&self) -> usize {
+        self.bits
+    }
+
+    /// The material, for one operation; `None` once wiped.
+    pub fn get(&self) -> Option<std::sync::Arc<dyn KeyMaterial>> {
+        crate::sched::lock(&self.key).clone()
+    }
+
+    pub fn wiped(&self) -> bool {
+        crate::sched::lock(&self.key).is_none()
+    }
+
+    /// Ends the key for every holder: later uses see it wiped. The
+    /// material is dropped (and so cleared) here, after the lock is
+    /// released, unless an operation in flight still holds it.
+    pub fn wipe(&self) {
+        let taken = crate::sched::lock(&self.key).take();
+        drop(taken);
+    }
+
+    /// Whether `a` and `b` hold the same key (`KeyMaterial::same_key`);
+    /// `None` when either is wiped. Each lock is taken alone, in turn.
+    pub fn equal(a: &KeyCell, b: &KeyCell) -> Option<bool> {
+        let x = a.get()?;
+        let y = b.get()?;
+        Some(a.kind == b.kind && x.same_key(&*y))
     }
 }
 
@@ -4391,6 +4480,81 @@ mod secret_tests {
         assert_eq!((there, clears()), (1, here));
     }
 
+    /// A key whose drop (its clear) is counted.
+    struct Counted(std::sync::Arc<std::sync::atomic::AtomicUsize>, u8);
+    impl Drop for Counted {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    impl KeyMaterial for Counted {
+        fn same_key(&self, other: &dyn KeyMaterial) -> bool {
+            other
+                .as_any()
+                .downcast_ref::<Counted>()
+                .is_some_and(|o| o.1 == self.1)
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    /// `wipe` with no operation in flight drops (clears) the key at once;
+    /// with one in flight (a snapshot held), when that one ends, not
+    /// before; `wiped` is true at once either way, and a new use gets
+    /// nothing.
+    #[test]
+    fn a_key_is_cleared_when_wiped_or_when_the_operation_in_flight_ends() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let drops = Arc::new(AtomicUsize::new(0));
+        let cell = KeyCell::new(KeyKind::Aes, 256, Arc::new(Counted(drops.clone(), 1)));
+        cell.wipe();
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert!(cell.wiped() && cell.get().is_none());
+        assert_eq!(cell.bits(), 256);
+
+        let cell = KeyCell::new(KeyKind::Aes, 256, Arc::new(Counted(drops.clone(), 1)));
+        let in_flight = cell.get().unwrap();
+        cell.wipe();
+        assert!(cell.wiped() && cell.get().is_none());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        drop(in_flight);
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+
+        // Dropped with the value when never wiped.
+        drop(KeyCell::new(
+            KeyKind::Aes,
+            256,
+            Arc::new(Counted(drops.clone(), 1)),
+        ));
+        assert_eq!(drops.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn keys_compare_by_key_and_not_once_wiped() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+        let d = Arc::new(AtomicUsize::new(0));
+        let new = |n| {
+            Rc::new(SecretVal::Key(KeyCell::new(
+                KeyKind::Aes,
+                128,
+                Arc::new(Counted(d.clone(), n)),
+            )))
+        };
+        let (a, b, c) = (new(1), new(1), new(2));
+        assert!(SecretVal::same_contents(&a, &b));
+        assert!(!SecretVal::same_contents(&a, &c));
+        let SecretVal::Key(k) = &*b else {
+            unreachable!()
+        };
+        k.wipe();
+        assert!(!SecretVal::same_contents(&a, &b));
+        assert!(SecretVal::same_contents(&b, &b));
+        assert_eq!(KeyCell::equal(k, k), None);
+    }
+
     #[test]
     fn secrets_compare_by_contents_in_constant_time() {
         let new = |b: &[u8]| Rc::new(SecretVal::Bytes(SecretBytes::new(b.to_vec())));
@@ -4399,7 +4563,9 @@ mod secret_tests {
         assert!(SecretVal::same_contents(&b, &a));
         assert!(!SecretVal::same_contents(&a, &c));
         assert!(SecretVal::same_contents(&a, &a));
-        let (SecretVal::Bytes(x), SecretVal::Bytes(y)) = (&*a, &*b);
+        let (SecretVal::Bytes(x), SecretVal::Bytes(y)) = (&*a, &*b) else {
+            unreachable!()
+        };
         assert_eq!(SecretBytes::equal(x, x), Some(true));
         y.wipe();
         assert!(!SecretVal::same_contents(&a, &b));

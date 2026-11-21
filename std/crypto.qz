@@ -74,15 +74,26 @@ module Crypto
   # AES, in its authenticated mode GCM.
   module AES
     # AES-GCM with one key: authenticated encryption, which keeps data
-    # secret and detects any change to it. A `data` value holding the
-    # key: immutable and Shareable; [inspect] and [to_s] never show the
-    # key ([key] and [to_h] do, asked for explicitly).
+    # secret and detects any change to it. The key is held natively
+    # (#963): never as a [Bytes] in the value, cleared when the last
+    # reference goes or wiped, shown by [inspect] and [to_s] only by its
+    # size; [export_key] gives it as a [Bytes::Secret], asked for
+    # explicitly. Immutable but for [wipe], and Shareable: tasks hold the
+    # same key, never a copy.
+    #
+    # [wipe] ends the key for every holder at once: [wiped?] is true at
+    # once, and every later use but [bits] and [wiped?] raises
+    # [Bytes::Secret::WipedError]. Its memory is cleared at once, or,
+    # while a [seal] or [open] begun before on another worker is still
+    # running, when that one ends (it completes with the whole key), never
+    # later.
     #
     # ```
     # aead = Crypto::AES::GCM.generate(256)
     # token = aead.encrypt("a secret", aad: "user 42")
     # aead.decrypt(token, aad: "user 42").decode   # => "a secret"
     # aead.decrypt(token, aad: "user 43")          # raises Crypto::AuthenticationError
+    # aead.inspect                                 # => "#<Crypto::AES::GCM 256 bits>"
     # ```
     #
     # A nonce must never be used twice with one key: that is the one way
@@ -91,50 +102,43 @@ module Crypto
     # messages per key; past that, rotate the key, or give [seal] a
     # counter as the nonce. [seal] and [open] are for protocols that fix
     # the nonce (a counter, one from the peer).
-    data GCM(
-      # The key: 16, 24 or 32 bytes (AES-128, -192, -256).
-      key: Bytes
-    )
-      # Raises [ArgumentError] for a key that is not 16, 24 or 32 bytes.
-      def initialize(key: Bytes)
-        unless key.size == 16 || key.size == 24 || key.size == 32
-          raise ArgumentError, "an AES key has 16, 24 or 32 bytes, not #{key.size}"
-        end
-        @key = key
-      end
+    class GCM
+      include Shareable
+
+      # The key: 16, 24 or 32 bytes (AES-128, -192, -256), [ArgumentError]
+      # otherwise. A [Bytes::Secret] key is read without a copy that stays;
+      # a [Bytes] one stays as it is.
+      native def self.new(key: Bytes | Bytes::Secret) -> GCM
 
       # A fresh random key of [bits] bits: 128, 192 or 256.
       def self.generate(bits: Int = 256) -> GCM
         unless bits == 128 || bits == 192 || bits == 256
           raise ArgumentError, "an AES key has 128, 192 or 256 bits, not #{bits}"
         end
-        GCM.new(Crypto.random_bytes(bits / 8))
+        GCM.new(Crypto.random_secret(bits / 8))
       end
 
-      # The key's size in bits.
-      def bits -> Int = key.size * 8
+      # The key's size in bits, wiped or not.
+      native def bits -> Int
 
       # `plaintext` encrypted with `nonce` (12 bytes, used once with this
-      # key), followed by the 16-byte tag that authenticates it and `aad`
-      # (associated data: authenticated, not encrypted, and not included).
-      def seal(nonce: Bytes, plaintext: Bytes | String, *, aad: Bytes | String = "") -> Bytes
-        AES.seal_with(key, nonce, plaintext, aad)
-      end
+      # key; [ArgumentError] for another length), followed by the 16-byte
+      # tag that authenticates it and `aad` (associated data:
+      # authenticated, not encrypted, and not included).
+      native def seal(nonce: Bytes, plaintext: Bytes | String, *, aad: Bytes | String = "") -> Bytes
 
       # The plaintext of `sealed` (what [seal] gave for `nonce` and `aad`);
       # [Crypto::AuthenticationError] when it does not authenticate, and
       # then nothing of it is returned.
       def open(nonce: Bytes, sealed: Bytes, *, aad: Bytes | String = "") -> Bytes
-        opened = AES.open_with(key, nonce, sealed, aad)
+        opened = open?(nonce, sealed, aad: aad)
         raise AuthenticationError, "the data did not authenticate" if opened.nil?
         opened
       end
 
       # As [open], nil instead of raising: for a caller to whom a bad
       # token is a normal case (an expired cookie).
-      def open?(nonce: Bytes, sealed: Bytes, *, aad: Bytes | String = "") -> Bytes?
-        AES.open_with(key, nonce, sealed, aad)
-      end
+      native def open?(nonce: Bytes, sealed: Bytes, *, aad: Bytes | String = "") -> Bytes?
 
       # As [open], the plaintext as a [Bytes::Secret]: decrypted into the
       # secret's own buffer, with no [Bytes] of it made. For key material
@@ -146,15 +150,13 @@ module Crypto
       # gcm.open_secret(nonce, gcm.seal(nonce, "key")) == Bytes::Secret.of(b"key")   # => true
       # ```
       def open_secret(nonce: Bytes, sealed: Bytes, *, aad: Bytes | String = "") -> Bytes::Secret
-        opened = AES.open_secret_with(key, nonce, sealed, aad)
+        opened = open_secret?(nonce, sealed, aad: aad)
         raise AuthenticationError, "the data did not authenticate" if opened.nil?
         opened
       end
 
       # As [open_secret], nil instead of raising.
-      def open_secret?(nonce: Bytes, sealed: Bytes, *, aad: Bytes | String = "") -> Bytes::Secret?
-        AES.open_secret_with(key, nonce, sealed, aad)
-      end
+      native def open_secret?(nonce: Bytes, sealed: Bytes, *, aad: Bytes | String = "") -> Bytes::Secret?
 
       # `plaintext` sealed with a fresh random nonce: the nonce (12
       # bytes), the ciphertext and the tag (16 bytes), as one [Bytes] to
@@ -167,42 +169,40 @@ module Crypto
       # The plaintext of `token` (what [encrypt] gave for `aad`);
       # [Crypto::AuthenticationError] when it does not authenticate.
       def decrypt(token: Bytes, *, aad: Bytes | String = "") -> Bytes
-        opened = if token.size < 28
-          nil
-        else
-          AES.open_with(key, token.slice(0, 12), token.slice(12, token.size - 12), aad)
-        end
+        opened = token.size < 28 ? nil : open?(token.slice(0, 12), token.slice(12, token.size - 12), aad: aad)
         raise AuthenticationError, "the data did not authenticate" if opened.nil?
         opened
       end
 
       # As [decrypt], the plaintext as a [Bytes::Secret] ([open_secret]).
       def decrypt_secret(token: Bytes, *, aad: Bytes | String = "") -> Bytes::Secret
-        opened = if token.size < 28
-          nil
-        else
-          AES.open_secret_with(key, token.slice(0, 12), token.slice(12, token.size - 12), aad)
-        end
+        opened = token.size < 28 ? nil : open_secret?(token.slice(0, 12), token.slice(12, token.size - 12), aad: aad)
         raise AuthenticationError, "the data did not authenticate" if opened.nil?
         opened
       end
 
-      # `#<Crypto::AES::GCM 256 bits>`: never the key.
+      # The key, as a [Bytes::Secret]: asked for explicitly.
+      native def export_key -> Bytes::Secret
+
+      # Ends the key for every holder (above). Wiping again does nothing.
+      native def wipe -> Void
+
+      # Whether it was wiped.
+      native def wiped? -> Bool
+
+      # Whether [other] is an AES key of the same bytes, compared in
+      # constant time. Raises [Bytes::Secret::WipedError] when either key
+      # was wiped; any other value (a [Bytes::Secret], an RSA key) is not
+      # equal, and raises only when this key was wiped.
+      native def ==(other: Object) -> Bool
+
+      # `#<Crypto::AES::GCM 256 bits>`: never the key; the size still
+      # once wiped.
       def inspect -> String = "#<Crypto::AES::GCM #{bits} bits>"
 
       # :ditto:
       def to_s -> String = inspect
     end
-
-    # :nodoc:
-    # `plaintext` sealed with `key` and `nonce` (GCM, a 16-byte tag).
-    native def self.seal_with(key: Bytes, nonce: Bytes, plaintext: Bytes | String, aad: Bytes | String) -> Bytes
-    # :nodoc:
-    # The plaintext of `sealed`, nil when it does not authenticate.
-    native def self.open_with(key: Bytes, nonce: Bytes, sealed: Bytes, aad: Bytes | String) -> Bytes?
-    # :nodoc:
-    # As [open_with], the plaintext as a secret.
-    native def self.open_secret_with(key: Bytes, nonce: Bytes, sealed: Bytes, aad: Bytes | String) -> Bytes::Secret?
   end
 
   # argon2id password hashes (RFC 9106), through the RustCrypto `argon2`
@@ -351,22 +351,31 @@ module Crypto
   # is named by a symbol: `:sha256`, `:sha384` or `:sha512`
   # ([ArgumentError] otherwise).
   module RSA
-    # An RSA private key.
+    # An RSA private key, held natively (#963): parsed once, never as a
+    # [Bytes] in the value, cleared when the last reference goes or wiped;
+    # [inspect] and [to_s] show its size only. [export_der] and
+    # [export_pem] give it as a [Bytes::Secret], asked for explicitly.
+    # Immutable but for [wipe], and Shareable: tasks hold the same key,
+    # never a copy.
+    #
+    # [wipe] ends the key for every holder at once: [wiped?] is true at
+    # once, and every later use but [bits] and [wiped?] raises
+    # [Bytes::Secret::WipedError]. Its memory is cleared at once, or,
+    # while a [sign] begun before on another worker is still running, when
+    # that one ends (it completes with the whole key), never later.
     #
     # ```quarz no_run
     # key = Crypto::RSA::PrivateKey.generate(2048)
-    # File.write("key.pem", key.to_pem)
+    # File.write("key.pem", key.export_pem.expose_bytes)
     # File.write("key.pub.pem", key.public_key.to_pem)
     # ```
-    data PrivateKey(
-      # The key as PKCS#8 DER, whatever it was read from.
-      der: Bytes
-    )
-      # Raises [Crypto::Error] when [der] is not an RSA private key
-      # (PKCS#8 or PKCS#1); it is kept as PKCS#8.
-      def initialize(der: Bytes)
-        @der = RSA.private_der(der)
-      end
+    class PrivateKey
+      include Shareable
+
+      # The key in [der]: PKCS#8 or PKCS#1 ([Crypto::Error] otherwise, as
+      # for a key of another kind or size). A [Bytes::Secret] is read
+      # without a copy that stays; a [Bytes] stays as it is.
+      native def self.new(der: Bytes | Bytes::Secret) -> PrivateKey
 
       # A new key of [bits] bits: 2048, 3072 or 4096 ([ArgumentError]
       # otherwise). It is made on a helper thread: only the calling task
@@ -375,35 +384,36 @@ module Crypto
         unless bits == 2048 || bits == 3072 || bits == 4096
           raise ArgumentError, "an RSA key has 2048, 3072 or 4096 bits, not #{bits}"
         end
-        PrivateKey.new(RSA.generate_der(bits))
+        generate_with(bits)
       end
 
       # The key in `pem`: one PKCS#8 (`PRIVATE KEY`) or PKCS#1
       # (`RSA PRIVATE KEY`) block, alone but for whitespace, not encrypted
       # ([Crypto::Error] otherwise, as for a key of another kind or size).
+      # A [Bytes::Secret] is read without a copy that stays.
       #
       # ```
       # pem = File.read("std/test/fixtures/crypto/rsa2048_pkcs1.pem")
       # Crypto::RSA::PrivateKey.from_pem(pem).bits   # => 2048
       # ```
-      def self.from_pem(pem: String | Bytes) -> PrivateKey
-        PrivateKey.new(RSA.private_pem(pem.is_a?(String) ? pem.to_bytes : pem))
-      end
+      native def self.from_pem(pem: String | Bytes | Bytes::Secret) -> PrivateKey
 
-      # The key in [der]: PKCS#8 or PKCS#1.
-      def self.from_der(der: Bytes) -> PrivateKey = PrivateKey.new(der)
+      # The key in [der]: PKCS#8 or PKCS#1 (as [new]).
+      def self.from_der(der: Bytes | Bytes::Secret) -> PrivateKey = PrivateKey.new(der)
 
-      # The key as DER: PKCS#8.
-      def to_der -> Bytes = der
+      # The key as PKCS#8 DER, in a [Bytes::Secret]: asked for explicitly.
+      native def export_der -> Bytes::Secret
 
-      # The key as PEM: PKCS#8 (`PRIVATE KEY`), or PKCS#1
-      # (`RSA PRIVATE KEY`) with `format: :pkcs1`.
-      native def to_pem(format: Symbol = :pkcs8) -> String
+      # The key as PEM text, in a [Bytes::Secret]: PKCS#8
+      # (`PRIVATE KEY`), or PKCS#1 (`RSA PRIVATE KEY`) with
+      # `format: :pkcs1`. `export_pem.expose_bytes` is the text as
+      # [Bytes], which nothing clears.
+      native def export_pem(format: Symbol = :pkcs8) -> Bytes::Secret
 
       # The public half.
-      def public_key -> PublicKey = PublicKey.new(RSA.public_of(der))
+      def public_key -> PublicKey = PublicKey.new(public_der)
 
-      # The modulus's size in bits.
+      # The modulus's size in bits, wiped or not.
       native def bits -> Int
 
       # The RSASSA-PKCS1-v1_5 signature of `data` with [hash].
@@ -414,11 +424,28 @@ module Crypto
       # salt is random.
       native def sign_pss(data: Bytes | String, hash: Symbol) -> Bytes
 
-      # `#<Crypto::RSA::PrivateKey 2048 bits>`: never the key.
+      # Ends the key for every holder (above). Wiping again does nothing.
+      native def wipe -> Void
+
+      # Whether it was wiped.
+      native def wiped? -> Bool
+
+      # Whether [other] is the same private key, whatever it was read from
+      # (PKCS#8 or PKCS#1, DER or PEM), its secret parts compared in
+      # constant time. Raises [Bytes::Secret::WipedError] when either key
+      # was wiped; any other value (a [Bytes::Secret], an AES key) is not
+      # equal, and raises only when this key was wiped.
+      native def ==(other: Object) -> Bool
+
+      # `#<Crypto::RSA::PrivateKey 2048 bits>`: never the key; the size
+      # still once wiped.
       def inspect -> String = "#<Crypto::RSA::PrivateKey #{bits} bits>"
 
       # :ditto:
       def to_s -> String = inspect
+
+      private native def self.generate_with(bits: Int) -> PrivateKey
+      private native def public_der -> Bytes
     end
 
     # An RSA public key.
@@ -482,22 +509,10 @@ module Crypto
     end
 
     # :nodoc:
-    # `der` (PKCS#8 or PKCS#1) as PKCS#8.
-    native def self.private_der(der: Bytes) -> Bytes
-    # :nodoc:
-    # The one private key block of `pem`, as PKCS#8 DER.
-    native def self.private_pem(pem: Bytes) -> Bytes
-    # :nodoc:
     # `der` (SPKI or PKCS#1) as SPKI.
     native def self.public_der(der: Bytes) -> Bytes
     # :nodoc:
     # The one public key block of `pem`, as SPKI DER.
     native def self.public_pem(pem: Bytes) -> Bytes
-    # :nodoc:
-    # The SPKI DER of the public half of the private key `der` (PKCS#8).
-    native def self.public_of(der: Bytes) -> Bytes
-    # :nodoc:
-    # A new key's PKCS#8 DER (on a helper thread).
-    native def self.generate_der(bits: Int) -> Bytes
   end
 end

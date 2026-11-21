@@ -268,7 +268,7 @@ const PURITY_BY_CLASS: &[(&str, Purity)] = &[
     // Argon2's salted `hash`, draw it in Quarz through
     // `Crypto.random_bytes`).
     ("Crypto", Pure),
-    ("Crypto::AES", Pure),
+    ("Crypto::AES::GCM", Pure),
     ("Crypto::Argon2", Pure),
     ("Crypto::RSA", Pure),
     ("Crypto::RSA::PrivateKey", Pure),
@@ -306,7 +306,7 @@ const PURITY_BY_KEY: &[(&str, Purity)] = &[
     ("Time.monotonic", Denied),
     ("Crypto.random_bytes", Denied),
     ("Crypto.random_secret", Denied),
-    ("Crypto::RSA.generate_der", Denied),
+    ("Crypto::RSA::PrivateKey.generate_with", Denied),
     // (A random salt.)
     ("Crypto::RSA::PrivateKey#sign_pss", Denied),
     // (On a socket.)
@@ -455,20 +455,30 @@ fn no_crypto(m: &mut Registry<NativeFn>) {
         [
             "Crypto.random_bytes",
             "Crypto.secure_compare",
-            "Crypto::AES.seal_with",
-            "Crypto::AES.open_with",
-            "Crypto::AES.open_secret_with",
+            "Crypto::AES::GCM.new",
+            "Crypto::AES::GCM#bits",
+            "Crypto::AES::GCM#seal",
+            "Crypto::AES::GCM#open?",
+            "Crypto::AES::GCM#open_secret?",
+            "Crypto::AES::GCM#export_key",
+            "Crypto::AES::GCM#wipe",
+            "Crypto::AES::GCM#wiped?",
+            "Crypto::AES::GCM#==",
             "Crypto::Argon2.hash_with",
             "Crypto::Argon2.verify_with",
             "Crypto::Argon2.params_with",
-            "Crypto::RSA.private_der",
-            "Crypto::RSA.private_pem",
             "Crypto::RSA.public_der",
             "Crypto::RSA.public_pem",
-            "Crypto::RSA.public_of",
-            "Crypto::RSA.generate_der",
-            "Crypto::RSA::PrivateKey#to_pem",
+            "Crypto::RSA::PrivateKey.new",
+            "Crypto::RSA::PrivateKey.from_pem",
+            "Crypto::RSA::PrivateKey.generate_with",
+            "Crypto::RSA::PrivateKey#export_der",
+            "Crypto::RSA::PrivateKey#export_pem",
+            "Crypto::RSA::PrivateKey#public_der",
             "Crypto::RSA::PrivateKey#bits",
+            "Crypto::RSA::PrivateKey#wipe",
+            "Crypto::RSA::PrivateKey#wiped?",
+            "Crypto::RSA::PrivateKey#==",
             "Crypto::RSA::PrivateKey#sign",
             "Crypto::RSA::PrivateKey#sign_pss",
             "Crypto::RSA::PublicKey#to_pem",
@@ -749,7 +759,7 @@ mod compile_time_tests {
                     | "Kernel#exit"
                     | "Kernel#gets"
                     | "Crypto.random_bytes"
-                    | "Crypto::RSA.generate_der"
+                    | "Crypto::RSA::PrivateKey.generate_with"
                     | "Array#shuffle"
                     | "Array#sample"
             );
@@ -771,7 +781,7 @@ mod compile_time_tests {
                         | "Time#year"
                         | "Time.at"
                         | "Crypto::RSA::PublicKey#verify"
-                        | "Crypto::AES.seal_with"
+                        | "Crypto::AES::GCM#seal"
                 )
             {
                 assert!(
