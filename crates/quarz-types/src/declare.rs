@@ -3124,7 +3124,10 @@ impl<'ast> Declarer<'ast> {
     /// type arguments the class (and the extension's bound) admits is an
     /// error at that include (`World::partial_replacements`): a class value
     /// carries no type arguments at run time, so the override table pairs
-    /// methods for every instantiation or for none.
+    /// methods for every instantiation or for none. A pair no include of
+    /// the class brings, the class's own method against one a superclass
+    /// brings (its own, or a module's it includes), is an error at that
+    /// method's declaration, by the same test (#990).
     fn check_partial_includes(&mut self, id: ClassId) {
         let pairs = self.world.partial_replacements(id);
         if pairs.is_empty() {
@@ -3164,21 +3167,36 @@ impl<'ast> Declarer<'ast> {
                     })
                     .or_else(|| of_extension(&|x| self.world.extensions[x as usize].target == id)),
             };
-            let Some((ty, span, file)) = site else {
-                // (No include of the class's own brings it: the class's own
-                // method against a method a superclass brings, its own or a
-                // module it includes. That is no include of this class, so
-                // outside #602's decision, and filed as #990.)
+            // (The class's own method against what an extension of another
+            // class brings, a superclass's: the method is what this class
+            // can change, so the error is there, as for #990's.)
+            let elsewhere = p
+                .extension
+                .is_some_and(|e| self.world.extensions[e as usize].target != id)
+                && self.world.method(p.by).owner == id;
+            // (No include of the class's own brings it: the class's own
+            // method against a method a superclass brings, its own or a
+            // module's it includes, reported at the method, #990.)
+            if site.is_none() {
                 debug_assert!(
                     self.world.class(id).superclass.as_ref().is_some_and(|s| matches!(
                         s, Type::Class(sup, _) if self.world.class_is_a_at_run_time(*sup, p.module)
-                    )),
-                    "a partial pair no include of the class brings comes from a superclass"
+                    )) && self.world.method(p.by).owner == id,
+                    "a partial pair no include of the class brings is its own method's against a superclass's"
                 );
-                continue;
-            };
+            }
             let w = &self.world;
-            let include = format!("include {}", w.type_name(&ty));
+            let (span, file) = match &site {
+                Some((_, span, file)) if !elsewhere => (*span, *file),
+                _ => {
+                    let m = w.method(p.by);
+                    (m.span, m.file)
+                }
+            };
+            let include = site
+                .as_ref()
+                .map(|(ty, ..)| format!("include {}", w.type_name(ty)))
+                .unwrap_or_default();
             // (`extension Box[T <: Int]`, as it is written.)
             let header = p.extension.map(|e| {
                 let ext = &w.extensions[e as usize];
@@ -3201,9 +3219,18 @@ impl<'ast> Declarer<'ast> {
                     format!("extension {}[{}]", w.class(ext.target).name, tps.join(", "))
                 }
             });
-            let whose = match &header {
-                Some(h) => format!("`{h}`'s `{include}`"),
-                None => format!("`{include}`"),
+            let (by, replaced) = (shown(w, p.by), shown(w, p.replaced));
+            let class = &w.class(id).name;
+            // (What makes the pair: the include, or the class's method.)
+            let lead = match (&site, &header) {
+                (None, _) => format!("`{by}` replaces `{replaced}`, which `{class}` inherits,"),
+                (Some(_), Some(h)) if elsewhere => format!(
+                    "`{by}` replaces `{replaced}`, which `{class}` inherits through `{h}`'s `{include}`,"
+                ),
+                (Some(_), Some(h)) => {
+                    format!("`{h}`'s `{include}` makes `{by}` replace `{replaced}`")
+                }
+                (Some(_), None) => format!("`{include}` makes `{by}` replace `{replaced}`"),
             };
             let params: Vec<String> = w
                 .class(id)
@@ -3211,15 +3238,13 @@ impl<'ast> Declarer<'ast> {
                 .iter()
                 .map(|tp| format!("`{}`", tp.name))
                 .collect();
-            let (by, replaced) = (shown(w, p.by), shown(w, p.replaced));
-            let class = &w.class(id).name;
             let advice = format!(
                 "give one of them another name, or parameters that do not depend on {}",
                 params.join(", ")
             );
             let message = match (&p.replaces_for, &p.not_for, p.extension) {
                 (Some(yes), Some(no), _) => format!(
-                    "{whose} makes `{by}` replace `{replaced}` only for some type arguments of `{class}`: for `{}` it replaces it, for `{}` it does not. A method replaces another for every type argument or for none (a class value carries none at run time): {advice}",
+                    "{lead} only for some type arguments of `{class}`: for `{}` it replaces it, for `{}` it does not. A method replaces another for every type argument or for none (a class value carries none at run time): {advice}",
                     instance(w, yes),
                     instance(w, no),
                 ),
@@ -3231,11 +3256,11 @@ impl<'ast> Declarer<'ast> {
                     instance(w, yes),
                 ),
                 (Some(yes), None, None) => format!(
-                    "{whose} makes `{by}` replace `{replaced}` only for some type arguments of `{class}`: for `{}` it replaces it, not for every one. A method replaces another for every type argument or for none (a class value carries none at run time): {advice}",
+                    "{lead} only for some type arguments of `{class}`: for `{}` it replaces it, not for every one. A method replaces another for every type argument or for none (a class value carries none at run time): {advice}",
                     instance(w, yes),
                 ),
                 _ => format!(
-                    "{whose} makes `{by}` replace `{replaced}` for some type arguments of `{class}` but perhaps not for all (their parameters' types depend on {} in a way this check does not decide). A method replaces another for every type argument or for none (a class value carries none at run time): {advice}",
+                    "{lead} for some type arguments of `{class}` but perhaps not for all (their parameters' types depend on {} in a way this check does not decide). A method replaces another for every type argument or for none (a class value carries none at run time): {advice}",
                     params.join(", ")
                 ),
             };
