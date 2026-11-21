@@ -8,6 +8,10 @@ on:
     branches: [main]
   pull_request:
 
+# Nothing here writes to the repository (#1008's job reads another).
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -57,6 +61,8 @@ jobs:
         part: [std, build, rest]
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -69,6 +75,42 @@ jobs:
       - name: Test std.rs
         if: matrix.part == 'std'
         run: cargo test -p quarz-cli --test std
+      # The examples of the guide at quarz.dev (quarz-lang/quarz.dev's
+      # `scripts/check_guide.qz`, run on the site's main) with this
+      # change's `quarz`, the one the step above built (#1008). A warning,
+      # not a failure: a change that breaks an example on purpose is
+      # followed by the site's pull request, which the summary names the
+      # blocks for. After the tests, so that the site's checkout is not
+      # in the tree they read.
+      - name: Check out the site's guide
+        if: matrix.part == 'std' && !cancelled()
+        uses: actions/checkout@v7
+        with:
+          repository: quarz-lang/quarz.dev
+          ref: main
+          path: quarz.dev
+          persist-credentials: false
+      - name: The guide's examples (a warning, not a failure)
+        if: matrix.part == 'std' && !cancelled()
+        continue-on-error: true
+        working-directory: quarz.dev
+        run: |
+          quarz="$GITHUB_WORKSPACE/target/debug/quarz"
+          if "$quarz" run scripts/check_guide.qz "$quarz" > guide.log 2>&1; then
+            tail -n 1 guide.log
+            exit 0
+          fi
+          {
+            echo "### The guide's examples at quarz.dev"
+            echo
+            echo "This change breaks examples of quarz-lang/quarz.dev's guide (checked on the site's main). If that is meant, update them in a pull request there, beside this one:"
+            echo
+            echo '```'
+            cat guide.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning title=The guide's examples::$(tail -n 1 guide.log) (see the job summary)"
+          exit 1
       - name: Test build.rs
         if: matrix.part == 'build'
         run: cargo test -p quarz-cli --test build
