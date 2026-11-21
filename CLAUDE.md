@@ -56,6 +56,12 @@ run (an edited function or match arm in a shared file, `value.rs`, the
 checker, lowering or the IR passes) runs the full `cargo test` locally
 as above. The pull request says which case it was.
 
+CI's `Test (std)` job also runs quarz.dev's guide examples
+(`scripts/check_guide.qz`) with the branch's `quarz` and reports failing
+blocks as a warning in its summary, without failing the pull request: a
+change that breaks one on purpose is followed by a quarz.dev pull
+request updating it, opened beside this one.
+
 While iterating, run the test binary for the area, and the full run
 only at the end when the case above calls for it: `cargo test -p
 quarz-cli --test std` for the language and standard library
