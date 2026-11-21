@@ -5542,9 +5542,21 @@ impl<B: Builder> Gen<'_, B> {
                     dst,
                 }) => {
                     self.set_call_line(block, index);
-                    for (k, r) in args.iter().enumerate() {
-                        let v = self.i32(*r);
-                        self.b.store(v, self.scratch, 4 * k as i32);
+                    // A native with a by-reference twin, bound statically
+                    // (what `qz_call_static` would reach without looking
+                    // anything up) is made through the twin's `qzfc.` entry
+                    // (below), the argument registers passed as they are.
+                    let fast = self.fast_entries.get(&mid).copied().filter(|_| {
+                        !function
+                            && blk.is_none()
+                            && args.len() <= 3
+                            && self.methods[mid as usize].dispatch() == Dispatch::Static
+                    });
+                    if fast.is_none() {
+                        for (k, r) in args.iter().enumerate() {
+                            let v = self.i32(*r);
+                            self.b.store(v, self.scratch, 4 * k as i32);
+                        }
                     }
                     // (A function's call carries `STATIC_FUNCTION` in its
                     // id: called as is.)
@@ -5595,28 +5607,38 @@ impl<B: Builder> Gen<'_, B> {
                     if recv.is_none() {
                         self.materialize();
                     }
-                    // A native with a by-reference twin, bound statically
-                    // (what `qz_call_static` would reach without looking
-                    // anything up): its `qzfc.` entry, which answers with no
-                    // status (a twin never raises) or declines, and then
-                    // the call goes through `qz_call_static` as before, on
-                    // the same operands (the entry consumed nothing), #795.
-                    let fast = self.fast_entries.get(&mid).copied().filter(|_| {
-                        !function
-                            && blk.is_none()
-                            && args.len() <= 3
-                            && self.methods[mid as usize].dispatch() == Dispatch::Static
-                    });
+                    // The twin's entry answers with no status (a twin never
+                    // raises) or declines, and then the call goes through
+                    // `qz_call_static` as before, on the same operands (the
+                    // entry consumed nothing), #795. A destination whose
+                    // home holds no counted value (its state, as
+                    // `clear_home` reads it) is written without a drop.
                     let cont = fast.map(|entry| {
+                        let empty = !self.states[dst as usize].needs_release();
+                        let d_flags = self.i32(if empty {
+                            dst | quarz_vm::natives::FAST_DST_EMPTY
+                        } else {
+                            dst
+                        });
+                        let a: Vec<B::Value> = (0..3)
+                            .map(|k| self.i32(args.get(k).copied().unwrap_or(0)))
+                            .collect();
                         let answered = self.b.call(
                             entry,
-                            &[self.rt, self.act, self.regs, recv_v, self.scratch, nargs, d],
+                            &[
+                                self.rt, self.act, self.regs, recv_v, d_flags, nargs, a[0], a[1],
+                                a[2],
+                            ],
                         )[0];
                         let cont = self.b.create_block();
                         let declined = self.b.create_block();
                         self.b.set_cold(declined);
                         self.b.brif(answered, cont, &[], declined, &[]);
                         self.b.switch_to_block(declined);
+                        for (k, r) in args.iter().enumerate() {
+                            let v = self.i32(*r);
+                            self.b.store(v, self.scratch, 4 * k as i32);
+                        }
                         cont
                     });
                     let status = self.b.call(

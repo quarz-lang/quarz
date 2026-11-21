@@ -40,13 +40,21 @@ macro_rules! native {
     };
 }
 
+/// The flag of a `qzfc.` entry's `dst`: the register's home holds no
+/// counted value, so the answer is written without dropping it (#795).
+pub const FAST_DST_EMPTY: u32 = 1 << 31;
+
 /// `native!` for a by-reference native (`qzf.`), with the entry compiled
 /// code calls it through (`qzfc.`, #795): the twin and its entry come from
 /// this one line, under its first key.
 macro_rules! fast {
     ($m:expr, [$first:literal $(, $key:literal)* $(,)?], $f:expr $(,)?) => {{
-        #[export_name = concat!("qzf.", $first)]
-        fn native(
+        // The twin, once: its `qzf.` export and its `qzfc.` entry both
+        // run this body (the entry inlines it rather than calling the
+        // export, which a position-independent program reaches through
+        // its global offset table).
+        #[inline(always)]
+        fn body(
             i: &crate::interp::Interp,
             r: &crate::value::Value,
             a: &[&crate::value::Value],
@@ -62,24 +70,39 @@ macro_rules! fast {
             }
             out
         }
+        #[export_name = concat!("qzf.", $first)]
+        fn native(
+            i: &crate::interp::Interp,
+            r: &crate::value::Value,
+            a: &[&crate::value::Value],
+        ) -> Option<crate::value::Value> {
+            body(i, r, a)
+        }
         /// Compiled code's call of the twin (#795): the receiver
         /// (`recv`, or the caller's `self` for `u32::MAX`) and the
-        /// argument registers (`args`, `n` of them) borrowed, as
-        /// `qz_call_static` lends them. 1 when it answered, the value in
-        /// `regs[dst]`; 0 when it declined, nothing touched, and the
-        /// caller then makes the call through `qz_call_static`.
+        /// argument registers (`a0`..`a2`, the first `n` of them)
+        /// borrowed, as `qz_call_static` lends them. 1 when it answered,
+        /// the value in `regs[dst]`; 0 when it declined, nothing
+        /// touched, and the caller then makes the call through
+        /// `qz_call_static`. `dst` with `FAST_DST_EMPTY` says its home
+        /// holds nothing to release (the caller knows it holds no
+        /// counted value): the answer is written over it without a drop.
         ///
         /// # Safety
-        /// As for `qz_call_static`.
+        /// As for `qz_call_static`; a `FAST_DST_EMPTY` home holds no
+        /// counted value.
         #[export_name = concat!("qzfc.", $first)]
+        #[allow(clippy::too_many_arguments)]
         unsafe extern "C" fn entry(
             rt: *const crate::interp::Interp,
             act: *const crate::vm::Activation,
             regs: *mut crate::value::Value,
             recv: u32,
-            args: *const u32,
-            n: u32,
             dst: u32,
+            n: u32,
+            a0: u32,
+            a1: u32,
+            a2: u32,
         ) -> u8 {
             // SAFETY: as the caller promises.
             unsafe {
@@ -88,13 +111,21 @@ macro_rules! fast {
                 } else {
                     &*regs.add(recv as usize)
                 };
-                let mut refs: [&crate::value::Value; 3] = [&crate::value::Value::Nil; 3];
-                for (i, slot) in refs.iter_mut().enumerate().take(n as usize) {
-                    *slot = &*regs.add(*args.add(i) as usize);
-                }
-                match native(&*rt, recv_ref, &refs[..n as usize]) {
+                let at = |r: u32| -> &crate::value::Value { &*regs.add(r as usize) };
+                let out = match n {
+                    0 => body(&*rt, recv_ref, &[]),
+                    1 => body(&*rt, recv_ref, &[at(a0)]),
+                    2 => body(&*rt, recv_ref, &[at(a0), at(a1)]),
+                    _ => body(&*rt, recv_ref, &[at(a0), at(a1), at(a2)]),
+                };
+                match out {
                     Some(v) => {
-                        *regs.add(dst as usize) = v;
+                        let home = regs.add((dst & !crate::natives::FAST_DST_EMPTY) as usize);
+                        if dst & crate::natives::FAST_DST_EMPTY != 0 {
+                            std::ptr::write(home, v);
+                        } else {
+                            *home = v;
+                        }
                         1
                     }
                     None => 0,
