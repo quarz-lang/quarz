@@ -1,0 +1,135 @@
+# #1000: an inline construction's field defaults, compiled without the
+# runtime's loop: a constant one placed in its word field (or nothing for
+# nil), any other run by a direct call of its function, its value stored
+# by the runtime. In order, as the interpreter runs them.
+
+def note(s: String, v: Int) -> Int
+  puts s
+  v
+end
+
+def seen(s: String, v: Int?) -> Int?
+  puts "#{s} #{v.inspect}"
+  v
+end
+
+def fail_now -> Int = raise "no default"
+
+# Constants of each kind, with and without an `initialize`.
+class Lits
+  @i: Int = 7
+  @f: Float = 1.5
+  @b: Bool = true
+  @off: Bool = false
+  @n: Int? = nil
+  @s: Symbol = :sym
+  @j: Int? = 3
+  @neg: Int = -4
+  def show -> String = "#{@i} #{@f} #{@b} #{@off} #{@n.inspect} #{@s.inspect} #{@j} #{@neg}"
+end
+
+class LitsInit
+  @i: Int = 7
+  @k: Int
+  def initialize(@k: Int); end
+  def show -> String = "#{@i} #{@k}"
+end
+
+# A computed default reads an earlier field, placed without a call, and
+# runs before a later constant is placed. (A default reading a later field
+# is a compile error: read before it is assigned.)
+class Order
+  @a: Int = 1
+  @b: Int = note("b", @a + 1)
+  @c: Int? = seen("c", 3)
+  @d: Int = 4
+  def initialize
+    puts "initialize"
+  end
+  def show -> String = "#{@a} #{@b} #{@c.inspect} #{@d}"
+end
+
+# A default that raises: the object is never seen, and what an earlier
+# default stored is released once, with the half-built object (which its
+# register keeps until after the `rescue`, as the interpreter does).
+class Probe
+  @name: String
+  def initialize(@name: String); end
+  def deinitialize -> Void
+    puts "released #{@name}"
+  end
+end
+
+class Fails
+  @p: Probe = Probe.new("early")
+  @x: Int = fail_now
+  def initialize
+    puts "never"
+  end
+end
+
+# A data value held in place, inherited defaults, a default holding a
+# block (not a lean call).
+data Pt = (x: Int, y: Int)
+
+class Holder
+  @p: Pt = Pt.new(1, 2)
+  @k: Int = 5
+  def show -> String = "#{@p.x},#{@p.y} #{@k}"
+end
+
+class Base
+  @base: Int = note("base", 10)
+end
+
+class Sub < Base
+  @own: String = "own"
+  @sum: Int = [1, 2, 3].map { |v| v * 2 }.sum
+  def show -> String = "#{@base} #{@own} #{@sum}"
+end
+
+# Literal defaults in a superclass and in a subclass that adds fields
+# after its superclass's: each value distinct, so a field taken for
+# another would print wrong.
+class Upper
+  @u1: Int = 11
+  @u2: Float = 2.5
+  @u3: Bool = false
+end
+
+class Lower < Upper
+  @l1: Int = 13
+  @l2: Bool = true
+  @l3: Int = 17
+  def show -> String = "#{@u1} #{@u2} #{@u3} #{@l1} #{@l2} #{@l3}"
+end
+
+# A collection and a string as defaults: each object its own value, one
+# updated in place leaving the others (and later ones) as they were.
+class Lister
+  var @items: Array[Int] = []
+  var @label: String = "x"
+  def add(n: Int) -> Void
+    @items = @items.push(n)
+    @label = @label + n.to_s
+  end
+  def show -> String = "#{@items} #{@label}"
+end
+
+puts Lits.new.show
+puts LitsInit.new(9).show
+puts Order.new.show
+begin
+  Fails.new
+rescue RuntimeError => e
+  puts "rescued #{e.message}"
+end
+puts Holder.new.show
+puts Sub.new.show
+puts Lower.new.show
+a1 = Lister.new
+a2 = Lister.new
+a1.add(1)
+a1.add(2)
+a3 = Lister.new
+puts a1.show, a2.show, a3.show

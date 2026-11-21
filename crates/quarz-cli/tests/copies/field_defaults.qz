@@ -1,0 +1,22 @@
+# #1000: an inline construction runs a collection's default by a direct
+# call of its function, which makes a new value for each object, as the
+# runtime's loop did: the object's field is the only reference to it, so
+# updating it in place copies nothing.
+class Lister
+  var @items: Array[Int] = [0]
+  var @tags: Hash[Symbol, Int] = {a: 1}
+  def add(n: Int) -> Void
+    @items = @items.push(n)
+    @tags = @tags.put(:b, n)
+  end
+  def size -> Int = @items.size + @tags.size
+end
+
+n = 0
+100.times do |i|
+  l = Lister.new
+  l.add(i)
+  l.add(i + 1)
+  n += l.size
+end
+p n

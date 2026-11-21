@@ -8,6 +8,10 @@ use crate::interp::{Hot, Interp};
 use crate::vm::Activation;
 
 pub const ACT_SIZE: usize = size_of::<Activation>();
+/// `qz_leave`'s destination that keeps the result in the call's result
+/// buffer (`out`) for the caller to take: a field default's value, which
+/// `qz_ivar_set` then stores (#1000). (`u32::MAX` drops the result.)
+pub const LEAVE_TO_OUT: u32 = u32::MAX - 1;
 /// Space compiled code reserves for an `Activation` it builds itself
 /// (`qz_enter`): at least its size (asserted below).
 pub const ACT_BUF_SIZE: usize = 320;

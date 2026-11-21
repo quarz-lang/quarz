@@ -1291,7 +1291,7 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
             cmp_int_float: declare("qz_cmp_int_float", &[i64_, Ty::F64, i32_], &[i32_]),
             alloc_data: declare("qz_alloc_data", &[p, i32_, p, i32_, i32_], &[]),
             alloc_object: declare("qz_alloc_object", &[p, p, i32_, i32_], &[i32_]),
-            field_defaults: declare("qz_field_defaults", &[p, p, i32_], &[i32_]),
+            ivar_set: declare("qz_ivar_set", &[p, p, i32_, i32_, p], &[i32_]),
             construct: declare("qz_construct", &[p, p, i32_, i32_, p, i32_, i32_], &[i32_]),
         },
         main: declare(
@@ -1448,7 +1448,7 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
                 construct: rt.h.construct,
                 alloc_data: rt.h.alloc_data,
                 alloc_object: rt.h.alloc_object,
-                field_defaults: rt.h.field_defaults,
+                ivar_set: rt.h.ivar_set,
                 owned_call: rt.h.owned_call,
                 hash_put_int: rt.h.hash_put_int,
                 cmp_int_float: rt.h.cmp_int_float,
