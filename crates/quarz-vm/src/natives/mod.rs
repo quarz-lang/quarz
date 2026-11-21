@@ -40,9 +40,67 @@ macro_rules! native {
     };
 }
 
-/// The flag of a `qzfc.` entry's `dst`: the register's home holds no
-/// counted value, so the answer is written without dropping it (#795).
-pub const FAST_DST_EMPTY: u32 = 1 << 31;
+/// How compiled code hands a `qzfc.` entry its operands (#795): six
+/// register parameters in all, the interpreter, the activation and the
+/// registers, then three words that code generation computes as
+/// constants (`pack`) and the entry takes apart (`unpack`), in this one
+/// place:
+/// - `dst`'s word: the destination register (`DST_MASK`), the number of
+///   arguments (`N_MASK`), and `DST_EMPTY` when the register's home
+///   holds no counted value, so the answer is written without a drop;
+/// - the receiver register (`u32::MAX` for the caller's `self`) and the
+///   first argument register;
+/// - the second and third argument registers.
+pub mod fast_call {
+    pub const DST_EMPTY: u32 = 1 << 31;
+    pub const N_SHIFT: u32 = 29;
+    pub const N_MASK: u32 = 0b11 << N_SHIFT;
+    pub const DST_MASK: u32 = (1 << N_SHIFT) - 1;
+
+    /// The words for a call with receiver `recv`, arguments `args` (at
+    /// most three) and destination `dst` (`empty` as `DST_EMPTY` says).
+    pub fn pack(recv: u32, args: &[u32], dst: u32, empty: bool) -> (u32, u64, u64) {
+        assert!(
+            args.len() <= 3,
+            "a fast entry takes at most three arguments"
+        );
+        assert!(
+            dst <= DST_MASK,
+            "register {dst} beyond a fast entry's range"
+        );
+        let a = |k: usize| u64::from(args.get(k).copied().unwrap_or(0));
+        let word = dst | (args.len() as u32) << N_SHIFT | if empty { DST_EMPTY } else { 0 };
+        (word, u64::from(recv) | a(0) << 32, a(1) | a(2) << 32)
+    }
+
+    /// `pack`'s words taken apart: the receiver, the argument registers
+    /// (the first `n`), `n`, the destination and whether its home is
+    /// empty.
+    #[inline(always)]
+    pub fn unpack(word: u32, ops0: u64, ops1: u64) -> (u32, [u32; 3], usize, u32, bool) {
+        (
+            ops0 as u32,
+            [(ops0 >> 32) as u32, ops1 as u32, (ops1 >> 32) as u32],
+            ((word & N_MASK) >> N_SHIFT) as usize,
+            word & DST_MASK,
+            word & DST_EMPTY != 0,
+        )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn pack_round_trips() {
+            for args in [&[][..], &[7], &[7, 8], &[7, 8, 9]] {
+                for (recv, empty) in [(3, false), (u32::MAX, true)] {
+                    let (w, o0, o1) = super::pack(recv, args, super::DST_MASK, empty);
+                    let (r, a, n, d, e) = super::unpack(w, o0, o1);
+                    assert_eq!((r, &a[..n], d, e), (recv, args, super::DST_MASK, empty));
+                }
+            }
+        }
+    }
+}
 
 /// `native!` for a by-reference native (`qzf.`), with the entry compiled
 /// code calls it through (`qzfc.`, #795): the twin and its entry come from
@@ -78,32 +136,27 @@ macro_rules! fast {
         ) -> Option<crate::value::Value> {
             body(i, r, a)
         }
-        /// Compiled code's call of the twin (#795): the receiver
-        /// (`recv`, or the caller's `self` for `u32::MAX`) and the
-        /// argument registers (`a0`..`a2`, the first `n` of them)
-        /// borrowed, as `qz_call_static` lends them. 1 when it answered,
-        /// the value in `regs[dst]`; 0 when it declined, nothing
-        /// touched, and the caller then makes the call through
-        /// `qz_call_static`. `dst` with `FAST_DST_EMPTY` says its home
-        /// holds nothing to release (the caller knows it holds no
-        /// counted value): the answer is written over it without a drop.
+        /// Compiled code's call of the twin (#795): the receiver (or the
+        /// caller's `self`) and the argument registers borrowed, as
+        /// `qz_call_static` lends them, all named in `fast_call`'s words.
+        /// 1 when it answered, the value in the destination register; 0
+        /// when it declined, nothing touched, and the caller then makes
+        /// the call through `qz_call_static`. A destination flagged
+        /// `DST_EMPTY` is written without a drop.
         ///
         /// # Safety
-        /// As for `qz_call_static`; a `FAST_DST_EMPTY` home holds no
-        /// counted value.
+        /// As for `qz_call_static`; a `DST_EMPTY` home holds no counted
+        /// value.
         #[export_name = concat!("qzfc.", $first)]
-        #[allow(clippy::too_many_arguments)]
         unsafe extern "C" fn entry(
             rt: *const crate::interp::Interp,
             act: *const crate::vm::Activation,
             regs: *mut crate::value::Value,
-            recv: u32,
-            dst: u32,
-            n: u32,
-            a0: u32,
-            a1: u32,
-            a2: u32,
+            word: u32,
+            ops0: u64,
+            ops1: u64,
         ) -> u8 {
+            let (recv, args, n, dst, empty) = crate::natives::fast_call::unpack(word, ops0, ops1);
             // SAFETY: as the caller promises.
             unsafe {
                 let recv_ref: &crate::value::Value = if recv == u32::MAX {
@@ -111,17 +164,21 @@ macro_rules! fast {
                 } else {
                     &*regs.add(recv as usize)
                 };
-                let at = |r: u32| -> &crate::value::Value { &*regs.add(r as usize) };
-                let out = match n {
-                    0 => body(&*rt, recv_ref, &[]),
-                    1 => body(&*rt, recv_ref, &[at(a0)]),
-                    2 => body(&*rt, recv_ref, &[at(a0), at(a1)]),
-                    _ => body(&*rt, recv_ref, &[at(a0), at(a1), at(a2)]),
+                // (Without a branch on `n`: the slots past it name nil.)
+                const NIL: crate::value::Value = crate::value::Value::Nil;
+                let at = |k: usize| -> &crate::value::Value {
+                    if k < n {
+                        &*regs.add(args[k] as usize)
+                    } else {
+                        &NIL
+                    }
                 };
+                let refs = [at(0), at(1), at(2)];
+                let out = body(&*rt, recv_ref, &refs[..n.min(3)]);
                 match out {
                     Some(v) => {
-                        let home = regs.add((dst & !crate::natives::FAST_DST_EMPTY) as usize);
-                        if dst & crate::natives::FAST_DST_EMPTY != 0 {
+                        let home = regs.add(dst as usize);
+                        if empty {
                             std::ptr::write(home, v);
                         } else {
                             *home = v;
