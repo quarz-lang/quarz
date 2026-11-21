@@ -197,6 +197,46 @@ fn static_calls_any_method_or_function() {
     }
 }
 
+/// #981: an ordinary generic callee of `static(...)` (a generic function
+/// with its arguments inferred, a generic class method with them inferred
+/// and written, one using its type parameter as a value through a
+/// `Type[T]`) gives the value it has at run time, run and built; and the
+/// `Kernel` functions a standard module's extension adds (#936): `URI(...)`
+/// is baked, `Decimal(...)` is refused as a value that cannot be baked.
+#[test]
+fn static_calls_generic_and_std_kernel_functions() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "def pair[A, B](a: A, b: B) -> Array[String] = [a.to_s, b.to_s]\nclass Box\n  def self.wrap[T](x: T) -> Array[T] = [x]\n  def self.named[T](t: Type[T]) -> String = t.name\n  def self.empty_of[T](t: Type[T]) -> Int = Array[T].new.size\nend\n",
+    );
+    write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nrequire \"uri\"\nA = static(pair(1, \"a\"))\nB = static(Box.wrap(3))\nE = static(Box.wrap[Int](4))\nC = static(Box.named(Int))\nD = static(Box.empty_of(String))\nU = static(URI(\"https://example.com/\"))\np A, B, E, C, D, U\np A == pair(1, \"a\"), B == Box.wrap(3), C == Box.named(Int), U == URI(\"https://example.com/\")\n",
+    );
+    let want = "[\"1\", \"a\"]\n[3]\n[4]\n\"Int\"\n0\n#<URI https://example.com/>\ntrue\ntrue\ntrue\ntrue\n";
+    let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, want);
+    let (ok, _, err) = quarz(&d.0, &["build", "app.qz", "-o", "app"], &[]);
+    assert!(ok, "{err}");
+    let built = Command::new(d.0.join("app")).output().expect("run app");
+    assert_eq!(String::from_utf8_lossy(&built.stdout), want);
+    write(
+        &d.0,
+        "dec.qz",
+        "require \"decimal\"\nX = static(Decimal(\"1.10\"))\np X\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", "dec.qz"], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("dec.qz:2:5: error: `static(...)` gives a Decimal, which cannot be baked into the program"),
+        "{err}"
+    );
+}
+
 #[test]
 fn what_static_refuses() {
     let d = dir();
