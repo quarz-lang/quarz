@@ -7,10 +7,10 @@ dir = ARGV[0]
 cert = File.read(File.join(dir, "server.pem"))
 key = File.read(File.join(dir, "server.key"))
 
-def make(certificate: String, private_key: String) -> Void
+def make(certificate: String, private_key: String | Bytes::Secret) -> Void
   TLS::ServerConfig.new(certificate: certificate, private_key: private_key)
   puts "made"
-rescue TLS::Error => e
+rescue TLS::Error, Bytes::Secret::WipedError => e
   puts "#{e.class}: #{e.message}"
 end
 
@@ -22,6 +22,19 @@ make("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n", key)
 make(cert, "")
 make(cert, "garbage")
 make(cert, cert)
+# The key read from its PEM (sections of other labels and text outside
+# sections skipped), given as a secret too.
+make(cert, Bytes::Secret.of(key.to_bytes))
+make(cert, "a comment\n-----BEGIN EC PARAMETERS-----\nBggqhkjOPQMBBw==\n-----END EC PARAMETERS-----\n" + key)
+make(cert, "-----BEGIN PRIVATE KEY-----\n!!!!\n-----END PRIVATE KEY-----\n")
+make(cert, "-----BEGIN PRIVATE KEY-----\nAAAA\n")
+make(cert, "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----\n")
+make(cert, "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n")
+wiped = Bytes::Secret.of(key.to_bytes)
+wiped.wipe
+make(cert, wiped)
+p TLS::ServerConfig.new(certificate: cert, private_key: key).private_key.class
+p TLS::ServerConfig.new(certificate: cert, private_key: key.to_bytes).private_key.class
 begin
   TLS::ServerConfig.new(certificate: cert, private_key: key, min_version: :ssl3)
 rescue ArgumentError => e

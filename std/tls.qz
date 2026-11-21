@@ -145,6 +145,14 @@ module TLS
   # to resume (rustls's default). Client certificates, OCSP stapling and
   # settings for resumption are not supported yet.
   #
+  # The private key is held as a [Bytes::Secret]: given as one, it is
+  # kept as it is, with no plain copy; given as a [String] or [Bytes]
+  # (which stays as the caller holds it), it is copied into one. The
+  # configuration built from it is kept by a digest of the key, and the
+  # key is read into buffers cleared when dropped: what stays is the
+  # signing key rustls's crypto provider (ring) makes of it, as long as
+  # the configuration is kept, which ring does not clear when dropped.
+  # Wiping the key makes [accept] raise [Bytes::Secret::WipedError].
   # Its [inspect] and [to_s] never show the private key.
   #
   # ```quarz no_run
@@ -156,7 +164,7 @@ module TLS
     # The certificate chain (PEM), the server's own certificate first.
     certificate: Bytes,
     # The private key of the certificate (PEM: PKCS#8, PKCS#1 or SEC1).
-    private_key: Bytes,
+    private_key: Bytes::Secret,
     # The protocols accepted by ALPN, preferred first; a client offering
     # none of them is refused, one offering none is served.
     alpn: Array[String],
@@ -165,13 +173,17 @@ module TLS
   )
     # Raises [TLS::Error] when the certificate or the key does not parse,
     # or the key is not the certificate's; the message names which.
-    def initialize(*, certificate: Bytes | String, private_key: Bytes | String,
+    def initialize(*, certificate: Bytes | String, private_key: Bytes | String | Bytes::Secret,
                    alpn: Array[String] = [], min_version: Symbol = :tls12)
       unless min_version == :tls12 || min_version == :tls13
         raise ArgumentError, "min_version: :tls12 or :tls13, not #{min_version.inspect}"
       end
       @certificate = certificate.is_a?(String) ? certificate.to_bytes : certificate
-      @private_key = private_key.is_a?(String) ? private_key.to_bytes : private_key
+      @private_key = case private_key
+                     in Bytes::Secret then private_key
+                     in String then Bytes::Secret.of(private_key.to_bytes)
+                     in Bytes then Bytes::Secret.of(private_key)
+                     end
       @alpn = alpn
       @min_version = min_version
       check

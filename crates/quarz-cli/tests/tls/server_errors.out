@@ -6,6 +6,15 @@ TLS::Error: certificate: the first certificate does not parse
 TLS::Error: private_key: no private key in the PEM (PKCS#8, PKCS#1 or SEC1)
 TLS::Error: private_key: no private key in the PEM (PKCS#8, PKCS#1 or SEC1)
 TLS::Error: private_key: no private key in the PEM (PKCS#8, PKCS#1 or SEC1)
+made
+made
+TLS::Error: private_key: bad PEM
+TLS::Error: private_key: bad PEM
+TLS::Error: private_key: bad PEM
+TLS::Error: private_key: not a key that can sign (RSA, ECDSA P-256 or P-384, Ed25519)
+Bytes::Secret::WipedError: the secret was wiped
+Bytes::Secret
+Bytes::Secret
 min_version: :tls12 or :tls13, not :ssl3
 false
 false
