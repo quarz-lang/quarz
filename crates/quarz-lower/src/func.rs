@@ -2673,37 +2673,95 @@ impl<'a> FnBuilder<'a> {
     }
 
     /// A `data` construction through the generated constructor (`init`,
-    /// `Synth::DataInit`) with trailing fields left out, each of whose
-    /// defaults may be evaluated at the call (`default_at_call`): the
-    /// defaults are lowered at the call, so that the construction has
-    /// every field and is made inline, as one written in full is
-    /// (`sroa`, the AOT's `alloc_data`), not through the runtime's binding
-    /// (#921, #940). Such a default runs no code of the program and names
-    /// nothing, so its value is the one the constructor would make (a new
-    /// array, hash or string each time, as the constructor's would be);
-    /// it is the same node, typed alike (an integer literal for a `Float`
-    /// field is a float, `[]` for an `Array[Symbol]` field an
-    /// `Array[Symbol]`), read from the checker's tables for that node,
-    /// which hold every unit's, whether its file was checked now or read
-    /// back from the cache. Any other default (a constant, a call, an
-    /// interpolation) leaves the call as it is.
-    fn fill_literal_defaults(&mut self, class: ClassId, init: MethodId, args: &mut Vec<Reg>) {
+    /// `Synth::DataInit`) with fields left out (`None` in `slots`, the
+    /// arguments in the constructor's order), each of whose defaults may
+    /// be evaluated at the call (`default_at_call`): the defaults are
+    /// lowered at the call, in field order after the arguments, so that
+    /// the construction has every field and is made inline, as one
+    /// written in full is (`sroa`, the AOT's `alloc_data`), not through
+    /// the runtime's binding (#921, #940, #971). Such a default runs no
+    /// code of the program and names nothing, so its value is the one the
+    /// constructor would make (a new array, hash or string each time, as
+    /// the constructor's would be); it is the same node, typed alike (an
+    /// integer literal for a `Float` field is a float, `[]` for an
+    /// `Array[Symbol]` field an `Array[Symbol]`), read from the checker's
+    /// tables for that node, which hold every unit's, whether its file
+    /// was checked now or read back from the cache. Any other default (a
+    /// constant, a call, an interpolation) leaves the call as it is:
+    /// `None`, nothing lowered.
+    fn fill_literal_defaults(
+        &mut self,
+        class: ClassId,
+        init: MethodId,
+        slots: Vec<Option<Reg>>,
+    ) -> Option<Vec<Reg>> {
         let fields = &self.world.class(class).fields;
         let params = self.world.method(init).params.len();
-        if args.len() >= params || params != fields.len() {
-            return;
+        if slots.len() != params || params != fields.len() {
+            return None;
         }
-        let defaults: Option<Vec<&'a Expr>> = fields[args.len()..]
+        let defaults: Vec<Option<&'a Expr>> = slots
             .iter()
-            .map(|f| f.default.as_deref().filter(|d| default_at_call(d)))
-            .collect();
-        let Some(defaults) = defaults else {
-            return;
-        };
-        for d in defaults {
-            let r = self.expr(d);
-            args.push(r);
+            .zip(fields)
+            .map(|(slot, f)| match slot {
+                Some(_) => Some(None),
+                None => f
+                    .default
+                    .as_deref()
+                    .filter(|d| default_at_call(d))
+                    .map(Some),
+            })
+            .collect::<Option<_>>()?;
+        let mut args = Vec::with_capacity(params);
+        for (slot, d) in slots.into_iter().zip(defaults) {
+            args.push(match (slot, d) {
+                (Some(r), _) => r,
+                (None, Some(d)) => self.expr(d),
+                (None, None) => unreachable!("a left-out field has a default"),
+            });
         }
+        Some(args)
+    }
+
+    /// A `data` construction by keywords (`Point.new(y: 2, x: 1)`, no
+    /// `*` or `**`): its arguments in the constructor's order, the
+    /// positional ones first and each keyword's value at its field's
+    /// index, for `fill_literal_defaults` (#971). The values are already
+    /// evaluated, in the order they are written (`args`); `None` for a
+    /// name the constructor does not take, which the checker refuses.
+    fn keyword_data_slots(
+        &self,
+        init: MethodId,
+        call: &'a ast::Call,
+        a: &Args,
+    ) -> Option<Vec<Option<Reg>>> {
+        let params = &self.world.method(init).params;
+        let mut slots: Vec<Option<Reg>> = vec![None; params.len()];
+        if a.pos.len() > params.len() {
+            return None;
+        }
+        for (i, r) in a.pos.iter().enumerate() {
+            slots[i] = Some(*r);
+        }
+        let names: Vec<&str> = call
+            .args
+            .iter()
+            .filter_map(|x| match x {
+                Arg::Keyword { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        if names.len() != a.kw.len() {
+            return None;
+        }
+        for (name, (_, r)) in names.into_iter().zip(&a.kw) {
+            let i = params.iter().position(|p| p.name == name)?;
+            if slots[i].is_some() {
+                return None;
+            }
+            slots[i] = Some(*r);
+        }
+        Some(slots)
     }
 
     /// The physical fields a data constructor of `class` takes, from
@@ -4364,9 +4422,28 @@ impl<'a> FnBuilder<'a> {
                 // A data constructor takes the physical fields.
                 let data_init = init
                     .is_some_and(|m| self.world.method(m).synth == quarz_types::Synth::DataInit);
-                if data_init && !a.splat && a.kw.is_empty() && a.kw_splat.is_none() {
-                    self.fill_literal_defaults(*class, init.unwrap(), &mut a.pos);
-                    a.pos = self.flatten_args(*class, std::mem::take(&mut a.pos));
+                if data_init && !a.splat && a.kw_splat.is_none() {
+                    let init = init.unwrap();
+                    // Keywords in the constructor's order (#971), the
+                    // fields left out filled at the call when they can be;
+                    // otherwise the call binds them as before.
+                    let slots = if a.kw.is_empty() {
+                        let n = self.world.method(init).params.len();
+                        let mut slots: Vec<Option<Reg>> = a.pos.iter().map(|r| Some(*r)).collect();
+                        slots.resize(n.max(slots.len()), None);
+                        Some(slots)
+                    } else {
+                        self.keyword_data_slots(init, call, &a)
+                    };
+                    if let Some(args) =
+                        slots.and_then(|s| self.fill_literal_defaults(*class, init, s))
+                    {
+                        a.pos = args;
+                        a.kw.clear();
+                    }
+                    if a.kw.is_empty() {
+                        a.pos = self.flatten_args(*class, std::mem::take(&mut a.pos));
+                    }
                 }
                 // `new` on the receiver of a class method that subclasses
                 // may inherit (in a later unit too): the class it is called
