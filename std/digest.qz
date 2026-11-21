@@ -47,13 +47,24 @@ module Digest
 
   # HMAC (RFC 2104).
   module HMAC
-    # The HMAC-SHA-256 of `data` under `key`: 32 bytes.
+    # The HMAC-SHA-256 of `data` under `key`: 32 bytes. A
+    # [Bytes::Secret] key is read without a copy that stays (a wiped one
+    # raises [Bytes::Secret::WipedError]).
     #
     # ```
     # Digest::HMAC.sha256("key", "The quick brown fox jumps over the lazy dog").hex[0, 16]
     # # => "f7bc83f430538424"
     # ```
-    native def self.sha256(key: Bytes | String, data: Bytes | String) -> Bytes
+    native def self.sha256(key: Bytes | String | Bytes::Secret, data: Bytes | String) -> Bytes
+
+    # As [sha256], the 32 bytes as a [Bytes::Secret]: for a key derived
+    # from another, as a chain of HMACs derives signing keys.
+    #
+    # ```
+    # k = Digest::HMAC.sha256_secret(Bytes::Secret.of(b"key"), "date")
+    # Digest::HMAC.sha256(k, "message") == Digest::HMAC.sha256(Digest::HMAC.sha256("key", "date"), "message")   # => true
+    # ```
+    native def self.sha256_secret(key: Bytes | String | Bytes::Secret, data: Bytes | String) -> Bytes::Secret
   end
 
   # PBKDF2 (RFC 8018), the key derivation of SCRAM and of password storage.
@@ -67,6 +78,17 @@ module Digest
     # Digest::PBKDF2.sha256("password", "salt", 1, 32).hex[0, 16]   # => "120fb6cffcf8b32c"
     # Digest::PBKDF2.sha256("password", "salt", 0, 32)              # raises ArgumentError
     # ```
-    native def self.sha256(password: Bytes | String, salt: Bytes | String, iterations: Int, length: Int) -> Bytes
+    #
+    # A [Bytes::Secret] password is read without a copy that stays (a
+    # wiped one raises [Bytes::Secret::WipedError]).
+    native def self.sha256(password: Bytes | String | Bytes::Secret, salt: Bytes | String, iterations: Int, length: Int) -> Bytes
+
+    # As [sha256], the derived bytes as a [Bytes::Secret]: a key made from
+    # a password.
+    #
+    # ```
+    # Digest::PBKDF2.sha256_secret("password", "salt", 1, 32).size   # => 32
+    # ```
+    native def self.sha256_secret(password: Bytes | String | Bytes::Secret, salt: Bytes | String, iterations: Int, length: Int) -> Bytes::Secret
   end
 end

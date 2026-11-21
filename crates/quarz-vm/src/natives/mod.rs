@@ -457,6 +457,7 @@ fn no_crypto(m: &mut Registry<NativeFn>) {
             "Crypto.secure_compare",
             "Crypto::AES.seal_with",
             "Crypto::AES.open_with",
+            "Crypto::AES.open_secret_with",
             "Crypto::Argon2.hash_with",
             "Crypto::Argon2.verify_with",
             "Crypto::Argon2.params_with",

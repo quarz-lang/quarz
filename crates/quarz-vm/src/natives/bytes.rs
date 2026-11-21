@@ -407,6 +407,80 @@ pub(super) fn secret_of<'a>(interp: &Interp, v: &'a Value) -> Result<&'a SecretB
     }
 }
 
+/// A copy of secret input (a key, a password) that is cleared when
+/// dropped: the bytes of a `Bytes::Secret`, copied under its lock so
+/// that no lock is held while a native hashes or derives from them, or
+/// of a `Bytes` or a `String` (#963).
+pub(super) struct Cleared(pub Vec<u8>);
+
+impl Drop for Cleared {
+    fn drop(&mut self) {
+        clear_bytes(&mut self.0);
+    }
+}
+
+impl std::ops::Deref for Cleared {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+/// A secret input (a key, a password): the bytes of a `Bytes` or a
+/// `String`'s UTF-8, borrowed as they are (the plain path copies
+/// nothing), or of a `Bytes::Secret`, copied under its lock into a
+/// `Cleared` buffer, so that no lock is held while a native hashes or
+/// derives from them (#963).
+pub(super) enum SecretInput<'a> {
+    Borrowed(&'a [u8]),
+    Copied(Cleared),
+}
+
+impl std::ops::Deref for SecretInput<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            SecretInput::Borrowed(b) => b,
+            SecretInput::Copied(c) => c,
+        }
+    }
+}
+
+impl SecretInput<'_> {
+    /// An owned copy, cleared when dropped (for a helper thread): the
+    /// secret's copy as it is, a borrowed input copied. (Argon2's, in
+    /// the `crypto` feature.)
+    #[cfg_attr(not(feature = "crypto"), allow(dead_code))]
+    pub(super) fn into_owned(self) -> Cleared {
+        match self {
+            SecretInput::Borrowed(b) => Cleared(b.to_vec()),
+            SecretInput::Copied(c) => c,
+        }
+    }
+}
+
+/// The bytes of a secret input `v`: a `Bytes::Secret` (a wiped one
+/// raises `WipedError`), a `Bytes`, or a `String`'s UTF-8.
+pub(super) fn secret_input<'a>(
+    interp: &Interp,
+    v: &'a Value,
+    what: &str,
+) -> Result<SecretInput<'a>, Flow> {
+    match v {
+        Value::Secret(_) => secret_of(interp, v)?
+            .with(|b| SecretInput::Copied(Cleared(b.to_vec())))
+            .ok_or_else(|| wiped(interp)),
+        Value::Bytes(b) => Ok(SecretInput::Borrowed(b)),
+        v => match v.as_str() {
+            Some(s) => Ok(SecretInput::Borrowed(s.as_bytes())),
+            None => Err(interp.err_type(&format!(
+                "{what} must be Bytes, a String or a Bytes::Secret, got {}",
+                interp.class_name(v)
+            ))),
+        },
+    }
+}
+
 /// What a use of a wiped secret raises (but `size` and `wiped?`).
 pub(super) fn wiped(interp: &Interp) -> Flow {
     interp.raise(interp.program.exc.secret_wiped, "the secret was wiped")

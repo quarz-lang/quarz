@@ -36,38 +36,26 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::string(hex(&Md5::digest(data(i, a.arg(0), "data")?))))
     });
     native!(m, "Digest::HMAC.sha256", |i, _, a| {
-        // HMAC takes a key of any length.
-        let mut mac = Hmac::<Sha256>::new_from_slice(data(i, a.arg(0), "key")?).unwrap();
-        mac.update(data(i, a.arg(1), "data")?);
-        Ok(Value::bytes(mac.finalize().into_bytes().to_vec()))
+        let mut tag = hmac_sha256(i, &a)?;
+        let v = Value::Bytes(crate::rc::Rc::from(&tag[..]));
+        clear_bytes(&mut tag);
+        Ok(v)
+    });
+    native!(m, "Digest::HMAC.sha256_secret", |i, _, a| {
+        // A derived key (as SigV4's chain makes): straight into a secret.
+        let mut tag = hmac_sha256(i, &a)?;
+        let v = super::bytes::secret(tag.to_vec());
+        clear_bytes(&mut tag);
+        Ok(v)
     });
     native!(m, "Digest::PBKDF2.sha256", |i, _, a| {
-        let password = data(i, a.arg(0), "password")?;
-        let salt = data(i, a.arg(1), "salt")?;
-        let iterations = int(i, a.arg(2), "iterations")?;
-        let length = int(i, a.arg(3), "length")?;
-        let Ok(rounds) = u32::try_from(iterations) else {
-            return Err(i.err_arg(&format!("iterations out of range: {iterations}")));
-        };
-        if rounds == 0 {
-            return Err(i.err_arg("iterations must be positive"));
-        }
-        if length < 0 {
-            return Err(i.err_arg(&format!("negative length: {length}")));
-        }
-        // RFC 8018 §5.2: at most (2^32 - 1) blocks of the hash's size.
-        if length > PBKDF2_MAX_LENGTH {
-            return Err(i.err_arg(&format!("length too large: {length}")));
-        }
-        // A length the RFC allows may still not fit in memory: raise
-        // rather than abort the process.
-        let mut out = Vec::new();
-        if out.try_reserve_exact(length as usize).is_err() {
-            return Err(i.err_arg(&format!("length too large: {length}")));
-        }
-        out.resize(length as usize, 0u8);
-        pbkdf2::pbkdf2_hmac::<Sha256>(password, salt, rounds, &mut out);
-        Ok(Value::bytes(out))
+        let mut out = pbkdf2_sha256(i, &a)?;
+        let v = Value::Bytes(crate::rc::Rc::from(&out[..]));
+        clear_bytes(&mut out);
+        Ok(v)
+    });
+    native!(m, "Digest::PBKDF2.sha256_secret", |i, _, a| {
+        Ok(super::bytes::secret(pbkdf2_sha256(i, &a)?))
     });
 
     native!(m, "Base64.encode", |i, _, a| {
@@ -110,6 +98,49 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             }
         }
     });
+}
+
+/// The HMAC-SHA-256 of `data` (arg 1) under `key` (arg 0, which may be a
+/// `Bytes::Secret`); the caller clears the tag once it is copied out.
+fn hmac_sha256(i: &Interp, a: &crate::interp::Args) -> Result<[u8; 32], Flow> {
+    let key = super::bytes::secret_input(i, a.arg(0), "key")?;
+    // HMAC takes a key of any length; its state is cleared when dropped
+    // (`hmac`'s `zeroize` feature).
+    let mut mac = Hmac::<Sha256>::new_from_slice(&key).unwrap();
+    mac.update(data(i, a.arg(1), "data")?);
+    Ok(mac.finalize().into_bytes().into())
+}
+
+/// `length` bytes derived by PBKDF2-HMAC-SHA-256 from `password` (arg 0,
+/// which may be a `Bytes::Secret`), `salt`, `iterations` and `length`
+/// (args 1 to 3), in a buffer of exactly that size.
+fn pbkdf2_sha256(i: &Interp, a: &crate::interp::Args) -> Result<Vec<u8>, Flow> {
+    let password = super::bytes::secret_input(i, a.arg(0), "password")?;
+    let salt = data(i, a.arg(1), "salt")?;
+    let iterations = int(i, a.arg(2), "iterations")?;
+    let length = int(i, a.arg(3), "length")?;
+    let Ok(rounds) = u32::try_from(iterations) else {
+        return Err(i.err_arg(&format!("iterations out of range: {iterations}")));
+    };
+    if rounds == 0 {
+        return Err(i.err_arg("iterations must be positive"));
+    }
+    if length < 0 {
+        return Err(i.err_arg(&format!("negative length: {length}")));
+    }
+    // RFC 8018 §5.2: at most (2^32 - 1) blocks of the hash's size.
+    if length > PBKDF2_MAX_LENGTH {
+        return Err(i.err_arg(&format!("length too large: {length}")));
+    }
+    // A length the RFC allows may still not fit in memory: raise
+    // rather than abort the process.
+    let mut out = Vec::new();
+    if out.try_reserve_exact(length as usize).is_err() {
+        return Err(i.err_arg(&format!("length too large: {length}")));
+    }
+    out.resize(length as usize, 0u8);
+    pbkdf2::pbkdf2_hmac::<Sha256>(&password, salt, rounds, &mut out);
+    Ok(out)
 }
 
 /// The longest key PBKDF2 derives with HMAC-SHA-256.
