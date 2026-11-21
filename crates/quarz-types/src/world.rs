@@ -948,6 +948,33 @@ type OrderedKey = (
     Vec<ExtensionId>,
 );
 type OrderedList = std::rc::Rc<Vec<(ClassId, Vec<Type>, Option<ExtensionId>)>>;
+
+/// A resolution order lent by `World::with_resolution`: the memo's kept
+/// list with each entry's source, or a list of pairs.
+#[derive(Clone, Copy)]
+pub(crate) enum Resolved<'a> {
+    Sourced(&'a [(ClassId, Vec<Type>, Option<ExtensionId>)]),
+    Pairs(&'a [(ClassId, Vec<Type>)]),
+}
+
+impl<'a> Resolved<'a> {
+    /// The classes, in order.
+    pub(crate) fn ids(self) -> impl Iterator<Item = ClassId> + 'a {
+        let (a, b) = match self {
+            Resolved::Sourced(l) => (Some(l.iter().map(|e| e.0)), None),
+            Resolved::Pairs(l) => (None, Some(l.iter().map(|e| e.0))),
+        };
+        a.into_iter().flatten().chain(b.into_iter().flatten())
+    }
+
+    /// The order as `resolution` gives it.
+    pub(crate) fn to_vec(self) -> Vec<(ClassId, Vec<Type>)> {
+        match self {
+            Resolved::Sourced(l) => l.iter().map(|(k, a, _)| (*k, a.clone())).collect(),
+            Resolved::Pairs(l) => l.to_vec(),
+        }
+    }
+}
 /// `AncestorsMemo::conformance`: the number of extensions, the active
 /// set, and the active conformance extensions made for them.
 type KeptConformance = (usize, Vec<ExtensionId>, Vec<ExtensionId>);
@@ -1554,9 +1581,9 @@ impl World {
         if self.is_a_by_itself(sub_id).contains(&sup_id) {
             return true;
         }
-        self.ancestors(sub_id, &[])
-            .iter()
-            .any(|(id, _)| *id == sup_id)
+        self.with_resolution(sub_id, &[], View::Static, |r| {
+            r.ids().any(|id| id == sup_id)
+        })
     }
 
     /// The classes `c` is, `class_is_a(c, k)` for each and only these
@@ -1589,21 +1616,47 @@ impl World {
     /// and its modules'). `view` names which extensions' conformances are
     /// in it; every other ancestry question is a view of this.
     pub fn resolution(&self, id: ClassId, args: &[Type], view: View) -> Vec<(ClassId, Vec<Type>)> {
-        if view == View::Override {
-            return self.override_resolution(id, args);
-        }
-        // (Membership's order: the top-level extensions' modules in the walk,
-        // the scoped ones' after it: `find_override` walks it.)
-        if view == View::Runtime {
-            return self.ordered_under(id, args, &self.all_conformance_extensions(), false, false);
-        }
-        // (The checker's order is the same with the extensions active where
-        // it asks: a call resolves to what runs, `using` or not.)
-        if view == View::Static {
-            return self.ordered_under(id, args, &self.conformance_extensions(), false, true);
-        }
+        self.with_resolution(id, args, view, |r| r.to_vec())
+    }
 
-        self.ancestors_under(id, args, self.view_extensions(view))
+    /// `resolution(id, args, view)` lent to `f`: the memo's kept list
+    /// itself where the view keeps one, not a copy of it (#832 Q1), for a
+    /// question that only reads it (membership: `class_is_a`,
+    /// `instances_are_objects`). The one place a view is mapped to its
+    /// walk; `resolution` is this, copied.
+    pub(crate) fn with_resolution<R>(
+        &self,
+        id: ClassId,
+        args: &[Type],
+        view: View,
+        f: impl FnOnce(Resolved<'_>) -> R,
+    ) -> R {
+        match view {
+            View::Override => f(Resolved::Pairs(&self.override_resolution(id, args))),
+            // (Membership's order: the top-level extensions' modules in the
+            // walk, the scoped ones' after it: `find_override` walks it.)
+            View::Runtime => f(Resolved::Sourced(&self.ordered_kept(
+                id,
+                args,
+                &self.all_conformance_extensions(),
+                false,
+                false,
+            ))),
+            // (The checker's order is the same with the extensions active
+            // where it asks: a call resolves to what runs, `using` or not.)
+            View::Static => f(Resolved::Sourced(&self.ordered_kept(
+                id,
+                args,
+                &self.conformance_extensions(),
+                false,
+                true,
+            ))),
+            View::Lookup | View::Declared => f(Resolved::Pairs(&self.ancestors_under(
+                id,
+                args,
+                self.view_extensions(view),
+            ))),
+        }
     }
 
     /// `resolution(id, args, View::Static)` with each entry's source: the
@@ -1781,8 +1834,24 @@ impl World {
         assume: bool,
         lexical: bool,
     ) -> Vec<(ClassId, Vec<Type>, Option<ExtensionId>)> {
+        self.ordered_kept(c, own, exts, assume, lexical)
+            .as_ref()
+            .clone()
+    }
+
+    /// `ordered_sources` as the memo keeps it, shared rather than copied
+    /// (`with_resolution`, #832 Q1); a walk the memo may not keep is
+    /// wrapped as it is.
+    fn ordered_kept(
+        &self,
+        c: ClassId,
+        own: &[Type],
+        exts: &[ExtensionId],
+        assume: bool,
+        lexical: bool,
+    ) -> OrderedList {
         if !self.ancestors_memo.on {
-            return self.ordered_sources_walk(c, own, exts, assume, lexical);
+            return std::rc::Rc::new(self.ordered_sources_walk(c, own, exts, assume, lexical));
         }
         let undecided = own.iter().any(|t| t.has_vars());
         let key = (
@@ -1798,17 +1867,18 @@ impl World {
             if cfg!(debug_assertions) {
                 self.guard_ordered_hit(&key, &found);
             }
-            return found.as_ref().clone();
+            return found;
         }
         let before = self.walk_reads();
         let found = self.ordered_sources_walk(c, own, exts, assume, lexical);
+        let found = std::rc::Rc::new(found);
         if !self.may_remember(undecided, before) {
             return found;
         }
         self.ancestors_memo
             .ordered
             .borrow_mut()
-            .insert(key, std::rc::Rc::new(found.clone()));
+            .insert(key, found.clone());
         found
     }
 
@@ -3057,10 +3127,9 @@ impl World {
     pub fn class_is_a_at_run_time(&self, sub_id: ClassId, sup_id: ClassId) -> bool {
         sub_id == sup_id
             || sup_id == self.builtin.object
-            || self
-                .resolution(sub_id, &[], View::Runtime)
-                .iter()
-                .any(|(id, _)| *id == sup_id)
+            || self.with_resolution(sub_id, &[], View::Runtime, |r| {
+                r.ids().any(|id| id == sup_id)
+            })
     }
 
     /// `ancestor_ids` in the run-time view (`class_is_a_at_run_time`).
@@ -6512,12 +6581,14 @@ impl World {
             ClassKind::Data | ClassKind::Enum | ClassKind::Variant => true,
             ClassKind::Class => {
                 id != self.builtin.object
-                    && self.ancestors(id, &[]).iter().all(|(a, _)| {
-                        let ac = self.class(*a);
-                        *a == self.builtin.object
-                            || ac.kind == ClassKind::Module
-                            || self.is_exception_class(*a)
-                            || (ac.file != 0 && ac.kind == ClassKind::Class)
+                    && self.with_resolution(id, &[], View::Static, |r| {
+                        r.ids().all(|a| {
+                            let ac = self.class(a);
+                            a == self.builtin.object
+                                || ac.kind == ClassKind::Module
+                                || self.is_exception_class(a)
+                                || (ac.file != 0 && ac.kind == ClassKind::Class)
+                        })
                     })
             }
             ClassKind::Module | ClassKind::Main => false,
