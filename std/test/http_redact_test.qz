@@ -1,0 +1,54 @@
+# quarz#1016: what HTTP prints (inspect, to_s, error messages) shows no
+# credential: the values of the credential header fields, a URL's
+# password.
+require "http"
+require "test"
+
+class HttpRedactTest < Test::Case
+  SECRET = "s3cret-value"
+
+  def test_credential_fields_are_hidden
+    h = HTTP::Headers.of({"Authorization" => "Bearer #{SECRET}", "Cookie" => "sid=#{SECRET}",
+                          "Proxy-Authorization" => "Basic #{SECRET}", "Accept" => "text/plain"})
+      .add("Set-Cookie", "sid=#{SECRET}")
+    [h.inspect, h.to_s, h.entries.inspect, h.entries.map(&:to_s).join].each do |text|
+      assert_false(text.include?(SECRET), text)
+    end
+    assert_equal("HTTP::Field(name: \"authorization\", value: [FILTERED])", h.entries[0].inspect)
+    assert_equal("HTTP::Field(name: \"accept\", value: \"text/plain\")", h.entries[3].inspect)
+    # The values themselves are as given.
+    assert_equal("Bearer #{SECRET}", h["authorization"])
+    assert_equal(["sid=#{SECRET}"], h.all("set-cookie"))
+  end
+
+  def test_a_client_request_hides_them_and_the_urls_password
+    req = HTTP::Client::Request.new("GET", "https://ann:#{SECRET}@example.com/a",
+                                    headers: {"Authorization" => "Bearer #{SECRET}"})
+    assert_false(req.inspect.include?(SECRET), req.inspect)
+    assert_false(req.to_s.include?(SECRET), req.to_s)
+    assert_true(req.inspect.include?("ann:***@example.com"), req.inspect)
+    # The URL itself keeps it.
+    assert_equal("https://ann:#{SECRET}@example.com/a", req.url.to_s)
+  end
+
+  def test_a_proxy_hides_its_password
+    proxy = HTTP::Proxy.new("http://ann:#{SECRET}@proxy.example:3128")
+    assert_false(proxy.inspect.include?(SECRET), proxy.inspect)
+    assert_false(proxy.to_s.include?(SECRET), proxy.to_s)
+    assert_equal("http://ann:#{SECRET}@proxy.example:3128", proxy.https&.to_s)
+  end
+
+  def test_errors_quote_no_password
+    messages = [
+      assert_raise(ArgumentError) { HTTP::Proxy.new("ftp://ann:#{SECRET}@proxy.example") }.message,
+      assert_raise(ArgumentError) { HTTP::Proxy.new("http://ann:#{SECRET}@proxy.example:x") }.message,
+      assert_raise(ArgumentError) { HTTP::Client::Request.new("GET", "ftp://ann:#{SECRET}@example.com/") }.message,
+      assert_raise(ArgumentError) { HTTP::Client::Request.new("GET", "http://ann:#{SECRET}@example.com/a b") }.message,
+      HTTP::Client::TooManyRedirects.new(302, HTTP::Headers.empty, URI.parse("http://ann:#{SECRET}@example.com/"), 3).message
+    ]
+    messages.each do |m|
+      assert_false(m.include?(SECRET), m)
+      assert_true(m.include?("ann:***@"), m)
+    end
+  end
+end
