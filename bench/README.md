@@ -21,5 +21,6 @@ done
 | `tak.qz` | recursive calls: the Takeuchi function `tak(3n, 2n, n)`, `n` from the command line (`quarz run bench/tak.qz 10`) |
 | `sort_objects.qz` | `sort`/`min`/`max` of 200k objects comparable by their own `<=>` (every comparison a dispatched `Comparable#<=>`, #599) |
 | `startup.qz` | one line printed: the start-up every other row includes |
+| `calls.qz` | one call path at a time (a native through `native!`/`fast!`/`owned!`, a block called by a native or by Quarz code, `iter.rs` loops, static and dynamic calls, `new`, keywords, defaults): `calls.sh [--vm]` prints instructions per operation, compiled and interpreted (#984) |
 
 `compare/` holds the same programs in Go, Rust, Crystal and Ruby (which Spinel also compiles) and a script that times all of them side by side; see `compare/README.md` for the latest numbers.

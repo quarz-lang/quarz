@@ -1,0 +1,164 @@
+# The costs of the shared call paths, one operation at a time (#984):
+# `quarz build bench/calls.qz -o calls`, then `calls CASE N` runs CASE N
+# times (the per-element cases: over a collection of 1,000, N / 1,000
+# times). Per operation: (instructions at N2 - at N1) / (N2 - N1), less
+# the `empty` case's (the loop's own). `bench/calls.sh` prints the table.
+class Shape
+  def area -> Int = 1
+end
+class Square < Shape
+  def area -> Int = 2
+end
+class Circle < Shape
+  def area -> Int = 3
+end
+class Pt
+  @x: Int
+  def initialize(@x: Int); end
+  def x -> Int = @x
+end
+def plus(x: Int) -> Int = x + 1
+# (Recursive: not inlined.)
+def kept(x: Int) -> Int = x >= 0 ? x + 1 : kept(x + 1)
+def keywords(a: Int, *, b: Int? = nil, c: Bool = false) -> Int = c ? a : a + 1
+def defaults(a: Int, b: Int = 2, c: Int = 3) -> Int = a + b + c
+def each_of(xs: Array[Int], &blk: (Int) -> Void) -> Void = xs.each(&blk)
+# An iteration written in Quarz, over the size and an indexed read.
+def each_in(xs: Array[Int], &blk: (Int) -> Void) -> Void
+  k = 0
+  size = xs.size
+  while k < size
+    yield xs[k]
+    k += 1
+  end
+end
+
+kind = ARGV[0]
+n = ARGV[1].to_i
+reps = n / 1000
+s = "abc"
+pre = "a"
+b = b"abc"
+pre_b = b"a"
+shapes: Array[Shape] = [Square.new, Circle.new]
+arr = (0...1000).to_a
+h: Hash[Int, Int] = {}
+(0...1000).each { |k| h = h.put(k, k) }
+text = "x" * 1000
+xs = [0, 1, 2]
+f = ->(x: Int) { x + 1 }
+acc = 0
+flag = false
+i = 0
+case kind
+when "empty"
+  while i < n
+    acc += i
+    i += 1
+  end
+when "native0"
+  while i < n
+    flag = b.empty?
+    i += 1
+  end
+when "fast0"
+  while i < n
+    flag = s.empty?
+    i += 1
+  end
+when "native1"
+  while i < n
+    flag = b.start_with?(pre_b)
+    i += 1
+  end
+when "fast1"
+  while i < n
+    flag = s.start_with?(pre)
+    i += 1
+  end
+when "native2"
+  while i < n
+    acc = i.clamp(0, 5)
+    i += 1
+  end
+when "owned"
+  while i < n
+    xs = xs.set(0, i)
+    i += 1
+  end
+when "block_value"
+  while i < n
+    acc = f.call(i)
+    i += 1
+  end
+when "static_call"
+  while i < n
+    acc = plus(acc)
+    i += 1
+  end
+when "static_call_kept"
+  while i < n
+    acc = kept(acc)
+    i += 1
+  end
+when "dynamic_call"
+  j = 0
+  while i < n
+    acc += shapes[j].area
+    j = 1 - j
+    i += 1
+  end
+when "new"
+  while i < n
+    acc = Pt.new(i).x
+    i += 1
+  end
+when "keywords"
+  while i < n
+    acc = keywords(i, b: nil, c: false)
+    i += 1
+  end
+when "keywords_left_out"
+  while i < n
+    acc = keywords(i)
+    i += 1
+  end
+when "defaults"
+  while i < n
+    acc = defaults(i)
+    i += 1
+  end
+when "each_loop"
+  while i < reps
+    arr.each { |x| acc += x }
+    i += 1
+  end
+when "map_loop"
+  while i < reps
+    acc += arr.map { |x| x + 1 }.size
+    i += 1
+  end
+when "each_block_value"
+  while i < reps
+    each_of(arr) { |x| acc += x }
+    i += 1
+  end
+when "each_yield"
+  while i < reps
+    each_in(arr) { |x| acc += x }
+    i += 1
+  end
+when "hash_each"
+  while i < reps
+    h.each { |k, v| acc += v }
+    i += 1
+  end
+when "each_char"
+  while i < reps
+    text.each_char { |c| acc += 1 }
+    i += 1
+  end
+else
+  puts "unknown case #{kind}"
+end
+puts acc, flag, xs.size
