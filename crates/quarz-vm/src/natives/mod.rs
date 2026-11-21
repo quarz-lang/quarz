@@ -256,6 +256,9 @@ const PURITY_BY_CLASS: &[(&str, Purity)] = &[
     ("Meta::ClassDef", Pure),
     ("Meta::FieldRef", Pure),
     ("Meta::Method", Pure),
+    // (`result`, #1011: reads the program's method tables, which a
+    // compile-time run has as the program does.)
+    ("Meta::MethodRef", Pure),
     ("Meta::StatementValues", Pure),
     ("JSON", Pure),
     ("Base64", Pure),

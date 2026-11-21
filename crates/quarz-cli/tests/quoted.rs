@@ -604,13 +604,14 @@ const EXPECTED_653: &str = "(18..65)@25.include?(age)\ntrue\ntrue\nfalse\n(18...
 /// (`Array`), natives and an operator, a generated method; an
 /// extension's method (which `Type#methods` does not list) and a
 /// construction (`initialize`'s `Void`, `Nil`) by hand; a reference that
-/// names no method raises. Interpreted and compiled.
+/// names no method raises; and `MethodRef#result` in a `static`
+/// statement gives what it gives at run time. Interpreted and compiled.
 #[test]
 fn a_method_reference_tells_its_declared_result() {
     let d = dir();
     write(&d.0, "lib.qz", LIB_1011);
     write(&d.0, "app.qz", APP_1011);
-    let expected = "[Bool, Object, Array, Object, Bool, Int, Object, Bool]\n[Bool, Object, Array, Object, Bool, Int, Object, Bool]\n[Bool]\n[Bool]\n[Bool, Nil, Bool, Bool]\nMeta::MethodRef names no method: App#nope (index 0)\n";
+    let expected = "[Bool, Object, Array, Object, Bool, Int, Object, Bool]\n[Bool, Object, Array, Object, Bool, Int, Object, Bool]\n[Bool]\n[Bool, Bool]\n[Bool, Nil, Bool, Bool]\nMeta::MethodRef names no method: App#nope (index 0)\n";
     let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
     assert!(ok, "{err}");
     assert_eq!(out, expected);
@@ -678,7 +679,8 @@ const LIB_1011: &str = r##"class Probe
     end
   end
   static def self.record_more -> Void
-    more = [sig(App, :generated)]
+    # (And `MethodRef#result` itself at compile time.)
+    more = [sig(App, :generated), Meta::MethodRef.new(App, :flag, false, 0, nil).result]
     def_class_method(:more_sigs) { more }
   end
 end
