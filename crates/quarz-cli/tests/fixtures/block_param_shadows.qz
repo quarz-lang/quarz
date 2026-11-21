@@ -1,0 +1,49 @@
+# #1017: a block's, a lambda's and a rescue clause's own variable hides an
+# outer local of its name and leaves it as it was, captured or not.
+
+def first(a: Int?) -> Int
+  n = 0
+  if x = a
+    g = -> { x + 1 }
+    ["a", "bb"].each { |x| n += x.size }
+    n += g.call
+  end
+  n
+end
+
+# 1. The outer local after a block whose parameter has its name.
+x = 1
+["a", "b"].each { |x| }
+p x
+
+# 2. A closure made before the block reads the outer local after it.
+y = 1
+f = -> { y + 1 }
+["a"].each { |y| y = y + "!" }
+p f.call
+
+# 3. The narrowing of #1017.
+p first(5)
+
+# 4. A block that captures the outer local, with an inner block whose
+# parameter has its name, reads the outer one after it.
+z = 10
+[1].each do |_|
+  ["q"].each { |z| z = z + "!" }
+  p z + 1
+end
+
+# 5. A lambda's parameter and a rescue clause's variable beside a
+# captured outer local.
+w = 7
+h = -> { w * 2 }
+k = ->(w: String) { w.size }
+p k.call("abc"), h.call
+v = 3
+c = -> { v + 1 }
+begin
+  raise "boom"
+rescue => v
+  p v.message
+end
+p c.call
