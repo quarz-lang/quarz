@@ -230,11 +230,13 @@ pub(crate) fn direct_callees(
     let mut out: Vec<FuncId> = Vec::new();
     for blk in &f.blocks {
         for inst in &blk.insts {
-            let target = direct_target(inst, methods).or_else(|| {
-                construct_target(inst, methods, classes)
-                    .flatten()
-                    .map(|(_, f)| f)
-            });
+            let target = direct_target(inst, methods)
+                .or_else(|| {
+                    construct_target(inst, &f.consts, methods, classes)
+                        .flatten()
+                        .map(|(_, f, _)| f)
+                })
+                .or_else(|| keyword_target(inst, &f.consts, methods).map(|k| k.callee));
             if let Some(target) = target {
                 if !out.contains(&target) {
                     out.push(target);
@@ -328,8 +330,8 @@ pub(crate) fn gen_function<B: Builder>(
                 args,
                 ..
             } => {
-                let init = match construct_target(inst, methods, classes) {
-                    Some(Some((mid, _))) => {
+                let init = match construct_target(inst, &f.consts, methods, classes) {
+                    Some(Some((mid, _, _))) => {
                         let m = &methods[mid as usize];
                         m.params.len() + usize::from(m.has_block)
                     }
@@ -994,21 +996,28 @@ fn direct_target(inst: &Inst, methods: &[RtMethod]) -> Option<FuncId> {
     m.func
 }
 
-/// A construction compiled code makes inline (#939): `Class.new(args)`
-/// with positional arguments only, of a class (not a data type, nor one
-/// the runtime builds) without a `deinitialize` (`quarz_ir::deinitializer`:
+/// The `initialize` an inline construction calls directly: the method,
+/// its body, and the argument area by parameter (`lay_out`).
+pub(crate) type InlineInit = (MethodId, FuncId, Vec<Option<Reg>>);
+
+/// A construction compiled code makes inline (#939): `Class.new(args)`,
+/// without a splat or block, of a class (not a data type, nor one the
+/// runtime builds) without a `deinitialize` (`quarz_ir::deinitializer`:
 /// a failure before the object is usable must keep it from running, which
 /// `Interp::construct` does), whose `initialize`, when it has one, is a
-/// compiled body with positional parameters. `Some(None)`: no
-/// `initialize`; `Some(Some((method, body)))`: the body called directly,
-/// the class being exact whatever overrides it (only `new` and `super`
-/// reach an `initialize`, and this names no new symbol of it). Anything
-/// else goes through `qz_construct`.
+/// compiled body whose positional and keyword arguments
+/// `quarz_ir::keyword_slots` places (#941; the names are the caller's
+/// `consts`). `Some(None)`: no `initialize`; `Some(Some((method, body,
+/// slots)))`: the body called directly with `slots` laid out, the class
+/// being exact whatever overrides it (only `new` and `super` reach an
+/// `initialize`, and this names no new symbol of it). Anything else goes
+/// through `qz_construct`.
 pub(crate) fn construct_target(
     inst: &Inst,
+    consts: &[Constant],
     methods: &[RtMethod],
     classes: &[RtClass],
-) -> Option<Option<(MethodId, FuncId)>> {
+) -> Option<Option<InlineInit>> {
     let Inst::Call {
         kind: CallKind::Construct { class, init },
         args,
@@ -1021,9 +1030,6 @@ pub(crate) fn construct_target(
     else {
         return None;
     };
-    if !kw.is_empty() {
-        return None;
-    }
     let c = classes.get(*class as usize)?;
     if c.kind != RtClassKind::Class
         || c.built_by_runtime
@@ -1032,18 +1038,115 @@ pub(crate) fn construct_target(
         return None;
     }
     let Some(i) = init else {
-        return Some(None);
+        return kw.is_empty().then_some(None);
     };
     let m = methods.get(*i as usize)?;
+    if m.synth != RtSynth::None || m.native_key.is_some() || m.is_abstract || m.keyword_hash {
+        return None;
+    }
+    let slots = lay_out(&m.params, args, kw, consts)?;
+    Some(Some((*i, m.func?, slots)))
+}
+
+/// The argument area of a direct call by parameter (`direct_call`): the
+/// positional arguments, then each keyword at the parameter
+/// `quarz_ir::keyword_slots` gives it, `None` for one left to its default.
+/// `None` when the call cannot be laid out so (#941).
+fn lay_out(
+    params: &[RtParam],
+    args: &[Reg],
+    kw: &[(u32, Reg)],
+    consts: &[Constant],
+) -> Option<Vec<Option<Reg>>> {
+    let mut names: Vec<&str> = Vec::with_capacity(kw.len());
+    for (k, _) in kw {
+        match consts.get(*k as usize)? {
+            Constant::Symbol(s) if s != KW_SPLAT => names.push(s),
+            _ => return None,
+        }
+    }
+    let at = keyword_slots(params, args.len(), &names)?;
+    let width = at
+        .iter()
+        .copied()
+        .max()
+        .map_or(0, |i| i + 1)
+        .max(args.len());
+    let mut slots: Vec<Option<Reg>> = vec![None; width];
+    for (k, r) in args.iter().enumerate() {
+        slots[k] = Some(*r);
+    }
+    for (i, (_, r)) in at.iter().zip(kw) {
+        slots[*i] = Some(*r);
+    }
+    Some(slots)
+}
+
+/// A call with keyword arguments laid out at code generation (#941).
+pub(crate) struct KeywordCall {
+    pub mid: MethodId,
+    pub callee: FuncId,
+    pub recv: Option<Reg>,
+    /// The argument area's values, by parameter: the positional
+    /// arguments, then each keyword at its parameter, `None` for one left
+    /// to its default (nil, its `provided` bit clear).
+    pub slots: Vec<Option<Reg>>,
+    pub block: Option<Reg>,
+    pub dst: Reg,
+}
+
+/// A call with keyword arguments the AOT binds itself (#941): a method
+/// called directly (a compiled body, not native, synthesized or
+/// abstract, dispatched statically, not one generated with `keywords:`;
+/// a top-level `def` is one), without a splat or `**` argument, whose
+/// keywords
+/// `quarz_ir::keyword_slots` places (the matching the runtime's
+/// `bind_params` makes, and every parameter without a default given).
+/// The names are the caller's constants. Anything else goes through the
+/// runtime's call.
+pub(crate) fn keyword_target(
+    inst: &Inst,
+    consts: &[Constant],
+    methods: &[RtMethod],
+) -> Option<KeywordCall> {
+    let Inst::Call {
+        dst,
+        kind: CallKind::Method(mid),
+        recv,
+        args,
+        splat: false,
+        kw,
+        kw_splat: None,
+        block,
+        ..
+    } = inst
+    else {
+        return None;
+    };
+    let m = methods.get(*mid as usize)?;
+    // (A call with no keyword to a method with none is `static_target`'s.)
+    if kw.is_empty() && !m.params.iter().any(|p| p.kind == RtParamKind::KeywordOnly) {
+        return None;
+    }
     if m.synth != RtSynth::None
         || m.native_key.is_some()
         || m.is_abstract
-        || args.len() > m.params.len()
-        || !m.params.iter().all(|p| p.kind == RtParamKind::Positional)
+        || m.keyword_hash
+        || m.dispatch() != Dispatch::Static
+        || (block.is_some() && !m.has_block)
     {
         return None;
     }
-    Some(Some((*i, m.func?)))
+    let callee = m.func?;
+    let slots = lay_out(&m.params, args, kw, consts)?;
+    Some(KeywordCall {
+        mid: *mid,
+        callee,
+        recv: *recv,
+        slots,
+        block: *block,
+        dst: *dst,
+    })
 }
 
 /// A call's result nobody reads (`direct_call`): released, not stored
@@ -2657,7 +2760,7 @@ impl<B: Builder> Gen<'_, B> {
         mid: MethodId,
         callee: FuncId,
         recv: Option<Reg>,
-        args: &[Reg],
+        args: &[Option<Reg>],
         blk: Option<Reg>,
         dst: Reg,
         block: u32,
@@ -2697,9 +2800,17 @@ impl<B: Builder> Gen<'_, B> {
             let p = self
                 .b
                 .iadd_imm(self.args_buf, (k as i64) * i64::from(VALUE_SIZE));
-            // The area is released after the call: a
-            // dead argument is moved there.
-            if allow_move && self.movable(inst, *r, block, index) {
+            let Some(r) = r else {
+                // A keyword left to its default (#941): nil, not given.
+                let zero = self.b.iconst(Ty::I64, 0);
+                self.b.store(zero, p, 0);
+                slots += 1;
+                continue;
+            };
+            // The area is released after the call: a dead argument is
+            // moved there (once: a register passed twice is copied).
+            let once = args.iter().filter(|a| **a == Some(*r)).count() == 1;
+            if allow_move && once && self.movable(inst, *r, block, index) {
                 self.move_reg_to_ptr(p, *r);
                 self.states[*r as usize] = State::NonHeap;
             } else {
@@ -4920,17 +5031,20 @@ impl<B: Builder> Gen<'_, B> {
                 kw_splat: None,
                 block: None,
                 ..
-            } if kw.is_empty() => {
+            } if kw.is_empty()
+                || construct_target(inst, &self.f.consts, self.methods, self.classes).is_some() =>
+            {
                 // A data type given all its fields: allocate it with nil
                 // fields and write the arguments straight into them.
-                let data = init.is_some_and(|i| {
-                    self.methods[i as usize].synth == RtSynth::DataInit
-                        && matches!(
-                            self.classes[*class as usize].kind,
-                            RtClassKind::Data | RtClassKind::Variant
-                        )
-                        && self.classes[*class as usize].fields.len() == args.len()
-                });
+                let data = kw.is_empty()
+                    && init.is_some_and(|i| {
+                        self.methods[i as usize].synth == RtSynth::DataInit
+                            && matches!(
+                                self.classes[*class as usize].kind,
+                                RtClassKind::Data | RtClassKind::Variant
+                            )
+                            && self.classes[*class as usize].fields.len() == args.len()
+                    });
                 if data {
                     // The fields are laid out in the argument area and
                     // moved into the object.
@@ -4959,7 +5073,9 @@ impl<B: Builder> Gen<'_, B> {
                 // a field's mark or the aside list), and the compiled
                 // `initialize` is called directly on it, its result
                 // released.
-                if let Some(target) = construct_target(inst, self.methods, self.classes) {
+                if let Some(target) =
+                    construct_target(inst, &self.f.consts, self.methods, self.classes)
+                {
                     // (The line a backtrace shows for this frame, as a
                     // direct method call records it.)
                     self.set_call_line(block, index);
@@ -4981,13 +5097,13 @@ impl<B: Builder> Gen<'_, B> {
                             self.b.call(self.h.field_defaults, &[self.rt, self.regs, d])[0];
                         self.check(status, unwind);
                     }
-                    if let Some((mid, callee)) = target {
+                    if let Some((mid, callee, slots)) = target {
                         self.direct_call(
                             inst,
                             mid,
                             callee,
                             Some(*dst),
-                            args,
+                            &slots,
                             None,
                             NO_DST,
                             block,
@@ -5179,6 +5295,19 @@ impl<B: Builder> Gen<'_, B> {
                 )[0];
                 self.check(status, unwind);
             }
+            // A call with keywords bound here (#941): laid out as a direct
+            // call, each keyword at its parameter.
+            Inst::Call { .. } if keyword_target(inst, &self.f.consts, self.methods).is_some() => {
+                let Some(k) = keyword_target(inst, &self.f.consts, self.methods) else {
+                    unreachable!()
+                };
+                self.set_call_line(block, index);
+                self.direct_call(
+                    inst, k.mid, k.callee, k.recv, &k.slots, k.block, k.dst, block, index, unwind,
+                    true,
+                );
+                self.drop_copied_moves(inst, k.dst);
+            }
             Inst::Call { .. } => match self.static_target(inst) {
                 Some(StaticCall {
                     mid,
@@ -5227,10 +5356,14 @@ impl<B: Builder> Gen<'_, B> {
                                     inst, mid, callee, &sig, recv, &args, dst, block, index, unwind,
                                 );
                             }
-                            _ => self.direct_call(
-                                inst, mid, callee, recv, &args, blk, dst, block, index, unwind,
-                                true,
-                            ),
+                            _ => {
+                                let slots: Vec<Option<Reg>> =
+                                    args.iter().map(|r| Some(*r)).collect();
+                                self.direct_call(
+                                    inst, mid, callee, recv, &slots, blk, dst, block, index,
+                                    unwind, true,
+                                )
+                            }
                         }
                         self.drop_copied_moves(inst, dst);
                         return;

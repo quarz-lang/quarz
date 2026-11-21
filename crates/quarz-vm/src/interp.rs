@@ -3792,10 +3792,7 @@ impl Interp {
                     }
                     continue;
                 }
-                let found = m.params.iter().position(|p| {
-                    *p.name == *name
-                        && matches!(p.kind, RtParamKind::Positional | RtParamKind::KeywordOnly)
-                });
+                let found = quarz_ir::keyword_param(&m.params, &name);
                 match found {
                     Some(i) if provided & bit(i) == 0 => {
                         values[i] = v;

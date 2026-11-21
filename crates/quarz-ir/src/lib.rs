@@ -1950,6 +1950,65 @@ impl DispatchView for RtWorld {
     }
 }
 
+/// The parameter a keyword argument named `name` binds: a positional or
+/// keyword-only parameter of that name (docs/01 §9). The runtime's
+/// binding (`Interp::bind_params`) and the AOT's layout of a keyword call
+/// (`keyword_slots`, #941) both decide it here.
+pub fn keyword_param(params: &[RtParam], name: &str) -> Option<usize> {
+    params.iter().position(|p| {
+        p.name == name && matches!(p.kind, RtParamKind::Positional | RtParamKind::KeywordOnly)
+    })
+}
+
+/// The parameters a call's keyword arguments bind when the call can be
+/// laid out at code generation (#941): `npos` positional arguments, then
+/// one keyword per name in `names`, to a method whose parameters are
+/// positional ones followed by keyword-only ones. Each name binds
+/// `keyword_param`'s parameter, as `bind_params` binds it. `None` (the
+/// call stays on the runtime's path) when a name binds nothing or a
+/// parameter already given, when there are more positional arguments
+/// than positional parameters, when the parameters have another kind,
+/// or when a parameter without a default is left out: what the checker
+/// refuses is never laid out with a nil in its place. Also `None` for a
+/// method of more than 64 parameters: an activation's `provided` mask has
+/// a bit for the first 64 only (`HasArg` takes a later one as given), so
+/// one left out there could not be told from one given (#1002).
+pub fn keyword_slots(params: &[RtParam], npos: usize, names: &[&str]) -> Option<Vec<usize>> {
+    if params.len() > 64 {
+        return None;
+    }
+    let positional = params
+        .iter()
+        .take_while(|p| p.kind == RtParamKind::Positional)
+        .count();
+    if npos > positional
+        || params[positional..]
+            .iter()
+            .any(|p| p.kind != RtParamKind::KeywordOnly)
+    {
+        return None;
+    }
+    let mut given = vec![false; params.len()];
+    given[..npos].fill(true);
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        let i = keyword_param(params, name)?;
+        if given[i] {
+            return None;
+        }
+        given[i] = true;
+        out.push(i);
+    }
+    if params
+        .iter()
+        .zip(&given)
+        .any(|(p, given)| !given && !p.has_default)
+    {
+        return None;
+    }
+    Some(out)
+}
+
 /// The `deinitialize` instances of class `cid` run when released: by
 /// name, along `lookup` (not the membership `ancestors`). The runtime
 /// (`Interp::deinitializer`) and the AOT (a construction inline only for

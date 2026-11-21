@@ -1,0 +1,25 @@
+# #941: a direct call binding keywords in compiled code copies no more
+# than the runtime's binding: an argument kept by keyword in a field
+# copies once when the caller's variable is updated after (200), and an
+# argument passed by keyword that the caller does not read again is
+# moved into the call, so the callee updates it in place (on the
+# runtime's path it was copied into the call, and its update copied).
+class Keep
+  @xs: Array[Int]
+  def initialize(*, xs: Array[Int])
+    @xs = xs
+  end
+  def xs -> Array[Int] = @xs
+end
+
+def take(*, xs: Array[Int]) -> Int = xs.push(1).size
+
+n = 0
+200.times do |i|
+  row = [i]
+  k = Keep.new(xs: row)
+  row = row.push(0)
+  n += row.size + k.xs.size
+end
+200.times { |i| n += take(xs: [i, i]) }
+p n

@@ -1,0 +1,104 @@
+# #941: compiled code binds a call's keyword arguments itself when the
+# callee is called directly (positional parameters, then keyword-only
+# ones, each name matched as the runtime's binding matches it,
+# `quarz_ir::keyword_param`); a parameter left out is nil and not given,
+# so the callee runs its default, as on the runtime's path. What prints
+# is what the VM prints.
+def say(n: Int) -> Int
+  puts "say #{n}"
+  n
+end
+
+def kw(a: Int, *, b: Int = 10, c: Int = 100) -> Int = a + b + c
+p kw(1), kw(1, b: 2), kw(1, c: 3), kw(1, c: 3, b: 2)
+
+# A keyword naming a positional parameter.
+def pos(a: Int, b: Int = 0) -> Int = a * 10 + b
+p pos(1, b: 3), pos(b: 3, a: 1)
+
+# Defaults that are not literals, run only when left out: one reading an
+# earlier parameter, one with an effect.
+def nl(a: Int, *, b: Int = a * 2, c: Int = say(7)) -> Int = a + b + c
+p nl(1), nl(1, c: 0), nl(1, b: 0, c: 0)
+
+# The arguments are evaluated in the order written, whatever the order
+# of the parameters.
+def ord(a: Int, b: Int = 0, c: Int = 0) -> Int = a * 100 + b * 10 + c
+p ord(c: say(3), a: say(1))
+p kw(say(5), c: say(6), b: say(4))
+
+# A block given with keywords.
+def steps(n: Int, *, step: Int = 1, &blk: (Int) -> Void) -> Void
+  i = 0
+  while i < n
+    blk.call(i)
+    i += step
+  end
+end
+steps(5, step: 2) { |i| puts "step #{i}" }
+steps(2) { |i| puts "one #{i}" }
+
+# Methods of a class, and an `initialize` with keywords (inline when the
+# class has no `deinitialize`, through the runtime when it has one).
+class K
+  @x: Int
+  @tag: String
+  def initialize(x: Int, *, tag: String = "k")
+    @x = x
+    @tag = tag
+  end
+  def self.make(*, x: Int = 1) -> K = K.new(x, tag: "made")
+  def scaled(*, by: Int = 2) -> Int = @x * by
+  def show -> String = "#{@tag}#{@x}"
+end
+p K.new(3).show, K.new(4, tag: "t").show, K.make.show, K.make(x: 9).show
+p K.new(2).scaled, K.new(2).scaled(by: 5)
+
+class R
+  @x: Int
+  def initialize(*, x: Int = 0)
+    @x = x
+  end
+  def deinitialize -> Void
+    puts "R#deinitialize #{@x}"
+  end
+end
+def make_r -> Int
+  r = R.new(x: 8)
+  1
+end
+p make_r
+
+# On the runtime's path: a callee with `**rest`.
+def rest(a: Int, **opts: Int) -> Int = a + opts.size
+p rest(1, x: 2, y: 3)
+
+# An argument passed by keyword and kept, the caller's variable updated
+# after.
+class Keep
+  @xs: Array[Int]
+  def initialize(*, xs: Array[Int])
+    @xs = xs
+  end
+  def xs -> Array[Int] = @xs
+end
+row = [1]
+k = Keep.new(xs: row)
+row = row.push(2)
+p row, k.xs
+
+# A method of more than 64 parameters stays on the runtime's path (an
+# activation's `provided` mask has 64 bits): the 65th and 66th given by
+# keyword, to a method and to an `initialize`, and 66 positionals.
+def wide(*, k1: Int = 1, k2: Int = 2, k3: Int = 3, k4: Int = 4, k5: Int = 5, k6: Int = 6, k7: Int = 7, k8: Int = 8, k9: Int = 9, k10: Int = 10, k11: Int = 11, k12: Int = 12, k13: Int = 13, k14: Int = 14, k15: Int = 15, k16: Int = 16, k17: Int = 17, k18: Int = 18, k19: Int = 19, k20: Int = 20, k21: Int = 21, k22: Int = 22, k23: Int = 23, k24: Int = 24, k25: Int = 25, k26: Int = 26, k27: Int = 27, k28: Int = 28, k29: Int = 29, k30: Int = 30, k31: Int = 31, k32: Int = 32, k33: Int = 33, k34: Int = 34, k35: Int = 35, k36: Int = 36, k37: Int = 37, k38: Int = 38, k39: Int = 39, k40: Int = 40, k41: Int = 41, k42: Int = 42, k43: Int = 43, k44: Int = 44, k45: Int = 45, k46: Int = 46, k47: Int = 47, k48: Int = 48, k49: Int = 49, k50: Int = 50, k51: Int = 51, k52: Int = 52, k53: Int = 53, k54: Int = 54, k55: Int = 55, k56: Int = 56, k57: Int = 57, k58: Int = 58, k59: Int = 59, k60: Int = 60, k61: Int = 61, k62: Int = 62, k63: Int = 63, k64: Int = 64, k65: Int = 65, k66: Int = 66) -> Int
+  k65 * 1000 + k66
+end
+class Wide
+  @v: Int
+  def initialize(*, k1: Int = 1, k2: Int = 2, k3: Int = 3, k4: Int = 4, k5: Int = 5, k6: Int = 6, k7: Int = 7, k8: Int = 8, k9: Int = 9, k10: Int = 10, k11: Int = 11, k12: Int = 12, k13: Int = 13, k14: Int = 14, k15: Int = 15, k16: Int = 16, k17: Int = 17, k18: Int = 18, k19: Int = 19, k20: Int = 20, k21: Int = 21, k22: Int = 22, k23: Int = 23, k24: Int = 24, k25: Int = 25, k26: Int = 26, k27: Int = 27, k28: Int = 28, k29: Int = 29, k30: Int = 30, k31: Int = 31, k32: Int = 32, k33: Int = 33, k34: Int = 34, k35: Int = 35, k36: Int = 36, k37: Int = 37, k38: Int = 38, k39: Int = 39, k40: Int = 40, k41: Int = 41, k42: Int = 42, k43: Int = 43, k44: Int = 44, k45: Int = 45, k46: Int = 46, k47: Int = 47, k48: Int = 48, k49: Int = 49, k50: Int = 50, k51: Int = 51, k52: Int = 52, k53: Int = 53, k54: Int = 54, k55: Int = 55, k56: Int = 56, k57: Int = 57, k58: Int = 58, k59: Int = 59, k60: Int = 60, k61: Int = 61, k62: Int = 62, k63: Int = 63, k64: Int = 64, k65: Int = 65, k66: Int = 66)
+    @v = k65 * 1000 + k66
+  end
+  def v -> Int = @v
+end
+def widepos(p1: Int, p2: Int, p3: Int, p4: Int, p5: Int, p6: Int, p7: Int, p8: Int, p9: Int, p10: Int, p11: Int, p12: Int, p13: Int, p14: Int, p15: Int, p16: Int, p17: Int, p18: Int, p19: Int, p20: Int, p21: Int, p22: Int, p23: Int, p24: Int, p25: Int, p26: Int, p27: Int, p28: Int, p29: Int, p30: Int, p31: Int, p32: Int, p33: Int, p34: Int, p35: Int, p36: Int, p37: Int, p38: Int, p39: Int, p40: Int, p41: Int, p42: Int, p43: Int, p44: Int, p45: Int, p46: Int, p47: Int, p48: Int, p49: Int, p50: Int, p51: Int, p52: Int, p53: Int, p54: Int, p55: Int, p56: Int, p57: Int, p58: Int, p59: Int, p60: Int, p61: Int, p62: Int, p63: Int, p64: Int, p65: Int, p66: Int) -> Int = p65 * 1000 + p66
+p wide(k65: 7, k66: 8), Wide.new(k65: 7, k66: 8).v, widepos(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66)
