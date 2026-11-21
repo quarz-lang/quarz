@@ -728,6 +728,11 @@ pub fn shake(module: &mut Module) -> usize {
         if methods[i] {
             continue;
         }
+        // (`result` stays: a fact of the declaration, which
+        // `Meta::MethodRef#result` reads for a method a quoted block's tree
+        // names, #1011. The tree's `Symbol` constant keeps the name, so the
+        // per-name lists below keep the method's id where the reference's
+        // `index` finds it, though its body may be gone.)
         m.name.clear();
         m.params.clear();
         m.native_key = None;

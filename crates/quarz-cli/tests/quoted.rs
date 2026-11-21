@@ -598,6 +598,145 @@ take { |age| ADULT.include?(age) }
 
 const EXPECTED_653: &str = "(18..65)@25.include?(age)\ntrue\ntrue\nfalse\n(18...65)@26.include?(age)\ntrue\nfalse\nfalse\n($lo..age.+(1))@28.include?(age)\nfalse\ntrue\ntrue\n(n..)@29\n3..\n(..n)@30\n..3\n18..65.include?(age)\ntrue\ntrue\nfalse\n";
 
+/// #1011: `Meta::MethodRef#result` at run time is `Meta::MethodSig#result`
+/// at compile time for the same method (one function, `rtworld::erase`):
+/// a `Bool`, a `Bool?` and a type parameter (`Object`), an `Array[Int]`
+/// (`Array`), natives and an operator, a generated method; an
+/// extension's method (which `Type#methods` does not list) and a
+/// construction (`initialize`'s `Void`, `Nil`) by hand; a reference that
+/// names no method raises; and `MethodRef#result` in a `static`
+/// statement gives what it gives at run time. Interpreted and compiled.
+#[test]
+fn a_method_reference_tells_its_declared_result() {
+    let d = dir();
+    write(&d.0, "lib.qz", LIB_1011);
+    write(&d.0, "app.qz", APP_1011);
+    let expected = "[Bool, Object, Array, Object, Bool, Int, Object, Bool]\n[Bool, Object, Array, Object, Bool, Int, Object, Bool]\n[Bool]\n[Bool, Bool]\n[Bool, Nil, Bool, Bool]\nMeta::MethodRef names no method: App#nope (index 0)\n";
+    let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(&d.0, &["build", "app.qz", "-o", "app.bin"], &[]);
+    assert!(ok, "{err}");
+    let run = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+}
+
+/// #1011, in a compiled program after `shake`, at -O2: a method named only
+/// in a quoted block that never runs (a translator reads `expr` alone)
+/// gives its declared result, and of two overloads of one name, the
+/// second, named alone, gives its own (the reference's `index` still
+/// finds it in the per-name list `shake` keeps).
+#[test]
+fn a_method_reference_tells_its_result_after_shake() {
+    let d = dir();
+    write(&d.0, "app.qz", APP_1011_SHAKE);
+    let expected = "Bool\nBool\n";
+    let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", "app.qz", "-o", "app.bin"],
+        &[("QUARZ_AOT_OPT", "2")],
+    );
+    assert!(ok, "{err}");
+    let run = Command::new(d.0.join("app.bin")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), expected);
+}
+
+const APP_1011_SHAKE: &str = r##"# Methods named only in quoted blocks that never run.
+class Row
+  def active? -> Bool = true
+  def pick(x: Int) -> Int = x
+  def pick(x: String) -> Bool = x.empty?
+end
+
+def first_result(&b: Quoted[Row.() -> Bool]) -> Type[Object]
+  case b.expr
+  in Meta::Expr::Block(body: [Meta::Expr::Call(method: m)]) then m.result
+  else Object
+  end
+end
+
+p first_result { active? }
+p first_result { pick("x") }
+"##;
+
+const LIB_1011: &str = r##"class Probe
+  # The compile-time view: `MethodSig#result` of `name` in `cls`.
+  static def self.sig(cls: Type[Object], name: Symbol) -> Type[Object]
+    s = cls.methods.find { |m| m.name == name }
+    s ? s.result : Nil
+  end
+  static def self.record -> Void
+    found = [
+      sig(App, :flag), sig(App, :maybe), sig(App, :list), sig(App, :ident),
+      sig(Int, :<), sig(Array, :size), sig(Array, :first), sig(String, :start_with?)
+    ]
+    def_class_method(:sigs) { found }
+    def_method(:generated) do -> Bool
+      true
+    end
+  end
+  static def self.record_more -> Void
+    # (And `MethodRef#result` itself at compile time.)
+    more = [sig(App, :generated), Meta::MethodRef.new(App, :flag, false, 0, nil).result]
+    def_class_method(:more_sigs) { more }
+  end
+end
+"##;
+
+const APP_1011: &str = r##"require_relative "lib"
+module Ext
+  extension String
+    def shout? -> Bool = true
+  end
+end
+using Ext
+
+class App < Probe
+  def flag -> Bool = true
+  def maybe -> Bool? = nil
+  def list -> Array[Int] = [1]
+  def ident[T](x: T) -> T = x
+  def initialize; end
+  record
+  record_more
+end
+
+# `MethodRef#result` of each call (or `!`) the block's array holds.
+def results(&b: Quoted[(App, Array[Int], String) -> Array[Object?]]) -> Array[Type[Object]]
+  out: Array[Type[Object]] = []
+  case b.expr
+  in Meta::Expr::Block(body: [Meta::Expr::ArrayLit(items: items)])
+    items.each do |x|
+      case x
+      in Meta::Expr::Call(methods: ms) then out = out.push(ms[0].result)
+      in Meta::Expr::Not(methods: ms) then out = out.push(ms.empty? ? Bool : ms[0].result)
+      else nil
+      end
+    end
+  else nil
+  end
+  out
+end
+
+# At run time, against `MethodSig#result` at compile time (`App.sigs`,
+# `App.more_sigs`).
+p results { |a, xs, s| [a.flag, a.maybe, a.list, a.ident(1), 1 < 2, xs.size, xs.first, s.start_with?("x")] }
+p App.sigs
+p results { |a, xs, s| [a.generated] }
+p App.more_sigs
+# An extension's method (`Type#methods` lists none), a construction
+# (`initialize`'s `Void`), `==`, and a user's `!` on `Bool`'s.
+p results { |a, xs, s| [s.shout?, App.new, a == a, !a.flag] }
+begin
+  Meta::MethodRef.new(App, :nope, false, 0, nil).result
+rescue ArgumentError => e
+  puts e.message
+end
+"##;
+
 #[test]
 fn the_tree_is_built_once_per_call_site() {
     // docs/14 §6: two calls of one site share the tree (a constant),

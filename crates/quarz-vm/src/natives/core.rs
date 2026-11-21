@@ -199,6 +199,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             .map_err(|m| i.err_runtime(&m))?;
         Ok(handle)
     });
+    native!(m, "Meta::MethodRef#result", |i, r, _a| method_ref_result(
+        i, r
+    ));
     native!(m, "Meta::ClassDef#method_ref", |i, r, a| method_ref(
         i, r, &a, false
     ));
@@ -617,6 +620,64 @@ fn gen_request(
 /// can write, so that only the class's generated `initialize`s call it.
 fn initializer_name(field: &str) -> String {
     format!("__init_@{field}")
+}
+
+/// `Meta::MethodRef#result` (#1011): the declared result's class of the
+/// method the reference names (`RtMethod::result`), found as the lowering
+/// made the reference (`quote::method_ref_of`): the `index`-th method of
+/// the name in the extension's table when it names one, else in the
+/// owner's (instance or class side).
+fn method_ref_result(interp: &Interp, recv: &Value) -> EvalResult {
+    let Value::Object(o) = recv else {
+        return Err(interp.err_type("result of a non-reference"));
+    };
+    let field = |k: usize| o.field(k).unwrap_or(Value::Nil);
+    let (Value::Class(owner), Value::Symbol(name), Value::Bool(singleton), Value::Int(index)) =
+        (field(0), field(1), field(2), field(3))
+    else {
+        return Err(interp.err_type("a malformed Meta::MethodRef"));
+    };
+    let ext = match field(4) {
+        Value::Class(e) => Some(e),
+        _ => None,
+    };
+    let name = interp.symbol_name(name);
+    let world = &interp.program.world;
+    let nth = |ids: Option<&Vec<quarz_ir::MethodId>>| -> Option<quarz_ir::MethodId> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|k| ids?.get(k).copied())
+    };
+    let found = match ext {
+        Some(e) => world
+            .extensions
+            .iter()
+            .filter(|x| x.module == Some(e) && x.target == owner)
+            .find_map(|x| nth(x.methods.get(&*name))),
+        None => {
+            let c = world.class(owner);
+            let table = if singleton {
+                &c.singleton_methods
+            } else {
+                &c.methods
+            };
+            nth(table.get(&*name))
+        }
+    };
+    match found {
+        Some(mid) => Ok(Value::Class(interp.program.method(mid).result)),
+        // A construction (`quote::method_ref`: `new` on the class side, the
+        // `index`-th `initialize` of the class declaring it): what
+        // `initialize` is declared to give, `Void`, shown as `Nil`.
+        None if singleton && &*name == "new" && ext.is_none() => {
+            Ok(Value::Class(interp.program.world.builtin.nil))
+        }
+        None => Err(interp.err_arg(&format!(
+            "Meta::MethodRef names no method: {}{}{name} (index {index})",
+            world.class(owner).name,
+            if singleton { "." } else { "#" }
+        ))),
+    }
 }
 
 /// `Meta::ClassDef#method_ref`/`#class_method_ref` (docs/14 §5): resolved

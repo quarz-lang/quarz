@@ -1602,6 +1602,10 @@ pub struct RtMethod {
     pub overridden: bool,
     pub fast_op: Option<FastOp>,
     pub file: u32,
+    /// The declared result's class as `Meta::MethodSig#result` shows it
+    /// (`rtworld::erase`): what `Meta::MethodRef#result` gives (#1011).
+    #[serde(default)]
+    pub result: ClassId,
     /// The declared return type's name, when known.
     #[serde(default)]
     pub ret: Option<String>,
@@ -1720,6 +1724,9 @@ pub struct RtConst {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RtExtension {
     pub target: ClassId,
+    /// The extension's module, when it has one (`Meta::MethodRef#extension`).
+    #[serde(default)]
+    pub module: Option<ClassId>,
     #[serde(serialize_with = "sorted")]
     pub methods: HashMap<String, Vec<MethodId>>,
     /// Active everywhere (the prelude's): its methods take part in
@@ -2479,6 +2486,7 @@ impl Droppable for RtMethod {
             overridden: false,
             fast_op: None,
             file: 0,
+            result: 0,
             ret: None,
             overrides: Vec::new(),
             makes: Vec::new(),
