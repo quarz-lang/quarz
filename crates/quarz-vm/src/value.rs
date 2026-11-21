@@ -3022,7 +3022,7 @@ pub enum Value {
     /// Nanoseconds.
     Duration(i64),
     /// A string of at most 14 bytes, kept in the value itself.
-    Short(ShortStr),
+    Short(ShortStr) = crate::layout::TAG_SHORT,
     // The first variant with a counted payload: every variant before it
     // has none, every one from it on has one (`NEEDS_DROP_FROM`, which
     // compiled code compares tags with).
@@ -3126,6 +3126,10 @@ pub struct ShortStr {
 
 impl ShortStr {
     pub const MAX: usize = 14;
+    /// Where the length and the bytes are in a `ShortStr` (`layout`'s
+    /// `SHORT_LEN_OFF` and `SHORT_BYTES_OFF` add the payload's offset).
+    pub const LEN_OFF: usize = std::mem::offset_of!(ShortStr, len);
+    pub const BYTES_OFF: usize = std::mem::offset_of!(ShortStr, bytes);
 
     pub fn new(s: &str) -> Option<ShortStr> {
         if s.len() > ShortStr::MAX {
@@ -4477,6 +4481,36 @@ pub fn regexp_literal(source: &str, flags: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::acyclic_type;
+
+    /// A short string's length and bytes are where `layout` says, for
+    /// every length (what compiled code's inline compare reads, #795).
+    #[test]
+    fn short_string_layout() {
+        use crate::layout::{SHORT_BYTES_OFF, SHORT_LEN_OFF, SHORT_MAX, TAG_SHORT};
+        for n in 0..=SHORT_MAX {
+            let text: String = (0..n).map(|k| char::from(b'a' + k as u8)).collect();
+            let v = super::Value::str(&text);
+            assert!(matches!(v, super::Value::Short(_)), "length {n}");
+            // SAFETY: a value is two words, a short string's all inline.
+            let raw: [u8; 16] = unsafe { std::mem::transmute_copy(&v) };
+            assert_eq!(raw[0], TAG_SHORT, "length {n}");
+            assert_eq!(raw[SHORT_LEN_OFF] as usize, n, "length {n}");
+            assert_eq!(&raw[SHORT_BYTES_OFF..SHORT_BYTES_OFF + n], text.as_bytes());
+        }
+    }
+
+    /// `String#==`'s one definition sees the bytes, whichever form holds
+    /// them: a short string kept as `Str` equals its `Short` form.
+    #[test]
+    fn string_equal_across_forms() {
+        use crate::natives::string::equal;
+        let long = super::Value::Str(crate::rc::Rc::from("ab"));
+        assert!(equal("ab", &long));
+        assert!(equal("ab", &super::Value::str("ab")));
+        assert!(!equal("ab", &super::Value::str("a")));
+        assert!(!equal("ab", &super::Value::Int(1)));
+        assert!(!equal("ab", &super::Value::Nil));
+    }
 
     /// A class `name` with fields of the declared types `fields`.
     fn class(name: &str, fields: &[&str]) -> quarz_ir::RtClass {

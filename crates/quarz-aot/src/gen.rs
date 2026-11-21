@@ -3282,6 +3282,97 @@ impl<B: Builder> Gen<'_, B> {
         self.states[dst as usize] = sig.ret.state();
     }
 
+    /// The text of the short string literal `r` holds at instruction
+    /// `index` of `block`, when its last definition before it in the block
+    /// is a `LoadConst` of one (a string of at most `SHORT_MAX` bytes, kept
+    /// in the value).
+    fn short_literal(&self, block: u32, index: u32, r: Reg) -> Option<String> {
+        let insts = &self.f.blocks[block as usize].insts[..index as usize];
+        let def = insts.iter().rev().find(|i| i.defs().contains(&r))?;
+        match def {
+            Inst::LoadConst { idx, .. } => match &self.f.consts[*idx as usize] {
+                Constant::Str(text) if text.len() <= quarz_vm::layout::SHORT_MAX => {
+                    Some(text.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// `other == text` (or `!=` with `ne`) for a short literal `text`, a
+    /// fast path of `natives::string::equal`, `String#==`'s definition:
+    /// true when `other` is a short string with `text`'s length and
+    /// bytes, compared as the value's two words under a mask that keeps
+    /// the tag, the length and the first `len` bytes (the bytes past
+    /// them are not the string's); false for a short string that differs.
+    /// Any other operand goes on to the call that follows, in the block
+    /// left current; the answer, boxed in `dst`'s home, then jumps to the
+    /// block returned, which the caller joins.
+    fn short_literal_eq(&mut self, text: &str, other: Reg, ne: bool, dst: Reg) -> B::Block {
+        use quarz_vm::layout::{SHORT_BYTES_OFF, SHORT_LEN_OFF, TAG_SHORT};
+        // The words are the value's bytes read in the target's order,
+        // which is the compiler's (built for the machine it runs on).
+        const _: () = assert!(cfg!(target_endian = "little"));
+        let mut want = [0u8; 16];
+        let mut mask = [0u8; 16];
+        want[0] = TAG_SHORT;
+        mask[0] = 0xff;
+        want[SHORT_LEN_OFF] = text.len() as u8;
+        mask[SHORT_LEN_OFF] = 0xff;
+        for (k, b) in text.bytes().enumerate() {
+            want[SHORT_BYTES_OFF + k] = b;
+            mask[SHORT_BYTES_OFF + k] = 0xff;
+        }
+        let word = |b: &[u8; 16], k: usize| -> i64 {
+            i64::from_le_bytes(b[8 * k..8 * k + 8].try_into().expect("a word"))
+        };
+        self.ensure_home(other);
+        let mut differs = None;
+        for k in 0..2 {
+            let w = self
+                .b
+                .load(Ty::I64, self.regs, reg_off(other) + 8 * k as i32);
+            let x = self.b.iconst(Ty::I64, word(&want, k));
+            let d = self.b.bxor(w, x);
+            let d = if word(&mask, k) == -1 {
+                d
+            } else {
+                let m = self.b.iconst(Ty::I64, word(&mask, k));
+                self.b.band(d, m)
+            };
+            differs = Some(match differs {
+                None => d,
+                Some(p) => self.b.bor(p, d),
+            });
+        }
+        let same = self
+            .b
+            .icmp_imm(IntCC::Equal, differs.expect("two words"), 0);
+        let done = self.b.create_block();
+        let answered = self.b.create_block();
+        let not_same = self.b.create_block();
+        let other_form = self.b.create_block();
+        self.b.brif(same, answered, &[], not_same, &[]);
+        self.b.switch_to_block(not_same);
+        let tag = self.tag(other);
+        let short = self.b.icmp_imm(IntCC::Equal, tag, i64::from(TAG_SHORT));
+        self.b.brif(short, answered, &[], other_form, &[]);
+        self.b.switch_to_block(answered);
+        // `same` is the answer to `==` on both edges (false on the second).
+        // (A comparison's result is a byte, 0 or 1.)
+        let v = if ne {
+            let one = self.b.iconst(Ty::I8, 1);
+            self.b.bxor(same, one)
+        } else {
+            same
+        };
+        self.store_bool_home(dst, v);
+        self.b.jump(done, &[]);
+        self.b.switch_to_block(other_form);
+        done
+    }
+
     /// A call through `qz_call_static`: the argument registers' indices
     /// in the scratch area, the runtime does the rest.
     fn runtime_call(
@@ -5613,6 +5704,28 @@ impl<B: Builder> Gen<'_, B> {
                     // entry consumed nothing), #795. A destination whose
                     // home holds no counted value (its state, as
                     // `clear_home` reads it) is written without a drop.
+                    // `String#==`/`!=` with a short literal on either side:
+                    // compared inline, the entry made only for an operand
+                    // that is not a short string (#795).
+                    let literal_eq = fast.and_then(|_| {
+                        let ne = match self.methods[mid as usize].native_key.as_deref() {
+                            Some("String#==") => false,
+                            Some("String#!=") => true,
+                            _ => return None,
+                        };
+                        let (recv, arg) = (recv?, *args.first()?);
+                        match (
+                            self.short_literal(block, index, arg),
+                            self.short_literal(block, index, recv),
+                        ) {
+                            (Some(text), _) => Some((text, recv, ne)),
+                            (None, Some(text)) => Some((text, arg, ne)),
+                            (None, None) => None,
+                        }
+                    });
+                    let saved = literal_eq.as_ref().map(|_| self.states.clone());
+                    let eq_cont = literal_eq
+                        .map(|(text, other, ne)| self.short_literal_eq(&text, other, ne, dst));
                     let cont = fast.map(|entry| {
                         let empty = !self.states[dst as usize].needs_release();
                         let d_flags = self.i32(if empty {
@@ -5659,6 +5772,13 @@ impl<B: Builder> Gen<'_, B> {
                     if let Some(cont) = cont {
                         self.b.jump(cont, &[]);
                         self.b.switch_to_block(cont);
+                    }
+                    if let (Some(eq_cont), Some(saved)) = (eq_cont, saved) {
+                        self.b.jump(eq_cont, &[]);
+                        self.b.switch_to_block(eq_cont);
+                        // Every path left the answer boxed in the home.
+                        self.states.clone_from(&saved);
+                        self.states[dst as usize] = State::Unknown;
                     }
                     self.drop_copied_moves(inst, dst);
                 }
