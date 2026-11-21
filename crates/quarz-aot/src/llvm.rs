@@ -1247,11 +1247,7 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
         };
         let entry = *fast_by_symbol.entry(sym).or_insert_with(|| {
             let name = format!("\"qzfc.{}\"", sym.trim_start_matches("qzf."));
-            declare(
-                &name,
-                &[p, p, p, i32_, i32_, i32_, i32_, i32_, i32_],
-                &[Ty::I8],
-            )
+            declare(&name, &[p, p, p, i32_, i64_, i64_], &[Ty::I8])
         });
         fast_entries.insert(mid as quarz_ir::MethodId, entry);
     }

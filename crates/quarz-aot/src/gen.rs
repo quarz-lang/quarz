@@ -5728,21 +5728,18 @@ impl<B: Builder> Gen<'_, B> {
                         .map(|(text, other, ne)| self.short_literal_eq(&text, other, ne, dst));
                     let cont = fast.map(|entry| {
                         let empty = !self.states[dst as usize].needs_release();
-                        let d_flags = self.i32(if empty {
-                            dst | quarz_vm::natives::FAST_DST_EMPTY
-                        } else {
-                            dst
-                        });
-                        let a: Vec<B::Value> = (0..3)
-                            .map(|k| self.i32(args.get(k).copied().unwrap_or(0)))
-                            .collect();
-                        let answered = self.b.call(
-                            entry,
-                            &[
-                                self.rt, self.act, self.regs, recv_v, d_flags, nargs, a[0], a[1],
-                                a[2],
-                            ],
-                        )[0];
+                        let (word, ops0, ops1) = quarz_vm::natives::fast_call::pack(
+                            recv.unwrap_or(u32::MAX),
+                            &args,
+                            dst,
+                            empty,
+                        );
+                        let word = self.i32(word);
+                        let ops0 = self.b.iconst(Ty::I64, ops0 as i64);
+                        let ops1 = self.b.iconst(Ty::I64, ops1 as i64);
+                        let answered = self
+                            .b
+                            .call(entry, &[self.rt, self.act, self.regs, word, ops0, ops1])[0];
                         let cont = self.b.create_block();
                         let declined = self.b.create_block();
                         self.b.set_cold(declined);
