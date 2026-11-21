@@ -285,6 +285,20 @@ impl<'a> FnBuilder<'a> {
                 let l = self.int(line);
                 self.node("HashLit", vec![pairs, l])
             }
+            // Always a node, its bounds literals or not (#653).
+            ExprKind::Range { lo, hi, exclusive } => {
+                let lo = match lo {
+                    Some(x) => self.quote_expr(q, x),
+                    None => self.nil(),
+                };
+                let hi = match hi {
+                    Some(x) => self.quote_expr(q, x),
+                    None => self.nil(),
+                };
+                let x = self.load_const(Constant::Bool(*exclusive));
+                let l = self.int(line);
+                self.node("RangeLit", vec![lo, hi, x, l])
+            }
             ExprKind::Call(call) => self.quote_call(q, e, call, line),
             ExprKind::And(a, b) | ExprKind::Or(a, b) => {
                 // A type's own `&&`/`||`: the call the checker made of it,

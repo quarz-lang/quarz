@@ -15822,7 +15822,7 @@ impl Checker {
     fn check_quotable(&mut self, e: &Expr) {
         let refuse = |what: &str| -> String {
             format!(
-                "{what} cannot be quoted: a block given as a `Quoted` holds literals, variables, `self`, calls (`&.` too), `&&`, `||`, `!`, `if` and blocks (docs/14 §6)"
+                "{what} cannot be quoted: a block given as a `Quoted` holds literals, ranges, variables, `self`, calls (`&.` too), `&&`, `||`, `!`, `if` and blocks (docs/14 §6)"
             )
         };
         let what: &str = match &e.kind {
@@ -15936,6 +15936,13 @@ impl Checker {
                 self.check_quotable(a);
                 return;
             }
+            // `Meta::Expr::RangeLit` (#653), its bounds quoted in turn.
+            ExprKind::Range { lo, hi, .. } => {
+                for x in lo.iter().chain(hi.iter()) {
+                    self.check_quotable(x);
+                }
+                return;
+            }
             ExprKind::If { cond, then, els } => {
                 self.check_quotable(cond);
                 for x in then.iter().chain(els.iter().flatten()) {
@@ -15959,7 +15966,6 @@ impl Checker {
                 return;
             }
             ExprKind::DSymbol(_) => "an interpolated symbol",
-            ExprKind::Range { .. } => "a range",
             ExprKind::Lambda(_) => "a lambda",
             ExprKind::Magic(_) => "a `__FILE__`-style name",
             ExprKind::TypeApp(_) => "a type",

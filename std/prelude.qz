@@ -546,6 +546,9 @@ module Meta
     variant If(cond: Expr, then_expr: Expr, else_expr: Expr?, line: Int)
     variant ArrayLit(items: Array[Expr], line: Int)
     variant HashLit(pairs: Array[[Expr, Expr]], line: Int)
+    # A range literal, `lo..hi` or `lo...hi` (`exclusive`); a bound left
+    # out (`18..`, `..65`) is nil.
+    variant RangeLit(lo: Expr?, hi: Expr?, exclusive: Bool, line: Int)
     # A string with interpolation: its parts, literals and expressions.
     variant Interp(parts: Array[Expr], line: Int)
     # A block given to a call inside the quoted one (and the quoted
