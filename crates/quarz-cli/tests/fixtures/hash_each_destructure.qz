@@ -24,3 +24,21 @@ b["x"] = 10
 b["y"] = 20
 b.each { |k, v| puts "#{k}:#{v + 1}" }
 b.each { |pair| p pair }
+# A value that is itself a pair is not spread again.
+{"a" => [1, 2]}.each { |k, v| p v }
+# More parameters than a pair has reach `each` only through a block typed
+# for arrays: the third is nil both ways, a `*rest` takes the value, and a
+# one-parameter block gets the pair. (A nested pattern `|(k, v)|` and a
+# block parameter's default are refused by the checker.)
+def run(h: Hash[Int, Int], &f: (Array[Int]) -> Void) -> Void = h.each(&f)
+run({1 => 2}) { |a, b, c| p a, b, c }
+run({1 => 2}) { |a, *r| p a, r }
+run({1 => 2}) { |a| p a }
+def run_b(b: Hash::Builder[Int, Int], &f: (Array[Int]) -> Void) -> Void = b.each(&f)
+hb = Hash::Builder[Int, Int].new
+hb[3] = 4
+run_b(hb) { |a, b, c| p a, b, c }
+# Enumerable's methods over a hash are Quarz code over `each { |x| ... }`
+# (untouched), and `select` its own native.
+p h.map { |k, v| "#{k}#{v}" }, h.select { |k, v| v > 1 }
+h.each_with_index { |kv, i| p kv, i }
