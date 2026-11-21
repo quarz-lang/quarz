@@ -1155,9 +1155,58 @@ fn layout_for(class: ClassId, n: usize) -> &'static FieldLayout {
     FieldLayout::values(n)
 }
 
+thread_local! {
+    /// The fields `FieldTake` took out of objects (#704), by the object's
+    /// address and the field's index, while the facts are checked
+    /// (`Interp::verify`): a later read of one is a violation, and the
+    /// object is freed with each still taken (nil).
+    static TAKEN: std::cell::RefCell<std::collections::HashSet<(usize, usize)>> = Default::default();
+}
+
+/// Record that field `i` of `o` was taken (`FieldTake`, under `verify`).
+pub(crate) fn note_taken(o: &Object, i: usize) {
+    let addr = o as *const Object as *const u8 as usize;
+    TAKEN.with(|t| t.borrow_mut().insert((addr, i)));
+}
+
+/// Whether field `i` of `o` was taken (`FieldTake`, under `verify`).
+pub(crate) fn was_taken(o: &Object, i: usize) -> bool {
+    let addr = o as *const Object as *const u8 as usize;
+    TAKEN.with(|t| {
+        let t = t.borrow();
+        !t.is_empty() && t.contains(&(addr, i))
+    })
+}
+
 impl<F: ?Sized + FieldTail> Drop for ObjectOf<F> {
     fn drop(&mut self) {
         let layout = self.layout;
+        // (A field `FieldTake` took is freed still taken: nothing wrote it
+        // back, #704. Recorded only while the facts are checked.)
+        let addr = self as *const Self as *const u8 as usize;
+        let taken: Vec<usize> = TAKEN.with(|t| {
+            let mut t = t.borrow_mut();
+            if t.is_empty() {
+                return Vec::new();
+            }
+            let mine: Vec<usize> = (0..layout.kinds.len())
+                .filter(|i| t.remove(&(addr, *i)))
+                .collect();
+            mine
+        });
+        for i in taken {
+            // SAFETY: a value field slot of this object, still alive
+            // (`FieldTake` takes only value fields).
+            let nil = layout.kinds[i] == FieldKind::Value
+                && unsafe {
+                    let base = &raw mut self.fields as *mut u8;
+                    matches!(&*(base.add(layout.offset(i)) as *const Value), Value::Nil)
+                };
+            assert!(
+                nil,
+                "a field FieldTake took was written back before the object was freed (#704)"
+            );
+        }
         let base = &raw mut self.fields as *mut u8;
         // The last reference went: an object whose class defines
         // `deinitialize` lives on, rebuilt from its fields, until the

@@ -229,6 +229,105 @@ pub const IN_PLACE_NATIVES: [&str; 6] = [
     "Set#delete",
 ];
 
+/// The classes whose values `FieldTake` may take out of a field: those
+/// whose in-place updates test for a unique reference (#704).
+const TAKEN_COLLECTIONS: [&str; 5] = ["Array", "Hash", "Set", "String", "Bytes"];
+
+/// Whether field `index` of class `class` is one `FieldTake` may take: a
+/// `data` type's (its fields are set once, by its constructor) value field
+/// (`field_slots`) declared of one of `TAKEN_COLLECTIONS`.
+pub fn takeable_field(classes: &[crate::RtClass], class: crate::ClassId, index: u32) -> bool {
+    let Some(c) = classes.get(class as usize) else {
+        return false;
+    };
+    if c.kind != crate::RtClassKind::Data {
+        return false;
+    }
+    let slots = crate::field_slots(&c.fields);
+    let i = index as usize;
+    slots.kinds.get(i) == Some(&crate::FieldKind::Value)
+        && c.fields[i].ty.as_deref().is_some_and(|t| {
+            let head = t.split('[').next().unwrap_or(t);
+            TAKEN_COLLECTIONS.contains(&head)
+        })
+}
+
+/// Whether `FieldGet` `inst` (at instruction `i` of block `b`) may be a
+/// `FieldTake` (#704): a field `takeable_field` allows, of an object
+/// whose class is known statically (`class`, exact: a `data` type has no
+/// subclasses), read through a register that holds a count of its own
+/// (not a borrowed element's, the only registers compiled code reads
+/// without one: `ArrayGetReg`'s `borrow`) and is read for the last time
+/// here, once, into another register. In a function with no handler:
+/// conservative, as an unwind into one would enter with every register
+/// owned, and a handler's code may read a register `mark_moves` thinks
+/// dead on the normal path (the field would then be seen nil). The QIR
+/// verifier checks the same (`verify::check_field_takes`).
+pub fn field_take_allowed(
+    f: &Function,
+    classes: &[crate::RtClass],
+    last: &[Vec<Vec<Reg>>],
+    b: usize,
+    i: usize,
+) -> bool {
+    let (Inst::FieldGet {
+        dst,
+        obj,
+        index,
+        class,
+    }
+    | Inst::FieldTake {
+        dst,
+        obj,
+        index,
+        class,
+    }) = &f.blocks[b].insts[i]
+    else {
+        return false;
+    };
+    *class != u32::MAX
+        && dst != obj
+        && takeable_field(classes, *class, *index)
+        && last[b][i].contains(obj)
+        && f.blocks.iter().all(|blk| blk.handler.is_none())
+        && !f.blocks.iter().any(|blk| {
+            blk.insts
+                .iter()
+                .any(|x| matches!(x, Inst::ArrayGetReg { dst, borrow: true, .. } if dst == obj))
+        })
+}
+
+/// Turn each `FieldGet` that `field_take_allowed` allows into a
+/// `FieldTake`. Run after `mark_moves` (nothing renumbers after).
+pub fn take_dying_fields(f: &mut Function, classes: &[crate::RtClass]) {
+    let last = last_reads(f);
+    let mut sites = Vec::new();
+    for (b, blk) in f.blocks.iter().enumerate() {
+        for (i, inst) in blk.insts.iter().enumerate() {
+            if matches!(inst, Inst::FieldGet { .. }) && field_take_allowed(f, classes, &last, b, i)
+            {
+                sites.push((b, i));
+            }
+        }
+    }
+    for (b, i) in sites {
+        if let Inst::FieldGet {
+            dst,
+            obj,
+            index,
+            class,
+        } = f.blocks[b].insts[i].clone()
+        {
+            f.blocks[b].insts[i] = Inst::FieldTake {
+                dst,
+                obj,
+                index,
+                class,
+            };
+        }
+    }
+}
+
 /// A call to one of the `IN_PLACE_NATIVES` that reads its receiver
 /// register for the last time becomes an `OwnedCall` on it: the
 /// collection moves into the call and is updated in place (`xs.push(v)`
@@ -521,6 +620,7 @@ pub fn heap_possible_in(
                 | Inst::BlockParam { dst }
                 | Inst::FrameGet { dst, .. }
                 | Inst::FieldGet { dst, .. }
+                | Inst::FieldTake { dst, .. }
                 | Inst::ConstGet { dst, .. }
                 | Inst::ClassRef { dst, .. }
                 | Inst::VariantSingleton { dst, .. }

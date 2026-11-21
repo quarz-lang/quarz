@@ -1,0 +1,62 @@
+# #704: a `data` value's collection field read for the last time through
+# a register that holds the value's only reference is taken, not copied
+# (`FieldTake`); held elsewhere too, it is copied, and every holder sees
+# the value as it was.
+
+data D(xs: Array[Int])
+  def add(x: Int) -> D = D.new(xs.push(x))
+end
+
+class Res
+  @name: String
+  def initialize(@name: String); end
+  def deinitialize -> Void
+    puts "released #{@name}"
+  end
+end
+
+# (`r` read first: `xs` is the value's last read, taken.)
+data P(r: Res, xs: Array[Int])
+  def add(x: Int) -> P = P.new(r, xs.push(x))
+end
+
+EMPTY = D.new([])
+
+# The only holder: updated in place, the result as built.
+d = D.new([])
+i = 0
+while i < 5
+  d = d.add(i)
+  i += 1
+end
+p d.xs
+
+# Two holders: both keep the value.
+a = D.new([1])
+b = a
+c = a.add(2)
+p b.xs, c.xs
+
+# A constant: unchanged.
+e = EMPTY.add(7)
+p EMPTY.xs, e.xs
+
+# An element of a collection: the element unchanged.
+ds = [D.new([1])]
+f = ds[0].add(3)
+p ds[0].xs, f.xs
+
+# A value another task reads.
+g = D.new([4])
+t = Task.spawn { g.xs.size }
+h = g.add(5)
+p t.await, h.xs
+
+# Another field with a `deinitialize`: released where it was before.
+def round -> Void
+  q = P.new(Res.new("r1"), [1])
+  q = q.add(2)
+  puts "added #{q.xs}"
+end
+round
+puts "end"

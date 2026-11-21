@@ -1267,6 +1267,9 @@ impl Interp {
                 let v = regs[*src as usize].clone();
                 self.frame(act).set(*depth, *slot, v);
             }
+            Inst::FieldTake {
+                dst, obj, index, ..
+            } => self.op_field_take(regs, *dst, *obj, *index)?,
             Inst::FieldGet {
                 dst, obj, index, ..
             } => {

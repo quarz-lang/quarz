@@ -283,6 +283,8 @@ pub fn typed_sigs(functions: &[Function], methods: &[RtMethod]) -> Vec<Option<Ty
                         Inst::MakeBlock { .. }
                             | Inst::BlockParam { .. }
                             | Inst::HasArg { .. }
+                            // (A runtime op, which takes the activation.)
+                            | Inst::FieldTake { .. }
                             | Inst::Call {
                                 kind: CallKind::Yield,
                                 ..
@@ -466,6 +468,12 @@ pub fn transfer(
             };
         }
         Inst::FieldSet { obj, .. } => st[*obj as usize] = State::Obj,
+        // (A runtime op: the object stays in `obj`'s home, the field's
+        // value is boxed in `dst`'s.)
+        Inst::FieldTake { dst, obj, .. } => {
+            st[*obj as usize] = State::Unknown;
+            st[*dst as usize] = State::Unknown;
+        }
         Inst::SelfRef { dst } => {
             st[*dst as usize] = if self_is_object(f, methods, classes) {
                 State::Obj

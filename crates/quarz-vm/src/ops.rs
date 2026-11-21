@@ -96,6 +96,42 @@ impl Interp {
         Ok(())
     }
 
+    /// `FieldTake` (#704): field `index` of the object in `obj` moves into
+    /// `dst` when `obj` holds the object's only reference (the runtime's
+    /// count: an object other threads may hold, or an immortal one, never
+    /// reads 1), and is copied as `FieldGet` copies it otherwise. `obj`
+    /// keeps the object either way (it is dead: released when next
+    /// written or cleared, as after a `FieldGet`).
+    pub fn op_field_take(
+        &self,
+        regs: &mut [Value],
+        dst: Reg,
+        obj: Reg,
+        index: u32,
+    ) -> Result<(), Flow> {
+        let i = index as usize;
+        let v = match &mut regs[obj as usize] {
+            Value::Object(o) => {
+                if self.verify && crate::value::was_taken(o, i) {
+                    return Err(self.err_runtime(
+                        "internal error: a field FieldTake took is read again (#704)",
+                    ));
+                }
+                let v = o.field(i).unwrap_or(Value::Nil);
+                if crate::rc::Rc::get_mut(o).is_some() {
+                    o.set_field(i, Value::Nil);
+                    if self.verify {
+                        crate::value::note_taken(o, i);
+                    }
+                }
+                v
+            }
+            _ => return Err(self.err_type("a field taken from a value that is not an object")),
+        };
+        regs[dst as usize] = v;
+        Ok(())
+    }
+
     pub fn op_has_arg(&self, act: &Activation, regs: &mut [Value], dst: Reg, index: u32) {
         regs[dst as usize] = Value::Bool(act.has_arg(index));
     }

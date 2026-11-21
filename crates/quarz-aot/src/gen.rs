@@ -52,6 +52,7 @@ pub(crate) const OPS: &[(&str, &[Ty])] = {
     const P: Ty = Ty::Ptr;
     &[
         ("qz_op_load_const", &[I, I]),
+        ("qz_op_field_take", &[I, I, I]),
         ("qz_op_field_get_by_name", &[I, I, I, I]),
         ("qz_op_const_get", &[I, I]),
         ("qz_op_variant_singleton", &[I, I]),
@@ -3456,6 +3457,12 @@ impl<B: Builder> Gen<'_, B> {
         let w = |g: &mut Self, v: u32| g.b.iconst(Ty::I32, i64::from(v));
         let opt = |r: Option<u32>| r.unwrap_or(u32::MAX);
         let (name, extra): (&str, Vec<B::Value>) = match inst {
+            Inst::FieldTake {
+                dst, obj, index, ..
+            } => (
+                "qz_op_field_take",
+                vec![w(self, *dst), w(self, *obj), w(self, *index)],
+            ),
             Inst::LoadConst { dst, idx } => {
                 ("qz_op_load_const", vec![w(self, *dst), w(self, *idx)])
             }

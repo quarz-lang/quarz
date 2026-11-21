@@ -1,0 +1,14 @@
+# #704: a `data` value updated through its collection field, the old
+# value given up each time, copies nothing: the field is taken from the
+# only holder (`FieldTake`). (`with(xs: xs.push(x))` still copies: `with`
+# reads every field, #1024.)
+data D(xs: Array[Int])
+  def add(x: Int) -> D = D.new(xs.push(x))
+end
+d = D.new([])
+i = 0
+while i < 400
+  d = d.add(i)
+  i += 1
+end
+puts d.xs.size
