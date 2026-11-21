@@ -246,3 +246,31 @@ rescue SystemExit => s
   "#{s.status} #{s.message}"
 end
 p exits
+
+# An `initialize` that makes a block is called through the entry that
+# builds its activation in the runtime (`qz_enter`/`qz_leave`), not the
+# lean one: with a default left out, its result dropped, and raising from
+# inside the block, the variable keeping its old value.
+class Summed
+  @s: Int = 0
+  @get: () -> Int
+  def initialize(xs: Array[Int], extra: Int = 0)
+    xs.each do |x|
+      raise ArgumentError, "negative" if x < 0
+      @s += x
+    end
+    @s += extra
+    base = @s
+    @get = -> { base }
+  end
+  def s -> Int = @get.call
+end
+def summed -> Int
+  a = Summed.new([1, 2, 3])
+  begin
+    a = Summed.new([4, -1])
+  rescue ArgumentError
+  end
+  a.s + Summed.new([1], 10).s
+end
+p summed

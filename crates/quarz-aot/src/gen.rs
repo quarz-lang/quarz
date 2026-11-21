@@ -4960,6 +4960,9 @@ impl<B: Builder> Gen<'_, B> {
                 // `initialize` is called directly on it, its result
                 // released.
                 if let Some(target) = construct_target(inst, self.methods, self.classes) {
+                    // (The line a backtrace shows for this frame, as a
+                    // direct method call records it.)
+                    self.set_call_line(block, index);
                     let class_v = self.i32(*class);
                     let d = self.i32(*dst);
                     let status = self
