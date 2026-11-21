@@ -369,8 +369,8 @@ impl Interp {
         if argc <= 3 {
             if let Some(fast) = self.program.fast_natives[mid as usize] {
                 let refs: SmallVec<[&Value; 3]> = args.iter().collect();
-                if let Some(r) = fast(self, recv, &refs) {
-                    return r;
+                if let Some(v) = fast(self, recv, &refs) {
+                    return Ok(v);
                 }
             }
         }

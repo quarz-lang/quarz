@@ -208,8 +208,7 @@ impl Interp {
                                 c.args.iter().map(|r| &regs[*r as usize]).collect();
                             fast(self, recv_ref, &refs)
                         };
-                        if let Some(r) = result {
-                            let v = r?;
+                        if let Some(v) = result {
                             regs[c.dst as usize] = v;
                             if c.moved != 0 && crate::deinit::enabled() {
                                 self.release_moved(regs, &c);

@@ -743,14 +743,9 @@ pub unsafe extern "C" fn qz_call_static(
             for (i, slot) in refs.iter_mut().enumerate().take(nargs as usize) {
                 *slot = &*regs.add(*arg_regs.add(i) as usize);
             }
-            if let Some(r) = fast(rt, recv_ref, &refs[..nargs as usize]) {
-                return match r {
-                    Ok(v) => {
-                        *regs.add(dst as usize) = v;
-                        STATUS_OK
-                    }
-                    Err(flow) => rt.park_flow(flow),
-                };
+            if let Some(v) = fast(rt, recv_ref, &refs[..nargs as usize]) {
+                *regs.add(dst as usize) = v;
+                return STATUS_OK;
             }
         }
     }
