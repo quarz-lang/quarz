@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use quarz_types::ClassId;
 
-use super::{brackets, documented, links, name_shaped, Api, Loaded};
+use super::{brackets, documented, links, name_shaped, Api, Loaded, Target};
 
 /// A text's edits: a byte range and its bracket.
 type Edits = Vec<(Range<usize>, String)>;
@@ -25,15 +25,45 @@ type Left = Vec<(usize, String)>;
 /// resolved in `scope`, else a bare public method of `scope`, with a page
 /// to link to.
 fn span_linked(loaded: &Loaded, api: &Api, scope: Option<ClassId>, code: &str) -> bool {
+    span_target(loaded, api, scope, code).is_some()
+}
+
+/// What code span `code` linked to before #881, as `span_linked` says.
+fn span_target(loaded: &Loaded, api: &Api, scope: Option<ClassId>, code: &str) -> Option<Target> {
     let world = &loaded.world;
     let target = if name_shaped(code) {
         api.resolve(world, scope, code)
     } else {
         scope.and_then(|s| api.resolve_bare(world, s, code))
     };
-    target
-        .and_then(|t| super::html::href(loaded, api, &t))
-        .is_some()
+    target.filter(|t| super::html::href(loaded, api, t).is_some())
+}
+
+/// The code spans of Markdown text `md` that link on another page
+/// showing it (`there`) but not where it is converted (`here`), outside
+/// a link's text: at their offset, with their code. Converted for
+/// `here`, such a span stays code and its link on the other page is lost
+/// (#920).
+pub(crate) fn linked_elsewhere(
+    md: &str,
+    here: impl Fn(&str) -> bool,
+    there: impl Fn(&str) -> bool,
+) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut in_link = 0usize;
+    for (event, range) in Parser::new_ext(md, Options::ENABLE_TABLES).into_offset_iter() {
+        match event {
+            Event::Start(Tag::Link { .. }) | Event::Start(Tag::Image { .. }) => in_link += 1,
+            Event::End(TagEnd::Link) | Event::End(TagEnd::Image) => {
+                in_link = in_link.saturating_sub(1)
+            }
+            Event::Code(code) if in_link == 0 && !here(&code) && there(&code) => {
+                out.push((range.start, code.to_string()))
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The edits of Markdown text `md`: each code span `linked` says links,
@@ -252,6 +282,36 @@ pub(crate) fn command(loaded: &Loaded, api: &Api) -> ExitCode {
             let line = text[..at].matches('\n').count() + 1;
             unlinked.push(format!("{}:{line}: {with}", path.display()));
         }
+        // The root module's page shows it too, with names resolved in the
+        // module: a span that linked there only stays code, and is listed
+        // with that page and, when one links here, the full name to write
+        // (#920).
+        for page in api.pages.iter().filter(|p| super::html::shows_readme(p)) {
+            let scope = Some(page.id);
+            let there = super::linker(loaded, api, scope);
+            let spans = linked_elsewhere(
+                text,
+                |code| span_linked(loaded, api, None, code) && link(code),
+                |code| span_linked(loaded, api, scope, code) && there(code),
+            );
+            for (at, code) in spans {
+                let line = text[..at].matches('\n').count() + 1;
+                let full = match span_target(loaded, api, scope, &code) {
+                    Some(Target::Page(p, member)) => Some(member.unwrap_or(p)),
+                    _ => None,
+                }
+                .filter(|full| link(full));
+                let write = match full {
+                    Some(full) => format!("write [{}]", brackets::label_of(&full)),
+                    None => "write its full name".to_string(),
+                };
+                left.push(format!(
+                    "{}:{line}: `{code}` links on the page of `{}` only, not on the front page: {write}",
+                    path.display(),
+                    page.name
+                ));
+            }
+        }
         if !edits.is_empty() {
             files.push(FileEdits {
                 path: path.clone(),
@@ -320,6 +380,22 @@ mod tests {
         let (s, left) = convert("One.\n\n`K`: v");
         assert_eq!(s, "One.\n\n`K`: v");
         assert_eq!(left, ["[K] would not link there as a bracket"]);
+    }
+
+    #[test]
+    fn spans_that_link_on_the_other_page_only() {
+        let md = "`A` and `B`, `C`; [`B`](u) ``B``.";
+        let here = |c: &str| c == "A";
+        let there = |c: &str| c == "A" || c == "B";
+        // (Not the one in a link's text: it links already.)
+        let found = linked_elsewhere(md, here, there);
+        assert_eq!(
+            found,
+            [
+                (md.find("`B`").unwrap(), "B".to_string()),
+                (md.find("``B``").unwrap(), "B".to_string())
+            ]
+        );
     }
 
     #[test]
