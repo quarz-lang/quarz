@@ -1,0 +1,34 @@
+# The natives that call their block repeatedly through a kept activation
+# (#987) hand it each element as before: an element the collection still
+# holds is shared, so a block's update of it copies once (200 + 200 +
+# 200 + 200 + 100 below, as on main before #987); a fresh value made per
+# call (a line, a match) is the block's alone and copies nothing. The one
+# fresh collection a moved native hands over, `Hash#each`'s `[k, v]`,
+# copies once when a `|pair|` block updates it (200, as on main, where
+# that block was kept already). The kept activation borrows its
+# arguments, so this count pins that it adds no copy of its own.
+rows = Array::Builder[Array[Int]].new
+200.times { |i| rows << [i] }
+rows.map! { |r| r.push(0) }
+n = 0
+rows.each { |r| n += r.push(0).size }
+
+h = Hash::Builder[Int, Array[Int]].new
+200.times { |i| h[i] = [i] }
+h.transform_values! { |v| v.push(0) }
+
+frozen = {1 => [1], 2 => [2]}
+100.times { frozen.each_value { |v| n += v.push(0).size } }
+
+s = Set::Builder[Array[Int]].new
+100.times { |i| s << [i] }
+s.each { |r| n += r.push(0).size }
+
+pairs = Hash::Builder[Int, Int].new
+200.times { |i| pairs[i] = i }
+pairs.to_h.each { |pair| n += pair.push(0).size }
+
+text = "ab\n" * 200
+text.each_line { |l| n += (l + "!").size }
+("ab " * 200).scan(/ab/) { |m| n += (m + "!").size }
+p n, rows.size, h.size
