@@ -3907,7 +3907,13 @@ impl World {
             for ids in c.methods.values() {
                 for &m in ids {
                     let mi = self.method(m);
-                    if mi.owner == id && mi.extension.is_none() {
+                    // (A constructor's chain is no override, as in
+                    // `include_overrides_on`: `initialize` and
+                    // `deinitialize` are the class's, run by `new` and
+                    // `super`.)
+                    let constructor =
+                        !mi.singleton && matches!(mi.name.as_str(), "initialize" | "deinitialize");
+                    if mi.owner == id && mi.extension.is_none() && !constructor {
                         self.overridden_methods_in_with(
                             mi,
                             &ancs,
