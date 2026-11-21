@@ -225,3 +225,24 @@ begin
 rescue ArgumentError
 end
 p top.x
+
+# An `initialize` taking more parameters than the call passes (defaults
+# left out), in a function with no other call laying parameters out: the
+# argument area is sized for the `initialize`, not for the arguments; and
+# an exception class raised without a message (`SystemExit`'s two
+# defaults), rescued.
+class Many
+  @sum: Int
+  def initialize(a: Int = 1, b: Int = 2, c: Int = 3, d: Int = 4)
+    @sum = a + b + c + d
+  end
+  def sum -> Int = @sum
+end
+def many -> Int = Many.new.sum
+p many
+def exits -> String
+  raise SystemExit
+rescue SystemExit => s
+  "#{s.status} #{s.message}"
+end
+p exits

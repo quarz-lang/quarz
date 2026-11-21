@@ -27,4 +27,6 @@ too deep
 ensure 4
 rescued ensure
 6
+10
+"0 exit"
 Res#deinitialize kept

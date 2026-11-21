@@ -320,11 +320,23 @@ pub(crate) fn gen_function<B: Builder>(
                 }
                 Some(m.params.len() + usize::from(m.has_block))
             }
+            // A data construction's fields; an inline construction's
+            // `initialize` parameters (#939), which may be more than
+            // the arguments (defaults left out).
             Inst::Call {
                 kind: CallKind::Construct { .. },
                 args,
                 ..
-            } => Some(args.len()),
+            } => {
+                let init = match construct_target(inst, methods, classes) {
+                    Some(Some((mid, _))) => {
+                        let m = &methods[mid as usize];
+                        m.params.len() + usize::from(m.has_block)
+                    }
+                    _ => 0,
+                };
+                Some(args.len().max(init))
+            }
             _ => None,
         })
         .max()
@@ -549,6 +561,7 @@ pub(crate) fn gen_function<B: Builder>(
         body_sig,
         ptrs,
         args_buf,
+        args_cap: max_direct_args,
         fid,
         f,
         methods,
@@ -1272,6 +1285,9 @@ struct Gen<'a, B: Builder> {
     ptrs: B::Value,
     /// The argument area of direct calls.
     args_buf: B::Value,
+    /// How many values `args_buf` holds: a call laying out more would
+    /// write past it (`direct_call` asserts it).
+    args_cap: usize,
     fid: FuncId,
     f: &'a Function,
     methods: &'a [RtMethod],
@@ -2671,6 +2687,10 @@ impl<B: Builder> Gen<'_, B> {
         };
         // Lay the parameters out in the argument area:
         // the arguments, nil for missing ones, the block.
+        assert!(
+            nparams.max(args.len()) + usize::from(has_block) <= self.args_cap,
+            "a direct call lays out more parameters than the argument area holds"
+        );
         let mut provided: u64 = 0;
         let mut slots = 0usize;
         for (k, r) in args.iter().enumerate() {
