@@ -95,6 +95,11 @@ fn scopes_cancellation_and_exceptions_between_workers() {
 }
 
 #[test]
+fn a_kept_block_caller_across_suspensions_between_workers() {
+    prints_its_out("kept_blocks.qz");
+}
+
+#[test]
 fn a_toplevel_defs_self_is_one_object_on_every_worker() {
     prints_its_out("toplevel_self.qz");
 }
