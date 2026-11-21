@@ -49,13 +49,70 @@ pub use quarz_ir::KW_SPLAT;
 
 /// Arguments to a native method.
 #[derive(Default)]
-pub struct Args {
-    pub pos: ArgVec,
+pub struct Args<'a> {
+    pub pos: ArgList<'a>,
     pub kw: Vec<(Symbol, Value)>,
     pub block: Option<Value>,
 }
 
-impl Args {
+/// A native's positional arguments: a list it owns, or a view of the
+/// caller's registers, read without counting (#988: `qz_call_static` and
+/// `op_call` for a call of positional arguments only; the registers keep
+/// the values, and the view lives for the call). Read as a slice; a
+/// native that keeps the list itself takes `into_owned`, which copies a
+/// view's values.
+pub enum ArgList<'a> {
+    Owned(ArgVec),
+    Borrowed(&'a [Value]),
+}
+
+impl ArgList<'_> {
+    /// The values, owned: the list itself, or a view's values counted.
+    pub fn into_owned(self) -> ArgVec {
+        match self {
+            ArgList::Owned(v) => v,
+            ArgList::Borrowed(s) => s.iter().cloned().collect(),
+        }
+    }
+
+    /// `into_owned`, as a `Vec`.
+    pub fn into_vec(self) -> Vec<Value> {
+        self.into_owned().into_vec()
+    }
+}
+
+impl std::ops::Deref for ArgList<'_> {
+    type Target = [Value];
+    #[inline(always)]
+    fn deref(&self) -> &[Value] {
+        match self {
+            ArgList::Owned(v) => v,
+            ArgList::Borrowed(s) => s,
+        }
+    }
+}
+
+impl<'b> IntoIterator for &'b ArgList<'_> {
+    type Item = &'b Value;
+    type IntoIter = std::slice::Iter<'b, Value>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl Default for ArgList<'_> {
+    fn default() -> Self {
+        ArgList::Owned(ArgVec::new())
+    }
+}
+
+impl From<ArgVec> for ArgList<'_> {
+    fn from(v: ArgVec) -> Self {
+        ArgList::Owned(v)
+    }
+}
+
+impl Args<'_> {
     pub fn arg(&self, i: usize) -> &Value {
         self.pos.get(i).unwrap_or(&Value::Nil)
     }
@@ -3291,6 +3348,40 @@ impl Interp {
 
     // ----- invocation --------------------------------------------------------------------
 
+    /// A native `mid` called with its receiver and positional arguments
+    /// borrowed (`ArgList::Borrowed`, #988): what `invoke` does for a
+    /// native, without an argument list. The caller keeps the values for
+    /// the call (a view of its registers).
+    #[inline]
+    pub fn invoke_native_borrowed(
+        &self,
+        mid: MethodId,
+        native: NativeFn,
+        recv: &Value,
+        args: &[Value],
+    ) -> EvalResult {
+        crate::keys::check()?;
+        if self.deadline.get().is_some() {
+            self.check_deadline()?;
+            if let Some(key) = self.program.method(mid).native_key.as_deref() {
+                if !crate::natives::compile_time_allowed(key) {
+                    return Err(
+                        self.err_compile_time(&format!("`{key}` cannot run at compile time"))
+                    );
+                }
+            }
+        }
+        native(
+            self,
+            recv,
+            Args {
+                pos: ArgList::Borrowed(args),
+                kw: Vec::new(),
+                block: None,
+            },
+        )
+    }
+
     pub fn invoke(
         &self,
         mid: MethodId,
@@ -3329,7 +3420,7 @@ impl Interp {
                 self,
                 &recv,
                 Args {
-                    pos: args,
+                    pos: args.into(),
                     kw,
                     block,
                 },
@@ -3565,7 +3656,7 @@ impl Interp {
                 self,
                 recv,
                 Args {
-                    pos: args,
+                    pos: args.into(),
                     kw,
                     block: None,
                 },

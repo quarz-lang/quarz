@@ -838,7 +838,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::Set(Rc::new(ValueSet::default())))
     });
     native!(m, "Set.[]", |_, _, a| {
-        Ok(Value::Set(Rc::new(a.pos.into_iter().collect())))
+        Ok(Value::Set(Rc::new(
+            a.pos.into_owned().into_iter().collect(),
+        )))
     });
     native!(m, "Set.build", set_build);
     native!(m, "Set#each", |i, r, a| {

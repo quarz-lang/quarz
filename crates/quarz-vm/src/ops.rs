@@ -176,6 +176,48 @@ impl Interp {
                         }
                     }
                 }
+                // A native: its receiver and arguments borrowed, a view of
+                // bitwise copies of the registers (#988); the registers
+                // keep the values for the call, and those the caller moved
+                // in are released after it, whatever it returned, as the
+                // argument list that took them would have dropped them.
+                if c.args.len() <= 3 {
+                    if let Some(native) = self.program.natives[mid as usize] {
+                        let r = {
+                            // SAFETY: the registers are this activation's,
+                            // made at its entry and not reallocated while
+                            // it runs (`interpret`), and nothing writes
+                            // them during the call: the view's bitwise
+                            // copies stay valid, and are never dropped.
+                            let mut view = [const { std::mem::MaybeUninit::<Value>::uninit() }; 4];
+                            unsafe {
+                                view[0].write(std::ptr::read(recv_ref));
+                                for (k, r) in c.args.iter().enumerate() {
+                                    view[k + 1].write(std::ptr::read(&regs[*r as usize]));
+                                }
+                            }
+                            let n = c.args.len() + 1;
+                            // SAFETY: the first `n` are written.
+                            let view: &[Value] = unsafe {
+                                std::slice::from_raw_parts(view.as_ptr().cast::<Value>(), n)
+                            };
+                            let r = self.invoke_native_borrowed(mid, native, &view[0], &view[1..]);
+                            #[cfg(debug_assertions)]
+                            for (k, r) in c.args.iter().enumerate() {
+                                debug_assert!(
+                                    view[k + 1].identical(&regs[*r as usize]),
+                                    "a register a native borrowed changed during the call"
+                                );
+                            }
+                            r
+                        };
+                        if c.moved != 0 {
+                            self.release_moved(regs, &c);
+                        }
+                        regs[c.dst as usize] = r?;
+                        return Ok(());
+                    }
+                }
                 // A method body with positional parameters: straight to
                 // it (what `invoke` and `bind_params` would do, without
                 // their checks), the arguments moved in as below.

@@ -749,7 +749,7 @@ pub unsafe extern "C" fn qz_call_static(
             rt,
             &recv,
             crate::interp::Args {
-                pos: args,
+                pos: args.into(),
                 kw: Vec::new(),
                 block: block.clone(),
             },

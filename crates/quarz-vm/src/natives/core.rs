@@ -30,7 +30,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Object#dup", obj_dup);
     native!(m, "Object#instance_exec", |i, r, a| {
         let b = super::block(i, &a)?;
-        i.call_block_on(&b, Some(r.clone()), a.pos)
+        i.call_block_on(&b, Some(r.clone()), a.pos.into_owned())
     });
     native!(m, "Type#name", class_name);
     // A cog's root module (docs/10 §6): its manifest's name and version,
