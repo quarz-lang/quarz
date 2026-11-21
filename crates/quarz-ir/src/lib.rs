@@ -1345,6 +1345,18 @@ pub struct RtIvar {
     pub slot: u32,
     pub flat: Option<ClassId>,
     pub default: Option<FuncId>,
+    /// The default's value when compiled code may place it in a new
+    /// object without running `default` (#1000): where the rule for what
+    /// a default may be evaluated at a construction holds (the lowering's
+    /// `default_at_call`, the one a `data` construction uses, #940) and
+    /// the value is a constant (`rtworld::literal_constant`: nil, a
+    /// boolean, a number, a symbol). The rest of that rule's set (a
+    /// string, an array or hash literal) is not shipped here: each
+    /// construction must make a new value, which running `default` does;
+    /// a value placed from here would be one constant shared by every
+    /// object.
+    #[serde(default)]
+    pub literal: Option<Constant>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

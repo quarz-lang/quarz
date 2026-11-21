@@ -376,6 +376,11 @@ pub unsafe extern "C" fn qz_leave(
             drop(v);
             STATUS_OK
         }
+        // (A field default's value, left for `qz_ivar_set`, #1000.)
+        Ok(v) if dst == crate::layout::LEAVE_TO_OUT => {
+            *out = v;
+            STATUS_OK
+        }
         Ok(v) => {
             *regs.add(dst as usize) = v;
             STATUS_OK
@@ -1098,18 +1103,31 @@ pub unsafe extern "C" fn qz_alloc_object(
     STATUS_OK
 }
 
-/// The field defaults of the object in `dst`, made by `qz_alloc_object`:
-/// `Interp::construct`'s own loop (#939).
+/// Store the value in `src` (a call's result buffer, which is left nil)
+/// into declared field `ivar` of the object in `regs[obj]`, through
+/// `Interp::logical_set`: an inline construction's field default (#1000),
+/// whose layout facts (a word field's mark, what goes aside, a data
+/// value held in place) are the runtime's.
 ///
 /// # Safety
-/// As for `qz_raise`; `dst` holds an object of a class with defaults.
+/// As for `qz_raise`; `src` points at a live value; `regs[obj]` holds an
+/// object of a class with that field.
 #[no_mangle]
-pub unsafe extern "C" fn qz_field_defaults(rt: *const Interp, regs: *mut Value, dst: u32) -> u32 {
+pub unsafe extern "C" fn qz_ivar_set(
+    rt: *const Interp,
+    regs: *mut Value,
+    obj: u32,
+    ivar: u32,
+    src: *mut Value,
+) -> u32 {
     let rt = &*rt;
-    let value = (*regs.add(dst as usize)).clone();
-    match rt.field_defaults(&value) {
-        Ok(()) => STATUS_OK,
-        Err(flow) => rt.park_flow(flow),
+    let v = std::mem::replace(&mut *src, Value::Nil);
+    match &*regs.add(obj as usize) {
+        Value::Object(o) => {
+            rt.logical_set(o, ivar as usize, v);
+            STATUS_OK
+        }
+        _ => rt.park_flow(rt.err_type("a field default of a non-object")),
     }
 }
 

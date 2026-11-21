@@ -146,6 +146,15 @@ fn an_inline_construction_copies_no_more_than_before() {
     check("construct_inline.qz", 200);
 }
 
+/// #1000: an inline construction's collection defaults, run by a direct
+/// call of their functions, are a new value per object, as the runtime's
+/// loop made them: updating one in place copies nothing (main: 0 on
+/// both).
+#[test]
+fn inline_field_defaults_are_each_objects_own() {
+    check("field_defaults.qz", 0);
+}
+
 /// #941: a direct call binding keywords in compiled code copies no more
 /// than the runtime's binding (main: 400 on both): the same on the VM,
 /// which binds them as before, and fewer compiled, where an argument
