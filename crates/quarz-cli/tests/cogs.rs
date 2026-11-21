@@ -2377,7 +2377,7 @@ fn a_dependencys_functions_at_compile_time() {
         "{err}"
     );
     assert!(
-        err.contains("`own` is a `static def` of the application"),
+        err.contains("`own` is a method of the application"),
         "{err}"
     );
 }

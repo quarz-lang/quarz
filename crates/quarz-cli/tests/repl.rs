@@ -517,10 +517,7 @@ fn static_expressions_in_the_session() {
         "class J; static def self.w -> Int = 1; def x -> Int = static(J.w); end",
     ]);
     assert_eq!(out[1], "=> 41", "{out:?}");
-    assert!(
-        out[2].contains("`w` is a `static def` of this input"),
-        "{out:?}"
-    );
+    assert!(out[2].contains("`w` is a method of this input"), "{out:?}");
     // A field default's value is baked, not computed on each `new`.
     let (out2, printed) = values(&[
         "class K2; static def self.v(n: Int) -> Int; puts \"ran\"; n * 10; end; end",
