@@ -1326,6 +1326,55 @@ impl Object {
     /// `src` points at `n` initialized values that the caller gives up
     /// (they are moved, not cloned, and must not be dropped by it).
     pub unsafe fn with_fields_from(class: ClassId, src: *const Value, n: usize) -> Rc<Object> {
+        // SAFETY: as the caller promises.
+        unsafe {
+            Object::allocate(class, n, |layout_of, base| {
+                for (i, k) in layout_of.kinds.iter().enumerate() {
+                    let at = base.add(layout_of.offset(i));
+                    let v = std::ptr::read(src.add(i));
+                    match k {
+                        FieldKind::Value => std::ptr::write(at as *mut Value, v),
+                        _ => {
+                            // Marked first: what the word cannot hold goes
+                            // aside (the object is not yet shared).
+                            std::ptr::write(at as *mut u64, mark(*k));
+                            store_word(layout_of, base, i, *k, v);
+                        }
+                    }
+                }
+            })
+        }
+    }
+
+    /// An object of `n` fields, all nil (before its `initialize` runs),
+    /// built in its allocation: a word field holds its mark with nothing
+    /// aside, which reads as nil (#1000).
+    pub fn with_nil_fields(class: ClassId, n: usize) -> Rc<Object> {
+        // SAFETY: every field slot is written.
+        unsafe {
+            Object::allocate(class, n, |layout_of, base| {
+                for (i, k) in layout_of.kinds.iter().enumerate() {
+                    let at = base.add(layout_of.offset(i));
+                    match k {
+                        FieldKind::Value => std::ptr::write(at as *mut Value, Value::Nil),
+                        _ => std::ptr::write(at as *mut u64, mark(*k)),
+                    }
+                }
+            })
+        }
+    }
+
+    /// An object of class `class` and `n` fields, its header written
+    /// and its fields by `fill` (given the layout and the fields' base).
+    ///
+    /// # Safety
+    /// `fill` writes every field slot of the layout.
+    #[inline]
+    unsafe fn allocate(
+        class: ClassId,
+        n: usize,
+        fill: impl FnOnce(&FieldLayout, *mut u8),
+    ) -> Rc<Object> {
         type Header = crate::rc::Inner<ObjectOf<std::cell::UnsafeCell<[u64; 0]>>>;
         let layout_of = layout_for(class, n);
         let words = layout_of.words;
@@ -1361,19 +1410,7 @@ impl Object {
                     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
                 );
             }
-            for (i, k) in layout_of.kinds.iter().enumerate() {
-                let at = base.add(layout_of.offset(i));
-                let v = std::ptr::read(src.add(i));
-                match k {
-                    FieldKind::Value => std::ptr::write(at as *mut Value, v),
-                    _ => {
-                        // Marked first: what the word cannot hold goes
-                        // aside (the object is not yet shared).
-                        std::ptr::write(at as *mut u64, mark(*k));
-                        store_word(layout_of, base, i, *k, v);
-                    }
-                }
-            }
+            fill(layout_of, base);
             let rc = crate::rc::Rc::from_fresh(p);
             debug_assert_eq!(std::alloc::Layout::for_value(&*p), layout);
             if layout_of.cyclic {
@@ -4414,6 +4451,60 @@ mod tests {
         let after = super::layout_for(0, 1);
         assert!(std::ptr::eq(mine, after));
         assert!(!after.cyclic);
+    }
+
+    /// `Object::with_nil_fields` makes the object `Object::new` makes
+    /// from nils (#1000): every field reads nil, word fields (`Int`,
+    /// `Float`, `Bool`) and value fields (`Int?`, `String`) alike, and a
+    /// later store and read round-trip the same on both, a value that
+    /// goes aside (`INT_MARK`) and a nil again included.
+    #[test]
+    fn nil_fields_are_those_of_an_object_made_from_nils() {
+        use super::{Object, Value, INT_MARK};
+        super::register_layouts(&[class("W", &["Int", "Float", "Bool", "Int?", "String"])]);
+        let n = 5;
+        let direct = Object::with_nil_fields(0, n);
+        let from_nils = Object::new(0, smallvec::smallvec![Value::Nil; n]);
+        let shown = |o: &Object| -> Vec<String> {
+            (0..n)
+                .map(|i| format!("{:?}", o.field(i).unwrap()))
+                .collect()
+        };
+        assert!(
+            shown(&direct).iter().all(|f| f == "Nil"),
+            "{:?}",
+            shown(&direct)
+        );
+        assert_eq!(shown(&direct), shown(&from_nils));
+        let values = || {
+            vec![
+                Value::Int(7),
+                Value::Float(1.5),
+                Value::Bool(true),
+                Value::Int(3),
+                Value::Nil,
+            ]
+        };
+        for o in [&direct, &from_nils] {
+            for (i, v) in values().into_iter().enumerate() {
+                o.set_field(i, v);
+            }
+        }
+        assert_eq!(shown(&direct), shown(&from_nils));
+        assert_eq!(
+            shown(&direct)[..4],
+            ["Int(7)", "Float(1.5)", "Bool(true)", "Int(3)"]
+        );
+        // A value the word cannot hold goes aside, and a nil comes back.
+        for o in [&direct, &from_nils] {
+            o.set_field(0, Value::Int(INT_MARK));
+            o.set_field(1, Value::Nil);
+        }
+        assert_eq!(shown(&direct), shown(&from_nils));
+        assert_eq!(
+            shown(&direct)[..2],
+            [format!("Int({INT_MARK})"), "Nil".to_string()]
+        );
     }
 
     #[test]

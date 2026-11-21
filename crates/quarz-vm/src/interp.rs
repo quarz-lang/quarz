@@ -3941,7 +3941,7 @@ impl Interp {
                 return Ok(Value::Object(Object::new(class, fields)));
             }
         }
-        let obj = Object::new(class, smallvec![Value::Nil; info.fields.len()]);
+        let obj = Object::with_nil_fields(class, info.fields.len());
         let value = Value::Object(obj.clone());
         let made = (|| {
             // Field defaults (data types evaluate them in their constructor).
