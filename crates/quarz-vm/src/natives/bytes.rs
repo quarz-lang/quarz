@@ -454,8 +454,8 @@ impl std::ops::Deref for SecretInput<'_> {
 impl SecretInput<'_> {
     /// An owned copy, cleared when dropped (for a helper thread): the
     /// secret's copy as it is, a borrowed input copied. (Argon2's, in
-    /// the `crypto` feature.)
-    #[cfg_attr(not(feature = "crypto"), allow(dead_code))]
+    /// the `crypto` feature; a TLS server's key, in the `tls` feature.)
+    #[cfg_attr(not(any(feature = "crypto", feature = "tls")), allow(dead_code))]
     pub(super) fn into_owned(self) -> Cleared {
         match self {
             SecretInput::Borrowed(b) => Cleared(b.to_vec()),

@@ -11,15 +11,23 @@
 //! `TLS::ServerConfig`'s likewise (built when it is made, to check it).
 //!
 //! A private key never goes into a message: errors about one name the
-//! part, not its bytes.
+//! part, not its bytes. A `TLS::ServerConfig` holds it as a
+//! `Bytes::Secret`; its configuration is kept by a digest of the key, not
+//! the key, and the key is read into buffers cleared when dropped:
+//! what stays is the signing key ring made of it, inside the
+//! configuration (ring does not clear it when dropped).
 
 use std::sync::{Arc, Mutex, OnceLock};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls::pki_types::{
+    CertificateDer, PrivateKeyDer, PrivatePkcs1KeyDer, PrivatePkcs8KeyDer, PrivateSec1KeyDer,
+    ServerName, UnixTime,
+};
 use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, ServerConfig, SignatureScheme};
+use sha2::{Digest, Sha256};
 
 use crate::interp::{Flow, Interp, NativeFn};
 use crate::value::*;
@@ -48,12 +56,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(tls)
     });
     native!(m, "TLS::ServerConfig#accept", |i, r, a| {
-        let config = server_config(i, server_key(i, r)?)?;
+        let config = server_config(i, r)?;
         let conn = rustls::ServerConnection::new(config).map_err(|e| tls_error(i, failure(e)))?;
         connection(i, rustls::Connection::Server(conn), a.arg(0), None, false)
     });
     native!(m, "TLS::ServerConfig#check", |i, r, _| {
-        server_config(i, server_key(i, r)?)?;
+        server_config(i, r)?;
         Ok(Value::Nil)
     });
     native!(m, "TLS::Testing.generate", |i, _, a| {
@@ -282,34 +290,42 @@ fn config_key(interp: &Interp, v: &Value) -> Result<ConfigKey, Flow> {
     })
 }
 
-/// What a server configuration is built from: a `TLS::ServerConfig`'s
-/// contents. (No `Debug`: it holds the private key.)
+/// What a server configuration is kept by: a `TLS::ServerConfig`'s
+/// contents, its private key as the SHA-256 of its PEM, so that the cache
+/// holds no copy of the key.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct ServerKey {
     certificate: Vec<u8>,
-    private_key: Vec<u8>,
+    key_digest: [u8; 32],
     alpn: Vec<Vec<u8>>,
     tls13_only: bool,
 }
 
 /// A `TLS::ServerConfig` (`data ServerConfig(certificate, private_key,
-/// alpn, min_version)`).
-fn server_key(interp: &Interp, v: &Value) -> Result<ServerKey, Flow> {
+/// alpn, min_version)`), and its private key (a `Bytes::Secret`).
+fn server_key(interp: &Interp, v: &Value) -> Result<(ServerKey, Value), Flow> {
     let bad = || interp.err_type("expected a TLS::ServerConfig");
     let Value::Object(cfg) = v else {
         return Err(bad());
     };
-    let (Some(Value::Bytes(certificate)), Some(Value::Bytes(private_key))) =
+    let (Some(Value::Bytes(certificate)), Some(private_key @ Value::Secret(_))) =
         (cfg.field(0), cfg.field(1))
     else {
         return Err(bad());
     };
-    Ok(ServerKey {
-        certificate: certificate.to_vec(),
-        private_key: private_key.to_vec(),
-        alpn: alpn(interp, cfg.field(2)).ok_or_else(bad)??,
-        tls13_only: tls13_only(interp, cfg.field(3)).ok_or_else(bad)??,
-    })
+    // Read in place, under the secret's lock: a wiped key raises.
+    let key_digest = super::bytes::secret_of(interp, &private_key)?
+        .with(|pem| <[u8; 32]>::from(Sha256::digest(pem)))
+        .ok_or_else(|| super::bytes::wiped(interp))?;
+    Ok((
+        ServerKey {
+            certificate: certificate.to_vec(),
+            key_digest,
+            alpn: alpn(interp, cfg.field(2)).ok_or_else(bad)??,
+            tls13_only: tls13_only(interp, cfg.field(3)).ok_or_else(bad)??,
+        },
+        private_key,
+    ))
 }
 
 /// A config's `alpn` field; `None` when it is not an array.
@@ -343,6 +359,15 @@ const CACHED: usize = 64;
 
 type Cache<K, V> = OnceLock<Mutex<quarz_ir::HashMap<K, Arc<V>>>>;
 
+/// The configuration kept for `key` in `cache`, if any.
+fn kept<K, V>(cache: &'static Cache<K, V>, key: &K) -> Option<Arc<V>>
+where
+    K: Eq + std::hash::Hash,
+{
+    let cache = cache.get_or_init(Default::default);
+    crate::sched::lock(cache).get(key).cloned()
+}
+
 /// The configuration built from `key`, from `cache` or by `build`: on a
 /// helper thread, as file IO is (reading the system's store, parsing
 /// certificates and keys).
@@ -350,16 +375,16 @@ fn cached<K, V>(
     interp: &Interp,
     cache: &'static Cache<K, V>,
     key: K,
-    build: fn(&K) -> Result<Arc<V>, TlsFailure>,
+    build: impl FnOnce(&K) -> Result<Arc<V>, TlsFailure> + Send + 'static,
 ) -> Result<Arc<V>, Flow>
 where
     K: Clone + Eq + std::hash::Hash + Send + 'static,
     V: Send + Sync + 'static,
 {
-    let cache = cache.get_or_init(Default::default);
-    if let Some(c) = crate::sched::lock(cache).get(&key) {
-        return Ok(c.clone());
+    if let Some(c) = kept(cache, &key) {
+        return Ok(c);
     }
+    let cache = cache.get_or_init(Default::default);
     let k = key.clone();
     let built = interp
         .block_on(move || build(&k))?
@@ -377,9 +402,17 @@ fn client_config(interp: &Interp, key: ConfigKey) -> Result<Arc<ClientConfig>, F
     cached(interp, &CACHE, key, build_config)
 }
 
-fn server_config(interp: &Interp, key: ServerKey) -> Result<Arc<ServerConfig>, Flow> {
+/// The server configuration of the `TLS::ServerConfig` `v`. Its key is
+/// copied (into a buffer cleared when dropped, for the helper thread)
+/// only when the configuration is not kept yet.
+fn server_config(interp: &Interp, v: &Value) -> Result<Arc<ServerConfig>, Flow> {
     static CACHE: Cache<ServerKey, ServerConfig> = OnceLock::new();
-    cached(interp, &CACHE, key, build_server_config)
+    let (key, private_key) = server_key(interp, v)?;
+    if let Some(c) = kept(&CACHE, &key) {
+        return Ok(c);
+    }
+    let pem = super::bytes::secret_input(interp, &private_key, "private_key")?.into_owned();
+    cached(interp, &CACHE, key, move |k| build_server_config(k, &pem))
 }
 
 fn provider() -> Arc<CryptoProvider> {
@@ -414,7 +447,7 @@ fn build_config(key: &ConfigKey) -> Result<Arc<ClientConfig>, TlsFailure> {
     Ok(Arc::new(config))
 }
 
-fn build_server_config(key: &ServerKey) -> Result<Arc<ServerConfig>, TlsFailure> {
+fn build_server_config(key: &ServerKey, pem: &[u8]) -> Result<Arc<ServerConfig>, TlsFailure> {
     let fail = |message: &str| TlsFailure {
         message: message.to_string(),
         certificate: false,
@@ -426,13 +459,29 @@ fn build_server_config(key: &ServerKey) -> Result<Arc<ServerConfig>, TlsFailure>
     if chain.is_empty() {
         return Err(fail("certificate: no certificate in the PEM"));
     }
-    // Not the PEM parser's message: it may quote a line of the key.
-    let private_key = PrivateKeyDer::from_pem_slice(&key.private_key).map_err(|e| match e {
-        rustls::pki_types::pem::Error::NoItemsFound => {
-            fail("private_key: no private key in the PEM (PKCS#8, PKCS#1 or SEC1)")
-        }
-        _ => fail("private_key: bad PEM"),
+    // Not a parser's message: it may quote a line of the key.
+    let der = private_key_der(pem).map_err(|e| match e {
+        KeyPem::None => fail("private_key: no private key in the PEM (PKCS#8, PKCS#1 or SEC1)"),
+        KeyPem::Bad => fail("private_key: bad PEM"),
     })?;
+    // What `with_single_cert` does, from a key borrowed from `der` (which
+    // is cleared when dropped) rather than one rustls takes: ring's
+    // signing key, then the check that it is the certificate's.
+    let private_key = match &der {
+        Der::Pkcs8(d) => PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(&d[..])),
+        Der::Pkcs1(d) => PrivateKeyDer::Pkcs1(PrivatePkcs1KeyDer::from(&d[..])),
+        Der::Sec1(d) => PrivateKeyDer::Sec1(PrivateSec1KeyDer::from(&d[..])),
+    };
+    let signing = rustls::crypto::ring::sign::any_supported_type(&private_key);
+    drop(private_key);
+    drop(der);
+    let certified = rustls::sign::CertifiedKey::new(chain, signing.map_err(map_key_error)?);
+    match certified.keys_match() {
+        // (As `with_single_cert`: a key whose public half is unknown is
+        // not refused.)
+        Ok(()) | Err(rustls::Error::InconsistentKeys(rustls::InconsistentKeys::Unknown)) => {}
+        Err(e) => return Err(map_key_error(e)),
+    }
     let versions: &[&rustls::SupportedProtocolVersion] = if key.tls13_only {
         &[&rustls::version::TLS13]
     } else {
@@ -442,22 +491,96 @@ fn build_server_config(key: &ServerKey) -> Result<Arc<ServerConfig>, TlsFailure>
         .with_protocol_versions(versions)
         .map_err(failure)?
         .with_no_client_auth()
-        .with_single_cert(chain, private_key)
-        .map_err(|e| match e {
-            rustls::Error::InconsistentKeys(_) => {
-                fail("private_key: does not match the certificate")
-            }
-            // ring's key loader.
-            rustls::Error::General(_) => {
-                fail("private_key: not a key that can sign (RSA, ECDSA P-256 or P-384, Ed25519)")
-            }
-            rustls::Error::InvalidCertificate(_) => {
-                fail("certificate: the first certificate does not parse")
-            }
-            e => fail(&format!("certificate: {e}")),
-        })?;
+        .with_cert_resolver(Arc::new(rustls::sign::SingleCertAndKey::from(certified)));
     config.alpn_protocols = key.alpn.clone();
     Ok(Arc::new(config))
+}
+
+/// A server key's failure, as `with_single_cert` would have reported it.
+fn map_key_error(e: rustls::Error) -> TlsFailure {
+    let message = match e {
+        rustls::Error::InconsistentKeys(_) => {
+            "private_key: does not match the certificate".to_string()
+        }
+        // ring's key loader.
+        rustls::Error::General(_) => {
+            "private_key: not a key that can sign (RSA, ECDSA P-256 or P-384, Ed25519)".to_string()
+        }
+        rustls::Error::InvalidCertificate(_) => {
+            "certificate: the first certificate does not parse".to_string()
+        }
+        e => format!("certificate: {e}"),
+    };
+    TlsFailure {
+        message,
+        certificate: false,
+    }
+}
+
+/// A private key's DER, by its PEM label, in a buffer cleared when
+/// dropped.
+enum Der {
+    Pkcs8(super::bytes::Cleared),
+    Pkcs1(super::bytes::Cleared),
+    Sec1(super::bytes::Cleared),
+}
+
+/// Why a PEM gave no private key.
+enum KeyPem {
+    /// No `PRIVATE KEY`, `RSA PRIVATE KEY` or `EC PRIVATE KEY` section.
+    None,
+    /// A section that does not end, or whose base64 does not decode.
+    Bad,
+}
+
+/// The first private key of `pem`, as rustls-pki-types' `PrivateKeyDer`
+/// reads it (sections of other labels skipped), but with every copy of
+/// the key, base64 or DER, in a buffer of its final size that is cleared
+/// when dropped (that parser's base64 buffer grows, and is not cleared).
+fn private_key_der(pem: &[u8]) -> Result<Der, KeyPem> {
+    let mut section: Option<&[u8]> = None;
+    let mut b64 = super::bytes::Cleared(Vec::with_capacity(pem.len()));
+    for line in pem.split(|&b| b == b'\n') {
+        let line = line.trim_ascii();
+        let Some(label) = section else {
+            if let Some(rest) = line.strip_prefix(b"-----BEGIN ") {
+                section = Some(rest.strip_suffix(b"-----").ok_or(KeyPem::Bad)?);
+            }
+            continue;
+        };
+        let Some(rest) = line.strip_prefix(b"-----END ") else {
+            b64.0
+                .extend(line.iter().filter(|b| !b.is_ascii_whitespace()));
+            continue;
+        };
+        if rest.strip_suffix(b"-----") != Some(label) {
+            return Err(KeyPem::Bad);
+        }
+        section = None;
+        let make: fn(super::bytes::Cleared) -> Der = match label {
+            b"PRIVATE KEY" => Der::Pkcs8,
+            b"RSA PRIVATE KEY" => Der::Pkcs1,
+            b"EC PRIVATE KEY" => Der::Sec1,
+            _ => {
+                clear_bytes(&mut b64.0);
+                b64.0.clear();
+                continue;
+            }
+        };
+        use base64::Engine;
+        let mut der = super::bytes::Cleared(vec![0u8; base64::decoded_len_estimate(b64.0.len())]);
+        let n = base64::engine::general_purpose::STANDARD
+            .decode_slice(&b64.0, &mut der.0)
+            .map_err(|_| KeyPem::Bad)?;
+        clear_bytes(&mut der.0[n..]);
+        der.0.truncate(n);
+        return Ok(make(der));
+    }
+    Err(if section.is_some() {
+        KeyPem::Bad
+    } else {
+        KeyPem::None
+    })
 }
 
 fn roots_from_pem(pem: &[u8]) -> Result<RootCertStore, TlsFailure> {
