@@ -1,0 +1,36 @@
+# #704: a field whose type names a class of the program is not taken,
+# whatever its name: a class `Time` in a module, and a top-level class
+# `Decimal` (the standard library's is not required here), each with a
+# `deinitialize`. Released where they were before.
+
+module M
+  class Time
+    @n: Int
+    def initialize(@n: Int); end
+    def deinitialize -> Void
+      puts "released M::Time #{@n}"
+    end
+  end
+end
+
+class Decimal
+  @n: Int
+  def initialize(@n: Int); end
+  def deinitialize -> Void
+    puts "released Decimal #{@n}"
+  end
+end
+
+data D = (ts: Array[M::Time])
+data E = (ds: Array[Decimal])
+
+def round -> Void
+  d = D.new([M::Time.new(1)])
+  ys = d.ts.push(M::Time.new(2))
+  puts "pushed #{ys.size}"
+  e = E.new([Decimal.new(3)])
+  zs = e.ds.push(Decimal.new(4))
+  puts "pushed #{zs.size}"
+end
+round
+puts "end"

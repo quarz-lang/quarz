@@ -136,7 +136,14 @@ fn field_take_not_allowed(f: &Function, world: &RtWorld) -> Option<(usize, usize
     for (b, blk) in f.blocks.iter().enumerate() {
         for (i, inst) in blk.insts.iter().enumerate() {
             if matches!(inst, Inst::FieldTake { .. })
-                && !quarz_ir::live::field_take_allowed(f, &world.classes, &last, b, i)
+                && !quarz_ir::live::field_take_allowed(
+                    f,
+                    &world.classes,
+                    &world.builtin,
+                    &last,
+                    b,
+                    i,
+                )
             {
                 return Some((b, i));
             }

@@ -1190,33 +1190,42 @@ pub(crate) fn was_taken(o: &Object, i: usize) -> bool {
     taken_set(|t| t.contains(&(addr, i)))
 }
 
+/// The fields of the object at `addr` (fields at `base`) that `FieldTake`
+/// took: forgotten, each asserted still nil (#704).
+///
+/// # Safety
+/// `base` is the fields of a live object laid out by `layout`.
+#[cold]
+#[inline(never)]
+unsafe fn check_taken_on_free(layout: &FieldLayout, base: *mut u8, addr: usize) {
+    let taken: Vec<usize> = taken_set(|t| {
+        (0..layout.kinds.len())
+            .filter(|i| t.remove(&(addr, *i)))
+            .collect()
+    });
+    for i in taken {
+        // SAFETY: a value field slot of a live object (`FieldTake` takes
+        // only value fields).
+        let nil = layout.kinds[i] == FieldKind::Value
+            && unsafe { matches!(&*(base.add(layout.offset(i)) as *const Value), Value::Nil) };
+        assert!(
+            nil,
+            "a field FieldTake took was written back before the object was freed (#704)"
+        );
+    }
+}
+
 impl<F: ?Sized + FieldTail> Drop for ObjectOf<F> {
     fn drop(&mut self) {
         let layout = self.layout;
         // (A field `FieldTake` took is freed still taken: nothing wrote it
-        // back, #704. Recorded only while the facts are checked.)
-        let taken: Vec<usize> = if TAKE_RECORD.load(std::sync::atomic::Ordering::Relaxed) {
+        // back, #704. Recorded only while the facts are checked: one
+        // relaxed load otherwise.)
+        if TAKE_RECORD.load(std::sync::atomic::Ordering::Relaxed) {
+            let base = &raw mut self.fields as *mut u8;
             let addr = self as *const Self as *const u8 as usize;
-            taken_set(|t| {
-                (0..layout.kinds.len())
-                    .filter(|i| t.remove(&(addr, *i)))
-                    .collect()
-            })
-        } else {
-            Vec::new()
-        };
-        for i in taken {
-            // SAFETY: a value field slot of this object, still alive
-            // (`FieldTake` takes only value fields).
-            let nil = layout.kinds[i] == FieldKind::Value
-                && unsafe {
-                    let base = &raw mut self.fields as *mut u8;
-                    matches!(&*(base.add(layout.offset(i)) as *const Value), Value::Nil)
-                };
-            assert!(
-                nil,
-                "a field FieldTake took was written back before the object was freed (#704)"
-            );
+            // SAFETY: the object's fields, still alive.
+            unsafe { check_taken_on_free(layout, base, addr) };
         }
         let base = &raw mut self.fields as *mut u8;
         // The last reference went: an object whose class defines
@@ -4463,6 +4472,7 @@ mod tests {
                     name: format!("f{i}"),
                     default: None,
                     ty: Some(ty.to_string()),
+                    classes: Vec::new(),
                 })
                 .collect(),
             ivars: Vec::new(),

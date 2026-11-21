@@ -1734,7 +1734,7 @@ pub fn lower_checked_with(mut lw: Lowerer, checked: &Checked, files: &[SourceFil
         let heap = quarz_ir::live::heap_possible(f, &delta.world.methods);
         quarz_ir::live::mark_moves(f, &heap);
         quarz_ir::live::own_dying_receivers(f, &in_place);
-        quarz_ir::live::take_dying_fields(f, &delta.world.classes);
+        quarz_ir::live::take_dying_fields(f, &delta.world.classes, &delta.world.builtin);
     }
     check(&functions, verify::Stage::Moves);
     Module {

@@ -1384,6 +1384,13 @@ pub struct RtField {
     pub default: Option<FuncId>,
     /// The declared type's name (`None` for a type parameter).
     pub ty: Option<String>,
+    /// The classes the declared type names, itself first, when it is a
+    /// class type with no type parameter in it (`Array[Int]`: `Array`,
+    /// `Int`); empty for any other (a union, a tuple, a procedure, a type
+    /// parameter). For `live::takeable_field` (#704): resolved ids, which
+    /// a program cannot make name another class as it could a name.
+    #[serde(default)]
+    pub classes: Vec<ClassId>,
 }
 
 /// How an object stores a physical field: a value (two words), or,

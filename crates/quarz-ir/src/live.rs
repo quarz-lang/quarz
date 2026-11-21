@@ -229,26 +229,24 @@ pub const IN_PLACE_NATIVES: [&str; 6] = [
     "Set#delete",
 ];
 
-/// The classes whose values `FieldTake` may take out of a field: those
-/// whose in-place updates test for a unique reference (#704).
-const TAKEN_COLLECTIONS: [&str; 5] = ["Array", "Hash", "Set", "String", "Bytes"];
-
-/// The classes a taken field's type may name in its arguments: built-in
-/// values that run nothing when released (no `deinitialize`, no IO), so
-/// that where the taken value's contents are released cannot be told
-/// from where the object's would have been. Conservative: any other name
-/// (a class of the program, a type parameter, a procedure) refuses the
-/// field (#704).
-const TAKEN_CONTENTS: [&str; 14] = [
-    "Array", "Hash", "Set", "String", "Bytes", "Int", "Float", "Bool", "Symbol", "Nil", "Time",
-    "Date", "Decimal", "Duration",
-];
-
-/// Whether field `index` of class `class` is one `FieldTake` may take: a
-/// `data` type's (its fields are set once, by its constructor) value field
-/// (`field_slots`) declared of one of `TAKEN_COLLECTIONS`, every name in
-/// its type one of `TAKEN_CONTENTS`.
-pub fn takeable_field(classes: &[crate::RtClass], class: crate::ClassId, index: u32) -> bool {
+/// Whether field `index` of class `class` is one `FieldTake` may take
+/// (#704): a `data` type's (its fields are set once, by its constructor)
+/// value field (`field_slots`) of a class type (`RtField::classes`, by
+/// resolved id) that is an `Array`, `Hash`, `Set`, `String` or `Bytes`
+/// (the classes whose in-place updates test for a unique reference),
+/// every class it names one of those or `Int`, `Float`, `Bool`, `Symbol`,
+/// `Nil`, `Time` or `Duration`: the prelude's, which a program cannot
+/// redefine (classes are not reopened) nor give a `deinitialize` (an
+/// extension declares none), so their release runs nothing and where the
+/// taken value's contents are released cannot be told from where the
+/// object's would have been. Conservative: anything else (a class of the
+/// program, a type parameter, a union) is not taken.
+pub fn takeable_field(
+    classes: &[crate::RtClass],
+    builtin: &crate::RtBuiltin,
+    class: crate::ClassId,
+    index: u32,
+) -> bool {
     let Some(c) = classes.get(class as usize) else {
         return false;
     };
@@ -257,14 +255,28 @@ pub fn takeable_field(classes: &[crate::RtClass], class: crate::ClassId, index: 
     }
     let slots = crate::field_slots(&c.fields);
     let i = index as usize;
+    let collections = [
+        builtin.array,
+        builtin.hash,
+        builtin.set,
+        builtin.string,
+        builtin.bytes,
+    ];
+    let contents = [
+        builtin.int,
+        builtin.float,
+        builtin.bool_,
+        builtin.symbol,
+        builtin.nil,
+        builtin.time,
+        builtin.duration,
+    ];
+    let named = &c.fields[i].classes;
     slots.kinds.get(i) == Some(&crate::FieldKind::Value)
-        && c.fields[i].ty.as_deref().is_some_and(|t| {
-            let head = t.split('[').next().unwrap_or(t);
-            TAKEN_COLLECTIONS.contains(&head)
-                && t.split(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == ':'))
-                    .filter(|w| !w.is_empty())
-                    .all(|w| TAKEN_CONTENTS.contains(&w))
-        })
+        && named.first().is_some_and(|h| collections.contains(h))
+        && named
+            .iter()
+            .all(|k| collections.contains(k) || contents.contains(k))
 }
 
 /// Whether `FieldGet` `inst` (at instruction `i` of block `b`) may be a
@@ -281,6 +293,7 @@ pub fn takeable_field(classes: &[crate::RtClass], class: crate::ClassId, index: 
 pub fn field_take_allowed(
     f: &Function,
     classes: &[crate::RtClass],
+    builtin: &crate::RtBuiltin,
     last: &[Vec<Vec<Reg>>],
     b: usize,
     i: usize,
@@ -302,7 +315,7 @@ pub fn field_take_allowed(
     };
     *class != u32::MAX
         && dst != obj
-        && takeable_field(classes, *class, *index)
+        && takeable_field(classes, builtin, *class, *index)
         && last[b][i].contains(obj)
         && f.blocks.iter().all(|blk| blk.handler.is_none())
         && !f.blocks.iter().any(|blk| {
@@ -314,12 +327,13 @@ pub fn field_take_allowed(
 
 /// Turn each `FieldGet` that `field_take_allowed` allows into a
 /// `FieldTake`. Run after `mark_moves` (nothing renumbers after).
-pub fn take_dying_fields(f: &mut Function, classes: &[crate::RtClass]) {
+pub fn take_dying_fields(f: &mut Function, classes: &[crate::RtClass], builtin: &crate::RtBuiltin) {
     let last = last_reads(f);
     let mut sites = Vec::new();
     for (b, blk) in f.blocks.iter().enumerate() {
         for (i, inst) in blk.insts.iter().enumerate() {
-            if matches!(inst, Inst::FieldGet { .. }) && field_take_allowed(f, classes, &last, b, i)
+            if matches!(inst, Inst::FieldGet { .. })
+                && field_take_allowed(f, classes, builtin, &last, b, i)
             {
                 sites.push((b, i));
             }

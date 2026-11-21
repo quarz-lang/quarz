@@ -90,6 +90,14 @@ pub fn fill(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<Strin
                     .find(|iv| iv.flat.is_none() && iv.slot as usize == k)
                     .and_then(|iv| iv.default),
                 ty: ty_name(&s.ty),
+                classes: match &s.ty {
+                    Type::Class(..) if ty_name(&s.ty).is_some() => {
+                        let mut out = Vec::new();
+                        classes_in(&s.ty, &mut out);
+                        out
+                    }
+                    _ => Vec::new(),
+                },
             })
             .collect();
         rc.ivars = ivars;
