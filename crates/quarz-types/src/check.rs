@@ -1819,7 +1819,14 @@ impl Checker {
             _ => {}
         }
         let Some(p) = init else {
-            return s.params.iter().all(|b| b.default.is_some());
+            // (What a call with no arguments must fill: the positional and
+            // keyword-only parameters without a default; a `*rest` or a
+            // `**opts` takes none, #1067.)
+            return s
+                .params
+                .iter()
+                .filter(|b| matches!(b.kind, ParamKind::Positional | ParamKind::KeywordOnly))
+                .all(|b| b.default.is_some());
         };
         let holds = |a: &ParamInfo, b: &ParamInfo| {
             a.name == b.name
