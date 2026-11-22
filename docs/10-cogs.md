@@ -161,7 +161,7 @@ A library cog's root module as a value, `cog` inside it and its key (`Httpx`) in
 
 ### Compile-time code
 
-A class body's `static` statement ([14-metaprogramming.md](14-metaprogramming.md)) runs, while the program is checked, a `static def` class method of a cog the file's cog **depends on** (directly or through its dependencies), of the standard library, or, in a script, of a file it `require`s: never one of the same cog. The dependency's code therefore runs inside `quarz check` as well as `run` and `build`, under the compile-time rules: it cannot reach the natives that touch the outside world (IO, processes, tasks, time, randomness), and a statement is cut off after ten seconds.
+A class body's `static` statement ([14-metaprogramming.md](14-metaprogramming.md)) runs, while the program is checked, a `static def` class method of a cog the file's cog **depends on** (directly or through its dependencies), of the standard library, or, in a script, of a file it `require`s: never one of the same cog. The dependency's code therefore runs inside `quarz check` as well as `run` and `build`, under the compile-time rules: it cannot reach the natives that touch the outside world (IO, processes, tasks, time, randomness), and a statement is cut off after ten seconds. These rules make a compilation reproducible; they are not a sandbox, and compiling a cog that is not trusted is not a supported use ([14-metaprogramming.md](14-metaprogramming.md) §3): a dependency is trusted as code that runs on the machine is.
 
 ## 7. Commands
 

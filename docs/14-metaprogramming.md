@@ -82,6 +82,7 @@ The interpreter that runs a statement is the one of `quarz run`, inside the comp
 - A time limit of ten seconds per statement, and the interpreter's stack limit.
 - Nothing reads a file (`Meta.read_file`, for schemas, is deferred: §9).
 - Dependency cogs' `static def`s run under these rules in every `quarz check` ([10-cogs.md](10-cogs.md) §6).
+- These rules are for reproducibility, not a security boundary: they were not designed or audited as a sandbox, and compiling a cog that is not trusted is not a supported use. A dependency's `static def`s run inside the compiler with the compiler's rights; the allow-list, the time limit and the stack limit keep a compilation a function of its sources, and are not a promise about what hostile code cannot do (exhaust memory, find a native classified pure by mistake). Depend on a cog as on any code that is going to run on the machine.
 
 ## 4. `Meta`: reflection
 
