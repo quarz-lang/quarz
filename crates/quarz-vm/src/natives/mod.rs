@@ -528,6 +528,7 @@ const COMPILE_TIME_ONLY: &[(&str, Purity)] = &[
     ("Type#field", CtOnly),
     ("Type#methods", CtOnly),
     ("Type#method?", CtOnly),
+    ("Type#constructors", CtOnly),
     ("Type#includes?", CtOnly),
     ("Meta::ClassDef#def_method", CtOnly),
     ("Meta::ClassDef#def_class_method", CtOnly),

@@ -483,6 +483,43 @@ fn an_inherited_hook_runs_after_the_written_statements() {
     );
 }
 
+/// `Type#constructors` read by an `inherited` hook in another cog (#1045,
+/// #421): a job class whose constructors all take a required argument is
+/// told from one `new` can build with none (no `initialize`, or one whose
+/// parameters all have defaults). The expected output is derived from the
+/// rule: `Mailer` and `Either` need arguments; `Tick` and `Retry` do not.
+#[test]
+fn an_inherited_hook_tells_a_class_new_cannot_build_bare() {
+    let w = World::new();
+    w.write(
+        "jobs/Cog.toml",
+        "[cog]\nname = \"jobs\"\nversion = \"0.1.0\"\n",
+    );
+    w.write("jobs/src/job.qz", "class Job\n  static def self.inherited -> Void\n    cs = constructors\n    needs = cs.size > 0 && cs.all? { |c| c.params.any? { |p| p.kind == Meta::ParamKind::Required } }\n    puts \"#{self.name} needs arguments: #{needs}\"\n    def_class_method(:needs_arguments) { needs }\n  end\nend\n");
+    w.commit("jobs", Some("v0.1.0"));
+    w.app(
+        &format!("Jobs = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("jobs")),
+        "class Mailer < Jobs::Job\n  @to: String\n  def initialize(@to: String); end\nend\nclass Tick < Jobs::Job\nend\nclass Retry < Jobs::Job\n  @n: Int\n  def initialize(@n: Int = 3); end\nend\nclass Either < Jobs::Job\n  @n: Int\n  def initialize(@n: Int); end\n  def initialize(s: String); @n = s.size; end\nend\nputs [Mailer.needs_arguments, Tick.needs_arguments, Retry.needs_arguments, Either.needs_arguments]\n",
+    );
+    let out = w.quarz("app", &["run"]);
+    assert!(out.ok, "{}", out.stderr);
+    assert_eq!(out.stdout, "true\nfalse\nfalse\ntrue\n");
+    let said: Vec<&str> = out
+        .stderr
+        .lines()
+        .filter(|l| !l.starts_with("quarz: "))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "Mailer needs arguments: true",
+            "Tick needs arguments: false",
+            "Retry needs arguments: false",
+            "Either needs arguments: true",
+        ]
+    );
+}
+
 /// The staging rule (docs/14 §2) for the `inherited` hook (#421): a
 /// subclass in the hook's own cog, abstract or not, an override of it
 /// included, is an error at its `class` line naming the hook's class.

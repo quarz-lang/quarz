@@ -147,6 +147,7 @@ struct ReflectKept {
     epoch: u64,
     fields: HashMap<ClassId, Rc<[ReflectField]>>,
     methods: HashMap<ClassId, Rc<[ReflectMethod]>>,
+    constructors: HashMap<ClassId, Rc<[ReflectMethod]>>,
     unshareable: rustc_hash::FxHashMap<ClassId, String>,
 }
 
@@ -1519,9 +1520,10 @@ impl Runner {
         match (&mut self.reflect_kept, changed) {
             (Some(k), Some(classes)) => {
                 for c in classes {
-                    let (fs, ms) = reflect_rows(world, c);
+                    let (fs, ms, cs) = reflect_rows(world, c);
                     k.fields.insert(c, Rc::from(fs));
                     k.methods.insert(c, Rc::from(ms));
+                    k.constructors.insert(c, Rc::from(cs));
                     match unshareable_of(world, c) {
                         Some(why) => k.unshareable.insert(c, why),
                         None => k.unshareable.remove(&c),
@@ -1532,16 +1534,19 @@ impl Runner {
             _ => {
                 let mut fields = HashMap::new();
                 let mut methods = HashMap::new();
+                let mut constructors = HashMap::new();
                 for c in 0..world.classes.len() as ClassId {
-                    let (fs, ms) = reflect_rows(world, c);
+                    let (fs, ms, cs) = reflect_rows(world, c);
                     fields.insert(c, Rc::from(fs));
                     methods.insert(c, Rc::from(ms));
+                    constructors.insert(c, Rc::from(cs));
                 }
                 self.reflect_kept = Some(ReflectKept {
                     key,
                     epoch,
                     fields,
                     methods,
+                    constructors,
                     unshareable: unshareable_data(world),
                 });
             }
@@ -1549,9 +1554,9 @@ impl Runner {
         let k = self.reflect_kept.as_ref().expect("made above");
         if quarz_lower::verify_static_tables() {
             for c in 0..world.classes.len() as ClassId {
-                let (fs, ms) = reflect_rows(world, c);
+                let (fs, ms, cs) = reflect_rows(world, c);
                 assert!(
-                    *k.fields[&c] == *fs && *k.methods[&c] == *ms,
+                    *k.fields[&c] == *fs && *k.methods[&c] == *ms && *k.constructors[&c] == *cs,
                     "internal error (QUARZ_VERIFY_STATIC_TABLES): the kept reflection of `{}` differs from the one made from nothing (#717)",
                     world.class(c).name
                 );
@@ -1567,6 +1572,10 @@ impl Runner {
                 .map(|(c, f)| (*c, vec![f.clone()]))
                 .collect(),
             k.methods
+                .iter()
+                .map(|(c, m)| (*c, vec![m.clone()]))
+                .collect(),
+            k.constructors
                 .iter()
                 .map(|(c, m)| (*c, vec![m.clone()]))
                 .collect(),
@@ -2851,6 +2860,8 @@ impl StaticRunner for Runner {
 struct WorldReflect {
     fields: HashMap<ClassId, Vec<Rc<[ReflectField]>>>,
     methods: HashMap<ClassId, Vec<Rc<[ReflectMethod]>>>,
+    /// The signatures `new` takes (`World::constructors`, #1045).
+    constructors: HashMap<ClassId, Vec<Rc<[ReflectMethod]>>>,
     /// What the statement's run asked to generate, in call order.
     generated: RefCell<Vec<Pending>>,
     /// The `doc` given, for the next generation.
@@ -3700,8 +3711,12 @@ fn free_param(t: &Type, own: &[TypeParamId]) -> Option<TypeParamId> {
 }
 
 /// Class `id`'s rows of the reflection (`Runner::snapshot`): its
-/// fields, inherited first, and its public instance methods.
-fn reflect_rows(world: &World, id: ClassId) -> (Vec<ReflectField>, Vec<ReflectMethod>) {
+/// fields, inherited first, its public instance methods, and the
+/// signatures `new` takes (`World::constructors`).
+fn reflect_rows(
+    world: &World,
+    id: ClassId,
+) -> (Vec<ReflectField>, Vec<ReflectMethod>, Vec<ReflectMethod>) {
     let class = world.class(id);
     let fs: Vec<ReflectField> = world
         .all_fields(class.id)
@@ -3763,7 +3778,29 @@ fn reflect_rows(world: &World, id: ClassId) -> (Vec<ReflectField>, Vec<ReflectMe
     }
     ms.sort_by_key(|(mid, _)| *mid);
     let ms: Vec<ReflectMethod> = ms.into_iter().map(|(_, m)| m).collect();
-    (fs, ms)
+    // The constructors: as the class has them (its own type parameters as
+    // its arguments, an inherited one's types substituted), in
+    // declaration order, each returning the class (what `new` makes).
+    let instance = Type::Class(id, world.own_args(id));
+    let cs: Vec<ReflectMethod> = world
+        .constructors(id, &instance)
+        .into_iter()
+        .map(|(mid, subst)| {
+            let m = world.method(mid);
+            ReflectMethod {
+                name: m.name.clone(),
+                params: m
+                    .params
+                    .iter()
+                    .map(|p| reflect_param(world, p, &subst, class.id))
+                    .collect(),
+                ret: id,
+                is_static: false,
+                ret_ref: type_ref_of(world, &instance, class.id),
+            }
+        })
+        .collect();
+    (fs, ms, cs)
 }
 
 impl WorldReflect {
@@ -3771,12 +3808,14 @@ impl WorldReflect {
     fn with_rows(
         fields: HashMap<ClassId, Vec<Rc<[ReflectField]>>>,
         methods: HashMap<ClassId, Vec<Rc<[ReflectMethod]>>>,
+        constructors: HashMap<ClassId, Vec<Rc<[ReflectMethod]>>>,
         unshareable: rustc_hash::FxHashMap<ClassId, String>,
     ) -> WorldReflect {
         WorldReflect {
             unshareable,
             fields,
             methods,
+            constructors,
             generated: RefCell::new(Vec::new()),
             doc: RefCell::new(None),
             pending: PendingView::default(),
@@ -3986,6 +4025,32 @@ impl Reflect for WorldReflect {
     }
     fn methods(&self, class: ClassId) -> Vec<ReflectMethod> {
         self.methods
+            .get(&class)
+            .and_then(|v| v.first())
+            .map(|ms| {
+                ms.iter()
+                    .map(|m| ReflectMethod {
+                        name: m.name.clone(),
+                        params: m
+                            .params
+                            .iter()
+                            .map(|p| ReflectParam {
+                                name: p.name.clone(),
+                                ty: p.ty,
+                                kind: p.kind,
+                                ty_ref: p.ty_ref.clone(),
+                            })
+                            .collect(),
+                        ret: m.ret,
+                        is_static: m.is_static,
+                        ret_ref: m.ret_ref.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    fn constructors(&self, class: ClassId) -> Vec<ReflectMethod> {
+        self.constructors
             .get(&class)
             .and_then(|v| v.first())
             .map(|ms| {

@@ -5866,6 +5866,52 @@ impl World {
 
     // ----- method lookup --------------------------------------------------------
 
+    /// The `initialize` overloads `new` resolves a call against for
+    /// class `cid` (docs/01 §3, "Which `initialize` `new` takes"), with
+    /// `instance` the class with its type arguments, each with its
+    /// substitution as lookup gives it: the class's own (or inherited)
+    /// ones, not `Object`'s, and only those that can assign the fields:
+    /// a superclass's when no class below it has fields of its own to
+    /// assign (a data type's or a variant's all are), a module's or an
+    /// extension's when the class has none at all; and only the nearest
+    /// owner's, since a class's own `initialize` hides its ancestors'
+    /// (docs/01 §9). Empty when `new` takes no arguments. What the
+    /// checker's `new` resolves against and what `Type#constructors`
+    /// lists (docs/14 §4, #1045).
+    pub fn constructors(
+        &self,
+        cid: ClassId,
+        instance: &Type,
+    ) -> Vec<(MethodId, HashMap<TypeParamId, Type>)> {
+        let mut cands: Vec<_> = self
+            .lookup_methods(instance, "initialize")
+            .into_iter()
+            .filter(|(m, _)| {
+                let m = self.method(*m);
+                !m.singleton && self.constructs(cid, m)
+            })
+            .collect();
+        if let Some(nearest) = cands.first().map(|(m, _)| self.method(*m).owner) {
+            cands.retain(|(m, _)| self.method(*m).owner == nearest);
+        }
+        cands
+    }
+
+    /// Whether `m`, an `initialize` found for `cid`, may make a `cid`:
+    /// it can assign every field that needs it (`constructors`).
+    fn constructs(&self, cid: ClassId, m: &MethodInfo) -> bool {
+        let owner = self.class(m.owner);
+        if m.extension.is_some() || owner.kind == ClassKind::Module {
+            return !self.has_fields_to_assign(cid, true);
+        }
+        // The classes from `cid` up to the owner, the owner aside.
+        !self
+            .superclass_chain(cid)
+            .into_iter()
+            .take_while(|k| *k != m.owner)
+            .any(|k| self.has_fields_to_assign(k, false))
+    }
+
     /// Candidate methods for `recv.name`, in resolution order, each with the
     /// substitution of the owner's (or extension's) type parameters.
     pub fn lookup_methods(

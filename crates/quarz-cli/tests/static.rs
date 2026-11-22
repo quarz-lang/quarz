@@ -1133,6 +1133,45 @@ fn an_inherited_hook_runs_in_a_script_and_its_cache() {
     );
 }
 
+/// `Type#constructors` (docs/14 §4, #1045): the signatures `new` takes,
+/// those `World::constructors` gives `new` (docs/01 §3), the expected
+/// lines derived from that rule:
+/// - none for a class whose `new` takes no arguments (`Plain`);
+/// - its own overloads, optional, keyword and private ones included,
+///   in order (`Two`); a protected one (`Prot`);
+/// - inherited when `new` takes them (`Kid`, `Free`), as the class has
+///   them (named after the class); not past a class between with fields
+///   to assign (`Below` takes `Between`'s, not `Base0`'s);
+/// - a generic class's with its parameter (`Box`), and with its argument
+///   applied below it (`IntBox`);
+/// - an abstract class's (`Abs`);
+/// - a generated one, after the statement that generated it (`Gen`);
+/// - a data type's and a variant's constructor (`D`, `E::V`);
+/// - each named `initialize`, returning the class, not static.
+///
+/// Read from `static(...)` while the class's statements are pending, it
+/// is refused as the other reflection is (§8).
+#[test]
+fn constructors_list_what_new_takes() {
+    let d = dir();
+    write(&d.0, "lib.qz", "class Lib\n  static def self.sig(t: Type[Object]) -> String\n    t.constructors.map { |c| \"(\" + c.params.map { |p| \"#{p.name}: #{p.type_ref} #{p.kind}\" }.join(\", \") + \") -> #{c.result} #{c.name} #{c.static}\" }.join(\" | \")\n  end\n  static def self.show -> Void\n    puts \"#{self.name}: [#{Lib.sig(self.type)}]\"\n  end\n  static def self.show_of(t: Type[Object]) -> Void\n    puts \"#{t.name}: [#{Lib.sig(t)}]\"\n  end\n  static def self.gen_init -> Void\n    def_initialize(:x) { |x: Int| }\n  end\n  static def self.count(t: Type[Object]) -> Int = t.constructors.size\n  static def self.mark(n: Int) -> Void\n  end\nend\n");
+    let app = write(&d.0, "main.qz", "require_relative \"lib\"\ndata D = (x: Int, y: String)\nenum E\n  variant V(a: Int)\n  variant W\nend\nclass Plain < Lib\n  show\nend\nclass Two < Lib\n  @n: Int\n  def initialize(@n: Int, label: String = \"x\"); end\n  private def initialize(s: String, *, k: Int); @n = 0; end\n  show\nend\nclass Kid < Two\n  show\nend\nclass Prot < Lib\n  @n: Int\n  protected def initialize(@n: Int); end\n  show\nend\nclass Box[T] < Lib\n  @v: T\n  def initialize(@v: T); end\n  show\nend\nclass IntBox < Box[Int]\n  show\nend\nabstract class Abs < Lib\n  @a: Int\n  def initialize(@a: Int); end\n  show\nend\nclass Gen < Lib\n  show\n  gen_init\n  show\nend\nclass Base0 < Lib\n  def initialize(s: String); end\nend\nclass Between < Base0\n  @f: Int\n  def initialize(@f: Int); super(\"x\"); end\nend\nclass Below < Between\n  show\nend\nclass Free < Base0\n  show\nend\nclass Probe < Lib\n  show_of D\n  show_of E::V\nend\n");
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(
+        err.lines().collect::<Vec<_>>(),
+        ["Plain: []", "Two: [(n: Int Meta::ParamKind::Required, label: String Meta::ParamKind::Optional) -> Two initialize false | (s: String Meta::ParamKind::Required, k: Int Meta::ParamKind::Keyword) -> Two initialize false]", "Kid: [(n: Int Meta::ParamKind::Required, label: String Meta::ParamKind::Optional) -> Kid initialize false | (s: String Meta::ParamKind::Required, k: Int Meta::ParamKind::Keyword) -> Kid initialize false]", "Prot: [(n: Int Meta::ParamKind::Required) -> Prot initialize false]", "Box: [(v: T Meta::ParamKind::Required) -> Box initialize false]", "IntBox: [(v: Int Meta::ParamKind::Required) -> IntBox initialize false]", "Abs: [(a: Int Meta::ParamKind::Required) -> Abs initialize false]", "Gen: []", "Gen: [(x: Int Meta::ParamKind::Required) -> Gen initialize false]", "Below: [(f: Int Meta::ParamKind::Required) -> Below initialize false]", "Free: [(s: String Meta::ParamKind::Required) -> Free initialize false]", "D: [(x: Int Meta::ParamKind::Required, y: String Meta::ParamKind::Required) -> D initialize false]", "E::V: [(a: Int Meta::ParamKind::Required) -> E::V initialize false]"],
+        "{err}"
+    );
+    let bad = write(&d.0, "bad.qz", "require_relative \"lib\"\nclass Post < Lib\n  mark(static(Lib.count(Post)))\n  gen_init\nend\n");
+    let (ok, _, err) = quarz(&d.0, &["check", bad.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("reflects on a class whose `static` statements have not all run (`mark` in `Post`, `gen_init` in `Post`)"),
+        "{err}"
+    );
+}
+
 #[test]
 fn a_statement_reaches_call_targets_and_their_overrides() {
     // The statement's `String.build` reaches `String.build`, not every

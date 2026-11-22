@@ -2485,25 +2485,6 @@ impl Checker {
         }
     }
 
-    /// The fields `initialize` must assign (see `init`): every field and
-    /// the class's own ones whose declared type does not admit `nil`
-    /// and that have no default.
-    /// Whether `m`, an `initialize` found for `cid`, may make a `cid`:
-    /// it can assign every field that needs it.
-    fn constructs(&self, cid: ClassId, m: &MethodInfo) -> bool {
-        let owner = self.world.class(m.owner);
-        if m.extension.is_some() || owner.kind == ClassKind::Module {
-            return !self.world.has_fields_to_assign(cid, true);
-        }
-        // The classes from `cid` up to the owner, the owner aside.
-        !self
-            .world
-            .superclass_chain(cid)
-            .into_iter()
-            .take_while(|k| *k != m.owner)
-            .any(|k| self.world.has_fields_to_assign(k, false))
-    }
-
     /// The definite initialization of a block given to `def_initialize`
     /// (docs/14 §5), as of a written `initialize` of a class below
     /// `bound` (see `init`): every field of `bound` to assign, on every
@@ -2546,6 +2527,9 @@ impl Checker {
         }
     }
 
+    /// The fields `initialize` must assign (see `init`): every field and
+    /// the class's own ones whose declared type does not admit `nil`
+    /// and that have no default.
     pub(crate) fn required_fields(
         &self,
         cid: ClassId,
@@ -13110,26 +13094,7 @@ impl Checker {
                 a.has_vars() || a.mentions_any_param()
             });
         let instance = Type::Class(cid, targs.clone());
-        let cands = self.world.lookup_methods(&instance, "initialize");
-        // Only the class's own (or inherited) initialize, not Object's,
-        // and only one that can assign the fields (docs/01 §3): a
-        // superclass's when no class below it has fields of its own to
-        // assign (a data type's or a variant's all are), a module's or an
-        // extension's when the class has none at all.
-        let mut cands: Vec<_> = cands
-            .into_iter()
-            .filter(|(m, _)| {
-                let m = self.world.method(*m);
-                !m.singleton && self.constructs(cid, m)
-            })
-            .collect();
-        // The class's own `initialize` hides its ancestors' (docs/01 §9):
-        // the nearest that has one (in lookup order), so a class that
-        // inherits them takes its superclass's alone, not those the
-        // superclass's hide in turn.
-        if let Some(nearest) = cands.first().map(|(m, _)| self.world.method(*m).owner) {
-            cands.retain(|(m, _)| self.world.method(*m).owner == nearest);
-        }
+        let cands = self.world.constructors(cid, &instance);
         if cands.is_empty() {
             if !call.args.is_empty() || call.block.is_some() {
                 self.error(
