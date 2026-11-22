@@ -104,11 +104,6 @@ pub const NATIVE_NAMES: &[&str] = &[
     "step",
 ];
 
-/// What a native the runtime calls by `name` calls by name in turn (what
-/// a run reaches, for the compile-time walks: the runner's `bad_reach`
-/// and a static round's lowering): the printing ones each other's
-/// (`Object#to_s` of an array is its elements' `inspect`), `==` and
-/// `hash` each other's (a key's), `<=>` itself; the other names, all.
 /// What an enumerator's natives call by name: the method it was made for,
 /// one of the first nine, the only ones natives make enumerators of
 /// (`natives::numeric::enumerator`, the one place that makes one; a native
@@ -142,6 +137,13 @@ pub fn calls_as(key: &str, name: &str) -> impl Iterator<Item = &'static str> {
         .filter(move |n| own.contains(n))
 }
 
+/// What a native the runtime calls by `name` calls by name in turn (what
+/// a run reaches, for the compile-time walks: the runner's `bad_reach`
+/// and a static round's lowering): the printing ones each other's
+/// (`Object#to_s` of an array is its elements' `inspect`), `==` and
+/// `hash` each other's (a key's), `<=>` itself; for another name, no
+/// narrowing: what the native is classified to call (`calls_as` takes
+/// both).
 pub fn calls_for(name: &str) -> &'static [&'static str] {
     match name {
         "to_s" | "inspect" | "<<" => &["to_s", "inspect"],
@@ -154,10 +156,12 @@ pub fn calls_for(name: &str) -> &'static [&'static str] {
 /// The names the native registered as `key` (`Class#name` or
 /// `Class.name`) may call by name on the values it is given
 /// (`Interp::to_s`, `inspect`, `values_equal`, `compare`, the keys' `==`
-/// and `hash`, enumerators): none for a native of a class whose methods
-/// take only built-in values (an `Int`'s, `Math`'s), the printing ones
-/// for `Kernel`'s printing functions, and every name a native calls by
-/// (`NATIVE_NAMES`) for the others, which are not told apart.
+/// and `hash`, enumerators), as `native_calls_decided` decides it for
+/// every registered native (#394): none for one whose values are built-in
+/// or which calls nothing on them, its real names for one read to call
+/// some, and every name a native calls by (`NATIVE_NAMES`) for the
+/// classes not read key by key yet (`CALLS_ANY_CLASSES`) and for a key
+/// no arm decides.
 pub fn native_calls(key: &str) -> &'static [&'static str] {
     native_calls_decided(key).unwrap_or(NATIVE_NAMES)
 }
