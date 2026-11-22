@@ -205,3 +205,73 @@ fn one_definition_generic_forms_ignore_block_and_keywords() {
         );
     }
 }
+
+/// Each native of `quarz_ir::live::NE_NEGATES_EQ` answers `Value::eq`'s
+/// answer for a receiver of its class, and `Object#!=` (`obj_ne`) there is
+/// its negation (#795): what lets the lowering rewrite `x != y` into that
+/// `==` and a `Not`. Over both forms of a string (inline and counted),
+/// byte strings (the same one and an equal one), and other-typed
+/// arguments and nil.
+#[test]
+fn ne_negates_eq() {
+    use quarz_vm::interp::{ArgList, Args};
+    use quarz_vm::value::Value;
+    quarz_vm::Interp::install_interpreter();
+    let interp = quarz_vm::Interp::new(common::lower("puts 1\n"), Vec::new());
+    let plain = quarz_vm::natives::all().plain.map();
+    let obj_ne = plain["Object#!="];
+    let long = "a string longer than fourteen bytes";
+    let bytes = |s: &str| Value::Bytes(quarz_vm::rc::Rc::from(s.as_bytes()));
+    let same_bytes = bytes("abc");
+    let strings = vec![
+        Value::str(""),
+        Value::str("abc"),
+        Value::str("abd"),
+        Value::str("é"),
+        Value::str(long),
+        Value::Str(quarz_vm::rc::Rc::from("abc")),
+        Value::Str(quarz_vm::rc::Rc::from(long)),
+    ];
+    let others = vec![Value::Int(1), Value::Nil, Value::Bool(true), bytes("abc")];
+    let byte_strings = vec![same_bytes.clone(), bytes("abc"), bytes("abd"), bytes("")];
+    let byte_others = vec![Value::str("abc"), Value::Int(1), Value::Nil];
+    for key in quarz_ir::live::NE_NEGATES_EQ {
+        let (recvs, args): (&[Value], Vec<Value>) = match key {
+            "String#==" => (&strings, strings.iter().chain(&others).cloned().collect()),
+            "Bytes#==" => (
+                &byte_strings,
+                byte_strings.iter().chain(&byte_others).cloned().collect(),
+            ),
+            _ => panic!("`{key}` is listed but not covered by this test"),
+        };
+        let eq = plain[key];
+        for r in recvs {
+            for a in &args {
+                let call = |f: quarz_vm::interp::NativeFn| {
+                    let pos = [a.clone()];
+                    f(
+                        &interp,
+                        r,
+                        Args {
+                            pos: ArgList::Borrowed(&pos),
+                            kw: Vec::new(),
+                            block: None,
+                        },
+                    )
+                    .unwrap_or_else(|_| panic!("`{key}` raised"))
+                };
+                let native = call(eq);
+                assert_eq!(
+                    native,
+                    Value::Bool(r == a),
+                    "`{key}` against `Value::eq`: {r:?}, {a:?}"
+                );
+                assert_eq!(
+                    call(obj_ne),
+                    Value::Bool(r != a),
+                    "`Object#!=`: {r:?}, {a:?}"
+                );
+            }
+        }
+    }
+}

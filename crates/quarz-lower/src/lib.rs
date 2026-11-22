@@ -1689,6 +1689,7 @@ pub fn lower_checked_with(mut lw: Lowerer, checked: &Checked, files: &[SourceFil
     cha::rewrite(&mut functions, &delta.world);
     check(&functions, verify::Stage::Cha);
     devirt::devirtualize(&mut functions, &delta.world);
+    devirt::negate_eq(&mut functions, &delta.world);
     check(&functions, verify::Stage::Devirt);
     inline::inline_calls(&mut functions, &delta.world.methods, 2);
     check(&functions, verify::Stage::Inline);

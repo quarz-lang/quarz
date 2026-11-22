@@ -229,6 +229,17 @@ pub const IN_PLACE_NATIVES: [&str; 6] = [
     "Set#delete",
 ];
 
+/// The natives whose answer for a receiver of their class is `Value::eq`'s
+/// (the interpreter's equality of two values), so that `Object#!=` there,
+/// which answers `!Value::eq` for any receiver that is not an object
+/// (`obj_ne`), is their negation: the lowering rewrites a call of
+/// `Object#!=` whose every receiver runs one of these for `==` into that
+/// call and a `Not` (`quarz_lower::devirt::negate_eq`, #795). A key added
+/// here must be covered by the test that compares the native with
+/// `Value::eq` and with `!obj_ne` (`ne_negates_eq` in
+/// `crates/quarz-cli/tests/builtins.rs`).
+pub const NE_NEGATES_EQ: [&str; 2] = ["String#==", "Bytes#=="];
+
 /// Whether field `index` of class `class` is one `FieldTake` may take
 /// (#704): a `data` type's (its fields are set once, by its constructor)
 /// value field (`field_slots`) of a class type (`RtField::classes`, by
