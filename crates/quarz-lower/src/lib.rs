@@ -1195,14 +1195,14 @@ impl Lowerer {
                 //   !=, + - * / % < <= > >=
                 //                      a `BinOp` without a method (by name)
                 //   <<                 Interpolate into a non-builder
-                //   each, next, rewind, status, to_json, each_slice,
-                //   each_cons, each_char, each_with_index_pairs, times,
-                //   upto, downto, step
+                //   each, next, rewind, status, to_json, succ,
+                //   each_slice, each_cons, each_char,
+                //   each_with_index_pairs, times, upto, downto, step
                 //                      natives (`shake::NATIVE_NAMES`)
                 //   initialize         a construction (`builds_of`), a
                 //                      data type's `with` (`walk_method`)
                 //   deinitialize       a construction (`builds_of`)
-                //   ===, eql?, succ, message, call
+                //   ===, eql?, message, call
                 //                      nothing calls them by name
                 let mut w = StaticWalk::default();
                 self.walk_target(world, callee, None, &by_name, &mut w);

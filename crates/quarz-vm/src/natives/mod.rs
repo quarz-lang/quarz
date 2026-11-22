@@ -973,6 +973,102 @@ mod compile_time_tests {
         }
     }
 
+    /// The names of `shake::NATIVE_NAMES` beyond the common ones
+    /// (`COMMON_CALLS`, which any native not read key by key is taken to
+    /// call) are sent from these places only, by a literal name, and
+    /// `shake::native_calls_decided` attributes each to the natives that
+    /// reach its place (#394): a send of one anywhere else fails here
+    /// until it is listed and attributed. A place is a file of `src/` and
+    /// the function or native (its key) the send is in. (The methods
+    /// enumerators are made for are sent by a name the enumerator holds,
+    /// `collections::enumerator_each` and `steps::start`, only from the
+    /// `Enumerator` natives.)
+    #[test]
+    fn a_rare_name_is_sent_only_from_its_places() {
+        const PLACES: &[(&str, &str, &str)] = &[
+            ("status", "natives/io.rs", "Process::Output#success?"),
+            ("next", "natives/steps.rs", "step"),
+            ("next", "natives/steps.rs", "each_by_next"),
+            ("rewind", "natives/steps.rs", "rewind"),
+            ("succ", "natives/collections.rs", "date_next"),
+            ("to_json", "natives/json.rs", "generate"),
+        ];
+        let common = quarz_ir::shake::COMMON_CALLS;
+        let rare: Vec<&str> = quarz_ir::shake::NATIVE_NAMES
+            .iter()
+            .copied()
+            .filter(|n| !common.contains(n))
+            .collect();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![root.clone()];
+        let mut sources = Vec::new();
+        while let Some(f) = files.pop() {
+            if f.is_dir() {
+                files.extend(std::fs::read_dir(&f).unwrap().map(|e| e.unwrap().path()));
+            } else if f.extension().is_some_and(|e| e == "rs") {
+                let rel = f
+                    .strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                sources.push((rel, std::fs::read_to_string(&f).unwrap()));
+            }
+        }
+        let mut seen: Vec<(&str, &str, &str)> = Vec::new();
+        let mut stray = Vec::new();
+        for (file, text) in &sources {
+            let mut place = String::new();
+            for line in text.lines() {
+                let t = line.trim_start();
+                if let Some(rest) = ["native!(m, \"", "fast!(m, \"", "owned!(m, \""]
+                    .iter()
+                    .find_map(|p| t.strip_prefix(p))
+                {
+                    place = rest.split('"').next().unwrap_or("").to_string();
+                } else if let Some(i) = t.find("fn ") {
+                    let head = &t[..i];
+                    if head.is_empty() || head.ends_with("pub ") || head.ends_with(") ") {
+                        place = t[i + 3..]
+                            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                            .next()
+                            .unwrap_or("")
+                            .to_string();
+                    }
+                }
+                for call in [
+                    "send(",
+                    "send_kw(",
+                    "send_with(",
+                    "send_requirement(",
+                    "has_user_method(",
+                ] {
+                    for (at, _) in line.match_indices(call) {
+                        // (The first string literal of the call: its name.)
+                        let args = &line[at + call.len()..];
+                        let Some(name) = args.split('"').nth(1) else {
+                            continue;
+                        };
+                        if rare.contains(&name) {
+                            let here = (name, file.as_str(), place.as_str());
+                            if let Some(p) = PLACES.iter().find(|p| **p == here) {
+                                seen.push(*p);
+                            } else {
+                                stray.push(format!("{name} in {file}, {place}"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            stray.is_empty(),
+            "a native sends a name of `shake::NATIVE_NAMES` that only listed places send: list the place here and attribute the name to the natives reaching it in `shake::native_calls_decided`: {stray:?}"
+        );
+        for p in PLACES {
+            assert!(seen.contains(p), "{p:?} sends no such name any more");
+        }
+    }
+
     /// Each line of the tables names natives that exist (with the
     /// optional features off too: their stubs register the same keys).
     #[test]
