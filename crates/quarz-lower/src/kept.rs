@@ -245,8 +245,6 @@ impl Kept {
         self.key == GraphKey::of(world) && self.cursor <= world.static_events.len()
     }
 
-    /// The classes rebuilt by the syncs after `epoch`, or `None` when one
-    /// of them rebuilt everything (or the log does not reach back).
     /// The methods class `c` owns, whose rows `rebuild` makes again with
     /// its row (the static rounds' world copies them, #1057 PR 4).
     pub(crate) fn owned_methods(&self, c: ClassId) -> &[MethodId] {
@@ -257,6 +255,8 @@ impl Kept {
             .unwrap_or(&[])
     }
 
+    /// The classes rebuilt by the syncs after `epoch`, or `None` when one
+    /// of them rebuilt everything (or the log does not reach back).
     pub(crate) fn changed_since(&self, epoch: u64) -> Option<Vec<ClassId>> {
         changed_in(&self.log, epoch)
     }

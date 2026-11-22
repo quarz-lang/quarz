@@ -1121,6 +1121,12 @@ impl Lowerer {
         let mut sw = self.static_world.take().expect("matched above");
         {
             let kept = self.kept.as_ref().expect("synced above");
+            // (Another holder makes `make_mut` copy: today's cost, counted
+            // with `QUARZ_COUNT_STATIC_COPIES`.)
+            let holders = std::sync::Arc::strong_count(&sw.world);
+            if holders > 1 && std::env::var_os("QUARZ_COUNT_STATIC_COPIES").is_some() {
+                eprintln!("quarz: the static rounds' world copied ({holders} holders)");
+            }
             let w = std::sync::Arc::make_mut(&mut sw.world);
             for &c in &changed {
                 w.classes[c as usize] = kept.rt.classes[c as usize].clone();
@@ -1143,7 +1149,11 @@ impl Lowerer {
         if cfg!(debug_assertions) || verify_static_tables() {
             let mut fresh = self.kept.as_ref().expect("synced above").rt.clone();
             rtworld::fill(&mut fresh, world, self, file_names);
-            if let Some(diff) = first_difference(&fresh, &sw.world) {
+            // (The whole struct is compared: a field `first_difference`
+            // does not name is still a difference.)
+            if fresh != *sw.world {
+                let diff = first_difference(&fresh, &sw.world)
+                    .unwrap_or_else(|| "a field `first_difference` does not name".to_string());
                 panic!(
                     "internal error: the static rounds' world differs from a fresh fill: {diff} (#1057)"
                 );
