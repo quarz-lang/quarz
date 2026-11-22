@@ -152,6 +152,9 @@ fn forwarding_arguments() {
     );
     assert_eq!(sexp("f(a...)"), "(call _ f (range (call _ a) ... ))");
     assert_eq!(sexp("x = n..."), "(= x (range (call _ n) ... ))");
+    // A local variable, a space and `...`: the endless range, as before.
+    assert_eq!(sexp("n = 1\nx = n ...\n"), "(= n 1)\n(= x (range n ... ))");
+    assert_eq!(sexp("n = 1\n(n ...)\n"), "(= n 1)\n(range n ... )");
     // Not taken: `...` beside other arguments, or without parentheses.
     let alone = "`...` forwards the method's arguments and is written alone: `f(...)`";
     assert_eq!(errors("f(1, ...)"), vec![alone]);

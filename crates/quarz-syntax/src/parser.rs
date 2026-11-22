@@ -1262,9 +1262,9 @@ impl<'src> Parser<'src> {
         }
         let exclusive = self.at(&T::DotDotDot);
         let dots = self.bump();
-        // `f ...` (a name, a space, `...`, nothing after it): meant as
-        // `f(...)`, which is the only form that forwards; an endless range
-        // is written without the space (`n...`).
+        // `f ...` (a call's name or `super`, a space, `...`, nothing
+        // after it): meant as `f(...)`, which is the only form that
+        // forwards. (A local variable's is the endless range it was.)
         if exclusive && dots.space_before && !self.starts_expression() {
             let name = match &lo.kind {
                 ExprKind::Call(c)
@@ -1275,7 +1275,6 @@ impl<'src> Parser<'src> {
                 {
                     Some(c.name.as_str())
                 }
-                ExprKind::Local(n) => Some(n.as_str()),
                 ExprKind::Super {
                     args: None,
                     block: None,

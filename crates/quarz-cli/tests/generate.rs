@@ -410,7 +410,9 @@ end
     let (ok, _, err) = quarz(&d.0, &["check", app3.to_str().unwrap()], &[]);
     assert!(!ok);
     assert!(
-        err.contains("lib2.qz:9:36: error: a block given to `def_method` takes plain parameters only"),
+        err.contains(
+            "lib2.qz:9:36: error: a block given to `def_method` takes plain parameters only"
+        ),
         "{err}"
     );
     assert!(!err.contains("lib2.qz:10:"), "{err}");

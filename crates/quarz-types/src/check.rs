@@ -5480,11 +5480,14 @@ impl Checker {
         bare_super: bool,
     ) -> Option<(Vec<Arg>, Vec<VarRef>)> {
         // In a parameter's default, the parameters after it have no value
-        // yet. (A bare `super` there is left as it was until #1078 is
-        // decided: the second condition goes with it.)
-        if self.env.in_param_default && !bare_super {
+        // yet (#1078): a bare `super` there forwards them too.
+        if self.env.in_param_default {
             self.error(
-                "`...` in a parameter's default: the parameters after it have no value yet; write the arguments",
+                if bare_super {
+                    "a bare `super` in a parameter's default passes the method's arguments, and the parameters after it have no value yet; write the arguments (`super(a)`)"
+                } else {
+                    "`...` in a parameter's default: the parameters after it have no value yet; write the arguments"
+                },
                 span,
             );
             return None;
@@ -5504,9 +5507,7 @@ impl Checker {
             }
             // (A block given `*rest`, keywords, a default or `&block` is
             // refused by itself, docs/14 §5: nothing more to say here.)
-            let Some(n) = ctx.lifted_params else {
-                return None;
-            };
+            let n = ctx.lifted_params?;
             let frame = self.env.lifted_frame.unwrap_or(top);
             for i in 0..n {
                 let name = self.env.frames[frame].vars[i].name.clone();
