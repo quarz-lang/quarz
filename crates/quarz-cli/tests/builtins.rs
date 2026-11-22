@@ -150,6 +150,7 @@ fn one_definition_generic_forms_ignore_block_and_keywords() {
     let other = Value::str("abc");
     let arr = Value::array(vec![Value::Int(1), Value::Int(2)]);
     let hash = Value::Hash(quarz_vm::rc::Rc::new(Default::default()));
+    let bytes = Value::Bytes(quarz_vm::rc::Rc::from(&b"abc"[..]));
     let cases: Vec<(&str, &Value, Vec<Value>)> = vec![
         ("String#size", &s, vec![]),
         ("String#length", &s, vec![]),
@@ -171,6 +172,13 @@ fn one_definition_generic_forms_ignore_block_and_keywords() {
         ("Hash#size", &hash, vec![]),
         ("Hash#length", &hash, vec![]),
         ("Hash#empty?", &hash, vec![]),
+        ("Bytes#size", &bytes, vec![]),
+        ("Bytes#length", &bytes, vec![]),
+        ("Bytes#bytesize", &bytes, vec![]),
+        ("Bytes#empty?", &bytes, vec![]),
+        ("Bytes#==", &bytes, vec![bytes.clone()]),
+        ("Bytes#end_with?", &bytes, vec![bytes.clone()]),
+        ("Bytes#include?", &bytes, vec![bytes.clone()]),
     ];
     for (key, recv, args) in cases {
         let f = plain[key];

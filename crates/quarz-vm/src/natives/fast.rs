@@ -6,7 +6,9 @@
 
 use crate::value::Value;
 
+use super::bytes::bs;
 use super::collections::{arr_data, hash, index_data, set};
+use super::matching::{engine, Hay};
 use super::string::s;
 use super::{int, string};
 
@@ -120,13 +122,15 @@ pub fn register(m: &mut impl super::Sink) {
     }
     );
     fast!(m, "String#end_with?", |_, r, a| match (r.as_str(), a) {
-        (Some(s), [p]) => p.as_str().map(|p| Value::Bool(s.ends_with(p))),
+        (Some(s), [p]) => p
+            .as_str()
+            .map(|p| Value::Bool(super::bytes::ends_with(s.as_bytes(), p.as_bytes()))),
         _ => None,
     },
         generic: |i, r, a| {
         let text = s(i, r)?;
         for p in &a.pos {
-            if text.ends_with(string(i, p, "suffix")?) {
+            if super::bytes::ends_with(text.as_bytes(), string(i, p, "suffix")?.as_bytes()) {
                 return Ok(Value::Bool(true));
             }
         }
@@ -134,7 +138,9 @@ pub fn register(m: &mut impl super::Sink) {
     }
     );
     fast!(m, "String#start_with?", |_, r, a| match (r.as_str(), a) {
-        (Some(s), [p]) => p.as_str().map(|p| Value::Bool(s.starts_with(p))),
+        (Some(s), [p]) => p
+            .as_str()
+            .map(|p| Value::Bool(super::bytes::starts_with(s.as_bytes(), p.as_bytes()))),
         _ => None,
     },
         generic: |i, r, a| {
@@ -142,7 +148,10 @@ pub fn register(m: &mut impl super::Sink) {
         for p in &a.pos {
             let hit = match p {
                 Value::Regexp(rx) => rx.regex.find(text.as_bytes()).is_some_and(|m| m.0 == 0),
-                other => text.starts_with(string(i, other, "prefix")?),
+                other => super::bytes::starts_with(
+                    text.as_bytes(),
+                    string(i, other, "prefix")?.as_bytes(),
+                ),
             };
             if hit {
                 return Ok(Value::Bool(true));
@@ -152,7 +161,9 @@ pub fn register(m: &mut impl super::Sink) {
     }
     );
     fast!(m, "String#include?", |_, r, a| match (r.as_str(), a) {
-        (Some(s), [p]) => p.as_str().map(|p| Value::Bool(s.contains(p))),
+        (Some(s), [p]) => p
+            .as_str()
+            .map(|p| Value::Bool(super::bytes::contains(s.as_bytes(), p.as_bytes()))),
         _ => None,
     },
         generic: |i, r, a| {
@@ -254,6 +265,129 @@ pub fn register(m: &mut impl super::Sink) {
             _ => None,
         },
         generic: super::string::sb_push
+    );
+    // ----- Bytes (#1036) -----
+    fast!(
+        m,
+        "Bytes#size",
+        |_, r, a| match (r, a) {
+            (Value::Bytes(b), []) => Some(Value::Int(b.len() as i64)),
+            _ => None,
+        },
+        generic: |i, r, _| {
+        bs(i, r)?;
+        Err(declined(i, "Bytes#size"))
+    }
+    );
+    fast!(
+        m,
+        "Bytes#length",
+        |_, r, a| match (r, a) {
+            (Value::Bytes(b), []) => Some(Value::Int(b.len() as i64)),
+            _ => None,
+        },
+        generic: |i, r, _| {
+        bs(i, r)?;
+        Err(declined(i, "Bytes#length"))
+    }
+    );
+    fast!(
+        m,
+        "Bytes#bytesize",
+        |_, r, a| match (r, a) {
+            (Value::Bytes(b), []) => Some(Value::Int(b.len() as i64)),
+            _ => None,
+        },
+        generic: |i, r, _| {
+        bs(i, r)?;
+        Err(declined(i, "Bytes#bytesize"))
+    }
+    );
+    fast!(
+        m,
+        "Bytes#empty?",
+        |_, r, a| match (r, a) {
+            (Value::Bytes(b), []) => Some(Value::Bool(b.is_empty())),
+            _ => None,
+        },
+        generic: |i, r, _| {
+        bs(i, r)?;
+        Err(declined(i, "Bytes#empty?"))
+    }
+    );
+    fast!(
+        m,
+        "Bytes#==",
+        |_, r, a| match (r, a) {
+            (Value::Bytes(b), [o]) => Some(Value::Bool(super::bytes::equal(b, o))),
+            _ => None,
+        },
+        generic: |i, r, _| {
+        bs(i, r)?;
+        Err(declined(i, "Bytes#=="))
+    }
+    );
+    fast!(
+        m,
+        "Bytes#[]?",
+        |_, r, a| match (r, a) {
+            (Value::Bytes(b), [Value::Int(k)]) => Some(match super::bytes::offset(b, *k) {
+                Some(x) => Value::Int(b[x] as i64),
+                None => Value::Nil,
+            }),
+            _ => None,
+        },
+        generic: |i, r, a| {
+        let data = bs(i, r)?;
+        let idx = int(i, a.arg(0), "index")?;
+        Ok(match super::bytes::offset(&data, idx) {
+            Some(k) => Value::Int(data[k] as i64),
+            None => Value::Nil,
+        })
+    }
+    );
+    fast!(
+        m,
+        "Bytes#start_with?",
+        |_, r, a| match (r, a) {
+            (Value::Bytes(b), [Value::Bytes(p)]) => Some(Value::Bool(super::bytes::starts_with(b, p))),
+            _ => None,
+        },
+        generic: |i, r, a| {
+        let data = bs(i, r)?;
+        Ok(Value::Bool(match a.arg(0) {
+            Value::Regexp(rx) => engine(i, rx, Hay::Bytes(&data))?
+                .find(&data)
+                .is_some_and(|(st, _)| st == 0),
+            other => super::bytes::starts_with(&data, &bs(i, other)?),
+        }))
+    }
+    );
+    fast!(
+        m,
+        "Bytes#end_with?",
+        |_, r, a| match (r, a) {
+            (Value::Bytes(b), [Value::Bytes(p)]) => Some(Value::Bool(super::bytes::ends_with(b, p))),
+            _ => None,
+        },
+        generic: |i, r, a| {
+        bs(i, r)?;
+        bs(i, a.arg(0))?;
+        Err(declined(i, "Bytes#end_with?"))
+    }
+    );
+    fast!(
+        m,
+        "Bytes#include?",
+        |_, r, a| match (r, a) {
+            (Value::Bytes(b), [Value::Bytes(p)]) => Some(Value::Bool(super::bytes::contains(b, p))),
+            _ => None,
+        },
+        generic: |i, r, a| {
+        bs(i, r)?;
+        bs(i, a.arg(0))?;
+        Err(declined(i, "Bytes#include?"))
+    }
     );
     // ----- Array -----
     fast!(m, "Array#size", |_, r, a| match (r, a) {

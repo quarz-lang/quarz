@@ -15,25 +15,6 @@ use super::matching::{
 use super::text::wants_match;
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
-    native!(m, "Bytes#start_with?", |i, r, a| {
-        let data = bs(i, r)?;
-        Ok(Value::Bool(match a.arg(0) {
-            Value::Regexp(rx) => engine(i, rx, Hay::Bytes(&data))?
-                .find(&data)
-                .is_some_and(|(st, _)| st == 0),
-            other => data.starts_with(&bs(i, other)?),
-        }))
-    });
-    native!(m, "Bytes#end_with?", |i, r, a| {
-        Ok(Value::Bool(bs(i, r)?.ends_with(&bs(i, a.arg(0))?)))
-    });
-    native!(m, "Bytes#include?", |i, r, a| {
-        let data = bs(i, r)?;
-        let needle = bs(i, a.arg(0))?;
-        Ok(Value::Bool(
-            find_literal(Hay::Bytes(&data), &needle, 0).is_some(),
-        ))
-    });
     native!(m, "Bytes#index", |i, r, a| bytes_find(i, r, a, false));
     native!(m, "Bytes#rindex", |i, r, a| bytes_find(i, r, a, true));
     native!(m, "Bytes#split", |i, r, a| {
