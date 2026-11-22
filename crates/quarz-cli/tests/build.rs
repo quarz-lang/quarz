@@ -67,6 +67,19 @@ fn same_as_vm(path: &Path, argv: &[&str]) {
     assert_eq!(native_code, vm_code, "exit code of {}", path.display());
 }
 
+/// The shard `k` of `n` (1-based) of the fixture lists this run takes,
+/// from `QUARZ_TEST_SHARD=k/n`: CI splits `tests/build.rs` over two jobs
+/// (#1048), each compiling the cases whose index in each sorted list is
+/// `k - 1` modulo `n`, so every case is compiled by exactly one of them.
+/// Unset, every case.
+fn shard() -> Option<(usize, usize)> {
+    let v = std::env::var("QUARZ_TEST_SHARD").ok()?;
+    let (k, n) = v.split_once('/')?;
+    let (k, n): (usize, usize) = (k.parse().ok()?, n.parse().ok()?);
+    assert!(n >= 1 && (1..=n).contains(&k), "QUARZ_TEST_SHARD={v}");
+    Some((k, n))
+}
+
 /// `same_as_vm` for each of `cases`, several at once: compiling with
 /// clang is most of the time, and the programs are independent. The
 /// failures are reported together. A worker stops at its first failure:
@@ -74,6 +87,24 @@ fn same_as_vm(path: &Path, argv: &[&str]) {
 /// would fail the next programs there too; the others go on, and the
 /// cases no worker got to are listed.
 fn all_same_as_vm(cases: &[(PathBuf, Vec<String>)]) {
+    let cases: Vec<(PathBuf, Vec<String>)> = match shard() {
+        Some((k, n)) => {
+            let mine: Vec<_> = cases
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| i % n == k - 1)
+                .map(|(_, c)| c.clone())
+                .collect();
+            // (The list, for counting that the shards cover each case
+            // once: shown with `--nocapture`.)
+            for (path, _) in &mine {
+                eprintln!("shard {k}/{n} case {}", path.display());
+            }
+            mine
+        }
+        None => cases.to_vec(),
+    };
+    let cases = &cases[..];
     let workers = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)

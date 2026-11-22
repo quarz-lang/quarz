@@ -8,6 +8,12 @@ on:
     branches: [main]
   pull_request:
 
+# A new push to a pull request cancels the run of its previous head
+# (#1048); runs on main are grouped by commit, so none cancels another.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Nothing here writes to the repository (#1008's job reads another).
 permissions:
   contents: read
@@ -47,10 +53,17 @@ jobs:
       - name: Check the standard library's docs
         run: cargo run -q --bin quarz -- doc --std --check
 
-  # The tests, in three jobs run side by side (#453): the two longest test
-  # binaries, `tests/std.rs` and `tests/build.rs`, each in its own, and
-  # every other test (cargo-nextest's) in the third. The jobs share one cache (`shared-key`),
-  # saved by one of them.
+  # The tests, in five jobs run side by side (#453, #1048): `tests/std.rs`
+  # in one; `tests/build.rs` in two, the second taking only its three
+  # fixture loops, which each compile their half of the fixtures
+  # (`QUARZ_TEST_SHARD`, every fixture in exactly one shard); every other
+  # test (cargo-nextest's) in two partitions, the doc tests in the first.
+  # The jobs share one cache (`shared-key`), saved by one of them.
+  #
+  # A pull request that changes only documentation (`docs/**`, `*.md`)
+  # runs none of a job's steps after the decision, and the job passes:
+  # its check is still reported under its name, which a skipped job
+  # (`if:` on the job) would not keep for a matrix.
   test:
     name: Test (${{ matrix.part }})
     runs-on: ubuntu-latest
@@ -58,22 +71,52 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [std, build, rest]
+        part: [std, build-1, build-2, rest-1, rest-2]
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          # The merge commit and its first parent, the base it merges
+          # into: what the pull request changes.
+          fetch-depth: 2
+      - name: Decide whether the change needs the tests
+        id: changes
+        run: |
+          if [ "${{ github.event_name }}" != pull_request ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Documentation: a file under `docs/`, or a `.md` outside
+          # `crates/`, `std/` and `examples/` (the top-level ones,
+          # `bench/`, `formal/`, `.claude/`); a `.md` under those three may
+          # be a test's input (`tests/doc_cmd/app/README.md`). Any other
+          # file needs the tests. `--no-renames` lists a renamed file by
+          # both of its paths, so a move out of `docs/` into code counts.
+          code=$(git diff --name-only --no-renames HEAD^1 HEAD | awk '
+            /^docs\// { next }
+            /\.md$/ && !/^(crates|std|examples)\// { next }
+            { print }')
+          if [ -n "$code" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Only documentation changed: the tests are not run."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.changes.outputs.run == 'true'
       - uses: Swatinem/rust-cache@v2
+        if: steps.changes.outputs.run == 'true'
         with:
           shared-key: test
-          save-if: ${{ matrix.part == 'rest' && github.ref == 'refs/heads/main' }}
+          save-if: ${{ matrix.part == 'rest-1' && github.ref == 'refs/heads/main' }}
       - name: Toolchain for the LLVM backend
+        if: steps.changes.outputs.run == 'true'
         run: clang --version
       - name: Build
+        if: steps.changes.outputs.run == 'true'
         run: cargo build --workspace
       - name: Test std.rs
-        if: matrix.part == 'std'
+        if: steps.changes.outputs.run == 'true' && matrix.part == 'std'
         run: cargo test -p quarz-cli --test std
       # The examples of the guide at quarz.dev (quarz-lang/quarz.dev's
       # `scripts/check_guide.qz`, run on the site's main) with this
@@ -83,7 +126,7 @@ jobs:
       # blocks for. After the tests, so that the site's checkout is not
       # in the tree they read.
       - name: Check out the site's guide
-        if: matrix.part == 'std' && !cancelled()
+        if: steps.changes.outputs.run == 'true' && matrix.part == 'std' && !cancelled()
         uses: actions/checkout@v7
         with:
           repository: quarz-lang/quarz.dev
@@ -91,7 +134,7 @@ jobs:
           path: quarz.dev
           persist-credentials: false
       - name: The guide's examples (a warning, not a failure)
-        if: matrix.part == 'std' && !cancelled()
+        if: steps.changes.outputs.run == 'true' && matrix.part == 'std' && !cancelled()
         continue-on-error: true
         working-directory: quarz.dev
         run: |
@@ -111,23 +154,37 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::warning title=The guide's examples::$(tail -n 1 guide.log) (see the job summary)"
           exit 1
-      - name: Test build.rs
-        if: matrix.part == 'build'
-        run: cargo test -p quarz-cli --test build
-      # The rest through cargo-nextest (#456): every test of every other
-      # binary on one scheduler, binaries side by side (`cargo test` runs
-      # one binary after another), then the doc tests, which nextest does
-      # not run. Its filter leaves out std and build by name, so a new test
-      # file runs here without being listed.
+      # The first shard also runs build.rs' other tests; the second only
+      # the fixture loops (the tests whose names end in `match_the_vm`).
+      # `--nocapture` shows each shard's list of fixtures.
+      - name: Test build.rs (shard 1 of 2)
+        if: steps.changes.outputs.run == 'true' && matrix.part == 'build-1'
+        env:
+          QUARZ_TEST_SHARD: "1/2"
+        run: cargo test -p quarz-cli --test build -- --nocapture
+      - name: Test build.rs (shard 2 of 2)
+        if: steps.changes.outputs.run == 'true' && matrix.part == 'build-2'
+        env:
+          QUARZ_TEST_SHARD: "2/2"
+        run: cargo test -p quarz-cli --test build -- --nocapture match_the_vm
+      # The rest through cargo-nextest (#456), in two partitions by test
+      # (`hash:`, stable as tests are added): every test of every other
+      # binary on one scheduler, binaries side by side, then, in the
+      # first, the doc tests, which nextest does not run. Its filter
+      # leaves out std and build by name, so a new test file runs here
+      # without being listed.
       - name: Install cargo-nextest
-        if: matrix.part == 'rest'
+        if: steps.changes.outputs.run == 'true' && startsWith(matrix.part, 'rest-')
         uses: taiki-e/install-action@nextest
       - name: Test the rest
-        if: matrix.part == 'rest'
+        if: steps.changes.outputs.run == 'true' && startsWith(matrix.part, 'rest-')
         run: |
           cargo nextest run --workspace --no-fail-fast \
+            --partition "hash:${{ matrix.part == 'rest-1' && '1' || '2' }}/2" \
             -E 'not (binary_id(quarz-cli::std) | binary_id(quarz-cli::build))'
-          cargo test --workspace --doc
+      - name: Doc tests
+        if: steps.changes.outputs.run == 'true' && matrix.part == 'rest-1'
+        run: cargo test --workspace --doc
 
   msrv:
     name: Check (Rust 1.96)
