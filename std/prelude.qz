@@ -259,8 +259,16 @@ module Meta
   # How a parameter is passed.
   enum ParamKind = Required | Optional | Rest | Keyword | Block
   # A parameter of a method signature: its type's class, and its type in
-  # full ([type_ref]).
-  data Param = (name: Symbol, type: Type[Object], kind: ParamKind, type_ref: TypeRef)
+  # full ([type_ref]). [default] is whether a call may leave it out:
+  # false for a `Required` parameter; true for an `Optional` one (it has
+  # a default) and a `Rest` one (none may be passed); for a `Keyword` one,
+  # true when it has a default (`retries: Int = 3`, not `client: Client`)
+  # and for a keyword rest (`**kw`). (A signature's params leave the
+  # method's block out, so `Block` does not appear in them; were it to,
+  # `default` would say whether the block is optional.) `new` builds a
+  # class with no arguments when its constructors are none, or one of
+  # them has every parameter `default`.
+  data Param = (name: Symbol, type: Type[Object], kind: ParamKind, type_ref: TypeRef, default: Bool)
   # A method's signature: no body is visible. [result_ref] is the result
   # type in full.
   data MethodSig = (name: Symbol, params: Array[Param], result: Type[Object], static: Bool, result_ref: TypeRef)

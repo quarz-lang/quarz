@@ -3767,7 +3767,7 @@ fn reflect_rows(
                     params: m
                         .params
                         .iter()
-                        .map(|p| reflect_param(world, p, &subst, class.id))
+                        .map(|p| reflect_param(world, p, m.block_optional, &subst, class.id))
                         .collect(),
                     ret: erase(world, &m.ret),
                     is_static: m.is_static,
@@ -3792,7 +3792,7 @@ fn reflect_rows(
                 params: m
                     .params
                     .iter()
-                    .map(|p| reflect_param(world, p, &subst, class.id))
+                    .map(|p| reflect_param(world, p, m.block_optional, &subst, class.id))
                     .collect(),
                 ret: id,
                 is_static: false,
@@ -3875,6 +3875,7 @@ impl WorldReflect {
 fn reflect_param(
     world: &World,
     p: &ParamInfo,
+    block_optional: bool,
     subst: &FxHashMap<TypeParamId, Type>,
     class: ClassId,
 ) -> ReflectParam {
@@ -3886,11 +3887,20 @@ fn reflect_param(
         ParamKind::KeywordOnly | ParamKind::KeywordRest => ReflectKind::Keyword,
         ParamKind::Block => ReflectKind::Block,
     };
+    // Whether a call may leave it out (#1060): a parameter with a
+    // default, a rest one (`*xs`, `**kw`: none passed), an optional
+    // block (the method's `block_optional`).
+    let default = match p.kind {
+        ParamKind::Positional | ParamKind::KeywordOnly => p.default.is_some(),
+        ParamKind::Rest | ParamKind::KeywordRest => true,
+        ParamKind::Block => block_optional,
+    };
     ReflectParam {
         name: p.name.clone(),
         ty: erase(world, &p.ty),
         kind,
         ty_ref: type_ref_of(world, &p.ty.subst(subst), class),
+        default,
     }
 }
 
@@ -4039,6 +4049,7 @@ impl Reflect for WorldReflect {
                                 ty: p.ty,
                                 kind: p.kind,
                                 ty_ref: p.ty_ref.clone(),
+                                default: p.default,
                             })
                             .collect(),
                         ret: m.ret,
@@ -4065,6 +4076,7 @@ impl Reflect for WorldReflect {
                                 ty: p.ty,
                                 kind: p.kind,
                                 ty_ref: p.ty_ref.clone(),
+                                default: p.default,
                             })
                             .collect(),
                         ret: m.ret,

@@ -1172,6 +1172,23 @@ fn constructors_list_what_new_takes() {
     );
 }
 
+/// `Meta::Param#default` (docs/14 §4, #1060): whether a call may leave
+/// the parameter out, for every kind, in `methods` and in `constructors`.
+/// The expected lines are derived from the rule: false for a required
+/// positional parameter and for a keyword without a default; true for an
+/// optional positional one, a rest, a keyword with a default and a
+/// keyword rest. A method's block is not among its parameters
+/// (`opt_block` lists none).
+#[test]
+fn a_param_says_whether_a_call_may_leave_it_out() {
+    let d = dir();
+    write(&d.0, "lib.qz", "class Lib\n  static def self.show -> Void\n    methods.select { |m| m.name == :all_kinds || m.name == :opt_block }.each do |m|\n      puts \"#{m.name}: \" + m.params.map { |p| \"#{p.name} #{p.kind} #{p.default}\" }.join(\", \")\n    end\n    constructors.each do |c|\n      puts \"initialize: \" + c.params.map { |p| \"#{p.name} #{p.kind} #{p.default}\" }.join(\", \")\n    end\n  end\nend\n");
+    let app = write(&d.0, "main.qz", "require_relative \"lib\"\nclass K < Lib\n  @a: Int\n  def initialize(@a: Int, b: Int = 1, *, client: String, retries: Int = 3); end\n  def all_kinds(a: Int, b: Int = 1, *rest: Int, k: Int, j: Int = 2, **kw: Int, &blk: () -> Void) -> Void; end\n  def opt_block(&blk: (() -> Void)?) -> Void; end\n  show\nend\n");
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(err.lines().collect::<Vec<_>>(), ["all_kinds: a Meta::ParamKind::Required false, b Meta::ParamKind::Optional true, rest Meta::ParamKind::Rest true, k Meta::ParamKind::Keyword false, j Meta::ParamKind::Keyword true, kw Meta::ParamKind::Keyword true", "opt_block: ", "initialize: a Meta::ParamKind::Required false, b Meta::ParamKind::Optional true, client Meta::ParamKind::Keyword false, retries Meta::ParamKind::Keyword true"], "{err}");
+}
+
 #[test]
 fn a_statement_reaches_call_targets_and_their_overrides() {
     // The statement's `String.build` reaches `String.build`, not every

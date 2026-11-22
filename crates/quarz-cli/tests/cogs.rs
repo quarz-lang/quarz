@@ -487,7 +487,9 @@ fn an_inherited_hook_runs_after_the_written_statements() {
 /// #421): a job class whose constructors all take a required argument is
 /// told from one `new` can build with none (no `initialize`, or one whose
 /// parameters all have defaults). The expected output is derived from the
-/// rule: `Mailer` and `Either` need arguments; `Tick` and `Retry` do not.
+/// rule: `Mailer`, `Either` and `Keyed` (a keyword without a default,
+/// #1060) need arguments; `Tick`, `Retry` and `Tuned` (a keyword with a
+/// default) do not.
 #[test]
 fn an_inherited_hook_tells_a_class_new_cannot_build_bare() {
     let w = World::new();
@@ -495,15 +497,15 @@ fn an_inherited_hook_tells_a_class_new_cannot_build_bare() {
         "jobs/Cog.toml",
         "[cog]\nname = \"jobs\"\nversion = \"0.1.0\"\n",
     );
-    w.write("jobs/src/job.qz", "class Job\n  static def self.inherited -> Void\n    cs = constructors\n    needs = cs.size > 0 && cs.all? { |c| c.params.any? { |p| p.kind == Meta::ParamKind::Required } }\n    puts \"#{self.name} needs arguments: #{needs}\"\n    def_class_method(:needs_arguments) { needs }\n  end\nend\n");
+    w.write("jobs/src/job.qz", "class Job\n  static def self.inherited -> Void\n    cs = constructors\n    needs = cs.size > 0 && cs.all? { |c| c.params.any? { |p| !p.default } }\n    puts \"#{self.name} needs arguments: #{needs}\"\n    def_class_method(:needs_arguments) { needs }\n  end\nend\n");
     w.commit("jobs", Some("v0.1.0"));
     w.app(
         &format!("Jobs = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("jobs")),
-        "class Mailer < Jobs::Job\n  @to: String\n  def initialize(@to: String); end\nend\nclass Tick < Jobs::Job\nend\nclass Retry < Jobs::Job\n  @n: Int\n  def initialize(@n: Int = 3); end\nend\nclass Either < Jobs::Job\n  @n: Int\n  def initialize(@n: Int); end\n  def initialize(s: String); @n = s.size; end\nend\nputs [Mailer.needs_arguments, Tick.needs_arguments, Retry.needs_arguments, Either.needs_arguments]\n",
+        "class Mailer < Jobs::Job\n  @to: String\n  def initialize(@to: String); end\nend\nclass Tick < Jobs::Job\nend\nclass Retry < Jobs::Job\n  @n: Int\n  def initialize(@n: Int = 3); end\nend\nclass Either < Jobs::Job\n  @n: Int\n  def initialize(@n: Int); end\n  def initialize(s: String); @n = s.size; end\nend\nclass Keyed < Jobs::Job\n  @c: String\n  def initialize(*, @c: String); end\nend\nclass Tuned < Jobs::Job\n  @r: Int\n  def initialize(*, @r: Int = 3); end\nend\nputs [Mailer.needs_arguments, Tick.needs_arguments, Retry.needs_arguments, Either.needs_arguments, Keyed.needs_arguments, Tuned.needs_arguments]\n",
     );
     let out = w.quarz("app", &["run"]);
     assert!(out.ok, "{}", out.stderr);
-    assert_eq!(out.stdout, "true\nfalse\nfalse\ntrue\n");
+    assert_eq!(out.stdout, "true\nfalse\nfalse\ntrue\ntrue\nfalse\n");
     let said: Vec<&str> = out
         .stderr
         .lines()
@@ -516,6 +518,8 @@ fn an_inherited_hook_tells_a_class_new_cannot_build_bare() {
             "Tick needs arguments: false",
             "Retry needs arguments: false",
             "Either needs arguments: true",
+            "Keyed needs arguments: true",
+            "Tuned needs arguments: false",
         ]
     );
 }
