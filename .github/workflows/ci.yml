@@ -86,7 +86,16 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          code=$(git diff --name-only HEAD^1 HEAD | grep -Ev '^docs/|\.md$' || true)
+          # Documentation: a file under `docs/`, or a `.md` outside
+          # `crates/`, `std/` and `examples/` (the top-level ones,
+          # `bench/`, `formal/`, `.claude/`); a `.md` under those three may
+          # be a test's input (`tests/doc_cmd/app/README.md`). Any other
+          # file needs the tests. `--no-renames` lists a renamed file by
+          # both of its paths, so a move out of `docs/` into code counts.
+          code=$(git diff --name-only --no-renames HEAD^1 HEAD | awk '
+            /^docs\// { next }
+            /\.md$/ && !/^(crates|std|examples)\// { next }
+            { print }')
           if [ -n "$code" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
