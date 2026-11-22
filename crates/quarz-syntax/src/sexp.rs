@@ -75,6 +75,7 @@ fn args(out: &mut String, args: &[Arg]) {
                 let _ = write!(out, "{name}: ");
                 expr_to_sexp(value, out);
             }
+            Arg::Forward { .. } => out.push_str("..."),
         }
     }
 }

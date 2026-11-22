@@ -210,6 +210,120 @@ fn top_level_fixtures_match_the_vm() {
     all_same_as_vm(&cases);
 }
 
+/// `super(...)` and a bare `super` are the same call (#511, step 1: the
+/// bare form means `super(...)` for now): one program written each way
+/// (`@@`), on the VM and compiled, prints what the forwarding rule gives
+/// (docs/01 §9): the parameter variables themselves, with their values
+/// and types where the call is, not a name hiding them; each as the
+/// method takes it; the block the method was given, even after its
+/// variable is assigned; in a block or lambda, the method's; in
+/// `initialize`, on each path.
+#[test]
+fn forwarding_super_is_the_bare_super() {
+    const PROGRAM: &str = r##"class A
+  def f(a: Int, b: String = "d", *rest: Int, k: Int = 0, **opts: String, &blk: (Int) -> Int) -> String
+    "#{a} #{b} #{rest} #{k} #{opts} #{yield a}"
+  end
+  def g(x: Int) -> Int = x + 1
+  def h(x: Int, &: (Int) -> Int) -> Int = yield x
+  def o(x: Int, &b: (() -> Int)?) -> Int
+    if b
+      x + b.call
+    else
+      -x
+    end
+  end
+end
+class B < A
+  # A reassigned parameter: its value where the call is.
+  def f(a: Int, b: String = "d", *rest: Int, k: Int = 0, **opts: String, &blk: (Int) -> Int) -> String
+    a = a + 100
+    "f: " + @@
+  end
+  # A narrowed one: its type there.
+  # In a lambda, the method's.
+  def g(x: Int?) -> Int
+    if x
+      l = -> { @@ }
+      l.call
+    else
+      0
+    end
+  end
+  # A name hidden by a block's parameter, a `:=` and a pattern binding:
+  # the parameter itself is passed; the block, after its variable is
+  # assigned, the one the method was given.
+  def h(x: Int, &: (Int) -> Int) -> Int
+    r = 0
+    [1].each do |x|
+      r += @@
+    end
+    [2].each do |i|
+      x := "hidden"
+      r += @@
+    end
+    case "s"
+    in String => x then r += @@
+    end
+    r
+  end
+  # An optional block: passed on, given or not.
+  def o(x: Int, &b: (() -> Int)?) -> Int
+    b = nil
+    @@ * 10
+  end
+end
+class Base
+  @a: Int
+  @b: Int
+  def initialize(@a: Int, @b: Int)
+  end
+  def to_s -> String = "Base(#{@a}, #{@b})"
+end
+class Sub < Base
+  @c: Int
+  # `initialize`: once on each path, directly.
+  def initialize(a: Int, b: Int)
+    @c = a * b
+    if a > 0
+      @@
+    else
+      a = -a
+      @@
+    end
+  end
+  def to_s -> String = "Sub(#{@a}, #{@b}, #{@c})"
+end
+puts B.new.f(1) { |v| v * 2 }
+puts B.new.f(1, "x", 7, 8, k: 2, z: "q") { |v| v + 1 }
+puts B.new.g(3)
+puts B.new.g(nil)
+puts B.new.h(4) { |v| v * 10 }
+puts B.new.o(5) { 1 }
+puts B.new.o(5)
+puts Sub.new(1, 2)
+puts Sub.new(-1, 2)
+"##;
+    const EXPECTED: &str = "f: 101 d [] 0 {} 202\n\
+                            f: 101 x [7, 8] 2 {z: \"q\"} 102\n\
+                            4\n0\n120\n60\n-50\n\
+                            Sub(1, 2, 2)\nSub(1, 2, -2)\n";
+    let dir = std::env::temp_dir().join(format!("quarz-forward-super-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    for (name, form) in [("bare", "super"), ("forward", "super(...)")] {
+        let path = dir.join(format!("{name}.qz"));
+        fs::write(&path, PROGRAM.replace("@@", form)).unwrap();
+        let (code, out) = common::run_path(&path, &[]);
+        assert_eq!((code, out.as_str()), (0, EXPECTED), "{name} on the VM");
+        assert_eq!(
+            run_native(&path, &[]),
+            (0, EXPECTED.to_string()),
+            "{name} compiled"
+        );
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// A compiled function that reads its activation's frame word (the
 /// fourth of the 32-byte `[args, self, nargs, frame]` slot) stores it
 /// first: a block whose only use of its activation is an in-place update

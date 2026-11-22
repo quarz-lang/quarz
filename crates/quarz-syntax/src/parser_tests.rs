@@ -131,6 +131,43 @@ fn command_calls() {
 }
 
 #[test]
+fn forwarding_arguments() {
+    // `...` as a call's whole argument list forwards the method's
+    // arguments (docs/01 §9), in any call, the next line and a block too.
+    assert_eq!(sexp("f(...)"), "(call _ f ...)");
+    assert_eq!(sexp("super(...)"), "(super ...)");
+    assert_eq!(sexp("@inner.m(...)"), "(call @inner m ...)");
+    assert_eq!(sexp("Self.new(...)"), "(call Self new ...)");
+    assert_eq!(sexp("f(\n  ...\n)"), "(call _ f ...)");
+    assert_eq!(
+        sexp("f(...) { |x| x }"),
+        "(call _ f ... (block (params x) x))"
+    );
+    assert_eq!(sexp("super(...) do end"), "(super ... (block (params)))");
+    // Anywhere else, `...` is still the exclusive range.
+    assert_eq!(sexp("f(...b)"), "(call _ f (range ... (call _ b)))");
+    assert_eq!(
+        sexp("f(a...b)"),
+        "(call _ f (range (call _ a) ... (call _ b)))"
+    );
+    assert_eq!(sexp("f(a...)"), "(call _ f (range (call _ a) ... ))");
+    assert_eq!(sexp("x = n..."), "(= x (range (call _ n) ... ))");
+    // Not taken: `...` beside other arguments, or without parentheses.
+    let alone = "`...` forwards the method's arguments and is written alone: `f(...)`";
+    assert_eq!(errors("f(1, ...)"), vec![alone]);
+    assert_eq!(errors("f(..., k: 1)"), vec![alone]);
+    assert_eq!(errors("f(\n  1,\n  ...\n)"), vec![alone]);
+    assert_eq!(
+        errors("f ..."),
+        vec!["`f ...` is not a call: write `f(...)` to forward the method's arguments (an endless range is written `f...`)"]
+    );
+    assert_eq!(
+        errors("super ...\n"),
+        vec!["`super ...` is not a call: write `super(...)` to forward the method's arguments (an endless range is written `super...`)"]
+    );
+}
+
+#[test]
 fn blocks_and_do_binding() {
     assert_eq!(
         sexp("foo bar do |x| x end"),
