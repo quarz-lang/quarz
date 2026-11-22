@@ -514,6 +514,14 @@ pub fn unit_base(n: u32) -> u32 {
 pub const UNIT_BITS: u32 = 22;
 pub const MAX_UNITS: u32 = 1000;
 
+/// The unit whose node ids the checker makes for what no file holds (the
+/// `inherited` hook's statements, `world::synthesized_stmt_id`): the
+/// last whose range fits in a `u32`, above the program's units and the
+/// standard library's (checked below), so that no file's results (the
+/// cache's, cut by unit, `unit::unit_output`) take them in.
+pub const SYNTH_UNIT: u32 = (1 << (32 - UNIT_BITS)) - 2;
+const _: () = assert!(MAX_UNITS + STD_MODULES.len() as u32 <= SYNTH_UNIT);
+
 /// The unit number a standard library module's spans and node ids come
 /// from, whatever loads it: the same in every program, so that its
 /// checked state can be kept (`std_state`). Above the program's files.

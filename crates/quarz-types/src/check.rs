@@ -3660,32 +3660,23 @@ impl Checker {
                 return None;
             }
         }
-        let allowed = match self.repl_unit {
-            Some((file, base)) => {
-                if m.file == file && m.span.start >= base {
-                    Err(if file == 1 {
-                        "this input".to_string()
-                    } else {
-                        "this file".to_string()
-                    })
-                } else {
-                    Ok(())
-                }
-            }
-            None => self.world.static_callee_allowed(stmt.file, m.file),
-        };
+        let allowed = self.static_stage_at(stmt.file, &m);
         if let (Err(why), Some(_)) = (&allowed, stmt.hook) {
             // (A statement written nowhere: the subclass's place is wrong,
             // not a call, #421.)
             let sub = &self.world.class(stmt.class).name;
             let owner = &self.world.class(m.owner).name;
-            let fix = match why.as_str() {
-                "this cog" => format!("declare `{sub}` in a cog that depends on `{owner}`'s"),
-                "this file" => format!(
+            let fix = match why {
+                StageRefusal::Cog | StageRefusal::OtherCog(_) => {
+                    format!("declare `{sub}` in a cog that depends on `{owner}`'s")
+                }
+                StageRefusal::App => {
+                    format!("declare `{owner}` in a cog the application depends on")
+                }
+                StageRefusal::File => format!(
                     "declare `{sub}` in a file that requires `{owner}`'s (loaded before it)"
                 ),
-                "this input" => format!("enter `{sub}` in an input after `{owner}`'s"),
-                _ => format!("declare `{sub}` where `{owner}`'s `static def`s can run"),
+                StageRefusal::Input => format!("enter `{sub}` in an input after `{owner}`'s"),
             };
             self.error_in(
                 stmt.file,
@@ -15805,16 +15796,27 @@ impl Checker {
     /// code being checked may run `m` at compile time, compiled before it
     /// (a method of the cogs or required files it depends on), or else
     /// whose `m` is ("this file", "this cog", "this input", ...).
-    fn static_stage(&self, m: &MethodInfo) -> Result<(), String> {
+    fn static_stage(&self, m: &MethodInfo) -> Result<(), StageRefusal> {
+        self.static_stage_at(self.env.file, m)
+    }
+
+    /// `static_stage` for code of file `file`: in the REPL, a method of
+    /// the unit's own text (this input, or the file it requires) is not
+    /// compiled yet.
+    fn static_stage_at(&self, file: u32, m: &MethodInfo) -> Result<(), StageRefusal> {
         match self.repl_unit {
-            Some((file, base)) => {
-                if m.file == file && m.span.start >= base {
-                    Err("this input".to_string())
+            Some((unit, base)) => {
+                if m.file == unit && m.span.start >= base {
+                    Err(if unit == 1 {
+                        StageRefusal::Input
+                    } else {
+                        StageRefusal::File
+                    })
                 } else {
                     Ok(())
                 }
             }
-            None => self.world.static_callee_allowed(self.env.file, m.file),
+            None => self.world.static_callee_allowed(file, m.file),
         }
     }
 
