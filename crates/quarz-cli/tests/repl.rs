@@ -109,6 +109,33 @@ fn an_inherited_hook_runs_for_a_later_input() {
     );
 }
 
+/// The runner's kept answers in the REPL (#1057): an input adds a class
+/// and an override of a method an earlier input's statement reached; a
+/// later statement reaching that method sees the override.
+#[test]
+fn a_later_inputs_override_reaches_a_later_statement() {
+    let dir = std::env::temp_dir().join(format!("quarz-repl-kept-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("lib.qz"),
+        "class Base\n  def greet -> String = \"base\"\n  static def self.ask -> Void\n    s = Base.new.greet\n    def_class_method(:asked) { s }\n  end\nend\n",
+    )
+    .unwrap();
+    let lib = dir.join("lib").display().to_string();
+    let (out, _) = values(&[
+        &format!("require_relative \"{lib}\""),
+        "class A < Base; ask; end",
+        "class Sub < Base; def greet -> String = File.read(\"/etc/hostname\"); end",
+        "class C < Base; ask; end",
+    ]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(out[..3], ["", "", ""], "{out:?}");
+    assert_eq!(
+        out[3],
+        "error: <repl>:1:17: error: `ask` reaches `File.read` (via Sub#greet), which cannot run at compile time"
+    );
+}
+
 #[test]
 fn static_statements_run_in_the_session() {
     // docs/14 §2: an input's statements run when it is entered, with the

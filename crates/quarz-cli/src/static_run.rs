@@ -97,6 +97,8 @@ fn limit() -> std::time::Duration {
 }
 
 pub struct Runner {
+    /// `overrides_of`'s answers across the check's rounds (#1057).
+    overrides_kept: OverridesKept,
     lowerer: Lowerer,
     /// Methods and constants whose on-demand check reported errors: a
     /// statement that reaches one does not run (docs/05 §3: checked code
@@ -1486,6 +1488,7 @@ impl Runner {
         Runner {
             lowerer: Lowerer::default(),
             bad_methods: Default::default(),
+            overrides_kept: Default::default(),
             bad_consts: Default::default(),
             state: None,
             world: None,
@@ -1942,6 +1945,7 @@ impl Runner {
             return None;
         }
         let world = self.world.as_ref()?;
+        self.overrides_kept.sync(world);
         let by_name = methods_by_name(world);
         // Each function once per bound of its `self` (`reached`).
         let mut seen: rustc_hash::FxHashSet<(FuncId, SelfBound)> = Default::default();
@@ -1966,6 +1970,7 @@ impl Runner {
             reached(
                 world,
                 &by_name,
+                &self.overrides_kept,
                 f,
                 &bound,
                 &mut methods,
@@ -2091,13 +2096,35 @@ impl Runner {
         lifted: &rustc_hash::FxHashSet<FuncId>,
     ) -> Option<Vec<String>> {
         let world = self.world.as_ref()?;
+        self.overrides_kept.sync(world);
         let by_name = methods_by_name(world);
         // Each function once per bound of its `self` (`reached`).
         let mut seen: rustc_hash::FxHashSet<(FuncId, SelfBound)> = Default::default();
-        // Each function with the bound of its `self` and the path of
-        // method names that reached it.
-        let mut work: Vec<(FuncId, SelfBound, Vec<String>)> = vec![(root, None, Vec::new())];
-        while let Some((fid, bound, path)) = work.pop() {
+        // The path of method names (and constants) that reached each
+        // function, as links to its last step: built into names only
+        // when a native denied at compile time is found (#1057).
+        enum Step {
+            Method(MethodId),
+            Const(u32),
+        }
+        let mut steps: Vec<(Step, Option<usize>)> = Vec::new();
+        let path = |steps: &Vec<(Step, Option<usize>)>, mut at: Option<usize>| {
+            let mut p: Vec<String> = Vec::new();
+            while let Some(k) = at {
+                let (step, up) = &steps[k];
+                p.push(match step {
+                    Step::Method(m) => method_name(world, *m),
+                    Step::Const(c) => world.consts[*c as usize].name.clone(),
+                });
+                at = *up;
+            }
+            p.reverse();
+            p
+        };
+        // Each function with the bound of its `self` and the last step of
+        // the path that reached it.
+        let mut work: Vec<(FuncId, SelfBound, Option<usize>)> = vec![(root, None, None)];
+        while let Some((fid, bound, at)) = work.pop() {
             if !seen.insert((fid, bound.clone())) {
                 continue;
             }
@@ -2108,6 +2135,7 @@ impl Runner {
             reached(
                 world,
                 &by_name,
+                &self.overrides_kept,
                 f,
                 &bound,
                 &mut methods,
@@ -2120,38 +2148,31 @@ impl Runner {
                 &mut |_, _, _| {},
             );
             // (In order: a stack, as is `work`.)
-            let mut methods: Vec<(MethodId, SelfBound, Vec<String>)> = methods
-                .into_iter()
-                .rev()
-                .map(|(m, b)| (m, b, path.clone()))
-                .collect();
-            while let Some((m, b, mut p)) = methods.pop() {
+            let mut methods: Vec<(MethodId, SelfBound, Option<usize>)> =
+                methods.into_iter().rev().map(|(m, b)| (m, b, at)).collect();
+            while let Some((m, b, up)) = methods.pop() {
                 let rm = &world.methods[m as usize];
-                p.push(method_name(world, m));
+                steps.push((Step::Method(m), up));
+                let here = Some(steps.len() - 1);
                 if let Some(key) = &rm.native_key {
                     if !compile_time_allowed(key) {
-                        return Some(p);
+                        return Some(path(&steps, here));
                     }
                 }
                 for &i in synth_calls(world, m) {
-                    methods.push((i, None, p.clone()));
+                    methods.push((i, None, here));
                 }
                 if let Some(f) = rm.func {
-                    work.push((f, b, p));
+                    work.push((f, b, here));
                 }
             }
             for g in funcs {
-                work.push((
-                    g,
-                    func_bound(&self.lowerer.done, f, g, &bound),
-                    path.clone(),
-                ));
+                work.push((g, func_bound(&self.lowerer.done, f, g, &bound), at));
             }
             for c in consts {
                 if let Some(init) = world.consts.get(c as usize).and_then(|c| c.init) {
-                    let mut p = path.clone();
-                    p.push(world.consts[c as usize].name.clone());
-                    work.push((init, None, p));
+                    steps.push((Step::Const(c), at));
+                    work.push((init, None, Some(steps.len() - 1)));
                 }
             }
         }
@@ -2236,6 +2257,7 @@ struct ByName {
 fn reached<'a>(
     world: &RtWorld,
     by_name: &HashMap<&str, Vec<MethodId>>,
+    kept: &OverridesKept,
     f: &'a quarz_ir::Function,
     self_bound: &SelfBound,
     methods: &mut Vec<(MethodId, SelfBound)>,
@@ -2250,9 +2272,9 @@ fn reached<'a>(
         shake::Ref::Method(m) => {
             methods.push((m, None));
             methods.extend(
-                overrides_of(world, by_name, m, None)
-                    .into_iter()
-                    .map(|o| (o, None)),
+                kept.overrides(world, by_name, m, &None)
+                    .iter()
+                    .map(|&o| (o, None)),
             );
         }
         shake::Ref::Bounded {
@@ -2266,9 +2288,9 @@ fn reached<'a>(
             };
             methods.push((method, bound.clone()));
             methods.extend(
-                overrides_of(world, by_name, method, bound.as_deref())
-                    .into_iter()
-                    .map(|o| (o, bound.clone())),
+                kept.overrides(world, by_name, method, &bound)
+                    .iter()
+                    .map(|&o| (o, bound.clone())),
             );
         }
         shake::Ref::Exact { method, on_self } => {
@@ -2436,6 +2458,99 @@ fn native_calls(world: &RtWorld, m: MethodId) -> &'static [&'static str] {
     match world.methods[m as usize].native_key.as_deref() {
         Some(key) => shake::native_calls(key),
         None => &[],
+    }
+}
+
+/// `overrides_of`'s answers, kept across a check's rounds (#1057): the
+/// runner's walks ask for the same calls' overrides round after round,
+/// and the answer changes only when what it reads does. It reads the
+/// methods of `m`'s name (their owners, sides and abstractness, fixed
+/// for a method, and the override table's pairings among them), the
+/// run-time class graph, and the extensions (`may_receive`). So `sync`,
+/// the one point that drops answers, called before each walk, drops:
+/// - those for a name a method added since has (a generated method, a
+///   field's reader or writer, a REPL input's method): only they can
+///   change, since overriding is by name;
+/// - all of them when the number of classes or extensions changed (a
+///   REPL input, a later unit): within a check's static phase the class
+///   graph does not change (#802's P1), and a statement cannot add a
+///   class, an include or an extension.
+///
+/// A field a statement generates (a layout change), a class's being
+/// abstract or not, and conformance rows are not read. A debug build
+/// (or `QUARZ_VERIFY_STATIC_TABLES`) recomputes every kept answer it
+/// hands out and compares (`overrides`).
+#[derive(Default)]
+struct OverridesKept {
+    state: RefCell<OverridesState>,
+}
+
+#[derive(Default)]
+struct OverridesState {
+    /// What the answers were made for: the numbers of methods, classes
+    /// and extensions of the world at the last `sync`.
+    seen: (usize, usize, usize),
+    answers: rustc_hash::FxHashMap<(MethodId, SelfBound), Rc<[MethodId]>>,
+}
+
+impl OverridesKept {
+    /// Drop the answers that `world` may answer otherwise than the world
+    /// they were made in (see the type's comment).
+    fn sync(&self, world: &RtWorld) {
+        let mut st = self.state.borrow_mut();
+        let now = (
+            world.methods.len(),
+            world.classes.len(),
+            world.extensions.len(),
+        );
+        if now == st.seen {
+            return;
+        }
+        if now.1 != st.seen.1 || now.2 != st.seen.2 || now.0 < st.seen.0 {
+            st.answers.clear();
+        } else {
+            let names: rustc_hash::FxHashSet<&str> = world.methods[st.seen.0..]
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect();
+            st.answers
+                .retain(|(m, _), _| !names.contains(world.methods[*m as usize].name.as_str()));
+        }
+        st.seen = now;
+    }
+
+    /// `overrides_of(world, by_name, m, bound)`, kept.
+    fn overrides(
+        &self,
+        world: &RtWorld,
+        by_name: &HashMap<&str, Vec<MethodId>>,
+        m: MethodId,
+        bound: &SelfBound,
+    ) -> Rc<[MethodId]> {
+        let key = (m, bound.clone());
+        let hit = self.state.borrow().answers.get(&key).cloned();
+        match hit {
+            Some(kept) => {
+                if cfg!(debug_assertions) || quarz_lower::verify_static_tables() {
+                    let fresh = overrides_of(world, by_name, m, bound.as_deref());
+                    assert!(
+                        *kept == *fresh,
+                        "internal error: the kept overrides of `{}` (self bound {:?}) differ from those computed afresh: {:?}, {:?} (#1057)",
+                        method_name(world, m),
+                        bound,
+                        kept,
+                        fresh
+                    );
+                }
+                kept
+            }
+            None => {
+                let fresh: Rc<[MethodId]> =
+                    Rc::from(overrides_of(world, by_name, m, bound.as_deref()));
+                self.state.borrow_mut().answers.insert(key, fresh.clone());
+                fresh
+            }
+        }
     }
 }
 
@@ -4333,6 +4448,8 @@ pub fn compile_time_only_calls_in(
         return Vec::new();
     };
     let by_name = methods_by_name(&rt);
+    // (Asked once, for this classification: nothing to keep.)
+    let kept = OverridesKept::default();
     let meta = world.builtin.meta_classdef;
     let mentions_meta = |t: &Type| mentions_class(t, meta);
     let mut only: HashMap<MethodId, bool> = HashMap::new();
@@ -4355,6 +4472,7 @@ pub fn compile_time_only_calls_in(
                     reached(
                         &rt,
                         &by_name,
+                        &kept,
                         &functions[fid as usize],
                         &None,
                         &mut methods,
