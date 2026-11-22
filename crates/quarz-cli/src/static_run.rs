@@ -1949,7 +1949,7 @@ impl Runner {
         }
         let world = self.world.as_ref()?;
         self.overrides_kept.sync(world);
-        let by_name = methods_by_name(world);
+        let by_name = self.overrides_kept.by_name();
         // Each function once per bound of its `self` (`reached`).
         let mut seen: rustc_hash::FxHashSet<(FuncId, SelfBound)> = Default::default();
         // (Each item with the call by name it was reached through, if any:
@@ -2100,7 +2100,7 @@ impl Runner {
     ) -> Option<Vec<String>> {
         let world = self.world.as_ref()?;
         self.overrides_kept.sync(world);
-        let by_name = methods_by_name(world);
+        let by_name = self.overrides_kept.by_name();
         // Each function once per bound of its `self` (`reached`).
         let mut seen: rustc_hash::FxHashSet<(FuncId, SelfBound)> = Default::default();
         // The path of method names (and constants) that reached each
@@ -2259,7 +2259,7 @@ struct ByName {
 #[allow(clippy::too_many_arguments)]
 fn reached<'a>(
     world: &RtWorld,
-    by_name: &HashMap<&str, Vec<MethodId>>,
+    by_name: &MethodsByName,
     kept: &OverridesKept,
     f: &'a quarz_ir::Function,
     self_bound: &SelfBound,
@@ -2494,6 +2494,10 @@ struct OverridesState {
     /// and extensions of the world at the last `sync`.
     seen: (usize, usize, usize),
     answers: rustc_hash::FxHashMap<(MethodId, SelfBound), Rc<[MethodId]>>,
+    /// The methods by name (`methods_by_name`), extended with those added
+    /// since: a method is appended, never renamed or removed, within a
+    /// check (#1057 PR 3).
+    by_name: Rc<MethodsByName>,
 }
 
 impl OverridesKept {
@@ -2509,6 +2513,18 @@ impl OverridesKept {
         if now == st.seen {
             return;
         }
+        if now.0 < st.seen.0 {
+            st.by_name = Rc::new(methods_by_name(world));
+        } else {
+            let from = st.seen.0;
+            add_by_name(Rc::make_mut(&mut st.by_name), world, from);
+        }
+        if cfg!(debug_assertions) || quarz_lower::verify_static_tables() {
+            assert!(
+                *st.by_name == methods_by_name(world),
+                "internal error: the kept methods by name differ from those of the world (#1057)"
+            );
+        }
         if now.1 != st.seen.1 || now.2 != st.seen.2 || now.0 < st.seen.0 {
             st.answers.clear();
         } else {
@@ -2522,11 +2538,16 @@ impl OverridesKept {
         st.seen = now;
     }
 
+    /// The methods by name of the world last synced.
+    fn by_name(&self) -> Rc<MethodsByName> {
+        self.state.borrow().by_name.clone()
+    }
+
     /// `overrides_of(world, by_name, m, bound)`, kept.
     fn overrides(
         &self,
         world: &RtWorld,
-        by_name: &HashMap<&str, Vec<MethodId>>,
+        by_name: &MethodsByName,
         m: MethodId,
         bound: &SelfBound,
     ) -> Rc<[MethodId]> {
@@ -2562,7 +2583,7 @@ impl OverridesKept {
 /// receiver of one of those classes or a subclass (`may_receive`).
 fn overrides_of(
     world: &RtWorld,
-    by_name: &HashMap<&str, Vec<MethodId>>,
+    by_name: &MethodsByName,
     m: MethodId,
     bound: Option<&[ClassId]>,
 ) -> Vec<MethodId> {
@@ -2625,12 +2646,26 @@ fn method_name(world: &RtWorld, m: MethodId) -> String {
     format!("{}{sep}{}", world.classes[rm.owner as usize].name, rm.name)
 }
 
-fn methods_by_name(world: &RtWorld) -> HashMap<&str, Vec<MethodId>> {
-    let mut out: HashMap<&str, Vec<MethodId>> = HashMap::new();
-    for (i, m) in world.methods.iter().enumerate() {
-        out.entry(m.name.as_str()).or_default().push(i as MethodId);
-    }
+/// The methods of each name, in id order (`methods_by_name`, or kept
+/// across rounds by `OverridesKept::sync`).
+type MethodsByName = rustc_hash::FxHashMap<String, Vec<MethodId>>;
+
+fn methods_by_name(world: &RtWorld) -> MethodsByName {
+    let mut out = MethodsByName::default();
+    add_by_name(&mut out, world, 0);
     out
+}
+
+/// The methods of `world` from `from` on, into `out` by name.
+fn add_by_name(out: &mut MethodsByName, world: &RtWorld, from: usize) {
+    for (i, m) in world.methods.iter().enumerate().skip(from) {
+        match out.get_mut(m.name.as_str()) {
+            Some(ids) => ids.push(i as MethodId),
+            None => {
+                out.insert(m.name.clone(), vec![i as MethodId]);
+            }
+        }
+    }
 }
 
 impl Runner {

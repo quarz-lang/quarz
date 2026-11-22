@@ -564,14 +564,34 @@ pub fn purity(key: &str) -> Option<Purity> {
 /// `purity`, but a compile-time-only key as its class's line (pure): what
 /// the runtime reads.
 fn run_purity(key: &str) -> Option<Purity> {
-    if let Some((_, p)) = PURITY_BY_KEY.iter().find(|(k, _)| *k == key) {
+    if let Some(p) = purity_tables().0.get(key) {
         return Some(*p);
     }
-    let class = native_class(key);
-    PURITY_BY_CLASS
-        .iter()
-        .find(|(c, _)| *c == class)
-        .map(|(_, p)| *p)
+    purity_tables().1.get(native_class(key)).copied()
+}
+
+/// `PURITY_BY_KEY` and `PURITY_BY_CLASS` as maps, made once: the
+/// compile-time runs ask for every native a statement reaches, every
+/// round (#1057). A key's first line counts, as a scan's would.
+#[allow(clippy::type_complexity)]
+fn purity_tables() -> &'static (
+    rustc_hash::FxHashMap<&'static str, Purity>,
+    rustc_hash::FxHashMap<&'static str, Purity>,
+) {
+    static TABLES: std::sync::OnceLock<(
+        rustc_hash::FxHashMap<&'static str, Purity>,
+        rustc_hash::FxHashMap<&'static str, Purity>,
+    )> = std::sync::OnceLock::new();
+    TABLES.get_or_init(|| {
+        let map = |rows: &'static [(&'static str, Purity)]| {
+            let mut m = rustc_hash::FxHashMap::default();
+            for (k, p) in rows {
+                m.entry(*k).or_insert(*p);
+            }
+            m
+        };
+        (map(PURITY_BY_KEY), map(PURITY_BY_CLASS))
+    })
 }
 
 /// Whether the natives of `class` are all denied at compile time (its
@@ -580,12 +600,7 @@ fn run_purity(key: &str) -> Option<Purity> {
 /// initialized by one, `STDOUT`), so their methods (an override of
 /// `Object#to_s`, say) cannot be reached otherwise.
 pub fn compile_time_denied_class(class: &str) -> bool {
-    let line = |c: &str| {
-        PURITY_BY_CLASS
-            .iter()
-            .find(|(n, _)| *n == c)
-            .map(|(_, p)| *p)
-    };
+    let line = |c: &str| purity_tables().1.get(c).copied();
     line(class) == Some(Denied) || line(class.split("::").next().unwrap_or("")) == Some(Denied)
 }
 
