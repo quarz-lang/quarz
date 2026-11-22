@@ -1,0 +1,27 @@
+# An inherited `new` that gives nothing (the class has no `initialize`)
+# builds a subclass whose `initialize` takes only a `*rest` or a
+# `**opts` (docs/01 §9, #1067): they take none.
+abstract class Base
+  def self.make -> Base = new
+  def describe -> String = "base"
+end
+
+class Rest < Base
+  @n: Int
+  def initialize(*xs: Int)
+    @n = xs.size
+  end
+  def describe -> String = "rest #{@n}"
+end
+
+class Opts < Base
+  @n: Int
+  def initialize(**kw: Int)
+    @n = kw.size
+  end
+  def describe -> String = "opts #{@n}"
+end
+
+puts Rest.make.describe
+puts Opts.make.describe
+puts Rest.new(1, 2).describe

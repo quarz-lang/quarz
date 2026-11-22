@@ -5307,6 +5307,15 @@ fn an_inherited_new_is_checked_against_each_initialize_in_full() {
         "class Model\n  def initialize(&b: (() -> Int)?); end\n  def self.mk -> Model = new\nend\nclass Sub < Model\n  def initialize(&b: () -> Int); end\nend",
         msg,
     );
+    // With no `initialize` in the class (`new` gives nothing), a subclass
+    // taking only a `*rest` or a `**opts` takes that (#1067), and one
+    // with a required keyword does not.
+    ok("abstract class Model\n  def self.mk -> Model = new\nend\nclass Sub < Model\n  def initialize(*xs: Int); end\nend");
+    ok("abstract class Model\n  def self.mk -> Model = new\nend\nclass Sub < Model\n  def initialize(**kw: Int); end\nend");
+    err(
+        "abstract class Model\n  def self.mk -> Model = new\nend\nclass Sub < Model\n  def initialize(*, k: Int); end\nend",
+        msg,
+    );
     // A block the subclass requires, which `new` gives none of.
     err(
         "class Model\n  def initialize(x: Int); end\n  def self.mk -> Model = new(1)\nend\nclass Sub < Model\n  def initialize(x: Int, &blk: () -> Int); end\nend",
