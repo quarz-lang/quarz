@@ -43,8 +43,14 @@ pub fn fill(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<Strin
         };
         // A declared field stored in one physical field keeps its
         // default there; a flattened one runs it through the
-        // logical view.
-        let declared = world.all_fields(c.id);
+        // logical view. (The declared fields only for a class with
+        // some: `all_fields` walks the superclass chain, and this runs
+        // for every class at every round of a static phase, #1038.)
+        let declared = if layout.ivars.is_empty() {
+            Vec::new()
+        } else {
+            world.all_fields(c.id)
+        };
         let ivars: Vec<RtIvar> = layout
             .ivars
             .iter()
