@@ -1189,6 +1189,29 @@ fn a_param_says_whether_a_call_may_leave_it_out() {
     assert_eq!(err.lines().collect::<Vec<_>>(), ["all_kinds: a Meta::ParamKind::Required false, b Meta::ParamKind::Optional true, rest Meta::ParamKind::Rest true, k Meta::ParamKind::Keyword false, j Meta::ParamKind::Keyword true, kw Meta::ParamKind::Keyword true", "opt_block: ", "initialize: a Meta::ParamKind::Required false, b Meta::ParamKind::Optional true, client Meta::ParamKind::Keyword false, retries Meta::ParamKind::Keyword true"], "{err}");
 }
 
+/// The runner keeps `overrides_of`'s answers across rounds (#1057) and
+/// drops those a generated method may change: `A`'s statement asks for
+/// `Base#greet`'s overrides (none), `Sub`'s generates one, which reads a
+/// file, and `C`'s, reaching `Base#greet` again, must see it. Were the
+/// answer kept, `C`'s statement would not be refused here (and a debug
+/// build's comparison of every kept answer with a fresh one fails).
+#[test]
+fn a_kept_override_answer_follows_a_generated_override() {
+    let d = dir();
+    write(&d.0, "lib.qz", "class Base\n  def greet -> String = \"base\"\n  static def self.ask -> Void\n    s = Base.new.greet\n    def_class_method(:asked) { s }\n  end\n  static def self.gen_greet -> Void\n    def_method(:greet, override: true) { File.read(\"/etc/hostname\") }\n  end\nend\n");
+    let app = write(
+        &d.0,
+        "main.qz",
+        "require_relative \"lib\"\nclass A < Base\n  ask\nend\nclass Sub < Base\n  gen_greet\nend\nclass C < Base\n  ask\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.starts_with("main.qz:9:3: error: `ask` reaches `File.read` (via Sub#greet), which cannot run at compile time"),
+        "{err}"
+    );
+}
+
 #[test]
 fn a_statement_reaches_call_targets_and_their_overrides() {
     // The statement's `String.build` reaches `String.build`, not every
