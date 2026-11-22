@@ -1318,8 +1318,15 @@ pub unsafe extern "C" fn qz_main(
             return 70;
         }
     };
-    let interp: std::rc::Rc<Interp> =
-        Interp::with_state_lazy(world, 0, functions, units, args, state, Some(lazy));
+    let interp: std::rc::Rc<Interp> = Interp::with_state_lazy(
+        std::sync::Arc::new(world),
+        0,
+        functions,
+        units,
+        args,
+        state,
+        Some(lazy),
+    );
     // Bit 0: compiled frames are found by the native unwinder (the
     // typed entries push no activation).
     interp.native_bt.set(flags & 1 != 0);

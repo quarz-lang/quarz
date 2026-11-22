@@ -112,7 +112,9 @@ pub struct Runner {
     /// functions are append-only, so each run sees the earlier ones; the
     /// lowerer keeps them, `Lowerer::done`).
     state: Option<SharedState>,
-    world: Option<RtWorld>,
+    /// The last round's run-time world, shared with the interpreters
+    /// that run on it (#1057: copied for none of them).
+    world: Option<std::sync::Arc<RtWorld>>,
     files: Vec<SourceFile>,
     /// The safety net refused a row of a compile-time round's tables
     /// (#645): no compile-time code runs any more in this check.
@@ -1730,15 +1732,16 @@ impl Runner {
                 .get_or_insert_with(|| SharedState::with_threads(Box::new(std::io::stderr()), 1))
                 .clone();
             // Loads the round's functions into the shared state.
+            let world = std::sync::Arc::new(round.delta.world);
             let _ = Interp::with_state(
-                round.delta.world.clone(),
+                world.clone(),
                 round.delta.base,
                 round.delta.functions,
                 Vec::new(),
                 Vec::new(),
                 state,
             );
-            self.world = Some(round.delta.world);
+            self.world = Some(world);
             if round.unchecked.is_empty() && round.unchecked_consts.is_empty() {
                 return round.stmt_func;
             }
@@ -4411,7 +4414,7 @@ pub fn compile_time_only_calls_in(
     // What the statements' runs lowered before the `static(...)` values
     // were known, lowered again with them (docs/14 §8).
     lowerer.relower_static_fallbacks();
-    let mut rt: Option<RtWorld> = None;
+    let mut rt: Option<std::sync::Arc<RtWorld>> = None;
     let dummy = quarz_syntax::ast::Expr {
         id: u32::MAX,
         kind: quarz_syntax::ast::ExprKind::Nil,
@@ -4430,9 +4433,10 @@ pub fn compile_time_only_calls_in(
         );
         // Loaded into the runner's state, which a REPL goes on running
         // (`continuing`): its functions must be all of `done`.
+        let world = std::sync::Arc::new(round.delta.world);
         if let Some(state) = &runner.state {
             let _ = Interp::with_state(
-                round.delta.world.clone(),
+                world.clone(),
                 round.delta.base,
                 round.delta.functions.clone(),
                 Vec::new(),
@@ -4441,7 +4445,7 @@ pub fn compile_time_only_calls_in(
             );
         }
         lowerer.done.extend(round.delta.functions);
-        rt = Some(round.delta.world);
+        rt = Some(world);
     }
     let functions = &lowerer.done;
     let Some(rt) = rt else {
