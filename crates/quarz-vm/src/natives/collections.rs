@@ -204,10 +204,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::Nil)
     });
-    native!(m, "Array#[]", array_index);
-    native!(m, "Array#[]?", |i, r, a| {
-        Ok(index_data(arr_data(i, r)?, int(i, a.arg(0), "index")?))
-    });
     native!(m, "Array#at", |i, r, a| {
         Ok(index_data(arr_data(i, r)?, int(i, a.arg(0), "index")?))
     });
@@ -236,15 +232,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             .checked_sub(1)
             .and_then(|k| items.get(k))
             .unwrap_or(Value::Nil))
-    });
-    native!(m, "Array#size", |i, r, _| {
-        Ok(Value::Int(arr_data(i, r)?.len() as i64))
-    });
-    native!(m, "Array#length", |i, r, _| {
-        Ok(Value::Int(arr_data(i, r)?.len() as i64))
-    });
-    native!(m, "Array#empty?", |i, r, _| {
-        Ok(Value::Bool(arr_data(i, r)?.is_empty()))
     });
     native!(m, "Array#push", |i, r, a| {
         update(i, r, |v| v.extend(a.pos.iter().cloned()))
@@ -640,25 +627,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         Ok(Value::Nil)
     });
-    native!(m, "Hash#[]", |i, r, a| match hash(i, r)?.get(a.arg(0)) {
-        Some(v) => Ok(v.clone()),
-        None => Err(i.raise(
-            i.program.exc.key_error,
-            &format!("key not found: {}", i.inspect(a.arg(0))?),
-        )),
-    });
-    native!(m, "Hash#[]?", |i, r, a| {
-        Ok(hash(i, r)?.get(a.arg(0)).unwrap_or(Value::Nil))
-    });
     native!(m, "Hash#fetch", hash_fetch);
     native!(m, "Hash#dig", |i, r, a| {
         Ok(hash(i, r)?.get(a.arg(0)).unwrap_or(Value::Nil))
-    });
-    native!(m, "Hash#key?", |i, r, a| {
-        Ok(Value::Bool(hash(i, r)?.contains_key(a.arg(0))))
-    });
-    native!(m, "Hash#has_key?", |i, r, a| {
-        Ok(Value::Bool(hash(i, r)?.contains_key(a.arg(0))))
     });
     native!(m, "Hash#value?", |i, r, a| {
         let map = hash(i, r)?.as_map();
@@ -680,15 +651,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(Value::array(
             hash(i, r)?.as_map().values().cloned().collect(),
         ))
-    });
-    native!(m, "Hash#size", |i, r, _| {
-        Ok(Value::Int(hash(i, r)?.len() as i64))
-    });
-    native!(m, "Hash#length", |i, r, _| {
-        Ok(Value::Int(hash(i, r)?.len() as i64))
-    });
-    native!(m, "Hash#empty?", |i, r, _| {
-        Ok(Value::Bool(hash(i, r)?.is_empty()))
     });
     native!(m, "Hash#put", |i, r, a| {
         hash_update_data(i, r, |h| {
@@ -875,9 +837,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         set_update(i, r, |s| {
             s.shift_remove(a.arg(0));
         })
-    });
-    native!(m, "Set#include?", |i, r, a| {
-        Ok(Value::Bool(set(i, r)?.contains(a.arg(0))))
     });
     native!(m, "Set#size", |i, r, _| {
         Ok(Value::Int(set(i, r)?.len() as i64))
@@ -1454,7 +1413,7 @@ fn array_each(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     Ok(Value::Nil)
 }
 
-fn array_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
+pub(super) fn array_index(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let data = arr_data(interp, recv)?;
     match args.arg(0) {
         Value::Int(i) => {

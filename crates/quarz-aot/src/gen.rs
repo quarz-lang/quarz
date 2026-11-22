@@ -3300,7 +3300,7 @@ impl<B: Builder> Gen<'_, B> {
         }
     }
 
-    /// `other == text` (or `!=` with `ne`) for a short literal `text`, a
+    /// `other == text` for a short literal `text`, a
     /// fast path of `natives::string::equal`, `String#==`'s definition:
     /// true when `other` is a short string with `text`'s length and
     /// bytes, compared as the value's two words under a mask that keeps
@@ -3309,7 +3309,7 @@ impl<B: Builder> Gen<'_, B> {
     /// Any other operand goes on to the call that follows, in the block
     /// left current; the answer, boxed in `dst`'s home, then jumps to the
     /// block returned, which the caller joins.
-    fn short_literal_eq(&mut self, text: &str, other: Reg, ne: bool, dst: Reg) -> B::Block {
+    fn short_literal_eq(&mut self, text: &str, other: Reg, dst: Reg) -> B::Block {
         use quarz_vm::layout::{SHORT_BYTES_OFF, SHORT_LEN_OFF, TAG_SHORT};
         // The words are the value's bytes read in the target's order,
         // which is the compiler's (built for the machine it runs on).
@@ -3359,15 +3359,8 @@ impl<B: Builder> Gen<'_, B> {
         let short = self.b.icmp_imm(IntCC::Equal, tag, i64::from(TAG_SHORT));
         self.b.brif(short, answered, &[], other_form, &[]);
         self.b.switch_to_block(answered);
-        // `same` is the answer to `==` on both edges (false on the second).
-        // (A comparison's result is a byte, 0 or 1.)
-        let v = if ne {
-            let one = self.b.iconst(Ty::I8, 1);
-            self.b.bxor(same, one)
-        } else {
-            same
-        };
-        self.store_bool_home(dst, v);
+        // `same` is the answer on both edges (false on the second).
+        self.store_bool_home(dst, same);
         self.b.jump(done, &[]);
         self.b.switch_to_block(other_form);
         done
@@ -5704,28 +5697,27 @@ impl<B: Builder> Gen<'_, B> {
                     // entry consumed nothing), #795. A destination whose
                     // home holds no counted value (its state, as
                     // `clear_home` reads it) is written without a drop.
-                    // `String#==`/`!=` with a short literal on either side:
+                    // `String#==` with a short literal on either side:
                     // compared inline, the entry made only for an operand
-                    // that is not a short string (#795).
+                    // that is not a short string (#795). (`s != "x"` is
+                    // `Object#!=`: `String` declares no `!=`.)
                     let literal_eq = fast.and_then(|_| {
-                        let ne = match self.methods[mid as usize].native_key.as_deref() {
-                            Some("String#==") => false,
-                            Some("String#!=") => true,
-                            _ => return None,
-                        };
+                        if self.methods[mid as usize].native_key.as_deref() != Some("String#==") {
+                            return None;
+                        }
                         let (recv, arg) = (recv?, *args.first()?);
                         match (
                             self.short_literal(block, index, arg),
                             self.short_literal(block, index, recv),
                         ) {
-                            (Some(text), _) => Some((text, recv, ne)),
-                            (None, Some(text)) => Some((text, arg, ne)),
+                            (Some(text), _) => Some((text, recv)),
+                            (None, Some(text)) => Some((text, arg)),
                             (None, None) => None,
                         }
                     });
                     let saved = literal_eq.as_ref().map(|_| self.states.clone());
-                    let eq_cont = literal_eq
-                        .map(|(text, other, ne)| self.short_literal_eq(&text, other, ne, dst));
+                    let eq_cont =
+                        literal_eq.map(|(text, other)| self.short_literal_eq(&text, other, dst));
                     let cont = fast.map(|entry| {
                         let empty = !self.states[dst as usize].needs_release();
                         let (word, ops0, ops1) = quarz_vm::natives::fast_call::pack(

@@ -4044,10 +4044,10 @@ impl Value {
             (Value::Class(a), Value::Class(b)) => a == b,
             (Value::Duration(a), Value::Duration(b)) => a == b,
             (Value::BigInt(a), Value::BigInt(b)) => Rc::ptr_eq(a, b) || a == b,
-            (Value::Str(a), Value::Str(b)) => Rc::ptr_eq(a, b) || a == b,
-            (Value::Short(a), Value::Short(b)) => a.as_str() == b.as_str(),
-            (Value::Str(a), Value::Short(b)) | (Value::Short(b), Value::Str(a)) => {
-                **a == *b.as_str()
+            // (Strings and byte strings are values: identical when equal,
+            // by `String#==`'s and `Bytes#==`'s definitions, #1035.)
+            (Value::Str(_) | Value::Short(_), _) => {
+                crate::natives::string::equal(self.as_str().expect("a string"), other)
             }
             (Value::Array(a), Value::Array(b)) => Rc::ptr_eq(a, b),
             (Value::Hash(a), Value::Hash(b)) => Rc::ptr_eq(a, b),
@@ -4068,7 +4068,7 @@ impl Value {
             (Value::Selector(a), Value::Selector(b)) => Rc::ptr_eq(a, b),
             (Value::Enumerator(a), Value::Enumerator(b)) => Rc::ptr_eq(a, b),
             (Value::Io(a), Value::Io(b)) => Rc::ptr_eq(a, b),
-            (Value::Bytes(a), Value::Bytes(b)) => Rc::ptr_eq(a, b) || a == b,
+            (Value::Bytes(a), _) => crate::natives::bytes::equal(a, other),
             (Value::BytesBuilder(a), Value::BytesBuilder(b)) => Rc::ptr_eq(a, b),
             (Value::Time(a), Value::Time(b)) => a.ns == b.ns,
             (Value::Random(a), Value::Random(b)) => Rc::ptr_eq(a, b),
@@ -4229,11 +4229,8 @@ impl PartialEq for Value {
             }
             (Value::BigInt(a), Value::BigInt(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
-            (Value::Str(a), Value::Str(b)) => a == b,
-            (Value::Short(a), Value::Short(b)) => a.as_str() == b.as_str(),
-            (Value::Str(a), Value::Short(b)) | (Value::Short(b), Value::Str(a)) => {
-                **a == *b.as_str()
-            }
+            // (A string or a byte string: by its content, `identical`'s
+            // arms below, #1035.)
             (Value::Array(a), Value::Array(b)) => {
                 a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
             }

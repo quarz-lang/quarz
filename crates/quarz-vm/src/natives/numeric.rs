@@ -383,7 +383,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         )
     });
     native!(m, "Int#to_i", |_, r, _| Ok(r.clone()));
-    native!(m, "Int#to_s", int_to_s);
     native!(m, "Int#chr", int_chr);
     native!(m, "Int#divmod", int_divmod);
     // In the numeric tower: a result past the `Int` range (the gcd of
@@ -664,7 +663,7 @@ fn int_shl(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     interp.int_of_big(&r)
 }
 
-fn int_to_s(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
+pub(super) fn int_to_s(interp: &Interp, recv: &Value, args: Args) -> EvalResult {
     let base = match args.pos.first() {
         Some(b) => int(interp, b, "base")?,
         None => 10,
