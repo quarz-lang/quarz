@@ -1822,7 +1822,7 @@ impl Runner {
                 self.method_place(host, p)
             );
             return format!(
-                "`{callee_name}` did not run: {}",
+                "{callee_name} did not run: {}",
                 self.describe_bad(host, m, &lead, "")
             );
         }

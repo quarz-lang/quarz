@@ -1022,6 +1022,57 @@ fn a_rare_name_reaches_its_methods_from_its_senders() {
     }
 }
 
+/// The `inherited` hook's statement stands at the end of its class's
+/// body, in text order among the program's statements (docs/14 §2, §5,
+/// #421): `First`'s runs before `Post`'s written statement, and `Post`'s
+/// after it. A method with errors reached past a call by name is named
+/// after the chain (#1055), the statement named by its hook and class.
+#[test]
+fn an_inherited_hook_runs_in_text_order_and_names_its_chain() {
+    let d = dir();
+    write(
+        &d.0,
+        "base.qz",
+        "class Base\n  static def self.mark -> Void\n    puts \"mark #{self.name}\"\n  end\n  static def self.inherited -> Void\n    puts \"hook #{self.name}\"\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "main.qz",
+        "require_relative \"base\"\nclass First < Base\nend\nclass Post < Base\n  mark\nend\nputs \"run\"\n",
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(
+        err.lines().collect::<Vec<_>>(),
+        ["hook First", "mark Post", "hook Post"]
+    );
+    assert_eq!(out, "run\n");
+    let lib = "class Base\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.inherited -> Void\n    s = [J.new].join(\",\")\n    def_class_method(:asked) { s }\n  end\nend\n";
+    write(&d.0, "base.qz", lib);
+    let classes = "class J\n  def to_s -> String = R.new.text\nend\nclass R\n  def text -> String = Post.new.title\nend\n";
+    let app = write(
+        &d.0,
+        "main.qz",
+        &format!("require_relative \"base\"\nclass First < Base\nend\nclass Post < Base\n  gen\nend\n{classes}"),
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("main.qz:2:1: error: `Base.inherited`, run for `First`, did not run: the native `Array#join`, which is taken to call `to_s` by name on the values it is given, may reach `J#to_s` (main.qz:8), a method of that name, which may reach `R#text` (main.qz:11), which has errors: undefined method `title` for Post"),
+        "{err}"
+    );
+    // `Post`'s statement first: its hook, and `First`'s after, find
+    // `title` generated.
+    let app = write(
+        &d.0,
+        "main.qz",
+        &format!("require_relative \"base\"\nclass Post < Base\n  gen\nend\nclass First < Base\nend\nputs First.asked\n{classes}"),
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "generated\n");
+}
+
 /// The `inherited` hook in a script (docs/14 §5, #421): a subclass in a
 /// file requiring the file that declares the hook runs it; in the same
 /// file, the staging rule refuses it. The checker's cache follows the

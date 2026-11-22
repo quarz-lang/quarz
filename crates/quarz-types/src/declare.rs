@@ -890,6 +890,33 @@ impl<'ast> Declarer<'ast> {
             }
             self.error("only declarations are allowed in a class body", expr.span);
         }
+        // (Where an ancestor's `inherited` hook runs, if it has one: after
+        // the statements written in the body, nested classes' included, in
+        // file and text order as they are. `inherited_hooks` keeps it, with
+        // its hook, or drops it, once the superclasses are known, #421.)
+        if !prelude && self.world.class(id).kind == ClassKind::Class {
+            let span = self.world.class(id).span;
+            self.world.static_stmts.push(StaticStmt {
+                class: id,
+                file: self.file,
+                expr: Rc::new(Expr {
+                    id: crate::world::synthesized_stmt_id(id),
+                    span,
+                    kind: ExprKind::Call(Box::new(Call {
+                        recv: None,
+                        name: "inherited".to_string(),
+                        args: Vec::new(),
+                        block: None,
+                        safe_nav: false,
+                        has_parens: false,
+                        type_args: Vec::new(),
+                        function: false,
+                    })),
+                }),
+                span,
+                hook: None,
+            });
+        }
     }
 
     /// The `inherited` hook (docs/14 §5, #421) for the classes `ids` just
@@ -913,6 +940,7 @@ impl<'ast> Declarer<'ast> {
             .iter()
             .any(|m| m.singleton && m.name == "inherited")
         {
+            self.drop_hook_placeholders();
             return;
         }
         for &id in ids {
@@ -920,7 +948,7 @@ impl<'ast> Declarer<'ast> {
             if c.kind != ClassKind::Class {
                 continue;
             }
-            let (file, span, name) = (c.file, c.span, c.name.clone());
+            let name = c.name.clone();
             let own: Vec<MethodId> = c
                 .singleton_methods
                 .get("inherited")
@@ -954,28 +982,27 @@ impl<'ast> Declarer<'ast> {
             let Some(hook) = inherited else {
                 continue;
             };
-            let expr = Expr {
-                id: crate::world::synthesized_stmt_id(id),
-                span,
-                kind: ExprKind::Call(Box::new(Call {
-                    recv: None,
-                    name: "inherited".to_string(),
-                    args: Vec::new(),
-                    block: None,
-                    safe_nav: false,
-                    has_parens: false,
-                    type_args: Vec::new(),
-                    function: false,
-                })),
-            };
-            self.world.static_stmts.push(StaticStmt {
-                class: id,
-                file,
-                expr: Rc::new(expr),
-                span,
-                hook: Some(hook),
-            });
+            let synth = crate::world::synthesized_stmt_id(id);
+            if let Some(s) = self
+                .world
+                .static_stmts
+                .iter_mut()
+                .find(|s| s.class == id && s.expr.id == synth)
+            {
+                s.hook = Some(hook);
+            }
         }
+        self.drop_hook_placeholders();
+    }
+
+    /// Drop the places `collect_body` kept for an `inherited` hook that
+    /// no ancestor has (all of them are this unit's: an earlier unit's
+    /// were dropped when it was declared, so the indices of the statements
+    /// before stay).
+    fn drop_hook_placeholders(&mut self) {
+        self.world.static_stmts.retain(|s| {
+            s.hook.is_some() || s.expr.id != crate::world::synthesized_stmt_id(s.class)
+        });
     }
 
     /// The `inherited` hook class `id` runs: the class method `inherited`
