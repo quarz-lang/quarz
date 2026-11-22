@@ -47,7 +47,9 @@ pub struct UnitInput<'a> {
 /// The result of one lowering round: the complete metadata plus the
 /// functions added in this round (ids starting at `base`).
 pub struct Delta {
-    pub world: RtWorld,
+    /// Shared: a static round hands out the world it keeps for the next
+    /// round (`Lowerer`'s `static_world`), which no one else writes.
+    pub world: std::sync::Arc<RtWorld>,
     pub base: FuncId,
     pub functions: Vec<Function>,
     pub units: Vec<Unit>,
@@ -236,6 +238,18 @@ pub struct Lowerer {
     reached_names: HashSet<String>,
     /// Lowered functions of this round whose references were followed.
     scanned: usize,
+    /// The static rounds' world (#1057 PR 4), kept and updated in place
+    /// from one round to the next; never the final lowering's, which fills
+    /// a copy of the declared tables from scratch (`lower` drops it).
+    static_world: Option<StaticWorld>,
+}
+
+/// `Lowerer`'s `static_world`: the world, the kept tables' epoch it was
+/// last updated at, and the field default functions as they were then.
+struct StaticWorld {
+    world: std::sync::Arc<RtWorld>,
+    epoch: u64,
+    defaults: HashMap<(ClassId, usize), FuncId>,
 }
 
 /// What a static round's statement reaches (`Lowerer::walk_all`), walked
@@ -448,6 +462,9 @@ impl Lowerer {
         files: Vec<SourceFile>,
     ) -> Delta {
         self.static_mode = false;
+        // (What a program is run or built with is filled from scratch,
+        // never from the static rounds' world, #1057 PR 4.)
+        self.static_world = None;
         self.round_base = self.next_func;
         self.quoted_sites.clear();
         self.pending.clear();
@@ -599,10 +616,14 @@ impl Lowerer {
             // (The safety net's report, when `declare` did not run it.)
             None => witness_net(world, &kept.rt),
         }
+        assert!(
+            self.static_world.is_none(),
+            "internal error: the final lowering found the static rounds' world (#1057)"
+        );
         let mut rt = kept.rt.clone();
         rtworld::fill(&mut rt, world, self, file_names);
         Delta {
-            world: rt,
+            world: std::sync::Arc::new(rt),
             base: self.round_base,
             functions,
             units: lowered_units,
@@ -1062,6 +1083,127 @@ impl Lowerer {
         self.kept.as_ref().map_or(0, |k| k.epoch())
     }
 
+    /// The world of a static round (#1057 PR 4): the kept one, updated in
+    /// place, or, the first time and after the kept tables were built
+    /// again (a REPL input, a later unit), a copy of the declared tables
+    /// filled from scratch. The update copies from the declared tables
+    /// (`Kept::rebuild`'s) the rows of the classes rebuilt since the last
+    /// round, their methods' and the new methods' rows, and the tables
+    /// `rebuild` assembles; then fills the dirty classes (`static_dirty`)
+    /// and the rest (`rtworld::fill_rest`, every method and constant, made
+    /// for everything every round). A debug build, or
+    /// `QUARZ_VERIFY_STATIC_TABLES`, compares it with a fresh fill.
+    fn update_static_world(
+        &mut self,
+        world: &World,
+        file_names: Vec<String>,
+    ) -> std::sync::Arc<RtWorld> {
+        let epoch = self.tables_epoch();
+        let kept = self.kept.as_ref().expect("synced above");
+        let changed = match &self.static_world {
+            Some(sw) if sw.world.classes.len() == kept.rt.classes.len() => {
+                kept.changed_since(sw.epoch)
+            }
+            _ => None,
+        };
+        let Some(changed) = changed else {
+            let mut rt = kept.rt.clone();
+            rtworld::fill(&mut rt, world, self, file_names);
+            let rt = std::sync::Arc::new(rt);
+            self.static_world = Some(StaticWorld {
+                world: rt.clone(),
+                epoch,
+                defaults: self.field_default_funcs.clone(),
+            });
+            return rt;
+        };
+        let dirty = self.static_dirty(world, &changed);
+        let mut sw = self.static_world.take().expect("matched above");
+        {
+            let kept = self.kept.as_ref().expect("synced above");
+            // (Another holder makes `make_mut` copy: today's cost, counted
+            // with `QUARZ_COUNT_STATIC_COPIES`.)
+            let holders = std::sync::Arc::strong_count(&sw.world);
+            if holders > 1 && std::env::var_os("QUARZ_COUNT_STATIC_COPIES").is_some() {
+                eprintln!("quarz: the static rounds' world copied ({holders} holders)");
+            }
+            let w = std::sync::Arc::make_mut(&mut sw.world);
+            for &c in &changed {
+                w.classes[c as usize] = kept.rt.classes[c as usize].clone();
+                for &m in kept.owned_methods(c) {
+                    if let Some(row) = w.methods.get_mut(m as usize) {
+                        *row = kept.rt.methods[m as usize].clone();
+                    }
+                }
+            }
+            let n = w.methods.len();
+            w.methods.extend(kept.rt.methods[n..].iter().cloned());
+            w.include_overrides = kept.rt.include_overrides.clone();
+            w.witness_record = kept.rt.witness_record.clone();
+            w.override_rows = kept.rt.override_rows.clone();
+            w.witness_rows = kept.rt.witness_rows.clone();
+            w.class_override_rows = kept.rt.class_override_rows.clone();
+            rtworld::fill_classes(w, world, self, Some(&dirty));
+            rtworld::fill_rest(w, world, self, file_names.clone());
+        }
+        if cfg!(debug_assertions) || verify_static_tables() {
+            let mut fresh = self.kept.as_ref().expect("synced above").rt.clone();
+            rtworld::fill(&mut fresh, world, self, file_names);
+            // (The whole struct is compared: a field `first_difference`
+            // does not name is still a difference.)
+            if fresh != *sw.world {
+                let diff = first_difference(&fresh, &sw.world)
+                    .unwrap_or_else(|| "a field `first_difference` does not name".to_string());
+                panic!(
+                    "internal error: the static rounds' world differs from a fresh fill: {diff} (#1057)"
+                );
+            }
+        }
+        sw.epoch = epoch;
+        sw.defaults = self.field_default_funcs.clone();
+        let rt = sw.world.clone();
+        self.static_world = Some(sw);
+        rt
+    }
+
+    /// The classes whose fields `rtworld::fill_classes` must make again
+    /// for the static rounds' world, defined here alone: those whose kept
+    /// rows `Kept::rebuild` made again since the last round (`changed`:
+    /// a generated method, field or `initialize`, a hook's generation,
+    /// with their descendants, #717's D(X)); those whose layout changed,
+    /// which only `rebuild` changes, for the same classes; and those
+    /// whose field default functions changed since (a default lowered
+    /// later, or dropped by `invalidate_layout`), with their descendants,
+    /// whose fields take an inherited default (`field_default`).
+    fn static_dirty(&self, world: &World, changed: &[ClassId]) -> HashSet<ClassId> {
+        let mut dirty: HashSet<ClassId> = changed.iter().copied().collect();
+        let old = &self.static_world.as_ref().expect("kept").defaults;
+        let mut moved: HashSet<ClassId> = HashSet::default();
+        for (key, f) in &self.field_default_funcs {
+            if old.get(key) != Some(f) {
+                moved.insert(key.0);
+            }
+        }
+        for key in old.keys() {
+            if !self.field_default_funcs.contains_key(key) {
+                moved.insert(key.0);
+            }
+        }
+        if !moved.is_empty() {
+            for c in 0..world.classes.len() as ClassId {
+                if world
+                    .superclass_chain(c)
+                    .iter()
+                    .chain([&c])
+                    .any(|k| moved.contains(k))
+                {
+                    dirty.insert(c);
+                }
+            }
+        }
+        dirty
+    }
+
     /// The classes whose kept rows were rebuilt after `epoch`, or `None`
     /// when everything was (or no tables are kept, or they have not read
     /// every event of `world`).
@@ -1228,8 +1370,7 @@ impl Lowerer {
             .map(|f| f.expect("function lowered"))
             .collect();
         let file_names = self.files.iter().map(|f| f.name.clone()).collect();
-        let mut rt = self.kept.as_ref().expect("synced above").rt.clone();
-        rtworld::fill(&mut rt, world, self, file_names);
+        let rt = self.update_static_world(world, file_names);
         self.static_mode = false;
         StaticRound {
             delta: Delta {
@@ -1741,7 +1882,8 @@ pub fn lower_checked_with(mut lw: Lowerer, checked: &Checked, files: &[SourceFil
     }
     check(&functions, verify::Stage::Moves);
     Module {
-        world: delta.world,
+        // (The final lowering's own world, held by no one else.)
+        world: std::sync::Arc::try_unwrap(delta.world).unwrap_or_else(|w| (*w).clone()),
         functions,
         units: delta.units,
     }
@@ -1844,6 +1986,84 @@ fn witness_net(world: &World, rt: &quarz_ir::RtWorld) {
         }
         _ => {}
     }
+}
+
+/// Where two run-time worlds first differ, field by field, naming the
+/// class, method or table (the static rounds' world's check, #1057 PR 4).
+fn first_difference(fresh: &RtWorld, kept: &RtWorld) -> Option<String> {
+    if fresh.classes.len() != kept.classes.len() {
+        return Some(format!(
+            "the number of classes ({} fresh, {} kept)",
+            fresh.classes.len(),
+            kept.classes.len()
+        ));
+    }
+    for (i, (a, b)) in fresh.classes.iter().zip(&kept.classes).enumerate() {
+        if a != b {
+            let what = if a.ivars != b.ivars {
+                "ivars"
+            } else if a.fields != b.fields {
+                "fields"
+            } else {
+                "row"
+            };
+            return Some(format!("class `{}` (#{i}), its {what}", a.name));
+        }
+    }
+    if fresh.methods.len() != kept.methods.len() {
+        return Some(format!(
+            "the number of methods ({} fresh, {} kept)",
+            fresh.methods.len(),
+            kept.methods.len()
+        ));
+    }
+    for (i, (a, b)) in fresh.methods.iter().zip(&kept.methods).enumerate() {
+        if a != b {
+            let what = if a.func != b.func {
+                "func"
+            } else if a.overridden != b.overridden {
+                "overridden"
+            } else {
+                "row"
+            };
+            return Some(format!(
+                "method `{}` of class #{} (#{i}), its {what}",
+                a.name, a.owner
+            ));
+        }
+    }
+    let tables: [(&str, bool); 11] = [
+        ("consts", fresh.consts == kept.consts),
+        ("extensions", fresh.extensions == kept.extensions),
+        (
+            "witness_record",
+            fresh.witness_record == kept.witness_record,
+        ),
+        (
+            "deferred_conformance",
+            fresh.deferred_conformance == kept.deferred_conformance,
+        ),
+        ("override_rows", fresh.override_rows == kept.override_rows),
+        ("witness_rows", fresh.witness_rows == kept.witness_rows),
+        (
+            "class_override_rows",
+            fresh.class_override_rows == kept.class_override_rows,
+        ),
+        (
+            "include_overrides",
+            fresh.include_overrides == kept.include_overrides,
+        ),
+        ("top", fresh.top == kept.top),
+        ("builtin", fresh.builtin == kept.builtin),
+        (
+            "file_names and file_mains",
+            fresh.file_names == kept.file_names && fresh.file_mains == kept.file_mains,
+        ),
+    ];
+    tables
+        .iter()
+        .find(|(_, same)| !same)
+        .map(|(name, _)| format!("the table `{name}`"))
 }
 
 #[cfg(test)]

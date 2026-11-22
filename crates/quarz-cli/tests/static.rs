@@ -1212,6 +1212,23 @@ fn a_kept_override_answer_follows_a_generated_override() {
     );
 }
 
+/// The static rounds' world, updated in place from round to round
+/// (#1057 PR 4), against the rows that change mid-check, each round
+/// compared with a fresh fill in a debug build: a field generated into a
+/// class and its subclass after earlier rounds filled them (`B`'s
+/// `add_f`, `C` below it), a construction reached by a later round (`D`'s
+/// `make_one`, with an inherited default), a constant first initialized
+/// by a later round (`E`'s `read_c`). `Late`'s default is lowered only by
+/// the final lowering, which fills from scratch: the program run and
+/// built shows it (it would not, were the static rounds' world shipped).
+#[test]
+fn the_static_rounds_world_follows_what_a_round_changes() {
+    let d = dir();
+    write(&d.0, "lib.qz", "class Model\n  static def self.gen -> Void\n    def_method((\"g_\" + self.name).to_sym) { 1 }\n  end\n  static def self.add_f -> Void\n    def_field(:hits, Int, 0, var: true, reader: true)\n  end\n  static def self.make_one -> Void\n    s = Pt.new.n + Qt.new.n\n    def_class_method(:got) { s }\n  end\n  static def self.read_c -> Void\n    s = LIMIT + 1\n    def_class_method(:limit_seen) { s }\n  end\nend\ndef compute -> Int = 5\nLIMIT = compute + 10\nclass Pt\n  @n: Int = compute\n  def n -> Int = @n\nend\nclass Qt < Pt\nend\nclass Late\n  @v: Int = compute + 2\n  def v -> Int = @v\nend\n");
+    let app = write(&d.0, "main.qz", "require_relative \"lib\"\nclass A < Model\n  gen\nend\nclass B < A\n  add_f\nend\nclass C < B\n  gen\nend\nclass D < Model\n  make_one\nend\nclass E < Model\n  read_c\nend\nputs C.new.hits\nputs D.got\nputs E.limit_seen\nputs Late.new.v\n");
+    run_and_build(&d.0, &app, "0\n10\n16\n7\n");
+}
+
 #[test]
 fn a_statement_reaches_call_targets_and_their_overrides() {
     // The statement's `String.build` reaches `String.build`, not every

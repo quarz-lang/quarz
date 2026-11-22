@@ -373,7 +373,7 @@ impl Repl {
         self.units.retain(|u| u.file != unit.file);
         self.units.push(unit);
         let interp = Interp::with_state(
-            std::sync::Arc::new(delta.world),
+            delta.world,
             delta.base,
             delta.functions,
             self.units.clone(),
