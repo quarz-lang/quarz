@@ -1701,6 +1701,9 @@ impl Runner {
             // descendants: not reached by name (`Lowerer::static_skip`).
             let skip = self.cover(host).skip.clone();
             self.lowerer.static_skip = skip;
+            // (The last round's world goes: the lowerer updates the one
+            // it keeps in place when no one else holds it, #1057 PR 4.)
+            self.world = None;
             let round = self.lowerer.lower_static(
                 host.world(),
                 host.output(),
@@ -1732,7 +1735,7 @@ impl Runner {
                 .get_or_insert_with(|| SharedState::with_threads(Box::new(std::io::stderr()), 1))
                 .clone();
             // Loads the round's functions into the shared state.
-            let world = std::sync::Arc::new(round.delta.world);
+            let world = round.delta.world;
             let _ = Interp::with_state(
                 world.clone(),
                 round.delta.base,
@@ -4468,7 +4471,7 @@ pub fn compile_time_only_calls_in(
         );
         // Loaded into the runner's state, which a REPL goes on running
         // (`continuing`): its functions must be all of `done`.
-        let world = std::sync::Arc::new(round.delta.world);
+        let world = round.delta.world;
         if let Some(state) = &runner.state {
             let _ = Interp::with_state(
                 world.clone(),

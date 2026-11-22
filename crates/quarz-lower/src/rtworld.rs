@@ -21,19 +21,24 @@ fn param_kind(k: ParamKind) -> RtParamKind {
 /// overridden, the constants' functions and the quoted blocks' trees, the
 /// file names. Nothing `declared`'s rows read.
 pub fn fill(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<String>) {
-    // (Per round: the deferred check removes a class from the list during
-    // a phase, and the program's final tables have none, every deferred
-    // conformance having been checked by then, #801.)
-    rt.deferred_conformance = if lw.static_mode {
-        world.conformance_deferred.clone()
-    } else {
-        debug_assert!(
-            world.conformance_deferred.is_empty(),
-            "a conformance still deferred at the final lowering"
-        );
-        Vec::new()
-    };
+    fill_classes(rt, world, lw, None);
+    fill_rest(rt, world, lw, file_names);
+}
+
+/// `fill`'s part for the classes: their fields and defaults (the
+/// layouts), for every class, or with `only` for those classes (the
+/// static rounds' world, updated in place, #1057 PR 4: `Lowerer`'s
+/// `static_world`).
+pub(crate) fn fill_classes(
+    rt: &mut RtWorld,
+    world: &World,
+    lw: &Lowerer,
+    only: Option<&rustc_hash::FxHashSet<ClassId>>,
+) {
     for (c, rc) in world.classes.iter().zip(rt.classes.iter_mut()) {
+        if only.is_some_and(|o| !o.contains(&c.id)) {
+            continue;
+        }
         let layout = &lw.layouts[c.id as usize];
         // A type with a parameter in it has no name of its own: a
         // parameter prints as its name, which may be a class's
@@ -105,6 +110,25 @@ pub fn fill(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<Strin
         rc.ivars = ivars;
         rc.fields = fields;
     }
+}
+
+/// `fill`'s part for the rest, made for everything every time: each
+/// method's function and whether it is overridden, the constants'
+/// functions and the quoted blocks' trees, the deferred conformances and
+/// the file names.
+pub(crate) fn fill_rest(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_names: Vec<String>) {
+    // (Per round: the deferred check removes a class from the list during
+    // a phase, and the program's final tables have none, every deferred
+    // conformance having been checked by then, #801.)
+    rt.deferred_conformance = if lw.static_mode {
+        world.conformance_deferred.clone()
+    } else {
+        debug_assert!(
+            world.conformance_deferred.is_empty(),
+            "a conformance still deferred at the final lowering"
+        );
+        Vec::new()
+    };
     for (m, rm) in world.methods.iter().zip(rt.methods.iter_mut()) {
         rm.overridden |= lw.overridden.contains(&m.id);
         assert!(!(rm.overridden && rm.is_extension), "an extension's method `{}` is never overridden: the checker refuses an abstract one (#534), the table has none (`RtMethod::dispatch`)", m.name);
