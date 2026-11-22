@@ -267,7 +267,8 @@ module Meta
   # method's block out, so `Block` does not appear in them; were it to,
   # `default` would say whether the block is optional.) `new` builds a
   # class with no arguments when its constructors are none, or one of
-  # them has every parameter `default`.
+  # them has every parameter `default`, up to a block: one that requires
+  # a block cannot be told from one that takes none.
   data Param = (name: Symbol, type: Type[Object], kind: ParamKind, type_ref: TypeRef, default: Bool)
   # A method's signature: no body is visible. [result_ref] is the result
   # type in full.
