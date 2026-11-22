@@ -847,6 +847,36 @@ fn a_method_reached_by_name_is_named_with_the_call() {
     );
 }
 
+/// The method a by-name error names, and the count, are among those the
+/// call reached by that name: a class method `status` with errors, which
+/// an earlier statement reached directly, is not one the runtime's
+/// instance-side call takes, so it is neither named nor counted (#1037).
+#[test]
+fn a_by_name_error_counts_only_what_the_call_reached() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Model\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.ask -> Void\n    xs: Array[A | B] = [A.new, B.new]\n    s = xs.size.to_s\n    def_class_method(:asked) { s }\n  end\n  static def self.ask0 -> Void\n    s = C.status\n    def_class_method(:asked0) { s }\n  end\nend\nclass A\n  def status -> String = \"a\"\nend\nclass B\n  def status -> Int = 2\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass Zero < Model\n  ask0\nend\nclass First < Model\n  ask\nend\nclass Post < Model\n  gen\nend\nclass Helper\n  def status(h: Int, m: Int) -> String = Post.new.title\nend\nclass C\n  def self.status -> String = Post.new.title\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    let line = err
+        .lines()
+        .find(|l| l.contains("`ask` did not run"))
+        .unwrap_or_else(|| panic!("{err}"));
+    assert_eq!(
+        line,
+        "app.qz:6:3: error: `ask` did not run: the native `Cog#name`, which is taken to call `status` by name on the values it is given, may reach `Helper#status` (app.qz:12), a method of that name, which has errors: undefined method `title` for Post",
+        "{err}"
+    );
+}
+
 #[test]
 fn a_statement_reaches_call_targets_and_their_overrides() {
     // The statement's `String.build` reaches `String.build`, not every

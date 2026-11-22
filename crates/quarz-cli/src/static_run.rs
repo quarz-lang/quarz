@@ -1781,15 +1781,15 @@ impl Runner {
     /// (file, then position) with its first error; and how many more of
     /// the name have errors. Every method of the name is in the reach
     /// (docs/14 §7), so the message says which call brought them.
-    fn by_name_message(&self, host: &dyn StaticHost, callee_name: &str, b: &ByName) -> String {
+    fn by_name_message(
+        &self,
+        host: &dyn StaticHost,
+        callee_name: &str,
+        b: &ByName,
+        mut bad: Vec<MethodId>,
+    ) -> String {
         let (name, from) = (b.name.as_str(), b.from);
         let world = host.world();
-        let mut bad: Vec<MethodId> = self
-            .bad_methods
-            .keys()
-            .copied()
-            .filter(|&m| world.method(m).name == name)
-            .collect();
         bad.sort_by_key(|&m| {
             let info = world.method(m);
             (info.file, info.span.start, m)
@@ -1986,7 +1986,23 @@ impl Runner {
                                 name: n,
                             }
                         });
-                        return Some(Ok(BadReach { method: m, by_name }));
+                        // (The methods with errors this call of the name
+                        // reached, for the message's first and count.)
+                        let reached_bad: Vec<MethodId> = match &by_name {
+                            Some(b) => via_name
+                                .iter()
+                                .filter(|(o, n, _)| {
+                                    *n == b.name && self.bad_methods.contains_key(o)
+                                })
+                                .map(|(o, _, _)| *o)
+                                .collect(),
+                            None => Vec::new(),
+                        };
+                        return Some(Ok(BadReach {
+                            method: m,
+                            by_name,
+                            reached_bad,
+                        }));
                     }
                     if let Some(f) = world.methods[m as usize].func {
                         work.push((f, b.clone()));
@@ -2079,18 +2095,6 @@ impl Runner {
 /// `self` (docs/14 §7).
 type SelfBound = Option<std::rc::Rc<[ClassId]>>;
 
-/// The methods a run of `f` may call, into `methods`, each with the
-/// bound of the `self` it runs with: a method called as resolved and its
-/// overrides (a subclass's runs in its place; on a receiver whose static
-/// type, or `self_bound` for a call on `self`, bounds it, those its
-/// lookup may find), one called exactly (`super`, keeping `self_bound`,
-/// a function) alone, those of a name looked up at run time, and for a
-/// construction the `initialize` it runs: the class's own (or inherited)
-/// for `C.new`, and those of its subclasses too for `new` on a class
-/// method's receiver, which may be one. The other references go to
-/// `other`. With `by_runtime`, also the methods the runtime calls by name
-/// for the instructions and the natives among them (for `bad_reach`
-/// only).
 /// The first line of `f` that calls `name` by name (`CallKind::Send`).
 fn send_line(f: &quarz_ir::Function, name: &str) -> Option<u32> {
     f.blocks
@@ -2112,6 +2116,9 @@ fn send_line(f: &quarz_ir::Function, name: &str) -> Option<u32> {
 struct BadReach {
     method: MethodId,
     by_name: Option<ByName>,
+    /// With `by_name`: every method with errors the call took by that name
+    /// (`method` among them), those the message names and counts.
+    reached_bad: Vec<MethodId>,
 }
 
 /// A call by name that brought methods into a statement's reach: the
@@ -2124,6 +2131,22 @@ struct ByName {
     native: Option<MethodId>,
 }
 
+/// The methods a run of `f` may call, into `methods`, each with the
+/// bound of the `self` it runs with: a method called as resolved and its
+/// overrides (a subclass's runs in its place; on a receiver whose static
+/// type, or `self_bound` for a call on `self`, bounds it, those its
+/// lookup may find), one called exactly (`super`, keeping `self_bound`,
+/// a function) alone, those of a name looked up at run time, and for a
+/// construction the `initialize` it runs: the class's own (or inherited)
+/// for `C.new`, and those of its subclasses too for `new` on a class
+/// method's receiver, which may be one. The other references go to
+/// `other`. With `by_runtime`, also the methods the runtime calls by name
+/// for the instructions and the natives among them (for `bad_reach`
+/// only).
+/// Each method taken by a name goes to `named` too, with the name and
+/// the native whose calls named it (none for the program's own call or
+/// an instruction's), for the error that says which call brought it
+/// (#1037).
 #[allow(clippy::too_many_arguments)]
 fn reached<'a>(
     world: &RtWorld,
@@ -2439,14 +2462,19 @@ impl Runner {
         let lifted = &self.lowerer.lifted_funcs;
         if let Some(bad) = self.bad_reach(fid, lifted) {
             let message = match bad {
-                Ok(BadReach { method, by_name: None }) => format!(
+                Ok(BadReach {
+                    method,
+                    by_name: None,
+                    ..
+                }) => format!(
                     "`{callee_name}` did not run: {}",
                     self.describe_bad(host, method, "it may reach", "")
                 ),
                 Ok(BadReach {
                     by_name: Some(b),
+                    reached_bad,
                     ..
-                }) => self.by_name_message(host, &callee_name, &b),
+                }) => self.by_name_message(host, &callee_name, &b, reached_bad),
                 Err(c) => format!(
                     "`{callee_name}` did not run: it reaches `{c}`, which has errors (reported above)"
                 ),
