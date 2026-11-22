@@ -1787,6 +1787,7 @@ impl Runner {
         callee_name: &str,
         b: &ByName,
         mut bad: Vec<MethodId>,
+        pulled: Option<MethodId>,
     ) -> String {
         let (name, from) = (b.name.as_str(), b.from);
         let world = host.world();
@@ -1813,6 +1814,18 @@ impl Runner {
                 ),
             },
         };
+        // (Reached from the method of that name the call took: that one,
+        // then what has errors.)
+        if let (Some(p), Some(&m)) = (pulled, bad.first()) {
+            let lead = format!(
+                "{lead} {}, a method of that name, which may reach",
+                self.method_place(host, p)
+            );
+            return format!(
+                "`{callee_name}` did not run: {}",
+                self.describe_bad(host, m, &lead, "")
+            );
+        }
         let more = match bad.len() {
             0 | 1 => String::new(),
             2 => " (and 1 more method of that name with errors)".to_string(),
@@ -1828,6 +1841,22 @@ impl Runner {
         }
     }
 
+    /// Method `m` as an error names it: "`Class#name` (file:line)".
+    fn method_place(&self, host: &dyn StaticHost, m: MethodId) -> String {
+        let world = host.world();
+        let info = world.method(m);
+        let name = format!(
+            "{}{}{}",
+            world.class(info.owner).name,
+            if info.singleton { "." } else { "#" },
+            info.name
+        );
+        match self.files.get(info.file as usize) {
+            Some(f) => format!("`{name}` ({}:{})", f.name, f.line_col(info.span.start).line),
+            None => format!("`{name}`"),
+        }
+    }
+
     /// `m`, a method with errors a statement may reach, where it is, and its
     /// first error.
     fn describe_bad(&self, host: &dyn StaticHost, m: MethodId, lead: &str, after: &str) -> String {
@@ -1838,41 +1867,27 @@ impl Runner {
             .map(|(_, e)| e.as_slice())
             .unwrap_or(&[]);
         let info = world.method(m);
-        let name = format!(
-            "{}{}{}",
-            world.class(info.owner).name,
-            if info.singleton { "." } else { "#" },
-            info.name
-        );
         let at = |file: u32, span: Span| -> String {
             match self.files.get(file as usize) {
                 Some(f) => format!("{}:{}", f.name, f.line_col(span.start).line),
                 None => String::new(),
             }
         };
-        let place = at(info.file, info.span);
-        let place = if place.is_empty() {
-            String::new()
-        } else {
-            format!(" ({place})")
-        };
+        let named = self.method_place(host, m);
         // Its own first error, else the first of what it uses (a
         // constant whose initializer has errors), with where that is.
         let own = errors.iter().find(|(f, d)| {
             *f == info.file && info.span.start <= d.span.start && d.span.end <= info.span.end
         });
         match (own, errors.first()) {
-            (Some((_, d)), _) => format!(
-                "{lead} `{name}`{place}{after}, which has errors: {}",
-                d.message
-            ),
+            (Some((_, d)), _) => format!("{lead} {named}{after}, which has errors: {}", d.message),
             (None, Some((f, d))) => format!(
-                "{lead} `{name}`{place}{after}, which uses what has errors: {} ({})",
+                "{lead} {named}{after}, which uses what has errors: {} ({})",
                 d.message,
                 at(*f, d.span)
             ),
             (None, None) => {
-                format!("{lead} `{name}`{place}{after}, which has errors (reported with it)")
+                format!("{lead} {named}{after}, which has errors (reported with it)")
             }
         }
     }
@@ -1921,8 +1936,15 @@ impl Runner {
         let by_name = methods_by_name(world);
         // Each function once per bound of its `self` (`reached`).
         let mut seen: rustc_hash::FxHashSet<(FuncId, SelfBound)> = Default::default();
-        let mut work: Vec<(FuncId, SelfBound)> = vec![(root, None)];
-        while let Some((fid, bound)) = work.pop() {
+        // (Each item with the call by name it was reached through, if any:
+        // what the error names when a method reached from it has errors,
+        // #1037.)
+        // (Breadth first: a method reached several ways is reached first
+        // the shortest way from the statement, whose call by name is the
+        // one to name.)
+        let mut work: std::collections::VecDeque<(FuncId, SelfBound, Option<std::rc::Rc<Origin>>)> =
+            [(root, None, None)].into();
+        while let Some((fid, bound, origin)) = work.pop_front() {
             if fid as usize >= self.lowerer.done.len() || !seen.insert((fid, bound.clone())) {
                 continue;
             }
@@ -1939,15 +1961,17 @@ impl Runner {
                 &bound,
                 &mut methods,
                 &mut |r| match r {
-                    shake::Ref::Func(g) if !lifted.contains(&g) => {
-                        work.push((g, func_bound(&self.lowerer.done, f, g, &bound)))
-                    }
+                    shake::Ref::Func(g) if !lifted.contains(&g) => work.push_back((
+                        g,
+                        func_bound(&self.lowerer.done, f, g, &bound),
+                        origin.clone(),
+                    )),
                     shake::Ref::Const(c) => {
                         if self.bad_consts.contains(&c) {
                             found = Some(Err(world.consts[c as usize].name.clone()));
                         } else if let Some(init) = world.consts.get(c as usize).and_then(|c| c.init)
                         {
-                            work.push((init, None));
+                            work.push_back((init, None, origin.clone()));
                         }
                     }
                     _ => {}
@@ -1966,26 +1990,22 @@ impl Runner {
                 for &m in std::iter::once(&m).chain(synth_calls(world, m)) {
                     if self.bad_methods.contains_key(&m) {
                         let tag = via_name.iter().find(|(o, _, _)| *o == m).cloned();
+                        // (Not itself of the name, but reached from a method
+                        // that was: that call, that method, then this one.)
+                        if let (None, Some(o)) = (&tag, &origin) {
+                            return Some(Ok(BadReach {
+                                method: m,
+                                by_name: Some(self.by_name_of(&seen, o.from, &o.name, o.native)),
+                                reached_bad: vec![m],
+                                pulled: Some(o.pulled),
+                            }));
+                        }
                         // (The program's own call of the name the walk passed,
                         // the first in source order, when there is one: the
                         // one to name, rather than a runtime path the walk
                         // happened to take first.)
-                        let by_name = tag.map(|(_, n, native)| {
-                            let own = seen
-                                .iter()
-                                .map(|(g, _)| *g)
-                                .chain(std::iter::once(fid))
-                                .filter_map(|g| {
-                                    let f = self.lowerer.done.get(g as usize)?;
-                                    send_line(f, &n).map(|l| ((f.file, l), g))
-                                })
-                                .min();
-                            ByName {
-                                from: own.map_or(fid, |(_, g)| g),
-                                native: native.filter(|_| own.is_none()),
-                                name: n,
-                            }
-                        });
+                        let by_name =
+                            tag.map(|(_, n, native)| self.by_name_of(&seen, fid, &n, native));
                         // (The methods with errors this call of the name
                         // reached, for the message's first and count.)
                         let reached_bad: Vec<MethodId> = match &by_name {
@@ -2002,15 +2022,56 @@ impl Runner {
                             method: m,
                             by_name,
                             reached_bad,
+                            pulled: None,
                         }));
                     }
                     if let Some(f) = world.methods[m as usize].func {
-                        work.push((f, b.clone()));
+                        // (A method taken by a name starts that origin; any
+                        // other carries this function's.)
+                        let from = match via_name.iter().find(|(o, _, _)| *o == m) {
+                            Some((_, n, native)) => Some(std::rc::Rc::new(Origin {
+                                name: n.clone(),
+                                native: *native,
+                                from: fid,
+                                pulled: m,
+                            })),
+                            None => origin.clone(),
+                        };
+                        work.push_back((f, b.clone(), from));
                     }
                 }
             }
         }
         None
+    }
+
+    /// The call by name to name for a method that `name` brought into the
+    /// reach, walking from `fid` (`seen` the functions walked so far): the
+    /// program's own call of the name, the first in source order among
+    /// them, when there is one, rather than a runtime path the walk
+    /// happened to take first; else the native (`native`) or the runtime's
+    /// call in `fid` (#1037).
+    fn by_name_of(
+        &self,
+        seen: &rustc_hash::FxHashSet<(FuncId, SelfBound)>,
+        fid: FuncId,
+        name: &str,
+        native: Option<MethodId>,
+    ) -> ByName {
+        let own = seen
+            .iter()
+            .map(|(g, _)| *g)
+            .chain(std::iter::once(fid))
+            .filter_map(|g| {
+                let f = self.lowerer.done.get(g as usize)?;
+                send_line(f, name).map(|l| ((f.file, l), g))
+            })
+            .min();
+        ByName {
+            from: own.map_or(fid, |(_, g)| g),
+            native: native.filter(|_| own.is_none()),
+            name: name.to_string(),
+        }
     }
 
     /// A native the statement reaches that cannot run at compile time,
@@ -2119,6 +2180,21 @@ struct BadReach {
     /// With `by_name`: every method with errors the call took by that name
     /// (`method` among them), those the message names and counts.
     reached_bad: Vec<MethodId>,
+    /// The method of that name the call took, when `method` is not one of
+    /// them but was reached from it.
+    pulled: Option<MethodId>,
+}
+
+/// A call by name a walk passed through (`Runner::bad_reach`): its name,
+/// the native whose calls named it (none for the program's own call or an
+/// instruction's), the function it was made in, and the method of that
+/// name taken, from which what follows was reached.
+struct Origin {
+    name: String,
+    native: Option<MethodId>,
+    /// The function whose walk took the method by the name.
+    from: FuncId,
+    pulled: MethodId,
 }
 
 /// A call by name that brought methods into a statement's reach: the
@@ -2475,8 +2551,9 @@ impl Runner {
                 Ok(BadReach {
                     by_name: Some(b),
                     reached_bad,
+                    pulled,
                     ..
-                }) => self.by_name_message(host, &callee_name, &b, reached_bad),
+                }) => self.by_name_message(host, &callee_name, &b, reached_bad, pulled),
                 Err(c) => format!(
                     "`{callee_name}` did not run: it reaches `{c}`, which has errors (reported above)"
                 ),

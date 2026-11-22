@@ -851,6 +851,31 @@ fn a_method_reached_by_name_is_named_with_the_call() {
     );
 }
 
+/// A method with errors that is not itself of the name, but is reached
+/// from a method the call by name took, is named after the chain: the
+/// call, the method of the name it pulled in, then the method with errors
+/// (#1037: the reported helper's callee).
+#[test]
+fn a_method_reached_from_one_taken_by_name_names_the_chain() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Model\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.ask -> Void\n    s = [J.new].join(\",\")\n    def_class_method(:asked) { s }\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass First < Model\n  ask\nend\nclass Post < Model\n  gen\nend\nclass J\n  def to_s -> String = R.new.text\nend\nclass R\n  def text -> String = Post.new.title\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("app.qz:3:3: error: `ask` did not run: the native `Array#join`, which is taken to call `to_s` by name on the values it is given, may reach `J#to_s` (app.qz:9), a method of that name, which may reach `R#text` (app.qz:12), which has errors: undefined method `title` for Post"),
+        "{err}"
+    );
+}
+
 /// The method a by-name error names, and the count, are among those the
 /// call reached by that name: a class method `to_s` with errors, which an
 /// earlier statement reached directly, is not one `Array#join`'s
