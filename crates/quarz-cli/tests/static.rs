@@ -570,7 +570,7 @@ fn a_method_with_errors_does_not_run_through_the_runtime() {
         ),
         (
             "broken",
-            "`broken` did not run: it may reach `Bad#to_s` (lib_bad.qz:2), which has errors: ",
+            "`broken` did not run: a call of `to_s` the runtime makes by name (for `BadBase#broken`) may reach `Bad#to_s` (lib_bad.qz:2), a method of that name, which has errors: ",
         ),
     ] {
         let (lib, base) = if call == "broken" {
@@ -786,10 +786,21 @@ fn the_in_place_updates_reach_what_they_compare_by() {
         "lib.qz",
         "class K\n  def ==(o: Object) -> Bool\n    n: Int = \"oops\"\n    true\n  end\n  def hash -> Int = 1\nend\nclass H\n  def ==(o: Object) -> Bool = true\n  def hash -> Int\n    n: Int = \"oops\"\n    1\n  end\nend\nclass Base\n  static def self.adel -> Void\n    [K.new].delete(K.new)\n    def_class_method(:a) { 1 }\n  end\n  static def self.hput -> Void\n    h: Hash[H, Int] = {}\n    h.put(H.new, 1)\n    def_class_method(:b) { 1 }\n  end\n  static def self.hdel -> Void\n    h: Hash[H, Int] = {}\n    h.delete(H.new)\n    def_class_method(:c) { 1 }\n  end\n  static def self.apush -> Void\n    [K.new].push(K.new)\n    def_class_method(:f) { 1 }\n  end\nend\n",
     );
+    // (Each brought in by a call by name, which the error names, #1037:
+    // the native `Array#delete`'s, or the one an in-place update makes.)
     for (call, reached) in [
-        ("adel", Some("`K#==` (lib.qz:2)")),
-        ("hput", Some("`H#hash` (lib.qz:10)")),
-        ("hdel", Some("`H#hash` (lib.qz:10)")),
+        (
+            "adel",
+            Some("the native `Array#delete`, which is taken to call `==` by name on the values it is given, may reach `K#==` (lib.qz:2)"),
+        ),
+        (
+            "hput",
+            Some("a call of `hash` the runtime makes by name (for `Base#hput`) may reach `H#hash` (lib.qz:10)"),
+        ),
+        (
+            "hdel",
+            Some("a call of `hash` the runtime makes by name (for `Base#hdel`) may reach `H#hash` (lib.qz:10)"),
+        ),
         ("apush", None),
     ] {
         let app = write(
@@ -800,15 +811,40 @@ fn the_in_place_updates_reach_what_they_compare_by() {
         let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
         // (The library's own errors fail the check in any case.)
         assert!(!ok, "{call}");
-        let refused = format!("`{call}` did not run: it may reach ");
+        let refused = format!("`{call}` did not run: ");
         match reached {
             Some(m) => assert!(
-                err.contains(&format!("{refused}{m}, which has errors")),
+                err.contains(&format!("{refused}{m}, a method of that name, which has errors")),
                 "{call}: {err}"
             ),
             None => assert!(!err.contains(&refused), "{call}: {err}"),
         }
     }
+}
+
+/// A statement blocked by a method that came into its reach by name says
+/// which call by name brought it (#1037): here a native the walk takes to
+/// call `status` on the values it is given, and the first method of the
+/// name with errors in source order, with how many more there are.
+#[test]
+fn a_method_reached_by_name_is_named_with_the_call() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Model\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.ask -> Void\n    xs: Array[A | B] = [A.new, B.new]\n    s = xs.size.to_s\n    def_class_method(:asked) { s }\n  end\nend\nclass A\n  def status -> String = \"a\"\nend\nclass B\n  def status -> Int = 2\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass First < Model\n  ask\nend\nclass Post < Model\n  gen\nend\nclass Helper\n  def status(h: Int, m: Int) -> String = Post.new.title\nend\nclass Other\n  def status(x: String) -> String = Post.new.title + x\nend\nputs First.asked\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("app.qz:3:3: error: `ask` did not run: the native `Cog#name`, which is taken to call `status` by name on the values it is given, may reach `Helper#status` (app.qz:9), a method of that name, which has errors: undefined method `title` for Post (and 1 more method of that name with errors)"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -1565,7 +1601,7 @@ fn a_round_reaches_the_names_the_runtime_calls_for_its_reach() {
     let (ok, _, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
     assert!(!ok);
     assert!(
-        err.contains("app.qz:6:3: error: `join_things` did not run: it may reach `Bad#to_s` (app.qz:3), which has errors"),
+        err.contains("app.qz:6:3: error: `join_things` did not run: the native `Array#join`, which is taken to call `to_s` by name on the values it is given, may reach `Bad#to_s` (app.qz:3), a method of that name, which has errors"),
         "{err}"
     );
 }
