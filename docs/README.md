@@ -36,3 +36,5 @@ The documents in this directory describe the language and its implementation. Fo
 | Lightweight threads | Stackful M:N tasks (`mmap` reservation + lazy commit) | Ruby-style synchronous code without async/await function coloring |
 | Memory management | Reference counting + in-place updates + cycle collection limited to mutable objects | Fits AOT (no stack maps), in-place updates of immutable values |
 | `arr[i]`/`h[k]` | Out of range / missing key raises. `[]?` returns `nil` | Reduces the nil checks you have to write under static typing (proven by Crystal) |
+
+<!-- CI probe for #1048: a documentation-only change. Not to be merged. -->
