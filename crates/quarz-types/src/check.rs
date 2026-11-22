@@ -3300,7 +3300,19 @@ impl Checker {
             // (`StaticHost::pending_statements`).
             let errors_before = self.error_count();
             if let Some(callee) = self.check_static_stmt(&stmt) {
-                if let Some(r) = runner.as_deref_mut() {
+                // (An `inherited` hook whose body is empty does nothing:
+                // checked as any statement, it is not run, so a hook a
+                // class declares only for its subclasses' overrides costs
+                // nothing, #421.)
+                let empty_hook = stmt.hook.is_some()
+                    && self
+                        .world
+                        .method(callee)
+                        .body
+                        .as_ref()
+                        .and_then(|d| d.body.as_ref())
+                        .is_some_and(|b| b.is_empty());
+                if let Some(r) = runner.as_deref_mut().filter(|_| !empty_hook) {
                     if let Err(failure) = r.run(self, &stmt, callee) {
                         self.static_failure(&stmt, failure);
                     }
@@ -3491,6 +3503,7 @@ impl Checker {
                 file,
                 expr: std::rc::Rc::new(e),
                 span,
+                hook: None,
             };
             let result = match runner.as_deref_mut() {
                 Some(r) => r.eval(self, &stmt, method),
@@ -3604,8 +3617,17 @@ impl Checker {
         self.touched = saved_touched;
         self.frame_vars = saved_frame_vars;
         self.temp_stmts = saved_temp_stmts;
+        // (An `inherited` hook's statement calls the hook itself, never an
+        // override the class declares, which runs for its subclasses: the
+        // call is lowered as `super`'s, on the class's `self`, #421.)
+        if let Some(hook) = stmt.hook {
+            self.out
+                .calls
+                .insert(stmt.expr.id, CallTarget::Super { method: hook });
+        }
         let callee = match self.out.calls.get(&stmt.expr.id) {
             Some(CallTarget::Method { method }) => *method,
+            Some(CallTarget::Super { method }) if stmt.hook.is_some() => *method,
             _ => {
                 if self.error_count() == errors_before {
                     self.error_in(
@@ -3652,6 +3674,28 @@ impl Checker {
             }
             None => self.world.static_callee_allowed(stmt.file, m.file),
         };
+        if let (Err(why), Some(_)) = (&allowed, stmt.hook) {
+            // (A statement written nowhere: the subclass's place is wrong,
+            // not a call, #421.)
+            let sub = &self.world.class(stmt.class).name;
+            let owner = &self.world.class(m.owner).name;
+            let fix = match why.as_str() {
+                "this cog" => format!("declare `{sub}` in a cog that depends on `{owner}`'s"),
+                "this file" => format!(
+                    "declare `{sub}` in a file that requires `{owner}`'s (loaded before it)"
+                ),
+                "this input" => format!("enter `{sub}` in an input after `{owner}`'s"),
+                _ => format!("declare `{sub}` where `{owner}`'s `static def`s can run"),
+            };
+            self.error_in(
+                stmt.file,
+                format!(
+                    "`{sub}` is a subclass of `{owner}`, whose `static def self.inherited` runs for each subclass at compile time (docs/14 §5), and a `static def` of {why} cannot run here (the staging rule, §2): {fix}"
+                ),
+                stmt.span,
+            );
+            return None;
+        }
         if let Err(why) = allowed {
             let only = if self.repl_unit.is_some() {
                 "those of the files required or the inputs entered before"

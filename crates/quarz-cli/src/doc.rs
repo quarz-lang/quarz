@@ -204,8 +204,14 @@ impl Loaded {
     }
 
     /// The source text of a span, on one line: its first, with `…` when
-    /// it goes on (a `static` statement, for what it generated).
+    /// it goes on (a `static` statement, for what it generated); an
+    /// `inherited` hook's statement by its hook.
     pub fn source_line(&self, span: Span) -> String {
+        // (An `inherited` hook's statement is written nowhere: named by
+        // the hook, #421.)
+        if let Some(label) = self.world.hook_statement_label(span) {
+            return label;
+        }
         let Some(f) = self.file_of(span.start) else {
             return String::new();
         };
