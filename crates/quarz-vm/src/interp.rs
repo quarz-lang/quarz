@@ -926,8 +926,9 @@ impl Derived {
 /// are to share (it is `Send + Sync`, checked below).
 pub struct Program {
     /// Its classes and so on, and, but in a compiled program, its methods
-    /// (see `method`).
-    pub world: RtWorld,
+    /// (see `method`). Shared: the compile-time runs of a check and the
+    /// interpreters a program's tasks load hold the same one (#1057).
+    pub world: std::sync::Arc<RtWorld>,
     /// A compiled program's methods, decoded when first needed.
     pub lazy: Option<std::sync::Arc<crate::methods::Lazy>>,
     /// Compilation units in execution order.
@@ -1070,14 +1071,14 @@ impl Interp {
             functions,
             units,
         } = module;
-        Interp::with_state(world, 0, functions, units, argv, state)
+        Interp::with_state(std::sync::Arc::new(world), 0, functions, units, argv, state)
     }
 
     /// Create an interpreter over shared run-time state, loading the
     /// functions `functions` at ids starting from `base` (the REPL creates
     /// one interpreter per input, sharing variables, tasks and output).
     pub fn with_state(
-        world: RtWorld,
+        world: std::sync::Arc<RtWorld>,
         base: FuncId,
         functions: Vec<Function>,
         units: Vec<Unit>,
@@ -1094,7 +1095,7 @@ impl Interp {
     /// `with_state` for a compiled program, whose methods (`world`'s are
     /// left empty) come from `lazy`.
     pub fn with_state_lazy(
-        world: RtWorld,
+        world: std::sync::Arc<RtWorld>,
         base: FuncId,
         functions: Vec<FuncInfo>,
         units: Vec<Unit>,

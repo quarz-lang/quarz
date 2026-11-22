@@ -22,7 +22,7 @@ use crate::value::*;
 
 /// Everything a second interpreter needs to run the loaded program.
 pub struct ProgramImage {
-    pub world: RtWorld,
+    pub world: Arc<RtWorld>,
     /// A compiled program's methods (shared: decoded once for all).
     pub lazy: Option<Arc<crate::methods::Lazy>>,
     pub functions: Vec<FuncInfo>,
