@@ -32,6 +32,9 @@ pub fn expand(world: &World, sources: &[SourceFile]) -> String {
         None => "?".to_string(),
     };
     let statement = |span: Span| -> String {
+        if let Some(label) = world.hook_statement_label(span) {
+            return label;
+        }
         let Some(f) = file_of(span.start) else {
             return String::new();
         };

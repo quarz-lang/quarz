@@ -326,6 +326,219 @@ fn static_defs_run_from_dependency_cogs() {
     );
 }
 
+/// The `inherited` hook (docs/14 §5, #421), the matrix of its cells, the
+/// expected output derived from the rules: a class of a cog declaring
+/// `static def self.inherited` has it run for each subclass in a cog
+/// depending on it, after the subclass's statements. Cells:
+/// - target: a class (`Post`), an abstract class (`Draft`), a generic
+///   class (`Box[T]`);
+/// - path: a direct subclass (`Post`, `Box`), an indirect one (`Draft`,
+///   `Note` below `Post`), the hook's class in another cog than the
+///   subclass (`orm`'s `Model`, `mid`'s `Mid` and the application);
+/// - definition: one declaring class; an override calling `super` (`Mid`:
+///   `Model`'s runs for `Mid` itself, `Mid`'s for `Leaf`, `super` between
+///   its two lines); an override without `super` (`Quiet`: `Model`'s runs
+///   for `Quiet`, not for `Hush`, as the compile-time lines show);
+/// - backend: the VM and the compiled program print the same.
+///
+/// Elsewhere: the same-cog refusal (`an_inherited_hook_runs_only_from_another_cog`),
+/// the REPL (`repl.rs`), a warm cache and scripts (`static.rs`).
+#[test]
+fn an_inherited_hook_runs_for_each_subclass() {
+    let w = World::new();
+    w.write(
+        "orm/Cog.toml",
+        "[cog]\nname = \"orm\"\nversion = \"0.1.0\"\n",
+    );
+    w.write(
+        "orm/src/model.qz",
+        "class Model\n  static def self.inherited -> Void\n    puts \"Model.inherited for #{self.name}\"\n    n = self.name\n    def_class_method(:made_by) { \"Model for #{n}\" }\n  end\nend\n",
+    );
+    w.commit("orm", Some("v0.1.0"));
+    let orm = format!("Orm = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("orm"));
+    w.write(
+        "mid/Cog.toml",
+        &format!("[cog]\nname = \"mid\"\nversion = \"0.1.0\"\n\n[dependencies]\n{orm}"),
+    );
+    w.write(
+        "mid/src/mid.qz",
+        "class Mid < Orm::Model\n  static def self.inherited -> Void\n    puts \"Mid.inherited for #{self.name}, before super\"\n    super\n    puts \"Mid.inherited for #{self.name}, after super\"\n  end\nend\nclass Quiet < Orm::Model\n  static def self.inherited -> Void\n    puts \"Quiet.inherited for #{self.name}\"\n  end\nend\n",
+    );
+    w.commit("mid", Some("v0.1.0"));
+    w.app(
+        &format!(
+            "{orm}Mid = {{ git = \"{}\", tag = \"v0.1.0\" }}\n",
+            w.url("mid")
+        ),
+        "class Post < Orm::Model\nend\nabstract class Draft < Post\nend\nclass Note < Draft\nend\nclass Box[T] < Orm::Model\n  @v: T\n  def initialize(@v: T); end\nend\nclass Leaf < Mid::Mid\nend\nclass Hush < Mid::Quiet\nend\nputs Post.made_by\nputs Draft.made_by\nputs Note.made_by\nputs Box[Int].made_by\nputs Mid::Mid.made_by\nputs Leaf.made_by\nputs Hush.name\n",
+    );
+    let expected = "Model for Post\nModel for Draft\nModel for Note\nModel for Box\nModel for Mid::Mid\nModel for Leaf\nHush\n";
+    let out = w.quarz("app", &["run"]);
+    assert!(out.ok, "{}", out.stderr);
+    assert_eq!(out.stdout, expected);
+    // What the hooks printed while compiling: `mid`'s cog first (its
+    // classes get `Model`'s), then the application's in order.
+    let said: Vec<&str> = out
+        .stderr
+        .lines()
+        .filter(|l| !l.starts_with("quarz: "))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "Model.inherited for Mid::Mid",
+            "Model.inherited for Mid::Quiet",
+            "Model.inherited for Post",
+            "Model.inherited for Draft",
+            "Model.inherited for Note",
+            "Model.inherited for Box",
+            "Mid.inherited for Leaf, before super",
+            "Model.inherited for Leaf",
+            "Mid.inherited for Leaf, after super",
+            "Quiet.inherited for Hush",
+        ]
+    );
+    // Compiled, the program prints the same.
+    w.write(
+        "app/src/main.qz",
+        "class Post < Orm::Model\nend\nabstract class Draft < Post\nend\nclass Note < Draft\nend\nclass Box[T] < Orm::Model\n  @v: T\n  def initialize(@v: T); end\nend\nclass Leaf < Mid::Mid\nend\nclass Hush < Mid::Quiet\nend\nputs Post.made_by\nputs Draft.made_by\nputs Note.made_by\nputs Box[Int].made_by\nputs Mid::Mid.made_by\nputs Leaf.made_by\nputs Hush.name\n",
+    );
+    let exe = w.path("app/app-bin");
+    w.ok("app", &["build", "-o", exe.to_str().unwrap()]);
+    let out = Command::new(&exe)
+        .env("QUARZ_THREADS", "1")
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+}
+
+/// The `inherited` hook among a class's statements (docs/14 §5, #421),
+/// the expected output derived from the rules:
+/// - order: the statements written in the subclass's body, then the
+///   hook, then the class-end hooks in the order registered (the written
+///   statement's, then the hook's own);
+/// - the hook sees what the written statements generated (`method?`),
+///   registers a class-end hook and adds statement values of its own;
+/// - a generic declaring class (`GBase[T]`, `GSub < GBase[Int]`);
+/// - two declaring classes in a chain with a plain class between them
+///   (`Model`, `Plainmid` declaring none, `Second` its own without
+///   `super`): `Model`'s runs for `Plainmid` and `Second`, `Second`'s for
+///   `Third`;
+/// - a module's `static def self.inherited` is not run for the classes
+///   that include it, nor for their subclasses;
+/// - `quarz doc` names what the hook generated.
+#[test]
+fn an_inherited_hook_runs_after_the_written_statements() {
+    let w = World::new();
+    w.write(
+        "lib/Cog.toml",
+        "[cog]\nname = \"lib\"\nversion = \"0.1.0\"\n",
+    );
+    w.write(
+        "lib/src/lib.qz",
+        "class Model\n  static def self.title_of(t: String) -> Void\n    puts \"title for #{self.name}\"\n    def_method(:title) { t }\n    at_class_end(:done) { |cls| puts \"class end for #{cls.name}\" }\n  end\n  static def self.inherited -> Void\n    puts \"Model.inherited for #{self.name}, sees title: #{self.method?(:title)}\"\n    statement_values[String](:seen).add(self.name)\n    def_class_method(:seen_by) { \"Model\" }\n    at_class_end(:seen) { |cls| puts \"hook's class end for #{cls.name}: #{cls.statement_values[String](:seen).values}\" }\n  end\nend\nclass GBase[T]\n  static def self.inherited -> Void\n    puts \"GBase.inherited for #{self.name}\"\n  end\nend\nmodule Hookm\n  static def self.inherited -> Void\n    puts \"Hookm.inherited for #{self.name}\"\n  end\nend\n",
+    );
+    w.commit("lib", Some("v0.1.0"));
+    let lib = format!("Lib = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("lib"));
+    w.write(
+        "two/Cog.toml",
+        &format!("[cog]\nname = \"two\"\nversion = \"0.1.0\"\n\n[dependencies]\n{lib}"),
+    );
+    w.write(
+        "two/src/two.qz",
+        "class Plainmid < Lib::Model\nend\nclass Second < Plainmid\n  static def self.inherited -> Void\n    puts \"Second.inherited for #{self.name}\"\n  end\nend\n",
+    );
+    w.commit("two", Some("v0.1.0"));
+    w.app(
+        &format!("{lib}Two = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("two")),
+        "class Post < Lib::Model\n  title_of \"hello\"\nend\nclass GSub < Lib::GBase[Int]\nend\nclass Third < Two::Second\nend\nclass Inc\n  include Lib::Hookm\nend\nclass SubInc < Inc\nend\nputs Post.new.title\nputs Post.seen_by\n",
+    );
+    let out = w.quarz("app", &["run"]);
+    assert!(out.ok, "{}", out.stderr);
+    assert_eq!(out.stdout, "hello\nModel\n");
+    let said: Vec<&str> = out
+        .stderr
+        .lines()
+        .filter(|l| !l.starts_with("quarz: "))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "Model.inherited for Two::Plainmid, sees title: false",
+            "hook's class end for Two::Plainmid: [\"Two::Plainmid\"]",
+            "Model.inherited for Two::Second, sees title: false",
+            "hook's class end for Two::Second: [\"Two::Second\"]",
+            "title for Post",
+            "Model.inherited for Post, sees title: true",
+            "class end for Post",
+            "hook's class end for Post: [\"Post\"]",
+            "GBase.inherited for GSub",
+            "Second.inherited for Third",
+        ]
+    );
+    let doc = w.ok("app", &["doc", "Post.seen_by"]);
+    assert!(
+        doc.contains("(generated by `Lib::Model.inherited (run for Post)` at src/main.qz:1)"),
+        "{doc}"
+    );
+}
+
+/// The staging rule (docs/14 §2) for the `inherited` hook (#421): a
+/// subclass in the hook's own cog, abstract or not, an override of it
+/// included, is an error at its `class` line naming the hook's class.
+/// The hook's form is checked at its declaration, and so is a class
+/// method `inherited` that is not `static` below one (an instance method
+/// `inherited`, and a class method one with no hook above, are any
+/// method's). An exception the hook raises is an error at the subclass's
+/// `class` line naming the hook and the class.
+#[test]
+fn an_inherited_hook_runs_only_from_another_cog() {
+    let w = World::new();
+    w.write(
+        "orm/Cog.toml",
+        "[cog]\nname = \"orm\"\nversion = \"0.1.0\"\n",
+    );
+    w.write(
+        "orm/src/model.qz",
+        "class Model\n  static def self.inherited -> Void\n    raise ArgumentError.new(\"#{self.name} is refused\") if self.name == \"Bad\"\n  end\nend\nabstract class Same < Model\nend\nclass Mid < Model\n  static def self.inherited -> Void\n    super\n  end\nend\n",
+    );
+    let err = w.fails("orm", &["check"]);
+    for (at, class) in [("6:10", "Orm::Same"), ("8:1", "Orm::Mid")] {
+        assert!(
+            err.contains(&format!("model.qz:{at}: error: `{class}` is a subclass of `Orm::Model`, whose `static def self.inherited` runs for each subclass at compile time (docs/14 §5), and a `static def` of this cog cannot run here (the staging rule, §2): declare `{class}` in a cog that depends on `Orm::Model`'s")),
+            "{err}"
+        );
+    }
+    w.write(
+        "orm/src/model.qz",
+        "class Model\n  static def self.inherited -> Void\n    raise ArgumentError.new(\"#{self.name} is refused\") if self.name == \"Bad\"\n  end\nend\n",
+    );
+    w.commit("orm", Some("v0.1.0"));
+    w.app(
+        &format!("Orm = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("orm")),
+        "class Args\n  static def self.inherited(x: Int) -> Void; end\nend\nclass Ret\n  static def self.inherited -> Int = 1\nend\nclass Plain < Orm::Model\n  def self.inherited -> Void; end\nend\nclass Inst < Orm::Model\n  def inherited -> Int = 2\nend\nclass Free\n  def self.inherited -> Void; end\nend\nclass Blocked\n  static def self.inherited(&: () -> Void) -> Void; end\nend\n",
+    );
+    let err = w.fails("app", &["check"]);
+    let form = "error: `inherited` is the hook run for each subclass (docs/14 §5): declare it `static def self.inherited -> Void`, with no parameters";
+    assert!(err.contains(&format!("main.qz:2:10: {form}")), "{err}");
+    assert!(err.contains(&format!("main.qz:5:10: {form}")), "{err}");
+    assert!(err.contains(&format!("main.qz:17:10: {form}")), "{err}");
+    assert!(
+        err.contains("main.qz:8:3: error: a class method `inherited` that is not `static` would stop `Orm::Model`'s hook for the classes below `Plain` (docs/14 §5): declare it `static def self.inherited -> Void`, calling `super` to run `Orm::Model`'s, or give it another name"),
+        "{err}"
+    );
+    assert_eq!(err.matches(": error:").count(), 4, "{err}");
+    w.write(
+        "app/src/main.qz",
+        "class Good < Orm::Model\nend\nclass Bad < Orm::Model\nend\nputs 1\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("main.qz:3:1: error: `Orm::Model.inherited`, run for `Bad`, raised ArgumentError: Bad is refused"),
+        "{err}"
+    );
+}
+
 #[test]
 fn a_generation_into_another_cogs_held_type_is_refused() {
     // #796 (C): a field of a library cog holds its `data` type `D` in

@@ -1766,11 +1766,11 @@ impl Runner {
             .min_by_key(|(_, (n, _))| *n);
         let Some((&m, _)) = blocking else {
             return format!(
-                "`{callee_name}` did not run: what it reaches has errors (reported above)"
+                "{callee_name} did not run: what it reaches has errors (reported above)"
             );
         };
         format!(
-            "`{callee_name}` did not run: {}",
+            "{callee_name} did not run: {}",
             self.describe_bad(host, m, "it may reach", "")
         )
     }
@@ -1822,7 +1822,7 @@ impl Runner {
                 self.method_place(host, p)
             );
             return format!(
-                "`{callee_name}` did not run: {}",
+                "{callee_name} did not run: {}",
                 self.describe_bad(host, m, &lead, "")
             );
         }
@@ -1834,10 +1834,10 @@ impl Runner {
         let first = bad.first().copied();
         match first {
             Some(m) => format!(
-                "`{callee_name}` did not run: {}{more}",
+                "{callee_name} did not run: {}{more}",
                 self.describe_bad(host, m, &lead, ", a method of that name")
             ),
-            None => format!("`{callee_name}` did not run: {lead} a method with errors"),
+            None => format!("{callee_name} did not run: {lead} a method with errors"),
         }
     }
 
@@ -2523,11 +2523,24 @@ impl Runner {
         }
         let errors_before = host.error_count();
         let fid = self.lower(host, stmt, callee);
-        let callee_name = host.world().method(callee).name.clone();
+        // (How the messages name the call, quoted: an `inherited` hook's
+        // statement is written nowhere, so its name the hook and the class
+        // it ran for, "`Base.inherited`, run for `Post`, raised ...", #421.)
+        let callee_name = match stmt.hook {
+            Some(h) => {
+                let world = host.world();
+                format!(
+                    "`{}.inherited`, run for `{}`,",
+                    world.class(world.method(h).owner).name,
+                    world.class(stmt.class).name
+                )
+            }
+            None => format!("`{}`", host.world().method(callee).name),
+        };
         if self.net_refused {
             return Err(StaticFailure {
                 message: format!(
-                    "`{callee_name}` did not run: the program's conformances make a row the run could reach that the safety net refuses (reported above)"
+                    "{callee_name} did not run: the program's conformances make a row the run could reach that the safety net refuses (reported above)"
                 ),
                 notes: Vec::new(),
             });
@@ -2545,7 +2558,7 @@ impl Runner {
                     by_name: None,
                     ..
                 }) => format!(
-                    "`{callee_name}` did not run: {}",
+                    "{callee_name} did not run: {}",
                     self.describe_bad(host, method, "it may reach", "")
                 ),
                 Ok(BadReach {
@@ -2555,7 +2568,7 @@ impl Runner {
                     ..
                 }) => self.by_name_message(host, &callee_name, &b, reached_bad, pulled),
                 Err(c) => format!(
-                    "`{callee_name}` did not run: it reaches `{c}`, which has errors (reported above)"
+                    "{callee_name} did not run: it reaches `{c}`, which has errors (reported above)"
                 ),
             };
             return Err(StaticFailure {
@@ -2579,7 +2592,7 @@ impl Runner {
             };
             return Err(StaticFailure {
                 message: format!(
-                    "`{callee_name}` reaches `{last}`{via}, which cannot run at compile time"
+                    "{callee_name} reaches `{last}`{via}, which cannot run at compile time"
                 ),
                 notes: Vec::new(),
             });
@@ -2595,7 +2608,7 @@ impl Runner {
         let reflect = Rc::new(reflect);
         let interp = self.interp(&reflect);
         let result = interp.run_static(fid, Value::Class(stmt.class), stmt.file);
-        self.finish(&interp, &reflect, result, &format!("`{callee_name}`"))
+        self.finish(&interp, &reflect, result, &callee_name)
     }
 
     /// The classes whose statements are still to run, as a message names

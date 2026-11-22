@@ -884,11 +884,144 @@ impl<'ast> Declarer<'ast> {
                     file: self.file,
                     expr: Rc::new(expr.clone()),
                     span: expr.span,
+                    hook: None,
                 });
                 continue;
             }
             self.error("only declarations are allowed in a class body", expr.span);
         }
+        // (Where an ancestor's `inherited` hook runs, if it has one: after
+        // the statements written in the body, nested classes' included, in
+        // file and text order as they are. `inherited_hooks`, which
+        // `resolve_headers` runs, must follow: it keeps the place, with its
+        // hook, or drops it, once the superclasses are known (every caller
+        // of the collecting functions calls `resolve_headers` next; the
+        // checker refuses a place left unfilled, `check_static_stmt`), #421.)
+        if !prelude && self.world.class(id).kind == ClassKind::Class {
+            let span = self.world.class(id).span;
+            self.world.static_stmts.push(StaticStmt {
+                class: id,
+                file: self.file,
+                expr: Rc::new(Expr {
+                    id: crate::world::synthesized_stmt_id(id),
+                    span,
+                    kind: ExprKind::Call(Box::new(Call {
+                        recv: None,
+                        name: "inherited".to_string(),
+                        args: Vec::new(),
+                        block: None,
+                        safe_nav: false,
+                        has_parens: false,
+                        type_args: Vec::new(),
+                        function: false,
+                    })),
+                }),
+                span,
+                hook: None,
+            });
+        }
+    }
+
+    /// The `inherited` hook (docs/14 §5, #421) for the classes `ids` just
+    /// declared. A class's own `static def self.inherited` must be the
+    /// hook's form (no parameters, `-> Void`); a class method `inherited`
+    /// that is not `static` is refused below a class that has the hook
+    /// (it would stop it for the classes below). A class below one with
+    /// the hook gets one statement more, after the ones written in its
+    /// body, that runs the nearest ancestor's hook (lookup from its
+    /// superclass: a class's own hook runs for its subclasses, not for
+    /// it). The staging rule refuses that statement as any other's
+    /// (`Checker::check_static_stmt`): a subclass in the hook's own cog
+    /// (file, REPL input) is an error at its `class` line.
+    fn inherited_hooks(&mut self, ids: &[ClassId]) {
+        // (A program that declares no class method `inherited` has nothing
+        // to look up: the lookups below cost a deep chain its depth per
+        // class.)
+        if !self
+            .world
+            .methods
+            .iter()
+            .any(|m| m.singleton && m.name == "inherited")
+        {
+            self.drop_hook_placeholders();
+            return;
+        }
+        for &id in ids {
+            let c = self.world.class(id);
+            if c.kind != ClassKind::Class {
+                continue;
+            }
+            let name = c.name.clone();
+            let own: Vec<MethodId> = c
+                .singleton_methods
+                .get("inherited")
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|&m| self.world.method(m).owner == id)
+                .collect();
+            let inherited = self.inherited_hook(id);
+            for m in own {
+                let info = self.world.method(m).clone();
+                let saved = std::mem::replace(&mut self.file, info.file);
+                if info.is_static {
+                    if !info.params.is_empty() || info.ret != Type::Void || info.block.is_some() {
+                        self.error(
+                            "`inherited` is the hook run for each subclass (docs/14 §5): declare it `static def self.inherited -> Void`, with no parameters",
+                            info.span,
+                        );
+                    }
+                } else if let Some(hook) = inherited {
+                    let owner = self.world.class(self.world.method(hook).owner).name.clone();
+                    self.error(
+                        format!(
+                            "a class method `inherited` that is not `static` would stop `{owner}`'s hook for the classes below `{name}` (docs/14 §5): declare it `static def self.inherited -> Void`, calling `super` to run `{owner}`'s, or give it another name"
+                        ),
+                        info.span,
+                    );
+                }
+                self.file = saved;
+            }
+            let Some(hook) = inherited else {
+                continue;
+            };
+            let synth = crate::world::synthesized_stmt_id(id);
+            if let Some(s) = self
+                .world
+                .static_stmts
+                .iter_mut()
+                .find(|s| s.class == id && s.expr.id == synth)
+            {
+                s.hook = Some(hook);
+            }
+        }
+        self.drop_hook_placeholders();
+    }
+
+    /// Drop the places `collect_body` kept for an `inherited` hook that
+    /// no ancestor has (all of them are this unit's: an earlier unit's
+    /// were dropped when it was declared, so the indices of the statements
+    /// before stay).
+    fn drop_hook_placeholders(&mut self) {
+        self.world.static_stmts.retain(|s| {
+            s.hook.is_some() || s.expr.id != crate::world::synthesized_stmt_id(s.class)
+        });
+    }
+
+    /// The `inherited` hook class `id` runs: the class method `inherited`
+    /// method lookup finds from its superclass (an ancestor's, strictly
+    /// above `id`), when it is a `static def` of a class (a module's hook
+    /// is not one, docs/14 §5).
+    fn inherited_hook(&self, id: ClassId) -> Option<MethodId> {
+        let sup = self.world.class(id).superclass.clone()?;
+        let (m, _) = self
+            .world
+            .lookup_methods(&Type::type_of(sup), "inherited")
+            .into_iter()
+            .next()?;
+        let info = self.world.method(m);
+        (info.is_static && info.singleton && self.world.class(info.owner).kind == ClassKind::Class)
+            .then_some(m)
     }
 
     fn declare_named(
@@ -1156,6 +1289,10 @@ impl<'ast> Declarer<'ast> {
             self.resolve_extension_members(e);
         }
         self.resolve_usings();
+        // (Before the conformance checks, which defer a class with
+        // statements: the synthesized `inherited` statements count.)
+        let declared: Vec<ClassId> = pending.iter().map(|p| p.id).collect();
+        self.inherited_hooks(&declared);
         // (Before the checks below, which ask whether a `data` type is a
         // `Shareable`: `World::derived_shareable`.)
         let mut ids: Vec<ClassId> = pending.iter().map(|p| p.id).collect();

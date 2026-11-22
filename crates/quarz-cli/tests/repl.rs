@@ -90,6 +90,25 @@ fn a_standard_modules_kernel_functions_follow_what_an_input_names() {
     assert_eq!(out, vec!["", "", "=> \"example.com\""]);
 }
 
+/// The `inherited` hook in the REPL (docs/14 §5, #421): a subclass
+/// entered in a later input than the class declaring the hook gets it
+/// run when its input is entered; one in the same input is refused by the
+/// staging rule of the REPL (§2).
+#[test]
+fn an_inherited_hook_runs_for_a_later_input() {
+    let (out, _) = values(&[
+        "class Base; static def self.inherited -> Void; n = self.name; def_class_method(:made_by) { \"Base for #{n}\" }; end; end",
+        "class A < Base; end",
+        "A.made_by",
+        "class B2; static def self.inherited -> Void; puts 1; end; end; class C2 < B2; end",
+    ]);
+    assert_eq!(out[..3], ["", "", "=> \"Base for A\""]);
+    assert_eq!(
+        out[3],
+        "error: <repl>:1:64: error: `C2` is a subclass of `B2`, whose `static def self.inherited` runs for each subclass at compile time (docs/14 §5), and a `static def` of this input cannot run here (the staging rule, §2): enter `C2` in an input after `B2`'s"
+    );
+}
+
 #[test]
 fn static_statements_run_in_the_session() {
     // docs/14 §2: an input's statements run when it is entered, with the
