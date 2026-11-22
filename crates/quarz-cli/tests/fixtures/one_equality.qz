@@ -1,0 +1,21 @@
+# #1035: a string's and a byte string's equality have one definition
+# each (`natives::string::equal`, `natives::bytes::equal`): `==`, `!=`
+# (`Object#!=`), equality and identity inside collections, and a value
+# seen as `Object` all answer the same.
+
+def mk(s: String) -> String = [s].join
+def mb(s: String) -> Bytes = s.to_bytes
+
+short = mk("abc")
+long = mk("a string longer than fourteen bytes")
+p short == "abc", short != "abc", short == "abd", short != 1, short == nil
+p long == "a string longer than fourteen bytes", long != "a string longer than fourteen byte"
+o: Object = short
+p o == "abc", o != "abc", "abc" == o
+p [short] == ["abc"], {short => 1}["abc"]?, Set[long].include?("a string longer than fourteen bytes")
+b = mb("abc")
+c = mb("abc")
+d = mb("abd")
+p b == c, b != c, b == d, b != d, b == "abc", b != "abc"
+ob: Object = b
+p ob == c, ob != d, [b] == [c], {b => 2}[c]?

@@ -112,11 +112,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         out.extend_from_slice(&bs(i, a.arg(0))?);
         Ok(Value::bytes(out))
     });
-    native!(m, "Bytes#==", |i, r, a| {
-        Ok(Value::Bool(
-            matches!(a.arg(0), Value::Bytes(o) if *o == bs(i, r)?),
-        ))
-    });
+    native!(m, "Bytes#==", |i, r, a| Ok(Value::Bool(equal(
+        &bs(i, r)?,
+        a.arg(0)
+    ))));
     native!(m, "Bytes#<=>", |i, r, a| {
         Ok(Value::Int(bs(i, r)?.cmp(&bs(i, a.arg(0))?) as i64))
     });
@@ -221,6 +220,15 @@ fn string_to_bytes(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
     Ok(Value::bytes(
         string(interp, recv, "receiver")?.as_bytes().to_vec(),
     ))
+}
+
+/// `Bytes#==`: whether `other` is a byte string with the bytes `b`. The
+/// one definition of a byte string's equality: `Bytes#==`, `Value`'s
+/// equality and identity (`Value::identical`), and so `Object#!=` on a
+/// byte string, which negates it (#1035).
+pub fn equal(b: &[u8], other: &Value) -> bool {
+    // (The same bytes, a byte string compared with itself: none read.)
+    matches!(other, Value::Bytes(o) if std::ptr::eq(&**o, b) || **o == *b)
 }
 
 fn bs(interp: &Interp, v: &Value) -> Result<Rc<[u8]>, Flow> {

@@ -14,13 +14,6 @@ use super::{block, int, string};
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "String.build", string_build);
-    native!(m, "String#+", |i, r, a| {
-        Ok(Value::string(format!(
-            "{}{}",
-            s(i, r)?,
-            string(i, a.arg(0), "other")?
-        )))
-    });
     native!(m, "String#*", |i, r, a| {
         Ok(Value::string(
             s(i, r)?.repeat(int(i, a.arg(0), "count")?.max(0) as usize),
@@ -32,42 +25,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         ))
     });
     // (Comparable's would call `<=>` through dispatch for each, #836.)
-    native!(m, "String#<", |i, r, a| {
-        Ok(Value::Bool(
-            order(s(i, r)?, string(i, a.arg(0), "other")?).is_lt(),
-        ))
-    });
-    native!(m, "String#<=", |i, r, a| {
-        Ok(Value::Bool(
-            order(s(i, r)?, string(i, a.arg(0), "other")?).is_le(),
-        ))
-    });
-    native!(m, "String#>", |i, r, a| {
-        Ok(Value::Bool(
-            order(s(i, r)?, string(i, a.arg(0), "other")?).is_gt(),
-        ))
-    });
-    native!(m, "String#>=", |i, r, a| {
-        Ok(Value::Bool(
-            order(s(i, r)?, string(i, a.arg(0), "other")?).is_ge(),
-        ))
-    });
-    native!(m, "String#==", |i, r, a| Ok(Value::Bool(equal(
-        s(i, r)?,
-        a.arg(0)
-    ))));
-    native!(m, "String#size", |i, r, _| {
-        Ok(Value::Int(char_count(r, s(i, r)?) as i64))
-    });
-    native!(m, "String#length", |i, r, _| {
-        Ok(Value::Int(char_count(r, s(i, r)?) as i64))
-    });
-    native!(m, "String#bytesize", |i, r, _| {
-        Ok(Value::Int(s(i, r)?.len() as i64))
-    });
-    native!(m, "String#empty?", |i, r, _| {
-        Ok(Value::Bool(s(i, r)?.is_empty()))
-    });
     native!(m, "String#[]?", string_index_opt);
     native!(m, "String#chars", |i, r, _| {
         Ok(Value::array(s(i, r)?.chars().map(Value::char).collect()))
@@ -85,12 +42,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         ))
     });
     native!(m, "String#=~", string_match_index);
-    native!(m, "String#upcase", |i, r, _| {
-        Ok(Value::string(s(i, r)?.to_uppercase()))
-    });
-    native!(m, "String#downcase", |i, r, _| {
-        Ok(Value::string(s(i, r)?.to_lowercase()))
-    });
     native!(m, "String#capitalize", string_capitalize);
     native!(m, "String#swapcase", |i, r, _| {
         Ok(Value::string(
@@ -119,13 +70,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         c.pop();
         Ok(Value::string(c))
     });
-    native!(m, "String#include?", |i, r, a| {
-        Ok(Value::Bool(s(i, r)?.contains(string(
-            i,
-            a.arg(0),
-            "other",
-        )?)))
-    });
     native!(m, "String#center", |i, r, a| pad(i, r, a, Pad::Center));
     native!(m, "String#ljust", |i, r, a| pad(i, r, a, Pad::Left));
     native!(m, "String#rjust", |i, r, a| pad(i, r, a, Pad::Right));
@@ -141,7 +85,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "String#to_sym", |i, r, _| {
         Ok(Value::Symbol(i.intern(s(i, r)?)))
     });
-    native!(m, "String#to_s", |_, r, _| Ok(r.clone()));
     native!(m, "String#inspect", |i, r, _| {
         Ok(Value::string(crate::interp::inspect_str(s(i, r)?)))
     });
@@ -166,8 +109,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "String::Builder.new", |_, _, _| {
         Ok(Value::StringBuilder(Rc::new(RefCell::new(String::new()))))
     });
-    native!(m, "String::Builder#<<", sb_push);
-    native!(m, "String::Builder#push", sb_push);
     native!(m, "String::Builder#to_s", |i, r, _| {
         Ok(Value::string(std::mem::take(&mut *sb(i, r)?.borrow_mut())))
     });
@@ -248,7 +189,8 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
 /// it, and compiled code's inline compare against a short literal
 /// (`gen::short_literal_eq`, #795) is a fast path that must agree with it.
 pub fn equal(s: &str, other: &Value) -> bool {
-    other.as_str() == Some(s)
+    // (The same text, a long string compared with itself: no byte read.)
+    other.as_str().is_some_and(|o| std::ptr::eq(o, s) || o == s)
 }
 
 pub(super) fn s<'a>(interp: &Interp, v: &'a Value) -> Result<&'a str, Flow> {

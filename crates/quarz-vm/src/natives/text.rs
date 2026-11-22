@@ -160,28 +160,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 .unwrap_or(text),
         ))
     });
-    native!(m, "String#start_with?", |i, r, a| {
-        let text = s(i, r)?;
-        for p in &a.pos {
-            let hit = match p {
-                Value::Regexp(rx) => rx.regex.find(text.as_bytes()).is_some_and(|m| m.0 == 0),
-                other => text.starts_with(string(i, other, "prefix")?),
-            };
-            if hit {
-                return Ok(Value::Bool(true));
-            }
-        }
-        Ok(Value::Bool(false))
-    });
-    native!(m, "String#end_with?", |i, r, a| {
-        let text = s(i, r)?;
-        for p in &a.pos {
-            if text.ends_with(string(i, p, "suffix")?) {
-                return Ok(Value::Bool(true));
-            }
-        }
-        Ok(Value::Bool(false))
-    });
     native!(m, "String#index", |i, r, a| string_find(i, r, a, false));
     native!(m, "String#rindex", |i, r, a| string_find(i, r, a, true));
     native!(m, "String#lines", |i, r, a| {
@@ -251,7 +229,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
 
     // String::Builder
-    native!(m, "String::Builder#append", super::string::sb_push);
     native!(m, "String::Builder#prepend", |i, r, a| {
         let piece = string(i, a.arg(0), "piece")?;
         sb(i, r)?.borrow_mut().insert_str(0, piece);

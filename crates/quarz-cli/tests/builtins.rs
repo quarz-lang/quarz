@@ -134,3 +134,66 @@ fn the_cycle_collector_starts_afresh_for_each_program_on_a_thread() {
     let left = quarz_vm::cycles::candidates();
     assert_eq!(left, 0, "{after} after the fixtures");
 }
+
+/// A native written once (#1035) answers a call that comes with a block
+/// or a keyword as its old generic form did, which read only the
+/// positional arguments: the generic form hands them to the twin whatever
+/// comes with them, and never reaches the twin's "declined" error.
+#[test]
+fn one_definition_generic_forms_ignore_block_and_keywords() {
+    use quarz_vm::interp::{ArgList, Args};
+    use quarz_vm::value::Value;
+    quarz_vm::Interp::install_interpreter();
+    let interp = quarz_vm::Interp::new(common::lower("puts 1\n"), Vec::new());
+    let plain = quarz_vm::natives::all().plain.map();
+    let s = Value::str("héllo");
+    let other = Value::str("abc");
+    let arr = Value::array(vec![Value::Int(1), Value::Int(2)]);
+    let hash = Value::Hash(quarz_vm::rc::Rc::new(Default::default()));
+    let cases: Vec<(&str, &Value, Vec<Value>)> = vec![
+        ("String#size", &s, vec![]),
+        ("String#length", &s, vec![]),
+        ("String#bytesize", &s, vec![]),
+        ("String#empty?", &s, vec![]),
+        ("String#==", &s, vec![other.clone()]),
+        ("String#<", &s, vec![other.clone()]),
+        ("String#<=", &s, vec![other.clone()]),
+        ("String#>", &s, vec![other.clone()]),
+        ("String#>=", &s, vec![other.clone()]),
+        ("String#include?", &s, vec![Value::str("ll")]),
+        ("String#upcase", &s, vec![]),
+        ("String#downcase", &s, vec![]),
+        ("String#+", &s, vec![other.clone()]),
+        ("String#to_s", &s, vec![]),
+        ("Array#size", &arr, vec![]),
+        ("Array#length", &arr, vec![]),
+        ("Array#empty?", &arr, vec![]),
+        ("Hash#size", &hash, vec![]),
+        ("Hash#length", &hash, vec![]),
+        ("Hash#empty?", &hash, vec![]),
+    ];
+    for (key, recv, args) in cases {
+        let f = plain[key];
+        let call = |kw: Vec<_>, block: Option<Value>| {
+            f(
+                &interp,
+                recv,
+                Args {
+                    pos: ArgList::Borrowed(&args),
+                    kw,
+                    block,
+                },
+            )
+            .unwrap_or_else(|_| panic!("`{key}` raised"))
+        };
+        let plain_answer = call(Vec::new(), None);
+        let with_extras = call(
+            vec![(interp.intern("extra"), Value::Int(1))],
+            Some(Value::Nil),
+        );
+        assert_eq!(
+            plain_answer, with_extras,
+            "`{key}` with a block and a keyword"
+        );
+    }
+}

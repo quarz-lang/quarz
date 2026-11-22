@@ -21,23 +21,69 @@ macro_rules! native {
             a: crate::interp::Args,
         ) -> crate::interp::EvalResult {
             let f: crate::interp::NativeFn = $f;
-            let out = f(i, r, a);
-            // What a key's own `==` or `hash` raised (`crate::keys`).
-            if crate::keys::pending() {
-                if let Some(e) = crate::keys::take_error() {
-                    return match out {
-                        Err(f) if !matches!(f, crate::interp::Flow::Raise(_)) => Err(f),
-                        _ => Err(e),
-                    };
-                }
-            }
-            out
+            crate::natives::keys_raised(f(i, r, a))
         }
         $m.add(&[$first $(, $key)*], native, concat!("qzn.", $first));
     }};
     ($m:expr, $key:literal, $f:expr $(,)?) => {
         native!($m, [$key], $f)
     };
+}
+
+/// A native's result, or what a key's own `==` or `hash` raised during
+/// it (`crate::keys`): every generic native's wrapper (`native!`,
+/// `fast!`).
+#[inline]
+pub(crate) fn keys_raised(out: crate::interp::EvalResult) -> crate::interp::EvalResult {
+    if crate::keys::pending() {
+        if let Some(e) = crate::keys::take_error() {
+            return match out {
+                Err(f) if !matches!(f, crate::interp::Flow::Raise(_)) => Err(f),
+                _ => Err(e),
+            };
+        }
+    }
+    out
+}
+
+/// Where `fast!` registers a native: its generic form into the plain
+/// registry, its by-reference twin into the fast one, from the same line
+/// (#1035), each under its keys once.
+pub(crate) trait Sink {
+    fn both(
+        &mut self,
+        keys: &[&'static str],
+        generic: NativeFn,
+        generic_symbol: &'static str,
+        twin: crate::interp::FastNativeFn,
+        twin_symbol: &'static str,
+    );
+}
+
+impl Sink for Registry<NativeFn> {
+    fn both(
+        &mut self,
+        keys: &[&'static str],
+        generic: NativeFn,
+        generic_symbol: &'static str,
+        _: crate::interp::FastNativeFn,
+        _: &'static str,
+    ) {
+        self.add(keys, generic, generic_symbol);
+    }
+}
+
+impl Sink for Registry<crate::interp::FastNativeFn> {
+    fn both(
+        &mut self,
+        keys: &[&'static str],
+        _: NativeFn,
+        _: &'static str,
+        twin: crate::interp::FastNativeFn,
+        twin_symbol: &'static str,
+    ) {
+        self.add(keys, twin, twin_symbol);
+    }
 }
 
 /// How compiled code hands a `qzfc.` entry its operands (#795): six
@@ -106,7 +152,7 @@ pub mod fast_call {
 /// code calls it through (`qzfc.`, #795): the twin and its entry come from
 /// this one line, under its first key.
 macro_rules! fast {
-    ($m:expr, [$first:literal $(, $key:literal)* $(,)?], $f:expr $(,)?) => {{
+    ($m:expr, [$first:literal $(, $key:literal)* $(,)?], $f:expr, generic: $g:expr $(,)?) => {{
         // The twin, once: its `qzf.` export and its `qzfc.` entry both
         // run this body (the entry inlines it rather than calling the
         // export, which a position-independent program reaches through
@@ -190,10 +236,37 @@ macro_rules! fast {
             }
         }
         let _ = entry;
-        $m.add(&[$first $(, $key)*], native, concat!("qzf.", $first));
+        /// The generic form (`qzn.`): the twin on the positional
+        /// arguments (as the generic forms read them, whatever block or
+        /// keywords come with the call), then, where it declines, `$g`,
+        /// which raises what the twin does not answer (a receiver or
+        /// argument of another kind) or does what it leaves (#1035).
+        #[export_name = concat!("qzn.", $first)]
+        fn generic(
+            i: &crate::interp::Interp,
+            r: &crate::value::Value,
+            a: crate::interp::Args,
+        ) -> crate::interp::EvalResult {
+            {
+                let refs: smallvec::SmallVec<[&crate::value::Value; 3]> = a.pos.iter().collect();
+                if let Some(v) = body(i, r, &refs) {
+                    return Ok(v);
+                }
+            }
+            let g: crate::interp::NativeFn = $g;
+            crate::natives::keys_raised(g(i, r, a))
+        }
+        crate::natives::Sink::both(
+            $m,
+            &[$first $(, $key)*],
+            generic,
+            concat!("qzn.", $first),
+            native,
+            concat!("qzf.", $first),
+        );
     }};
-    ($m:expr, $key:literal, $f:expr $(,)?) => {
-        fast!($m, [$key], $f)
+    ($m:expr, $key:literal, $f:expr, generic: $g:expr $(,)?) => {
+        fast!($m, [$key], $f, generic: $g)
     };
 }
 
@@ -576,6 +649,8 @@ fn registry() -> Registry<NativeFn> {
     crypto::register(&mut m);
     #[cfg(not(feature = "crypto"))]
     no_crypto(&mut m);
+    // The generic forms of the natives with a twin (#1035).
+    fast::register(&mut m);
     m
 }
 
@@ -818,6 +893,29 @@ pub(crate) fn clock_start() -> std::time::Instant {
 
 #[cfg(test)]
 mod compile_time_tests {
+    /// Every key with a by-reference twin has its generic form in the
+    /// plain registry under the same key and the same first key's symbol,
+    /// from the same `fast!` line, and is registered once in each (#1035).
+    #[test]
+    fn twins_have_their_generic_form() {
+        let plain = super::registry();
+        let fast = super::fast_registry();
+        for (key, _, sym) in &fast.entries {
+            let generic: Vec<_> = plain.entries.iter().filter(|e| e.0 == *key).collect();
+            assert_eq!(generic.len(), 1, "`{key}` in the plain registry");
+            assert_eq!(
+                generic[0].2.trim_start_matches("qzn."),
+                sym.trim_start_matches("qzf."),
+                "`{key}`"
+            );
+            assert_eq!(
+                fast.entries.iter().filter(|e| e.0 == *key).count(),
+                1,
+                "`{key}` twice"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]
