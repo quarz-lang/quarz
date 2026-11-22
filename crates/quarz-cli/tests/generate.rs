@@ -321,7 +321,8 @@ end
 /// inside), interpreted and compiled; in a block given to
 /// `def_initialize`, `super(...)` passes them to the bound's
 /// `initialize`. With `keywords:` what the method takes is known only
-/// when the statement runs: an error.
+/// when the statement runs: an error; a block whose parameters
+/// `def_method` refuses has that error alone.
 #[test]
 fn forwarding_in_a_generated_method() {
     let d = dir();
@@ -347,8 +348,21 @@ fn forwarding_in_a_generated_method() {
       super(...)
     end
   end
+end
+"##,
+    );
+    write(
+        &d.0,
+        "lib2.qz",
+        r##"class Base2
+  def one(x: Int) -> Int = x
   static def self.kw -> Void
     def_method(:h, keywords: [Meta::Keyword.new(:k, Int, true)]) do |opts|
+      one(...)
+    end
+  end
+  static def self.rest -> Void
+    def_method(:r, param: :xs) do |*xs|
       one(...)
     end
   end
@@ -377,14 +391,29 @@ end
     let app2 = write(
         &d.0,
         "app2.qz",
-        "require_relative \"lib\"\nclass C < Base\n  kw\nend\n",
+        "require_relative \"lib2\"\nclass C < Base2\n  kw\nend\n",
     );
     let (ok, _, err) = quarz(&d.0, &["check", app2.to_str().unwrap()], &[]);
     assert!(!ok);
     assert!(
-        err.contains("lib.qz:21:11: error: `...` in a block given with `keywords:`: the generated method's keywords are known only when the statement runs; read them from the block's hash"),
+        err.contains("lib2.qz:5:11: error: `...` in a block given with `keywords:`: the generated method's keywords are known only when the statement runs; read them from the block's hash"),
         "{err}"
     );
+    // A block `def_method` refuses for its parameters (`*rest` here; a
+    // default or a destructuring one likewise): that error alone, the
+    // `...` passing nothing more to say.
+    let app3 = write(
+        &d.0,
+        "app3.qz",
+        "require_relative \"lib2\"\nclass R < Base2\n  rest\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app3.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("lib2.qz:9:36: error: a block given to `def_method` takes plain parameters only"),
+        "{err}"
+    );
+    assert!(!err.contains("lib2.qz:10:"), "{err}");
 }
 
 #[test]

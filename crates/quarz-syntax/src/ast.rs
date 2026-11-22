@@ -82,7 +82,7 @@ pub enum ExprKind {
     Yield(Vec<Arg>),
     Super {
         /// `None` for a bare `super`, which for now means `super(...)`
-        /// (forward the method's arguments, docs/01 §4).
+        /// (forward the method's arguments, docs/01 §3).
         args: Option<Vec<Arg>>,
         block: Option<Box<Block>>,
     },

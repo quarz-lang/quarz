@@ -668,6 +668,11 @@ struct Env {
     /// ... given with `keywords:`: the generated method's parameters are
     /// the keywords the statement computes, the block's one a hash.
     next_block_keywords: bool,
+    /// While a method's parameter default is checked: the parameters
+    /// after it have no value yet when it runs, so `...` there is refused
+    /// (`Checker::forwarding`). (In the environment: a method checked on
+    /// demand from a default has its own.)
+    in_param_default: bool,
     /// ... given to a generating call on another class's `Meta::ClassDef`
     /// than the `static def`'s own `self`.
     next_block_foreign: bool,
@@ -1005,7 +1010,8 @@ struct BlockCtx {
     /// method's, plain), and whether it was given with `keywords:`, so
     /// that what the method takes is known only when the statement runs
     /// (what `...` forwards, `Checker::forwarding`).
-    lifted_params: usize,
+    /// (`None` when they are not all plain: an error of their own.)
+    lifted_params: Option<usize>,
     lifted_keywords: bool,
     /// A block given to `def_initialize`, the body of an `initialize`:
     /// what is outside it is not in that `initialize` (a late closure
@@ -1396,6 +1402,7 @@ impl Checker {
             next_block_lifted: false,
             next_block_init: false,
             next_block_keywords: false,
+            in_param_default: false,
             next_block_foreign: false,
             lifted_foreign: false,
         };
@@ -3842,6 +3849,7 @@ impl Checker {
             next_block_lifted: false,
             next_block_init: false,
             next_block_keywords: false,
+            in_param_default: false,
             next_block_foreign: false,
             lifted_foreign: false,
         }
@@ -4214,6 +4222,7 @@ impl Checker {
             );
             if let Some(d) = &p.default {
                 let expected = p.ty.subst(&self_subst);
+                let saved = std::mem::replace(&mut self.env.in_param_default, true);
                 let t = match self.symbol_argument(d, &expected) {
                     Ok(Some(t)) => t,
                     Err(why) => {
@@ -4222,6 +4231,7 @@ impl Checker {
                     }
                     Ok(None) => self.check_expr(d, Some(&expected)),
                 };
+                self.env.in_param_default = saved;
                 if !self.coerce(&t, &expected) {
                     self.error(
                         format!(
@@ -5467,7 +5477,18 @@ impl Checker {
         id: NodeId,
         span: Span,
         block: ForwardBlock,
+        bare_super: bool,
     ) -> Option<(Vec<Arg>, Vec<VarRef>)> {
+        // In a parameter's default, the parameters after it have no value
+        // yet. (A bare `super` there is left as it was until #1078 is
+        // decided: the second condition goes with it.)
+        if self.env.in_param_default && !bare_super {
+            self.error(
+                "`...` in a parameter's default: the parameters after it have no value yet; write the arguments",
+                span,
+            );
+            return None;
+        }
         let top = self.env.frames.len() - 1;
         // (Each as `name` read at this depth and slot, passed as `kind`.)
         let mut params: Vec<(String, VarRef, Forward)> = Vec::new();
@@ -5481,7 +5502,11 @@ impl Checker {
                 );
                 return None;
             }
-            let n = ctx.lifted_params;
+            // (A block given `*rest`, keywords, a default or `&block` is
+            // refused by itself, docs/14 §5: nothing more to say here.)
+            let Some(n) = ctx.lifted_params else {
+                return None;
+            };
             let frame = self.env.lifted_frame.unwrap_or(top);
             for i in 0..n {
                 let name = self.env.frames[frame].vars[i].name.clone();
@@ -5589,7 +5614,7 @@ impl Checker {
         } else {
             ForwardBlock::Call
         };
-        let Some((args, vars)) = self.forwarding(id, span, own) else {
+        let Some((args, vars)) = self.forwarding(id, span, own, false) else {
             self.check_args_blindly(&Call {
                 args: Vec::new(),
                 ..call.clone()
@@ -16586,7 +16611,12 @@ impl Checker {
             // not be live there either.
             escapes: escapes || is_task || shareable || lifted,
             lifted,
-            lifted_params: block.params.list.len(),
+            lifted_params: block
+                .params
+                .list
+                .iter()
+                .all(|p| p.kind == ParamKind::Positional && p.default.is_none())
+                .then_some(block.params.list.len()),
             lifted_keywords: keywords,
             init,
             static_call: in_static,
@@ -17231,7 +17261,7 @@ impl Checker {
             is_lambda: true,
             escapes: true,
             lifted: false,
-            lifted_params: 0,
+            lifted_params: None,
             lifted_keywords: false,
             init: false,
             static_call: false,
@@ -18343,7 +18373,7 @@ impl Checker {
             return Type::Nothing;
         }
         // `super(...)`, and a bare `super`, which means it for now (docs/01
-        // §4): checked as written with what `...` stands for.
+        // §3): checked as written with what `...` stands for.
         let forward = match args {
             None => Some((expr.id, expr.span)),
             Some([Arg::Forward { id, span }]) => Some((*id, *span)),
@@ -18356,7 +18386,7 @@ impl Checker {
                 } else {
                     ForwardBlock::Super
                 };
-                match self.forwarding(id, span, own) {
+                match self.forwarding(id, span, own, args.is_none()) {
                     Some((a, vars)) => (a, Some(vars)),
                     None => return Type::Nothing,
                 }
@@ -18518,7 +18548,7 @@ impl Checker {
         // `super(...)`: the block's parameters (`forwarding`).
         let (call, vars) = match args {
             Some([Arg::Forward { id, span }]) => {
-                match self.forwarding(*id, *span, ForwardBlock::Own) {
+                match self.forwarding(*id, *span, ForwardBlock::Own, false) {
                     Some((a, vars)) => (Call { args: a, ..call }, Some(vars)),
                     None => return Type::Nothing,
                 }

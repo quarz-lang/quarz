@@ -4741,7 +4741,7 @@ impl<'a> FnBuilder<'a> {
         let method = *method;
         let mut a = match args {
             Some(args) => self.args(args),
-            // A bare `super`: `super(...)` (docs/01 §4), the block passed
+            // A bare `super`: `super(...)` (docs/01 §3), the block passed
             // below as for any `super`.
             None => {
                 let ForwardedArgs {
