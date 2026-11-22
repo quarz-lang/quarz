@@ -892,8 +892,11 @@ impl<'ast> Declarer<'ast> {
         }
         // (Where an ancestor's `inherited` hook runs, if it has one: after
         // the statements written in the body, nested classes' included, in
-        // file and text order as they are. `inherited_hooks` keeps it, with
-        // its hook, or drops it, once the superclasses are known, #421.)
+        // file and text order as they are. `inherited_hooks`, which
+        // `resolve_headers` runs, must follow: it keeps the place, with its
+        // hook, or drops it, once the superclasses are known (every caller
+        // of the collecting functions calls `resolve_headers` next; the
+        // checker refuses a place left unfilled, `check_static_stmt`), #421.)
         if !prelude && self.world.class(id).kind == ClassKind::Class {
             let span = self.world.class(id).span;
             self.world.static_stmts.push(StaticStmt {

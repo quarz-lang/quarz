@@ -3301,9 +3301,9 @@ impl Checker {
             let errors_before = self.error_count();
             if let Some(callee) = self.check_static_stmt(&stmt) {
                 // (An `inherited` hook whose body is empty does nothing:
-                // checked as any statement, it is not run, so a hook a
-                // class declares only for its subclasses' overrides costs
-                // nothing, #421.)
+                // it is not run, though its statement is checked, and the
+                // subclass deferred, as any (docs/14 §5: about 14% of the
+                // check of a deep chain with nothing else), #421.)
                 let empty_hook = stmt.hook.is_some()
                     && self
                         .world
@@ -3576,6 +3576,17 @@ impl Checker {
     /// Type-check one `static` statement and validate what it calls:
     /// the `static def` class method, which must belong to a dependency.
     fn check_static_stmt(&mut self, stmt: &StaticStmt) -> Option<MethodId> {
+        // (A place `Declarer::collect_body` kept for an `inherited` hook is
+        // filled or dropped by `inherited_hooks`: one left would be
+        // checked as a written `inherited`, #421.)
+        if stmt.hook.is_none() && stmt.expr.id == crate::world::synthesized_stmt_id(stmt.class) {
+            debug_assert!(
+                false,
+                "an unfilled `inherited` place for class {}",
+                stmt.class
+            );
+            return None;
+        }
         let class = self.world.class(stmt.class).clone();
         let instance = Type::Class(
             stmt.class,
