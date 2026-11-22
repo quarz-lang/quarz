@@ -29,24 +29,120 @@ pub fn devirtualize(functions: &mut [Function], world: &RtWorld) {
 fn receivers(world: &RtWorld, mid: MethodId) -> Option<Vec<(ClassId, MethodId)>> {
     let m = &world.methods[mid as usize];
     let mut out = Vec::new();
-    for (cid, c) in world.classes.iter().enumerate() {
-        let cid = cid as ClassId;
-        if !matches!(
-            c.kind,
-            RtClassKind::Class | RtClassKind::Data | RtClassKind::Variant
-        ) || c.is_abstract
-        {
-            continue;
-        }
-        if cid != m.owner && !c.ancestors.contains(&m.owner) {
-            continue;
-        }
+    for cid in cone(world, m.owner) {
         out.push((cid, resolve(world, cid, mid)?));
         if out.len() > MAX_CLASSES {
             return None;
         }
     }
     (!out.is_empty()).then_some(out)
+}
+
+/// The classes whose values may be of class `root` or below it: those
+/// that make values (a class, a `data` type, a variant; not an abstract
+/// one), `root` itself or with `root` among their ancestors. The whole
+/// program's, as class hierarchy analysis takes them.
+pub(crate) fn cone(world: &RtWorld, root: ClassId) -> impl Iterator<Item = ClassId> + '_ {
+    world
+        .classes
+        .iter()
+        .enumerate()
+        .filter_map(move |(cid, c)| {
+            let cid = cid as ClassId;
+            (matches!(
+                c.kind,
+                RtClassKind::Class | RtClassKind::Data | RtClassKind::Variant
+            ) && !c.is_abstract
+                && (cid == root || c.ancestors.contains(&root)))
+            .then_some(cid)
+        })
+}
+
+/// `x != y` where every class `x` may be of runs `Object#!=` for `!=` and
+/// one native of `live::NE_NEGATES_EQ` for `==` (`RtWorld::dispatch_target`
+/// for each class of the cone of each of the call's `recv_classes`): that
+/// `==` and a `Not`. `Object#!=` answers `!Value::eq` for such a receiver,
+/// and the native's answer is `Value::eq`'s (#795, #1035): the same
+/// definition, negated. A receiver of unknown classes (`recv_classes` of
+/// `None`), or with one class of the cone answering otherwise, keeps the
+/// call. Run where `devirtualize` runs, on the whole program's classes.
+pub fn negate_eq(functions: &mut [Function], world: &RtWorld) {
+    let method = |id: MethodId| &world.methods[id as usize];
+    let object = world.builtin.object;
+    let named = |name: &str| -> Option<MethodId> {
+        world.classes[object as usize]
+            .methods
+            .get(name)?
+            .iter()
+            .copied()
+            .find(|m| !method(*m).singleton)
+    };
+    let (Some(ne), Some(eq)) = (named("!="), named("==")) else {
+        return;
+    };
+    // The `==` every receiver of a call runs, when it is one listed native.
+    let negatable = |classes: &[ClassId]| -> Option<MethodId> {
+        let mut found: Option<MethodId> = None;
+        for &root in classes {
+            for cid in cone(world, root) {
+                if world.dispatch_target(&method, cid, ne) != ne {
+                    return None;
+                }
+                let w = world.dispatch_target(&method, cid, eq);
+                if found.is_some_and(|f| f != w) {
+                    return None;
+                }
+                found = Some(w);
+            }
+        }
+        let w = found?;
+        method(w)
+            .native_key
+            .as_deref()
+            .is_some_and(|k| live::NE_NEGATES_EQ.contains(&k))
+            .then_some(w)
+    };
+    for f in functions.iter_mut() {
+        for bi in 0..f.blocks.len() {
+            let mut ii = 0;
+            while ii < f.blocks[bi].insts.len() {
+                let found = match &f.blocks[bi].insts[ii] {
+                    Inst::Call {
+                        kind: CallKind::Method(mid),
+                        recv: Some(_),
+                        args,
+                        splat: false,
+                        kw,
+                        kw_splat: None,
+                        block: None,
+                        recv_classes: Some(classes),
+                        ..
+                    } if *mid == ne && args.len() == 1 && kw.is_empty() => negatable(classes),
+                    _ => None,
+                };
+                if let Some(w) = found {
+                    let tmp = f.nregs;
+                    f.nregs += 1;
+                    let Inst::Call { kind, dst, .. } = &mut f.blocks[bi].insts[ii] else {
+                        unreachable!()
+                    };
+                    *kind = CallKind::Method(w);
+                    let result = std::mem::replace(dst, tmp);
+                    let line = f.blocks[bi].lines[ii];
+                    f.blocks[bi].insts.insert(
+                        ii + 1,
+                        Inst::Not {
+                            dst: result,
+                            src: tmp,
+                        },
+                    );
+                    f.blocks[bi].lines.insert(ii + 1, line);
+                    ii += 1;
+                }
+                ii += 1;
+            }
+        }
+    }
 }
 
 /// The method class `cid` runs for `mid`, as dispatch has it

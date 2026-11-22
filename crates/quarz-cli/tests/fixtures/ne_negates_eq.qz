@@ -1,0 +1,198 @@
+# #795: `x != y` on a `String` (and a `Bytes`) is the negation of its
+# `==`, rewritten so by the lowering where every receiver runs `Object#!=`
+# and that `==`; other receivers keep the call. The expected output
+# follows the rule: `!=` is not `==`, by bytes.
+
+def mk(cs: Array[String]) -> String = cs.join
+
+s = mk(Array[String].new)
+p s != "", "" != s
+s = mk(["x"])
+p s != "", "" != s
+s = mk(["a"])
+p s != "a", "a" != s
+s = mk(["b"])
+p s != "a", "a" != s
+s = mk(["b"])
+p s != "a", "a" != s
+s = mk(Array[String].new)
+p s != "a", "a" != s
+s = mk(["a", "x"])
+p s != "a", "a" != s
+s = mk(["a", "b"])
+p s != "ab", "ab" != s
+s = mk(["b", "b"])
+p s != "ab", "ab" != s
+s = mk(["a", "c"])
+p s != "ab", "ab" != s
+s = mk(["a"])
+p s != "ab", "ab" != s
+s = mk(["a", "b", "x"])
+p s != "ab", "ab" != s
+s = mk(["a", "b", "c"])
+p s != "abc", "abc" != s
+s = mk(["b", "b", "c"])
+p s != "abc", "abc" != s
+s = mk(["a", "b", "d"])
+p s != "abc", "abc" != s
+s = mk(["a", "b"])
+p s != "abc", "abc" != s
+s = mk(["a", "b", "c", "x"])
+p s != "abc", "abc" != s
+s = mk(["a", "b", "c", "d"])
+p s != "abcd", "abcd" != s
+s = mk(["b", "b", "c", "d"])
+p s != "abcd", "abcd" != s
+s = mk(["a", "b", "c", "e"])
+p s != "abcd", "abcd" != s
+s = mk(["a", "b", "c"])
+p s != "abcd", "abcd" != s
+s = mk(["a", "b", "c", "d", "x"])
+p s != "abcd", "abcd" != s
+s = mk(["a", "b", "c", "d", "e"])
+p s != "abcde", "abcde" != s
+s = mk(["b", "b", "c", "d", "e"])
+p s != "abcde", "abcde" != s
+s = mk(["a", "b", "c", "d", "f"])
+p s != "abcde", "abcde" != s
+s = mk(["a", "b", "c", "d"])
+p s != "abcde", "abcde" != s
+s = mk(["a", "b", "c", "d", "e", "x"])
+p s != "abcde", "abcde" != s
+s = mk(["a", "b", "c", "d", "e", "f"])
+p s != "abcdef", "abcdef" != s
+s = mk(["b", "b", "c", "d", "e", "f"])
+p s != "abcdef", "abcdef" != s
+s = mk(["a", "b", "c", "d", "e", "g"])
+p s != "abcdef", "abcdef" != s
+s = mk(["a", "b", "c", "d", "e"])
+p s != "abcdef", "abcdef" != s
+s = mk(["a", "b", "c", "d", "e", "f", "x"])
+p s != "abcdef", "abcdef" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g"])
+p s != "abcdefg", "abcdefg" != s
+s = mk(["b", "b", "c", "d", "e", "f", "g"])
+p s != "abcdefg", "abcdefg" != s
+s = mk(["a", "b", "c", "d", "e", "f", "h"])
+p s != "abcdefg", "abcdefg" != s
+s = mk(["a", "b", "c", "d", "e", "f"])
+p s != "abcdefg", "abcdefg" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "x"])
+p s != "abcdefg", "abcdefg" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h"])
+p s != "abcdefgh", "abcdefgh" != s
+s = mk(["b", "b", "c", "d", "e", "f", "g", "h"])
+p s != "abcdefgh", "abcdefgh" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "i"])
+p s != "abcdefgh", "abcdefgh" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g"])
+p s != "abcdefgh", "abcdefgh" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "x"])
+p s != "abcdefgh", "abcdefgh" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i"])
+p s != "abcdefghi", "abcdefghi" != s
+s = mk(["b", "b", "c", "d", "e", "f", "g", "h", "i"])
+p s != "abcdefghi", "abcdefghi" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "j"])
+p s != "abcdefghi", "abcdefghi" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h"])
+p s != "abcdefghi", "abcdefghi" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "x"])
+p s != "abcdefghi", "abcdefghi" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"])
+p s != "abcdefghij", "abcdefghij" != s
+s = mk(["b", "b", "c", "d", "e", "f", "g", "h", "i", "j"])
+p s != "abcdefghij", "abcdefghij" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "k"])
+p s != "abcdefghij", "abcdefghij" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i"])
+p s != "abcdefghij", "abcdefghij" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "x"])
+p s != "abcdefghij", "abcdefghij" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"])
+p s != "abcdefghijk", "abcdefghijk" != s
+s = mk(["b", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"])
+p s != "abcdefghijk", "abcdefghijk" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "l"])
+p s != "abcdefghijk", "abcdefghijk" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"])
+p s != "abcdefghijk", "abcdefghijk" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "x"])
+p s != "abcdefghijk", "abcdefghijk" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"])
+p s != "abcdefghijkl", "abcdefghijkl" != s
+s = mk(["b", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"])
+p s != "abcdefghijkl", "abcdefghijkl" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "m"])
+p s != "abcdefghijkl", "abcdefghijkl" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"])
+p s != "abcdefghijkl", "abcdefghijkl" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "x"])
+p s != "abcdefghijkl", "abcdefghijkl" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m"])
+p s != "abcdefghijklm", "abcdefghijklm" != s
+s = mk(["b", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m"])
+p s != "abcdefghijklm", "abcdefghijklm" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "n"])
+p s != "abcdefghijklm", "abcdefghijklm" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"])
+p s != "abcdefghijklm", "abcdefghijklm" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "x"])
+p s != "abcdefghijklm", "abcdefghijklm" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n"])
+p s != "abcdefghijklmn", "abcdefghijklmn" != s
+s = mk(["b", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n"])
+p s != "abcdefghijklmn", "abcdefghijklmn" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "o"])
+p s != "abcdefghijklmn", "abcdefghijklmn" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m"])
+p s != "abcdefghijklmn", "abcdefghijklmn" != s
+s = mk(["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "x"])
+p s != "abcdefghijklmn", "abcdefghijklmn" != s
+s = mk(["é"])
+p s != "é", "é" != s
+s = mk(["e"])
+p s != "é", "é" != s
+s = mk(["a", "é"])
+p s != "aé", "aé" != s
+s = mk(["a", "\0", "b"])
+p s != "a\0b", "a\0b" != s
+s = mk(["a"])
+p s != "a\0", "a\0" != s
+s = mk(["a", "\0"])
+p s != "a", "a" != s
+s = mk(["a"])
+p s != 1, s != nil, s != :a
+o: String? = nil
+p o != "a", o != nil
+u: String | Int = 1
+p u != "a", u != 1
+w: String | Int = mk(["a"])
+p w != "a", w != "b"
+
+class Loose
+  @v: Int
+  def initialize(@v: Int); end
+  def ==(other: Object) -> Bool = other.is_a?(Loose) && other.as(Loose).v % 10 == @v % 10
+  def v -> Int = @v
+  def hash -> Int = @v % 10
+end
+a = Loose.new(3)
+x: Object = Loose.new(13)
+p a != Loose.new(13), a != Loose.new(4), x != a
+
+def mb(s: String) -> Bytes = s.to_bytes
+b = mb("abc")
+p b != mb("abc"), b != mb("abd"), b != b, b != "abc", b != nil
+
+# An extension's `!=` under `using` binds statically: never rewritten.
+module Contrary
+  extension String
+    def !=(other: String) -> Bool = self == other
+  end
+end
+def contrary(s: String) -> Bool
+  using Contrary
+  s != "abc"
+end
+p contrary(mk(["a", "b", "c"])), contrary(mk(["x"]))
