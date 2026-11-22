@@ -58,18 +58,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
 
     native!(m, "Bytes#each", bytes_each);
     native!(m, "Bytes#each_byte", bytes_each);
-    native!(m, "Bytes#size", |i, r, _| {
-        Ok(Value::Int(bs(i, r)?.len() as i64))
-    });
-    native!(m, "Bytes#length", |i, r, _| {
-        Ok(Value::Int(bs(i, r)?.len() as i64))
-    });
-    native!(m, "Bytes#bytesize", |i, r, _| {
-        Ok(Value::Int(bs(i, r)?.len() as i64))
-    });
-    native!(m, "Bytes#empty?", |i, r, _| {
-        Ok(Value::Bool(bs(i, r)?.is_empty()))
-    });
     native!(m, "Bytes#[]", |i, r, a| {
         let data = bs(i, r)?;
         match a.arg(0) {
@@ -86,14 +74,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
                 i.class_name(other)
             ))),
         }
-    });
-    native!(m, "Bytes#[]?", |i, r, a| {
-        let data = bs(i, r)?;
-        let idx = int(i, a.arg(0), "index")?;
-        Ok(match offset(&data, idx) {
-            Some(k) => Value::Int(data[k] as i64),
-            None => Value::Nil,
-        })
     });
     native!(m, "Bytes#slice", |i, r, a| {
         let data = bs(i, r)?;
@@ -112,10 +92,6 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         out.extend_from_slice(&bs(i, a.arg(0))?);
         Ok(Value::bytes(out))
     });
-    native!(m, "Bytes#==", |i, r, a| Ok(Value::Bool(equal(
-        &bs(i, r)?,
-        a.arg(0)
-    ))));
     native!(m, "Bytes#<=>", |i, r, a| {
         Ok(Value::Int(bs(i, r)?.cmp(&bs(i, a.arg(0))?) as i64))
     });
@@ -231,7 +207,24 @@ pub fn equal(b: &[u8], other: &Value) -> bool {
     matches!(other, Value::Bytes(o) if std::ptr::eq(&**o, b) || **o == *b)
 }
 
-fn bs(interp: &Interp, v: &Value) -> Result<Rc<[u8]>, Flow> {
+/// Whether `hay` starts with `p`, ends with it, or holds it: `String`'s
+/// and `Bytes`' `start_with?`, `end_with?` and `include?` with a plain
+/// argument, the same on a string's bytes (UTF-8: a byte prefix, suffix
+/// or substring of valid text is a text one) and on a byte string's
+/// (#1036).
+pub fn starts_with(hay: &[u8], p: &[u8]) -> bool {
+    hay.starts_with(p)
+}
+
+pub fn ends_with(hay: &[u8], p: &[u8]) -> bool {
+    hay.ends_with(p)
+}
+
+pub fn contains(hay: &[u8], p: &[u8]) -> bool {
+    memchr::memmem::find(hay, p).is_some()
+}
+
+pub(super) fn bs(interp: &Interp, v: &Value) -> Result<Rc<[u8]>, Flow> {
     match v {
         Value::Bytes(b) => Ok(b.clone()),
         _ => Err(interp.err_type(&format!("expected Bytes, got {}", interp.class_name(v)))),
@@ -255,7 +248,7 @@ fn byte(interp: &Interp, v: &Value) -> Result<u8, Flow> {
     })
 }
 
-fn offset(data: &[u8], idx: i64) -> Option<usize> {
+pub(super) fn offset(data: &[u8], idx: i64) -> Option<usize> {
     let n = data.len() as i64;
     let k = if idx < 0 { n + idx } else { idx };
     (0..n).contains(&k).then_some(k as usize)

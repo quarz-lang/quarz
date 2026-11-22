@@ -20,6 +20,8 @@ num-bigint = "0.5"
 num-integer = "0.1"
 num-traits = "0.2"
 regex = "1"
+# (Already in the build through `regex`: byte-string search, #1036.)
+memchr = "2"
 regex-automata = { version = "0.4", default-features = false, features = ["std", "syntax", "meta", "perf", "unicode"] }
 rustc-hash = "2"
 chrono = "0.4"

@@ -1,0 +1,19 @@
+# #1036: `Bytes`' by-reference twins answer as the generic forms do, and
+# the forms they decline (a `Regexp`, several arguments) still answer as
+# before.
+
+def mb(s: String) -> Bytes = s.to_bytes
+b = mb("hello")
+e = mb("")
+p b.size, b.length, b.bytesize, e.size, b.empty?, e.empty?
+p b == mb("hello"), b == mb("hellO"), b == "hello", b == nil, b != mb("x")
+p b[0]?, b[-1]?, b[5]?, b[-6]?, e[0]?
+p b.start_with?(mb("he")), b.start_with?(mb("lo")), b.start_with?(e)
+p b.end_with?(mb("lo")), b.end_with?(mb("he")), b.end_with?(e)
+p b.include?(mb("ll")), b.include?(mb("lx")), b.include?(e), e.include?(e)
+p b.start_with?(/h.l/), b.start_with?(/l+/)
+s = "héllo"
+p s.start_with?("hé"), s.end_with?("llo"), s.include?("él"), s.include?("x")
+p s.start_with?("x", "h"), s.end_with?("x", "o")
+long = mb("ab" * 500 + "xyz")
+p long.include?(mb("xyz")), long.include?(mb("xyy")), long.end_with?(mb("bxyz"))

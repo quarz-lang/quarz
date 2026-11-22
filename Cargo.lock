@@ -1021,6 +1021,7 @@ dependencies = [
  "libc",
  "libmimalloc-sys",
  "md-5",
+ "memchr",
  "mimalloc",
  "num-bigint 0.5.1",
  "num-integer",
