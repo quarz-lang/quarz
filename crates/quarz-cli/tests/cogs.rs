@@ -580,6 +580,33 @@ fn an_inherited_hook_runs_only_from_another_cog() {
     );
 }
 
+/// An inherited `new` from another cog (docs/01 §9, #1065): a class
+/// method of a library's class calls `new` with no block; a subclass in
+/// the application whose `initialize` requires one is refused at that
+/// `initialize`, as one requiring an argument is.
+#[test]
+fn an_inherited_new_from_a_cog_gives_no_required_block() {
+    let w = World::new();
+    w.write(
+        "base/Cog.toml",
+        "[cog]\nname = \"base\"\nversion = \"0.1.0\"\n",
+    );
+    w.write(
+        "base/src/base.qz",
+        "abstract class Base\n  def self.make -> Base = new\nend\n",
+    );
+    w.commit("base", Some("v0.1.0"));
+    w.app(
+        &format!("Base = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("base")),
+        "class NeedsBlock < Base::Base\n  @tag: String\n  def initialize(&make: () -> String)\n    @tag = make.call\n  end\nend\nputs 1\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("main.qz:3:3: error: `NeedsBlock#initialize` does not take the arguments of `new` in `Base::Base.make`, which `NeedsBlock` inherits"),
+        "{err}"
+    );
+}
+
 #[test]
 fn a_generation_into_another_cogs_held_type_is_refused() {
     // #796 (C): a field of a library cog holds its `data` type `D` in

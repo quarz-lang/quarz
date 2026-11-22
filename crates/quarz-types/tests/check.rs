@@ -5312,6 +5312,20 @@ fn an_inherited_new_is_checked_against_each_initialize_in_full() {
         "class Model\n  def initialize(x: Int); end\n  def self.mk -> Model = new(1)\nend\nclass Sub < Model\n  def initialize(x: Int, &blk: () -> Int); end\nend",
         msg,
     );
+    // The same where the class has no `initialize` of its own, so `new`
+    // gives nothing at all (#1065: the block was not looked at then); an
+    // optional block, and one `new` gives, are taken.
+    err(
+        "abstract class Model\n  def self.mk -> Model = new\nend\nclass Sub < Model\n  @t: String\n  def initialize(&make: () -> String)\n    @t = make.call\n  end\nend",
+        msg,
+    );
+    ok("abstract class Model\n  def self.mk -> Model = new\nend\nclass Sub < Model\n  @t: String\n  def initialize(&make: (() -> String)?)\n    @t = make ? make.call : \"\"\n  end\nend");
+    ok("class Model\n  @t: String\n  def initialize(&make: () -> String)\n    @t = make.call\n  end\n  def self.mk -> Model = new { \"x\" }\nend\nclass Sub < Model\n  def initialize(&make: () -> String)\n    @t = make.call\n  end\nend");
+    // `Self.new` in an instance method the subclass inherits, likewise.
+    err(
+        "abstract class Model\n  def again -> Self = Self.new\nend\nclass Sub < Model\n  @t: String\n  def initialize(&make: () -> String)\n    @t = make.call\n  end\nend",
+        "`Sub#initialize` does not take the arguments of `Self.new` in `Model#again`",
+    );
 }
 
 #[test]

@@ -1799,6 +1799,25 @@ impl Checker {
     /// they were; its keywords by name; its `*rest`, `**opts` and block
     /// (`MethodInfo::block`); and only optional parameters besides.
     fn initialize_fits(&self, init: Option<&MethodInfo>, s: &MethodInfo) -> bool {
+        // A block: a required one only where `new` must give one; one
+        // `new` may give (`init` takes one), a subclass's of a type that
+        // holds it, optional where `init`'s is (a subclass taking none
+        // ignores it). With no `init`, `new` gives none (#1065: checked
+        // before the parameters' early answer below, which left it out).
+        let (given, given_optional) = match init {
+            Some(p) => (&p.block, p.block_optional),
+            None => (&None, false),
+        };
+        match (given, &s.block) {
+            (None, Some(_)) if !s.block_optional => return false,
+            (Some((_, a)), Some((_, b)))
+                if !(a == b || self.world.is_subtype(a, b))
+                    || (given_optional && !s.block_optional) =>
+            {
+                return false
+            }
+            _ => {}
+        }
         let Some(p) = init else {
             return s.params.iter().all(|b| b.default.is_some());
         };
@@ -1824,20 +1843,6 @@ impl Checker {
                 .all(|b| b.default.is_some() || pk.iter().any(|a| a.name == b.name))
         {
             return false;
-        }
-        // A block: a required one only where `new` must give one; one
-        // `new` may give (`init` takes one), a subclass's of a type that
-        // holds it, optional where `init`'s is (a subclass taking none
-        // ignores it).
-        match (&p.block, &s.block) {
-            (None, Some(_)) if !s.block_optional => return false,
-            (Some((_, a)), Some((_, b)))
-                if !(a == b || self.world.is_subtype(a, b))
-                    || (p.block_optional && !s.block_optional) =>
-            {
-                return false
-            }
-            _ => {}
         }
         // (What `*rest` or `**opts` passes, the subclass's takes.)
         [ParamKind::Rest, ParamKind::KeywordRest]
