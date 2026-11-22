@@ -189,7 +189,8 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
 /// it, and compiled code's inline compare against a short literal
 /// (`gen::short_literal_eq`, #795) is a fast path that must agree with it.
 pub fn equal(s: &str, other: &Value) -> bool {
-    other.as_str() == Some(s)
+    // (The same text, a long string compared with itself: no byte read.)
+    other.as_str().is_some_and(|o| std::ptr::eq(o, s) || o == s)
 }
 
 pub(super) fn s<'a>(interp: &Interp, v: &'a Value) -> Result<&'a str, Flow> {

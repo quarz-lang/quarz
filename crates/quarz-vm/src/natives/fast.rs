@@ -11,9 +11,13 @@ use super::string::s;
 use super::{int, string};
 
 /// A twin declined a call of the kinds it answers (its generic form's
-/// checks passed): the twin answers every such call (#1035).
-fn declined(key: &str) -> crate::interp::Flow {
-    unreachable!("internal error: `{key}`'s twin declined a call it answers (#1035)")
+/// checks passed), which it never does: raised as an internal error, not
+/// a panic, which compiled code would turn into an abort (#1035).
+fn declined(i: &crate::interp::Interp, key: &str) -> crate::interp::Flow {
+    i.raise(
+        i.program.exc.runtime_error,
+        &format!("internal error: `{key}`'s twin declined a call it answers (#1035)"),
+    )
 }
 
 /// The natives with a by-reference twin, each written once: `fast!`
@@ -27,7 +31,7 @@ pub fn register(m: &mut impl super::Sink) {
     },
         generic: |i, r, _| {
         super::string::s(i, r)?;
-        Err(declined("String#size"))
+        Err(declined(i, "String#size"))
     }
     );
     fast!(m, "String#length", |_, r, a| match (r.as_str(), a) {
@@ -36,7 +40,7 @@ pub fn register(m: &mut impl super::Sink) {
     },
         generic: |i, r, _| {
         super::string::s(i, r)?;
-        Err(declined("String#length"))
+        Err(declined(i, "String#length"))
     }
     );
     fast!(m, "String#bytesize", |_, r, a| match (r.as_str(), a) {
@@ -45,7 +49,7 @@ pub fn register(m: &mut impl super::Sink) {
     },
         generic: |i, r, _| {
         super::string::s(i, r)?;
-        Err(declined("String#bytesize"))
+        Err(declined(i, "String#bytesize"))
     }
     );
     fast!(m, "String#empty?", |_, r, a| match (r.as_str(), a) {
@@ -54,7 +58,7 @@ pub fn register(m: &mut impl super::Sink) {
     },
         generic: |i, r, _| {
         super::string::s(i, r)?;
-        Err(declined("String#empty?"))
+        Err(declined(i, "String#empty?"))
     }
     );
     fast!(m, "String#==", |_, r, a| match (r.as_str(), a) {
@@ -63,7 +67,7 @@ pub fn register(m: &mut impl super::Sink) {
     },
         generic: |i, r, _| {
         super::string::s(i, r)?;
-        Err(declined("String#=="))
+        Err(declined(i, "String#=="))
     }
     );
     // (Comparable's would call `<=>` through dispatch for each, #836.)
@@ -76,7 +80,7 @@ pub fn register(m: &mut impl super::Sink) {
         generic: |i, r, a| {
         super::string::s(i, r)?;
         super::string(i, a.arg(0), "other")?;
-        Err(declined("String#<"))
+        Err(declined(i, "String#<"))
     }
     );
     fast!(m, "String#<=", |_, r, a| match (r.as_str(), a) {
@@ -88,7 +92,7 @@ pub fn register(m: &mut impl super::Sink) {
         generic: |i, r, a| {
         super::string::s(i, r)?;
         super::string(i, a.arg(0), "other")?;
-        Err(declined("String#<="))
+        Err(declined(i, "String#<="))
     }
     );
     fast!(m, "String#>", |_, r, a| match (r.as_str(), a) {
@@ -100,7 +104,7 @@ pub fn register(m: &mut impl super::Sink) {
         generic: |i, r, a| {
         super::string::s(i, r)?;
         super::string(i, a.arg(0), "other")?;
-        Err(declined("String#>"))
+        Err(declined(i, "String#>"))
     }
     );
     fast!(m, "String#>=", |_, r, a| match (r.as_str(), a) {
@@ -112,7 +116,7 @@ pub fn register(m: &mut impl super::Sink) {
         generic: |i, r, a| {
         super::string::s(i, r)?;
         super::string(i, a.arg(0), "other")?;
-        Err(declined("String#>="))
+        Err(declined(i, "String#>="))
     }
     );
     fast!(m, "String#end_with?", |_, r, a| match (r.as_str(), a) {
@@ -154,7 +158,7 @@ pub fn register(m: &mut impl super::Sink) {
         generic: |i, r, a| {
         super::string::s(i, r)?;
         super::string(i, a.arg(0), "other")?;
-        Err(declined("String#include?"))
+        Err(declined(i, "String#include?"))
     }
     );
     fast!(m, "String#upcase", |_, r, a| match (r, a) {
@@ -178,7 +182,7 @@ pub fn register(m: &mut impl super::Sink) {
     },
         generic: |i, r, _| {
         super::string::s(i, r)?;
-        Err(declined("String#upcase"))
+        Err(declined(i, "String#upcase"))
     }
     );
     fast!(m, "String#downcase", |_, r, a| match (r, a) {
@@ -201,7 +205,7 @@ pub fn register(m: &mut impl super::Sink) {
     },
         generic: |i, r, _| {
         super::string::s(i, r)?;
-        Err(declined("String#downcase"))
+        Err(declined(i, "String#downcase"))
     }
     );
     fast!(m, "String#+", |_, r, a| match (r.as_str(), a) {
@@ -216,7 +220,7 @@ pub fn register(m: &mut impl super::Sink) {
         generic: |i, r, a| {
         super::string::s(i, r)?;
         super::string(i, a.arg(0), "other")?;
-        Err(declined("String#+"))
+        Err(declined(i, "String#+"))
     }
     );
     fast!(m, "String#to_s", |_, r, a| match (r.as_str(), a) {
@@ -258,7 +262,7 @@ pub fn register(m: &mut impl super::Sink) {
     },
         generic: |i, r, _| {
         super::collections::arr_data(i, r)?;
-        Err(declined("Array#size"))
+        Err(declined(i, "Array#size"))
     }
     );
     fast!(m, "Array#length", |_, r, a| match (r, a) {
@@ -267,7 +271,7 @@ pub fn register(m: &mut impl super::Sink) {
     },
         generic: |i, r, _| {
         super::collections::arr_data(i, r)?;
-        Err(declined("Array#length"))
+        Err(declined(i, "Array#length"))
     }
     );
     fast!(m, "Array#empty?", |_, r, a| match (r, a) {
@@ -276,7 +280,7 @@ pub fn register(m: &mut impl super::Sink) {
     },
         generic: |i, r, _| {
         super::collections::arr_data(i, r)?;
-        Err(declined("Array#empty?"))
+        Err(declined(i, "Array#empty?"))
     }
     );
     fast!(m, "Array#[]", |_, r, a| match (r, a) {
@@ -341,7 +345,7 @@ pub fn register(m: &mut impl super::Sink) {
     },
         generic: |i, r, _| {
         super::collections::hash(i, r)?;
-        Err(declined("Hash#size"))
+        Err(declined(i, "Hash#size"))
     }
     );
     fast!(m, "Hash#length", |_, r, a| match (r, a) {
@@ -350,7 +354,7 @@ pub fn register(m: &mut impl super::Sink) {
     },
         generic: |i, r, _| {
         super::collections::hash(i, r)?;
-        Err(declined("Hash#length"))
+        Err(declined(i, "Hash#length"))
     }
     );
     fast!(m, "Hash#empty?", |_, r, a| match (r, a) {
@@ -359,7 +363,7 @@ pub fn register(m: &mut impl super::Sink) {
     },
         generic: |i, r, _| {
         super::collections::hash(i, r)?;
-        Err(declined("Hash#empty?"))
+        Err(declined(i, "Hash#empty?"))
     }
     );
     fast!(m, "Set#include?", |_, r, a| match (r, a) {

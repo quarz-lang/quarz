@@ -227,7 +227,8 @@ fn string_to_bytes(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
 /// equality and identity (`Value::identical`), and so `Object#!=` on a
 /// byte string, which negates it (#1035).
 pub fn equal(b: &[u8], other: &Value) -> bool {
-    matches!(other, Value::Bytes(o) if **o == *b)
+    // (The same bytes, a byte string compared with itself: none read.)
+    matches!(other, Value::Bytes(o) if std::ptr::eq(&**o, b) || **o == *b)
 }
 
 fn bs(interp: &Interp, v: &Value) -> Result<Rc<[u8]>, Flow> {

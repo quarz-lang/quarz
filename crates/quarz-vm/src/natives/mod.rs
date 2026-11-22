@@ -237,16 +237,17 @@ macro_rules! fast {
         }
         let _ = entry;
         /// The generic form (`qzn.`): the twin on the positional
-        /// arguments, then, where it declines, `$g`, which raises what
-        /// the twin does not answer (a receiver or argument of another
-        /// kind) or does what it leaves (#1035).
+        /// arguments (as the generic forms read them, whatever block or
+        /// keywords come with the call), then, where it declines, `$g`,
+        /// which raises what the twin does not answer (a receiver or
+        /// argument of another kind) or does what it leaves (#1035).
         #[export_name = concat!("qzn.", $first)]
         fn generic(
             i: &crate::interp::Interp,
             r: &crate::value::Value,
             a: crate::interp::Args,
         ) -> crate::interp::EvalResult {
-            if a.kw.is_empty() && a.block.is_none() && a.pos.len() <= 3 {
+            {
                 let refs: smallvec::SmallVec<[&crate::value::Value; 3]> = a.pos.iter().collect();
                 if let Some(v) = body(i, r, &refs) {
                     return Ok(v);
