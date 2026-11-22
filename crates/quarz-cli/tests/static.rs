@@ -925,6 +925,78 @@ fn a_native_with_real_names_reaches_them() {
     }
 }
 
+/// Each name of `shake::NATIVE_NAMES` beyond the common ones is still
+/// taken to be sent by the natives that send it (#394, the split by
+/// name): `status` by `Process::Output#success?`, `next` and `rewind` by
+/// the `Enumerator` natives, `succ` by a range's (of dates), `to_json` by
+/// `JSON.generate`, a method an enumerator was made for by the
+/// enumerator's. A method of that name using a member a later statement
+/// generates blocks the statement, naming the native; with that statement
+/// first, the program checks. An attribution too narrow would let the
+/// statement run into a method with no body.
+#[test]
+fn a_rare_name_reaches_its_methods_from_its_senders() {
+    for (case, lib, classes, want) in [
+        (
+            "status",
+            "class Model\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.ask -> Void\n    s = Process::Output.new(0, \"\", \"\").success?\n    def_class_method(:a) { s }\n  end\nend\n",
+            "class H\n  def status -> Int = Post.new.title.size\nend\n",
+            "app.qz:3:3: error: `ask` did not run: the native `Process::Output#success?`, which is taken to call `status` by name on the values it is given, may reach `H#status` (app.qz:9), a method of that name, which has errors: undefined method `title` for Post",
+        ),
+        (
+            "next",
+            "class Model\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.ask -> Void\n    s = N.new.each { |x| x }\n    def_class_method(:a) { s }\n  end\nend\n",
+            "class N < Enumerator[Int]\n  def next -> Int\n    Post.new.title\n    raise StopIteration.new(\"done\")\n  end\nend\n",
+            "app.qz:3:3: error: `ask` did not run: the native `Enumerator#each`, which is taken to call `next` by name on the values it is given, may reach `N#next` (app.qz:9), a method of that name, which has errors: undefined method `title` for Post",
+        ),
+        (
+            "rewind",
+            "class Model\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.ask -> Void\n    s = C.new.to_enum.rewind.nil?\n    def_class_method(:a) { s }\n  end\nend\n",
+            "class C\n  def rewind -> Void\n    Post.new.title\n  end\n  include Enumerable[Int]\n  def each(&: (Int) -> Void) -> Void\n    yield 1\n  end\nend\n",
+            "app.qz:3:3: error: `ask` did not run: the native `Enumerator#rewind`, which is taken to call `rewind` by name on the values it is given, may reach `C#rewind` (app.qz:9), a method of that name, which has errors: undefined method `title` for Post",
+        ),
+        (
+            "succ",
+            "class Model\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.ask -> Void\n    s = (Date.new(2026, 1, 1)..Date.new(2026, 1, 3)).to_a.size\n    def_class_method(:a) { s }\n  end\nend\n",
+            "class H\n  def succ -> Int = Post.new.title.size\nend\n",
+            "app.qz:3:3: error: `ask` did not run: the native `Range#to_a`, which is taken to call `succ` by name on the values it is given, may reach `H#succ` (app.qz:9), a method of that name, which has errors: undefined method `title` for Post",
+        ),
+        (
+            "to_json",
+            "class Model\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.ask -> Void\n    s = JSON.generate([1])\n    def_class_method(:a) { s }\n  end\nend\n",
+            "class H\n  def to_json -> String = Post.new.title\nend\n",
+            "app.qz:3:3: error: `ask` did not run: the native `JSON.generate`, which is taken to call `to_json` by name on the values it is given, may reach `H#to_json` (app.qz:9), a method of that name, which has errors: undefined method `title` for Post",
+        ),
+        (
+            "upto",
+            "class Model\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.ask -> Void\n    s = 3.upto(5).size\n    def_class_method(:a) { s }\n  end\nend\n",
+            "class H\n  def upto(n: Int) -> Int = Post.new.title.size\nend\n",
+            "app.qz:3:3: error: `ask` did not run: the native `Enumerator#size`, which is taken to call `upto` by name on the values it is given, may reach `H#upto` (app.qz:9), a method of that name, which has errors: undefined method `title` for Post",
+        ),
+    ] {
+        let d = dir();
+        write(&d.0, "lib.qz", lib);
+        let post = "class Post < Model\n  gen\nend\n";
+        // The statement first, `Post`'s after: blocked, naming the native.
+        let app = write(
+            &d.0,
+            "app.qz",
+            &format!("require_relative \"lib\"\nclass First < Model\n  ask\nend\n{post}{classes}"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        assert!(!ok, "{case}");
+        assert!(err.contains(want), "{case}: {err}");
+        // `Post`'s first: the method has its member, and the program checks.
+        let app = write(
+            &d.0,
+            "app.qz",
+            &format!("require_relative \"lib\"\n{post}class First < Model\n  ask\nend\n{classes}"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        assert!(ok, "{case}: {err}");
+    }
+}
+
 #[test]
 fn a_statement_reaches_call_targets_and_their_overrides() {
     // The statement's `String.build` reaches `String.build`, not every

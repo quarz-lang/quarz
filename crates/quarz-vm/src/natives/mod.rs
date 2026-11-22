@@ -973,6 +973,177 @@ mod compile_time_tests {
         }
     }
 
+    /// The names of `shake::NATIVE_NAMES` beyond the common ones
+    /// (`COMMON_CALLS`, which any native not read key by key is taken to
+    /// call) are sent from these places only, by a literal name, and
+    /// `shake::native_calls_decided` attributes each to the natives that
+    /// reach its place (#394): a send of one anywhere else fails here
+    /// until it is listed and attributed. A place is a file of `src/` and
+    /// the function or native (its key) the send is in.
+    ///
+    /// The scan sees a name written as a literal in a call of one of
+    /// `BY_NAME`, the `Interp` methods that dispatch, or look up to
+    /// dispatch, by a name given as `&str`. It does not see a name passed
+    /// through a `const` or a variable: the two places that send such a
+    /// name are the methods enumerators are made for, which an enumerator
+    /// holds (`collections::enumerator_each`, `steps::start`), reached only
+    /// from the `Enumerator` natives, which `ENUMERATOR_CALLS` covers.
+    /// `Interp::invoke` takes a `MethodId`, found by one of these
+    /// (`has_user_method`), so it carries no name of its own.
+    /// `call_named` is given the name a method object holds (`vm.rs`, a
+    /// closure's `BoundMethod`), never a native's literal.
+    #[test]
+    fn a_rare_name_is_sent_only_from_its_places() {
+        const PLACES: &[(&str, &str, &str)] = &[
+            ("status", "natives/io.rs", "Process::Output#success?"),
+            ("next", "natives/steps.rs", "step"),
+            ("next", "natives/steps.rs", "each_by_next"),
+            ("rewind", "natives/steps.rs", "rewind"),
+            ("succ", "natives/collections.rs", "date_next"),
+            ("to_json", "natives/json.rs", "generate"),
+        ];
+        let common = quarz_ir::shake::COMMON_CALLS;
+        let rare: Vec<&str> = quarz_ir::shake::NATIVE_NAMES
+            .iter()
+            .copied()
+            .filter(|n| !common.contains(n))
+            .collect();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = vec![root.clone()];
+        let mut sources = Vec::new();
+        while let Some(f) = files.pop() {
+            if f.is_dir() {
+                files.extend(std::fs::read_dir(&f).unwrap().map(|e| e.unwrap().path()));
+            } else if f.extension().is_some_and(|e| e == "rs") {
+                let rel = f
+                    .strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                sources.push((rel, std::fs::read_to_string(&f).unwrap()));
+            }
+        }
+        let mut seen: Vec<(&str, &str, &str)> = Vec::new();
+        let mut stray = Vec::new();
+        for (file, text) in &sources {
+            let mut place = String::new();
+            for line in text.lines() {
+                let t = line.trim_start();
+                if let Some(rest) = ["native!(m, \"", "fast!(m, \"", "owned!(m, \""]
+                    .iter()
+                    .find_map(|p| t.strip_prefix(p))
+                {
+                    place = rest.split('"').next().unwrap_or("").to_string();
+                } else if let Some(i) = t.find("fn ") {
+                    let head = &t[..i];
+                    if head.is_empty() || head.ends_with("pub ") || head.ends_with(") ") {
+                        place = t[i + 3..]
+                            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                            .next()
+                            .unwrap_or("")
+                            .to_string();
+                    }
+                }
+                for entry in BY_NAME {
+                    let call = format!("{entry}(");
+                    for (at, _) in line.match_indices(&call) {
+                        // (The first string literal of the call: its name.)
+                        let args = &line[at + call.len()..];
+                        let Some(name) = args.split('"').nth(1) else {
+                            continue;
+                        };
+                        if rare.contains(&name) {
+                            let here = (name, file.as_str(), place.as_str());
+                            if let Some(p) = PLACES.iter().find(|p| **p == here) {
+                                seen.push(*p);
+                            } else {
+                                stray.push(format!("{name} in {file}, {place}"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            stray.is_empty(),
+            "a native sends a name of `shake::NATIVE_NAMES` that only listed places send: list the place here and attribute the name to the natives reaching it in `shake::native_calls_decided`: {stray:?}"
+        );
+        for p in PLACES {
+            assert!(seen.contains(p), "{p:?} sends no such name any more");
+        }
+        // (Every method of `Interp` given a name as `&str` is one of
+        // `BY_NAME` or one that dispatches nothing by it: a new entry point
+        // is an edit here.)
+        let mut unlisted = Vec::new();
+        for file in ["interp.rs", "vm.rs"] {
+            let text = &sources.iter().find(|(f, _)| f == file).unwrap().1;
+            let mut in_fn: Option<String> = None;
+            for line in text.lines() {
+                let t = line.trim_start();
+                if let Some(i) = t.find("fn ") {
+                    let head = &t[..i];
+                    if head.is_empty() || head.ends_with("pub ") || head.ends_with(") ") {
+                        in_fn = Some(
+                            t[i + 3..]
+                                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                                .next()
+                                .unwrap_or("")
+                                .to_string(),
+                        );
+                    }
+                }
+                if t.starts_with("name: &str")
+                    || t.contains(", name: &str")
+                    || t.contains("(name: &str")
+                {
+                    if let Some(f) = in_fn.take() {
+                        if !BY_NAME.contains(&f.as_str()) && !NOT_BY_NAME.contains(&f.as_str()) {
+                            unlisted.push(format!("{file}: {f}"));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            unlisted.is_empty(),
+            "list each in `BY_NAME` (it dispatches by the name) or `NOT_BY_NAME`: {unlisted:?}"
+        );
+    }
+
+    /// The methods of `Interp` that dispatch, or look up to dispatch, by
+    /// a name given as `&str` (`a_rare_name_is_sent_only_from_its_places`).
+    const BY_NAME: &[&str] = &[
+        "send",
+        "send_kw",
+        "send_with",
+        "send_requirement",
+        "has_user_method",
+        "call_named",
+        "binary_op",
+        "find_method",
+        // (A module's requirement, `each` or `<=>`, for `send_requirement`.)
+        "requirement",
+        // (A class's generated `==` or `hash`, for the keys.)
+        "generated_key_method",
+    ];
+
+    /// Those of `interp.rs` and `vm.rs` given a `name: &str` that is not a
+    /// method's to dispatch.
+    const NOT_BY_NAME: &[&str] = &[
+        // (A keyword argument's.)
+        "kw",
+        // (A symbol's.)
+        "intern",
+        // (A task's, for messages.)
+        "spawn_task",
+        // (A field's.)
+        "field_index",
+        // (For the message of an internal error; the method is `req`.)
+        "check_gated_key",
+        // (For the message of a TypeError; the methods are given by id.)
+        "among_method",
+    ];
+
     /// Each line of the tables names natives that exist (with the
     /// optional features off too: their stubs register the same keys).
     #[test]

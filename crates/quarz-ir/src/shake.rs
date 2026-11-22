@@ -104,11 +104,29 @@ pub const NATIVE_NAMES: &[&str] = &[
     "step",
 ];
 
+/// What a native not read key by key (`CALLS_ANY_CLASSES`, and a key no
+/// arm decides) is taken to call by name: the names the interpreter's own
+/// helpers send to any value (`Interp::to_s`, `inspect`, `values_equal`,
+/// `compare`, the keys' `==` and `hash`, `natives::collect`'s `each`).
+/// The other names of `NATIVE_NAMES` are sent from a few places only,
+/// each attributed to the natives that reach it (#394, decided
+/// 2026-11-22): `status` (`Process::Output#success?`), `next` and
+/// `rewind` (the `Enumerator` natives, `natives/steps.rs`), `succ` (a
+/// range of dates stepped: the `Range` natives, `Enumerable`'s ordering
+/// ones and the `Enumerator` ones, `natives/collections.rs`' `date_next`),
+/// `to_json` (`JSON.generate`, `pretty_generate`) and the methods
+/// enumerators are made for (the `Enumerator` natives). quarz-vm's
+/// `natives::a_rare_name_is_sent_only_from_its_places` refuses a send of
+/// one of them anywhere else.
+pub const COMMON_CALLS: &[&str] = &["to_s", "inspect", "==", "hash", "<=>", "each"];
+
 /// What an enumerator's natives call by name: the method it was made for,
 /// one of the first nine, the only ones natives make enumerators of
 /// (`natives::numeric::enumerator`, the one place that makes one; a native
-/// that makes an enumerator of another name adds it here), and `next` and
-/// `rewind` on a source that defines them (`natives/steps.rs`).
+/// that makes an enumerator of another name adds it here), `next` and
+/// `rewind` on a source that defines them (`natives/steps.rs`), and, over
+/// a range of dates, `succ` and `<=>` (`natives/steps.rs`' `start` and
+/// `step`, `collections::date_next`).
 const ENUMERATOR_CALLS: &[&str] = &[
     "each",
     "each_char",
@@ -121,6 +139,8 @@ const ENUMERATOR_CALLS: &[&str] = &[
     "downto",
     "next",
     "rewind",
+    "succ",
+    "<=>",
 ];
 
 /// What the native registered as `key`, called by the runtime by `name`,
@@ -159,11 +179,11 @@ pub fn calls_for(name: &str) -> &'static [&'static str] {
 /// and `hash`, enumerators), as `native_calls_decided` decides it for
 /// every registered native (#394): none for one whose values are built-in
 /// or which calls nothing on them, its real names for one read to call
-/// some, and every name a native calls by (`NATIVE_NAMES`) for the
-/// classes not read key by key yet (`CALLS_ANY_CLASSES`) and for a key
-/// no arm decides.
+/// some, and the names any value may be sent by the interpreter's helpers
+/// (`COMMON_CALLS`) for the classes not read key by key yet
+/// (`CALLS_ANY_CLASSES`) and for a key no arm decides.
 pub fn native_calls(key: &str) -> &'static [&'static str] {
-    native_calls_decided(key).unwrap_or(NATIVE_NAMES)
+    native_calls_decided(key).unwrap_or(COMMON_CALLS)
 }
 
 /// The natives that call no method by name on the values they are given
@@ -262,15 +282,15 @@ pub const CALLS_NONE_KEYS: &[&str] = &[
     "Kernel#Date",
 ];
 
-/// The natives taken to call every name in `NATIVE_NAMES` (`native_calls`'
-/// default), by class, on purpose (#394): those not read key by key yet,
-/// some of which print, compare or iterate a value they are given (`IO`'s
-/// and `File`'s writers, `Kernel`'s conversions and printing,
-/// `Comparable#clamp`, `JSON.parse`'s and `decode`'s builders, the tasks
-/// and channels, which hold values and run blocks, `Process`'s), and the
-/// sockets, which print a non-bytes payload (`net::payload`). Their
-/// natives already read are listed above (`CALLS_NONE_KEYS`) or in an arm
-/// of their own. A new native of these classes falls here; one of any
+/// The natives taken to call the common names (`COMMON_CALLS`,
+/// `native_calls`' default), by class, on purpose (#394): those not read
+/// key by key yet, some of which print, compare or iterate a value they
+/// are given (`IO`'s and `File`'s writers, `Kernel`'s conversions and
+/// printing, `Comparable#clamp`, `JSON.parse`'s and `decode`'s builders,
+/// the tasks and channels, which hold values and run blocks,
+/// `Process`'s), and the sockets, which print a non-bytes payload
+/// (`net::payload`). Their natives already read are listed above
+/// (`CALLS_NONE_KEYS`) or in an arm of their own. A new native of these classes falls here; one of any
 /// other class must be classified for the test
 /// (`natives::every_native_calls_by_name_on_purpose` in quarz-vm).
 pub const CALLS_ANY_CLASSES: &[&str] = &[
@@ -345,14 +365,17 @@ pub fn native_calls_decided(key: &str) -> Option<&'static [&'static str]> {
         ("Array", "delete") | ("Hash", "put" | "delete") | ("Set", "add" | "delete") => {
             &["==", "hash"]
         }
+        // (A range of dates steps by `Date#succ` and compares by `<=>`,
+        // `collections::date_steps` and `date_next`, #884: `Range#each`,
+        // `to_a`, `empty?`, `reverse_each`, and the others through
+        // `range_to_vec`.)
+        ("Range", _) => &["to_s", "inspect", "==", "hash", "<=>", "succ"],
         // A collection's elements are printed, compared, hashed and
         // ordered, not iterated by name (those taking a collection,
         // `Set#merge`, iterate a built-in one).
-        (
-            "Array" | "Hash" | "Set" | "Range" | "Array::Builder" | "Hash::Builder"
-            | "Set::Builder",
-            _,
-        ) => &["to_s", "inspect", "==", "hash", "<=>"],
+        ("Array" | "Hash" | "Set" | "Array::Builder" | "Hash::Builder" | "Set::Builder", _) => {
+            &["to_s", "inspect", "==", "hash", "<=>"]
+        }
         ("Kernel", "p" | "pp" | "puts" | "print" | "warn" | "format" | "sprintf") => {
             &["to_s", "inspect"]
         }
@@ -371,7 +394,11 @@ pub fn native_calls_decided(key: &str) -> Option<&'static [&'static str]> {
         // (`send_requirement(recv, .., "each", ..)`), ordered by `<=>`
         // (`Interp::sort_compared`, `compare`) or by a comparator block
         // whose results are read as numbers (`block_ordering`), #394.)
-        ("Enumerable", "sort" | "sort_pairs" | "min" | "max" | "minmax") => &["each", "<=>"],
+        // (A range's elements are stepped there too, `range_to_vec`: a
+        // range of dates by `succ`.)
+        ("Enumerable", "sort" | "sort_pairs" | "min" | "max" | "minmax") => {
+            &["each", "<=>", "succ"]
+        }
         // (An enumerator drives the method it was made for on its
         // receiver, by name: one of `ENUMERATOR_CALLS`' first nine, the
         // only ones natives make enumerators of.
@@ -384,7 +411,9 @@ pub fn native_calls_decided(key: &str) -> Option<&'static [&'static str]> {
         ("Enumerator", "each" | "next" | "peek" | "rewind" | "size" | "with_index") => {
             ENUMERATOR_CALLS
         }
-        (c, _) if CALLS_ANY_CLASSES.contains(&c) => NATIVE_NAMES,
+        // (Its receiver's `status`, by name: `natives/io.rs`.)
+        ("Process::Output", "success?") => &["status"],
+        (c, _) if CALLS_ANY_CLASSES.contains(&c) => COMMON_CALLS,
         _ => return None,
     })
 }
