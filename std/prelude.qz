@@ -208,6 +208,17 @@ class Type[T]
   # Whether the class has an instance method named [name]; at compile
   # time only.
   static native def method?(name: Symbol) -> Bool
+  # The signatures `new` takes for the class, one per `initialize`
+  # overload, at compile time only: the class's own `initialize`s, or the
+  # nearest ancestor's when `new` takes those (docs/01 §3), as the class
+  # has them (its type arguments applied), written or generated, private
+  # and protected ones included. Each is named `initialize`, its
+  # [Meta::MethodSig#params] are the overload's (their kinds tell required,
+  # optional, rest and keyword parameters apart), its
+  # [Meta::MethodSig#result] is the class (what `new` makes) and
+  # [Meta::MethodSig#static] is false. Empty when `new` takes no arguments.
+  # [methods] leaves `initialize` out, which only `new` and `super` call.
+  static native def constructors -> Array[Meta::MethodSig]
   # Whether the class includes the module `m` (or is `m`, or a subclass
   # of it); at compile time only.
   static native def includes?(m: Type[Object]) -> Bool

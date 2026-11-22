@@ -67,6 +67,10 @@ pub trait Reflect {
     /// The class's instance methods, its own and inherited, in
     /// declaration order (an overriding method once).
     fn methods(&self, class: ClassId) -> Vec<ReflectMethod>;
+    /// The signatures `new` takes for the class (`World::constructors`,
+    /// docs/14 §4): each `initialize` overload, its parameters as the class
+    /// has them, returning the class; none when `new` takes no arguments.
+    fn constructors(&self, class: ClassId) -> Vec<ReflectMethod>;
     /// `Meta::ClassDef#def_method` (docs/14 §5): a method to generate,
     /// recorded for the compiler, or why it cannot be (the message of
     /// the exception raised at the call). Its result is the generation's

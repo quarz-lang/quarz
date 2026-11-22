@@ -66,6 +66,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let out: Result<Vec<Value>, Flow> = methods.iter().map(|m| meta_method(i, m)).collect();
         Ok(Value::array(out?))
     });
+    native!(m, "Type#constructors", |i, r, _| {
+        let class = read_class(i, r)?;
+        let sigs = reflect_of(i)?.constructors(class);
+        let out: Result<Vec<Value>, Flow> = sigs.iter().map(|m| meta_method(i, m)).collect();
+        Ok(Value::array(out?))
+    });
     native!(m, "Type#method?", |i, r, a| {
         let class = read_class(i, r)?;
         let Value::Symbol(name) = a.arg(0) else {
