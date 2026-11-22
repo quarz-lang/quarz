@@ -109,6 +109,39 @@ pub const NATIVE_NAMES: &[&str] = &[
 /// and a static round's lowering): the printing ones each other's
 /// (`Object#to_s` of an array is its elements' `inspect`), `==` and
 /// `hash` each other's (a key's), `<=>` itself; the other names, all.
+/// What an enumerator's natives call by name: the method it was made for,
+/// one of the first nine, the only ones natives make enumerators of
+/// (`natives::numeric::enumerator`, the one place that makes one; a native
+/// that makes an enumerator of another name adds it here), and `next` and
+/// `rewind` on a source that defines them (`natives/steps.rs`).
+const ENUMERATOR_CALLS: &[&str] = &[
+    "each",
+    "each_char",
+    "each_cons",
+    "each_slice",
+    "each_with_index_pairs",
+    "step",
+    "times",
+    "upto",
+    "downto",
+    "next",
+    "rewind",
+];
+
+/// What the native registered as `key`, called by the runtime by `name`,
+/// may call by name in turn (#394): its own calls (`native_calls`, which
+/// hold whatever name it was reached by), narrowed to the name's
+/// (`calls_for`): a collection's native called as `==` compares and
+/// hashes, it does not print. `calls_for`'s default arm narrows nothing,
+/// so a native reached by another name calls what it is classified to.
+pub fn calls_as(key: &str, name: &str) -> impl Iterator<Item = &'static str> {
+    let own = native_calls(key);
+    calls_for(name)
+        .iter()
+        .copied()
+        .filter(move |n| own.contains(n))
+}
+
 pub fn calls_for(name: &str) -> &'static [&'static str] {
     match name {
         "to_s" | "inspect" | "<<" => &["to_s", "inspect"],
@@ -126,11 +159,152 @@ pub fn calls_for(name: &str) -> &'static [&'static str] {
 /// for `Kernel`'s printing functions, and every name a native calls by
 /// (`NATIVE_NAMES`) for the others, which are not told apart.
 pub fn native_calls(key: &str) -> &'static [&'static str] {
+    native_calls_decided(key).unwrap_or(NATIVE_NAMES)
+}
+
+/// The natives that call no method by name on the values they are given
+/// (#394): their arguments and receiver are built-in values, or the
+/// native only stores, copies or compares them by identity, with no block.
+/// By class, read in their natives' code (`quarz-vm/src/natives`):
+/// - `Crypto`, its keys and ciphers, `Digest`'s (`crypto.rs`,
+///   `digest.rs`, `Base64` there too): bytes, strings and numbers in,
+///   bytes out;
+/// - `Random` (`random.rs`): numbers and ranges of numbers; `Random#==`
+///   compares two generators by identity;
+/// - `Signal` (`signal.rs`): signal names and numbers;
+/// - the TLS configuration and sockets (`tls.rs`, `tls_io.rs`): bytes,
+///   strings, paths;
+/// - `Cog`: what the class knows of its cog;
+/// - `Bytes::Secret`: bytes; its `==` compares two secrets' contents;
+/// - `Bytes::Builder`: bytes and strings appended as bytes;
+/// - `Atom` (`natives/concurrency.rs`): it holds a value, gives it back,
+///   compares it by identity (`Value::identical`), and `update` calls the
+///   procedure it is given with it;
+/// - `Proc`'s natives: its count (`arity`) and copies of its captured
+///   frames (`__copy_captures`, `__snapshot`, `natives/concurrency.rs`).
+const CALLS_NONE_CLASSES: &[&str] = &[
+    "Crypto",
+    "Crypto::RSA",
+    "Crypto::RSA::PrivateKey",
+    "Crypto::RSA::PublicKey",
+    "Crypto::AES::GCM",
+    "Crypto::Argon2",
+    "Digest::SHA256",
+    "Digest::MD5",
+    "Digest::HMAC",
+    "Digest::PBKDF2",
+    "Base64",
+    "Random",
+    "Signal",
+    "TLS::ServerConfig",
+    "TLS::Roots",
+    "TLS::Testing",
+    "TLSSocket",
+    "Cog",
+    "Bytes::Secret",
+    "Bytes::Builder",
+    "Atom",
+    "Proc",
+];
+
+/// Single natives of that kind in classes that also have others (#394):
+/// `Bytes::MatchData`'s readers (positions and bytes of a match, its
+/// `to_s` the matched bytes, `inspect` its captures: `MatchData`'s own
+/// functions, `md_*`), `Date.parse` and `Date.parse?` (a string in), `Proc#arity`
+/// (the procedure's own count), `Exception`'s `==` and `hash` (by its
+/// identity), `backtrace`, `cause` and `full_message` (its own fields,
+/// `Interp::exception_message`), and `Meta`'s two markers of a static run.
+pub const CALLS_NONE_KEYS: &[&str] = &[
+    "Bytes::MatchData#[]",
+    "Bytes::MatchData#begin",
+    "Bytes::MatchData#end",
+    "Bytes::MatchData#captures",
+    "Bytes::MatchData#named_captures",
+    "Bytes::MatchData#names",
+    "Bytes::MatchData#pre_match",
+    "Bytes::MatchData#post_match",
+    "Bytes::MatchData#size",
+    "Bytes::MatchData#to_a",
+    "Bytes::MatchData#to_s",
+    "Bytes::MatchData#values_at",
+    "Bytes::MatchData#inspect",
+    "Date.parse",
+    "Date.parse?",
+    "Exception#==",
+    "Exception#hash",
+    "Exception#backtrace",
+    "Exception#cause",
+    "Exception#full_message",
+    "Meta.__static_enter",
+    "Meta.__static_leave",
+    // Natives that only call the procedure they are given (a block
+    // parameter, `natives::block` or `Args::block`), with values of their
+    // own (lines, names, received values, the atom's value) and nothing
+    // done by name with what it returns: the walk reaches the block's
+    // function on its own, by the `MakeBlock` that made it
+    // (`reach_refs`, `Ref::Func`).
+    "Channel#each",
+    "Dir.each_child",
+    "Dir.chdir",
+    "IO#each_line",
+    "File.each_line",
+    "File.foreach",
+    "File.open",
+    "Kernel#loop",
+    // (A file's offset moved, its buffers' only: `natives/io.rs`.)
+    "IO#rewind",
+    // (A string parsed: `natives/time.rs`' `time_parse`, `date_parse`.)
+    "Kernel#Time",
+    "Kernel#Date",
+];
+
+/// The natives taken to call every name in `NATIVE_NAMES` (`native_calls`'
+/// default), by class, on purpose (#394): those not read key by key yet,
+/// some of which print, compare or iterate a value they are given (`IO`'s
+/// and `File`'s writers, `Kernel`'s conversions and printing,
+/// `Comparable#clamp`, `JSON.parse`'s and `decode`'s builders, the tasks
+/// and channels, which hold values and run blocks, `Process`'s), and the
+/// sockets, which print a non-bytes payload (`net::payload`). Their
+/// natives already read are listed above (`CALLS_NONE_KEYS`) or in an arm
+/// of their own. A new native of these classes falls here; one of any
+/// other class must be classified for the test
+/// (`natives::every_native_calls_by_name_on_purpose` in quarz-vm).
+pub const CALLS_ANY_CLASSES: &[&str] = &[
+    "IO",
+    "File",
+    "Dir",
+    "Kernel",
+    "Task",
+    "Task::Scope",
+    "Channel",
+    "Channel::Selector",
+    "Process",
+    "Process::Child",
+    "Process::Output",
+    "Comparable",
+    "JSON",
+    "Date",
+    "Meta",
+    "Socket",
+    "TCPSocket",
+    "TCPServer",
+    "UDPSocket",
+    "UNIXSocket",
+    "UNIXServer",
+];
+
+/// `native_calls` when one of its arms decides `key` (a class's row, a
+/// key's, or `CALLS_ANY_CLASSES`), `None` when only the default would:
+/// every registered native is decided, which a test of quarz-vm checks.
+pub fn native_calls_decided(key: &str) -> Option<&'static [&'static str]> {
     let (class, name) = key
         .split_once('#')
         .or_else(|| key.split_once('.'))
         .unwrap_or(("", key));
-    match (class, name) {
+    if CALLS_NONE_KEYS.contains(&key) || CALLS_NONE_CLASSES.contains(&class) {
+        return Some(&[]);
+    }
+    Some(match (class, name) {
         // (A string's `sub` and `gsub` with a block, and a builder's
         // `<<`, make strings of what they are given.)
         ("String", "sub" | "gsub" | "sub!" | "gsub!" | "%") | ("String::Builder", _) => {
@@ -144,7 +318,10 @@ pub fn native_calls(key: &str) -> &'static [&'static str] {
         // (Compile-time natives: names and types, no values of a program's.)
         (c, _) if c.starts_with("Meta::") => &[],
         // An object's own: what it is for.
-        ("Object", "to_s" | "inspect") => &["to_s", "inspect"],
+        // (`IO`'s print itself with `Interp::inspect`, `natives/io.rs`.)
+        ("Object", "to_s" | "inspect") | ("Exception", "inspect") | ("IO", "to_s" | "inspect") => {
+            &["to_s", "inspect"]
+        }
         ("Object", "==" | "!=" | "hash") => &["==", "hash"],
         ("Object", _) => &[],
         // The in-place updates that look at no element (read in
@@ -158,6 +335,9 @@ pub fn native_calls(key: &str) -> &'static [&'static str] {
             "Array",
             "push" | "pop" | "shift" | "unshift" | "concat" | "+" | "set" | "compact" | "reverse",
         ) => &[],
+        // (Each element's `Interp::to_s`, which prints a nested one with
+        // `inspect`; `natives/collections.rs`'s `array_join`, #394.)
+        ("Array", "join") => &["to_s", "inspect"],
         ("Array", "delete") | ("Hash", "put" | "delete") | ("Set", "add" | "delete") => {
             &["==", "hash"]
         }
@@ -172,8 +352,37 @@ pub fn native_calls(key: &str) -> &'static [&'static str] {
         ("Kernel", "p" | "pp" | "puts" | "print" | "warn" | "format" | "sprintf") => {
             &["to_s", "inspect"]
         }
-        _ => NATIVE_NAMES,
-    }
+        // (Its receiver's `each`, by name, with a block of its own that
+        // passes each element and its index to the one it was given:
+        // `natives/enumerable.rs`, `i.send_requirement(r, i.req_each(),
+        // "each", ..)`, #394.)
+        ("Enumerable", "each_with_index_pairs") => &["each"],
+        // (A value's `to_json` when it has one, else its `Interp::to_s`:
+        // `natives/json.rs`' `generate`, #394.)
+        ("JSON", "generate" | "pretty_generate") => &["to_json", "to_s", "inspect"],
+        // (These make an enumerator, `natives::numeric::enumerator`,
+        // calling nothing; the enumerator's natives drive it.)
+        ("Enumerable", "to_enum" | "map" | "each_with_index" | "each_slice" | "each_cons") => &[],
+        // (The elements through the receiver's `each`, `natives::collect`
+        // (`send_requirement(recv, .., "each", ..)`), ordered by `<=>`
+        // (`Interp::sort_compared`, `compare`) or by a comparator block
+        // whose results are read as numbers (`block_ordering`), #394.)
+        ("Enumerable", "sort" | "sort_pairs" | "min" | "max" | "minmax") => &["each", "<=>"],
+        // (An enumerator drives the method it was made for on its
+        // receiver, by name: one of `ENUMERATOR_CALLS`' first nine, the
+        // only ones natives make enumerators of.
+        // `natives/collections.rs`' `enumerator_each`:
+        // `interp.send(&e.recv, &e.method, ..)`; `next`, `peek`, `rewind`
+        // and `size` the same through `natives/steps.rs` and `collect`,
+        // which also send `next` and `rewind` to a source that defines
+        // them (a subclass of `Enumerator`); `with_index` also calls its
+        // block, #394.)
+        ("Enumerator", "each" | "next" | "peek" | "rewind" | "size" | "with_index") => {
+            ENUMERATOR_CALLS
+        }
+        (c, _) if CALLS_ANY_CLASSES.contains(&c) => NATIVE_NAMES,
+        _ => return None,
+    })
 }
 
 struct Shake<'a> {

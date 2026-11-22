@@ -952,6 +952,27 @@ mod compile_time_tests {
         );
     }
 
+    /// What each native may call by name on the values it is given is
+    /// decided on purpose (#394): an arm of `shake::native_calls_decided`
+    /// takes it (a class's row, a key's, `CALLS_ANY_CLASSES`), so a new
+    /// native fails here until someone says what it calls.
+    #[test]
+    fn every_native_calls_by_name_on_purpose() {
+        let missing: Vec<&str> = every_key()
+            .into_iter()
+            .filter(|k| quarz_ir::shake::native_calls_decided(k).is_none())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "say what these natives call by name in `quarz_ir::shake` (`CALLS_NONE_CLASSES`, `CALLS_NONE_KEYS` or `CALLS_ANY_CLASSES`): {missing:?}"
+        );
+        // (Each listed key names a native.)
+        let keys = every_key();
+        for k in quarz_ir::shake::CALLS_NONE_KEYS {
+            assert!(keys.contains(k), "{k} is no native");
+        }
+    }
+
     /// Each line of the tables names natives that exist (with the
     /// optional features off too: their stubs register the same keys).
     #[test]
