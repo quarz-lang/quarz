@@ -990,3 +990,4 @@ fn an_abstract_method_reached_compiled() {
     }
     fs::remove_dir_all(&dir).ok();
 }
+// CI probe for #1048: a mixed change. Not to be merged.
