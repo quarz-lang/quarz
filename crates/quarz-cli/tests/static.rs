@@ -822,48 +822,44 @@ fn the_in_place_updates_reach_what_they_compare_by() {
     }
 }
 
+/// A method named like one the runtime calls by name, here `status`, is
+/// not in a statement's reach through natives that call nothing of the
+/// kind (#394): #1037's reproducer, two unrelated helpers named `status`
+/// using a member a later statement generates, compiles and runs.
+#[test]
+fn an_unrelated_helper_named_like_a_runtime_name_does_not_block_a_statement() {
+    let d = dir();
+    write(&d.0, "lib.qz", "class Model\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.ask -> Void\n    xs: Array[A | B] = [A.new, B.new]\n    s = xs.map { |x| x.status.to_s }.join(\",\")\n    def_class_method(:asked) { s }\n  end\nend\nclass A\n  def status -> String = \"a\"\nend\nclass B\n  def status -> Int = 2\nend\n");
+    let app = write(&d.0, "app.qz", "require_relative \"lib\"\nclass First < Model\n  ask\nend\nclass Post < Model\n  gen\nend\nclass Helper\n  def status(h: Int, m: Int) -> String = Post.new.title\nend\nclass Other\n  def status(x: String) -> String = Post.new.title + x\nend\nputs First.asked\n");
+    run_and_build(&d.0, &app, "a,2\n");
+}
+
 /// A statement blocked by a method that came into its reach by name says
-/// which call by name brought it (#1037): here a native the walk takes to
-/// call `status` on the values it is given, and the first method of the
-/// name with errors in source order, with how many more there are.
+/// which call by name brought it (#1037): here `Array#join`, which calls
+/// `to_s` by name on its elements, and the first method of the name with
+/// errors in source order, with how many more there are.
 #[test]
 fn a_method_reached_by_name_is_named_with_the_call() {
     let d = dir();
-    write(
-        &d.0,
-        "lib.qz",
-        "class Model\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.ask -> Void\n    xs: Array[A | B] = [A.new, B.new]\n    s = xs.size.to_s\n    def_class_method(:asked) { s }\n  end\nend\nclass A\n  def status -> String = \"a\"\nend\nclass B\n  def status -> Int = 2\nend\n",
-    );
-    let app = write(
-        &d.0,
-        "app.qz",
-        "require_relative \"lib\"\nclass First < Model\n  ask\nend\nclass Post < Model\n  gen\nend\nclass Helper\n  def status(h: Int, m: Int) -> String = Post.new.title\nend\nclass Other\n  def status(x: String) -> String = Post.new.title + x\nend\nputs First.asked\n",
-    );
+    write(&d.0, "lib.qz", "class Model\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.ask -> Void\n    s = [1, 2].join(\",\")\n    def_class_method(:asked) { s }\n  end\n  static def self.ask0 -> Void\n    s = C.to_s\n    def_class_method(:asked0) { s }\n  end\nend\n");
+    let app = write(&d.0, "app.qz", "require_relative \"lib\"\nclass First < Model\n  ask\nend\nclass Post < Model\n  gen\nend\nclass Helper\n  def to_s -> String = Post.new.title\nend\nclass Other\n  def to_s -> String = Post.new.title + \"!\"\nend\nputs First.asked\n");
     let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
     assert!(!ok);
     assert!(
-        err.contains("app.qz:3:3: error: `ask` did not run: the native `Cog#name`, which is taken to call `status` by name on the values it is given, may reach `Helper#status` (app.qz:9), a method of that name, which has errors: undefined method `title` for Post (and 1 more method of that name with errors)"),
+        err.contains("app.qz:3:3: error: `ask` did not run: the native `Array#join`, which is taken to call `to_s` by name on the values it is given, may reach `Helper#to_s` (app.qz:9), a method of that name, which has errors: undefined method `title` for Post (and 1 more method of that name with errors)"),
         "{err}"
     );
 }
 
 /// The method a by-name error names, and the count, are among those the
-/// call reached by that name: a class method `status` with errors, which
-/// an earlier statement reached directly, is not one the runtime's
+/// call reached by that name: a class method `to_s` with errors, which an
+/// earlier statement reached directly, is not one `Array#join`'s
 /// instance-side call takes, so it is neither named nor counted (#1037).
 #[test]
 fn a_by_name_error_counts_only_what_the_call_reached() {
     let d = dir();
-    write(
-        &d.0,
-        "lib.qz",
-        "class Model\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.ask -> Void\n    xs: Array[A | B] = [A.new, B.new]\n    s = xs.size.to_s\n    def_class_method(:asked) { s }\n  end\n  static def self.ask0 -> Void\n    s = C.status\n    def_class_method(:asked0) { s }\n  end\nend\nclass A\n  def status -> String = \"a\"\nend\nclass B\n  def status -> Int = 2\nend\n",
-    );
-    let app = write(
-        &d.0,
-        "app.qz",
-        "require_relative \"lib\"\nclass Zero < Model\n  ask0\nend\nclass First < Model\n  ask\nend\nclass Post < Model\n  gen\nend\nclass Helper\n  def status(h: Int, m: Int) -> String = Post.new.title\nend\nclass C\n  def self.status -> String = Post.new.title\nend\n",
-    );
+    write(&d.0, "lib.qz", "class Model\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.ask -> Void\n    s = [1, 2].join(\",\")\n    def_class_method(:asked) { s }\n  end\n  static def self.ask0 -> Void\n    s = C.to_s\n    def_class_method(:asked0) { s }\n  end\nend\n");
+    let app = write(&d.0, "app.qz", "require_relative \"lib\"\nclass Zero < Model\n  ask0\nend\nclass First < Model\n  ask\nend\nclass Post < Model\n  gen\nend\nclass Helper\n  def to_s -> String = Post.new.title\nend\nclass C\n  def self.to_s -> String = Post.new.title\nend\n");
     let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
     assert!(!ok);
     let line = err
@@ -872,9 +868,61 @@ fn a_by_name_error_counts_only_what_the_call_reached() {
         .unwrap_or_else(|| panic!("{err}"));
     assert_eq!(
         line,
-        "app.qz:6:3: error: `ask` did not run: the native `Cog#name`, which is taken to call `status` by name on the values it is given, may reach `Helper#status` (app.qz:12), a method of that name, which has errors: undefined method `title` for Post",
+        "app.qz:6:3: error: `ask` did not run: the native `Array#join`, which is taken to call `to_s` by name on the values it is given, may reach `Helper#to_s` (app.qz:12), a method of that name, which has errors: undefined method `title` for Post",
         "{err}"
     );
+}
+
+/// The natives classified with real names rather than every name (#394)
+/// still reach what they call: `Enumerable#min` the elements' `<=>`,
+/// `Array#join` their `to_s`, `Enumerator#size` its receiver's `each`.
+/// A method of that name using a member a later statement generates
+/// blocks the statement, naming it; with that statement first, the
+/// program runs. A list too narrow would let the statement run into a
+/// method with no body.
+#[test]
+fn a_native_with_real_names_reaches_them() {
+    for (call, lib, classes, want) in [
+        (
+            "ask_sort",
+            "class Model\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.ask_sort -> Void\n    s = D.new.min.nil?\n    def_class_method(:a) { s }\n  end\nend\n",
+            "class E\n  include Comparable[E]\n  def <=>(o: E) -> Int = Post.new.title.size\nend\nclass D\n  include Enumerable[E]\n  def each(&: (E) -> Void) -> Void\n    yield E.new\n    yield E.new\n  end\nend\n",
+            "app.qz:3:3: error: `ask_sort` did not run: the native `Enumerable#min`, which is taken to call `<=>` by name on the values it is given, may reach `E#<=>` (app.qz:10), a method of that name, which has errors: undefined method `title` for Post",
+        ),
+        (
+            "ask_join",
+            "class Model\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.ask_join -> Void\n    s = [J.new].join(\",\")\n    def_class_method(:a) { s }\n  end\nend\n",
+            "class J\n  def to_s -> String = Post.new.title\nend\n",
+            "app.qz:3:3: error: `ask_join` did not run: the native `Array#join`, which is taken to call `to_s` by name on the values it is given, may reach `J#to_s` (app.qz:9), a method of that name, which has errors: undefined method `title` for Post",
+        ),
+        (
+            "ask_next",
+            "class Model\n  static def self.gen -> Void\n    def_method(:title) { \"generated\" }\n  end\n  static def self.ask_next -> Void\n    s = C.new.to_enum.size\n    def_class_method(:a) { s }\n  end\nend\n",
+            "class C\n  include Enumerable[Int]\n  def each(&: (Int) -> Void) -> Void\n    yield Post.new.title.size\n  end\nend\n",
+            "app.qz:3:3: error: `ask_next` did not run: the native `Enumerator#size`, which is taken to call `each` by name on the values it is given, may reach `C#each` (app.qz:10), a method of that name, which has errors: undefined method `title` for Post",
+        ),
+    ] {
+        let d = dir();
+        write(&d.0, "lib.qz", lib);
+        let post = "class Post < Model\n  gen\nend\n";
+        // The statement first, `Post`'s after: blocked, naming the method.
+        let app = write(
+            &d.0,
+            "app.qz",
+            &format!("require_relative \"lib\"\nclass First < Model\n  {call}\nend\n{post}{classes}"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        assert!(!ok, "{call}");
+        assert!(err.contains(want), "{call}: {err}");
+        // `Post`'s first: the method has its member, and the program runs.
+        let app = write(
+            &d.0,
+            "app.qz",
+            &format!("require_relative \"lib\"\n{post}class First < Model\n  {call}\nend\n{classes}"),
+        );
+        let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+        assert!(ok, "{call}: {err}");
+    }
 }
 
 #[test]

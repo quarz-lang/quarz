@@ -2295,9 +2295,11 @@ fn reached<'a>(
         if world.methods[m as usize].native_key.is_none() {
             continue;
         }
-        let names = match by {
-            Some(n) => shake::calls_for(n),
-            None => native_calls(world, m),
+        // (A native reached by a name: what it calls when called by it,
+        // `shake::calls_as`, #394.)
+        let names: Vec<&'static str> = match (by, world.methods[m as usize].native_key.as_deref()) {
+            (Some(n), Some(key)) => shake::calls_as(key, n).collect(),
+            _ => native_calls(world, m).to_vec(),
         };
         for n in names {
             add(n, Some(m), &mut work, methods);

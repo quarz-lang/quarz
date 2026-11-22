@@ -1483,12 +1483,14 @@ impl Lowerer {
         let before = std::mem::replace(&mut walk.via_runtime, true);
         self.walk_name(world, name, by_name, walk);
         walk.via_runtime = before;
-        if by_name.get(name).is_some_and(|ms| {
-            ms.iter()
-                .any(|&m| is_native_code(&world.methods[m as usize]))
-        }) {
-            walk.runtime_todo
-                .extend_from_slice(quarz_ir::shake::calls_for(name));
+        // (Each native of the name: what it calls when called by it,
+        // `shake::calls_as`, #394.)
+        for &m in by_name.get(name).map(|v| v.as_slice()).unwrap_or(&[]) {
+            let method = &world.methods[m as usize];
+            if is_native_code(method) {
+                walk.runtime_todo
+                    .extend(quarz_ir::shake::calls_as(&method.native_key(world), name));
+            }
         }
     }
 
