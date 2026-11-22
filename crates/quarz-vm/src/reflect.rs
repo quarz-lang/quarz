@@ -49,6 +49,9 @@ pub struct ReflectParam {
     pub ty: ClassId,
     pub kind: ReflectKind,
     pub ty_ref: ReflectType,
+    /// Whether a call may leave the parameter out (`Meta::Param#default`,
+    /// #1060): one with a default, a rest parameter, an optional block.
+    pub default: bool,
 }
 
 /// A method's signature as `Meta::MethodSig` shows it.

@@ -922,7 +922,8 @@ fn meta_method(interp: &Interp, m: &crate::reflect::ReflectMethod) -> EvalResult
                 name,
                 Value::Class(p.ty),
                 kind,
-                type_ref_value(interp, &p.ty_ref)?
+                type_ref_value(interp, &p.ty_ref)?,
+                Value::Bool(p.default)
             ],
         )));
     }
