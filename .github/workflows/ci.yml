@@ -65,13 +65,16 @@ jobs:
   # its check is still reported under its name, which a skipped job
   # (`if:` on the job) would not keep for a matrix.
   test:
-    name: Test (${{ matrix.part }})
+    name: Test (${{ matrix.part }}, ${{ matrix.profile }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         part: [std, build-1, build-2, rest-1, rest-2]
+        profile: [dev, ci]
+    env:
+      P: ${{ matrix.profile }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -107,17 +110,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: steps.changes.outputs.run == 'true'
         with:
-          shared-key: test
-          save-if: ${{ matrix.part == 'rest-1' && github.ref == 'refs/heads/main' }}
+          shared-key: exp-${{ matrix.profile }}
+          save-if: false
       - name: Toolchain for the LLVM backend
         if: steps.changes.outputs.run == 'true'
         run: clang --version
       - name: Build
         if: steps.changes.outputs.run == 'true'
-        run: cargo build --workspace
+        run: cargo build --workspace --profile $P
       - name: Test std.rs
         if: steps.changes.outputs.run == 'true' && matrix.part == 'std'
-        run: cargo test -p quarz-cli --test std
+        run: cargo test --profile $P -p quarz-cli --test std
       # The examples of the guide at quarz.dev (quarz-lang/quarz.dev's
       # `scripts/check_guide.qz`, run on the site's main) with this
       # change's `quarz`, the one the step above built (#1008). A warning,
@@ -138,7 +141,7 @@ jobs:
         continue-on-error: true
         working-directory: quarz.dev
         run: |
-          quarz="$GITHUB_WORKSPACE/target/debug/quarz"
+          quarz="$GITHUB_WORKSPACE/target/${{ matrix.profile == 'dev' && 'debug' || 'ci' }}/quarz"
           if "$quarz" run scripts/check_guide.qz "$quarz" > guide.log 2>&1; then
             tail -n 1 guide.log
             exit 0
@@ -161,12 +164,12 @@ jobs:
         if: steps.changes.outputs.run == 'true' && matrix.part == 'build-1'
         env:
           QUARZ_TEST_SHARD: "1/2"
-        run: cargo test -p quarz-cli --test build -- --nocapture
+        run: cargo test --profile $P -p quarz-cli --test build -- --nocapture
       - name: Test build.rs (shard 2 of 2)
         if: steps.changes.outputs.run == 'true' && matrix.part == 'build-2'
         env:
           QUARZ_TEST_SHARD: "2/2"
-        run: cargo test -p quarz-cli --test build -- --nocapture match_the_vm
+        run: cargo test --profile $P -p quarz-cli --test build -- --nocapture match_the_vm
       # The rest through cargo-nextest (#456), in two partitions by test
       # (`hash:`, stable as tests are added): every test of every other
       # binary on one scheduler, binaries side by side, then, in the
@@ -179,12 +182,12 @@ jobs:
       - name: Test the rest
         if: steps.changes.outputs.run == 'true' && startsWith(matrix.part, 'rest-')
         run: |
-          cargo nextest run --workspace --no-fail-fast \
+          cargo nextest run --cargo-profile $P --workspace --no-fail-fast \
             --partition "hash:${{ matrix.part == 'rest-1' && '1' || '2' }}/2" \
             -E 'not (binary_id(quarz-cli::std) | binary_id(quarz-cli::build))'
       - name: Doc tests
         if: steps.changes.outputs.run == 'true' && matrix.part == 'rest-1'
-        run: cargo test --workspace --doc
+        run: cargo test --profile $P --workspace --doc
 
   msrv:
     name: Check (Rust 1.96)

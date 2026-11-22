@@ -34,3 +34,12 @@ quarz-cog = { path = "crates/quarz-cog" }
 # how unrelated code is split into units (as Ruff does for its parser).
 [profile.release.package.quarz-vm]
 codegen-units = 1
+
+# #1048 item 4, an experiment (not to be merged): the tests built with
+# optimization, keeping the checks debug builds make.
+[profile.ci]
+inherits = "dev"
+opt-level = 1
+debug = "line-tables-only"
+debug-assertions = true
+overflow-checks = true
