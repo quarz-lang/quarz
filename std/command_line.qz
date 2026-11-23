@@ -40,12 +40,26 @@
 # - [flag]: an option without a value, `--lines` and `-l`, read as a
 #   [Bool]. Every flag also takes `--no-lines`, which sets it false.
 # - [option]: an option with a value, `--jobs=4`, `--jobs 4`, `-j4` and
-#   `-j 4`, of type [String], [Int], [Float] or [Bool] (`true` or
-#   `false`). Without `default:` it is required; with `default: nil` its
+#   `-j 4`, of type [String], [Int], [Float], [Bool] (`true` or
+#   `false`) or an enum whose variants have no fields, named by its
+#   variants in kebab case (`--unit=no-key-update` for
+#   `Unit::NoKeyUpdate`; the help lists them). Without `default:` it is
+#   required; with `default: nil` its
 #   reader is nilable (`String?`); with a default it is that value when
 #   not given. Given twice, the last one counts. With `bare:` its value
 #   is optional: `--parallel` alone gives the `bare` value, and only
 #   `--parallel=8` (or `-p8`) gives another.
+#
+#   ```
+#   enum Unit = Bytes | Chars | NoKeyUpdate
+#
+#   class Count < CommandLine
+#     option :unit, Unit, default: Unit::Bytes, help: "what to count"
+#   end
+#
+#   Count.parse(["--unit=no-key-update"], exit: false).unit   # => Unit::NoKeyUpdate
+#   Count.parse([], exit: false).unit                         # => Unit::Bytes
+#   ```
 # - [list]: a repeated option, `-x a -x b`, read as an [Array] in the
 #   order given.
 # - [rest]: the operands, the arguments that are not options, read as an
@@ -91,6 +105,7 @@
 # option '--jobs': '99999999999999999999' is out of range
 # option '--ratio': 'x' is not a number
 # option '--cache': 'yes' is not true or false
+# option '--unit': 'words' is not one of bytes, chars
 # missing option '--out'
 # option '--port' needs at least 2 values
 # argument FILE: 'x' is not an integer
@@ -167,13 +182,20 @@
 # site = Site.parse(["-v", "serve", "-p", "3000"], exit: false)
 # site.verbose        # => true
 # site.command_name   # => :serve
-# serve = site.command
-# serve.is_a?(Serve) ? serve.port : 0   # => 3000
+# site.serve&.port    # => 3000
+# site.build          # => nil
 # ```
 #
-# The first operand names the command, which is then required, and the
-# arguments after it are the command's: parsed by its class, whose usage
-# and errors say `site serve`. Options shared by the commands are the
+# The first operand names the command, which is then required: the
+# reader's name with `-` for `_` (`command :dry_run, DryRun` is typed
+# `dry-run`), or the word `name:` gives (`command :validate_cmd,
+# Validate, name: "validate"`, for a word the instances already answer as
+# a method, which a reader cannot be named). The arguments after it are
+# the command's: parsed by its class, whose usage
+# and errors say `site serve`. Each command has a reader of its name,
+# typed as its class (`site.serve -> Serve?`), which gives the command's
+# instance when it was the one given; [command] and [command_name] give
+# whichever was. Options shared by the commands are the
 # parent's, given before the command's name; a class below a command
 # class cannot declare options of its own.
 #
@@ -251,7 +273,7 @@ class CommandLine
   # one-character name. Its reader gives [default] when neither is given.
   static def self.flag(name: Symbol, *, short: String? = nil, long: String? = nil, default: Bool = false, help: String = "") -> Void
     Support.declare(self, Support::Decl.new(:flag, name, long || Support.long_name(name), short || "", :bool, false,
-                                            default ? "on" : "", nil, "", help, 0, nil, false))
+                                            default ? "on" : "", nil, "", help, 0, nil, false, []))
     def_method(name) do -> Bool
       v = __value_of(name)
       v.nil? ? default : v == true
@@ -259,14 +281,24 @@ class CommandLine
   end
 
   # A required option with a value of type [type] ([String], [Int],
-  # [Float] or [Bool]); `arg:` names the value in the help (by default
-  # the name in upper case).
+  # [Float], [Bool] or an enum whose variants have no fields); `arg:`
+  # names the value in the help (by default the long name in upper
+  # case).
   static def self.option[U](name: Symbol, type: Type[U], *, short: String? = nil, long: String? = nil, arg: String? = nil, help: String = "") -> Void
     lg = long || Support.long_name(name)
-    Support.declare(self, Support::Decl.new(:option, name, lg, short || "", Support.value_kind(type),
-                                            true, "", nil, arg || Support.arg_name(lg), help, 0, nil, false))
-    def_method(name) do -> U
-      type.cast(__value_of(name))
+    kind = Support.value_kind(type)
+    Support.declare(self, Support::Decl.new(:option, name, lg, short || "", kind,
+                                            true, "", nil, arg || Support.arg_name(lg), help, 0, nil, false,
+                                            Support.choices(type)))
+    if kind == :enum
+      values = type.variants
+      def_method(name) do -> U
+        values[Int.cast(__value_of(name))]
+      end
+    else
+      def_method(name) do -> U
+        type.cast(__value_of(name))
+      end
     end
   end
 
@@ -278,22 +310,41 @@ class CommandLine
     kind = Support.value_kind(type)
     lg = long || Support.long_name(name)
     Support.declare(self, Support::Decl.new(:option, name, lg, short || "", kind, false,
-                                            Support.default_text(default), bare.nil? ? nil : bare.to_s,
-                                            arg || Support.arg_name(lg), help, 0, nil, false))
-    def_method(name) do -> U
-      v = __value_of(name)
-      v.nil? ? default : type.cast(v)
+                                            Support.default_text(kind, default), bare.nil? ? nil : Support.text_of(kind, bare),
+                                            arg || Support.arg_name(lg), help, 0, nil, false,
+                                            Support.choices(type)))
+    if kind == :enum
+      values = type.variants
+      def_method(name) do -> U
+        v = __value_of(name)
+        v.nil? ? default : values[Int.cast(v)]
+      end
+    else
+      def_method(name) do -> U
+        v = __value_of(name)
+        v.nil? ? default : type.cast(v)
+      end
     end
   end
 
   # An option with a value of type [type], nil when it is not given.
   static def self.option[U](name: Symbol, type: Type[U], *, default: Nil, short: String? = nil, long: String? = nil, arg: String? = nil, help: String = "") -> Void
     lg = long || Support.long_name(name)
-    Support.declare(self, Support::Decl.new(:option, name, lg, short || "", Support.value_kind(type),
-                                            false, "", nil, arg || Support.arg_name(lg), help, 0, nil, false))
-    def_method(name) do -> U?
-      v = __value_of(name)
-      v.nil? ? nil : type.cast(v)
+    kind = Support.value_kind(type)
+    Support.declare(self, Support::Decl.new(:option, name, lg, short || "", kind,
+                                            false, "", nil, arg || Support.arg_name(lg), help, 0, nil, false,
+                                            Support.choices(type)))
+    if kind == :enum
+      values = type.variants
+      def_method(name) do -> U?
+        v = __value_of(name)
+        v.nil? ? nil : values[Int.cast(v)]
+      end
+    else
+      def_method(name) do -> U?
+        v = __value_of(name)
+        v.nil? ? nil : type.cast(v)
+      end
     end
   end
 
@@ -302,10 +353,19 @@ class CommandLine
   static def self.list[U](name: Symbol, type: Type[U], *, min: Int = 0, short: String? = nil, long: String? = nil, arg: String? = nil, help: String = "") -> Void
     raise ArgumentError, "CommandLine: `min:` of `#{name}` is negative" if min < 0
     lg = long || Support.long_name(name)
-    Support.declare(self, Support::Decl.new(:list, name, lg, short || "", Support.value_kind(type),
-                                            min > 0, "", nil, arg || Support.arg_name(lg), help, min, nil, false))
-    def_method(name) do -> Array[U]
-      __values_of(name).map { |v| type.cast(v) }
+    kind = Support.value_kind(type)
+    Support.declare(self, Support::Decl.new(:list, name, lg, short || "", kind,
+                                            min > 0, "", nil, arg || Support.arg_name(lg), help, min, nil, false,
+                                            Support.choices(type)))
+    if kind == :enum
+      values = type.variants
+      def_method(name) do -> Array[U]
+        __values_of(name).map { |v| values[Int.cast(v)] }
+      end
+    else
+      def_method(name) do -> Array[U]
+        __values_of(name).map { |v| type.cast(v) }
+      end
     end
   end
 
@@ -317,7 +377,7 @@ class CommandLine
   # hands them to another program. Such a class declares nothing else
   # but [program], [about] and [banner], and no commands.
   static def self.rest(name: Symbol, *, min: Int = 0, max: Int? = nil, raw: Bool = false, arg: String? = nil, help: String = "") -> Void
-    Support.declare_rest(self, name, :string, min, max, arg, help, raw)
+    Support.declare_rest(self, name, :string, min, max, arg, help, raw, [])
     def_method(name) do -> Array[String]
       __values_of(name).map { |v| String.cast(v) }
     end
@@ -325,21 +385,48 @@ class CommandLine
 
   # The operands, as values of type [type].
   static def self.rest[U](name: Symbol, type: Type[U], *, min: Int = 0, max: Int? = nil, arg: String? = nil, help: String = "") -> Void
-    Support.declare_rest(self, name, Support.value_kind(type), min, max, arg, help, false)
-    def_method(name) do -> Array[U]
-      __values_of(name).map { |v| type.cast(v) }
+    kind = Support.value_kind(type)
+    Support.declare_rest(self, name, kind, min, max, arg, help, false, Support.choices(type))
+    if kind == :enum
+      values = type.variants
+      def_method(name) do -> Array[U]
+        __values_of(name).map { |v| values[Int.cast(v)] }
+      end
+    else
+      def_method(name) do -> Array[U]
+        __values_of(name).map { |v| type.cast(v) }
+      end
     end
   end
 
-  # A subcommand named [name], whose arguments [type] parses; [help] is
-  # its line in the help's list of commands (by default the first line
-  # of its [about]). [command] and [command_name] say which one was
-  # given.
-  static def self.command[U <: CommandLine](name: Symbol, type: Type[U], *, help: String? = nil) -> Void
+  # A subcommand whose arguments [type] parses, typed on the command line
+  # as [reader] with `-` for `_` (`:dry_run` is `dry-run`), or as [name]
+  # gives it (`command :validate_cmd, Validate, name: "validate"`, for a
+  # word the instances already answer as a method; letters, digits, `-`
+  # and `_`, as written). [help] is its line in the help's list of
+  # commands (by default the first line of its [about]). Its reader,
+  # [reader], gives the command's instance when it was the one given,
+  # typed as [type] (`site.serve -> Serve?`), and nil otherwise;
+  # [command] and [command_name] (which gives [reader]) say which one was
+  # given whichever it is.
+  static def self.command[U <: CommandLine](reader: Symbol, type: Type[U], *, name: String? = nil, help: String? = nil) -> Void
+    word = name || Support.long_name(reader)
     taken = statement_values[Support::Cmd](:command_line_commands).values
-    raise ArgumentError, "CommandLine: the command `#{name}` is declared twice" if taken.any? { |c| c.name == name }
+    raise ArgumentError, "CommandLine: the command `#{reader}` is declared twice" if taken.any? { |c| c.name == reader }
+    raise ArgumentError, "CommandLine: the command `#{word}` is declared twice" if taken.any? { |c| c.word == word }
     raise ArgumentError, "CommandLine: a class with commands takes no `rest`" if statement_values[Support::Decl](:command_line_decls).values.any? { |d| d.kind == :rest }
-    statement_values[Support::Cmd](:command_line_commands).add(Support::Cmd.new(name, type, help))
+    unless word.match?(/\A[A-Za-z0-9_][A-Za-z0-9_-]*\z/)
+      raise ArgumentError, "CommandLine: #{word.inspect} is not a command's name for `#{reader}` (letters, digits, `-` and `_`, not starting with `-`)"
+    end
+    raise ArgumentError, "CommandLine: `#{reader}` cannot name a command: names starting with `__` are CommandLine's own" if reader.to_s.start_with?("__")
+    if method?(reader)
+      raise ArgumentError, "CommandLine: `#{reader}` cannot name a command: `#{self.name}` already has a method of that name (its reader would replace it); name it otherwise, and keep `#{word}` as the word typed with `name: \"#{word}\"`"
+    end
+    statement_values[Support::Cmd](:command_line_commands).add(Support::Cmd.new(reader, word, type, help))
+    def_method(reader) do -> U?
+      v = __value_of(:__command)
+      __value_of(:__command_name) == reader && !v.nil? ? type.cast?(v) : nil
+    end
   end
 
   # :nodoc:
@@ -467,14 +554,16 @@ class CommandLine
       help: String,
       min: Int,
       max: Int?,
-      raw: Bool              # a `rest` taking every argument as given
+      raw: Bool,             # a `rest` taking every argument as given
+      choices: Array[String] # an enum's variants as written, by index
     )
 
     # A line of the help: an option or command and its text.
     data Row = (left: String, text: String)
 
     # A declared command.
-    data Cmd = (name: Symbol, type: Type[CommandLine], help: String?)
+    # A declared command: its reader's name and the word typed.
+    data Cmd = (name: Symbol, word: String, type: Type[CommandLine], help: String?)
 
     # What a class declared: the statements' values, gathered by
     # `inherited`.
@@ -523,32 +612,57 @@ class CommandLine
     end
 
     # Records the operands.
-    static def self.declare_rest(cls: Meta::ClassDef[CommandLine], name: Symbol, kind: Symbol, min: Int, max: Int?, arg: String?, help: String, raw: Bool) -> Void
+    static def self.declare_rest(cls: Meta::ClassDef[CommandLine], name: Symbol, kind: Symbol, min: Int, max: Int?, arg: String?, help: String, raw: Bool, choices: Array[String]) -> Void
       raise ArgumentError, "CommandLine: `rest` is declared twice" if cls.statement_values[Decl](:command_line_decls).values.any? { |d| d.kind == :rest }
       raise ArgumentError, "CommandLine: a class with commands takes no `rest`" if cls.statement_values[Cmd](:command_line_commands).size > 0
       raise ArgumentError, "CommandLine: `min:` of `#{name}` is negative" if min < 0
       raise ArgumentError, "CommandLine: `min:` of `#{name}` is above its `max:`" if !max.nil? && min > max
       declare(cls, Decl.new(:rest, name, long_name(name), "", kind, min > 0, "", nil,
-                            arg || arg_name(long_name(name)), help, min, max, raw))
+                            arg || arg_name(long_name(name)), help, min, max, raw, choices))
     end
 
     # The kind of value [type] is, or the error for a type that is not one.
-    def self.value_kind(type: Type[Object]) -> Symbol
+    static def self.value_kind(type: Type[Object]) -> Symbol
       return :string if type == String
       return :int if type == Int
       return :float if type == Float
       return :bool if type == Bool
-      raise ArgumentError, "CommandLine: `#{type.name}` is not a value type (String, Int, Float, Bool)"
+      begin
+        type.variants
+      rescue ArgumentError
+        raise ArgumentError, "CommandLine: `#{type.name}` is not a value type (String, Int, Float, Bool, an enum whose variants have no fields)"
+      end
+      :enum
     end
+
+    # An enum's variants as the command line writes them, in kebab case
+    # (`NoKeyUpdate` is `no-key-update`); empty for another type.
+    static def self.choices(type: Type[Object]) -> Array[String]
+      return [] if type == String || type == Int || type == Float || type == Bool
+      names = type.variants.map { |v| variant_name(v) }
+      names.each_with_index do |n, i|
+        j = names.index(n) || i
+        next if j == i
+        raise ArgumentError, "CommandLine: `#{type.name}`'s variants `#{type.variants[j].class.name}` and `#{type.variants[i].class.name}` are both `#{n}` on the command line"
+      end
+      names
+    end
+
+    # A variant as the command line writes it: its declared name in
+    # kebab case (not its `to_s`, which an enum may define).
+    def self.variant_name(value: Object) -> String = kebab(value.class.name)
+
+    # A value as the help writes it: an enum's variant in kebab case.
+    def self.text_of(kind: Symbol, value: Object) -> String = kind == :enum ? variant_name(value) : value.to_s
 
     def self.long_name(name: Symbol) -> String = name.to_s.tr("_", "-")
 
     def self.arg_name(long: String) -> String = long.upcase
 
     # What the help shows as a default: nothing for nil, false and "".
-    def self.default_text(value: Object?) -> String
+    def self.default_text(kind: Symbol, value: Object?) -> String
       return "" if value.nil? || value == false
-      value.to_s
+      text_of(kind, value)
     end
 
     # `WordCount` → `word-count`, `HTTPServer` → `http-server`, from a
@@ -600,6 +714,9 @@ class CommandLine
                 else d.bare.nil? ? "--#{d.long}=#{d.arg}" : "--#{d.long}[=#{d.arg}]"
                 end
         text = d.help
+        unless d.choices.empty?
+          text = text.empty? ? "one of #{d.choices.join(", ")}" : "#{text}: #{d.choices.join(", ")}"
+        end
         bare = d.bare
         text += "; #{d.arg} is #{bare} when omitted" unless bare.nil?
         notes: Array[String] = []
@@ -614,14 +731,21 @@ class CommandLine
         rows = rows.push(Row.new("  -h, --help", "print this help and exit"))
         out += "\nOptions:\n#{columns(rows)}"
       end
-      args = spec.decls.select { |d| d.kind == :rest && !d.help.empty? }
+      args = spec.decls.select { |d| d.kind == :rest && (!d.help.empty? || !d.choices.empty?) }
       unless args.empty?
-        out += "\nArguments:\n#{columns(args.map { |d| Row.new("  #{d.arg}", d.help) })}"
+        rows = args.map do |d|
+          text = d.help
+          unless d.choices.empty?
+            text = text.empty? ? "one of #{d.choices.join(", ")}" : "#{text}: #{d.choices.join(", ")}"
+          end
+          Row.new("  #{d.arg}", text)
+        end
+        out += "\nArguments:\n#{columns(rows)}"
       end
       unless spec.commands.empty?
         cmds = spec.commands.map do |c|
           summary = c.help || (c.type.__spec.about || "").lines.first?&.chomp || ""
-          Row.new("  #{c.name}", summary)
+          Row.new("  #{c.word}", summary)
         end
         out += "\nCommands:\n#{columns(cmds)}"
         out += "\nRun '#{program} COMMAND --help' for a command's options.\n"
@@ -806,10 +930,10 @@ class CommandLine
       end
 
       def command(name: String, rest: Array[String]) -> Void
-        names = @spec.commands.map { |c| c.name.to_s }.join(", ")
-        c = @spec.commands.find { |x| x.name.to_s == name }
+        names = @spec.commands.map { |c| c.word }.join(", ")
+        c = @spec.commands.find { |x| x.word == name }
         fail("unknown command '#{name}' (one of #{names})") if c.nil?
-        line = c.type.__parse_as(rest, "#{@program} #{name}")
+        line = c.type.__parse_as(rest, "#{@program} #{c.word}")
         @values = @values.put(:__command, line).put(:__command_name, c.name)
       end
 
@@ -837,6 +961,10 @@ class CommandLine
         when :bool
           fail("#{given}: #{quoted} is not true or false") unless text == "true" || text == "false"
           text == "true"
+        when :enum
+          index = d.choices.index(text)
+          fail("#{given}: #{quoted} is not one of #{d.choices.join(", ")}") if index.nil?
+          index
         else
           text
         end
@@ -844,7 +972,7 @@ class CommandLine
 
       def finish -> Void
         if !@spec.commands.empty? && !@values.key?(:__command)
-          fail("missing command (one of #{@spec.commands.map { |c| c.name.to_s }.join(", ")})")
+          fail("missing command (one of #{@spec.commands.map { |c| c.word }.join(", ")})")
         end
         @spec.decls.each do |d|
           case d.kind
