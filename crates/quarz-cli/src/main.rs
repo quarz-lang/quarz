@@ -31,7 +31,8 @@ commands:
                  run the tests of PATHS (`*_test.qz` files, or directories
                  of them; default: the cog's test/), `--release` compiled;
                  OPTIONS: -n NAME, -v, --list, --order=random, --seed=N,
-                 --fail-fast, --parallel[=N], --timeout=D, --junit=PATH
+                 --fail-fast, --parallel[=N], --timeout=D, --junit=PATH,
+                 --help (all of them)
   repl           start an interactive session
   cog COMMAND    manage the cogs (packages) of the application here:
     init                      write a Cog.toml (and src/main.qz)

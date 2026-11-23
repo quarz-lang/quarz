@@ -14,7 +14,6 @@ const STD_SETS: &[&[&str]] = &[
     &["json", "logger"],
     &["crypto"],
     &["command_line"],
-    &["test"],
 ];
 
 fn main() {

@@ -21,6 +21,30 @@ enum Docs {
     None,
 }
 
+/// Whether `a`, an option `quarz test` passes to the program, takes the
+/// next argument as its value (`Test::QuarzTest` in std/test.qz): a long
+/// option with a required value given without `=`, or a group of short
+/// options ending in `-n` (`-n`, `-vn`; `-nNAME` holds its value).
+fn takes_next_value(a: &str) -> bool {
+    match a {
+        "--name" | "--seed" | "--order" | "--timeout" | "--junit" => true,
+        _ => match a.strip_prefix('-') {
+            Some(group) if !group.starts_with('-') => {
+                for (k, c) in group.char_indices() {
+                    if c == 'n' {
+                        return k + 1 == group.len();
+                    }
+                    if c != 'v' && c != 'h' {
+                        return false;
+                    }
+                }
+                false
+            }
+            _ => false,
+        },
+    }
+}
+
 pub fn command(args: &[String]) -> ExitCode {
     let mut paths: Vec<PathBuf> = Vec::new();
     let mut argv: Vec<String> = Vec::new();
@@ -54,7 +78,7 @@ pub fn command(args: &[String]) -> ExitCode {
                 argv.extend(args[i + 1..].iter().cloned());
                 break;
             }
-            "-n" | "--name" => {
+            _ if takes_next_value(a) => {
                 argv.push(a.clone());
                 if let Some(v) = args.get(i + 1) {
                     argv.push(v.clone());
