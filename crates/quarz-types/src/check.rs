@@ -8613,6 +8613,28 @@ impl Checker {
 
     fn check_const(&mut self, expr: &Expr, path: &ConstPath) -> Type {
         let namespace = self.env.scope.namespace;
+        // A type parameter in scope hides the name in an expression as in
+        // a type, and has no value: an error, not a constant looked up
+        // past it (#1110).
+        if !path.absolute && !path.cog {
+            let first = &path.names[0];
+            if self.env.scope.params.iter().any(|(n, _)| n == first) {
+                let hidden = self
+                    .world
+                    .resolve_member(namespace, first)
+                    // (No hint when the hidden name is itself ambiguous.)
+                    .found()
+                    .map(|m| self.member_full_name(m));
+                let mut message = format!(
+                    "`{first}` is a type parameter here, which has no value at run time (type arguments are not kept)"
+                );
+                if let Some(full) = hidden {
+                    message.push_str(&format!("; to name `{full}`, write it in full"));
+                }
+                self.error(message, expr.span);
+                return Type::Nothing;
+            }
+        }
         let Some(member) = self.resolve_path(namespace, path, expr.span) else {
             return Type::Nothing;
         };
@@ -8647,6 +8669,27 @@ impl Checker {
                     expr.span,
                 );
                 Type::Nothing
+            }
+        }
+    }
+
+    /// `m`'s name in full (`Base::T`, `M::X`), for a message.
+    fn member_full_name(&self, m: Member) -> String {
+        match m {
+            Member::Class(c) => self.world.class(c).name.clone(),
+            Member::Const(c) => {
+                let k = &self.world.consts[c as usize];
+                match k.owner {
+                    Some(o) => format!("{}::{}", self.world.class(o).name, k.name),
+                    None => k.name.clone(),
+                }
+            }
+            Member::Alias(a) => {
+                let al = &self.world.aliases[a as usize];
+                match al.owner {
+                    Some(o) => format!("{}::{}", self.world.class(o).name, al.name),
+                    None => al.name.clone(),
+                }
             }
         }
     }

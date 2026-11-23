@@ -5790,6 +5790,34 @@ fn a_narrowed_type_parameter_has_the_classs_overrides() {
     ok("module First\n  def fm -> Object = 1\nend\nclass C\n  include First\nend\nmodule M\n  def fm -> Int = 7\nend\ndef f[T <: C](v: T) -> Int\n  if v in M\n    v.fm + 1\n  else\n    0\n  end\nend");
 }
 
+/// #1110: a type parameter's name in an expression is an error, as the
+/// parameter has no value at run time: it hides an ancestor's (or an
+/// enclosing scope's) constant of the name there as in a type, rather
+/// than the expression silently naming that constant. A type position
+/// keeps the parameter; a full name reaches the constant.
+#[test]
+fn a_type_parameter_is_no_expression() {
+    err(
+        "class Sub[T]\n  def self.w -> String = T.name\nend\n",
+        "`T` is a type parameter here, which has no value at run time (type arguments are not kept)",
+    );
+    err(
+        "class Base\n  class T\n  end\nend\nclass Sub[T] < Base\n  def self.w(x: T) -> String = T.name\nend\n",
+        "`T` is a type parameter here, which has no value at run time (type arguments are not kept); to name `Base::T`, write it in full",
+    );
+    // A method's own type parameter, and a path starting with one.
+    err(
+        "def f[U](x: U) -> String = U.name\n",
+        "`U` is a type parameter here",
+    );
+    err(
+        "class Base\n  class T\n    X = 1\n  end\nend\nclass Sub[T] < Base\n  def self.x -> Int = T::X\nend\n",
+        "`T` is a type parameter here",
+    );
+    ok("class Base\n  class T\n  end\nend\nclass Sub[T] < Base\n  def self.w(x: T) -> String = Base::T.name\nend\n");
+    ok("class Sub[T]\n  def id(x: T) -> T = x\nend\n");
+}
+
 #[test]
 fn a_type_parameter_cannot_have_a_builtin_types_name() {
     // `extension Array[Int]`, `class Box[Int]` meant a type argument.
