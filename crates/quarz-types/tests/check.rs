@@ -1580,7 +1580,7 @@ fn logical_operator_methods() {
     let defs = "class Cond\n  def &&(&rhs: () -> Cond) -> String = \"and\"\n  def ||(&rhs: () -> Cond) -> String = \"or\"\nend\n";
     // On a type that defines it, `a && b` is the call `a.&&() { b }`.
     ok(&format!("{defs}def f(c: Cond) -> String = c && Cond.new"));
-    ok(&format!("{defs}def f(c: Cond) -> String = c or Cond.new"));
+    ok(&format!("{defs}def f(c: Cond) -> String = c || Cond.new"));
     ok(&format!("{defs}def f(c: Cond) -> String = c.&&() {{ c }}"));
     err(
         &format!("{defs}def f(c: Cond) -> String = c && 1"),
