@@ -4744,6 +4744,29 @@ fn a_class_method_cannot_take_type_casts_place() {
     ok("class A\n  def self.cast(s: String) -> A = A.new\n  def self.cast?(s: String) -> A? = nil\nend");
 }
 
+/// #1091: on a `Type[U]` whose `U` has a class bound, `Type`'s own
+/// methods are `U`'s (`cast` gives a `U`, `cast?` a `U?`), as without the
+/// bound; the bound's class methods are still found.
+#[test]
+fn type_methods_on_a_bounded_parameter_keep_the_parameter() {
+    let defs = "class A\n  def self.make -> A = A.new\nend\nclass B < A\nend\n";
+    ok(&format!(
+        "{defs}def c2[U <: A](t: Type[U], v: Object) -> U = t.cast(v)\np c2(B, B.new).class.name"
+    ));
+    ok(&format!(
+        "{defs}def c3[U <: A](t: Type[U], v: Object) -> U? = t.cast?(v)\np c3(B, A.new)"
+    ));
+    ok(&format!(
+        "{defs}def c4[U <: A](t: Type[U]) -> A = t.make\np c4(B).class.name"
+    ));
+    // Through a bound that is itself a parameter.
+    ok(&format!(
+        "{defs}def c5[V <: A, U <: V](t: Type[U], v: Object) -> U = t.cast(v)\np c5(B, B.new)"
+    ));
+    // A block given to `def_method`, declared `-> U?` (#1089's `command`).
+    ok("class Base\n  static def self.command[U <: Base](name: Symbol, type: Type[U]) -> Void\n    def_method(name) do -> U?\n      type.cast?(self)\n    end\n  end\nend");
+}
+
 /// `Kernel.name(...)` is the built-in function, wherever it is written
 /// (docs/01 §1); another name is a method of the module object.
 #[test]
