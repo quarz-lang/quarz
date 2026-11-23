@@ -980,10 +980,12 @@ dependencies = [
 name = "quarz-lower"
 version = "0.0.1"
 dependencies = [
+ "bincode",
  "quarz-ir",
  "quarz-syntax",
  "quarz-types",
  "rustc-hash",
+ "serde",
 ]
 
 [[package]]

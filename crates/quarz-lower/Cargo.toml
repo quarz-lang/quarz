@@ -12,3 +12,5 @@ quarz-syntax = { workspace = true }
 quarz-types = { workspace = true }
 quarz-ir = { workspace = true }
 rustc-hash = "2"
+serde = { version = "1", features = ["derive"] }
+bincode = { version = "2", default-features = false, features = ["serde", "std"] }

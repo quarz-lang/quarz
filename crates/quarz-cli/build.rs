@@ -33,6 +33,10 @@ fn main() {
     assert!(errors.is_empty(), "the prelude does not check: {errors:#?}");
     let dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     std::fs::write(dir.join("prelude.bin"), state.encode()).unwrap();
+    // The prelude's share of the runtime's tables, made by the functions
+    // that make them at start-up (`quarz_lower::prelude`, #551).
+    let rt = quarz_lower::prelude::make(&state.world, &state.output);
+    std::fs::write(dir.join("prelude_rt.bin"), rt.encode()).unwrap();
     // The standard library's modules as programs load them (with what each
     // requires): `std_<a>,<b>.bin` for each set in `STD_SETS`.
     let mut list = String::new();
