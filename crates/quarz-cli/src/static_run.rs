@@ -140,7 +140,17 @@ pub struct Runner {
     /// The safety net's verdicts by class, kept across rounds and checked
     /// again for the classes whose rows were rebuilt (#717).
     net_kept: Option<NetKept>,
+    /// `compile_time_allowed` by method, across the check's rounds:
+    /// `impure_reach` asks it of every native a statement reaches, about
+    /// 1,600 each round (#1098). Each entry keeps the key it answered, so
+    /// a method id given to another native (the REPL rolling back an
+    /// input) is asked again.
+    allowed_kept: RefCell<Vec<Option<KeptVerdict>>>,
 }
+
+/// A native's key and whether it may run at compile time
+/// (`Runner::allowed_kept`).
+type KeptVerdict = (Box<str>, bool);
 
 /// `Runner::reflect_kept`.
 struct ReflectKept {
@@ -1491,6 +1501,7 @@ impl Runner {
             lowerer: Lowerer::default(),
             bad_methods: Default::default(),
             overrides_kept: Default::default(),
+            allowed_kept: Default::default(),
             bad_consts: Default::default(),
             state: None,
             world: None,
@@ -2094,6 +2105,23 @@ impl Runner {
         }
     }
 
+    /// `compile_time_allowed(key)` for method `m`, kept (`allowed_kept`).
+    fn allowed(&self, m: MethodId, key: &str) -> bool {
+        let mut kept = self.allowed_kept.borrow_mut();
+        let i = m as usize;
+        if let Some(Some((k, ok))) = kept.get(i) {
+            if **k == *key {
+                return *ok;
+            }
+        }
+        let ok = compile_time_allowed(key);
+        if kept.len() <= i {
+            kept.resize(i + 1, None);
+        }
+        kept[i] = Some((key.into(), ok));
+        ok
+    }
+
     /// A native the statement reaches that cannot run at compile time,
     /// with the calls leading to it (innermost last).
     fn impure_reach(
@@ -2161,7 +2189,7 @@ impl Runner {
                 steps.push((Step::Method(m), up));
                 let here = Some(steps.len() - 1);
                 if let Some(key) = &rm.native_key {
-                    if !compile_time_allowed(key) {
+                    if !self.allowed(m, key) {
                         return Some(path(&steps, here));
                     }
                 }
