@@ -437,9 +437,10 @@ fn decimal_mixes_with_no_float_and_orders_only_decimals() {
 /// instances already answer or one starting with `__`, the help's own
 /// names, a short name that is not one character, a type that is not a
 /// value type, a second `rest` or `program`, `rest` beside `command`, a
-/// `min:` above `max:`; and at the `class` line a class below a command
-/// class that declares options of its own (one that declares none is
-/// accepted).
+/// `min:` above `max:`, a `raw: true` rest beside anything else, a bad
+/// long name, a long name that is also a flag's negation; and at the
+/// `class` line a class below a command class that declares options of
+/// its own (one that declares none is accepted).
 #[test]
 fn command_line_declarations_are_checked_at_compile_time() {
     let dir = std::env::temp_dir().join(format!("quarz-command-line-{}", std::process::id()));
@@ -509,6 +510,30 @@ class Methods < CommandLine
   flag :error
   list :__values_of, String
 end
+
+class RawAfter < CommandLine
+  flag :x
+  rest :args, raw: true
+end
+
+class OptionAfterRaw < CommandLine
+  rest :args, raw: true
+  option :y, String, default: nil
+end
+
+class BadLong < CommandLine
+  flag :a, long: "-a"
+end
+
+class Negates < CommandLine
+  flag :color
+  option :no_color, String, default: nil
+end
+
+class SameLong < CommandLine
+  flag :color
+  flag :b, long: "color"
+end
 "#,
     )
     .unwrap();
@@ -533,9 +558,14 @@ end
         "bad.qz:43:1: error: `CommandLine.inherited`, run for `Child`, raised ArgumentError: CommandLine: options are declared on a direct subclass of CommandLine (`Child` is below one that declares them)",
         "bad.qz:51:3: error: `rest` raised ArgumentError: CommandLine: `min:` of `a` is above its `max:`",
         "bad.qz:56:3: error: `program` raised ArgumentError: CommandLine: `program` is given twice",
-        "bad.qz:60:3: error: `option` raised ArgumentError: CommandLine: `hash` cannot name an option: `Methods` already has a method of that name (its reader would replace it); name the option otherwise",
-        "bad.qz:61:3: error: `flag` raised ArgumentError: CommandLine: `error` cannot name an option: `Methods` already has a method of that name (its reader would replace it); name the option otherwise",
+        "bad.qz:60:3: error: `option` raised ArgumentError: CommandLine: `hash` cannot name an option: `Methods` already has a method of that name (its reader would replace it); name it otherwise, and keep `--hash` with `long: \"hash\"`",
+        "bad.qz:61:3: error: `flag` raised ArgumentError: CommandLine: `error` cannot name an option: `Methods` already has a method of that name (its reader would replace it); name it otherwise, and keep `--error` with `long: \"error\"`",
         "bad.qz:62:3: error: `list` raised ArgumentError: CommandLine: `__values_of` cannot name an option: names starting with `__` are CommandLine's own",
+        "bad.qz:67:3: error: `rest` raised ArgumentError: CommandLine: a `rest` with `raw: true` takes every argument as given, so `RawAfter` declares nothing beside it (`x` is declared)",
+        "bad.qz:72:3: error: `option` raised ArgumentError: CommandLine: `OptionAfterRaw` takes its arguments as given (`rest :args, raw: true`), so it declares nothing beside it",
+        "bad.qz:76:3: error: `flag` raised ArgumentError: CommandLine: \"-a\" is not a long name for `a` (letters, digits and `-`, not starting with `-`)",
+        "bad.qz:81:3: error: `option` raised ArgumentError: CommandLine: `--no-color` would both negate a flag and name an option",
+        "bad.qz:86:3: error: `flag` raised ArgumentError: CommandLine: `--color` is declared twice",
     ];
     for e in expected {
         assert!(err.contains(e), "{e}\n{err}");
