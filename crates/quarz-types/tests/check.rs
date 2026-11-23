@@ -1075,6 +1075,70 @@ fn a_test_never_true_is_refused() {
     );
     warns("def w(xs: Array[Int]) -> Bool = xs.include?(\"a\")\nw([1])", "`include?` compares `String` with the elements, of type `Int`: they are never equal, so it finds none");
     no_warnings("def w(x: Int) -> Bool = x == 1.0\nw(1)");
+    // Class values, in each of their forms (`ClassObject`, `TypeOf`, an
+    // instance of `Type` or `Meta::ClassDef`): equal as one class, so
+    // they may be unless both name definite, unrelated classes. Run-time
+    // results beside each (probed).
+    let cls = "class Animal\nend\nclass Dog < Animal\nend\nclass Post\nend\nclass Comment\nend\n";
+    for (src, never) in [
+        // `K.same?(K)` is true.
+        (
+            "class K\n  static def self.same?(other: Type[Object]) -> Bool = self == other\nend\n",
+            None,
+        ),
+        (
+            "class K\n  static def self.k? -> Bool = self == K\nend\n",
+            None,
+        ),
+        (
+            "class K\n  static def self.p?[U](t: Type[U]) -> Bool = self == t\nend\n",
+            None,
+        ),
+        // A `static` statement's `self` is `K` or a subclass: never `Int`.
+        (
+            "class K\n  static def self.i? -> Bool = self == Int\nend\n",
+            Some("`==` compares `Meta::ClassDef[K]` with `Type[Int]`: they are never equal"),
+        ),
+        (
+            "def a(x: Type[Animal], y: Type[Dog]) -> Bool = x == y\n",
+            None,
+        ),
+        (
+            "def c(x: Type[Object], y: Type[Int]) -> Bool = x == y\n",
+            None,
+        ),
+        (
+            "def e[T](x: Type[T], y: Type[Int]) -> Bool = x == y\n",
+            None,
+        ),
+        (
+            "def f(x: Type[Array[Int]], y: Type[Array[String]]) -> Bool = x == y\n",
+            None,
+        ),
+        ("def h(x: Type[Object], o: Object) -> Bool = x == o\n", None),
+        (
+            "def b(x: Type[Post], y: Type[Comment]) -> Bool = x == y\n",
+            Some("`==` compares `Type[Post]` with `Type[Comment]`: they are never equal"),
+        ),
+        (
+            "def g(x: Type[Int], y: Type[Float]) -> Bool = x == y\n",
+            Some("`==` compares `Type[Int]` with `Type[Float]`"),
+        ),
+        (
+            "def d(x: Type[Object], n: Int) -> Bool = x == n\n",
+            Some("`==` compares `Type[Object]` with `Int`"),
+        ),
+        (
+            "def k(x: Type[Animal], t: [Int]) -> Bool = x == t\n",
+            Some("`==` compares `Type[Animal]` with `[Int]`"),
+        ),
+    ] {
+        let src = format!("{cls}{src}");
+        match never {
+            None => no_warnings(&src),
+            Some(w) => warns(&src, w),
+        }
+    }
 }
 
 /// #915: a symbol literal searched for in a collection of an enum by the

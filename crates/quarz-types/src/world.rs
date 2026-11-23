@@ -1632,6 +1632,15 @@ impl World {
             t => t.clone(),
         };
         let (a, b) = (norm(a), norm(b));
+        // Every variant of `Type`, each side:
+        // - `Nothing`, `Param`, `Var`, `Proc`: unknown, true;
+        // - `Void`: as `Nil` (above);
+        // - `Union`: some member of each;
+        // - a class value, in any of its forms (`ClassObject`, `TypeOf`,
+        //   an instance of `Type` or a subclass, `Meta::ClassDef`):
+        //   `class_value`;
+        // - `Tuple`: an array;
+        // - `Class`: an instance.
         let unknown = |t: &Type| {
             matches!(
                 t,
@@ -1644,26 +1653,44 @@ impl World {
             return true;
         }
         let deeper = |x: &Type, y: &Type| self.may_equal_at(x, y, depth + 1);
-        match (&a, &b) {
-            (Type::Union(ms), other) | (other, Type::Union(ms)) => {
-                ms.iter().any(|m| deeper(m, other))
+        if let Type::Union(ms) = &a {
+            return ms.iter().any(|m| deeper(m, &b));
+        }
+        if let Type::Union(ms) = &b {
+            return ms.iter().any(|m| deeper(&a, m));
+        }
+        // Class values: equal only as one class (`Value::Class`), whatever
+        // the type arguments. Two whose classes are both known overlap if
+        // one inherits from the other (a `Type[A]` holds `A` or a subclass
+        // of it); one of an unknown class (`Type[T]`, `Type[Object]`'s
+        // `Object` overlaps all) may be any.
+        match (self.class_value(&a), self.class_value(&b)) {
+            (Some(x), Some(y)) => {
+                return match (x, y) {
+                    (Some(c), Some(d)) => self.class_is_a(c, d) || self.class_is_a(d, c),
+                    _ => true,
+                };
             }
+            // A class value and an instance of no class value's class (a
+            // `Type`'s ancestors are tops or modules, taken above): never.
+            (Some(_), None) | (None, Some(_)) => return false,
+            (None, None) => {}
+        }
+        let array = self.builtin.array;
+        match (&a, &b) {
             (Type::Tuple(xs), Type::Tuple(ys)) => {
                 xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| deeper(x, y))
             }
-            (Type::Tuple(xs), Type::Class(c, args)) | (Type::Class(c, args), Type::Tuple(xs))
-                if *c == self.builtin.array =>
-            {
-                let elem = args.first().cloned().unwrap_or(Type::Nothing);
-                xs.iter().all(|x| deeper(x, &elem))
+            // A tuple is an array at run time.
+            (Type::Tuple(xs), Type::Class(c, args)) | (Type::Class(c, args), Type::Tuple(xs)) => {
+                if *c == array {
+                    let elem = args.first().cloned().unwrap_or(Type::Nothing);
+                    xs.iter().all(|x| deeper(x, &elem))
+                } else {
+                    // (An ancestor of `Array` that is a class: may.)
+                    self.class_is_a(array, *c)
+                }
             }
-            (Type::Tuple(_), _) | (_, Type::Tuple(_)) => false,
-            (Type::ClassObject(c, _), Type::ClassObject(d, _)) => {
-                self.class_is_a(*c, *d) || self.class_is_a(*d, *c)
-            }
-            (Type::TypeOf(_), _) | (_, Type::TypeOf(_)) => true,
-            (Type::ClassObject(..), Type::Class(c, _))
-            | (Type::Class(c, _), Type::ClassObject(..)) => *c == self.builtin.class_,
             (Type::Class(c, xs), Type::Class(d, ys)) => {
                 let numeric = |k: ClassId| {
                     [self.builtin.int, self.builtin.float, self.builtin.integer].contains(&k)
@@ -1695,7 +1722,31 @@ impl World {
                 }
                 true
             }
+            // Every other pair has been taken: unknowns, unions and class
+            // values above; what is left of `Tuple` and `Class` here.
+            // (`ClassObject` and `TypeOf` are class values; `Void` is `Nil`.)
             _ => true,
+        }
+    }
+
+    /// For a type whose values are class values: `Some(Some(c))` when
+    /// they are `c`'s or a subclass's, `Some(None)` when the class is not
+    /// known (`Type[T]`, an inference variable's); `None` for any other
+    /// type. The forms: `ClassObject` (a class written, `Type[Point]`),
+    /// `TypeOf` (`Type[T]` of a parameter or a variable), and an instance
+    /// type of `Type` or a subclass (`Meta::ClassDef[K]`, a `static`
+    /// statement's `self`), whose first argument names the class.
+    fn class_value(&self, t: &Type) -> Option<Option<ClassId>> {
+        match t {
+            Type::ClassObject(c, _) => Some(Some(*c)),
+            Type::TypeOf(_) => Some(None),
+            Type::Class(k, args) if self.class_is_a(*k, self.builtin.class_) => {
+                Some(match args.first() {
+                    Some(Type::Class(c, _)) => Some(*c),
+                    _ => None,
+                })
+            }
+            _ => None,
         }
     }
 
