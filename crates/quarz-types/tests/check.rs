@@ -6198,7 +6198,8 @@ fn self_new_in_instance_methods() {
 fn a_def_initialize_block_is_checked_as_an_initialize() {
     // docs/14 §5: the block given to `def_initialize` assigns the
     // bound's fields on every path, before the object is used, with
-    // `super` directly in it (and not bare).
+    // `super` directly in it (a bare one is `super()`, docs/01 §3:
+    // `super(...)` passes the block's parameters).
     let class = |body: &str| {
         format!(
             "class Base\n  @a: Int\n  @b: String? = nil\n  @c: String?\n  def initialize(@a: Int); @c = nil; end\n  def show -> Void = puts \"a\"\n  static def self.gen -> Void\n    def_initialize(:x) do |x: Int|\n      {body}\n    end\n  end\nend\n"
@@ -6235,8 +6236,9 @@ fn a_def_initialize_block_is_checked_as_an_initialize() {
     );
     err(
         &class("super"),
-        "a bare `super` forwards a method's parameters",
+        "is missing the argument `a` (a bare `super` passes nothing: write `super(...)` to pass the method's arguments)",
     );
+    ok(&class("super(...)"));
     err(
         &class("[1].each { super(x) }"),
         "`super` in `initialize` must be called directly, not from a block or lambda",

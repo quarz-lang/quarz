@@ -1,0 +1,71 @@
+# A `super` passes what it writes (docs/01 §3; #511, #1080): a bare
+# `super` is `super()`, which passes no arguments; `super()` and
+# `super(a)` pass the method's block only when written (`&`), and
+# `super(...)` passes the method's arguments and its block, an optional
+# one too.
+class P
+  def none -> String = "P#none"
+  def opt(x: Int = 5) -> String = "P#opt(#{x})"
+  def run(&b: (() -> Int)?) -> String
+    if b
+      "P#run with #{b.call}"
+    else
+      "P#run without"
+    end
+  end
+  def each_pair(x: Int, &b: ((Int) -> Int)?) -> String
+    if b
+      "P#each_pair #{b.call(x)}"
+    else
+      "P#each_pair #{x}, no block"
+    end
+  end
+end
+class C < P
+  # No parameter, no block: `super` and `super()` are one call.
+  def none -> String = "C>" + super
+  # A parameter the parent's default stands for: `super()` passes none.
+  def opt(x: Int = 5) -> String = "C>" + super()
+  # The method's block goes only when written.
+  def run(&b: (() -> Int)?) -> String = "C>" + super() + ", " + super(&b) + ", " + super(...)
+  def each_pair(x: Int, &b: ((Int) -> Int)?) -> String = "C>" + super(x) + ", " + super(...)
+end
+c = C.new
+puts c.none
+puts c.opt(7)
+puts c.run { 3 }
+puts c.run
+puts c.each_pair(4) { |v| v * 10 }
+# An anonymous block does not outlive the call (#1080): `super()` and a
+# bare `super` do not hand it to a parent that keeps its block, which
+# finds none kept; `super(...)` would, and is refused.
+class Keeper
+  var @kept: (() -> Int)?
+  def initialize
+    @kept = nil
+  end
+  def opt(&b: (() -> Int)?) -> Int
+    @kept = b
+    0
+  end
+  def run -> Int
+    k = @kept
+    if k
+      k.call
+    else
+      -1
+    end
+  end
+end
+class Empty < Keeper
+  def opt(&: (() -> Int)?) -> Int = super()
+end
+class Bare < Keeper
+  def opt(&: (() -> Int)?) -> Int = super
+end
+e = Empty.new
+e.opt { 42 }
+puts e.run
+b = Bare.new
+b.opt { 42 }
+puts b.run

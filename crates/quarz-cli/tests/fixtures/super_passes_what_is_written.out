@@ -1,0 +1,7 @@
+C>P#none
+C>P#opt(5)
+C>P#run without, P#run with 3, P#run with 3
+C>P#run without, P#run without, P#run without
+C>P#each_pair 4, no block, P#each_pair 40
+-1
+-1

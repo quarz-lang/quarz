@@ -210,16 +210,17 @@ fn top_level_fixtures_match_the_vm() {
     all_same_as_vm(&cases);
 }
 
-/// `super(...)` and a bare `super` are the same call (#511, step 1: the
-/// bare form means `super(...)` for now): one program written each way
-/// (`@@`), on the VM and compiled, prints what the forwarding rule gives
-/// (docs/01 §9): the parameter variables themselves, with their values
-/// and types where the call is, not a name hiding them; each as the
-/// method takes it; the block the method was given, even after its
-/// variable is assigned; in a block or lambda, the method's; in
-/// `initialize`, on each path.
+/// `super(...)` (`@@` below), on the VM and compiled, prints what the
+/// forwarding rule gives (docs/01 §9): the parameter variables
+/// themselves, with their values and types where the call is, not a name
+/// hiding them; each as the method takes it; the block the method was
+/// given, even after its variable is assigned; in a block or lambda, the
+/// method's; in `initialize`, on each path. The same program with a bare
+/// `super` at each of those places is refused at each (#511 step 3: a
+/// bare `super` is `super()`, which there either fails, with the hint,
+/// or is ambiguous with `super(...)`).
 #[test]
-fn forwarding_super_is_the_bare_super() {
+fn super_forwarding_passes_the_method_arguments() {
     const PROGRAM: &str = r##"class A
   def f(a: Int, b: String = "d", *rest: Int, k: Int = 0, **opts: String, &blk: (Int) -> Int) -> String
     "#{a} #{b} #{rest} #{k} #{opts} #{yield a}"
@@ -310,18 +311,35 @@ puts Sub.new(-1, 2)
                             Sub(1, 2, 2)\nSub(1, 2, -2)\n";
     let dir = std::env::temp_dir().join(format!("quarz-forward-super-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
-    for (name, form) in [("bare", "super"), ("forward", "super(...)")] {
-        let path = dir.join(format!("{name}.qz"));
-        fs::write(&path, PROGRAM.replace("@@", form)).unwrap();
-        let (code, out) = common::run_path(&path, &[]);
-        assert_eq!((code, out.as_str()), (0, EXPECTED), "{name} on the VM");
-        assert_eq!(
-            run_native(&path, &[]),
-            (0, EXPECTED.to_string()),
-            "{name} compiled"
-        );
-    }
+    let path = dir.join("forward.qz");
+    fs::write(&path, PROGRAM.replace("@@", "super(...)")).unwrap();
+    let (code, out) = common::run_path(&path, &[]);
+    assert_eq!((code, out.as_str()), (0, EXPECTED), "on the VM");
+    assert_eq!(
+        run_native(&path, &[]),
+        (0, EXPECTED.to_string()),
+        "compiled"
+    );
     let _ = fs::remove_dir_all(&dir);
+    // Bare, each site has an error there that names the bare `super`.
+    let source = PROGRAM.replace("@@", "super");
+    let diagnostics = common::diagnostics(&source);
+    let mut sites = 0;
+    for (i, line) in PROGRAM.lines().enumerate() {
+        for (at, _) in line.match_indices("@@") {
+            sites += 1;
+            let here = format!("test:{}:{}: error: ", i + 1, at + 1);
+            assert!(
+                diagnostics.iter().any(|d| d.starts_with(&here)
+                    && d.lines()
+                        .next()
+                        .unwrap()
+                        .contains("a bare `super` passes nothing")),
+                "{here}\n{diagnostics:#?}"
+            );
+        }
+    }
+    assert_eq!(sites, 8);
 }
 
 /// A compiled function that reads its activation's frame word (the

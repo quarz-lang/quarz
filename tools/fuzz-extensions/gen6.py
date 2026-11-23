@@ -58,7 +58,7 @@ def gen(seed):
     sub = r.random() < 0.4
     if sub:
         w("class D < C")
-        w("  def initialize; super(); end")
+        w("  def initialize; super; end")
         if r.random() < 0.5:
             w('  def m(x: String) -> String = "d:" + x')
         if r.random() < 0.3:

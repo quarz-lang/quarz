@@ -4739,53 +4739,31 @@ impl<'a> FnBuilder<'a> {
             return self.nil();
         };
         let method = *method;
+        // What is written, and nothing else (#1080): a bare `super` is
+        // `super()` (docs/01 §3), and the method's block goes only with
+        // `...` (`forwarded`) or `&`.
         let mut a = match args {
             Some(args) => self.args(args),
-            // A bare `super`: `super(...)` (docs/01 §3), the block passed
-            // below as for any `super`.
-            None => {
-                let ForwardedArgs {
-                    items,
-                    kw,
-                    kw_splat,
-                    ..
-                } = self.forwarded(e.id);
-                let (pos, splat) = self.positional(items);
-                Args {
-                    pos,
-                    splat,
-                    kw,
-                    kw_splat,
-                    block: None,
-                }
-            }
+            None => Args {
+                pos: Vec::new(),
+                splat: false,
+                kw: Vec::new(),
+                kw_splat: None,
+                block: None,
+            },
         };
-        a.block = match block {
-            Some(b) => {
-                let func = self.block_function(b, e.id, false);
-                let destructure = self.out.block_destructure.get(&e.id).map(|n| *n as u32);
-                let dst = self.reg();
-                self.emit(Inst::MakeBlock {
-                    dst,
-                    func,
-                    destructure,
-                    is_lambda: false,
-                });
-                Some(self.block_value(e.id, b, dst))
-            }
-            // (In a block given to `def_initialize`, the generated
-            // `initialize`'s `super`: it has no block to pass on.)
-            None if matches!(self.owner, Some(SelfOwner::Block(id))
-                if self.out.init_blocks.contains_key(&id)) =>
-            {
-                None
-            }
-            None => {
-                let dst = self.reg();
-                self.emit(Inst::BlockParam { dst });
-                Some(dst)
-            }
-        };
+        if let Some(b) = block {
+            let func = self.block_function(b, e.id, false);
+            let destructure = self.out.block_destructure.get(&e.id).map(|n| *n as u32);
+            let dst = self.reg();
+            self.emit(Inst::MakeBlock {
+                dst,
+                func,
+                destructure,
+                is_lambda: false,
+            });
+            a.block = Some(self.block_value(e.id, b, dst));
+        }
         // In a block with a receiver, the method's `self`, from its hidden
         // slot (`outer_self_calls`), whether the block is lowered in place
         // or as a function of its own (#384); elsewhere the frame's.
