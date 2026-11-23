@@ -66,6 +66,17 @@ end
 enum Unit = Bytes | Chars | NoKeyUpdate
 enum Order = Defined | Random
 
+# Its own `to_s` changes nothing on the command line.
+enum Mood
+  variant Calm, VeryAngry
+
+  def to_s -> String = "mood"
+end
+
+class Moods < CommandLine
+  option :mood, Mood, default: Mood::VeryAngry
+end
+
 class Enums < CommandLine
   option :unit, Unit, default: Unit::Bytes, help: "what to count"
   option :order, Order, default: nil
@@ -379,6 +390,13 @@ TEXT
     assert_equal("option '--need': 'sideways' is not one of defined, random", error_of { Enums.parse(["--need=sideways"], exit: false); nil })
     assert_equal("option '--need': 'Random' is not one of defined, random", error_of { Enums.parse(["--need=Random"], exit: false); nil })
     assert_equal("argument ORDERS: 'x' is not one of defined, random", error_of { Enums.parse(["--need=random", "x"], exit: false); nil })
+  end
+
+  def test_enum_names_are_the_variants_declared_names
+    assert_equal[Mood](Mood::Calm, Moods.parse(["--mood=calm"], exit: false).mood)
+    assert_equal[Mood](Mood::VeryAngry, Moods.parse([], exit: false).mood)
+    assert(Moods.help.include?("--mood=MOOD  one of calm, very-angry (default: very-angry)\n"), Moods.help)
+    assert_equal("option '--mood': 'mood' is not one of calm, very-angry", error_of { Moods.parse(["--mood=mood"], exit: false); nil })
   end
 
   def test_enum_help

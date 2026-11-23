@@ -616,10 +616,7 @@ class CommandLine
       begin
         type.variants
       rescue ArgumentError => e
-        why = ""
-        m = e.message.match(/`([^`]+)` has fields/)
-        why = ": its variant `#{m[1]}` has fields" unless m.nil?
-        raise ArgumentError, "CommandLine: `#{type.name}` is not a value type (String, Int, Float, Bool, an enum whose variants have no fields)#{why}"
+        raise ArgumentError, "CommandLine: `#{type.name}` is not a value type (String, Int, Float, Bool, an enum whose variants have no fields): #{e.message}"
       end
       :enum
     end
@@ -628,11 +625,21 @@ class CommandLine
     # (`NoKeyUpdate` is `no-key-update`); empty for another type.
     static def self.choices(type: Type[Object]) -> Array[String]
       return [] if type == String || type == Int || type == Float || type == Bool
-      type.variants.map { |v| kebab(v.to_s) }
+      names = type.variants.map { |v| variant_name(v) }
+      names.each_with_index do |n, i|
+        j = names.index(n) || i
+        next if j == i
+        raise ArgumentError, "CommandLine: `#{type.name}`'s variants `#{type.variants[j].class.name}` and `#{type.variants[i].class.name}` are both `#{n}` on the command line"
+      end
+      names
     end
 
+    # A variant as the command line writes it: its declared name in
+    # kebab case (not its `to_s`, which an enum may define).
+    def self.variant_name(value: Object) -> String = kebab(value.class.name)
+
     # A value as the help writes it: an enum's variant in kebab case.
-    def self.text_of(kind: Symbol, value: Object) -> String = kind == :enum ? kebab(value.to_s) : value.to_s
+    def self.text_of(kind: Symbol, value: Object) -> String = kind == :enum ? variant_name(value) : value.to_s
 
     def self.long_name(name: Symbol) -> String = name.to_s.tr("_", "-")
 
