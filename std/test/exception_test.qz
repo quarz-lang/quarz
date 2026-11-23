@@ -62,7 +62,11 @@ class ExceptionTest < Test::Case
       -1
     end
     assert_equal(-1, x)
-    y = Integer("zz") rescue -2
+    y = begin
+      Integer("zz")
+    rescue ArgumentError, TypeError
+      -2
+    end
     assert_equal(-2, y)
   end
 

@@ -433,7 +433,7 @@ xs.push!(4)            # xs = xs.push(4): `!` on an immutable value rebinds its 
 
 ## 11. Expressions and control structures
 
-Same as Ruby: `if`/`unless`/`elsif`/`else`, `while`/`until`, modifier forms, `case/when`, `case/in`, `begin/rescue/else/ensure`, `loop`, `break`/`next`/`retry`/`return`, `and`/`or`/`not`, `&&`/`||`/`!`, `..`/`...` (including endless ranges), `&.`, `=>` (rightward assignment / pattern), `in` (pattern test), string interpolation `#{}`, `__FILE__`/`__LINE__`/`__method__` (a `String` in Quarz, a `Symbol` in Ruby).
+Same as Ruby: `if`/`unless`/`elsif`/`else`, `while`/`until`, their modifier forms (not `rescue`'s, §12), `case/when`, `case/in`, `begin/rescue/else/ensure`, `loop`, `break`/`next`/`retry`/`return`, `and`/`or`/`not`, `&&`/`||`/`!`, `..`/`...` (including endless ranges), `&.`, `=>` (rightward assignment / pattern), `in` (pattern test), string interpolation `#{}`, `__FILE__`/`__LINE__`/`__method__` (a `String` in Quarz, a `Symbol` in Ruby).
 
 Different from Ruby:
 
@@ -518,9 +518,9 @@ else
 ensure
   cleanup
 end
-
-value = risky rescue default   # the modifier form is also allowed
 ```
+
+- There is no `rescue` modifier (Ruby's `value = risky rescue default`, #1074): it would rescue every `StandardError` the expression raises, a `KeyError` meant as well as a `NoMethodError` from a typo, with no way to name the class. It is a syntax error (`` the `rescue` modifier is removed: ... ``): write `begin ... rescue K ... end` naming the class (it is an expression: `value = begin` with `risky`, `rescue KeyError`, `default` and `end` on the lines after it), or use a method's `?` variant where there is one (`[]?`, `first?`, `Date.parse?`), which returns `nil` instead of raising.
 
 - The exception hierarchy follows Ruby (`Exception` > `StandardError` > ...). The argument of `raise` is an exception class, an exception object, or a string (`RuntimeError`). `raise K, message` is `raise K.new(message)`: `K`'s `initialize` (and its fields' defaults) runs, and must take one String (its other parameters optional), else it is an error. `raise K` is `raise K.new("K")` (the class name as the message, `raise ArgumentError`'s message is `"ArgumentError"`), or `raise K.new` when `initialize` takes no String but needs no argument (`raise SystemExit`). Of several `initialize` overloads, the most specific that fits is run, as `new` would. An abstract class, or one that defines or inherits `self.new`, cannot be raised by name: build the exception and raise it. The class is written by name: raising a class value (`k: Type[StandardError]`, `raise k, message`) is an error, for the same reason `k.new` is: `k` may be a subclass whose `initialize` takes other arguments, so which `initialize` runs, and with what, is not known. The ways around it (with a `FooError` whose `initialize` takes a message and a code):
 

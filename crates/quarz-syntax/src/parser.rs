@@ -616,9 +616,7 @@ impl<'src> Parser<'src> {
                     );
                 }
                 T::Keyword(K::Rescue) => {
-                    self.bump();
-                    let fallback = self.parse_expr_stmt()?;
-                    expr = self.rescue_modifier(expr, fallback, start);
+                    self.rescue_modifier(false)?;
                 }
                 _ => break,
             }
@@ -626,23 +624,22 @@ impl<'src> Parser<'src> {
         Ok(expr)
     }
 
-    fn rescue_modifier(&mut self, body: Expr, fallback: Expr, start: Span) -> Expr {
-        let span = self.span_from(start);
-        let rescue_span = fallback.span;
-        self.node(
+    /// At a `rescue` after an expression (a statement, or an assignment's
+    /// value): the modifier form, which Quarz does not have (#1074). It
+    /// is reported, and the fallback parsed and dropped, so that the rest
+    /// is still checked.
+    fn rescue_modifier(&mut self, in_value: bool) -> PResult<()> {
+        let span = self.bump().span;
+        self.error_at(
+            "the `rescue` modifier is removed: it rescues every `StandardError` the expression raises; write `begin ... rescue K ... end` naming the class, or use the method's `?` variant where there is one (`[]?`, `first?`, `Date.parse?`)",
             span,
-            ExprKind::Begin(Box::new(BeginBlock {
-                body: vec![body],
-                rescues: vec![Rescue {
-                    classes: vec![],
-                    var: None,
-                    body: vec![fallback],
-                    span: rescue_span,
-                }],
-                else_body: None,
-                ensure: None,
-            })),
-        )
+        );
+        if in_value {
+            self.parse_expr()?;
+        } else {
+            self.parse_expr_stmt()?;
+        }
+        Ok(())
     }
 
     fn not(&mut self, expr: Expr) -> Expr {
@@ -1169,12 +1166,9 @@ impl<'src> Parser<'src> {
                 self.bump();
                 self.skip_newlines();
                 self.declare_lvalue(&target);
-                let mut value = self.parse_expr()?;
+                let value = self.parse_expr()?;
                 if self.at_kw(K::Rescue) {
-                    self.bump();
-                    let fallback = self.parse_expr()?;
-                    let vstart = value.span;
-                    value = self.rescue_modifier(value, fallback, vstart);
+                    self.rescue_modifier(true)?;
                 }
                 let span = self.span_from(start);
                 Ok(self.node(
