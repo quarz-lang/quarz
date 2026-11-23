@@ -303,14 +303,15 @@ TEXT
     s = Site.parse(["-v", "serve", "-p", "3000", "--watch"], exit: false)
     assert(s.verbose)
     assert_equal(:serve, s.command_name)
-    serve = s.command
-    assert(serve.is_a?(Serve))
-    if serve.is_a?(Serve)
-      assert_equal(3000, serve.port)
-      assert(serve.watch)
-    end
-    b = Site.parse(["build", "-o", "dist"], exit: false).command
-    assert_equal("dist", b.is_a?(Build) ? b.out : "")
+    assert(s.command.is_a?(Serve))
+    serve: Serve? = s.serve
+    assert_equal(3000, serve&.port)
+    assert_equal(true, serve&.watch)
+    b: Build? = s.build
+    assert_nil(b)
+    assert_nil(s.remote)
+    assert_equal("dist", Site.parse(["build", "-o", "dist"], exit: false).build&.out)
+    assert_nil(Site.parse(["build", "-o", "dist"], exit: false).serve)
     # The parent's options come before the command's name.
     assert_equal("unknown option '-v'", error_of { Site.parse(["build", "-o", "d", "-v"], exit: false); nil })
   end
@@ -318,8 +319,9 @@ TEXT
   def test_subcommands_two_deep
     s = Site.parse(["remote", "add", "-o", "x"], exit: false)
     assert_equal(:remote, s.command_name)
-    r = s.command
-    assert_equal(:add, r.nil? ? nil : r.command_name)
+    assert_equal(:add, s.command&.command_name)
+    assert_equal("x", s.remote&.add&.out)
+    assert_nil(s.remote&.show)
     e = assert_raise(CommandLine::Error) { Site.parse(["remote", "add"], exit: false); nil }
     assert_equal("missing option '--out'", e.message)
     assert_equal("site remote add", e.as(CommandLine::Error).program)

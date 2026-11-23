@@ -49,6 +49,17 @@
 #   not given. Given twice, the last one counts. With `bare:` its value
 #   is optional: `--parallel` alone gives the `bare` value, and only
 #   `--parallel=8` (or `-p8`) gives another.
+#
+#   ```
+#   enum Unit = Bytes | Chars | NoKeyUpdate
+#
+#   class Count < CommandLine
+#     option :unit, Unit, default: Unit::Bytes, help: "what to count"
+#   end
+#
+#   Count.parse(["--unit=no-key-update"], exit: false).unit   # => Unit::NoKeyUpdate
+#   Count.parse([], exit: false).unit                         # => Unit::Bytes
+#   ```
 # - [list]: a repeated option, `-x a -x b`, read as an [Array] in the
 #   order given.
 # - [rest]: the operands, the arguments that are not options, read as an
@@ -171,13 +182,16 @@
 # site = Site.parse(["-v", "serve", "-p", "3000"], exit: false)
 # site.verbose        # => true
 # site.command_name   # => :serve
-# serve = site.command
-# serve.is_a?(Serve) ? serve.port : 0   # => 3000
+# site.serve&.port    # => 3000
+# site.build          # => nil
 # ```
 #
 # The first operand names the command, which is then required, and the
 # arguments after it are the command's: parsed by its class, whose usage
-# and errors say `site serve`. Options shared by the commands are the
+# and errors say `site serve`. Each command has a reader of its name,
+# typed as its class (`site.serve -> Serve?`), which gives the command's
+# instance when it was the one given; [command] and [command_name] give
+# whichever was. Options shared by the commands are the
 # parent's, given before the command's name; a class below a command
 # class cannot declare options of its own.
 #
@@ -383,13 +397,23 @@ class CommandLine
 
   # A subcommand named [name], whose arguments [type] parses; [help] is
   # its line in the help's list of commands (by default the first line
-  # of its [about]). [command] and [command_name] say which one was
-  # given.
+  # of its [about]). Its reader, of the command's name, gives the
+  # command's instance when it was the one given, typed as [type]
+  # (`site.serve -> Serve?`), and nil otherwise; [command] and
+  # [command_name] say which one was given whichever it is.
   static def self.command[U <: CommandLine](name: Symbol, type: Type[U], *, help: String? = nil) -> Void
     taken = statement_values[Support::Cmd](:command_line_commands).values
     raise ArgumentError, "CommandLine: the command `#{name}` is declared twice" if taken.any? { |c| c.name == name }
     raise ArgumentError, "CommandLine: a class with commands takes no `rest`" if statement_values[Support::Decl](:command_line_decls).values.any? { |d| d.kind == :rest }
+    raise ArgumentError, "CommandLine: `#{name}` cannot name a command: names starting with `__` are CommandLine's own" if name.to_s.start_with?("__")
+    if method?(name)
+      raise ArgumentError, "CommandLine: `#{name}` cannot name a command: `#{self.name}` already has a method of that name (its reader would replace it)"
+    end
     statement_values[Support::Cmd](:command_line_commands).add(Support::Cmd.new(name, type, help))
+    def_method(name) do -> U?
+      v = __value_of(:__command)
+      __value_of(:__command_name) == name && !v.nil? ? type.cast?(v) : nil
+    end
   end
 
   # :nodoc:

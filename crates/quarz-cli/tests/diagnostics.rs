@@ -438,7 +438,8 @@ fn decimal_mixes_with_no_float_and_orders_only_decimals() {
 /// names, a short name that is not one character, a type that is not a
 /// value type, a second `rest` or `program`, `rest` beside `command`, a
 /// `min:` above `max:`, a `raw: true` rest beside anything else, a bad
-/// long name, a long name that is also a flag's negation; and at the
+/// long name, a long name that is also a flag's negation, a command named
+/// as a method the instances answer; and at the
 /// `class` line a class below a command class that declares options of
 /// its own (one that declares none is accepted).
 #[test]
@@ -543,6 +544,15 @@ end
 class Shapes < CommandLine
   option :shape, Shape, default: nil
 end
+
+class Commands < CommandLine
+  flag :serve
+  command :serve, H
+end
+
+class Commands2 < CommandLine
+  command :to_s, H
+end
 "#,
     )
     .unwrap();
@@ -576,6 +586,8 @@ end
         "bad.qz:81:3: error: `option` raised ArgumentError: CommandLine: `--no-color` would both negate a flag and name an option",
         "bad.qz:86:3: error: `flag` raised ArgumentError: CommandLine: `--color` is declared twice",
         "bad.qz:95:3: error: `option` raised ArgumentError: CommandLine: `Shape` is not a value type (String, Int, Float, Bool, an enum whose variants have no fields): its variant `Shape::Circle` has fields",
+        "bad.qz:100:3: error: `command` raised ArgumentError: CommandLine: `serve` cannot name a command: `Commands` already has a method of that name (its reader would replace it)",
+        "bad.qz:104:3: error: `command` raised ArgumentError: CommandLine: `to_s` cannot name a command: `Commands2` already has a method of that name (its reader would replace it)",
     ];
     for e in expected {
         assert!(err.contains(e), "{e}\n{err}");
