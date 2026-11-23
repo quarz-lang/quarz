@@ -443,7 +443,7 @@ fn initialize_only_from_new() {
     );
     // `new` and `super` (with arguments and bare); a module declares no
     // `initialize`.
-    ok("class A\n  @a: Int\n  def initialize(@a: Int); end\n  def initialize(s: String)\n    @a = s.size\n  end\nend\nclass B < A\n  @b: Int\n  def initialize(@b: Int)\n    super(@b)\n  end\nend\nclass D < A\n  def initialize(a: Int)\n    super\n  end\nend\nB.new(1)\nD.new(2)\nA.new(\"ab\")");
+    ok("class A\n  @a: Int\n  def initialize(@a: Int); end\n  def initialize(s: String)\n    @a = s.size\n  end\nend\nclass B < A\n  @b: Int\n  def initialize(@b: Int)\n    super(@b)\n  end\nend\nclass D < A\n  def initialize(a: Int)\n    super(...)\n  end\nend\nB.new(1)\nD.new(2)\nA.new(\"ab\")");
     err(
         "module M\n  def initialize\n    puts \"m\"\n  end\nend\nclass C\n  include M\nend\nC.new",
         "a module cannot declare `initialize`",
@@ -472,7 +472,7 @@ fn super_in_initialize_is_direct() {
     // is fine (Ruby).
     err(
         &format!(
-            "{a}class B < A\n  def initialize(a: Int?)\n    [1].each {{ |i| super }}\n  end\nend"
+            "{a}class B < A\n  def initialize(a: Int?)\n    [1].each {{ |i| super(...) }}\n  end\nend"
         ),
         direct,
     );
@@ -486,12 +486,12 @@ fn super_chooses_among_overloads() {
     // `super` resolves against all the overloads of the first ancestor
     // that has the method, as a call does (docs/01 §9).
     let base = "class Base\n  @a: Int\n  def initialize(x: Int)\n    @a = x\n  end\n  def initialize(s: String)\n    @a = s.size\n  end\n  def f(x: Int) -> String = \"int\"\n  def f(s: String) -> String = \"str\"\n  def f(x: Int, s: String) -> String = \"both\"\nend\n";
-    ok(&format!("{base}class Mid < Base\n  def initialize(s: String)\n    super(s)\n  end\n  def initialize(n: Int)\n    super(n)\n  end\n  def f(s: String) -> String = \"Mid \" + super(s)\n  def f(x: Int) -> String = \"Mid \" + super\nend\nMid.new(\"a\")\nMid.new(1)"));
+    ok(&format!("{base}class Mid < Base\n  def initialize(s: String)\n    super(s)\n  end\n  def initialize(n: Int)\n    super(n)\n  end\n  def f(s: String) -> String = \"Mid \" + super(s)\n  def f(x: Int) -> String = \"Mid \" + super(...)\nend\nMid.new(\"a\")\nMid.new(1)"));
     // A bare `super` forwards the parameters, chosen by their types.
-    ok(&format!("{base}class Fwd < Base\n  def initialize(x: Int, s: String)\n    super(s)\n  end\n  def initialize(x: Int)\n    super\n  end\nend\nFwd.new(1, \"a\")"));
+    ok(&format!("{base}class Fwd < Base\n  def initialize(x: Int, s: String)\n    super(s)\n  end\n  def initialize(x: Int)\n    super(...)\n  end\nend\nFwd.new(1, \"a\")"));
     err(
         &format!(
-            "{base}class Fwd < Base\n  def initialize(x: Int, s: String)\n    super\n  end\nend"
+            "{base}class Fwd < Base\n  def initialize(x: Int, s: String)\n    super(...)\n  end\nend"
         ),
         "no overload of `initialize` on Fwd matches",
     );
@@ -559,7 +559,7 @@ fn narrowing_does_not_survive_assignments() {
     );
     // In a method other than `initialize`, `super` assigns no field: an
     // inherited field keeps its narrowing past it.
-    ok("class P\n  @p: Int?\n  def initialize(@p: Int?); end\n  def go(c: Bool) -> Int = 0\n  def go2(c: Bool) -> Int = 0\nend\nclass C < P\n  def go(c: Bool) -> Int\n    if @p.is_a?(Int)\n      while c\n        super\n        c = false\n      end\n      return @p + 1\n    end\n    0\n  end\n  def go2(c: Bool) -> Int\n    y = @p.is_a?(Int) && (super(c); true) && @p + 1\n    y.is_a?(Int) ? y : 0\n  end\nend\nC.new(1).go(true)\nC.new(1).go2(true)");
+    ok("class P\n  @p: Int?\n  def initialize(@p: Int?); end\n  def go(c: Bool) -> Int = 0\n  def go2(c: Bool) -> Int = 0\nend\nclass C < P\n  def go(c: Bool) -> Int\n    if @p.is_a?(Int)\n      while c\n        super(...)\n        c = false\n      end\n      return @p + 1\n    end\n    0\n  end\n  def go2(c: Bool) -> Int\n    y = @p.is_a?(Int) && (super(c); true) && @p + 1\n    y.is_a?(Int) ? y : 0\n  end\nend\nC.new(1).go(true)\nC.new(1).go2(true)");
 }
 
 #[test]
@@ -585,10 +585,10 @@ fn super_in_extension_reaches_the_hidden_method() {
     // `super` in an extension's method calls the method it hides: the
     // class's own (among its overloads), else the ancestors' (docs/01 §7).
     let classes = "class Base\n  def greet(n: Int) -> String = \"base\"\n  def greet(s: String) -> String = \"base\"\nend\nclass Mid < Base\n  def greet(n: Int) -> String = \"mid\"\n  def greet(s: String) -> String = \"mid\"\nend\nclass Leaf < Mid\nend\n";
-    ok(&format!("{classes}module Loud\n  extension Mid\n    def greet(n: Int) -> String = super(n) + \"!\"\n    def greet(s: String) -> String = super + \"?\"\n  end\n  extension Leaf\n    def greet(n: Int) -> String = \"please, \" + super\n    def greet(s: String) -> String = super(s)\n  end\nend\nusing Loud\nputs Mid.new.greet(1)\nputs Leaf.new.greet(\"a\")"));
+    ok(&format!("{classes}module Loud\n  extension Mid\n    def greet(n: Int) -> String = super(n) + \"!\"\n    def greet(s: String) -> String = super(...) + \"?\"\n  end\n  extension Leaf\n    def greet(n: Int) -> String = \"please, \" + super(...)\n    def greet(s: String) -> String = super(s)\n  end\nend\nusing Loud\nputs Mid.new.greet(1)\nputs Leaf.new.greet(\"a\")"));
     // Also where the extension's module is not `using`-ed (a library's
     // layout: defined in one place, used in others).
-    ok(&format!("{classes}module Loud\n  extension Mid\n    def greet(n: Int) -> String = super(n) + \"!\"\n  end\n  extension Leaf\n    def greet(n: Int) -> String = \"please, \" + super\n  end\nend\nclass User\n  using Loud\n  def go -> String = Leaf.new.greet(1)\nend\nputs User.new.go"));
+    ok(&format!("{classes}module Loud\n  extension Mid\n    def greet(n: Int) -> String = super(n) + \"!\"\n  end\n  extension Leaf\n    def greet(n: Int) -> String = \"please, \" + super(...)\n  end\nend\nclass User\n  using Loud\n  def go -> String = Leaf.new.greet(1)\nend\nputs User.new.go"));
     // The hidden method is the class's own, with its signature.
     err(
         &format!("{classes}module Loud\n  extension Leaf\n    def greet(n: Int) -> String = super(1.5)\n  end\nend\nusing Loud\nputs Leaf.new.greet(1)"),
@@ -4834,7 +4834,7 @@ fn kernel_functions_are_no_methods() {
     ok("class C\n  def exit(status: Int = 0) -> Void = nil\nend");
     ok("x: Bool = 1.is_a?(Kernel)");
     err(
-        "class C\n  def puts(*values: Object) -> Void = super\nend",
+        "class C\n  def puts(*values: Object) -> Void = super(...)\nend",
         "no superclass method `puts`: `puts` is a built-in function, called as `Kernel.puts`",
     );
     err("x: Kernel = 3", "");
@@ -5091,26 +5091,26 @@ fn a_bare_super_forwards_the_parameters_themselves() {
     let a = "class A\n  def f(x: Int) -> Int = x + 1\nend\n";
     // Not a variable hiding the parameter's name where the `super` is.
     err(
-        &format!("{a}class B < A\n  def f(x: Int?) -> Int\n    r = 0\n    [1].each do |i|\n      x := 50\n      r = super\n    end\n    r\n  end\nend"),
+        &format!("{a}class B < A\n  def f(x: Int?) -> Int\n    r = 0\n    [1].each do |i|\n      x := 50\n      r = super(...)\n    end\n    r\n  end\nend"),
         "argument `x` of f(x: Int) -> Int expects Int but found Int?",
     );
     err(
-        &format!("{a}class B < A\n  def f(x: Int?) -> Int\n    case 5\n    in Int => x then super\n    end\n  end\nend"),
+        &format!("{a}class B < A\n  def f(x: Int?) -> Int\n    case 5\n    in Int => x then super(...)\n    end\n  end\nend"),
         "argument `x` of f(x: Int) -> Int expects Int but found Int?",
     );
     err(
         &format!(
-            "{a}class B < A\n  def f(x: Int?) -> Int\n    [1].sum {{ |x| super }}\n  end\nend"
+            "{a}class B < A\n  def f(x: Int?) -> Int\n    [1].sum {{ |x| super(...) }}\n  end\nend"
         ),
         "argument `x` of f(x: Int) -> Int expects Int but found Int?",
     );
     // So one of another type there is fine.
-    ok(&format!("{a}class B < A\n  def f(x: Int) -> Int\n    r = 0\n    [1].each do |i|\n      x := \"s\"\n      r = super\n    end\n    r\n  end\nend"));
+    ok(&format!("{a}class B < A\n  def f(x: Int) -> Int\n    r = 0\n    [1].each do |i|\n      x := \"s\"\n      r = super(...)\n    end\n    r\n  end\nend"));
     // The parameter as assigned and narrowed there.
     ok(&format!(
-        "{a}class B < A\n  def f(x: Int?) -> Int\n    x = 5\n    super\n  end\nend"
+        "{a}class B < A\n  def f(x: Int?) -> Int\n    x = 5\n    super(...)\n  end\nend"
     ));
-    ok(&format!("{a}class B < A\n  def f(x: Int?) -> Int\n    if x\n      super\n    else\n      0\n    end\n  end\nend"));
+    ok(&format!("{a}class B < A\n  def f(x: Int?) -> Int\n    if x\n      super(...)\n    else\n      0\n    end\n  end\nend"));
 }
 
 #[test]
@@ -5773,7 +5773,7 @@ fn super_in_a_class_method_override_reaches_the_parents_new() {
     // `super` runs the parent's `new` with the subclass for `self`.
     let two = "class Two\n  @n: Int\n  def initialize(@n: Int); end\n  def self.mk(n: Int) -> Self = new(n)\n  def self.via(n: Int) -> Self = build(n)\n  def self.build(n: Int) -> Self = new(n)\nend\n";
     err(
-        &format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def self.mk(n: Int) -> Self = super\n  def self.build(n: Int) -> Self = new(\"b\")\n  def self.via(n: Int) -> Self = new(\"v\")\nend"),
+        &format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def self.mk(n: Int) -> Self = super(...)\n  def self.build(n: Int) -> Self = new(\"b\")\n  def self.via(n: Int) -> Self = new(\"v\")\nend"),
         "`super` in `Sub.mk` runs `new` in `Two.mk` with `Sub` for `self`, but `Sub#initialize` does not take its arguments",
     );
     // Inside a block too.
@@ -5783,12 +5783,12 @@ fn super_in_a_class_method_override_reaches_the_parents_new() {
     );
     // Through another class method (`via` calls `build`): `build`'s `new`.
     err(
-        &format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def self.mk(n: Int) -> Self = new(\"m\")\n  def self.via(n: Int) -> Self = super\nend"),
+        &format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def self.mk(n: Int) -> Self = new(\"m\")\n  def self.via(n: Int) -> Self = super(...)\nend"),
         "`Sub#initialize` does not take the arguments of `new` in `Two.build`",
     );
     // The override among overloads: by signature, any `super` of them.
     err(
-        &format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def self.mk(s: String) -> Self = new(s)\n  def self.mk(n: Int) -> Self = super\n  def self.build(n: Int) -> Self = new(\"b\")\n  def self.via(n: Int) -> Self = new(\"v\")\nend"),
+        &format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def self.mk(s: String) -> Self = new(s)\n  def self.mk(n: Int) -> Self = super(...)\n  def self.build(n: Int) -> Self = new(\"b\")\n  def self.via(n: Int) -> Self = new(\"v\")\nend"),
         "`super` in `Sub.mk`",
     );
     // Another signature only: no override, the method is reached.
@@ -5802,7 +5802,7 @@ fn super_in_a_class_method_override_reaches_the_parents_new() {
     ok("class Box[T]\n  @x: T\n  def initialize(@x: T); end\n  def self.mk(v: T) -> Self = new(v)\nend\nclass IntBox < Box[Int]\n  def initialize(s: String, v: Int); @x = v; end\n  def self.mk(v: Int) -> Self = new(\"i\", v)\nend");
     ok(&format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def self.mk(n: Int | String, k: Int = 1) -> Self = new(\"w\")\n  def self.build(n: Int) -> Self = new(\"b\")\n  def self.via(n: Int) -> Self = new(\"v\")\nend"));
     // An overload that fits, or no `super`: accepted.
-    ok(&format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def initialize(@n: Int); end\n  def self.mk(n: Int) -> Self = super\nend"));
+    ok(&format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def initialize(@n: Int); end\n  def self.mk(n: Int) -> Self = super(...)\nend"));
     ok(&format!("{two}class Sub < Two\n  def initialize(s: String); @n = 0; end\n  def self.mk(n: Int) -> Self = new(\"m\")\n  def self.build(n: Int) -> Self = new(\"b\")\n  def self.via(n: Int) -> Self = new(\"v\")\nend"));
 }
 

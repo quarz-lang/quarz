@@ -23,13 +23,13 @@ class Mid < Base
     super(n)
   end
   def f(s: String) -> String = "Mid " + super(s)
-  def f(x: Int) -> String = "Mid " + super
+  def f(x: Int) -> String = "Mid " + super(...)
 end
 
-# A bare `super` forwards the parameters, chosen by their types.
+# `super(...)` forwards the parameters, chosen by their types.
 class Fwd < Base
   def initialize(x: Int)
-    super
+    super(...)
   end
   def initialize(x: Int, s: String)
     super(s)
@@ -39,7 +39,7 @@ end
 # `super` sees only the first ancestor with the method: Mid's two `f`,
 # not Base's three.
 class Leaf < Mid
-  def f(s: String) -> String = "Leaf " + super
+  def f(s: String) -> String = "Leaf " + super(...)
 end
 
 puts Mid.new("abc").a
@@ -51,7 +51,7 @@ puts Mid.new(1).f(1)
 puts Leaf.new(1).f("z")
 puts Leaf.new(1).f(2)
 
-# A bare `super` forwards every parameter: positional ones of different
+# `super(...)` forwards every parameter: positional ones of different
 # types, `*rest` and `**opts`.
 class Pair
   def initialize(x: Int, s: String)
@@ -61,9 +61,9 @@ class Pair
 end
 class Pair2 < Pair
   def initialize(x: Int, s: String)
-    super
+    super(...)
   end
-  def g(*xs: Int, **kw: String) -> Int = super + 100
+  def g(*xs: Int, **kw: String) -> Int = super(...) + 100
 end
 Pair2.new(1, "a")
 puts Pair2.new(2, "b").g(1, 2, a: "x")
@@ -79,9 +79,9 @@ end
 class Yielder2 < Yielder
   def each_twice(x: Int, &: (Int) -> Void) -> Void
     puts "Yielder2"
-    super
+    super(...)
   end
-  def named(x: Int, &b: (Int) -> Int) -> Int = super + 1
+  def named(x: Int, &b: (Int) -> Int) -> Int = super(...) + 1
 end
 Yielder2.new.each_twice(1) { |i| puts i }
 puts Yielder2.new.named(5) { |i| i + 1 }

@@ -32,7 +32,7 @@ class P < Q
     "#{in_place} | #{as_function}"
   end
 
-  def zs(n: Int) -> String = Runner.new.with(P3.new) { super }
+  def zs(n: Int) -> String = Runner.new.with(P3.new) { super(...) }
 
   def lam(n: Int) -> String
     f: P.() -> String = -> { super(n) }

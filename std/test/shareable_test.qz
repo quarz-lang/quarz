@@ -140,7 +140,7 @@ class ShareableTestDerived < ShareableTestBase
 
   # `super` passing the method's block on, and with a block of its own.
   def m(x: Int, &blk: shareable (Int) -> Int) -> Int
-    f: shareable () -> Int = -> { super }
+    f: shareable () -> Int = -> { super(...) }
     g: shareable () -> Int = -> { super(x) { |y| y * 100 } }
     f.call + g.call
   end

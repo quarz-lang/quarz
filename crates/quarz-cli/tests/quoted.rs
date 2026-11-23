@@ -334,7 +334,7 @@ fn overloads_by_block_kind() {
     write(
         &d.0,
         "app.qz",
-        "class A\n  def w(&f: Quoted[(Int) -> Bool]) -> String = \"quoted\"\n  def w(&f: (String) -> Bool) -> String = \"proc #{f.call(\"a\")}\"\nend\np A.new.w { |x| x.empty? }\nclass B\n  def w(&f: (String) -> Bool) -> String = \"proc #{f.call(\"a\")}\"\n  def w(&f: Quoted[(Int) -> Bool]) -> String = \"quoted\"\nend\np B.new.w { |x| x > 0 }\np B.new.w { |x| x.empty? }\nclass C\n  def w(x: Int, &f: Quoted[(Int) -> Bool]) -> Int = f.captures.size\n  def w(x: String, &f: (Int) -> Bool) -> Int = 0\nend\nn = 1\np C.new.w(1) { |x| x > n }\nclass R\n  def c(&f: Quoted[(Int) -> Bool]) -> Int = f.captures.size\nend\nclass S < R\n  def c(&f: Quoted[(Int) -> Bool]) -> Int = f.captures.size + super\nend\nr: R = S.new\np r.c { |x| x > n }\n",
+        "class A\n  def w(&f: Quoted[(Int) -> Bool]) -> String = \"quoted\"\n  def w(&f: (String) -> Bool) -> String = \"proc #{f.call(\"a\")}\"\nend\np A.new.w { |x| x.empty? }\nclass B\n  def w(&f: (String) -> Bool) -> String = \"proc #{f.call(\"a\")}\"\n  def w(&f: Quoted[(Int) -> Bool]) -> String = \"quoted\"\nend\np B.new.w { |x| x > 0 }\np B.new.w { |x| x.empty? }\nclass C\n  def w(x: Int, &f: Quoted[(Int) -> Bool]) -> Int = f.captures.size\n  def w(x: String, &f: (Int) -> Bool) -> Int = 0\nend\nn = 1\np C.new.w(1) { |x| x > n }\nclass R\n  def c(&f: Quoted[(Int) -> Bool]) -> Int = f.captures.size\nend\nclass S < R\n  def c(&f: Quoted[(Int) -> Bool]) -> Int = f.captures.size + super(...)\nend\nr: R = S.new\np r.c { |x| x > n }\n",
     );
     let expected = "\"proc false\"\n\"quoted\"\n\"proc false\"\n1\n2\n";
     let (ok, out, err) = quarz(&d.0, &["run", "app.qz"], &[]);

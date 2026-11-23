@@ -32,7 +32,7 @@ module XA
   using T1
   using T2
   extension D
-    def it(x: Int) -> String = "XA>" + super
+    def it(x: Int) -> String = "XA>" + super(...)
   end
 end
 def f -> String
@@ -54,7 +54,7 @@ module XB
   using T2
   using T1
   extension D
-    def it(x: Int) -> String = "XB>" + super
+    def it(x: Int) -> String = "XB>" + super(...)
   end
 end
 def b -> String

@@ -14,10 +14,10 @@ end
 module Loud
   extension Mid
     def greet(n: Int) -> String = super(n).upcase + "!"
-    def greet(s: String) -> String = super.upcase + "?"
+    def greet(s: String) -> String = super(...).upcase + "?"
   end
   extension Leaf
-    def greet(n: Int) -> String = "please, " + super
+    def greet(n: Int) -> String = "please, " + super(...)
   end
 end
 using Loud
