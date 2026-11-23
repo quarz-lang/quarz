@@ -2211,15 +2211,7 @@ impl<'a> FnBuilder<'a> {
                         let Arg::Positional(ce) = c else { continue };
                         let cv = self.expr(ce);
                         let matched = match subject {
-                            Some(s) => {
-                                let t = self.reg();
-                                self.emit(Inst::CaseEq {
-                                    dst: t,
-                                    pattern: cv,
-                                    value: s,
-                                });
-                                t
-                            }
+                            Some(s) => self.case_eq(ce.id, cv, s),
                             None => cv,
                         };
                         let next = self.new_block();
@@ -4729,6 +4721,36 @@ impl<'a> FnBuilder<'a> {
         }
     }
 
+    /// `pattern === value` for the pattern of node `id` (a `when` value or
+    /// a value pattern of `case/in`, docs/01 §11): the call of a pattern
+    /// the checker typed as a procedure (`Output::proc_patterns`, #1085),
+    /// else `Inst::CaseEq` (`Interp::case_eq`).
+    fn case_eq(&mut self, id: u32, pattern: Reg, value: Reg) -> Reg {
+        let dst = self.reg();
+        if self.out.proc_patterns.contains(&id) {
+            self.emit(Inst::Call {
+                dst,
+                kind: CallKind::ProcCall,
+                recv: Some(pattern),
+                args: vec![value],
+                splat: false,
+                kw: Vec::new(),
+                kw_splat: None,
+                block: None,
+                moved: 0,
+                recv_classes: None,
+                on_self: false,
+            });
+        } else {
+            self.emit(Inst::CaseEq {
+                dst,
+                pattern,
+                value,
+            });
+        }
+        dst
+    }
+
     fn super_call(
         &mut self,
         e: &'a Expr,
@@ -5611,12 +5633,7 @@ impl<'a> FnBuilder<'a> {
             }
             PatternKind::Value(e) => {
                 let p = self.expr(e);
-                let t = self.reg();
-                self.emit(Inst::CaseEq {
-                    dst: t,
-                    pattern: p,
-                    value: v,
-                });
+                let t = self.case_eq(e.id, p, v);
                 self.check(t, fail);
             }
             PatternKind::Range { lo, hi, exclusive } => {

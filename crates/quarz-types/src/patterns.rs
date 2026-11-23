@@ -47,6 +47,13 @@ impl Checker {
                 let t = self.check_expr_pub(expr, None);
                 self.restore_alternatives(saved);
                 let t = self.resolve_ty(&t);
+                // A procedure is called (#1085); a class with its own
+                // `===` decides (#1075): neither narrows the subject.
+                self.no_extension_case_eq(&t, "in", expr.span);
+                if self.may_be_proc(&t) || self.defines_case_eq(&t) {
+                    self.proc_pattern(expr, &t, &value_ty, "in");
+                    return value_ty;
+                }
                 // `1 === 1.0`: a value of a type not decided yet is not
                 // narrowed to the literal's class.
                 if Self::undecided(&value_ty) {

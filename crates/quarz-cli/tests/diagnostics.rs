@@ -4266,6 +4266,46 @@ fn a_bare_super_passes_nothing() {
     }
 }
 
+/// #1075, #1085: `when p` is `p === subject`. A class's `===` takes one
+/// `Object` and returns `Bool`, the class side's cannot be defined, an
+/// extension's is not what `when` (or `in`) calls, and a procedure-typed
+/// pattern is called: one parameter the subject fits, no keyword, a
+/// `Bool`; a union that may be a procedure is refused.
+#[test]
+fn case_eq_rules() {
+    let cases = [
+        ("class A\n  def ===(n: Int) -> Bool = true\nend\n", "test:2:3: error: `===` takes one parameter of type `Object`: it is called with any value (`x == y` with an operand typed `Object`, `Array#==`, `case`/`when`); test the class in the body (`other.is_a?(Foo) && ...`)"),
+        ("class A\n  def ===(o: Object) -> Int = 1\nend\n", "test:2:3: error: `===` returns Int but `Object#===`, which it overrides, returns Bool"),
+        ("class A\n  def self.===(o: Object) -> Bool = true\nend\n", "test:2:3: error: `===` on the class side would replace `Type#===`, which `when` uses for class patterns: it cannot be defined"),
+        ("class A\nend\nmodule M\n  extension A\n    def ===(o: Object) -> Bool = true\n  end\nend\nusing M\ncase 1\nwhen A.new then 1\nend\n", "test:10:6: error: `when` calls `===` on the pattern's class, not an extension's: `A`'s `===` from `extension A` in `M` is not used here; define it on the class, or test with a procedure (`when ->(v) { ... }`)"),
+        ("module M\n  extension String\n    def ===(o: Object) -> Bool = true\n  end\nend\nusing M\ncase \"a\"\nin \"b\" then 1\nelse 2\nend\n", "test:8:4: error: `in` calls `===` on the pattern's class, not an extension's: `String`'s `===` from `extension String` in `M` is not used here; define it on the class, or match with a guard (`in v if ...`)"),
+        ("f = ->(n: Int) { n > 1 }\ncase \"s\"\nwhen f then 1\nend\n", "test:3:6: error: `when` calls the procedure with the subject: `(Int) -> Bool` takes `Int`, not `String`; narrow the subject first (a `when Int` before it), or give the procedure an `Object` parameter"),
+        ("f = -> { true }\ncase 1\nwhen f then 1\nend\n", "test:3:6: error: `when` calls the procedure with the subject alone: `() -> Bool` takes 0 arguments"),
+        ("f = ->(a: Int, b: Int) { true }\ncase 1\nwhen f then 1\nend\n", "test:3:6: error: `when` calls the procedure with the subject alone: `(Int, Int) -> Bool` takes 2 arguments"),
+        ("f = ->(*, k: Int) { true }\ncase 1\nwhen f then 1\nend\n", "test:3:6: error: `when` calls the procedure with the subject alone: `(*, k: Int) -> Bool` takes the keyword `k:`"),
+        ("f = ->(n: Int) { n }\ncase 1\nwhen f then 1\nend\n", "test:3:6: error: `when` calls the procedure as `===`, which gives a `Bool`: `(Int) -> Int` gives `Int`; return a `Bool` from it (`x != nil`, `x > 0`)"),
+        ("f = ->(n: Int) { n > 1 }\np(f === \"s\")\n", "test:2:3: error: `===` calls the procedure with the subject: `(Int) -> Bool` takes `Int`, not `String`"),
+        ("def u(p: Int | (Int) -> Bool) -> Int\n  case 3\n  when p then 1\n  else 2\n  end\nend\n", "test:3:8: error: `when` decides when it compiles whether it calls its pattern: `Int | (Int) -> Bool` may be the procedure `(Int) -> Bool` or not; give the pattern a procedure type, or a type with no procedure in it"),
+        // A subclass of `Proc` may define `===`, but no value of it exists.
+        ("class X < Proc\n  def ===(o: Object) -> Bool = true\nend\nx = X.new\n", "test:4:5: error: `X` is not built with `new`"),
+    ];
+    for (src, expected) in cases {
+        let out = common::diagnostics(src);
+        assert!(
+            out.iter().any(|d| d.starts_with(expected)),
+            "{src:?}: {out:#?}"
+        );
+    }
+    // An extension's `===` not active where the `when` is: nothing.
+    let quiet = "class A\nend\nmodule M\n  extension A\n    def ===(o: Object) -> Bool = true\n  end\nend\ncase 1\nwhen A.new then 1\nend\n";
+    assert!(
+        common::diagnostics(quiet)
+            .iter()
+            .all(|d| !d.contains("error")),
+        "{quiet}"
+    );
+}
+
 /// #577: two active scoped extensions whose includes give the class a
 /// method of the name, neither overriding the other: the call is
 /// ambiguous, naming both extensions and modules, wherever the `using`s
