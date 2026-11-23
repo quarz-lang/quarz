@@ -119,6 +119,12 @@ pub struct Lowerer {
     /// What each function refers to, for the static rounds' walks
     /// (`walk_refs`), by function id.
     walk_refs: Vec<Option<std::rc::Rc<WalkRefs>>>,
+    /// The methods by name the static rounds walk with
+    /// (`methods_by_name`), for the world of this number of methods,
+    /// extended with those added since: a method is appended, never
+    /// renamed or removed, within a check; `forget` (the REPL's rollback,
+    /// which gives ids again) drops it (#1070).
+    names_kept: (usize, MethodsByName),
     /// The walk of the last static round, by its statement, callee and
     /// world (numbers of methods and classes), and the `static_skip` it
     /// left methods out by: continued by the next round of the same
@@ -368,6 +374,7 @@ impl Lowerer {
     /// (their ids are not reused); nothing refers to them.
     pub fn forget(&mut self, methods: usize, consts: usize, classes: usize, funcs: FuncId) {
         self.last_walk = None;
+        self.names_kept = Default::default();
         // (The ids from `methods` on are given to other methods next.)
         self.overrides_cache.1.clear();
         self.bounded_cache.1.clear();
@@ -759,18 +766,49 @@ impl Lowerer {
 /// The file index of the prelude.
 const PRELUDE_FILE: u32 = 0;
 
-fn methods_by_name(world: &World) -> HashMap<&str, Vec<MethodId>> {
-    let mut by_name: HashMap<&str, Vec<MethodId>> = HashMap::default();
-    for (i, m) in world.methods.iter().enumerate() {
-        by_name
-            .entry(m.name.as_str())
-            .or_default()
-            .push(i as MethodId);
-    }
+/// The methods of each name, in id order.
+type MethodsByName = HashMap<String, Vec<MethodId>>;
+
+fn methods_by_name(world: &World) -> MethodsByName {
+    let mut by_name = MethodsByName::default();
+    add_by_name(&mut by_name, world, 0);
     by_name
 }
 
+/// `by_name` extended with the methods of `world` from id `from` on.
+fn add_by_name(by_name: &mut MethodsByName, world: &World, from: usize) {
+    for (i, m) in world.methods.iter().enumerate().skip(from) {
+        match by_name.get_mut(m.name.as_str()) {
+            Some(v) => v.push(i as MethodId),
+            None => {
+                by_name.insert(m.name.clone(), vec![i as MethodId]);
+            }
+        }
+    }
+}
+
 impl Lowerer {
+    /// The kept methods by name (`names_kept`), brought up to `world`'s
+    /// methods and taken out for a walk: put back after it with the
+    /// number of methods it covers, so that a walk that does not finish
+    /// leaves none kept, and the next is made afresh.
+    fn names_synced(&mut self, world: &World) -> MethodsByName {
+        let (seen, mut by_name) = std::mem::take(&mut self.names_kept);
+        let now = world.methods.len();
+        if now < seen {
+            by_name = methods_by_name(world);
+        } else {
+            add_by_name(&mut by_name, world, seen);
+        }
+        if cfg!(debug_assertions) || verify_static_tables() {
+            assert!(
+                by_name == methods_by_name(world),
+                "internal error: the lowerer's kept methods by name differ from the world's (#1070)"
+            );
+        }
+        by_name
+    }
+
     /// Whether the methods of `file` are lowered only once something may
     /// call them: the prelude's and the standard library's.
     fn lazy(&self, world: &World, file: u32) -> bool {
@@ -818,7 +856,7 @@ impl Lowerer {
         &mut self,
         world: &World,
         out: &Output,
-        by_name: &HashMap<&str, Vec<MethodId>>,
+        by_name: &MethodsByName,
         work: &mut Vec<MethodId>,
     ) {
         loop {
@@ -1302,7 +1340,7 @@ impl Lowerer {
         // returned unchecked is checked) continues this one's walk: the
         // world has the same methods, and only what was left unlowered,
         // and the field defaults lowered since, are new to it.
-        let by_name = methods_by_name(world);
+        let by_name = self.names_synced(world);
         let key = (stmt.id, callee, world.methods.len(), world.classes.len());
         let mut walk = match self.last_walk.take() {
             Some((k, skip, mut w)) if k == key && skip == self.static_skip => {
@@ -1354,6 +1392,7 @@ impl Lowerer {
             }
         };
         self.walk_all(world, out, &by_name, &mut walk);
+        self.names_kept = (world.methods.len(), by_name);
         // This round's functions the statement does not reach: followed
         // later (`unwalked`).
         let walked = |id: FuncId| walk.funcs.get(id as usize).copied().unwrap_or(false);
@@ -1393,7 +1432,7 @@ impl Lowerer {
         &mut self,
         world: &World,
         mid: MethodId,
-        by_name: &HashMap<&str, Vec<MethodId>>,
+        by_name: &MethodsByName,
         work: &mut Vec<MethodId>,
     ) {
         let Some(seen) = self.reached.get_mut(mid as usize) else {
@@ -1476,7 +1515,7 @@ impl Lowerer {
         world: &World,
         mid: MethodId,
         bound: Option<&[ClassId]>,
-        by_name: &HashMap<&str, Vec<MethodId>>,
+        by_name: &MethodsByName,
         walk: &mut StaticWalk,
     ) {
         self.walk_method(world, mid, walk);
@@ -1512,7 +1551,7 @@ impl Lowerer {
         world: &World,
         mid: MethodId,
         bound: &[ClassId],
-        by_name: &HashMap<&str, Vec<MethodId>>,
+        by_name: &MethodsByName,
     ) -> std::rc::Rc<Vec<MethodId>> {
         let all = self.overrides_of(world, mid, by_name);
         let shape = (world.classes.len(), world.extensions.len());
@@ -1545,7 +1584,7 @@ impl Lowerer {
         &mut self,
         world: &World,
         mid: MethodId,
-        by_name: &HashMap<&str, Vec<MethodId>>,
+        by_name: &MethodsByName,
     ) -> std::rc::Rc<Vec<MethodId>> {
         if self.overrides_cache.0 != world.classes.len() {
             self.overrides_cache = (world.classes.len(), HashMap::default());
@@ -1579,7 +1618,7 @@ impl Lowerer {
         &mut self,
         world: &World,
         name: &str,
-        by_name: &HashMap<&str, Vec<MethodId>>,
+        by_name: &MethodsByName,
         walk: &mut StaticWalk,
     ) {
         // (Once by a call and once by the runtime, `walk_runtime`, which
@@ -1616,7 +1655,7 @@ impl Lowerer {
         &mut self,
         world: &World,
         name: &'static str,
-        by_name: &HashMap<&str, Vec<MethodId>>,
+        by_name: &MethodsByName,
         walk: &mut StaticWalk,
     ) {
         if !walk.runtime.insert(name) {
@@ -1679,7 +1718,7 @@ impl Lowerer {
         &mut self,
         world: &World,
         out: &Output,
-        by_name: &HashMap<&str, Vec<MethodId>>,
+        by_name: &MethodsByName,
         walk: &mut StaticWalk,
     ) {
         loop {
@@ -1743,7 +1782,7 @@ impl Lowerer {
         &mut self,
         world: &World,
         name: &str,
-        by_name: &HashMap<&str, Vec<MethodId>>,
+        by_name: &MethodsByName,
         work: &mut Vec<MethodId>,
     ) {
         if self.reached_names.contains(name) {
