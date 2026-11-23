@@ -221,18 +221,16 @@ fn nil_safety_and_narrowing() {
     err("line: String? = \"a\"\nwhile (line = line.size > 3 ? nil : line + \"b\")\n  puts line\nend", "undefined method `size` for Nil");
 }
 
-/// #905: a statement `a or EXIT` leaves `a`'s truthy side for what
-/// follows, `a and EXIT` its falsy side, as `EXIT unless a` and `EXIT if
-/// a` do; with `||`/`&&` too, and an assignment in `a` narrows the
-/// variable assigned. Without an exit nothing changes.
+/// #905: a statement `a || EXIT` leaves `a`'s truthy side for what
+/// follows, `a && EXIT` its falsy side, as `EXIT unless a` and `EXIT if
+/// a` do, and an assignment in `a` narrows the variable assigned.
+/// Without an exit nothing changes.
 #[test]
 fn and_or_with_an_exit_narrow_after_them() {
     let pre = "class Foo\n  def name -> String = \"foo\"\nend\ndef maybe(n: Int) -> Foo? = n > 0 ? Foo.new : nil\n";
     for exit in ["return \"none\"", "raise ArgumentError, \"none\""] {
         for form in [
-            "z = maybe(n) or EXIT",
-            "(z = maybe(n)) or EXIT",
-            "z = maybe(n)\n  z or EXIT",
+            "(z = maybe(n)) || EXIT",
             "z = maybe(n)\n  z || EXIT",
             "z = maybe(n)\n  (z.nil?) && EXIT",
         ] {
@@ -242,39 +240,39 @@ fn and_or_with_an_exit_narrow_after_them() {
             ));
         }
         ok(&format!(
-            "{pre}def f(n: Int) -> String\n  z = maybe(n)\n  z and {}\n  w: Nil = z\n  \"none\"\nend\nputs f(0)",
+            "{pre}def f(n: Int) -> String\n  z = maybe(n)\n  z && {}\n  w: Nil = z\n  \"none\"\nend\nputs f(0)",
             exit.replace("\"none\"", "\"some\"")
         ));
     }
     // `next` and `break` in a block and a loop.
     ok(&format!(
-        "{pre}[1, 0].each do |n|\n  z = maybe(n) or next\n  puts z.name\nend"
+        "{pre}[1, 0].each do |n|\n  (z = maybe(n)) || next\n  puts z.name\nend"
     ));
     ok(&format!(
-        "{pre}n = 1\nwhile true\n  z = maybe(n) or break\n  puts z.name\n  n -= 1\nend"
+        "{pre}n = 1\nwhile true\n  (z = maybe(n)) || break\n  puts z.name\n  n -= 1\nend"
     ));
     ok(&format!(
-        "{pre}[1, 0].each do |n|\n  z = maybe(n)\n  z and next\n  w: Nil = z\nend"
+        "{pre}[1, 0].each do |n|\n  z = maybe(n)\n  z && next\n  w: Nil = z\nend"
     ));
     // The facts of a method test and of a negation go through the same
     // two paths.
     for exit in ["return \"\"", "raise ArgumentError, \"\""] {
         ok(&format!(
-            "{pre}def f(n: Int) -> String\n  z = maybe(n)\n  z.nil? or {exit}\n  w: Nil = z\n  \"\"\nend\nputs f(0)"
+            "{pre}def f(n: Int) -> String\n  z = maybe(n)\n  z.nil? || {exit}\n  w: Nil = z\n  \"\"\nend\nputs f(0)"
         ));
         ok(&format!(
-            "{pre}def f(n: Int) -> String\n  z = maybe(n)\n  !z and {exit}\n  z.name\nend\nputs f(1)"
+            "{pre}def f(n: Int) -> String\n  z = maybe(n)\n  !z && {exit}\n  z.name\nend\nputs f(1)"
         ));
     }
     // A right operand that does not exit narrows nothing after it.
     err(
         &format!(
-            "{pre}def f(n: Int) -> String\n  z = maybe(n)\n  z or puts(\"none\")\n  z.name\nend"
+            "{pre}def f(n: Int) -> String\n  z = maybe(n)\n  z || puts(\"none\")\n  z.name\nend"
         ),
         "undefined method `name` for Nil",
     );
     err(
-        &format!("{pre}def f(n: Int) -> String\n  z = maybe(n)\n  z and puts(\"some\")\n  w: Nil = z\n  \"\"\nend"),
+        &format!("{pre}def f(n: Int) -> String\n  z = maybe(n)\n  z && puts(\"some\")\n  w: Nil = z\n  \"\"\nend"),
         "cannot assign Foo? to `w` of type Nil",
     );
 }

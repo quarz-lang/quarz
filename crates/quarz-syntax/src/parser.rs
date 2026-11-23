@@ -1116,7 +1116,18 @@ impl<'src> Parser<'src> {
                 T::Keyword(K::Or) => false,
                 _ => break,
             };
-            self.bump();
+            // Quarz has no `and`/`or` (#1073): reported, and read as
+            // `&&`/`||` with their old precedence, so that the rest is
+            // still checked.
+            let kw = self.bump().span;
+            self.error_at(
+                if is_and {
+                    "Quarz has no `and`: write `&&` (it binds tighter than `=`, where `and` bound looser: `(x = a) && b` keeps that reading)"
+                } else {
+                    "Quarz has no `or`: write `||` (it binds tighter than `=`, where `or` bound looser: `(x = a) || b` keeps that reading)"
+                },
+                kw,
+            );
             self.skip_newlines();
             let rhs = self.parse_not_expr()?;
             let span = self.span_from(start);
@@ -1131,7 +1142,13 @@ impl<'src> Parser<'src> {
 
     fn parse_not_expr(&mut self) -> PResult<Expr> {
         if self.at_kw(K::Not) {
+            // Quarz has no `not` (#1073): reported, and read as `!` with
+            // its old precedence.
             let start = self.bump().span;
+            self.error_at(
+                "Quarz has no `not`: write `!` (it binds tighter than `==`, where `not` bound looser: `!(a == b)` keeps that reading)",
+                start,
+            );
             let operand = self.parse_not_expr()?;
             let span = self.span_from(start);
             return Ok(self.node(span, ExprKind::Not(Box::new(operand))));
