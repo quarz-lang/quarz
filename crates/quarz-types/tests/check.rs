@@ -1074,6 +1074,14 @@ fn a_test_never_true_is_refused() {
         "`!=` compares `Int` with `String`: they are never equal, so it is always true",
     );
     warns("def w(xs: Array[Int]) -> Bool = xs.include?(\"a\")\nw([1])", "`include?` compares `String` with the elements, of type `Int`: they are never equal, so it finds none");
+    // An array literal of an enum's values, typed by its variants, keeps
+    // the fix (#915).
+    for list in ["[Color::Red]", "[Color::Red, Color::Green]"] {
+        warns(
+            &format!("{pre}p {list}.include?(:red)"),
+            "`include?` compares the symbol `:red` with enum values, which never equal it: write `Color::Red`",
+        );
+    }
     no_warnings("def w(x: Int) -> Bool = x == 1.0\nw(1)");
     // Class values, in each of their forms (`ClassObject`, `TypeOf`, an
     // instance of `Type` or `Meta::ClassDef`): equal as one class, so

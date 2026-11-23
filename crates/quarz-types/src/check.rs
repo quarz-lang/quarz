@@ -18124,7 +18124,25 @@ impl Checker {
         let ExprKind::Symbol(name) = &sym.kind else {
             return None;
         };
-        let (_, found) = self.symbol_variants_for(name, t)?;
+        // (An array literal of an enum's values is typed by its variants:
+        // their enum names the fix, #1087.)
+        let variants_enum = |t: &Type| match t {
+            Type::Class(v, _) => self.world.class(*v).variant_of,
+            _ => None,
+        };
+        let enum_of = match t {
+            Type::Union(ms) => ms
+                .iter()
+                .map(variants_enum)
+                .reduce(|a, b| if a == b { a } else { None })
+                .flatten(),
+            t => variants_enum(t),
+        };
+        let t = match enum_of {
+            Some(e) => Type::class(e),
+            None => t.clone(),
+        };
+        let (_, found) = self.symbol_variants_for(name, &t)?;
         match found.as_slice() {
             [(v, _)] => Some((name.clone(), self.world.class(*v).name.clone())),
             _ => None,
