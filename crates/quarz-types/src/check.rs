@@ -759,6 +759,9 @@ enum TableUndo {
     /// A call's `Output::receiver_blocks` membership before a check
     /// changed it.
     ReceiverBlock(NodeId, bool),
+    /// A pattern's `Output::proc_patterns` membership before a check
+    /// changed it (#1085).
+    ProcPattern(NodeId, bool),
     /// `Checker::logical_seen` of a node before a check changed it.
     Logical(NodeId, Option<LogicalSeen>),
     /// `Output::logical_calls` of a node before a check changed it.
@@ -3055,6 +3058,13 @@ impl Checker {
                         self.out.receiver_blocks.insert(id);
                     } else {
                         self.out.receiver_blocks.remove(&id);
+                    }
+                }
+                TableUndo::ProcPattern(id, was) => {
+                    if was {
+                        self.out.proc_patterns.insert(id);
+                    } else {
+                        self.out.proc_patterns.remove(&id);
                     }
                 }
                 TableUndo::SymbolVariant(id, before) => match before {
@@ -9248,29 +9258,38 @@ impl Checker {
     /// whether `when` calls it is decided when compiling. A procedure
     /// reaching `===` any other way (a pattern typed `Object`, a type
     /// parameter) is compared with `==`, never called.
+    /// Every check of the pattern writes its decision, either way, and
+    /// journals it (`TableUndo::ProcPattern`): a discarded trial (an
+    /// overload tried for a block around it, `forwarding_resolves`) is
+    /// undone, and of the checks kept the last decides, as for
+    /// `Output::calls`.
     pub(crate) fn proc_pattern(&mut self, pattern: &Expr, ty: &Type, subject: &Type, kw: &str) {
-        match self.resolve(ty) {
-            p @ Type::Proc(..) => {
-                if self.proc_case_eq_fits(&p, subject, kw, pattern.span) {
-                    self.out.proc_patterns.insert(pattern.id);
-                }
+        let called = match self.resolve(ty) {
+            p @ Type::Proc(..) => self.proc_case_eq_fits(&p, subject, kw, pattern.span),
+            _ => false,
+        };
+        let was = self.out.proc_patterns.contains(&pattern.id);
+        self.table_journal
+            .push(TableUndo::ProcPattern(pattern.id, was));
+        if called {
+            self.out.proc_patterns.insert(pattern.id);
+        } else {
+            self.out.proc_patterns.remove(&pattern.id);
+        }
+        if let Type::Union(ms) = self.resolve(ty) {
+            if let Some(p) = ms
+                .iter()
+                .map(|m| self.resolve(m))
+                .find(|m| matches!(m, Type::Proc(..)))
+            {
+                let (t, p) = (self.name(ty), self.name(&p));
+                self.error(
+                    format!(
+                        "`{kw}` decides when it compiles whether it calls its pattern: `{t}` may be the procedure `{p}` or not; give the pattern a procedure type, or a type with no procedure in it"
+                    ),
+                    pattern.span,
+                );
             }
-            Type::Union(ms) => {
-                if let Some(p) = ms
-                    .iter()
-                    .map(|m| self.resolve(m))
-                    .find(|m| matches!(m, Type::Proc(..)))
-                {
-                    let (t, p) = (self.name(ty), self.name(&p));
-                    self.error(
-                        format!(
-                            "`{kw}` decides when it compiles whether it calls its pattern: `{t}` may be the procedure `{p}` or not; give the pattern a procedure type, or a type with no procedure in it"
-                        ),
-                        pattern.span,
-                    );
-                }
-            }
-            _ => {}
         }
     }
 
@@ -9298,7 +9317,12 @@ impl Checker {
 
     /// Whether procedure type `p` can test `subject` as `===` (`kw` the
     /// form, for the errors): one positional parameter the subject fits,
-    /// no keyword, no receiver, a `Bool` result (#1085).
+    /// no keyword, no receiver, a `Bool` result (#1085). "Fits" is
+    /// `coerce`: subtyping, binding an inference variable of either side
+    /// (an unannotated lambda's parameter); it converts no value (an
+    /// `Int` literal typed `Float` is the literal's typing,
+    /// `Output::float_literals`, not a coercion; an `Int` subject is no
+    /// `Float`), so the subject is passed as it is.
     fn proc_case_eq_fits(&mut self, p: &Type, subject: &Type, kw: &str, span: Span) -> bool {
         let Type::Proc(recv, params, ret, _, kws) = p else {
             return false;
@@ -9408,6 +9432,9 @@ impl Checker {
                     self.no_extension_case_eq(&ct, "when", ce.span);
                 }
                 if let (Some(st), Type::ClassObject(cid, _)) = (&subject_ty, &ct) {
+                    // (Not a procedure: its record says so, should an
+                    // earlier check have seen one, `proc_pattern`.)
+                    self.proc_pattern(ce, &ct, st, "when");
                     let target = Type::class(*cid);
                     let st = st.clone();
                     self.check_testable(&st, &target, "when", ce.span);

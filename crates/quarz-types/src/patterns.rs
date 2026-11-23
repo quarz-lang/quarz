@@ -50,8 +50,8 @@ impl Checker {
                 // A procedure is called (#1085); a class with its own
                 // `===` decides (#1075): neither narrows the subject.
                 self.no_extension_case_eq(&t, "in", expr.span);
+                self.proc_pattern(expr, &t, &value_ty, "in");
                 if self.may_be_proc(&t) || self.defines_case_eq(&t) {
-                    self.proc_pattern(expr, &t, &value_ty, "in");
                     return value_ty;
                 }
                 // `1 === 1.0`: a value of a type not decided yet is not

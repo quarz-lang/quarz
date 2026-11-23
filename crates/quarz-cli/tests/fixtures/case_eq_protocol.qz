@@ -96,3 +96,15 @@ def t(x: Int | String) -> String
   end
 end
 puts t(5), t("a"), t(0)
+# A `when` (and a `===`) in a block an overload trial checks with the block
+# parameter a procedure, discarded, and the winner with an `Int`: the
+# winner's decision is what runs (`===` compared, not called).
+def run(x: Int, &b: ((Int) -> Bool) -> Int) -> Int = b.call(->(n: Int) { n > 1 })
+def run(x: Object, &b: (Int) -> String) -> String = b.call(3)
+puts run(1) { |q|
+  case 3
+  when q then "hit"
+  else "miss"
+  end
+}
+puts run(1) { |q| (q === 3) ? "same" : "other" }
