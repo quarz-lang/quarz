@@ -115,7 +115,7 @@ pub struct Runner {
     /// The last round's run-time world, shared with the interpreters
     /// that run on it (#1057: copied for none of them).
     world: Option<std::sync::Arc<RtWorld>>,
-    files: Vec<SourceFile>,
+    files: Rc<Vec<SourceFile>>,
     /// The safety net refused a row of a compile-time round's tables
     /// (#645): no compile-time code runs any more in this check.
     net_refused: bool,
@@ -1505,7 +1505,7 @@ impl Runner {
             bad_consts: Default::default(),
             state: None,
             world: None,
-            files,
+            files: Rc::new(files),
             net_refused: false,
             prepared: false,
             keep_consts: 0,
@@ -3008,15 +3008,17 @@ impl StaticRunner for Runner {
     }
 
     fn reset(&mut self) {
-        *self = Runner::new(std::mem::take(&mut self.files));
+        *self = Runner::new(Rc::unwrap_or_clone(std::mem::take(&mut self.files)));
     }
 
     fn add_file(&mut self, index: u32, file: SourceFile) {
         let i = index as usize;
-        if self.files.len() <= i {
-            self.files.resize(i + 1, SourceFile::new("", ""));
+        // (Copied only while the lowerer still holds the last round's.)
+        let files = Rc::make_mut(&mut self.files);
+        if files.len() <= i {
+            files.resize(i + 1, SourceFile::new("", ""));
         }
-        self.files[i] = file;
+        files[i] = file;
     }
 
     fn later_unit(&mut self, world: &World, after: bool) -> Option<LayoutChange> {
@@ -4486,6 +4488,8 @@ pub fn compile_time_only_calls_in(
         kind: quarz_syntax::ast::ExprKind::Nil,
         span: Span::new(0, 0),
     };
+    // (One copy of the files for all the rounds.)
+    let files = Rc::new(files.to_vec());
     for &m in &statics {
         let owner = world.method(m).owner;
         let round = lowerer.lower_static(
@@ -4495,7 +4499,7 @@ pub fn compile_time_only_calls_in(
             owner,
             world.method(m).file,
             m,
-            files.to_vec(),
+            files.clone(),
         );
         // Loaded into the runner's state, which a REPL goes on running
         // (`continuing`): its functions must be all of `done`.

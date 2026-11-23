@@ -229,8 +229,10 @@ pub struct Lowerer {
     /// Functions of the current round, by id minus `round_base`.
     pending: Vec<Option<Function>>,
     round_base: FuncId,
-    /// Source files by index, for line numbers.
-    pub(crate) files: Vec<SourceFile>,
+    /// Source files by index, for line numbers: shared with the static
+    /// runner, which hands them to each compile-time round (#1070: not
+    /// copied, texts and all, per round).
+    pub(crate) files: std::rc::Rc<Vec<SourceFile>>,
     /// The methods something takes the place of at run time
     /// (`World::overridden_methods` over the override table): a call of
     /// one may dispatch elsewhere (`RtMethod::overridden`, #715).
@@ -476,7 +478,7 @@ impl Lowerer {
         self.round_base = self.next_func;
         self.quoted_sites.clear();
         self.pending.clear();
-        self.files = files;
+        self.files = std::rc::Rc::new(files);
         self.sync_tables(world, out);
 
         // Methods.
@@ -1269,7 +1271,7 @@ impl Lowerer {
         class: ClassId,
         file: u32,
         callee: MethodId,
-        files: Vec<SourceFile>,
+        files: std::rc::Rc<Vec<SourceFile>>,
     ) -> StaticRound {
         self.static_mode = true;
         self.unchecked.clear();
