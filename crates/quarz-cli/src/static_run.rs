@@ -1745,16 +1745,10 @@ impl Runner {
                 .state
                 .get_or_insert_with(|| SharedState::with_threads(Box::new(std::io::stderr()), 1))
                 .clone();
-            // Loads the round's functions into the shared state.
+            // Loads the round's functions into the shared state; the
+            // run's interpreter is made over it after (`interp`).
             let world = round.delta.world;
-            let _ = Interp::with_state(
-                world.clone(),
-                round.delta.base,
-                round.delta.functions,
-                Vec::new(),
-                Vec::new(),
-                state,
-            );
+            Interp::load_functions(&state, round.delta.base, round.delta.functions);
             self.world = Some(world);
             if round.unchecked.is_empty() && round.unchecked_consts.is_empty() {
                 return round.stmt_func;
@@ -4505,14 +4499,7 @@ pub fn compile_time_only_calls_in(
         // (`continuing`): its functions must be all of `done`.
         let world = round.delta.world;
         if let Some(state) = &runner.state {
-            let _ = Interp::with_state(
-                world.clone(),
-                round.delta.base,
-                round.delta.functions.clone(),
-                Vec::new(),
-                Vec::new(),
-                state.clone(),
-            );
+            Interp::load_functions(state, round.delta.base, round.delta.functions.clone());
         }
         lowerer.done.extend(round.delta.functions);
         rt = Some(world);
