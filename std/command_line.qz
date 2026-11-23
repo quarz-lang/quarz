@@ -186,8 +186,12 @@
 # site.build          # => nil
 # ```
 #
-# The first operand names the command, which is then required, and the
-# arguments after it are the command's: parsed by its class, whose usage
+# The first operand names the command, which is then required: the
+# reader's name with `-` for `_` (`command :dry_run, DryRun` is typed
+# `dry-run`), or the word `name:` gives (`command :validate_cmd,
+# Validate, name: "validate"`, for a word the instances already answer as
+# a method, which a reader cannot be named). The arguments after it are
+# the command's: parsed by its class, whose usage
 # and errors say `site serve`. Each command has a reader of its name,
 # typed as its class (`site.serve -> Serve?`), which gives the command's
 # instance when it was the one given; [command] and [command_name] give
@@ -395,24 +399,33 @@ class CommandLine
     end
   end
 
-  # A subcommand named [name], whose arguments [type] parses; [help] is
-  # its line in the help's list of commands (by default the first line
-  # of its [about]). Its reader, of the command's name, gives the
-  # command's instance when it was the one given, typed as [type]
-  # (`site.serve -> Serve?`), and nil otherwise; [command] and
-  # [command_name] say which one was given whichever it is.
-  static def self.command[U <: CommandLine](name: Symbol, type: Type[U], *, help: String? = nil) -> Void
+  # A subcommand whose arguments [type] parses, typed on the command line
+  # as [reader] with `-` for `_` (`:dry_run` is `dry-run`), or as [name]
+  # gives it (`command :validate_cmd, Validate, name: "validate"`, for a
+  # word the instances already answer as a method; letters, digits, `-`
+  # and `_`, as written). [help] is its line in the help's list of
+  # commands (by default the first line of its [about]). Its reader,
+  # [reader], gives the command's instance when it was the one given,
+  # typed as [type] (`site.serve -> Serve?`), and nil otherwise;
+  # [command] and [command_name] (which gives [reader]) say which one was
+  # given whichever it is.
+  static def self.command[U <: CommandLine](reader: Symbol, type: Type[U], *, name: String? = nil, help: String? = nil) -> Void
+    word = name || Support.long_name(reader)
     taken = statement_values[Support::Cmd](:command_line_commands).values
-    raise ArgumentError, "CommandLine: the command `#{name}` is declared twice" if taken.any? { |c| c.name == name }
+    raise ArgumentError, "CommandLine: the command `#{reader}` is declared twice" if taken.any? { |c| c.name == reader }
+    raise ArgumentError, "CommandLine: the command `#{word}` is declared twice" if taken.any? { |c| c.word == word }
     raise ArgumentError, "CommandLine: a class with commands takes no `rest`" if statement_values[Support::Decl](:command_line_decls).values.any? { |d| d.kind == :rest }
-    raise ArgumentError, "CommandLine: `#{name}` cannot name a command: names starting with `__` are CommandLine's own" if name.to_s.start_with?("__")
-    if method?(name)
-      raise ArgumentError, "CommandLine: `#{name}` cannot name a command: `#{self.name}` already has a method of that name (its reader would replace it)"
+    unless word.match?(/\A[A-Za-z0-9_][A-Za-z0-9_-]*\z/)
+      raise ArgumentError, "CommandLine: #{word.inspect} is not a command's name for `#{reader}` (letters, digits, `-` and `_`, not starting with `-`)"
     end
-    statement_values[Support::Cmd](:command_line_commands).add(Support::Cmd.new(name, type, help))
-    def_method(name) do -> U?
+    raise ArgumentError, "CommandLine: `#{reader}` cannot name a command: names starting with `__` are CommandLine's own" if reader.to_s.start_with?("__")
+    if method?(reader)
+      raise ArgumentError, "CommandLine: `#{reader}` cannot name a command: `#{self.name}` already has a method of that name (its reader would replace it); name it otherwise, and keep `#{word}` as the word typed with `name: \"#{word}\"`"
+    end
+    statement_values[Support::Cmd](:command_line_commands).add(Support::Cmd.new(reader, word, type, help))
+    def_method(reader) do -> U?
       v = __value_of(:__command)
-      __value_of(:__command_name) == name && !v.nil? ? type.cast?(v) : nil
+      __value_of(:__command_name) == reader && !v.nil? ? type.cast?(v) : nil
     end
   end
 
@@ -549,7 +562,8 @@ class CommandLine
     data Row = (left: String, text: String)
 
     # A declared command.
-    data Cmd = (name: Symbol, type: Type[CommandLine], help: String?)
+    # A declared command: its reader's name and the word typed.
+    data Cmd = (name: Symbol, word: String, type: Type[CommandLine], help: String?)
 
     # What a class declared: the statements' values, gathered by
     # `inherited`.
@@ -615,8 +629,8 @@ class CommandLine
       return :bool if type == Bool
       begin
         type.variants
-      rescue ArgumentError => e
-        raise ArgumentError, "CommandLine: `#{type.name}` is not a value type (String, Int, Float, Bool, an enum whose variants have no fields): #{e.message}"
+      rescue ArgumentError
+        raise ArgumentError, "CommandLine: `#{type.name}` is not a value type (String, Int, Float, Bool, an enum whose variants have no fields)"
       end
       :enum
     end
@@ -731,7 +745,7 @@ class CommandLine
       unless spec.commands.empty?
         cmds = spec.commands.map do |c|
           summary = c.help || (c.type.__spec.about || "").lines.first?&.chomp || ""
-          Row.new("  #{c.name}", summary)
+          Row.new("  #{c.word}", summary)
         end
         out += "\nCommands:\n#{columns(cmds)}"
         out += "\nRun '#{program} COMMAND --help' for a command's options.\n"
@@ -916,10 +930,10 @@ class CommandLine
       end
 
       def command(name: String, rest: Array[String]) -> Void
-        names = @spec.commands.map { |c| c.name.to_s }.join(", ")
-        c = @spec.commands.find { |x| x.name.to_s == name }
+        names = @spec.commands.map { |c| c.word }.join(", ")
+        c = @spec.commands.find { |x| x.word == name }
         fail("unknown command '#{name}' (one of #{names})") if c.nil?
-        line = c.type.__parse_as(rest, "#{@program} #{name}")
+        line = c.type.__parse_as(rest, "#{@program} #{c.word}")
         @values = @values.put(:__command, line).put(:__command_name, c.name)
       end
 
@@ -958,7 +972,7 @@ class CommandLine
 
       def finish -> Void
         if !@spec.commands.empty? && !@values.key?(:__command)
-          fail("missing command (one of #{@spec.commands.map { |c| c.name.to_s }.join(", ")})")
+          fail("missing command (one of #{@spec.commands.map { |c| c.word }.join(", ")})")
         end
         @spec.decls.each do |d|
           case d.kind

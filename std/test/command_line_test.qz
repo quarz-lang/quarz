@@ -105,6 +105,13 @@ class Tool < CommandLine
   command :exec, Exec
 end
 
+# Commands typed as their readers with `-`, or as `name:` gives.
+class Ops < CommandLine
+  command :dry_run, Serve
+  command :validate_cmd, Build, name: "validate"
+  command :snake, Migrate, name: "snake_case"
+end
+
 # Named `http-server` in its usage line.
 class HTTPServer < CommandLine
 end
@@ -337,6 +344,21 @@ TEXT
     assert_equal("missing option '--out'", e.message)
     assert_equal("site remote add", e.as(CommandLine::Error).program)
     assert_equal("usage: site remote add [options] --out=DIR\n", e.as(CommandLine::Error).usage)
+  end
+
+  def test_command_words
+    o = Ops.parse(["dry-run", "-p", "1"], exit: false)
+    assert_equal(:dry_run, o.command_name)
+    assert_equal(1, o.dry_run&.port)
+    v = Ops.parse(["validate", "-o", "x"], exit: false)
+    assert_equal(:validate_cmd, v.command_name)
+    assert_equal("x", v.validate_cmd&.out)
+    assert_nil(v.dry_run)
+    assert_equal(:snake, Ops.parse(["snake_case"], exit: false).command_name)
+    assert_equal("unknown command 'dry_run' (one of dry-run, validate, snake_case)", error_of { Ops.parse(["dry_run"], exit: false); nil })
+    e = assert_raise(CommandLine::Error) { Ops.parse(["validate"], exit: false); nil }
+    assert_equal("ops validate", e.as(CommandLine::Error).program)
+    assert(Ops.help.include?("Commands:\n  dry-run     Run the development server.\n  validate    Build the site into DIR.\n  snake_case  Run the pending migrations.\n"), Ops.help)
   end
 
   def test_subcommand_errors

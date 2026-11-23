@@ -439,8 +439,9 @@ fn decimal_mixes_with_no_float_and_orders_only_decimals() {
 /// value type, a second `rest` or `program`, `rest` beside `command`, a
 /// `min:` above `max:`, a `raw: true` rest beside anything else, a bad
 /// long name, a long name that is also a flag's negation, a command named
-/// as a method the instances answer, an enum two of whose variants have
-/// one name on the command line; and at the
+/// as a method the instances answer, two commands typed alike or a bad
+/// command word, an enum two of whose variants have one name on the
+/// command line; and at the
 /// `class` line a class below a command class that declares options of
 /// its own (one that declares none is accepted).
 #[test]
@@ -560,6 +561,15 @@ enum Twin = HTTPServer | HttpServer
 class Twins < CommandLine
   option :server, Twin, default: nil
 end
+
+class Words < CommandLine
+  command :dry_run, H
+  command :dry_run2, H, name: "dry-run"
+end
+
+class BadWord < CommandLine
+  command :x, H, name: "-x"
+end
 "#,
     )
     .unwrap();
@@ -578,7 +588,7 @@ end
         "bad.qz:14:3: error: `flag` raised ArgumentError: CommandLine: `--help` is the help's own",
         "bad.qz:18:3: error: `flag` raised ArgumentError: CommandLine: `-h` is the help's own",
         "bad.qz:22:3: error: `flag` raised ArgumentError: CommandLine: the short name of `all` must be one letter or digit, not \"ab\"",
-        "bad.qz:26:3: error: `option` raised ArgumentError: CommandLine: `Time` is not a value type (String, Int, Float, Bool, an enum whose variants have no fields): `variants` gives an enum's values: `Time` is not an enum",
+        "bad.qz:26:3: error: `option` raised ArgumentError: CommandLine: `Time` is not a value type (String, Int, Float, Bool, an enum whose variants have no fields)",
         "bad.qz:31:3: error: `rest` raised ArgumentError: CommandLine: `rest` is declared twice",
         "bad.qz:36:3: error: `rest` raised ArgumentError: CommandLine: a class with commands takes no `rest`",
         "bad.qz:43:1: error: `CommandLine.inherited`, run for `Child`, raised ArgumentError: CommandLine: options are declared on a direct subclass of CommandLine (`Child` is below one that declares them)",
@@ -592,10 +602,12 @@ end
         "bad.qz:76:3: error: `flag` raised ArgumentError: CommandLine: \"-a\" is not a long name for `a` (letters, digits and `-`, not starting with `-`)",
         "bad.qz:81:3: error: `option` raised ArgumentError: CommandLine: `--no-color` would both negate a flag and name an option",
         "bad.qz:86:3: error: `flag` raised ArgumentError: CommandLine: `--color` is declared twice",
-        "bad.qz:95:3: error: `option` raised ArgumentError: CommandLine: `Shape` is not a value type (String, Int, Float, Bool, an enum whose variants have no fields): `variants` gives the values of an enum whose variants have no fields: `Shape::Circle` has fields (`r`); list the variants by name",
-        "bad.qz:100:3: error: `command` raised ArgumentError: CommandLine: `serve` cannot name a command: `Commands` already has a method of that name (its reader would replace it)",
-        "bad.qz:104:3: error: `command` raised ArgumentError: CommandLine: `to_s` cannot name a command: `Commands2` already has a method of that name (its reader would replace it)",
+        "bad.qz:95:3: error: `option` raised ArgumentError: CommandLine: `Shape` is not a value type (String, Int, Float, Bool, an enum whose variants have no fields)",
+        "bad.qz:100:3: error: `command` raised ArgumentError: CommandLine: `serve` cannot name a command: `Commands` already has a method of that name (its reader would replace it); name it otherwise, and keep `serve` as the word typed with `name: \"serve\"`",
+        "bad.qz:104:3: error: `command` raised ArgumentError: CommandLine: `to_s` cannot name a command: `Commands2` already has a method of that name (its reader would replace it); name it otherwise, and keep `to-s` as the word typed with `name: \"to-s\"`",
         "bad.qz:110:3: error: `option` raised ArgumentError: CommandLine: `Twin`'s variants `Twin::HTTPServer` and `Twin::HttpServer` are both `http-server` on the command line",
+        "bad.qz:115:3: error: `command` raised ArgumentError: CommandLine: the command `dry-run` is declared twice",
+        "bad.qz:119:3: error: `command` raised ArgumentError: CommandLine: \"-x\" is not a command's name for `x` (letters, digits, `-` and `_`, not starting with `-`)",
     ];
     for e in expected {
         assert!(err.contains(e), "{e}\n{err}");
