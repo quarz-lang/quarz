@@ -1100,6 +1100,53 @@ impl Interp {
         Interp::with_state_lazy(world, base, infos, units, argv, state, None)
     }
 
+    /// Load `functions` into the shared state at ids from `base`, with no
+    /// interpreter made for them: a compile-time round loads its
+    /// functions so, and the run's interpreter is made over the state
+    /// after (#1070: once a round, not twice).
+    pub fn load_functions(state: &SharedState, base: FuncId, functions: Vec<Function>) {
+        Interp::install_interpreter();
+        let (infos, bodies): (Vec<FuncInfo>, Vec<Vec<quarz_ir::Block>>) =
+            functions.into_iter().map(Function::split).unzip();
+        crate::vm::load_bodies(state, base, bodies);
+        Interp::load_infos(state, base, infos);
+    }
+
+    /// The functions' infos and constant pools into the shared state, at
+    /// ids from `base` (`with_state_lazy`, `load_functions`).
+    fn load_infos(state: &SharedState, base: FuncId, functions: Vec<FuncInfo>) {
+        let mut funcs = state.funcs.borrow_mut();
+        let mut pools = state.pools.borrow_mut();
+        let mut compiled = state.compiled.borrow_mut();
+        assert_eq!(funcs.len(), base as usize, "functions loaded out of order");
+        let mut symbols = state
+            .global
+            .symbols
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        for f in functions {
+            let pool: Vec<Value> = f
+                .consts
+                .iter()
+                .map(|c| match c {
+                    Constant::Nil => Value::Nil,
+                    Constant::Bool(b) => Value::Bool(*b),
+                    Constant::Int(i) => Value::Int(*i),
+                    Constant::BigInt { digits, base } => parse_integer(digits, *base),
+                    Constant::Float(f) => Value::Float(*f),
+                    Constant::Str(s) => Value::str(s),
+                    Constant::Symbol(s) => Value::Symbol(symbols.intern(s)),
+                    // Compiled on first use.
+                    Constant::Regexp { .. } => Value::Nil,
+                    Constant::Bytes(b) => Value::bytes(b.clone()),
+                })
+                .collect();
+            funcs.push(Rc::new(f));
+            pools.push(Rc::new(RefCell::new(pool)));
+            compiled.push(None);
+        }
+    }
+
     /// `with_state` for a compiled program, whose methods (`world`'s are
     /// left empty) come from `lazy`.
     pub fn with_state_lazy(
@@ -1116,38 +1163,7 @@ impl Interp {
         crate::value::register_layouts(&world.classes);
 
         // Load the functions.
-        {
-            let mut funcs = state.funcs.borrow_mut();
-            let mut pools = state.pools.borrow_mut();
-            let mut compiled = state.compiled.borrow_mut();
-            assert_eq!(funcs.len(), base as usize, "functions loaded out of order");
-            let mut symbols = state
-                .global
-                .symbols
-                .write()
-                .unwrap_or_else(|e| e.into_inner());
-            for f in functions {
-                let pool: Vec<Value> = f
-                    .consts
-                    .iter()
-                    .map(|c| match c {
-                        Constant::Nil => Value::Nil,
-                        Constant::Bool(b) => Value::Bool(*b),
-                        Constant::Int(i) => Value::Int(*i),
-                        Constant::BigInt { digits, base } => parse_integer(digits, *base),
-                        Constant::Float(f) => Value::Float(*f),
-                        Constant::Str(s) => Value::str(s),
-                        Constant::Symbol(s) => Value::Symbol(symbols.intern(s)),
-                        // Compiled on first use.
-                        Constant::Regexp { .. } => Value::Nil,
-                        Constant::Bytes(b) => Value::bytes(b.clone()),
-                    })
-                    .collect();
-                funcs.push(Rc::new(f));
-                pools.push(Rc::new(RefCell::new(pool)));
-                compiled.push(None);
-            }
-        }
+        Interp::load_infos(&state, base, functions);
 
         let derived = Derived::of(&world, lazy.as_deref());
         let field_indices: Vec<FxHashMap<String, usize>> = world
