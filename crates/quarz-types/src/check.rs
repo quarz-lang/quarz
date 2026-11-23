@@ -15526,8 +15526,22 @@ impl Checker {
                 }
             }
         }
-        // Type the arguments.
-        for (pi, matched) in &bound {
+        // Type the arguments, in an order of their own (not the map's,
+        // #1090): those given for a class-value parameter (`t: Type[U]`)
+        // first, whose class fixes `U` as written (`Order` for `Order`);
+        // then the others in declaration order, which a `U` taken from
+        // one of them (`Order::Defined`) would otherwise fix narrower,
+        // refusing the class (`Type` is covariant).
+        let mut order: Vec<usize> = bound.keys().copied().collect();
+        order.sort_by_key(|pi| {
+            let class_value = matches!(
+                self.infer.resolve(&m.params[*pi].ty.subst(subst)),
+                Type::TypeOf(_) | Type::ClassObject(..)
+            );
+            (!class_value, *pi)
+        });
+        for pi in &order {
+            let matched = &bound[pi];
             for ma in matched {
                 let expected_ty = ma.param_ty.clone();
                 let p = &m.params[*pi];
