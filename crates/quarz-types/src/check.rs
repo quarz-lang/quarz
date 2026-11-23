@@ -18488,7 +18488,14 @@ impl Checker {
     /// method with a parameter or a block: whether `super(...)` would
     /// resolve too among `cands`, as `call` with what `...` stands for
     /// (`forwarding`; one it refuses does not). A trial: its diagnostics,
-    /// tables, inference and environment are undone.
+    /// tables, inference and environment are undone, and its
+    /// `Output::forwards` entry removed. What else it records is never
+    /// read: the forwarded variables' `var_refs` entry, at the `super`'s
+    /// own span, is read only for an `outer_self_calls` `super`, whose
+    /// entry `bind_outer_self_slot` writes after the trial (journaled);
+    /// their `node_types` and `block_pass` entries are under `FORWARD_ID`
+    /// nodes, in `load::SYNTH_UNIT`'s range, which no unit's output takes
+    /// and the lowering never looks up (it reads `Output::forwards`).
     fn forwarding_resolves(
         &mut self,
         expr: &Expr,
