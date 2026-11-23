@@ -1,0 +1,115 @@
+require "test"
+
+# `quarz test`'s options as `Test.parse_options` reads them: each
+# argument list and what it gives, the options (the clock seed left out)
+# or the message `quarz test` prints before exiting with 2.
+module TestOptions
+  def self.show(argv: Array[String]) -> String
+    case Test.parse_options(argv)
+    in String => message then "error: #{message}"
+    in Test::Options => o
+      timeout = o.timeout
+      [
+        "names=#{o.names}",
+        "patterns=#{o.patterns.map(&:source)}",
+        "verbose=#{o.verbose}",
+        "list=#{o.list}",
+        "random=#{o.random}",
+        "fail_fast=#{o.fail_fast}",
+        "parallel=#{o.parallel}",
+        "timeout=#{timeout.nil? ? "none" : timeout.to_f.to_s}",
+        "junit=#{o.junit || "none"}",
+      ].join(" ")
+    end
+  end
+
+  DEFAULTS = "names=[] patterns=[] verbose=false list=false random=false fail_fast=false parallel=1 timeout=60.0 junit=none"
+
+  # The defaults with some fields changed.
+  def self.with(changes: Hash[String, String]) -> String
+    DEFAULTS.split(" ").map do |field|
+      key = field.split("=")[0]
+      changes.key?(key) ? "#{key}=#{changes[key]}" : field
+    end.join(" ")
+  end
+end
+
+class TestOptionsTest < Test::Case
+  def check(argv: Array[String], expected: String) -> Void
+    assert_equal(expected, TestOptions.show(argv), "for #{argv}")
+  end
+
+  def test_no_options_give_the_defaults
+    check([], TestOptions::DEFAULTS)
+  end
+
+  def test_names_and_patterns
+    check(["-n", "test_a"], TestOptions.with({"names" => "[\"test_a\"]"}))
+    check(["--name", "test_a"], TestOptions.with({"names" => "[\"test_a\"]"}))
+    check(["--name=test_a"], TestOptions.with({"names" => "[\"test_a\"]"}))
+    check(["-n", "a", "--name=b", "-n", "/c+/"],
+          TestOptions.with({"names" => "[\"a\", \"b\"]", "patterns" => "[\"c+\"]"}))
+    check(["-n", "/"], TestOptions.with({"names" => "[\"/\"]"}))
+    assert_match(/\Aerror: bad pattern \/x\[\/: ./, TestOptions.show(["--name=/x[/"]))
+    assert_match(/\Aerror: bad pattern \/x\[\/: ./, TestOptions.show(["-n", "/x[/"]))
+  end
+
+  def test_a_name_option_needs_its_value
+    check(["-n"], "error: -n needs a name")
+    check(["--name"], "error: --name needs a name")
+  end
+
+  def test_flags
+    check(["-v"], TestOptions.with({"verbose" => "true"}))
+    check(["--verbose"], TestOptions.with({"verbose" => "true"}))
+    check(["--list"], TestOptions.with({"list" => "true"}))
+    check(["--fail-fast"], TestOptions.with({"fail_fast" => "true"}))
+  end
+
+  def test_order_and_seed
+    check(["--order=random"], TestOptions.with({"random" => "true"}))
+    check(["--order=random", "--order=defined"], TestOptions::DEFAULTS)
+    check(["--seed=42"], TestOptions.with({"random" => "true"}))
+    check(["--seed=x"], "error: bad seed: x")
+    check(["--seed="], "error: bad seed: ")
+    check(["--seed=1234567890123456789"], "error: bad seed: 1234567890123456789")
+    check(["--order=sideways"], "error: unknown option: --order=sideways")
+  end
+
+  def test_the_seed_is_kept
+    case Test.parse_options(["--seed=42"])
+    in Test::Options => o then assert_equal(42, o.seed)
+    in String => m then flunk(m)
+    end
+  end
+
+  def test_parallel
+    check(["--parallel"], TestOptions.with({"parallel" => "4"}))
+    check(["--parallel=8"], TestOptions.with({"parallel" => "8"}))
+    check(["--parallel=0"], "error: bad --parallel: 0")
+    check(["--parallel=x"], "error: bad --parallel: x")
+    check(["--parallel=1000000"], "error: bad --parallel: 1000000")
+  end
+
+  def test_timeout
+    check(["--timeout=5s"], TestOptions.with({"timeout" => "5.0"}))
+    check(["--timeout=500ms"], TestOptions.with({"timeout" => "0.5"}))
+    check(["--timeout=2m"], TestOptions.with({"timeout" => "120.0"}))
+    check(["--timeout=1.5"], TestOptions.with({"timeout" => "1.5"}))
+    check(["--timeout=0"], TestOptions.with({"timeout" => "none"}))
+    check(["--timeout=soon"], "error: bad --timeout: --timeout=soon")
+  end
+
+  def test_junit
+    check(["--junit=out.xml"], TestOptions.with({"junit" => "out.xml"}))
+  end
+
+  def test_unknown_options
+    check(["--bogus"], "error: unknown option: --bogus")
+    check(["-x"], "error: unknown option: -x")
+    check(["--verbose=1"], "error: unknown option: --verbose=1")
+    check(["--seed", "42"], "error: unknown option: --seed")
+    check(["-vn", "a"], "error: unknown option: -vn")
+    check(["--help"], "error: unknown option: --help")
+  end
+end
