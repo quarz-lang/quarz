@@ -402,6 +402,8 @@ pub fn own_dying_receivers(f: &mut Function, in_place: &[bool]) {
                 args: std::mem::take(args),
                 kw: std::mem::take(kw),
                 unused: false,
+                // The call's own decision, its arguments' bits.
+                moved: *moved & 0x7fff,
             };
         }
     }
@@ -410,7 +412,8 @@ pub fn own_dying_receivers(f: &mut Function, in_place: &[bool]) {
 /// Write the moves into the function, for the interpreter and the
 /// compiled backends alike: a `Move` that is its source's last read
 /// becomes a `Take`, and a call records which of its receiver and
-/// arguments it reads for the last time (`Inst::Call::moved`). Run once,
+/// arguments it reads for the last time (`Inst::Call::moved`, and an
+/// `OwnedCall`'s arguments in `Inst::OwnedCall::moved`). Run once,
 /// after the optimizations that move instructions around.
 ///
 /// The same answer as `last_reads`, computed with bit sets per block
@@ -506,7 +509,11 @@ pub fn mark_moves(f: &mut Function, heap: &[bool]) {
                     continue;
                 }
             }
-            // Dead after it, or overwritten by it.
+            // Dead after it, or overwritten by it; read once by it (a
+            // register passed twice, or as an `OwnedCall`'s receiver and
+            // an argument, is copied); and owning its value (a borrowed
+            // element owns nothing to move). A variable whose release is
+            // observable is read by its `Release` after, so live here.
             let dying = |r: Reg| {
                 (!has(&live, r) || defs.contains(&r))
                     && uses.iter().filter(|u| **u == r).count() == 1
@@ -519,8 +526,24 @@ pub fn mark_moves(f: &mut Function, heap: &[bool]) {
                         src: *src,
                     };
                 }
-                // A result nothing reads is not stored (see the field).
-                Inst::OwnedCall { dst, unused, .. } => *unused = !has(&live, *dst),
+                // A result nothing reads is not stored (see the field);
+                // the arguments read for the last time move in (#1028).
+                Inst::OwnedCall {
+                    dst,
+                    args,
+                    unused,
+                    moved,
+                    ..
+                } => {
+                    *unused = !has(&live, *dst);
+                    let mut bits = 0u16;
+                    for (i, a) in args.iter().enumerate().take(15) {
+                        if dying(*a) {
+                            bits |= 1 << i;
+                        }
+                    }
+                    *moved = bits;
+                }
                 Inst::Call {
                     recv,
                     args,

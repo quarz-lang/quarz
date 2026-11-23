@@ -390,6 +390,9 @@ impl Checker<'_> {
                     Inst::OwnedCall { unused: true, .. } if stage < Stage::Moves => {
                         self.report_early(bi, ii, "an unused OwnedCall before mark_moves".into())
                     }
+                    Inst::OwnedCall { moved, .. } if *moved != 0 && stage < Stage::Moves => {
+                        self.report_early(bi, ii, "moved arguments before mark_moves".into())
+                    }
                     Inst::ArrayGetReg { borrow: true, .. } if stage < Stage::Borrow => {
                         self.report_early(bi, ii, "a borrowed element before mark_borrows".into())
                     }

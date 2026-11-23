@@ -3635,6 +3635,7 @@ impl<B: Builder> Gen<'_, B> {
                 args,
                 kw,
                 unused,
+                moved,
             } => {
                 let (kind, a, b2) = match recv {
                     VarLoc::Reg(r) => (0, *r, 0),
@@ -3650,6 +3651,7 @@ impl<B: Builder> Gen<'_, B> {
                     u32::from(*unused),
                     args.len() as u32,
                     kw.len() as u32,
+                    u32::from(*moved),
                 ];
                 desc.extend(args.iter().copied());
                 for (k, r) in kw {
@@ -5453,6 +5455,7 @@ impl<B: Builder> Gen<'_, B> {
                 args,
                 kw,
                 unused,
+                moved,
             } if kw.is_empty() => {
                 // A result nobody reads (`xs = xs.push(v)` as a statement)
                 // is not stored: one clone and one release fewer (and the
@@ -5476,7 +5479,24 @@ impl<B: Builder> Gen<'_, B> {
                         .as_deref()
                         .is_some_and(|k| k == "Hash#put")
                     && args.iter().all(|a| self.states[*a as usize] == State::Int);
-                let moving = is_push && self.movable(inst, args[0], block, index);
+                // The arguments `mark_moves` found read for the last time
+                // (`OwnedCall::moved`, #1028) move in: the inline push
+                // takes its value; the runtime's entry copies what it
+                // keeps, so they are released after it, on both paths
+                // gone from their registers. (Only a boxed register holds
+                // a count to move: the others are this backend's.)
+                let moves: Vec<Reg> = args
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, r)| {
+                        *i < 15
+                            && moved & (1 << i) != 0
+                            && **r != *dst
+                            && self.states[**r as usize].boxed()
+                    })
+                    .map(|(_, r)| *r)
+                    .collect();
+                let moving = is_push && moves.contains(&args[0]);
                 let slow = self.b.create_block();
                 let cont = self.b.create_block();
                 if is_put {
@@ -5569,16 +5589,16 @@ impl<B: Builder> Gen<'_, B> {
                     ],
                 )[0];
                 self.check(status, unwind);
-                if moving {
-                    self.drop_moved(args[0]);
+                for r in &moves {
+                    self.drop_moved(*r);
                 }
                 if let (true, VarLoc::Reg(r)) = (is_push, recv) {
                     self.arr_after_slow(*r, block, index);
                 }
                 self.b.jump(cont, &[]);
                 self.b.switch_to_block(cont);
-                if moving {
-                    self.states[args[0] as usize] = State::NonHeap;
+                for r in &moves {
+                    self.states[*r as usize] = State::NonHeap;
                 }
             }
             Inst::Call {

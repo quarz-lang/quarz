@@ -291,11 +291,12 @@ op_entry!(
     /// An in-place call compiled code does not make itself. `desc`:
     /// destination, method, location kind (register, frame, field) and
     /// its two operands, whether the result is unused, argument count,
-    /// keyword count, the arguments, the keywords.
+    /// keyword count, the moved arguments' bits, the arguments, the
+    /// keywords.
     qz_op_owned_call(desc: *const u32) |rt, act, f, pool, regs| {
-        let head = unsafe { words(desc, 8) };
+        let head = unsafe { words(desc, 9) };
         let (nargs, nkw) = (head[6], head[7]);
-        let rest = unsafe { words(desc.add(8), nargs + 2 * nkw) };
+        let rest = unsafe { words(desc.add(9), nargs + 2 * nkw) };
         let kw: SmallVec<[(u32, Reg); 4]> = rest[nargs as usize..]
             .chunks(2)
             .map(|p| (p[0], p[1]))
@@ -317,6 +318,7 @@ op_entry!(
                 args: &rest[..nargs as usize],
                 kw: &kw,
                 unused: head[5] != 0,
+                moved: head[8] as u16,
             },
         )
     }

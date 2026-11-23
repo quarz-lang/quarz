@@ -81,6 +81,8 @@ pub struct OwnedOps<'a> {
     pub args: &'a [Reg],
     pub kw: &'a [(u32, Reg)],
     pub unused: bool,
+    /// `Inst::OwnedCall::moved`: the arguments that move in.
+    pub moved: u16,
 }
 
 impl Interp {
@@ -414,12 +416,29 @@ impl Interp {
         regs: &mut [Value],
         c: OwnedOps<'_>,
     ) -> Result<(), Flow> {
+        // What the call reads for the last time moves into it (`moved`,
+        // from `live::mark_moves`), as compiled code moves it (#1028):
+        // its register no longer keeps the value, which goes with the
+        // call's (a value only the call held is released when it ends).
+        let mut bits = c.moved;
+        let pos: ArgVec = c
+            .args
+            .iter()
+            .map(|r| {
+                let slot = &mut regs[*r as usize];
+                let moved = bits & 1 != 0;
+                bits >>= 1;
+                if moved {
+                    std::mem::replace(slot, Value::Nil)
+                } else {
+                    slot.clone()
+                }
+            })
+            .collect();
         if c.kw.is_empty() && c.args.len() <= 2 {
             // The arguments by reference: the fast paths clone only what
             // they keep.
-            let argv: SmallVec<[Value; 2]> =
-                c.args.iter().map(|r| regs[*r as usize].clone()).collect();
-            let refs: SmallVec<[&Value; 2]> = argv.iter().collect();
+            let refs: SmallVec<[&Value; 2]> = pos.iter().collect();
             match c.recv {
                 VarLoc::Reg(r) => {
                     if self.owned_fast(c.method, &mut regs[r as usize], &refs) {
@@ -448,7 +467,6 @@ impl Interp {
                 VarLoc::Frame { .. } => {}
             }
         }
-        let pos = self.call_args(regs, c.args, false);
         let kw = self.call_kwargs(f, pool, regs, c.kw, None);
         let take_field = |obj: Reg, index: u32| -> Value {
             match &regs[obj as usize] {

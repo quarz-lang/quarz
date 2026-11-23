@@ -1,0 +1,51 @@
+# #1028: an argument an in-place call (`OwnedCall`, `xs = xs.push(v)`)
+# reads for the last time moves into it (`OwnedCall::moved`), on the
+# interpreter as in compiled code: its register keeps no reference, so
+# the value goes with the collection it was pushed into, the same on
+# both. An argument read again stays in its variable.
+
+class Res
+  @name: String
+  def initialize(@name: String); end
+  def name -> String = @name
+  def deinitialize -> Void
+    puts "released #{@name}"
+  end
+end
+
+data P = (rs: Array[Res])
+
+# The issue's reproducer: `push` copies the shared field's array; that
+# copy, `[c, c2]`, is `c2`'s only holder and goes at `ys = []`.
+def from_field -> Void
+  q = P.new([Res.new("c")])
+  ys = q.rs.push(Res.new("c2"))
+  puts "pushed"
+  ys = []
+  puts "mid #{ys.size}"
+  q = P.new([])
+end
+
+def in_place -> Void
+  xs: Array[Res] = []
+  xs = xs.push(Res.new("p"))
+  puts "pushed"
+  xs = []
+  puts "emptied"
+end
+
+def read_again -> Void
+  r = Res.new("k")
+  zs: Array[Res] = []
+  zs = zs.push(r)
+  zs = []
+  puts "still"
+  puts "kept #{r.name}"
+end
+
+from_field
+puts "--"
+in_place
+puts "--"
+read_again
+puts "end"

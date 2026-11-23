@@ -540,8 +540,10 @@ pub(crate) fn rewrite_with(
             args,
             kw: kws,
             unused,
+            moved,
         } => Inst::OwnedCall {
             unused: *unused,
+            moved: *moved,
             dst: r(dst),
             method: *method,
             recv: match recv {

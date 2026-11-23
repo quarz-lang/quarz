@@ -1363,6 +1363,7 @@ impl Interp {
                 args,
                 kw,
                 unused,
+                moved,
             } => self.op_owned_call(
                 f,
                 pool,
@@ -1375,6 +1376,7 @@ impl Interp {
                     args,
                     kw,
                     unused: *unused,
+                    moved: *moved,
                 },
             )?,
             Inst::IsNil { dst, src } => {
