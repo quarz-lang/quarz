@@ -4035,16 +4035,13 @@ impl Interp {
             Value::Class(cid) => Ok(self.case_eq_class(*cid, v)),
             Value::Range(r) => self.range_covers(r, v),
             Value::Regexp(re) => self.case_eq_regexp(re, v),
+            // (`values_equal`'s two tails, its lookup cached.)
             Value::Object(_) => match self.object_case_eq(pattern)? {
-                CaseEq::Own(mid) | CaseEq::Eq(mid) => Ok(self
+                CaseEq::Own(mid) => Ok(self
                     .invoke(mid, pattern.clone(), smallvec![v.clone()], vec![], None)?
                     .is_truthy()),
-                // (As `values_equal` past its lookup of `==`.)
-                CaseEq::Default => {
-                    let eq = pattern == v;
-                    crate::keys::check()?;
-                    Ok(eq)
-                }
+                CaseEq::Eq(mid) => self.eq_by(mid, pattern, v),
+                CaseEq::Default => self.builtin_eq(pattern, v),
             },
             _ => self.values_equal(pattern, v),
         }
@@ -4058,7 +4055,7 @@ impl Interp {
         let find = || -> Result<CaseEq, Flow> {
             Ok(match self.has_user_method(pattern, "===", 1)? {
                 Some(mid) => CaseEq::Own(mid),
-                None => match self.has_user_method(pattern, "==", 1)? {
+                None => match self.user_eq(pattern)? {
                     Some(mid) => CaseEq::Eq(mid),
                     None => CaseEq::Default,
                 },
@@ -4434,12 +4431,28 @@ impl Interp {
 
     /// `a == b` with user-defined equality.
     pub fn values_equal(&self, a: &Value, b: &Value) -> Result<bool, Flow> {
-        if let Value::Object(_) = a {
-            if let Some(mid) = self.has_user_method(a, "==", 1)? {
-                let r = self.invoke(mid, a.clone(), smallvec![b.clone()], vec![], None)?;
-                return Ok(r.is_truthy());
-            }
+        match self.user_eq(a)? {
+            Some(mid) => self.eq_by(mid, a, b),
+            None => self.builtin_eq(a, b),
         }
+    }
+
+    /// `values_equal`'s lookup: `a`'s class's own `==`, for an object.
+    pub(crate) fn user_eq(&self, a: &Value) -> Result<Option<MethodId>, Flow> {
+        if let Value::Object(_) = a {
+            return self.has_user_method(a, "==", 1);
+        }
+        Ok(None)
+    }
+
+    /// `a == b` by `a`'s own `==`, `mid` (`user_eq`).
+    pub(crate) fn eq_by(&self, mid: MethodId, a: &Value, b: &Value) -> Result<bool, Flow> {
+        let r = self.invoke(mid, a.clone(), smallvec![b.clone()], vec![], None)?;
+        Ok(r.is_truthy())
+    }
+
+    /// `a == b` when `a` has no `==` of its own (`user_eq`).
+    pub(crate) fn builtin_eq(&self, a: &Value, b: &Value) -> Result<bool, Flow> {
         // An element's or field's own `==` (`crate::keys`) may raise.
         let eq = a == b;
         crate::keys::check()?;
