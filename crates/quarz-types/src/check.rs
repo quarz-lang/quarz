@@ -8668,7 +8668,14 @@ impl Checker {
         } else if path.absolute {
             self.world.resolve_absolute(namespace, &path.names[0])
         } else {
-            self.world.resolve_member(namespace, &path.names[0])
+            match self.world.resolve_member(namespace, &path.names[0]) {
+                Lookup::Ambiguous(a) => {
+                    let message = self.world.ambiguity_message(&a);
+                    self.error(message, span);
+                    return None;
+                }
+                found => found.found(),
+            }
         };
         if member.is_none() {
             self.error(format!("unknown constant `{}`", path.names[0]), span);

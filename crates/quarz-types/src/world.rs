@@ -419,6 +419,52 @@ pub enum UnitGroup {
     Std(u32),
 }
 
+/// What `World::resolve_member` found for a bare name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Lookup {
+    Found(Member),
+    /// Found both through an ancestor and, later in the walk, in an
+    /// enclosing scope, as different things (#1105).
+    Ambiguous(Ambiguity),
+    Unknown,
+}
+
+impl Lookup {
+    /// The member, unless there is none or it is ambiguous (for a caller
+    /// that reports nothing: the program's checking reports it).
+    pub fn found(self) -> Option<Member> {
+        match self {
+            Lookup::Found(m) => Some(m),
+            _ => None,
+        }
+    }
+}
+
+/// The two things a bare name names (`Lookup::Ambiguous`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ambiguity {
+    pub name: String,
+    /// The scope the walk started in.
+    pub scope: Option<ClassId>,
+    /// The ancestor's member the walk found first, the ancestor, and the
+    /// lexical level whose ancestor it is.
+    pub inherited: Member,
+    pub through: ClassId,
+    pub at: ClassId,
+    /// The enclosing scope's member, and where it comes from.
+    pub lexical: Member,
+    pub from: Origin,
+}
+
+/// Where an enclosing scope's member comes from (`Ambiguity`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// A member of this enclosing class or module.
+    Member(ClassId),
+    /// An import of the library cog whose root this is.
+    Import(ClassId),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Member {
     Class(ClassId),
@@ -6480,34 +6526,138 @@ impl World {
         }
     }
 
-    /// Resolve a constant path relative to a namespace, walking outward.
-    /// Inside a library cog the walk ends at its root module, then its
-    /// imports, then the top level without the application's names.
-    pub fn resolve_member(&self, scope: Option<ClassId>, name: &str) -> Option<Member> {
+    /// The first name of a relative constant path, looked up from
+    /// `scope` outwards (docs/01 §3): at each level, its own members, then
+    /// its ancestors' (the superclass chain and included modules, in
+    /// `World::ancestors` order), then, at a library cog's root, the
+    /// cog's imports; last the top level (inside a library, without the
+    /// application's names).
+    ///
+    /// `Ambiguous` where the first hit is an ancestor's member and an
+    /// enclosing level's own member or a cog root's import, later in the
+    /// walk, is another one (#1105): what is written nearest and what is
+    /// inherited disagree, and the program writes the one it means in
+    /// full. A class's own members, two ancestors (their order is the
+    /// method resolution order), the same thing found both ways (through
+    /// a constant aliasing it too) and the top level are never ambiguous.
+    pub fn resolve_member(&self, scope: Option<ClassId>, name: &str) -> Lookup {
         let mut cur = scope;
         let mut in_library = false;
+        // The ancestor's member found first: (it, the ancestor, the level).
+        let mut inherited: Option<(Member, ClassId, ClassId)> = None;
+        let lexical_after =
+            |found: Member, inherited: &Option<(Member, ClassId, ClassId)>, from: Origin| {
+                match inherited {
+                    None => Lookup::Found(found),
+                    // The same thing both ways (a constant naming the class the
+                    // ancestor has, say): today's answer, the inherited one.
+                    Some((m, _, _)) if self.through_alias(*m) == self.through_alias(found) => {
+                        Lookup::Found(*m)
+                    }
+                    Some((m, through, at)) => Lookup::Ambiguous(Ambiguity {
+                        name: name.to_string(),
+                        scope,
+                        inherited: *m,
+                        through: *through,
+                        at: *at,
+                        lexical: found,
+                        from,
+                    }),
+                }
+            };
         while let Some(cid) = cur {
             if let Some(m) = self.class(cid).members.get(name) {
-                return Some(*m);
+                return lexical_after(*m, &inherited, Origin::Member(cid));
             }
-            // Members of ancestors (inherited constants).
-            for anc in self.ancestor_ids(cid) {
-                if let Some(m) = self.class(anc).members.get(name) {
-                    return Some(*m);
+            if inherited.is_none() {
+                // Members of ancestors (inherited constants).
+                for anc in self.ancestor_ids(cid) {
+                    if let Some(m) = self.class(anc).members.get(name) {
+                        inherited = Some((*m, anc, cid));
+                        break;
+                    }
                 }
             }
             if let Some(cog) = self.class(cid).cog {
                 if let Some(root) = self.cogs[cog as usize].imports.get(name) {
-                    return Some(Member::Class(*root));
+                    return lexical_after(Member::Class(*root), &inherited, Origin::Import(cid));
                 }
                 in_library = true;
             }
             cur = self.class(cid).parent;
         }
-        if in_library && self.app_names.contains(name) {
-            return None;
+        if let Some((m, _, _)) = inherited {
+            return Lookup::Found(m);
         }
-        self.top.get(name).copied()
+        if in_library && self.app_names.contains(name) {
+            return Lookup::Unknown;
+        }
+        match self.top.get(name) {
+            Some(m) => Lookup::Found(*m),
+            None => Lookup::Unknown,
+        }
+    }
+
+    /// The error for an ambiguous bare name (`Lookup::Ambiguous`, #1105):
+    /// both things in full and where each comes from.
+    pub fn ambiguity_message(&self, a: &Ambiguity) -> String {
+        let full = |m: Member| match m {
+            Member::Class(c) => format!("`{}`", self.class(c).name),
+            Member::Const(c) => {
+                let k = &self.consts[c as usize];
+                match k.owner {
+                    Some(o) => format!("`{}::{}`", self.class(o).name, k.name),
+                    None => format!("`{}`", k.name),
+                }
+            }
+            Member::Alias(id) => {
+                let al = &self.aliases[id as usize];
+                match al.owner {
+                    Some(o) => format!("the type alias `{}::{}`", self.class(o).name, al.name),
+                    None => format!("the type alias `{}`", al.name),
+                }
+            }
+        };
+        let kind = |c: ClassId| {
+            if self.class(c).kind == ClassKind::Module {
+                "module"
+            } else {
+                "class"
+            }
+        };
+        let lexical = match a.from {
+            Origin::Member(c) => format!(
+                "a member of the enclosing {} `{}`",
+                kind(c),
+                self.class(c).name
+            ),
+            Origin::Import(root) => {
+                let cog = self
+                    .class(root)
+                    .cog
+                    .map(|i| self.cogs[i as usize].name.clone())
+                    .unwrap_or_default();
+                format!("a cog that `{cog}`'s manifest names")
+            }
+        };
+        let through = self.class(a.through).name.clone();
+        let inherited = if Some(a.at) != a.scope {
+            format!(
+                "from `{through}`, an ancestor of the enclosing {} `{}`",
+                kind(a.at),
+                self.class(a.at).name
+            )
+        } else if self.class(a.through).kind == ClassKind::Module {
+            format!("from the included module `{through}`")
+        } else {
+            format!("inherited from `{through}`")
+        };
+        format!(
+            "`{}` names two things here: {}, {lexical}, and {}, {inherited}; write the one you mean in full",
+            a.name,
+            full(a.lexical),
+            full(a.inherited)
+        )
     }
 
     /// The first name of an absolute path (`::X`) in `scope`: the top
@@ -6725,7 +6875,10 @@ impl World {
         } else if path.absolute {
             self.resolve_absolute(info.owner, path.names.first()?)?
         } else {
-            self.resolve_member(info.owner, path.names.first()?)?
+            // (An ambiguous name: no alias step; the checker reports it
+            // at the constant's value.)
+            self.resolve_member(info.owner, path.names.first()?)
+                .found()?
         };
         for name in path.names.get(1..).unwrap_or_default() {
             let Member::Class(cid) = self.through_alias_shallow(member) else {

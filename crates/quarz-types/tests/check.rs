@@ -2411,6 +2411,67 @@ fn namespaces_are_added_to_not_reopened() {
     );
 }
 
+/// #1105: a bare name found through an ancestor (superclass or included
+/// module, of the class or of an enclosing module) and, later in the
+/// lookup, as an enclosing scope's own member, is an error naming both,
+/// in expressions and in types. A class's own members, two ancestors, the
+/// same thing both ways, and the top level are never ambiguous; `::X`,
+/// a full name and an extension body are not affected.
+#[test]
+fn a_name_inherited_and_enclosing_is_ambiguous() {
+    let base = "class Base\n  class Help\n  end\n  X = 1\nend\n";
+    let both = |body: &str| {
+        format!(
+            "{base}module M\n  class Help\n  end\n  X = 2\n  class Sub < Base\n{body}  end\nend\n"
+        )
+    };
+    err(
+        &both("    def self.h -> String = Help.name\n"),
+        "`Help` names two things here: `M::Help`, a member of the enclosing module `M`, and `Base::Help`, inherited from `Base`; write the one you mean in full",
+    );
+    err(
+        &both("    def self.x -> Int = X\n"),
+        "`X` names two things here: `M::X`, a member of the enclosing module `M`, and `Base::X`, inherited from `Base`",
+    );
+    // A type position.
+    err(
+        &both("    def self.f(h: Help) -> Int = 1\n"),
+        "`Help` names two things here",
+    );
+    // An included module's nested class.
+    err(
+        "module Mix\n  class Tool\n  end\n  def m -> Int = 1\nend\nmodule M\n  class Tool\n  end\n  class Sub\n    include Mix\n    def self.t -> String = Tool.name\n  end\nend\n",
+        "`Tool` names two things here: `M::Tool`, a member of the enclosing module `M`, and `Mix::Tool`, from the included module `Mix`",
+    );
+    // An enclosing module's ancestor against an outer module's member.
+    err(
+        "module N\n  class Tool\n  end\nend\nmodule O\n  class Tool\n  end\n  module M\n    include N\n    class Sub\n      def self.t -> String = Tool.name\n    end\n  end\nend\n",
+        "`Tool` names two things here: `O::Tool`, a member of the enclosing module `O`, and `N::Tool`, from `N`, an ancestor of the enclosing module `O::M`",
+    );
+    // The full names.
+    ok(&both("    def self.h -> String = M::Help.name + Base::Help.name\n    def self.x -> Int = M::X + Base::X\n"));
+    // A class's own member.
+    ok(&both(
+        "    class Help\n    end\n    def self.h -> String = Help.name\n",
+    ));
+    // Only inherited: today's answer.
+    ok("class Base\n  class Help\n  end\nend\nmodule M\n  class Sub < Base\n    def self.h -> String = Help.name\n  end\nend\n");
+    // The enclosing member comes first in the walk (its own level).
+    ok("module M\n  class Help\n  end\n  module Inner\n    include Comparable[Int]\n    class Sub\n      def self.h -> String = Help.name\n    end\n  end\nend\n");
+    // The same thing both ways: a constant naming the inherited class.
+    ok("module Same\n  class Base2\n    class Inner\n    end\n  end\n  Inner = Base2::Inner\n  class S < Base2\n    def self.i -> String = Inner.name\n  end\nend\n");
+    // Two ancestors: the method resolution order, not an error.
+    ok("module Mix\n  class Help\n  end\n  def m -> Int = 1\nend\nclass Base\n  class Help\n  end\nend\nclass Sub < Base\n  include Mix\n  def self.h -> String = Help.name\nend\n");
+    // The top level is the last fallback.
+    ok("class Help\nend\nclass Base\n  class Help\n  end\nend\nclass Sub < Base\n  def self.h -> String = Help.name\nend\n");
+    // `::X` and a superclass written from the enclosing scope.
+    ok("X = 0\nclass Base\n  X = 1\nend\nmodule M\n  X = 2\n  class Sub < Base\n    def self.x -> Int = ::X\n  end\nend\n");
+    ok(&format!(
+        "{base}module M\n  class Help\n  end\n  class Sub2 < Help\n  end\nend\n"
+    ));
+    // An extension body sees its enclosing module's names only.
+    ok("class Base\n  X = 1\nend\nmodule M\n  X = 2\n  extension Base\n    def x -> Int = X\n  end\nend\n");
+}
 #[test]
 fn variables_assigned_on_some_paths_may_be_nil() {
     // A variable a branch or a loop body declares is nil where it was not

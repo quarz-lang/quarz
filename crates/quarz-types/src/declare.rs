@@ -763,7 +763,7 @@ impl<'ast> Declarer<'ast> {
         &self,
         path: &'p ConstPath,
         namespace: Option<ClassId>,
-    ) -> Result<Option<ClassId>, &'p str> {
+    ) -> Result<Option<ClassId>, PrefixError<'p>> {
         let (mut ns, outwards) = if path.absolute {
             (None, false)
         } else if path.cog {
@@ -774,13 +774,16 @@ impl<'ast> Declarer<'ast> {
         let prefixes = &path.names[..path.names.len().saturating_sub(1)];
         for (i, prefix) in prefixes.iter().enumerate() {
             let found = if i == 0 && outwards {
-                self.world.resolve_member(ns, prefix)
+                match self.world.resolve_member(ns, prefix) {
+                    Lookup::Ambiguous(a) => return Err(PrefixError::Ambiguous(a)),
+                    found => found.found(),
+                }
             } else {
                 self.world.member_in(ns, prefix)
             };
             match found {
                 Some(Member::Class(id)) => ns = Some(id),
-                _ => return Err(prefix),
+                _ => return Err(PrefixError::Unknown(prefix)),
             }
         }
         Ok(ns)
@@ -1051,8 +1054,13 @@ impl<'ast> Declarer<'ast> {
         // `class A::B` nests B in A (A must exist, see `resolve_prefix`).
         let ns = match self.resolve_prefix(path, namespace) {
             Ok(ns) => ns,
-            Err(prefix) => {
+            Err(PrefixError::Unknown(prefix)) => {
                 self.error(format!("unknown namespace `{prefix}`"), span);
+                return None;
+            }
+            Err(PrefixError::Ambiguous(a)) => {
+                let message = self.world.ambiguity_message(&a);
+                self.error(message, span);
                 return None;
             }
         };
@@ -7234,7 +7242,14 @@ impl<'ast> Declarer<'ast> {
         } else if path.absolute {
             self.world.resolve_absolute(namespace, &path.names[0])
         } else {
-            self.world.resolve_member(namespace, &path.names[0])
+            match self.world.resolve_member(namespace, &path.names[0]) {
+                Lookup::Ambiguous(a) => {
+                    let message = self.world.ambiguity_message(&a);
+                    self.error(message, span);
+                    return None;
+                }
+                found => found.found(),
+            }
         };
         if member.is_none() {
             self.error(format!("unknown constant `{}`", path.names[0]), span);
@@ -7327,7 +7342,8 @@ impl<'ast> Declarer<'ast> {
     /// standard library (a class, module or alias).
     fn is_builtin_type_name(&self, name: &str, scope: Option<ClassId>) -> bool {
         let std = |file: u32| file == 0 || self.world.std_files.contains(&file);
-        match self.world.resolve_member(scope, name) {
+        // (An ambiguous name is reported where it is resolved.)
+        match self.world.resolve_member(scope, name).found() {
             Some(Member::Class(c)) => std(self.world.class(c).file),
             Some(Member::Alias(a)) => std(self.world.aliases[a as usize].file),
             _ => false,
@@ -7696,4 +7712,11 @@ pub fn method_name_rule(
         block,
         owner,
     )
+}
+
+/// Why `Declarer::resolve_prefix` found no namespace: a part not declared,
+/// or a first part that names two things (#1105).
+enum PrefixError<'p> {
+    Unknown(&'p str),
+    Ambiguous(Ambiguity),
 }

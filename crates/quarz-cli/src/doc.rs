@@ -1290,6 +1290,7 @@ fn resolve_class(world: &World, scope: Option<ClassId>, path: &str) -> Option<Me
     let first = segs.next()?;
     let mut cur = world
         .resolve_member(scope, first)
+        .found()
         .or_else(|| world.top.get(first).copied())?;
     for seg in segs {
         let Member::Class(c) = cur else { return None };

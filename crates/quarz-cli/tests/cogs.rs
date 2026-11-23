@@ -784,6 +784,55 @@ fn keys_name_cogs_and_scopes_are_closed() {
         .contains("name of a built-in or standard library constant"));
 }
 
+/// #1105: in a library, a bare name found through an ancestor (here a
+/// superclass from another cog, with a nested class) and, later in the
+/// walk, as a cog its manifest names, is an error naming both; the full
+/// names are accepted.
+#[test]
+fn a_cog_key_and_an_inherited_name_are_ambiguous() {
+    let w = World::new();
+    w.write(
+        "shapes/Cog.toml",
+        "[cog]\nname = \"shapes\"\nversion = \"1.0.0\"\n",
+    );
+    w.write("shapes/src/circle.qz", "class Circle\nend\n");
+    w.commit("shapes", Some("v1.0.0"));
+    w.write(
+        "frame/Cog.toml",
+        "[cog]\nname = \"frame\"\nversion = \"1.0.0\"\n",
+    );
+    w.write(
+        "frame/src/base.qz",
+        "class Base\n  class Shape\n  end\nend\n",
+    );
+    w.commit("frame", Some("v1.0.0"));
+    w.write(
+        "client/Cog.toml",
+        &format!(
+            "[cog]\nname = \"client\"\nversion = \"1.0.0\"\n\n[dependencies]\nShape = {{ git = \"{}\", tag = \"v1.0.0\" }}\nFrame = {{ git = \"{}\", tag = \"v1.0.0\" }}\n",
+            w.url("shapes"),
+            w.url("frame")
+        ),
+    );
+    w.write(
+        "client/src/c.qz",
+        "class C < Frame::Base\n  def self.n -> String = Shape.name\nend\n\npublic def n -> String = C.n\n",
+    );
+    w.commit("client", Some("v1.0.0"));
+    w.app(
+        &format!(
+            "Client = {{ git = \"{}\", tag = \"v1.0.0\" }}\n",
+            w.url("client")
+        ),
+        "puts Client.n\n",
+    );
+    let err = w.fails("app", &["check"]);
+    assert!(
+        err.contains("`Shape` names two things here: `Shapes`, a cog that `client`'s manifest names, and `Frame::Base::Shape`, inherited from `Frame::Base`; write the one you mean in full"),
+        "{err}"
+    );
+}
+
 #[test]
 fn cog_files_hold_declarations_only() {
     let w = World::new();
