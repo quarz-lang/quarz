@@ -1514,6 +1514,20 @@ impl Checker {
             .push((self.env.file, Diagnostic::warning(message, span)));
     }
 
+    /// `warning`, unless the same one is already there: for a check made
+    /// on an expression the checker may type twice (an argument checked
+    /// again for an overload, #1087's never-equal warnings).
+    fn warning_once(&mut self, message: String, span: Span) {
+        let file = self.env.file;
+        let seen = self
+            .diagnostics
+            .iter()
+            .any(|(f, d)| *f == file && d.span == span && d.message == message);
+        if !seen {
+            self.warning(message, span);
+        }
+    }
+
     fn name(&self, t: &Type) -> String {
         self.world.type_name(&self.infer.resolve(t))
     }
@@ -7552,21 +7566,22 @@ impl Checker {
                     _ => self.check_call(expr, call, expected),
                 };
                 // The built-in `==` (or `!=`) between values that are never
-                // equal: an enum value and a symbol, a `Date` and a `Time`
-                // (#879, #884).
+                // equal (`World::may_equal`, #1087; #879, #884's pairs with
+                // their own texts).
                 if let (Some(recv), "==" | "!=", [Arg::Positional(a)]) =
                     (&call.recv, call.name.as_str(), call.args.as_slice())
                 {
                     let builtin = matches!(self.out.calls.get(&expr.id),
                         Some(CallTarget::Method { method }) if self.world.method(*method).is_native);
                     if builtin {
-                        if let Some(why) = self.never_equal(recv, a) {
-                            self.warning(why, expr.span);
+                        if let Some(why) = self.never_equal(&call.name, recv, a) {
+                            self.warning_once(why, expr.span);
                         }
                     }
                 }
-                // A symbol searched for in a collection of an enum: never
-                // found, by the `==` the search compares with (#915).
+                // A value searched for in a collection whose elements it
+                // never equals (`World::may_equal`, #1087), by the `==` the
+                // search compares with (#915: a symbol among enum values).
                 if let (Some(recv), [Arg::Positional(a)]) = (&call.recv, call.args.as_slice()) {
                     let method = match self.out.calls.get(&expr.id) {
                         Some(CallTarget::Method { method }) => Some(*method),
@@ -7580,15 +7595,26 @@ impl Checker {
                     let element = method
                         .zip(recv_ty)
                         .and_then(|(m, t)| self.search_element(m, &t));
-                    if let Some(t) = element {
-                        if let Some((name, v)) = self.symbol_never_equal(&t, a) {
-                            self.warning(
-                                format!(
+                    let arg_ty = self
+                        .out
+                        .node_types
+                        .get(&a.id)
+                        .map(|t| self.infer.resolve(t));
+                    if let (Some(t), Some(at)) = (element, arg_ty) {
+                        if !self.world.may_equal(&t, &at) {
+                            let text = match self.symbol_never_equal(&t, a) {
+                                Some((name, v)) => format!(
                                     "`{}` compares the symbol `:{name}` with enum values, which never equal it: write `{v}`",
                                     call.name
                                 ),
-                                expr.span,
-                            );
+                                None => format!(
+                                    "`{}` compares `{}` with the elements, of type `{}`: they are never equal, so it finds none",
+                                    call.name,
+                                    self.name(&at),
+                                    self.name(&t)
+                                ),
+                            };
+                            self.warning_once(text, expr.span);
                         }
                     }
                 }
@@ -9223,6 +9249,90 @@ impl Checker {
         self.join(&tt, &et)
     }
 
+    /// A `when` value (or an `in` value or range pattern, `kw` saying
+    /// which) whose test is never true (#1087): a pattern compared by the
+    /// built-in `==` (no `===` or `==` of its own) whose type may not equal
+    /// the subject's (`World::may_equal`), a range whose bounds' type may
+    /// not equal it, a regexp over a subject that is neither a `String`
+    /// nor `Bytes`. `pattern` is the written pattern, `pt` its type,
+    /// `subject` what the arms before it left. A class value, a procedure,
+    /// a class with its own `===` and `Nothing` are not judged here.
+    pub(crate) fn never_taken(
+        &mut self,
+        kw: &str,
+        pattern: &Expr,
+        pt: &Type,
+        subject: &Type,
+        span: Span,
+    ) {
+        let pt = self.resolve(pt);
+        let subject = self.resolve(subject);
+        if matches!(pt, Type::Nothing | Type::ClassObject(..) | Type::TypeOf(_))
+            || subject.is_nothing()
+            || self.may_be_proc(&pt)
+            || self.defines_case_eq(&pt)
+        {
+            return;
+        }
+        let (range, regexp) = (self.world.builtin.range, self.world.builtin.regexp);
+        let a = |name: &str| {
+            let vowel = name
+                .trim_start_matches('`')
+                .starts_with(['A', 'E', 'I', 'O', 'U']);
+            format!("{} {name}", if vowel { "an" } else { "a" })
+        };
+        let sname = format!("`{}`", self.name(&subject));
+        let message = match &pt {
+            Type::Class(c, args) if *c == range => {
+                let Some(elem) = args.first() else { return };
+                if self.world.may_equal(elem, &subject) {
+                    return;
+                }
+                format!(
+                    "this `{kw}` tests whether a `{}` covers the subject, {}: its bounds never equal or compare with one, so it is never taken",
+                    self.name(&pt),
+                    a(&sname)
+                )
+            }
+            Type::Class(c, _) if *c == regexp => {
+                let text = Type::union_of(vec![
+                    Type::class(self.world.builtin.string),
+                    Type::class(self.world.builtin.bytes),
+                ]);
+                if self.world.may_equal(&text, &subject) {
+                    return;
+                }
+                format!(
+                    "this `{kw}` matches a `Regexp` against the subject, {}: a `Regexp` matches only a `String` or `Bytes`, so it is never taken",
+                    a(&sname)
+                )
+            }
+            _ => {
+                if self.world.may_equal(&pt, &subject) {
+                    return;
+                }
+                let mut m = format!(
+                    "this `{kw}` compares `{}` with the subject, {}: they are never equal, so it is never taken",
+                    self.name(&pt),
+                    a(&sname)
+                );
+                let boolean = self.world.builtin.bool_;
+                if matches!(pt, Type::Class(c, _) if c == boolean) {
+                    if kw == "when" {
+                        m.push_str("; for conditions write `case` without a subject (`case` / `when x == 1`), or compare the subject (`when 1`)");
+                    } else {
+                        m.push_str("; compare the subject (`in 1`)");
+                    }
+                } else if let Some(fix) = self.never_equal_fix(&subject, pattern, &pt) {
+                    m.push_str(": ");
+                    m.push_str(&fix);
+                }
+                m
+            }
+        };
+        self.error(message, span);
+    }
+
     /// `when p` (or a value pattern `in p`) runs `p === subject` by the
     /// pattern's class, at run time (`Interp::case_eq`, docs/01 §11): an
     /// extension's `===`, chosen statically where it is active, is never
@@ -9453,6 +9563,7 @@ impl Checker {
                     // after `when String` gets the rest.)
                     let left = remaining.clone().unwrap_or(st2);
                     self.proc_pattern(ce, &ct, &left, "when");
+                    self.never_taken("when", ce, &ct, &left, ce.span);
                     // Value comparison with `===`.
                     narrowed_to.push(self.resolve(st));
                 }
@@ -17930,36 +18041,77 @@ impl Checker {
         out
     }
 
-    /// Why the built-in `==` of `a` and `b` (either order) is never true,
-    /// for the pairs it is decided for: an enum value and a symbol literal
-    /// naming one of its variants, which nothing converts there (#879,
-    /// D7), and a `Date` and a `Time` (#884's decision 3). `None` for any
-    /// other pair.
-    fn never_equal(&self, a: &Expr, b: &Expr) -> Option<String> {
+    /// Why the built-in `==` (or `!=`, `op`) of `a` and `b` is never true:
+    /// their types may not be equal (`World::may_equal`, #1087). The text
+    /// is a pair's own for the two it names (`never_equal_pair`: an enum
+    /// value and a symbol literal naming one of its variants, #879; a
+    /// `Date` and a `Time`, #884), else the general one. `None` when they
+    /// may be equal or a type is not known.
+    fn never_equal(&self, op: &str, a: &Expr, b: &Expr) -> Option<String> {
         let ty = |e: &Expr| {
             self.out
                 .node_types
                 .get(&e.id)
                 .map(|t| self.infer.resolve(t))
         };
-        for (value, sym) in [(a, b), (b, a)] {
-            let Some(t) = ty(value) else { continue };
-            if let Some((name, v)) = self.symbol_never_equal(&t, sym) {
-                return Some(format!(
-                    "an enum value compared with the symbol `:{name}` is never equal: write `{v}`"
+        let (ta, tb) = (ty(a)?, ty(b)?);
+        if self.world.may_equal(&ta, &tb) {
+            return None;
+        }
+        if let Some((text, _)) = self.never_equal_pair(&ta, Some(a), &tb, Some(b)) {
+            return Some(text);
+        }
+        let always = if op == "!=" {
+            ", so it is always true"
+        } else {
+            ""
+        };
+        Some(format!(
+            "`{op}` compares `{}` with `{}`: they are never equal{always}",
+            self.name(&ta),
+            self.name(&tb)
+        ))
+    }
+
+    /// The fix a `when` or `in` pattern's error names for the two pairs
+    /// `never_equal_pair` knows, the subject of type `subject`.
+    fn never_equal_fix(&self, subject: &Type, pattern: &Expr, pt: &Type) -> Option<String> {
+        // (Only the pattern can be the symbol literal.)
+        self.never_equal_pair(subject, None, pt, Some(pattern))
+            .map(|(_, fix)| fix)
+    }
+
+    /// For two values never equal (`World::may_equal` false), the texts of
+    /// the pairs decided with a fix of their own (#879, #884): an enum
+    /// value and a symbol literal naming one of its variants, a `Date` and
+    /// a `Time`. The whole warning and the fix alone; `None` for any other
+    /// pair. Texts only: whether they are equal is `may_equal`'s.
+    fn never_equal_pair(
+        &self,
+        ta: &Type,
+        a: Option<&Expr>,
+        tb: &Type,
+        b: Option<&Expr>,
+    ) -> Option<(String, String)> {
+        for (t, sym) in [(ta, b), (tb, a)] {
+            if let Some((name, v)) = sym.and_then(|sym| self.symbol_never_equal(t, sym)) {
+                return Some((
+                    format!("an enum value compared with the symbol `:{name}` is never equal: write `{v}`"),
+                    format!("write `{v}`"),
                 ));
             }
         }
-        let class_of = |e: &Expr| match ty(e)? {
-            Type::Class(c, _) => Some(c),
+        let class_of = |t: &Type| match t {
+            Type::Class(c, _) => Some(*c),
             _ => None,
         };
         let (date, time) = (self.world.top_class("Date")?, self.world.top_class("Time")?);
-        match (class_of(a)?, class_of(b)?) {
-            (x, y) if (x, y) == (date, time) || (x, y) == (time, date) => Some(
+        match (class_of(ta)?, class_of(tb)?) {
+            (x, y) if (x, y) == (date, time) || (x, y) == (time, date) => Some((
                 "a `Date` compared with a `Time` is never equal: compare `d == t.to_date` or `d.at(...) == t`"
                     .to_string(),
-            ),
+                "compare `d == t.to_date` or `d.at(...) == t`".to_string(),
+            )),
             _ => None,
         }
     }
@@ -17972,7 +18124,25 @@ impl Checker {
         let ExprKind::Symbol(name) = &sym.kind else {
             return None;
         };
-        let (_, found) = self.symbol_variants_for(name, t)?;
+        // (An array literal of an enum's values is typed by its variants:
+        // their enum names the fix, #1087.)
+        let variants_enum = |t: &Type| match t {
+            Type::Class(v, _) => self.world.class(*v).variant_of,
+            _ => None,
+        };
+        let enum_of = match t {
+            Type::Union(ms) => ms
+                .iter()
+                .map(variants_enum)
+                .reduce(|a, b| if a == b { a } else { None })
+                .flatten(),
+            t => variants_enum(t),
+        };
+        let t = match enum_of {
+            Some(e) => Type::class(e),
+            None => t.clone(),
+        };
+        let (_, found) = self.symbol_variants_for(name, &t)?;
         match found.as_slice() {
             [(v, _)] => Some((name.clone(), self.world.class(*v).name.clone())),
             _ => None,

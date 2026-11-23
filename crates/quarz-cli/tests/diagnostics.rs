@@ -4480,8 +4480,9 @@ fn case_eq_rules() {
             "{src:?}: {out:#?}"
         );
     }
-    // An extension's `===` not active where the `when` is: nothing.
-    let quiet = "class A\nend\nmodule M\n  extension A\n    def ===(o: Object) -> Bool = true\n  end\nend\ncase 1\nwhen A.new then 1\nend\n";
+    // An extension's `===` not active where the `when` is: nothing. (The
+    // subject an `A`, which the pattern may equal: #1087.)
+    let quiet = "class A\nend\nmodule M\n  extension A\n    def ===(o: Object) -> Bool = true\n  end\nend\ncase A.new\nwhen A.new then 1\nend\n";
     assert!(
         common::diagnostics(quiet)
             .iter()

@@ -1586,6 +1586,180 @@ impl World {
         })
     }
 
+    /// Whether a value of `a` and a value of `b` may be equal by the
+    /// built-in `==` (`Value::eq` at run time, a native `==`): false means
+    /// never (#1087, decided there with the cases below, derived from
+    /// `Value::eq`). Symmetric. Types are taken as resolved (an inference
+    /// variable left is unknown: true).
+    ///
+    /// True wherever it cannot tell: a top, a type parameter, an
+    /// inference variable, `Nothing` (error recovery), a module (some
+    /// class may include it), a procedure, a class whose `==` is its own
+    /// (written in Quarz or an extension's, on either side: it decides).
+    /// Otherwise:
+    /// - numbers (`Int`, `Float`, `Integer`) are one class (#888);
+    /// - a union, if some member of each may;
+    /// - two tuples, of one length, element by element; a tuple and an
+    ///   `Array[T]` (a tuple is an array at run time), if every element
+    ///   may equal `T` (an empty tuple always);
+    /// - two classes, if one is the other or inherits from it (single
+    ///   inheritance: two unrelated classes have no common instance),
+    ///   and then, for the same structural class (`data`, a variant), its
+    ///   fields pairwise after substitution, and for two `Range`s their
+    ///   bounds' types; `Array`, `Hash` and `Set` by their classes alone
+    ///   (two empty ones are equal whatever their element types);
+    /// - two class values, if their classes overlap, whatever the type
+    ///   arguments (`Array[Int]` and `Array[String]` are one class
+    ///   value); a class value and an instance, only an instance typed
+    ///   `Type` (or a top).
+    ///
+    /// The approximation is toward true only: it never answers false for
+    /// two values `==` can find equal, so a refusal it makes is never of
+    /// a test that can be true. Not made exact (a module, a procedure):
+    /// none is planned, since true only misses a refusal.
+    pub fn may_equal(&self, a: &Type, b: &Type) -> bool {
+        self.may_equal_at(a, b, 0)
+    }
+
+    fn may_equal_at(&self, a: &Type, b: &Type, depth: usize) -> bool {
+        // (A recursive type, a `data` holding itself: unknown past here.)
+        if depth > 16 {
+            return true;
+        }
+        let nil = Type::Class(self.builtin.nil, Vec::new());
+        let norm = |t: &Type| match t {
+            Type::Void => nil.clone(),
+            t => t.clone(),
+        };
+        let (a, b) = (norm(a), norm(b));
+        // Every variant of `Type`, each side:
+        // - `Nothing`, `Param`, `Var`, `Proc`: unknown, true;
+        // - `Void`: as `Nil` (above);
+        // - `Union`: some member of each;
+        // - a class value, in any of its forms (`ClassObject`, `TypeOf`,
+        //   an instance of `Type` or a subclass, `Meta::ClassDef`):
+        //   `class_value`;
+        // - `Tuple`: an array;
+        // - `Class`: an instance.
+        let unknown = |t: &Type| {
+            matches!(
+                t,
+                Type::Nothing | Type::Param(_) | Type::Var(_) | Type::Proc(..)
+            ) || matches!(t, Type::Class(c, _) if *c == self.builtin.object
+                || self.class(*c).kind == ClassKind::Module
+                || self.own_eq(t))
+        };
+        if unknown(&a) || unknown(&b) {
+            return true;
+        }
+        let deeper = |x: &Type, y: &Type| self.may_equal_at(x, y, depth + 1);
+        if let Type::Union(ms) = &a {
+            return ms.iter().any(|m| deeper(m, &b));
+        }
+        if let Type::Union(ms) = &b {
+            return ms.iter().any(|m| deeper(&a, m));
+        }
+        // Class values: equal only as one class (`Value::Class`), whatever
+        // the type arguments. Two whose classes are both known overlap if
+        // one inherits from the other (a `Type[A]` holds `A` or a subclass
+        // of it); one of an unknown class (`Type[T]`, `Type[Object]`'s
+        // `Object` overlaps all) may be any.
+        match (self.class_value(&a), self.class_value(&b)) {
+            (Some(x), Some(y)) => {
+                return match (x, y) {
+                    (Some(c), Some(d)) => self.class_is_a(c, d) || self.class_is_a(d, c),
+                    _ => true,
+                };
+            }
+            // A class value and an instance of no class value's class (a
+            // `Type`'s ancestors are tops or modules, taken above): never.
+            (Some(_), None) | (None, Some(_)) => return false,
+            (None, None) => {}
+        }
+        let array = self.builtin.array;
+        match (&a, &b) {
+            (Type::Tuple(xs), Type::Tuple(ys)) => {
+                xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| deeper(x, y))
+            }
+            // A tuple is an array at run time.
+            (Type::Tuple(xs), Type::Class(c, args)) | (Type::Class(c, args), Type::Tuple(xs)) => {
+                if *c == array {
+                    let elem = args.first().cloned().unwrap_or(Type::Nothing);
+                    xs.iter().all(|x| deeper(x, &elem))
+                } else {
+                    // (An ancestor of `Array` that is a class: may.)
+                    self.class_is_a(array, *c)
+                }
+            }
+            (Type::Class(c, xs), Type::Class(d, ys)) => {
+                let numeric = |k: ClassId| {
+                    [self.builtin.int, self.builtin.float, self.builtin.integer].contains(&k)
+                };
+                if numeric(*c) && numeric(*d) {
+                    return true;
+                }
+                if !(self.class_is_a(*c, *d) || self.class_is_a(*d, *c)) {
+                    return false;
+                }
+                if *c == self.builtin.range && *d == self.builtin.range {
+                    return match (xs.first(), ys.first()) {
+                        (Some(x), Some(y)) => deeper(x, y),
+                        _ => true,
+                    };
+                }
+                let structural =
+                    |k: ClassId| matches!(self.class(k).kind, ClassKind::Data | ClassKind::Variant);
+                if c == d && structural(*c) {
+                    let info = self.class(*c);
+                    if info.type_params.len() != xs.len() || xs.len() != ys.len() {
+                        return true;
+                    }
+                    let (sx, sy) = (self.class_subst(*c, xs), self.class_subst(*c, ys));
+                    return info
+                        .fields
+                        .iter()
+                        .all(|f| deeper(&f.ty.subst(&sx), &f.ty.subst(&sy)));
+                }
+                true
+            }
+            // Every other pair has been taken: unknowns, unions and class
+            // values above; what is left of `Tuple` and `Class` here.
+            // (`ClassObject` and `TypeOf` are class values; `Void` is `Nil`.)
+            _ => true,
+        }
+    }
+
+    /// For a type whose values are class values: `Some(Some(c))` when
+    /// they are `c`'s or a subclass's, `Some(None)` when the class is not
+    /// known (`Type[T]`, an inference variable's); `None` for any other
+    /// type. The forms: `ClassObject` (a class written, `Type[Point]`),
+    /// `TypeOf` (`Type[T]` of a parameter or a variable), and an instance
+    /// type of `Type` or a subclass (`Meta::ClassDef[K]`, a `static`
+    /// statement's `self`), whose first argument names the class.
+    fn class_value(&self, t: &Type) -> Option<Option<ClassId>> {
+        match t {
+            Type::ClassObject(c, _) => Some(Some(*c)),
+            Type::TypeOf(_) => Some(None),
+            Type::Class(k, args) if self.class_is_a(*k, self.builtin.class_) => {
+                Some(match args.first() {
+                    Some(Type::Class(c, _)) => Some(*c),
+                    _ => None,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `t`'s `==` is its class's own: one written in Quarz or an
+    /// extension's, not a native (a native `==` compares as `Value::eq`
+    /// does, #1087).
+    fn own_eq(&self, t: &Type) -> bool {
+        self.lookup_methods(t, "==").first().is_some_and(|(m, _)| {
+            let m = self.method(*m);
+            !m.is_native || m.extension.is_some()
+        })
+    }
+
     /// The classes `c` is, `class_is_a(c, k)` for each and only these
     /// `k`: `c`, `Object` and its ancestors (`ancestors(c, &[])`, under
     /// the extensions active now). Each once.
