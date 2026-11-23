@@ -267,6 +267,70 @@ end
     );
 }
 
+/// `CommandLine.parse(ARGV)` ends the program on a mistake, with the
+/// error, the usage and a pointer to `--help` on STDERR and the status
+/// 2, and on `--help` with the help on STDOUT and the status 0.
+#[test]
+fn command_line_parse_exits_on_a_mistake_and_on_help() {
+    let dir = std::env::temp_dir().join(format!("quarz-run-cl-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("tool.qz");
+    std::fs::write(
+        &path,
+        r#"require "command_line"
+
+class Tool < CommandLine
+  option :jobs, Int, short: "j", default: 1, help: "workers"
+end
+
+puts "jobs=#{Tool.parse(ARGV).jobs}"
+"#,
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+            .arg("run")
+            .arg(&path)
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let ok = run(&["-j3"]);
+    let mistake = run(&["--jobs=many"]);
+    let help = run(&["--help"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(ok, (Some(0), "jobs=3\n".to_string(), String::new()));
+    assert_eq!(
+        mistake,
+        (
+            Some(2),
+            String::new(),
+            "tool: option '--jobs': 'many' is not an integer\n\
+             usage: tool [options]\n\
+             Try 'tool --help' for more information.\n"
+                .to_string()
+        )
+    );
+    assert_eq!(
+        help,
+        (
+            Some(0),
+            "usage: tool [options]\n\
+             \n\
+             Options:\n  \
+             -j, --jobs=JOBS  workers (default: 1)\n  \
+             -h, --help       print this help and exit\n"
+                .to_string(),
+            String::new()
+        )
+    );
+}
+
 /// A `return` from a kept block called after its method returned has no
 /// method to leave: the program ends with an error that says so.
 #[test]

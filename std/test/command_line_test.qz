@@ -1,0 +1,330 @@
+require "command_line"
+require "test"
+
+class Wc < CommandLine
+  program "wc"
+  about "Print line, word and byte counts for each FILE."
+  flag   :lines, short: "l", help: "print the line counts"
+  flag   :words, short: "w", help: "print the word counts"
+  flag   :color, default: true, help: "colour the totals"
+  option :jobs, Int, short: "j", default: 1, arg: "N", help: "files counted at once"
+  option :ratio, Float, default: 0.5, help: "a fraction"
+  option :cache, Bool, default: true, help: "keep a cache"
+  option :files_from, String, default: nil, arg: "PATH", help: "read the file names from PATH"
+  option :out, String, short: "o", arg: "PATH", help: "where to write"
+  option :parallel, Int, short: "p", default: 1, bare: 4, arg: "N", help: "count in N tasks"
+  list   :exclude, String, short: "x", arg: "GLOB", help: "skip files matching GLOB"
+  rest   :files, arg: "FILE"
+end
+
+# No statements: no options, no operands.
+class Bare < CommandLine
+end
+
+class Ports < CommandLine
+  list :port, Int, min: 2, help: "a port"
+  rest :hosts, min: 1, max: 2, arg: "HOST", help: "where to connect"
+end
+
+class Numbers < CommandLine
+  rest :values, Float, min: 2, arg: "X"
+end
+
+class Copy < CommandLine
+  option :from, String
+  option :to, String
+
+  def validate -> Void
+    error("--from and --to are the same file") if from == to
+  end
+end
+
+class Serve < CommandLine
+  about "Run the development server.\nIt reloads the site on a change."
+  option :port, Int, short: "p", default: 8080, help: "port to listen on"
+  flag :watch, help: "rebuild when a file changes"
+end
+
+class Build < CommandLine
+  about "Build the site into DIR."
+  option :out, String, short: "o", arg: "DIR", help: "where to write"
+end
+
+class Remote < CommandLine
+  command :add, Build, help: "add a remote"
+  command :show, Serve
+end
+
+class Site < CommandLine
+  program "site"
+  flag :verbose, short: "v", help: "print more"
+  command :serve, Serve
+  command :build, Build
+  command :remote, Remote
+end
+
+# A class named in kebab case for its usage line, with a banner.
+class WordCount < CommandLine
+  banner "usage: wc2 [-l] FILE..."
+  flag :lines, short: "l"
+end
+
+class CommandLineTest < Test::Case
+  def wc(argv: Array[String]) -> Wc = Wc.parse(["-o", "out"] + argv, exit: false)
+
+  def error_of(&: () -> Void) -> String
+    e = assert_raise(CommandLine::Error) { yield }
+    e.message
+  end
+
+  def test_defaults
+    w = wc([])
+    assert_equal(false, w.lines)
+    assert_equal(true, w.color)
+    assert_equal(1, w.jobs)
+    assert_equal(0.5, w.ratio)
+    assert_equal(true, w.cache)
+    assert_nil(w.files_from)
+    assert_equal("out", w.out)
+    assert_equal(1, w.parallel)
+    assert(w.exclude.empty?)
+    assert(w.files.empty?)
+  end
+
+  def test_long_forms
+    w = wc(["--lines", "--jobs=4", "--files-from", "list.txt", "--ratio=2.5e-1", "--cache=false"])
+    assert(w.lines)
+    assert_equal(4, w.jobs)
+    assert_equal("list.txt", w.files_from)
+    assert_equal(0.25, w.ratio)
+    assert_equal(false, w.cache)
+  end
+
+  def test_short_forms_and_groups
+    assert_equal(4, wc(["-j4"]).jobs)
+    assert_equal(5, wc(["-j", "5"]).jobs)
+    w = wc(["-lwj6"])
+    assert(w.lines)
+    assert(w.words)
+    assert_equal(6, w.jobs)
+    assert_equal("x", Wc.parse(["-lox"], exit: false).out)
+  end
+
+  def test_a_required_value_takes_an_argument_starting_with_a_dash
+    assert_equal(-3, wc(["--jobs", "-3"]).jobs)
+    assert_equal("-l", wc(["--files-from", "-l"]).files_from)
+    assert_equal(-2, wc(["-j", "-2"]).jobs)
+  end
+
+  def test_the_last_value_counts_and_lists_keep_all
+    assert_equal(3, wc(["-j1", "--jobs=3"]).jobs)
+    assert_equal(["*.log", "*.tmp"], wc(["-x", "*.log", "--exclude=*.tmp"]).exclude)
+    assert_equal(["a,b"], wc(["-x", "a,b"]).exclude)
+  end
+
+  def test_no_negates_a_flag
+    assert_equal(false, wc(["--no-color"]).color)
+    assert_equal(true, wc(["--no-color", "--color"]).color)
+    assert_equal(false, wc(["--lines", "--no-lines"]).lines)
+  end
+
+  def test_an_optional_value
+    assert_equal(4, wc(["--parallel"]).parallel)
+    assert_equal(8, wc(["--parallel=8"]).parallel)
+    assert_equal(8, wc(["-p8"]).parallel)
+    assert_equal(4, wc(["-p"]).parallel)
+    w = wc(["--parallel", "8"])
+    assert_equal(4, w.parallel)
+    assert_equal(["8"], w.files)
+  end
+
+  def test_operands_mix_with_options_up_to_the_double_dash
+    w = wc(["a", "-l", "b", "--", "-w", "-", "--jobs=2"])
+    assert(w.lines)
+    assert_equal(false, w.words)
+    assert_equal(1, w.jobs)
+    assert_equal(["a", "b", "-w", "-", "--jobs=2"], w.files)
+    assert_equal(["-"], wc(["-"]).files)
+  end
+
+  def test_unknown_options
+    assert_equal("unknown option '--bogus'", error_of { wc(["--bogus"]); nil })
+    assert_equal("unknown option '-q'", error_of { wc(["-lq"]); nil })
+    assert_equal("unknown option '--verb'", error_of { wc(["--verb"]); nil })
+    assert_equal("unknown option '--no-jobs'", error_of { wc(["--no-jobs"]); nil })
+  end
+
+  def test_values_missing_or_not_taken
+    assert_equal("option '--jobs' needs a value", error_of { wc(["--jobs"]); nil })
+    assert_equal("option '-j' needs a value", error_of { wc(["-lj"]); nil })
+    assert_equal("option '--lines' takes no value", error_of { wc(["--lines=1"]); nil })
+    assert_equal("option '--no-color' takes no value", error_of { wc(["--no-color=x"]); nil })
+  end
+
+  def test_bad_values
+    assert_equal("option '--jobs': 'many' is not an integer", error_of { wc(["--jobs=many"]); nil })
+    assert_equal("option '-j': '' is not an integer", error_of { wc(["-j", ""]); nil })
+    assert_equal("option '--jobs': '99999999999999999999' is out of range", error_of { wc(["--jobs=99999999999999999999"]); nil })
+    assert_equal(9223372036854775807, wc(["--jobs=9223372036854775807"]).jobs)
+    assert_equal("option '--jobs': '9223372036854775808' is out of range", error_of { wc(["--jobs=9223372036854775808"]); nil })
+    assert_equal(-9223372036854775807 - 1, wc(["--jobs=-9223372036854775808"]).jobs)
+    assert_equal(7, wc(["--jobs=+007"]).jobs)
+    assert_equal("option '--ratio': 'x' is not a number", error_of { wc(["--ratio=x"]); nil })
+    assert_equal("option '--cache': 'yes' is not true or false", error_of { wc(["--cache=yes"]); nil })
+  end
+
+  def test_a_required_option
+    assert_equal("missing option '--out'", error_of { Wc.parse([], exit: false); nil })
+  end
+
+  def test_operands_counted
+    p = Ports.parse(["--port=1", "--port", "2", "h"], exit: false)
+    assert_equal([1, 2], p.port)
+    assert_equal(["h"], p.hosts)
+    assert_equal("option '--port' needs at least 2 values", error_of { Ports.parse(["--port=1", "h"], exit: false); nil })
+    assert_equal("missing option '--port'", error_of { Ports.parse(["h"], exit: false); nil })
+    assert_equal("missing HOST", error_of { Ports.parse(["--port=1", "--port=2"], exit: false); nil })
+    assert_equal("unexpected argument 'c'", error_of { Ports.parse(["--port=1", "--port=2", "a", "b", "c"], exit: false); nil })
+    assert_equal("needs at least 2 X arguments", error_of { Numbers.parse(["1"], exit: false); nil })
+    assert_equal([1.0, 2.5], Numbers.parse(["1", "2.5"], exit: false).values)
+    assert_equal("option 'X': 'a' is not a number", error_of { Numbers.parse(["1", "a"], exit: false); nil })
+    assert_equal("unexpected argument 'x'", error_of { Bare.parse(["x"], exit: false); nil })
+  end
+
+  def test_a_class_without_statements
+    b = Bare.parse([], exit: false)
+    assert_nil(b.command)
+    assert_nil(b.command_name)
+    assert_equal("usage: bare [options]\n\nOptions:\n  -h, --help  print this help and exit\n",
+                 assert_raise(CommandLine::Help) { Bare.parse(["-h"], exit: false); nil }.message)
+  end
+
+  def test_validate
+    assert_equal("a", Copy.parse(["--from=a", "--to=b"], exit: false).from)
+    e = assert_raise(CommandLine::Error) { Copy.parse(["--from=a", "--to=a"], exit: false); nil }
+    assert_equal("--from and --to are the same file", e.message)
+    assert_equal("copy", e.as(CommandLine::Error).program)
+    assert_equal("usage: copy [options] --from=FROM --to=TO\n", e.as(CommandLine::Error).usage)
+  end
+
+  def test_help
+    expected = <<-TEXT
+usage: wc [options] --out=PATH [FILE...]
+
+Print line, word and byte counts for each FILE.
+
+Options:
+  -l, --lines            print the line counts
+  -w, --words            print the word counts
+      --[no-]color       colour the totals (default: on)
+  -j, --jobs=N           files counted at once (default: 1)
+      --ratio=RATIO      a fraction (default: 0.5)
+      --cache=CACHE      keep a cache (default: true)
+      --files-from=PATH  read the file names from PATH
+  -o, --out=PATH         where to write (required)
+  -p, --parallel[=N]     count in N tasks; N is 4 when omitted (default: 1)
+  -x, --exclude=GLOB     skip files matching GLOB (may repeat)
+  -h, --help             print this help and exit
+TEXT
+    assert_equal(expected, assert_raise(CommandLine::Help) { Wc.parse(["--help"], exit: false); nil }.message)
+    # Before a mistake, wherever it is.
+    assert_equal(expected, assert_raise(CommandLine::Help) { Wc.parse(["-lh"], exit: false); nil }.message)
+    assert_equal(expected, assert_raise(CommandLine::Help) { Wc.parse(["--jobs=x", "-h"], exit: false); nil }.message)
+    assert_equal(expected, assert_raise(CommandLine::Help) { Wc.parse(["--bogus", "--help"], exit: false); nil }.message)
+    # After `--` it is an operand.
+    assert_equal(["--help"], wc(["--", "--help"]).files)
+  end
+
+  def test_help_with_operands_and_lists
+    expected = <<-TEXT
+usage: ports [options] --port=PORT HOST...
+
+Options:
+      --port=PORT  a port (may repeat, at least 2)
+  -h, --help       print this help and exit
+
+Arguments:
+  HOST  where to connect
+TEXT
+    assert_equal(expected, assert_raise(CommandLine::Help) { Ports.parse(["-h"], exit: false); nil }.message)
+  end
+
+  def test_banner_and_kebab_case_names
+    expected = "usage: wc2 [-l] FILE...\n\nOptions:\n  -l, --lines\n  -h, --help   print this help and exit\n"
+    assert_equal(expected, assert_raise(CommandLine::Help) { WordCount.parse(["-h"], exit: false); nil }.message)
+    e = assert_raise(CommandLine::Error) { WordCount.parse(["-x"], exit: false); nil }
+    assert_equal("word-count", e.as(CommandLine::Error).program)
+  end
+
+  def test_subcommands
+    s = Site.parse(["-v", "serve", "-p", "3000", "--watch"], exit: false)
+    assert(s.verbose)
+    assert_equal(:serve, s.command_name)
+    serve = s.command
+    assert(serve.is_a?(Serve))
+    if serve.is_a?(Serve)
+      assert_equal(3000, serve.port)
+      assert(serve.watch)
+    end
+    b = Site.parse(["build", "-o", "dist"], exit: false).command
+    assert_equal("dist", b.is_a?(Build) ? b.out : "")
+    # The parent's options come before the command's name.
+    assert_equal("unknown option '-v'", error_of { Site.parse(["build", "-o", "d", "-v"], exit: false); nil })
+  end
+
+  def test_subcommands_two_deep
+    s = Site.parse(["remote", "add", "-o", "x"], exit: false)
+    assert_equal(:remote, s.command_name)
+    r = s.command
+    assert_equal(:add, r.nil? ? nil : r.command_name)
+    e = assert_raise(CommandLine::Error) { Site.parse(["remote", "add"], exit: false); nil }
+    assert_equal("missing option '--out'", e.message)
+    assert_equal("site remote add", e.as(CommandLine::Error).program)
+    assert_equal("usage: site remote add [options] --out=DIR\n", e.as(CommandLine::Error).usage)
+  end
+
+  def test_subcommand_errors
+    assert_equal("missing command (one of serve, build, remote)", error_of { Site.parse(["-v"], exit: false); nil })
+    assert_equal("unknown command 'deploy' (one of serve, build, remote)", error_of { Site.parse(["deploy"], exit: false); nil })
+  end
+
+  def test_subcommand_help
+    expected = <<-TEXT
+usage: site [options] COMMAND [ARGS...]
+
+Options:
+  -v, --verbose  print more
+  -h, --help     print this help and exit
+
+Commands:
+  serve   Run the development server.
+  build   Build the site into DIR.
+  remote
+
+Run 'site COMMAND --help' for a command's options.
+TEXT
+    assert_equal(expected, assert_raise(CommandLine::Help) { Site.parse(["--help"], exit: false); nil }.message)
+    serve = <<-TEXT
+usage: site serve [options]
+
+Run the development server.
+It reloads the site on a change.
+
+Options:
+  -p, --port=PORT  port to listen on (default: 8080)
+      --watch      rebuild when a file changes
+  -h, --help       print this help and exit
+TEXT
+    assert_equal(serve, assert_raise(CommandLine::Help) { Site.parse(["serve", "--help"], exit: false); nil }.message)
+  end
+
+  # The default `parse` ends the program with `exit`, which raises
+  # `SystemExit` (the error and the usage go to STDERR first): in a test
+  # `assert_raise` catches it. Not caught, it ends the run there with the
+  # status 2, as any `exit` in a test does, without the report. What it
+  # prints and the help's exit are tested in tests/run.rs.
+  def test_the_default_parse_exits
+    e = assert_raise(SystemExit) { Bare.parse(["--bogus"]); nil }
+    assert_equal(2, e.as(SystemExit).status)
+  end
+end

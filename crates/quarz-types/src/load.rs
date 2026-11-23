@@ -34,6 +34,7 @@ pub const STD_MODULES: &[(&str, &str)] = &[
     ("http", include_str!("../../../std/http.qz")),
     ("logger", include_str!("../../../std/logger.qz")),
     ("decimal", include_str!("../../../std/decimal.qz")),
+    ("command_line", include_str!("../../../std/command_line.qz")),
     ("test", include_str!("../../../std/test.qz")),
 ];
 

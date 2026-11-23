@@ -432,6 +432,107 @@ fn decimal_mixes_with_no_float_and_orders_only_decimals() {
     assert!(!err.contains("mix.qz:5:"), "{err}");
 }
 
+/// `CommandLine`'s declarations (std/command_line.qz, #1089) refuse at
+/// the statement a name, long name or short name taken, the help's own
+/// names, a short name that is not one character, a type that is not a
+/// value type, a second `rest` or `program`, `rest` beside `command`, a
+/// `min:` above `max:`; and at the `class` line a class below a command
+/// class that declares options of its own (one that declares none is
+/// accepted).
+#[test]
+fn command_line_declarations_are_checked_at_compile_time() {
+    let dir = std::env::temp_dir().join(format!("quarz-command-line-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("bad.qz"),
+        r#"require "command_line"
+
+class Twice < CommandLine
+  flag :verbose
+  option :verbose, Int, default: 1
+end
+
+class Shorts < CommandLine
+  flag :all, short: "a"
+  flag :any, short: "a"
+end
+
+class Helps < CommandLine
+  flag :help
+end
+
+class H < CommandLine
+  flag :hidden, short: "h"
+end
+
+class LongShort < CommandLine
+  flag :all, short: "ab"
+end
+
+class NotValue < CommandLine
+  option :when, Time, default: nil
+end
+
+class TwoRests < CommandLine
+  rest :a
+  rest :b
+end
+
+class RestAndCommand < CommandLine
+  command :x, H
+  rest :a
+end
+
+class Parent < CommandLine
+  flag :verbose
+end
+
+class Child < Parent
+  flag :quiet
+end
+
+class Quiet < Parent
+end
+
+class Ranges < CommandLine
+  rest :a, min: 3, max: 2
+end
+
+class Programs < CommandLine
+  program "a"
+  program "b"
+end
+"#,
+    )
+    .unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .args(["check", "bad.qz"])
+        .current_dir(&dir)
+        .env("QUARZ_NO_CACHE", "1")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    let expected = [
+        "bad.qz:5:3: error: `option` raised ArgumentError: CommandLine: `verbose` is declared twice",
+        "bad.qz:10:3: error: `flag` raised ArgumentError: CommandLine: `-a` is declared twice",
+        "bad.qz:14:3: error: `flag` raised ArgumentError: CommandLine: `--help` is the help's own",
+        "bad.qz:18:3: error: `flag` raised ArgumentError: CommandLine: `-h` is the help's own",
+        "bad.qz:22:3: error: `flag` raised ArgumentError: CommandLine: the short name of `all` must be one letter or digit, not \"ab\"",
+        "bad.qz:26:3: error: `option` raised ArgumentError: CommandLine: `Time` is not a value type (String, Int, Float, Bool)",
+        "bad.qz:31:3: error: `rest` raised ArgumentError: CommandLine: `rest` is declared twice",
+        "bad.qz:36:3: error: `rest` raised ArgumentError: CommandLine: a class with commands takes no `rest`",
+        "bad.qz:43:1: error: `CommandLine.inherited`, run for `Child`, raised ArgumentError: CommandLine: options are declared on a direct subclass of CommandLine (`Child` is below one that declares them)",
+        "bad.qz:51:3: error: `rest` raised ArgumentError: CommandLine: `min:` of `a` is above its `max:`",
+        "bad.qz:56:3: error: `program` raised ArgumentError: CommandLine: `program` is given twice",
+    ];
+    for e in expected {
+        assert!(err.contains(e), "{e}\n{err}");
+    }
+    assert_eq!(err.matches(": error: ").count(), expected.len(), "{err}");
+}
+
 /// An extension's include brings the module's class methods (#504): an
 /// abstract one is required of the target class, implemented by the
 /// extension's own `def self.` or the class's, else an error at the
