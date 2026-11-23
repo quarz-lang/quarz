@@ -40,7 +40,7 @@ def gen(seed):
     w("class C < A")
     if r.random() < 0.3:
         w("  include N")
-    w("  def initialize; super(); end")
+    w("  def initialize; super; end")
     for q in reqs:
         if r.random() < 0.3:
             w(impl("cc", q))
