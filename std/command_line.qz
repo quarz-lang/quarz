@@ -163,6 +163,17 @@
 # and errors say `site serve`. Options shared by the commands are the
 # parent's, given before the command's name; a class below a command
 # class cannot declare options of its own.
+#
+# ## Cost
+#
+# The declarations run while the program is compiled, so `quarz run` and
+# `quarz check` pay them each time they compile it, and a program built
+# with `quarz build` pays them once, when it is built (its `parse` is
+# ordinary code over the baked declarations). Measured on a release
+# build of `quarz`: the first command class with one statement adds
+# about 20 ms (50M instructions) to checking the program, and each
+# further statement about 2.5 ms (7M to 10M instructions); a class of
+# 19 options adds about 70 ms (quarz-lang/quarz#1098).
 class CommandLine
   # A mistake on the command line: an unknown option, a missing or bad
   # value, a missing operand or command, or what [CommandLine#validate]
