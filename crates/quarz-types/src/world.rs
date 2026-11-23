@@ -6197,10 +6197,15 @@ impl World {
                             }
                             continue;
                         }
+                        // (Its class methods only: `Type[T]`'s own, which a
+                        // class object's lookup ends with, are `T`'s below,
+                        // `cast` giving a `T`, not the bound, #1091.)
                         for found in
                             self.lookup_methods(&Type::ClassObject(*bid, bargs.clone()), name)
                         {
-                            if !out.iter().any(|(m, _)| *m == found.0) {
+                            if self.method(found.0).singleton
+                                && !out.iter().any(|(m, _)| *m == found.0)
+                            {
                                 out.push(found);
                             }
                         }
