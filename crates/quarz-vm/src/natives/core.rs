@@ -13,6 +13,23 @@ use super::{int, string};
 pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Object#==", obj_eq);
     native!(m, "Object#!=", obj_ne);
+    // `===` (docs/01 §11, #1075): `case/when`'s test, the arms of
+    // `Interp::case_eq` (the one function), `==` for any other value.
+    native!(m, "Object#===", |i, r, a| Ok(Value::Bool(
+        i.values_equal(r, a.arg(0))?
+    )));
+    native!(m, "Type#===", |i, r, a| match r {
+        Value::Class(cid) => Ok(Value::Bool(i.case_eq_class(*cid, a.arg(0)))),
+        _ => Err(i.err_type("Type#=== on a value that is no class")),
+    });
+    native!(m, "Range#===", |i, r, a| match r {
+        Value::Range(range) => Ok(Value::Bool(i.range_covers(range, a.arg(0))?)),
+        _ => Err(i.err_type("Range#=== on a value that is no range")),
+    });
+    native!(m, "Regexp#===", |i, r, a| match r {
+        Value::Regexp(re) => Ok(Value::Bool(i.case_eq_regexp(re, a.arg(0))?)),
+        _ => Err(i.err_type("Regexp#=== on a value that is no regexp")),
+    });
     native!(m, "Object#equal?", obj_equal);
     native!(m, "Object#hash", obj_hash);
     native!(m, "Object#to_s", obj_to_s);

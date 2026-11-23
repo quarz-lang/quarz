@@ -295,6 +295,11 @@ pub struct Output {
     /// What each `...` forwards, by its node (`Arg::Forward`'s; a bare
     /// `super`'s own, which means `super(...)`).
     pub forwards: FxHashMap<NodeId, Forwarded>,
+    /// The `when` values and value patterns of `case/in` whose static
+    /// type is a procedure type: their test is the call `p.call(subject)`
+    /// (`Checker::proc_pattern`, #1085), lowered as that call rather than
+    /// `Inst::CaseEq`.
+    pub proc_patterns: rustc_hash::FxHashSet<NodeId>,
     /// Exception classes of each `rescue` clause, keyed by its span.
     pub rescue_classes: FxHashMap<Span, Vec<ClassId>>,
     /// Integer literals typed as `Float` because of their context.
@@ -754,6 +759,9 @@ enum TableUndo {
     /// A call's `Output::receiver_blocks` membership before a check
     /// changed it.
     ReceiverBlock(NodeId, bool),
+    /// A pattern's `Output::proc_patterns` membership before a check
+    /// changed it (#1085).
+    ProcPattern(NodeId, bool),
     /// `Checker::logical_seen` of a node before a check changed it.
     Logical(NodeId, Option<LogicalSeen>),
     /// `Output::logical_calls` of a node before a check changed it.
@@ -3050,6 +3058,13 @@ impl Checker {
                         self.out.receiver_blocks.insert(id);
                     } else {
                         self.out.receiver_blocks.remove(&id);
+                    }
+                }
+                TableUndo::ProcPattern(id, was) => {
+                    if was {
+                        self.out.proc_patterns.insert(id);
+                    } else {
+                        self.out.proc_patterns.remove(&id);
                     }
                 }
                 TableUndo::SymbolVariant(id, before) => match before {
@@ -9208,6 +9223,183 @@ impl Checker {
         self.join(&tt, &et)
     }
 
+    /// `when p` (or a value pattern `in p`) runs `p === subject` by the
+    /// pattern's class, at run time (`Interp::case_eq`, docs/01 §11): an
+    /// extension's `===`, chosen statically where it is active, is never
+    /// run there, so a pattern whose type has one active is an error
+    /// rather than a `===` silently not called (#1075).
+    pub(crate) fn no_extension_case_eq(&mut self, pattern: &Type, kw: &str, span: Span) {
+        let Some((mid, _)) = self.world.lookup_methods(pattern, "===").into_iter().next() else {
+            return;
+        };
+        let Some(ext) = self.world.method(mid).extension else {
+            return;
+        };
+        let class = self.name(pattern);
+        let label = self.world.extension_label(ext);
+        let instead = if kw == "when" {
+            "test with a procedure (`when ->(v) { ... }`)"
+        } else {
+            "match with a guard (`in v if ...`)"
+        };
+        self.error(
+            format!(
+                "`{kw}` calls `===` on the pattern's class, not an extension's: `{class}`'s `===` from {label} is not used here; define it on the class, or {instead}"
+            ),
+            span,
+        );
+    }
+
+    /// A `when` value (or a value pattern of `case/in`, `kw` saying which)
+    /// whose static type is a procedure type: its test is the call
+    /// `p.call(subject)`, decided here and lowered as that call
+    /// (`Output::proc_patterns`; docs/01 §11, #1085). A type that may be
+    /// a procedure or not (a union with a procedure member) is refused:
+    /// whether `when` calls it is decided when compiling. A procedure
+    /// reaching `===` any other way (a pattern typed `Object`, a type
+    /// parameter) is compared with `==`, never called.
+    /// Every check of the pattern writes its decision, either way, and
+    /// journals it (`TableUndo::ProcPattern`): a discarded trial (an
+    /// overload tried for a block around it, `forwarding_resolves`) is
+    /// undone, and of the checks kept the last decides, as for
+    /// `Output::calls`.
+    pub(crate) fn proc_pattern(&mut self, pattern: &Expr, ty: &Type, subject: &Type, kw: &str) {
+        let called = match self.resolve(ty) {
+            p @ Type::Proc(..) => self.proc_case_eq_fits(&p, subject, kw, pattern.span),
+            _ => false,
+        };
+        let was = self.out.proc_patterns.contains(&pattern.id);
+        self.table_journal
+            .push(TableUndo::ProcPattern(pattern.id, was));
+        if called {
+            self.out.proc_patterns.insert(pattern.id);
+        } else {
+            self.out.proc_patterns.remove(&pattern.id);
+        }
+        if let Type::Union(ms) = self.resolve(ty) {
+            if let Some(p) = ms
+                .iter()
+                .map(|m| self.resolve(m))
+                .find(|m| matches!(m, Type::Proc(..)))
+            {
+                let (t, p) = (self.name(ty), self.name(&p));
+                self.error(
+                    format!(
+                        "`{kw}` decides when it compiles whether it calls its pattern: `{t}` may be the procedure `{p}` or not; give the pattern a procedure type, or a type with no procedure in it"
+                    ),
+                    pattern.span,
+                );
+            }
+        }
+    }
+
+    /// Whether `t` is a procedure type or a union with one.
+    pub(crate) fn may_be_proc(&self, t: &Type) -> bool {
+        match self.resolve(t) {
+            Type::Proc(..) => true,
+            Type::Union(ms) => ms.iter().any(|m| matches!(self.resolve(m), Type::Proc(..))),
+            _ => false,
+        }
+    }
+
+    /// Whether a value of `t` is tested by `===` of its class's own (a
+    /// class that defines `===`, not `Object`'s `==`), so that a value
+    /// pattern of it narrows nothing (#1075).
+    pub(crate) fn defines_case_eq(&self, t: &Type) -> bool {
+        self.world
+            .lookup_methods(t, "===")
+            .first()
+            .is_some_and(|(m, _)| {
+                let m = self.world.method(*m);
+                !m.is_native && m.extension.is_none()
+            })
+    }
+
+    /// Whether procedure type `p` can test `subject` as `===` (`kw` the
+    /// form, for the errors): one positional parameter the subject fits,
+    /// no keyword, no receiver, a `Bool` result (#1085). "Fits" is
+    /// `coerce`: subtyping, binding an inference variable of either side
+    /// (an unannotated lambda's parameter); it converts no value (an
+    /// `Int` literal typed `Float` is the literal's typing,
+    /// `Output::float_literals`, not a coercion; an `Int` subject is no
+    /// `Float`), so the subject is passed as it is.
+    fn proc_case_eq_fits(&mut self, p: &Type, subject: &Type, kw: &str, span: Span) -> bool {
+        let Type::Proc(recv, params, ret, _, kws) = p else {
+            return false;
+        };
+        let pname = self.name(p);
+        if recv.is_some() {
+            self.error(
+                format!("`{kw}` calls the procedure with the subject alone: `{pname}` is a block with a receiver, run with `recv.instance_exec(&block)`"),
+                span,
+            );
+            return false;
+        }
+        if !kws.is_empty() {
+            let names: Vec<String> = kws.iter().map(|k| format!("`{}:`", k.name)).collect();
+            self.error(
+                format!(
+                    "`{kw}` calls the procedure with the subject alone: `{pname}` takes the keyword{} {}",
+                    if names.len() == 1 { "" } else { "s" },
+                    names.join(", ")
+                ),
+                span,
+            );
+            return false;
+        }
+        if params.len() != 1 {
+            self.error(
+                format!(
+                    "`{kw}` calls the procedure with the subject alone: `{pname}` takes {} arguments",
+                    params.len()
+                ),
+                span,
+            );
+            return false;
+        }
+        let (param, ret) = (params[0].clone(), (**ret).clone());
+        let subject = self.resolve(subject);
+        if !self.coerce(&subject, &param) {
+            let (pt, st) = (self.name(&param), self.name(&subject));
+            // (The members the parameter does not take, for the advice.)
+            let members = match &subject {
+                Type::Union(ms) => ms.clone(),
+                t => vec![t.clone()],
+            };
+            let others: Vec<String> = members
+                .iter()
+                .filter(|m| !self.world.is_subtype(m, &param))
+                .map(|m| format!("`{}`", self.name(m)))
+                .collect();
+            let first = if kw == "===" {
+                format!("narrow the operand to `{pt}` first")
+            } else if others.len() < members.len() {
+                format!("take {} in a `{kw}` before it", others.join(" and "))
+            } else {
+                format!("give it a subject of type `{pt}`")
+            };
+            self.error(
+                format!(
+                    "`{kw}` calls the procedure with the subject: `{pname}` takes `{pt}`, not `{st}`; {first}, or give the procedure an `Object` parameter"
+                ),
+                span,
+            );
+            return false;
+        }
+        let ret = self.resolve(&ret);
+        if !self.world.is_subtype(&ret, &self.world.bool_()) {
+            let rt = self.name(&ret);
+            self.error(
+                format!(
+                    "`{kw}` calls the procedure as `===`, which gives a `Bool`: `{pname}` gives `{rt}`; return a `Bool` from it (`x != nil`, `x > 0`)"
+                ),
+                span,
+            );
+            return false;
+        }
+        true
+    }
+
     fn check_case_when(
         &mut self,
         subject: Option<&Expr>,
@@ -9236,7 +9428,13 @@ impl Checker {
                 };
                 let ct = self.check_expr(ce, None);
                 let ct = self.resolve(&ct);
+                if subject_ty.is_some() {
+                    self.no_extension_case_eq(&ct, "when", ce.span);
+                }
                 if let (Some(st), Type::ClassObject(cid, _)) = (&subject_ty, &ct) {
+                    // (Not a procedure: its record says so, should an
+                    // earlier check have seen one, `proc_pattern`.)
+                    self.proc_pattern(ce, &ct, st, "when");
                     let target = Type::class(*cid);
                     let st = st.clone();
                     self.check_testable(&st, &target, "when", ce.span);
@@ -9251,6 +9449,10 @@ impl Checker {
                     // (A type parameter's class value: a test, #598.)
                     let st2 = self.resolve(st);
                     self.check_testable_param(&st2, &ct, "when", ce.span);
+                    // (What the arms before have not taken: a procedure
+                    // after `when String` gets the rest.)
+                    let left = remaining.clone().unwrap_or(st2);
+                    self.proc_pattern(ce, &ct, &left, "when");
                     // Value comparison with `===`.
                     narrowed_to.push(self.resolve(st));
                 }
@@ -11453,13 +11655,29 @@ impl Checker {
                 self.check_args_blindly(call);
                 Type::Nothing
             }
-            Type::Proc(Some(_), ..) if name == "call" || name == "[]" => {
+            Type::Proc(Some(_), ..) if name == "call" || name == "[]" || name == "===" => {
                 self.error(
                     "a block with a receiver is run with `recv.instance_exec(&block)`",
                     expr.span,
                 );
                 self.check_args_blindly(call);
                 Type::Nothing
+            }
+            // `p === x` is `p.call(x)` too, a `Bool` (#1085: the test a
+            // procedure pattern runs, `proc_pattern`).
+            Type::Proc(None, params, ret, _, kws) if name == "===" => {
+                let (params, kws, ret) = (params.clone(), kws.clone(), (**ret).clone());
+                if let ([Arg::Positional(x)], None) = (call.args.as_slice(), &call.block) {
+                    let xt = self.check_expr(x, None);
+                    let p = Type::Proc(None, params, Box::new(ret), false, kws);
+                    if self.proc_case_eq_fits(&p, &xt, "===", expr.span) {
+                        self.out.calls.insert(expr.id, CallTarget::ProcCall);
+                    }
+                } else {
+                    self.error("`===` takes one argument", expr.span);
+                    self.check_args_blindly(call);
+                }
+                self.world.bool_()
             }
             // `f.call(x)`, `f.(x)` and `f[x]` all call the procedure.
             Type::Proc(None, params, ret, _, kws) if name == "call" || name == "[]" => {

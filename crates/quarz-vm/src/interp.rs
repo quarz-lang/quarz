@@ -1003,6 +1003,12 @@ pub struct Interp {
     /// functions loaded when it was taken.
     pub(crate) image_cache: RefCell<Option<(usize, std::sync::Arc<crate::transfer::ProgramImage>)>>,
     name_cache: RefCell<FxHashMap<NameKey, FxHashMap<String, Option<MethodId>>>>,
+    /// A class's own `===` (`has_user_method`), by class, for
+    /// `case_eq`'s object arm: one map lookup a `when` instead of
+    /// `find_method`'s by name (#1075). As `name_cache`, kept for the
+    /// interpreter's life; not used in a compile-time run, whose
+    /// `refuse_generated_over` applies to each dispatch.
+    case_eq_methods: RefCell<FxHashMap<ClassId, Option<MethodId>>>,
     next_tag: Rc<Cell<u64>>,
     /// The activations in progress, innermost last (all tasks share the
     /// vector; entries are tagged with their task). Raw pointers: an
@@ -1306,6 +1312,7 @@ impl Interp {
             class_method_cache: RefCell::new(FxHashMap::default()),
             image_cache: RefCell::new(None),
             name_cache: RefCell::new(FxHashMap::default()),
+            case_eq_methods: RefCell::new(FxHashMap::default()),
             next_tag: state.next_tag,
             current_task_id: Cell::new(0),
             rescuing: RefCell::new(Vec::new()),
@@ -4009,18 +4016,60 @@ impl Interp {
         }
     }
 
-    /// `===` for `case/when`.
+    /// `pattern === v` (docs/01 §11, #1075): the one test of `when` and a
+    /// value pattern of `case/in` (`Inst::CaseEq`, on the VM and through
+    /// `qz_op_case_eq` in compiled code). A built-in pattern takes its
+    /// arm, the same function its prelude `===` native runs (`Type#===`
+    /// `case_eq_class`, `Range#===` `range_covers`, `Regexp#===`
+    /// `case_eq_regexp`), with no method looked
+    /// up: a program can change none of them. An object of a class with
+    /// its own `===` is asked; any other value is compared with `==`
+    /// (`Object#===`), a class's own `==` included, and so is a procedure:
+    /// one is called only where the pattern's static type is a procedure
+    /// type, which the lowering makes a call (`Output::proc_patterns`,
+    /// #1085), never by the value's class here.
     pub fn case_eq(&self, pattern: &Value, v: &Value) -> Result<bool, Flow> {
         match pattern {
-            Value::Class(cid) => Ok(self.program.world.class_is_a(self.class_of(v), *cid)),
+            Value::Class(cid) => Ok(self.case_eq_class(*cid, v)),
             Value::Range(r) => self.range_covers(r, v),
-            Value::Regexp(re) => Ok(match v {
-                Value::Bytes(b) => re.for_bytes().map_err(|e| self.err_arg(e))?.is_match(b),
-                _ => v.as_str().is_some_and(|s| re.regex.is_match(s.as_bytes())),
-            }),
-            Value::Proc(_) => Ok(self.call_block(pattern, smallvec![v.clone()])?.is_truthy()),
+            Value::Regexp(re) => self.case_eq_regexp(re, v),
+            Value::Object(_) => match self.own_case_eq(pattern)? {
+                Some(mid) => Ok(self
+                    .invoke(mid, pattern.clone(), smallvec![v.clone()], vec![], None)?
+                    .is_truthy()),
+                None => self.values_equal(pattern, v),
+            },
             _ => self.values_equal(pattern, v),
         }
+    }
+
+    /// The pattern's class's own `===` (`has_user_method`), cached by
+    /// class outside a compile-time run (`case_eq_methods`).
+    fn own_case_eq(&self, pattern: &Value) -> Result<Option<MethodId>, Flow> {
+        if self.generated_any.get() {
+            return self.has_user_method(pattern, "===", 1);
+        }
+        let cid = self.class_of(pattern);
+        if let Some(found) = self.case_eq_methods.borrow().get(&cid) {
+            return Ok(*found);
+        }
+        let found = self.has_user_method(pattern, "===", 1)?;
+        self.case_eq_methods.borrow_mut().insert(cid, found);
+        Ok(found)
+    }
+
+    /// `Type#===`: whether `v` is an instance of the class or a subclass.
+    pub fn case_eq_class(&self, cid: ClassId, v: &Value) -> bool {
+        self.program.world.class_is_a(self.class_of(v), cid)
+    }
+
+    /// `Regexp#===`: whether the regexp matches `v`, a string or bytes
+    /// (any other value does not match).
+    pub fn case_eq_regexp(&self, re: &RegexpVal, v: &Value) -> Result<bool, Flow> {
+        Ok(match v {
+            Value::Bytes(b) => re.for_bytes().map_err(|e| self.err_arg(e))?.is_match(b),
+            _ => v.as_str().is_some_and(|s| re.regex.is_match(s.as_bytes())),
+        })
     }
 
     pub fn range_covers(&self, r: &RangeVal, v: &Value) -> Result<bool, Flow> {

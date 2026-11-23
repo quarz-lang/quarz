@@ -6696,7 +6696,7 @@ impl<'ast> Declarer<'ast> {
         }
     }
 
-    /// `==` and `!=` take one parameter, an `Object`: the runtime calls a
+    /// `==`, `!=` and `===` take one parameter, an `Object`: the runtime calls a
     /// class's own by name with any value (`x == y` with an operand typed
     /// `Object`, `Array#==`, `case`/`when`), so one taking less would
     /// receive a value not of its type. A method of another signature is not an override
@@ -7103,6 +7103,9 @@ impl<'ast> Declarer<'ast> {
         // callers by name, which use the class's own: docs/01 §3, §7.)
         if !def.singleton && extension.is_none() {
             self.check_equality_params(&def.name, &params, block.is_some(), def.span);
+        }
+        if def.singleton && def.name == "===" {
+            self.error(CLASS_SIDE_CASE_EQ, def.span);
         }
         if def.name == "deinitialize" && !def.singleton {
             // Run by the runtime when an instance's last reference goes.
@@ -7571,7 +7574,7 @@ pub(crate) fn late_default_rule(params: &[ParamInfo]) -> Option<(usize, String)>
     ))
 }
 
-/// `==` and `!=` take one parameter, an `Object`: the runtime calls a
+/// `==`, `!=` and `===` take one parameter, an `Object`: the runtime calls a
 /// class's own by name with any value (`x == y` with an operand typed
 /// `Object`, `Array#==`, `case`/`when`), so one taking less would
 /// receive a value not of its type. A method of another signature is not an override
@@ -7583,7 +7586,7 @@ fn equality_params_rule(
     params: &[ParamInfo],
     block: bool,
 ) -> Option<String> {
-    if !matches!(name, "==" | "!=") {
+    if !matches!(name, "==" | "!=" | "===") {
         return None;
     }
     let one_object = match params {
@@ -7643,6 +7646,12 @@ pub fn reserved_field_name(name: &str) -> Option<String> {
     }
 }
 
+/// A class method `===` would replace `Type#===` on the class's value,
+/// the test `when` runs for a class pattern (narrowing the subject and
+/// counting for exhaustiveness, docs/01 §11, #1075): written or
+/// generated, it is refused.
+const CLASS_SIDE_CASE_EQ: &str = "`===` on the class side would replace `Type#===`, which `when` uses for class patterns: it cannot be defined";
+
 pub fn method_name_rule(
     world: &World,
     name: &str,
@@ -7674,6 +7683,8 @@ pub fn method_name_rule(
         if let Some(m) = equality_params_rule(world, name, params, block.is_some()) {
             return Some(m);
         }
+    } else if name == "===" {
+        return Some(CLASS_SIDE_CASE_EQ.to_string());
     }
     // A generated method's block parameter would be a `&block` of the
     // block: refused before, so `nparams` is the parameters' count.

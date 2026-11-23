@@ -248,6 +248,7 @@ pub(crate) fn unit_output(world: &World, out: &Output, base: u32, file: u32) -> 
         block_pass: map!(block_pass),
         block_destructure: map!(block_destructure),
         forwards: map!(forwards),
+        proc_patterns: set!(proc_patterns),
         rescue_classes: spans!(rescue_classes),
         float_literals: set!(float_literals),
         symbol_variants: map!(symbol_variants),
@@ -380,6 +381,7 @@ pub(crate) fn merge_output(out: &mut Output, o: Output) {
     out.block_pass.extend(o.block_pass);
     out.block_destructure.extend(o.block_destructure);
     out.forwards.extend(o.forwards);
+    out.proc_patterns.extend(o.proc_patterns);
     out.rescue_classes.extend(o.rescue_classes);
     out.float_literals.extend(o.float_literals);
     out.symbol_variants.extend(o.symbol_variants);

@@ -50,6 +50,18 @@ class Object
   native def ==(other: Object) -> Bool
   # The negation of [==].
   native def !=(other: Object) -> Bool
+  # Whether `other` matches the value as a `case/when` pattern (a
+  # `when` value, or a value pattern of `case/in`, is `pattern ===
+  # subject`): [==] here, a class's own [==] included. A class may
+  # define its own `===(other: Object) -> Bool` to match otherwise
+  # (docs/01 §11); `Type`, `Range` and `Regexp` have theirs. A
+  # procedure-typed pattern is called instead (`p === x` is `p.call(x)`, a
+  # `Bool`); a procedure typed otherwise is compared with [==].
+  #
+  # ```
+  # 3 === 3   # => true
+  # ```
+  native def ===(other: Object) -> Bool
   # Whether the value is the same object as `other`: identity, whatever
   # [==] says. Meaningful for instances of classes and builders: numbers,
   # `nil` and symbols are the same object when they are equal, and equal
@@ -154,6 +166,13 @@ end
 # no type arguments: `Array[Int]` and `Array[String]` are the same value.
 class Type[T]
   include Shareable
+  # Whether `other` is an instance of the class or of a subclass, as
+  # `other.is_a?(self)`: the test of `when Foo`.
+  #
+  # ```
+  # Int === 3   # => true
+  # ```
+  native def ===(other: Object) -> Bool
   # The class's full name, with its namespace (`"Task::Cancelled"`) and
   # without type arguments (`[1].class.name` is `"Array"`).
   native def name -> String
@@ -3747,6 +3766,13 @@ end
 # ```
 class Regexp
   include Shareable
+  # Whether the regexp matches `other`, a `String` or `Bytes` (any other
+  # value does not match): the test of `when /re/`.
+  #
+  # ```
+  # /a/ === "cat"   # => true
+  # ```
+  native def ===(other: Object) -> Bool
 
   # The regular expression whose pattern is [source], with [options] the
   # literal's flags (`i`, `m`, `x`): `Regexp.new("a+b", "i")` is `/a+b/i`.
@@ -5973,6 +5999,14 @@ end
 class Range[T <: Comparable[T]]
   include Shareable
   include Enumerable[T]
+  # Whether the range covers `other`, compared with its bounds (a value
+  # its bounds cannot compare with is not covered): the test of
+  # `when 1..5`.
+  #
+  # ```
+  # (1..5) === 3   # => true
+  # ```
+  native def ===(other: Object) -> Bool
 
   # Calls the block with each value in order.
   #
