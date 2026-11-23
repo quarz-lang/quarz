@@ -33,7 +33,7 @@ def gen(seed):
         w("  def m -> Int = 20")
     w("end")
     w("class C < A")
-    w("  def initialize; super; end")
+    w("  def initialize; super(); end")
     if r.random() < 0.4:
         w("  def m -> Int = 30")
     w("end")
@@ -42,7 +42,7 @@ def gen(seed):
         own = r.choice(["A", "B", "C"])
         w(f"class D < {own}")
         w("  include M")
-        w("  def initialize; super; end")
+        w("  def initialize; super(); end")
         w("end")
         classes = ["A", "B", "C", "D"]
     else:

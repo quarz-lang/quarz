@@ -315,6 +315,109 @@ end
     );
 }
 
+/// `...` in a block given to `def_method` forwards the block's
+/// parameters, which become the generated method's (docs/14 §5; #511):
+/// the variables themselves (one reassigned, one hidden in a block
+/// inside), interpreted and compiled; in a block given to
+/// `def_initialize`, `super(...)` passes them to the bound's
+/// `initialize`. With `keywords:` what the method takes is known only
+/// when the statement runs: an error; a block whose parameters
+/// `def_method` refuses has that error alone.
+#[test]
+fn forwarding_in_a_generated_method() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        r##"class Base
+  @a: Int
+  @b: Int
+  def initialize(@a: Int, @b: Int)
+  end
+  def both(x: Int, y: Int) -> Int = x * 10 + y + @a
+  def one(x: Int) -> Int = x * @b
+  static def self.gen -> Void
+    def_method(:f, params: [:x, :y]) do |x: Int, y: Int| -> Int
+      x = 100
+      both(...) + [1].map { |x| both(...) }.first.as(Int)
+    end
+    def_method(:g, param: :x) do |x: Int| -> Int
+      one(...)
+    end
+    def_initialize(params: [:p, :q]) do |p: Int, q: Int|
+      super(...)
+    end
+  end
+end
+"##,
+    );
+    write(
+        &d.0,
+        "lib2.qz",
+        r##"class Base2
+  def one(x: Int) -> Int = x
+  static def self.kw -> Void
+    def_method(:h, keywords: [Meta::Keyword.new(:k, Int, true)]) do |opts|
+      one(...)
+    end
+  end
+  static def self.rest -> Void
+    def_method(:r, param: :xs) do |*xs|
+      one(...)
+    end
+  end
+end
+"##,
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nclass B < Base\n  gen\nend\nb = B.new(1, 2)\nputs b.f(3, 4)\nputs b.g(5)\n",
+    );
+    let expected = "2010\n10\n";
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let out = std::process::Command::new(d.0.join("app.bin"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+    let app2 = write(
+        &d.0,
+        "app2.qz",
+        "require_relative \"lib2\"\nclass C < Base2\n  kw\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app2.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains("lib2.qz:5:11: error: `...` in a block given with `keywords:`: the generated method's keywords are known only when the statement runs; read them from the block's hash"),
+        "{err}"
+    );
+    // A block `def_method` refuses for its parameters (`*rest` here; a
+    // default or a destructuring one likewise): that error alone, the
+    // `...` passing nothing more to say.
+    let app3 = write(
+        &d.0,
+        "app3.qz",
+        "require_relative \"lib2\"\nclass R < Base2\n  rest\nend\n",
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app3.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(
+        err.contains(
+            "lib2.qz:9:36: error: a block given to `def_method` takes plain parameters only"
+        ),
+        "{err}"
+    );
+    assert!(!err.contains("lib2.qz:10:"), "{err}");
+}
+
 #[test]
 fn what_cannot_be_generated() {
     let d = dir();

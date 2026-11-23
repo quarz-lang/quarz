@@ -4174,6 +4174,37 @@ fn super_past_an_abstract_declaration_with_nothing_after() {
     );
 }
 
+/// #511: `...` forwards the enclosing method's arguments, written alone
+/// as a call's whole argument list; each refusal with its text: beside
+/// other arguments, without parentheses, in a parameter's default (the
+/// parameters after it have no value yet; a bare `super` too, #1078),
+/// outside a method, in `yield`,
+/// in a quoted block, and the method's block where the callee takes
+/// none or may keep an anonymous one (the forwarded block counts as
+/// given, as `&` would).
+#[test]
+fn forwarding_where_it_is_refused() {
+    let cases = [
+        ("def f(x: Int) -> Int = g(1, ...)\n", "test:1:29: error: `...` forwards the method's arguments and is written alone: `f(...)`"),
+        ("def f(x: Int) -> Int = g(..., k: 1)\n", "test:1:26: error: `...` forwards the method's arguments and is written alone: `f(...)`"),
+        ("def f(x: Int) -> Object = g ...\n", "test:1:29: error: `g ...` is not a call: write `g(...)` to forward the method's arguments (an endless range is written `g...`)"),
+        ("def h(a: Int, b: Int = 7) -> Int = a * 10 + b\ndef g(a: Int, b: Int = h(...)) -> Int = a + b\n", "test:2:26: error: `...` in a parameter's default: the parameters after it have no value yet; write the arguments"),
+        ("class P\n  def initialize(a: Int, b: Int = 0); end\nend\nclass C < P\n  def initialize(a: Int, b: Int = (super; 1)); end\nend\n", "test:5:36: error: a bare `super` in a parameter's default passes the method's arguments, and the parameters after it have no value yet; write the arguments (`super(a)`)"),
+        ("puts(...)\n", "test:1:6: error: `...` forwards the enclosing method's arguments: there is no method here"),
+        ("def f(x: Int, &: (Int) -> Void) -> Void\n  yield(...)\nend\n", "test:2:9: error: `...` forwards the method's arguments to a call: `yield` passes values to the block, write them"),
+        ("def g(x: Int) -> Int = x\ndef f(x: Int, &b: () -> Int) -> Int = g(...)\n", "test:2:39: error: g(x: Int) -> Int does not take a block"),
+        ("def g(x: Int, &b: () -> Int) -> Int = b.call\ndef f(x: Int, &: () -> Int) -> Int = g(...)\n", "test:2:40: error: the method's block (`&`) cannot be passed to `g`, which may keep it: name the block parameter (`&blk`) to keep it"),
+        ("def where(&f: Quoted[(Int) -> Bool]) -> Int = f.captures.size\ndef g(x: Int) -> Bool = x > 1\ndef f(x: Int) -> Int = where { |y| g(...) }\n", "test:3:38: error: `...` cannot be quoted: a block given as a `Quoted` holds literals, ranges, variables, `self`, calls (`&.` too), `&&`, `||`, `!`, `if` and blocks (docs/14 §6)"),
+    ];
+    for (src, expected) in cases {
+        let out = common::diagnostics(src);
+        assert!(
+            out.iter().any(|d| d.starts_with(expected)),
+            "{src:?}: {out:#?}"
+        );
+    }
+}
+
 /// #577: two active scoped extensions whose includes give the class a
 /// method of the name, neither overriding the other: the call is
 /// ambiguous, naming both extensions and modules, wherever the `using`s

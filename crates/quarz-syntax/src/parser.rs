@@ -1261,7 +1261,33 @@ impl<'src> Parser<'src> {
             return Ok(lo);
         }
         let exclusive = self.at(&T::DotDotDot);
-        self.bump();
+        let dots = self.bump();
+        // `f ...` (a call's name or `super`, a space, `...`, nothing
+        // after it): meant as `f(...)`, which is the only form that
+        // forwards. (A local variable's is the endless range it was.)
+        if exclusive && dots.space_before && !self.starts_expression() {
+            let name = match &lo.kind {
+                ExprKind::Call(c)
+                    if c.recv.is_none()
+                        && c.args.is_empty()
+                        && c.block.is_none()
+                        && !c.has_parens =>
+                {
+                    Some(c.name.as_str())
+                }
+                ExprKind::Super {
+                    args: None,
+                    block: None,
+                } => Some("super"),
+                _ => None,
+            };
+            if let Some(name) = name {
+                let msg = format!(
+                    "`{name} ...` is not a call: write `{name}(...)` to forward the method's arguments (an endless range is written `{name}...`)"
+                );
+                return Err(self.error_at(msg, dots.span));
+            }
+        }
         let hi = if self.starts_expression() {
             Some(Box::new(self.parse_binary(0)?))
         } else {
@@ -1719,6 +1745,18 @@ impl<'src> Parser<'src> {
         let saved = self.no_do;
         self.no_do = false;
         self.skip_newlines();
+        // `f(...)`: the method's arguments, forwarded (docs/01 §9); only
+        // as the whole list, a `...` before anything else starting a
+        // beginless range as elsewhere.
+        if matches!(self.after_dots(), Some(T::RParen)) {
+            let span = self.bump().span;
+            self.skip_newlines();
+            self.no_do = saved;
+            self.expect(&T::RParen, "`)`")?;
+            let id = self.next_id;
+            self.next_id += 1;
+            return Ok(vec![Arg::Forward { id, span }]);
+        }
         let args = self.parse_call_args_until(&T::RParen)?;
         self.keywords_last(&args);
         self.skip_newlines();
@@ -1764,12 +1802,38 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// At a `...`: the token after it, past newlines.
+    fn after_dots(&mut self) -> Option<T> {
+        if !self.at(&T::DotDotDot) {
+            return None;
+        }
+        let mut n = 1;
+        while matches!(self.kind_at(n), T::Newline) {
+            n += 1;
+        }
+        Some(self.kind_at(n).clone())
+    }
+
     fn parse_call_args_until(&mut self, close: &T) -> PResult<Vec<Arg>> {
         let mut args = Vec::new();
         loop {
             self.skip_newlines();
             if self.at(close) {
                 break;
+            }
+            // `f(1, ...)`, `f(..., k: 1)`: not taken (a `...` that ends an
+            // argument cannot start a range).
+            if *close == T::RParen && matches!(self.after_dots(), Some(T::RParen | T::Comma)) {
+                let span = self.bump().span;
+                self.error_at(
+                    "`...` forwards the method's arguments and is written alone: `f(...)`",
+                    span,
+                );
+                self.skip_newlines();
+                if !self.eat(&T::Comma) {
+                    break;
+                }
+                continue;
             }
             args.push(self.parse_arg()?);
             self.skip_newlines();

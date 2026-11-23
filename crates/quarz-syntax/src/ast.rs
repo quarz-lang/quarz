@@ -81,7 +81,8 @@ pub enum ExprKind {
     },
     Yield(Vec<Arg>),
     Super {
-        /// `None` for a bare `super` (forward the same arguments).
+        /// `None` for a bare `super`, which for now means `super(...)`
+        /// (forward the method's arguments, docs/01 §3).
         args: Option<Vec<Arg>>,
         block: Option<Box<Block>>,
     },
@@ -311,13 +312,20 @@ pub enum Arg {
     },
     DoubleSplat(Expr),
     BlockPass(Expr),
+    /// `f(...)`: the enclosing method's arguments, forwarded (docs/01
+    /// §9). Only ever the whole argument list. The checker records what
+    /// it stands for under `id` (`Output::forwards`).
+    Forward {
+        id: NodeId,
+        span: Span,
+    },
 }
 
 impl Arg {
     pub fn span(&self) -> Span {
         match self {
             Arg::Positional(e) | Arg::Splat(e) | Arg::DoubleSplat(e) | Arg::BlockPass(e) => e.span,
-            Arg::Keyword { span, .. } => *span,
+            Arg::Keyword { span, .. } | Arg::Forward { span, .. } => *span,
         }
     }
 }

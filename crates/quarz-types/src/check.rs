@@ -26,6 +26,42 @@ pub struct VarRef {
     pub slot: u32,
 }
 
+/// What a `...` stands for (`Output::forwards`, decided by
+/// `Checker::forwarding`, the one place): the parameters of the method it
+/// is in (in a block given to `def_method`, the block's, which become the
+/// generated method's), each read from its own variable and passed as
+/// the method takes it, and whether the method's block is passed on (the
+/// block the method was given, even after its variable is assigned).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Forwarded {
+    pub args: Vec<(VarRef, Forward)>,
+    pub block: bool,
+}
+
+/// How a forwarded parameter is passed: as the parameter's kind.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Forward {
+    Positional,
+    /// A keyword-only parameter, by its name.
+    Keyword(String),
+    /// `*rest`, splatted.
+    Rest,
+    /// `**opts`, splatted.
+    KeywordRest,
+}
+
+/// Whether a `...` passes the method's block on (`Checker::forwarding`).
+#[derive(Clone, Copy)]
+enum ForwardBlock {
+    /// No: the call has a block of its own.
+    Own,
+    /// A `super`'s: unless the block is optional (it is passed at run
+    /// time all the same).
+    Super,
+    /// Any other call's.
+    Call,
+}
+
 /// A call's record kept apart from its node's own (`calls`,
 /// `union_calls`, `union_conflicts`, `dynamic_calls`): a compound
 /// assignment's logical call (`o.c ||= v` through the value's own `||`),
@@ -259,6 +295,9 @@ pub struct Output {
     pub block_pass: FxHashMap<NodeId, BlockPass>,
     /// For block parameters that destructure a tuple: the arity.
     pub block_destructure: FxHashMap<NodeId, usize>,
+    /// What each `...` forwards, by its node (`Arg::Forward`'s; a bare
+    /// `super`'s own, which means `super(...)`).
+    pub forwards: FxHashMap<NodeId, Forwarded>,
     /// Exception classes of each `rescue` clause, keyed by its span.
     pub rescue_classes: FxHashMap<Span, Vec<ClassId>>,
     /// Integer literals typed as `Float` because of their context.
@@ -399,9 +438,19 @@ pub(crate) enum VarKey {
 
 pub(crate) type Facts = Vec<(VarKey, Type)>;
 
+/// The nodes of the variables a `...` forwards, as the call it stands in
+/// is checked with them (`Checker::forwarding`), counting down from this
+/// one: in `load::SYNTH_UNIT`'s range, which no file's syntax takes.
+const FORWARD_ID: NodeId = u32::MAX - 1;
+/// How many variables one `...` may forward: its nodes stay above
+/// `OP_VALUE_ID`'s.
+const MAX_FORWARDED: usize = 0xff00;
+const _: () = assert!(FORWARD_ID - MAX_FORWARDED as u32 > OP_VALUE_ID);
+const _: () = assert!(OP_VALUE_ID > crate::load::unit_base(crate::load::SYNTH_UNIT));
+
 /// The nodes of the arguments a compound assignment's writer is checked
 /// with (`[]=(index..., value)`), counting down from this one, outside
-/// every file's range and the zsuper locals'.
+/// every file's range and the forwarded variables'.
 const OP_VALUE_ID: NodeId = u32::MAX - 0x10000;
 
 /// The node of a call checked only to see which method it resolves to
@@ -616,6 +665,14 @@ struct Env {
     next_block_lifted: bool,
     /// ... given to `def_initialize`: an `initialize`'s body.
     next_block_init: bool,
+    /// ... given with `keywords:`: the generated method's parameters are
+    /// the keywords the statement computes, the block's one a hash.
+    next_block_keywords: bool,
+    /// While a method's parameter default is checked: the parameters
+    /// after it have no value yet when it runs, so `...` there is refused
+    /// (`Checker::forwarding`). (In the environment: a method checked on
+    /// demand from a default has its own.)
+    in_param_default: bool,
     /// ... given to a generating call on another class's `Meta::ClassDef`
     /// than the `static def`'s own `self`.
     next_block_foreign: bool,
@@ -949,6 +1006,13 @@ struct BlockCtx {
     /// A block given to `def_method`: `break` would leave the generated
     /// method's body.
     lifted: bool,
+    /// For a lifted block: how many parameters it has (the generated
+    /// method's, plain), and whether it was given with `keywords:`, so
+    /// that what the method takes is known only when the statement runs
+    /// (what `...` forwards, `Checker::forwarding`).
+    /// (`None` when they are not all plain: an error of their own.)
+    lifted_params: Option<usize>,
+    lifted_keywords: bool,
     /// A block given to `def_initialize`, the body of an `initialize`:
     /// what is outside it is not in that `initialize` (a late closure
     /// around it, `in_late_closure`).
@@ -1092,10 +1156,11 @@ pub struct Checker {
     /// active (scoped as `World::active_extensions`): a `super` in an
     /// extension's method under one of the same class is an error (#593).
     local_usings: Vec<ExtensionId>,
-    /// While a bare `super`'s call is resolved: how many variables it
-    /// forwards (the parameters, then the block), read as the method's
-    /// own (`zsuper_local`).
-    zsuper_forwards: Option<usize>,
+    /// While a call with `...` (or a bare `super`) is checked: the
+    /// variables its arguments' nodes read (`FORWARD_ID - i`'s is the
+    /// `i`th, at this depth from the frame it is checked in, and slot),
+    /// whatever hides their names there (`forwarded_local`).
+    forward_vars: Option<Vec<VarRef>>,
     /// The arguments a compound assignment's writer is checked with,
     /// already typed: `OP_VALUE_ID - i` is the `i`th's node.
     op_values: Vec<Type>,
@@ -1336,11 +1401,13 @@ impl Checker {
             static_frame: None,
             next_block_lifted: false,
             next_block_init: false,
+            next_block_keywords: false,
+            in_param_default: false,
             next_block_foreign: false,
             lifted_foreign: false,
         };
         Checker {
-            zsuper_forwards: None,
+            forward_vars: None,
             op_values: Vec::new(),
             op_seen: HashMap::default(),
             logical_seen: HashMap::default(),
@@ -3781,6 +3848,8 @@ impl Checker {
             static_frame: None,
             next_block_lifted: false,
             next_block_init: false,
+            next_block_keywords: false,
+            in_param_default: false,
             next_block_foreign: false,
             lifted_foreign: false,
         }
@@ -4153,6 +4222,7 @@ impl Checker {
             );
             if let Some(d) = &p.default {
                 let expected = p.ty.subst(&self_subst);
+                let saved = std::mem::replace(&mut self.env.in_param_default, true);
                 let t = match self.symbol_argument(d, &expected) {
                     Ok(Some(t)) => t,
                     Err(why) => {
@@ -4161,6 +4231,7 @@ impl Checker {
                     }
                     Ok(None) => self.check_expr(d, Some(&expected)),
                 };
+                self.env.in_param_default = saved;
                 if !self.coerce(&t, &expected) {
                     self.error(
                         format!(
@@ -5379,14 +5450,186 @@ impl Checker {
         }
     }
 
-    /// A variable a bare `super` forwards: the method's parameter (or
-    /// block) itself, whatever hides its name where the `super` is (a
-    /// block's parameter or `:=`, a pattern's binding), as the lowering
-    /// forwards it. Its slots are the method frame's first.
-    fn zsuper_local(&self, id: NodeId) -> Option<(usize, usize)> {
-        let count = self.zsuper_forwards?;
-        let i = (u32::MAX - 1).checked_sub(id)? as usize;
-        (i < count).then(|| (self.env.frames.len() - 1, i))
+    /// A variable a `...` forwards: the method's parameter (or block)
+    /// itself, whatever hides its name where the `...` is (a block's
+    /// parameter or `:=`, a pattern's binding), as the lowering forwards
+    /// it (`Output::forwards`).
+    fn forwarded_local(&self, id: NodeId) -> Option<(usize, usize)> {
+        let vars = self.forward_vars.as_ref()?;
+        let i = FORWARD_ID.checked_sub(id)? as usize;
+        vars.get(i).map(|r| (r.depth as usize, r.slot as usize))
+    }
+
+    /// What the `...` of node `id` at `span` stands for (docs/01 §9), the
+    /// one place that decides it: the parameters of the method it is in,
+    /// each read from its own variable (`forwarded_local`) and passed as
+    /// the method takes it (positionally, by keyword, `*rest` and
+    /// `**opts` splatted), then the method's block when `block` (a call
+    /// without a block of its own). In a block or lambda, the enclosing
+    /// method's; in a block given to `def_method`, the block's, which
+    /// become the generated method's (docs/14 §5; it takes no block). The
+    /// call is then checked as one written with these arguments; the
+    /// variables are those `forward_vars` names while it is. Recorded in
+    /// `Output::forwards` for the lowering; `None` (reported) where there
+    /// is nothing to forward.
+    fn forwarding(
+        &mut self,
+        id: NodeId,
+        span: Span,
+        block: ForwardBlock,
+        bare_super: bool,
+    ) -> Option<(Vec<Arg>, Vec<VarRef>)> {
+        // In a parameter's default, the parameters after it have no value
+        // yet (#1078): a bare `super` there forwards them too.
+        if self.env.in_param_default {
+            self.error(
+                if bare_super {
+                    "a bare `super` in a parameter's default passes the method's arguments, and the parameters after it have no value yet; write the arguments (`super(a)`)"
+                } else {
+                    "`...` in a parameter's default: the parameters after it have no value yet; write the arguments"
+                },
+                span,
+            );
+            return None;
+        }
+        let top = self.env.frames.len() - 1;
+        // (Each as `name` read at this depth and slot, passed as `kind`.)
+        let mut params: Vec<(String, VarRef, Forward)> = Vec::new();
+        let mut block_var = None;
+        if let Some(pos) = self.env.blocks.iter().rposition(|b| b.lifted) {
+            let ctx = &self.env.blocks[pos];
+            if ctx.lifted_keywords {
+                self.error(
+                    "`...` in a block given with `keywords:`: the generated method's keywords are known only when the statement runs; read them from the block's hash",
+                    span,
+                );
+                return None;
+            }
+            // (A block given `*rest`, keywords, a default or `&block` is
+            // refused by itself, docs/14 §5: nothing more to say here.)
+            let n = ctx.lifted_params?;
+            let frame = self.env.lifted_frame.unwrap_or(top);
+            for i in 0..n {
+                let name = self.env.frames[frame].vars[i].name.clone();
+                let r = VarRef {
+                    depth: (top - frame) as u32,
+                    slot: i as u32,
+                };
+                params.push((name, r, Forward::Positional));
+            }
+        } else if let Some(mid) = self.env.method {
+            let m = self.world.method(mid);
+            let depth = top as u32;
+            for (i, p) in m.params.iter().enumerate() {
+                let kind = match p.kind {
+                    ParamKind::KeywordOnly => Forward::Keyword(p.name.clone()),
+                    ParamKind::Rest => Forward::Rest,
+                    ParamKind::KeywordRest => Forward::KeywordRest,
+                    ParamKind::Positional | ParamKind::Block => Forward::Positional,
+                };
+                let r = VarRef {
+                    depth,
+                    slot: i as u32,
+                };
+                params.push((p.name.clone(), r, kind));
+            }
+            // The method's block (`&` when anonymous), unless the call
+            // has one of its own. (For `super`, an optional one is not
+            // written: the superclass may take none, and one that takes
+            // an optional block gets it at run time all the same.)
+            let pass = match block {
+                ForwardBlock::Own => false,
+                ForwardBlock::Super => !m.block_optional,
+                ForwardBlock::Call => true,
+            };
+            if let (Some((name, _)), true) = (&m.block, pass) {
+                block_var = Some((
+                    name.clone(),
+                    VarRef {
+                        depth,
+                        slot: m.params.len() as u32,
+                    },
+                ));
+            }
+        } else {
+            self.error(
+                "`...` forwards the enclosing method's arguments: there is no method here",
+                span,
+            );
+            return None;
+        }
+        if params.len() + 1 > MAX_FORWARDED {
+            self.error(
+                format!("`...` forwards at most {MAX_FORWARDED} parameters"),
+                span,
+            );
+            return None;
+        }
+        let local = |i: usize, name: &str| Expr {
+            id: FORWARD_ID - i as u32,
+            span,
+            kind: ExprKind::Local(name.to_string()),
+        };
+        let mut args = Vec::new();
+        let mut vars = Vec::new();
+        for (i, (name, r, kind)) in params.iter().enumerate() {
+            let e = local(i, name);
+            args.push(match kind {
+                Forward::Keyword(k) => Arg::Keyword {
+                    name: k.clone(),
+                    value: e,
+                    span,
+                },
+                Forward::Rest => Arg::Splat(e),
+                Forward::KeywordRest => Arg::DoubleSplat(e),
+                Forward::Positional => Arg::Positional(e),
+            });
+            vars.push(*r);
+        }
+        if let Some((name, r)) = &block_var {
+            args.push(Arg::BlockPass(local(params.len(), name)));
+            vars.push(*r);
+        }
+        self.out.forwards.insert(
+            id,
+            Forwarded {
+                args: params.into_iter().map(|(_, r, k)| (r, k)).collect(),
+                block: block_var.is_some(),
+            },
+        );
+        Some((args, vars))
+    }
+
+    /// A call whose arguments are `...` (`f(...)`, `Self.new(...)`): as
+    /// written with what it forwards (`forwarding`).
+    fn check_forwarding_call(
+        &mut self,
+        expr: &Expr,
+        call: &Call,
+        id: NodeId,
+        span: Span,
+        expected: Option<&Type>,
+    ) -> Type {
+        let own = if call.block.is_some() {
+            ForwardBlock::Own
+        } else {
+            ForwardBlock::Call
+        };
+        let Some((args, vars)) = self.forwarding(id, span, own, false) else {
+            self.check_args_blindly(&Call {
+                args: Vec::new(),
+                ..call.clone()
+            });
+            return Type::Nothing;
+        };
+        let call = Call {
+            args,
+            ..call.clone()
+        };
+        let saved = self.forward_vars.replace(vars);
+        let t = self.check_call(expr, &call, expected);
+        self.forward_vars = saved;
+        t
     }
 
     fn lookup_var(&self, name: &str) -> Option<(usize, usize)> {
@@ -6287,6 +6530,8 @@ impl Checker {
                         | Arg::DoubleSplat(x)
                         | Arg::BlockPass(x) => Self::assigned_names_expr(x, out),
                         Arg::Keyword { value, .. } => Self::assigned_names_expr(value, out),
+                        // (It reads the parameters.)
+                        Arg::Forward { .. } => {}
                     }
                 }
                 if let Some(b) = &call.block {
@@ -6517,6 +6762,7 @@ impl Checker {
                     Self::assigned_names_expr(x, out)
                 }
                 Arg::Keyword { value, .. } => Self::assigned_names_expr(value, out),
+                Arg::Forward { .. } => {}
             }
         }
     }
@@ -7261,7 +7507,10 @@ impl Checker {
                 range
             }
             Lambda(block) => self.check_lambda(expr.id, block, expected),
-            Local(name) => match self.zsuper_local(expr.id).or_else(|| self.lookup_var(name)) {
+            Local(name) => match self
+                .forwarded_local(expr.id)
+                .or_else(|| self.lookup_var(name))
+            {
                 Some((depth, slot)) => {
                     self.out.var_refs.insert(
                         expr.span,
@@ -7299,7 +7548,12 @@ impl Checker {
             }
             Call(call) => {
                 let uses = self.self_uses.len();
-                let t = self.check_call(expr, call, expected);
+                let t = match call.args.as_slice() {
+                    [Arg::Forward { id, span }] => {
+                        self.check_forwarding_call(expr, call, *id, *span, expected)
+                    }
+                    _ => self.check_call(expr, call, expected),
+                };
                 // The built-in `==` (or `!=`) between values that are never
                 // equal: an enum value and a symbol, a `Date` and a `Time`
                 // (#879, #884).
@@ -10881,6 +11135,7 @@ impl Checker {
                 Arg::Keyword { value, .. } => {
                     self.check_expr(value, None);
                 }
+                Arg::Forward { .. } => {}
             }
         }
     }
@@ -13277,7 +13532,7 @@ impl Checker {
             let e = match a {
                 Arg::Positional(e) | Arg::Splat(e) | Arg::DoubleSplat(e) => e,
                 Arg::Keyword { value, .. } => value,
-                Arg::BlockPass(_) => continue,
+                Arg::BlockPass(_) | Arg::Forward { .. } => continue,
             };
             if !Self::needs_expectation(e) {
                 let t = self.check_expr(e, None);
@@ -14680,6 +14935,7 @@ impl Checker {
                         .unwrap_or_else(|| "?".to_string())
                 )),
                 Arg::BlockPass(_) => parts.push("&block".to_string()),
+                Arg::Forward { .. } => parts.push("...".to_string()),
             }
         }
         if call.block.is_some() {
@@ -14990,17 +15246,19 @@ impl Checker {
                                 ExprKind::Local(n) => format!("`*{n}`"),
                                 _ => "the splat".to_string(),
                             };
-                            return Err(
-                                if matches!(&expr.kind, ExprKind::Super { args: None, .. }) {
-                                    format!(
-                                        "this `super` passes `{name}:` by keyword beside {shown}, which may fill that position: pass the arguments explicitly, `{name}` by position"
+                            return Err(if self.forwarded_local(s.id).is_some() {
+                                let what = match &expr.kind {
+                                    ExprKind::Super { .. } => "this `super`",
+                                    _ => "this `...`",
+                                };
+                                format!(
+                                        "{what} passes `{name}:` by keyword beside {shown}, which may fill that position: pass the arguments explicitly, `{name}` by position"
                                     )
-                                } else {
-                                    format!(
+                            } else {
+                                format!(
                                         "`{name}:` names a positional parameter, but {shown} in the call may fill that position; pass it positionally"
                                     )
-                                },
-                            );
+                            });
                         }
                     }
                     match found {
@@ -15046,7 +15304,9 @@ impl Checker {
                         pre_type: pre.get(&e.id).cloned(),
                     });
                 }
-                Arg::BlockPass(_) => {}
+                // (A call with `...` is checked with what it stands for,
+                // `Checker::forwarding`.)
+                Arg::BlockPass(_) | Arg::Forward { .. } => {}
             }
         }
         // Missing required parameters.
@@ -15162,6 +15422,8 @@ impl Checker {
                     && m.owner == self.world.builtin.meta_classdef
                     && m.name != "at_class_end";
                 self.env.next_block_init = self.env.next_block_lifted && m.name == "def_initialize";
+                self.env.next_block_keywords =
+                    self.env.next_block_lifted && m.params.iter().any(|p| p.name == "keywords");
                 // (Own only on the `static def`'s own `self`, outside any
                 // block run with another receiver: `instance_exec` on
                 // another class's `Meta::ClassDef` makes its `self` that.)
@@ -15983,6 +16245,7 @@ impl Checker {
                             Arg::Splat(_) | Arg::DoubleSplat(_) => {
                                 self.error(refuse("a splat"), e.span)
                             }
+                            Arg::Forward { span, .. } => self.error(refuse("`...`"), *span),
                         }
                     }
                     if let Some(b) = &call.block {
@@ -16139,6 +16402,7 @@ impl Checker {
         }
         let lifted = std::mem::take(&mut self.env.next_block_lifted);
         let init = std::mem::take(&mut self.env.next_block_init) && lifted;
+        let keywords = std::mem::take(&mut self.env.next_block_keywords) && lifted;
         let foreign = std::mem::take(&mut self.env.next_block_foreign);
         let lifted_before = lifted.then(|| self.out.lifted_blocks.get(&call_id).cloned());
         if lifted {
@@ -16348,6 +16612,13 @@ impl Checker {
             // not be live there either.
             escapes: escapes || is_task || shareable || lifted,
             lifted,
+            lifted_params: block
+                .params
+                .list
+                .iter()
+                .all(|p| p.kind == ParamKind::Positional && p.default.is_none())
+                .then_some(block.params.list.len()),
+            lifted_keywords: keywords,
             init,
             static_call: in_static,
             task: elsewhere.or_else(|| is_task.then(|| "the task's method".to_string())),
@@ -16991,6 +17262,8 @@ impl Checker {
             is_lambda: true,
             escapes: true,
             lifted: false,
+            lifted_params: None,
+            lifted_keywords: false,
             init: false,
             static_call: false,
             task: None,
@@ -17088,6 +17361,13 @@ impl Checker {
 
     fn check_yield(&mut self, expr: &Expr, args: &[Arg]) -> Type {
         self.note_method_use(false, true);
+        if let [Arg::Forward { span, .. }] = args {
+            self.error(
+                "`...` forwards the method's arguments to a call: `yield` passes values to the block, write them",
+                *span,
+            );
+            return Type::Nothing;
+        }
         // (The method's block, outside the block of `static(...)`.)
         if self.env.static_frame.is_some() {
             self.error(
@@ -17272,6 +17552,7 @@ impl Checker {
                             );
                             self.check_expr(e, None);
                         }
+                        Arg::Forward { .. } => {}
                     }
                 }
                 // (The expected type, where there is one, as for a
@@ -17588,6 +17869,7 @@ impl Checker {
                     | Arg::Keyword { value: e, .. } => {
                         this.check_expr(e, None);
                     }
+                    Arg::Forward { .. } => {}
                 }
             }
         };
@@ -18091,60 +18373,38 @@ impl Checker {
             );
             return Type::Nothing;
         }
+        // `super(...)`, and a bare `super`, which means it for now (docs/01
+        // §3): checked as written with what `...` stands for.
+        let forward = match args {
+            None => Some((expr.id, expr.span)),
+            Some([Arg::Forward { id, span }]) => Some((*id, *span)),
+            Some(_) => None,
+        };
+        let (call_args, vars) = match forward {
+            Some((id, span)) => {
+                let own = if block.is_some() {
+                    ForwardBlock::Own
+                } else {
+                    ForwardBlock::Super
+                };
+                match self.forwarding(id, span, own, args.is_none()) {
+                    Some((a, vars)) => (a, Some(vars)),
+                    None => return Type::Nothing,
+                }
+            }
+            None => (args.unwrap_or(&[]).to_vec(), None),
+        };
         let call = Call {
             recv: None,
             name: m.name.clone(),
-            args: match args {
-                Some(a) => a.to_vec(),
-                None => {
-                    // zsuper: forward the parameters, each read as a
-                    // local of its own node (the ids are outside the
-                    // file's range, and nothing is recorded for them
-                    // beyond this resolution).
-                    let local = |i: usize, name: &str| Expr {
-                        id: u32::MAX - 1 - i as u32,
-                        span: expr.span,
-                        kind: ExprKind::Local(name.to_string()),
-                    };
-                    let mut forwarded: Vec<Arg> = m
-                        .params
-                        .iter()
-                        .enumerate()
-                        .map(|(i, p)| {
-                            let e = local(i, &p.name);
-                            match p.kind {
-                                ParamKind::KeywordOnly => Arg::Keyword {
-                                    name: p.name.clone(),
-                                    value: e,
-                                    span: expr.span,
-                                },
-                                ParamKind::Rest => Arg::Splat(e),
-                                ParamKind::KeywordRest => Arg::DoubleSplat(e),
-                                ParamKind::Positional | ParamKind::Block => Arg::Positional(e),
-                            }
-                        })
-                        .collect();
-                    // The method's block too (`&` when anonymous), unless
-                    // the `super` has one of its own. An optional block
-                    // is not written: the superclass may take none, and
-                    // one that takes an optional block gets it at run
-                    // time all the same.
-                    if let (Some((name, _)), false, None) = (&m.block, m.block_optional, block) {
-                        forwarded.push(Arg::BlockPass(local(m.params.len(), name)));
-                    }
-                    forwarded
-                }
-            },
+            args: call_args,
             block: block.cloned(),
             safe_nav: false,
             function: false,
             has_parens: true,
             type_args: vec![],
         };
-        let zsuper = args
-            .is_none()
-            .then(|| m.params.len() + usize::from(m.block.is_some()));
-        let saved = std::mem::replace(&mut self.zsuper_forwards, zsuper);
+        let saved = std::mem::replace(&mut self.forward_vars, vars);
         // (A candidate of an extension in this one's cycle: tried, undone;
         // the `super` taking it is an error, else it is left out, #585.)
         let in_cycle = |c: &Self, k: MethodId| {
@@ -18196,7 +18456,7 @@ impl Checker {
                 if na == nb {
                     nb = nb.replacen("the ", "another ", 1);
                 }
-                self.zsuper_forwards = saved;
+                self.forward_vars = saved;
                 self.error(
                     format!(
                         "`super` in {na} would reach `{}` of {nb}, which reaches this one back: there is no order between them; put one in a module and `using` it from the other's",
@@ -18224,10 +18484,10 @@ impl Checker {
             // other call of it, docs/03 §4.)
             m.name == "initialize" || (m.name == "deinitialize" && !m.singleton),
         );
-        self.zsuper_forwards = saved;
+        self.forward_vars = saved;
         if let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id).cloned() {
             self.out.calls.insert(expr.id, CallTarget::Super { method });
-            if let Some(args) = args {
+            if let (Some(args), None) = (args, forward) {
                 self.note_abstract_type_args(method, args);
             }
         }
@@ -18286,6 +18546,16 @@ impl Checker {
             );
             return Type::Nothing;
         }
+        // `super(...)`: the block's parameters (`forwarding`).
+        let (call, vars) = match args {
+            Some([Arg::Forward { id, span }]) => {
+                match self.forwarding(*id, *span, ForwardBlock::Own, false) {
+                    Some((a, vars)) => (Call { args: a, ..call }, Some(vars)),
+                    None => return Type::Nothing,
+                }
+            }
+            _ => (call, None),
+        };
         let self_ty = self.env.self_type.clone();
         let mut owner = None;
         let mut cands = Vec::new();
@@ -18304,10 +18574,13 @@ impl Checker {
             self.check_args_blindly(&call);
             return Type::Nothing;
         }
+        let saved = std::mem::replace(&mut self.forward_vars, vars);
         let t = self.resolve_overloads_as(expr, &call, &self_ty, cands, true, None, true);
+        let forwarded = self.forward_vars.is_some();
+        self.forward_vars = saved;
         if let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id).cloned() {
             self.out.calls.insert(expr.id, CallTarget::Super { method });
-            if let Some(args) = args {
+            if let (Some(args), false) = (args, forwarded) {
                 self.note_abstract_type_args(method, args);
             }
             // It assigned its class's fields, perhaps other values than

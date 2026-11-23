@@ -224,6 +224,8 @@ impl<'a> InitCheck<'a> {
                 | Arg::DoubleSplat(e)
                 | Arg::BlockPass(e)
                 | Arg::Keyword { value: e, .. } => self.expr(e, st),
+                // (It reads the parameters.)
+                Arg::Forward { .. } => st,
             };
         }
         st

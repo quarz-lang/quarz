@@ -6,7 +6,7 @@ use quarz_ir::*;
 use quarz_syntax::ast::{self, Arg, Block as AstBlock, Expr, ExprKind, LValue, ParamKind, StrPart};
 use quarz_syntax::token::OpAssign;
 use quarz_syntax::Span;
-use quarz_types::{CallTarget, ConstTarget, Output, SelfOwner, Type, VarRef, World};
+use quarz_types::{CallTarget, ConstTarget, Forward, Output, SelfOwner, Type, VarRef, World};
 
 use crate::capture::captured_slots;
 use crate::iter::{self, Kind, Shape, Source};
@@ -106,6 +106,17 @@ struct Args {
     kw: Vec<(u32, Reg)>,
     kw_splat: Option<Reg>,
     block: Option<Reg>,
+}
+
+/// The arguments a `...` stands for, read (`FnBuilder::forwarded`).
+struct ForwardedArgs {
+    /// The positional ones, `*rest` splatted.
+    items: Vec<ArrayItem>,
+    kw: Vec<(u32, Reg)>,
+    /// `**opts`.
+    kw_splat: Option<Reg>,
+    /// Whether the method's block is passed on.
+    block: bool,
 }
 
 pub struct FnBuilder<'a> {
@@ -1275,14 +1286,6 @@ impl<'a> FnBuilder<'a> {
 
     fn var_ref(&self, span: Span) -> Option<VarRef> {
         self.out.var_refs.get(&span).copied()
-    }
-
-    /// Translate a checker depth into a heap-frame depth: levels without a
-    /// frame of their own do not appear in the frame chain.
-    /// The checker's depth of the method's own level from here (for
-    /// `super` without arguments, which forwards the method's parameters).
-    fn method_level_depth(&self) -> u32 {
-        self.inline.len() as u32 + (self.levels.len() as u32 - 1) + self.gaps.iter().sum::<u32>()
     }
 
     fn is_captured(&self, slot: u32) -> bool {
@@ -2807,7 +2810,90 @@ impl<'a> FnBuilder<'a> {
 
     // ----- calls -------------------------------------------------------------------------
 
+    /// The arguments a `...` of node `id` stands for, as the checker
+    /// decided (`Output::forwards`): the positional ones (`*rest`
+    /// splatted), the keywords, `**opts`, and whether the method's block
+    /// is passed on (the block the method was given).
+    fn forwarded(&mut self, id: u32) -> ForwardedArgs {
+        // (None where the checker reported the `...` as an error: code
+        // with errors is lowered, never run, `Runner::bad_reach`.)
+        let Some(f) = self.out.forwards.get(&id) else {
+            return ForwardedArgs {
+                items: Vec::new(),
+                kw: Vec::new(),
+                kw_splat: None,
+                block: false,
+            };
+        };
+        let mut items = Vec::new();
+        let mut kw = Vec::new();
+        let mut kw_splat = None;
+        for (r, kind) in &f.args {
+            let v = self.load_var(*r);
+            match kind {
+                Forward::Keyword(name) => {
+                    let s = self.sym_const(name);
+                    kw.push((s, v));
+                }
+                Forward::Rest => items.push(ArrayItem {
+                    reg: v,
+                    splat: true,
+                }),
+                Forward::KeywordRest => kw_splat = Some(v),
+                Forward::Positional => items.push(ArrayItem {
+                    reg: v,
+                    splat: false,
+                }),
+            }
+        }
+        ForwardedArgs {
+            items,
+            kw,
+            kw_splat,
+            block: f.block,
+        }
+    }
+
+    /// Positional arguments as a call takes them: one array when one of
+    /// them is splatted.
+    fn positional(&mut self, items: Vec<ArrayItem>) -> (Vec<Reg>, bool) {
+        if items.iter().any(|i| i.splat) {
+            let dst = self.reg();
+            self.emit(Inst::MakeArray { dst, items });
+            (vec![dst], true)
+        } else {
+            (items.into_iter().map(|i| i.reg).collect(), false)
+        }
+    }
+
     fn args(&mut self, args: &'a [Arg]) -> Args {
+        // `f(...)`: what the method was given (`forwarded`).
+        if let [Arg::Forward { id, .. }] = args {
+            let ForwardedArgs {
+                items,
+                mut kw,
+                kw_splat,
+                block,
+            } = self.forwarded(*id);
+            // (`**opts` in its place among the keywords, as written.)
+            if let Some(h) = kw_splat {
+                let s = self.sym_const(quarz_ir::KW_SPLAT);
+                kw.push((s, h));
+            }
+            let (pos, splat) = self.positional(items);
+            let block = block.then(|| {
+                let dst = self.reg();
+                self.emit(Inst::BlockParam { dst });
+                dst
+            });
+            return Args {
+                pos,
+                splat,
+                kw,
+                kw_splat: None,
+                block,
+            };
+        }
         let has_splat = args.iter().any(|a| matches!(a, Arg::Splat(_)));
         let mut items = Vec::new();
         let mut kw = Vec::new();
@@ -2876,6 +2962,8 @@ impl<'a> FnBuilder<'a> {
                         _ => self.expr(e),
                     });
                 }
+                // (Only ever the whole list, above.)
+                Arg::Forward { .. } => unreachable!("`...` beside other arguments"),
             }
         }
         let (pos, splat) = if has_splat {
@@ -4653,47 +4741,16 @@ impl<'a> FnBuilder<'a> {
         let method = *method;
         let mut a = match args {
             Some(args) => self.args(args),
+            // A bare `super`: `super(...)` (docs/01 §3), the block passed
+            // below as for any `super`.
             None => {
-                // zsuper: forward the current method's parameters.
-                let mut items = Vec::new();
-                let mut kw = Vec::new();
-                let mut kw_splat = None;
-                let mut has_rest = false;
-                if let Some(mid) = self.method {
-                    let m = self.world.method(mid);
-                    for (i, p) in m.params.iter().enumerate() {
-                        let v = self.load_var(VarRef {
-                            depth: self.method_level_depth(),
-                            slot: i as u32,
-                        });
-                        match p.kind {
-                            ParamKind::KeywordOnly => {
-                                let s = self.sym_const(&p.name);
-                                kw.push((s, v));
-                            }
-                            ParamKind::Rest => {
-                                has_rest = true;
-                                items.push(ArrayItem {
-                                    reg: v,
-                                    splat: true,
-                                });
-                            }
-                            ParamKind::KeywordRest => kw_splat = Some(v),
-                            ParamKind::Block => {}
-                            ParamKind::Positional => items.push(ArrayItem {
-                                reg: v,
-                                splat: false,
-                            }),
-                        }
-                    }
-                }
-                let (pos, splat) = if has_rest {
-                    let dst = self.reg();
-                    self.emit(Inst::MakeArray { dst, items });
-                    (vec![dst], true)
-                } else {
-                    (items.into_iter().map(|i| i.reg).collect(), false)
-                };
+                let ForwardedArgs {
+                    items,
+                    kw,
+                    kw_splat,
+                    ..
+                } = self.forwarded(e.id);
+                let (pos, splat) = self.positional(items);
                 Args {
                     pos,
                     splat,
