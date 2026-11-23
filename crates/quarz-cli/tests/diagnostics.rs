@@ -4559,6 +4559,19 @@ fn a_bound_held_through_a_scoped_extension_is_decided_where_it_is_active() {
     }
 }
 
+/// #1105: a bare name an ancestor and an enclosing module both declare,
+/// as different things, is an error at the name, naming both in full and
+/// where each comes from.
+#[test]
+fn an_ambiguous_bare_name_names_both() {
+    let src = "class Base\n  class Help\n  end\nend\nmodule M\n  class Help\n  end\n  class Sub < Base\n    def self.who -> String = Help.name\n  end\nend\n";
+    let out = common::diagnostics(src);
+    assert!(
+        out.iter().any(|d| d.starts_with("test:9:30: error: `Help` names two things here: `M::Help`, a member of the enclosing module `M`, and `Base::Help`, inherited from `Base`; write the one you mean in full")),
+        "{out:?}"
+    );
+}
+
 /// #577: the pair named is two the others do not override (M2 overrides
 /// M1, which it includes, but ties with M3), and a module that comes
 /// through an extension's include is said to be brought. (A third
