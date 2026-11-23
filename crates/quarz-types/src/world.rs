@@ -2805,7 +2805,15 @@ impl World {
     /// and no method after the prelude's has a prelude owner. Those are
     /// the only ways a program reaches the prelude's entries: classes and
     /// modules are not reopened (docs/01), and a program's classes add
-    /// entries of their own, keyed by them.
+    /// entries of their own, keyed by them. Nor does generation give a
+    /// prelude class a field (or anything else of its `RtClass` row):
+    /// `def_field` and the other generating calls act on a
+    /// `Meta::ClassDef`, which is only a `static` statement's `self` (or a
+    /// class-end hook's argument), and `Declare::collect_body` makes
+    /// statements of a class body outside the prelude only; no value
+    /// becomes one otherwise (`check_testable` refuses `as`/`is_a?`
+    /// `Meta::ClassDef[...]`), and an extension declares no `static def`
+    /// (`check_extension_static`).
     /// Conservative, by design: it answers no for any such extension or
     /// method, even one whose names change nothing (an exact rule would
     /// compare names with the prelude's, the "fresh names" variant #551's
