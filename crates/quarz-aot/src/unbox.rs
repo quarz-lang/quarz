@@ -549,6 +549,7 @@ pub fn transfer(
             args,
             unused,
             kw,
+            ..
         } if kw.is_empty() => {
             // `xs = xs.push(v)`, compiled inline, leaves an array in the
             // register (see `Gen`'s `OwnedCall`).

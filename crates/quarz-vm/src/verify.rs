@@ -59,6 +59,13 @@ fn moved_out(inst: &Inst, shadow: &mut [bool]) {
                 shadow[r as usize] = true;
             }
         }
+        Inst::OwnedCall { args, moved, .. } if *moved != 0 => {
+            for (i, a) in args.iter().enumerate().take(15) {
+                if moved & (1 << i) != 0 {
+                    shadow[*a as usize] = true;
+                }
+            }
+        }
         _ => {}
     }
 }

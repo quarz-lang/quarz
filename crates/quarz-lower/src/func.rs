@@ -3282,6 +3282,7 @@ impl<'a> FnBuilder<'a> {
                         args: a.pos,
                         kw: a.kw,
                         unused: false,
+                        moved: 0,
                     });
                     return dst;
                 }
@@ -3329,6 +3330,7 @@ impl<'a> FnBuilder<'a> {
                         args: a.pos,
                         kw: a.kw,
                         unused: false,
+                        moved: 0,
                     });
                     return dst;
                 }
@@ -4860,6 +4862,7 @@ impl<'a> FnBuilder<'a> {
                                         args: a.pos,
                                         kw: a.kw,
                                         unused: false,
+                                        moved: 0,
                                     });
                                     return dst;
                                 }
@@ -4929,6 +4932,7 @@ impl<'a> FnBuilder<'a> {
                                         args: a.pos,
                                         kw: a.kw,
                                         unused: false,
+                                        moved: 0,
                                     });
                                     return dst;
                                 }

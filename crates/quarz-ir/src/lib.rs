@@ -631,6 +631,13 @@ pub enum Inst {
         /// collection shared and make its next update copy it.
         #[serde(default)]
         unused: bool,
+        /// The arguments it reads for the last time, bit `i` for
+        /// argument `i` (the first 15), as `Call::moved` without the
+        /// receiver's bit (the receiver always moves in): they move into
+        /// the call (#1028). Only `live::mark_moves` (and
+        /// `own_dying_receivers`, from the call it replaces) writes it.
+        #[serde(default)]
+        moved: u16,
     },
     IsNil {
         dst: Reg,
