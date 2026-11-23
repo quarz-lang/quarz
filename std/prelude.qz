@@ -238,6 +238,11 @@ class Type[T]
   # [Meta::MethodSig#static] is false. Empty when `new` takes no arguments.
   # [methods] leaves `initialize` out, which only `new` and `super` call.
   static native def constructors -> Array[Meta::MethodSig]
+  # An enum's values, each variant's, in declaration order, when no
+  # variant has fields (`Order.variants` is `[Order::Defined,
+  # Order::Random]`); an error for an enum with a variant that has fields,
+  # or a class that is no enum. At compile time only.
+  static native def variants -> Array[T]
   # Whether the class includes the module `m` (or is `m`, or a subclass
   # of it); at compile time only.
   static native def includes?(m: Type[Object]) -> Bool
