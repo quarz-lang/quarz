@@ -16621,9 +16621,6 @@ impl Checker {
             .filter(|p| !matches!(p.kind, ParamKind::Block | ParamKind::KeywordOnly))
             .collect();
         let mut param_types: Vec<Type> = params.clone();
-        // (Destructuring an array: the binder pads a shorter element with
-        // `nil`, so each parameter's type must admit it, #531.)
-        let mut padded: Option<Type> = None;
         if declared.len() > 1 && params.len() == 1 {
             match self.infer.resolve(&params[0]) {
                 Type::Tuple(ts) => {
@@ -16663,13 +16660,19 @@ impl Checker {
                     }
                     self.out.block_destructure.insert(call_id, declared.len());
                 }
-                // An array is spread over the parameters, as in Ruby: each
-                // may get `nil` where the element is shorter.
+                // An array is not spread (#1072): its length is not known,
+                // so how many parameters it fills is not either. (Each is
+                // then checked as an element, for no more errors.)
                 Type::Class(id, args) if id == self.world.builtin.array && args.len() == 1 => {
-                    let t = self.world.nilable(args[0].clone());
-                    padded = Some(args[0].clone());
-                    param_types = vec![t; declared.len()];
-                    self.out.block_destructure.insert(call_id, declared.len());
+                    self.error(
+                        format!(
+                            "block given an `{}` element declares {} parameters, but an array's length is not known: take the element as one parameter and match it in the body (`|row| row => [a, b]`, or `row => [a, *rest]`)",
+                            self.name(&params[0]),
+                            declared.len()
+                        ),
+                        block.span,
+                    );
+                    param_types = vec![args[0].clone(); declared.len()];
                 }
                 _ => {}
             }
@@ -16706,31 +16709,9 @@ impl Checker {
                 .get(i)
                 .cloned()
                 .unwrap_or_else(|| self.world.nil());
-            // (A `*rest` takes the elements there are: no `nil` padding.)
-            if let Some(elem) = padded.as_ref().filter(|_| p.kind == ParamKind::Rest) {
-                t = elem.clone();
-            }
             if let Some(te) = &p.ty {
                 let scope = self.env.scope.clone();
                 if let Some(annotated) = self.resolve_type_expr(te, &scope) {
-                    // (An array element destructured: the parameter may get
-                    // `nil`, #531; the error names the fix.)
-                    if let Some(elem) = padded.as_ref().filter(|_| p.kind != ParamKind::Rest) {
-                        if !self.world.is_subtype(&self.world.nil(), &annotated) {
-                            let elem = self.name(elem);
-                            self.error(
-                                format!(
-                                    "block destructures an Array[{elem}] element into {} parameters: an element may be shorter, so each gets `nil` where it has no value; type them to admit it (`|{}: {}?, ...|`), or take the element as one parameter",
-                                    declared.len(),
-                                    p.name,
-                                    self.name(&annotated)
-                                ),
-                                te.span,
-                            );
-                            self.declare_var(&p.name, annotated, p.span);
-                            continue;
-                        }
-                    }
                     if !self.coerce(&t, &annotated) {
                         self.error(
                             format!(

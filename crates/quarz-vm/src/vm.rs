@@ -394,18 +394,23 @@ fn own_cache<'a>(
     (!crate::rc::Rc::is_shared(closure)).then_some(cache)
 }
 
-/// A block's single array argument spread over its parameters (a block
-/// that destructures, `|k, v|` given `[k, v]`): the array's elements,
-/// padded with `nil` to `fixed` (`destructure_fixed`: the positional
-/// parameters, which the checker typed to admit it, #531; a `*rest`
-/// takes what is left, nothing when nothing is). `None` when the call is
-/// not one array. The rule `call_block_kw` and `BlockCaller::call` share.
+/// A block's single tuple argument spread over its parameters (a block
+/// that destructures, `|k, v|` given `[k, v]`): the tuple's elements,
+/// at least `fixed` of them (`destructure_fixed`: the positional
+/// parameters, which the checker held to the tuple's arity; an array is
+/// not spread, #1072; a `*rest` takes what is left, nothing when nothing
+/// is). `None` when the call is not one array value. The rule
+/// `call_block_kw` and `BlockCaller::call` share.
 pub(crate) fn destructured(args: &[Value], fixed: usize) -> Option<ArgVec> {
     let [Value::Array(a)] = args else {
         return None;
     };
-    let mut items: ArgVec = a.iter().collect();
-    items.resize(fixed.max(items.len()), Value::Nil);
+    let items: ArgVec = a.iter().collect();
+    debug_assert!(
+        items.len() >= fixed,
+        "a tuple of {} spread over {fixed} parameters",
+        items.len()
+    );
     Some(items)
 }
 

@@ -3,8 +3,7 @@
 # before: a block calling the same native again on the same block value
 # (through a method) gets a caller of its own; `break`, `next` and an
 # exception leave the native, and the next call starts afresh; a block
-# that destructures (`|k, v|` given `[k, v]`) is called the same way,
-# a shorter element padded with `nil`.
+# that destructures (`|k, v|` given `[k, v]`) is called the same way.
 def walk(h: Hash[String, Int], depth: Int, out: Array::Builder[String]) -> Void
   h.each_pair do |k, v|
     out << "#{depth}:#{k}=#{v}"
@@ -38,7 +37,8 @@ rescue ArgumentError => e
 end
 h.each_pair { |k, v| puts "again: #{k}=#{v}" }
 
-[[1], [2, 3], [4, 5, 6]].each { |a, b| p [a, b] }
+ts: Array[[Int, String]] = [[1, "a"], [2, "b"]]
+ts.each { |a, b| p [a, b] }
 p [3, 1, 2].sort { |a, b| b <=> a }
 p [3, 1, 2].max { |a, b| a <=> b }
 p "a1b22c333".scan(/\d+/) { |m| puts "m=#{m}" }
