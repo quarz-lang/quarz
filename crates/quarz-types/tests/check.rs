@@ -988,6 +988,95 @@ fn a_symbol_argument_is_an_enums_variant() {
     ok("enum Proto\n  variant HTTP2\n  variant Plain\nend\ndef f(p: Proto) -> Proto = p\nf(:h_t_t_p2)");
 }
 
+/// #1087: a `when` value (or an `in` value or range pattern) whose test is
+/// never true is an error, decided by `World::may_equal`, which follows
+/// the built-in `==` (`Value::eq`): numbers are one class, a tuple is an
+/// array, empty collections are equal whatever their elements, a range
+/// by its bounds, a `data` class by its fields, class values by their
+/// classes. A class with its own `==` or `===`, a class pattern, `Object`
+/// and a type parameter are never refused. The written `==`/`!=` and the
+/// built-in searches warn by the same function.
+#[test]
+fn a_test_never_true_is_refused() {
+    let when = |subject: &str, pattern: &str| {
+        format!(
+            "def f(x: {subject}) -> Int\n  case x\n  when {pattern} then 1\n  else 0\n  end\nend\n"
+        )
+    };
+    let pre = "enum Color = Red | Green\ndata P = (x: Int)\ndata Q = (x: Int)\ndata G[T] = (x: T)\nclass Name\n  def ==(other: Object) -> Bool = false\n  def hash -> Int = 0\nend\n";
+    // The reproducer: a condition written as a pattern.
+    err(
+        &when("Int", "x == 1"),
+        "this `when` compares `Bool` with the subject, an `Int`: they are never equal, so it is never taken; for conditions write `case` without a subject (`case` / `when x == 1`), or compare the subject (`when 1`)",
+    );
+    for (subject, pattern, expected) in [
+        ("Int", "\"a\"", "this `when` compares `String` with the subject, an `Int`: they are never equal, so it is never taken"),
+        ("String", ":a", "this `when` compares `Symbol` with the subject, a `String`: they are never equal"),
+        ("Bytes", "\"a\"", "this `when` compares `String` with the subject, a `Bytes`"),
+        ("[Int, String]", "[1, 2]", "this `when` compares `Array[Int]` with the subject, a `[Int, String]`"),
+        ("P", "Q.new(1)", "this `when` compares `Q` with the subject, a `P`"),
+        ("Bool", "nil", "this `when` compares `Nil` with the subject, a `Bool`"),
+        ("Array[Int]", "Set.new([1])", "this `when` compares `Set[Int]` with the subject"),
+        ("Int", "1.seconds", "this `when` compares `Duration` with the subject, an `Int`"),
+        ("String", "1..5", "this `when` tests whether a `Range[Int]` covers the subject, a `String`: its bounds never equal or compare with one, so it is never taken"),
+        // (A range pattern tests coverage, not `==`: `(1..2) === (1.0..2.0)` is
+        // false.)
+        ("Range[Float]", "1..2", "this `when` tests whether a `Range[Int]` covers the subject, a `Range[Float]`"),
+        ("Int", "/a/", "this `when` matches a `Regexp` against the subject, an `Int`: a `Regexp` matches only a `String` or `Bytes`, so it is never taken"),
+        ("Color", ":red", "this `when` compares `Symbol` with the subject, a `Color`: they are never equal, so it is never taken: write `Color::Red`"),
+    ] {
+        err(&format!("{pre}{}", when(subject, pattern)), expected);
+    }
+    // Accepted: the test can be true at run time.
+    for (subject, pattern) in [
+        ("Float", "1"),
+        ("Int", "2.0"),
+        ("Array[Int]", "[1, 2]"),
+        ("[Int, Int]", "[1.0, 2.0]"),
+        ("Array[String]", "[]"),
+        ("Color", "Color::Red"),
+        ("G[Float]", "G.new(1)"),
+        ("Float", "1..2"),
+        ("Int?", "nil"),
+        ("Int", "Name.new"),
+        ("Object", "\"a\""),
+        ("Int | String", "\"a\""),
+        ("String?", "/a/"),
+        ("Int", "Int"),
+        ("Type[Array[String]]", "Array[Int]"),
+    ] {
+        ok(&format!("{pre}{}", when(subject, pattern)));
+    }
+    ok("def f[T](x: T) -> Int\n  case x\n  when \"a\" then 1\n  else 0\n  end\nend\n");
+    // What the arms before left: after `when String`, an `Int | String`
+    // subject is an `Int`.
+    err(
+        "def f(x: Int | String) -> Int\n  case x\n  when String then 1\n  when \"a\" then 2\n  else 0\n  end\nend\n",
+        "this `when` compares `String` with the subject, an `Int`",
+    );
+    // `case/in` value and range patterns.
+    err(
+        "def f(x: Int) -> Int\n  case x\n  in \"a\" then 1\n  else 0\n  end\nend\n",
+        "this `in` compares `String` with the subject, an `Int`: they are never equal, so it is never taken",
+    );
+    err(
+        "def f(x: Int) -> Int\n  case x\n  in \"a\"..\"b\" then 1\n  else 0\n  end\nend\n",
+        "this `in` tests whether a `Range[String]` covers the subject, an `Int`",
+    );
+    ok("def f(x: Int) -> Int\n  case x\n  in 1.0..2.0 then 1\n  else 0\n  end\nend\n");
+    // The written `==`/`!=` and the searches: warnings.
+    warns(
+        "def w(x: Int) -> Bool = x == \"a\"\nw(1)",
+        "`==` compares `Int` with `String`: they are never equal",
+    );
+    warns(
+        "def w(x: Int) -> Bool = x != \"a\"\nw(1)",
+        "`!=` compares `Int` with `String`: they are never equal, so it is always true",
+    );
+    warns("def w(xs: Array[Int]) -> Bool = xs.include?(\"a\")\nw([1])", "`include?` compares `String` with the elements, of type `Int`: they are never equal, so it finds none");
+    no_warnings("def w(x: Int) -> Bool = x == 1.0\nw(1)");
+}
+
 /// #915: a symbol literal searched for in a collection of an enum by the
 /// built-in searches that take an `Object` and compare by `==` is never
 /// found: the warning `==` gets, naming the variant. A `Hash`'s
@@ -1024,9 +1113,14 @@ fn a_symbol_searched_for_in_an_enum_collection_warns() {
             &format!("`{method}` compares the symbol `:json` with enum values, which never equal it: write `Format::Json`"),
         );
     }
+    // A symbol no variant names: never equal either, by the general text
+    // since #1087 (`World::may_equal`).
+    warns(
+        &format!("{pre}p fs.include?(:jsno)"),
+        "`include?` compares `Symbol` with the elements, of type `Format`: they are never equal, so it finds none",
+    );
     for call in [
         "p fs.include?(Format::Json)",
-        "p fs.include?(:jsno)",
         "p fs - [:json]",
         "p fs.difference([:json])",
         "syms = [:json]\np syms.include?(:json)",

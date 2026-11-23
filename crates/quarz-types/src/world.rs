@@ -1586,6 +1586,129 @@ impl World {
         })
     }
 
+    /// Whether a value of `a` and a value of `b` may be equal by the
+    /// built-in `==` (`Value::eq` at run time, a native `==`): false means
+    /// never (#1087, decided there with the cases below, derived from
+    /// `Value::eq`). Symmetric. Types are taken as resolved (an inference
+    /// variable left is unknown: true).
+    ///
+    /// True wherever it cannot tell: a top, a type parameter, an
+    /// inference variable, `Nothing` (error recovery), a module (some
+    /// class may include it), a procedure, a class whose `==` is its own
+    /// (written in Quarz or an extension's, on either side: it decides).
+    /// Otherwise:
+    /// - numbers (`Int`, `Float`, `Integer`) are one class (#888);
+    /// - a union, if some member of each may;
+    /// - two tuples, of one length, element by element; a tuple and an
+    ///   `Array[T]` (a tuple is an array at run time), if every element
+    ///   may equal `T` (an empty tuple always);
+    /// - two classes, if one is the other or inherits from it (single
+    ///   inheritance: two unrelated classes have no common instance),
+    ///   and then, for the same structural class (`data`, a variant), its
+    ///   fields pairwise after substitution, and for two `Range`s their
+    ///   bounds' types; `Array`, `Hash` and `Set` by their classes alone
+    ///   (two empty ones are equal whatever their element types);
+    /// - two class values, if their classes overlap, whatever the type
+    ///   arguments (`Array[Int]` and `Array[String]` are one class
+    ///   value); a class value and an instance, only an instance typed
+    ///   `Type` (or a top).
+    ///
+    /// The approximation is toward true only: it never answers false for
+    /// two values `==` can find equal, so a refusal it makes is never of
+    /// a test that can be true. Not made exact (a module, a procedure):
+    /// none is planned, since true only misses a refusal.
+    pub fn may_equal(&self, a: &Type, b: &Type) -> bool {
+        self.may_equal_at(a, b, 0)
+    }
+
+    fn may_equal_at(&self, a: &Type, b: &Type, depth: usize) -> bool {
+        // (A recursive type, a `data` holding itself: unknown past here.)
+        if depth > 16 {
+            return true;
+        }
+        let nil = Type::Class(self.builtin.nil, Vec::new());
+        let norm = |t: &Type| match t {
+            Type::Void => nil.clone(),
+            t => t.clone(),
+        };
+        let (a, b) = (norm(a), norm(b));
+        let unknown = |t: &Type| {
+            matches!(
+                t,
+                Type::Nothing | Type::Param(_) | Type::Var(_) | Type::Proc(..)
+            ) || matches!(t, Type::Class(c, _) if *c == self.builtin.object
+                || self.class(*c).kind == ClassKind::Module
+                || self.own_eq(t))
+        };
+        if unknown(&a) || unknown(&b) {
+            return true;
+        }
+        let deeper = |x: &Type, y: &Type| self.may_equal_at(x, y, depth + 1);
+        match (&a, &b) {
+            (Type::Union(ms), other) | (other, Type::Union(ms)) => {
+                ms.iter().any(|m| deeper(m, other))
+            }
+            (Type::Tuple(xs), Type::Tuple(ys)) => {
+                xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| deeper(x, y))
+            }
+            (Type::Tuple(xs), Type::Class(c, args)) | (Type::Class(c, args), Type::Tuple(xs))
+                if *c == self.builtin.array =>
+            {
+                let elem = args.first().cloned().unwrap_or(Type::Nothing);
+                xs.iter().all(|x| deeper(x, &elem))
+            }
+            (Type::Tuple(_), _) | (_, Type::Tuple(_)) => false,
+            (Type::ClassObject(c, _), Type::ClassObject(d, _)) => {
+                self.class_is_a(*c, *d) || self.class_is_a(*d, *c)
+            }
+            (Type::TypeOf(_), _) | (_, Type::TypeOf(_)) => true,
+            (Type::ClassObject(..), Type::Class(c, _))
+            | (Type::Class(c, _), Type::ClassObject(..)) => *c == self.builtin.class_,
+            (Type::Class(c, xs), Type::Class(d, ys)) => {
+                let numeric = |k: ClassId| {
+                    [self.builtin.int, self.builtin.float, self.builtin.integer].contains(&k)
+                };
+                if numeric(*c) && numeric(*d) {
+                    return true;
+                }
+                if !(self.class_is_a(*c, *d) || self.class_is_a(*d, *c)) {
+                    return false;
+                }
+                if *c == self.builtin.range && *d == self.builtin.range {
+                    return match (xs.first(), ys.first()) {
+                        (Some(x), Some(y)) => deeper(x, y),
+                        _ => true,
+                    };
+                }
+                let structural =
+                    |k: ClassId| matches!(self.class(k).kind, ClassKind::Data | ClassKind::Variant);
+                if c == d && structural(*c) {
+                    let info = self.class(*c);
+                    if info.type_params.len() != xs.len() || xs.len() != ys.len() {
+                        return true;
+                    }
+                    let (sx, sy) = (self.class_subst(*c, xs), self.class_subst(*c, ys));
+                    return info
+                        .fields
+                        .iter()
+                        .all(|f| deeper(&f.ty.subst(&sx), &f.ty.subst(&sy)));
+                }
+                true
+            }
+            _ => true,
+        }
+    }
+
+    /// Whether `t`'s `==` is its class's own: one written in Quarz or an
+    /// extension's, not a native (a native `==` compares as `Value::eq`
+    /// does, #1087).
+    fn own_eq(&self, t: &Type) -> bool {
+        self.lookup_methods(t, "==").first().is_some_and(|(m, _)| {
+            let m = self.method(*m);
+            !m.is_native || m.extension.is_some()
+        })
+    }
+
     /// The classes `c` is, `class_is_a(c, k)` for each and only these
     /// `k`: `c`, `Object` and its ancestors (`ancestors(c, &[])`, under
     /// the extensions active now). Each once.

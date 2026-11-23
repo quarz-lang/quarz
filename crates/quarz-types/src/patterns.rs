@@ -59,18 +59,10 @@ impl Checker {
                 if Self::undecided(&value_ty) {
                     return value_ty;
                 }
+                // A test never true is an error (#1087).
+                self.never_taken("in", expr, &t, &value_ty, pattern.span);
                 let t = self.numeric_widen(&t);
                 let (yes, _) = self.split_by_type(&value_ty, &t);
-                if yes.is_nothing() {
-                    self.warn(
-                        format!(
-                            "pattern of type {} never matches {}",
-                            self.type_name(&t),
-                            self.type_name(&value_ty)
-                        ),
-                        pattern.span,
-                    );
-                }
                 yes
             }
             PatternKind::Range { lo, hi, .. } => {
@@ -88,6 +80,12 @@ impl Checker {
                 self.check_range_bound(&t, pattern.span);
                 if Self::undecided(&value_ty) {
                     return value_ty;
+                }
+                // Bounds that never equal or compare with the subject: never
+                // taken (#1087), judged as the range value would be.
+                if let Some(side) = lo.as_ref().or(hi.as_ref()) {
+                    let range = Type::Class(self.world.builtin.range, vec![t.clone()]);
+                    self.never_taken("in", side, &range, &value_ty, pattern.span);
                 }
                 let t = self.numeric_widen(&t);
                 let (yes, _) = self.split_by_type(&value_ty, &t);
