@@ -6949,21 +6949,36 @@ fn destructuring_a_failed_expression_reports_its_error_only() {
 }
 
 #[test]
-fn a_destructured_array_element_may_be_shorter() {
-    // #531: the binder pads a shorter element with `nil`, so each
-    // parameter it spreads an `Array[T]` element over is typed `T?`.
+fn an_array_element_is_not_spread() {
+    // #1072: a block given an `Array[T]` element and declaring several
+    // parameters (a `*rest` counting) is an error, whatever their types:
+    // the element is taken as one parameter and matched in the body.
+    let spread = |ty: &str, n: usize| {
+        format!(
+            "block given an `{ty}` element declares {n} parameters, but an array's length is not known: take the element as one parameter and match it in the body (`|row| row => [a, b]`, or `row => [a, *rest]`)"
+        )
+    };
     err(
-        "xs: Array[Array[Int]] = [[1]]\nxs.each { |a: Int, b: Int| p a + b }",
-        "block destructures an Array[Int] element into 2 parameters: an element may be shorter, so each gets `nil` where it has no value; type them to admit it (`|a: Int?, ...|`), or take the element as one parameter",
+        "xs: Array[Array[Int]] = [[1]]\nxs.each { |a, b| p a, b }",
+        &spread("Array[Int]", 2),
     );
-    // Unannotated, they are `Int?`: `+` on one is an error at the use.
     err(
-        "xs: Array[Array[Int]] = [[1]]\nxs.each { |a, b| p a + b }",
-        "Int?",
+        "xs: Array[Array[Int]] = [[1]]\nxs.each { |a: Int?, b: Int?| p a, b }",
+        &spread("Array[Int]", 2),
     );
-    ok("xs: Array[Array[Int]] = [[1]]\nxs.each { |a: Int?, b: Int?| p a, b }");
-    // A `*rest` takes the elements there are.
-    ok("xs: Array[Array[Int]] = [[1]]\nxs.each { |a, *r| r.each { |x| p x + 1 } }");
+    err(
+        "xs: Array[Array[Int]] = [[1]]\nxs.each { |a, *r| p a, r }",
+        &spread("Array[Int]", 2),
+    );
+    err(
+        "[1, 2, 3, 4].each_slice(2) { |a, b| p a, b }",
+        &spread("Array[Int]", 2),
+    );
+    err(
+        "[1, 2, 3].combination(2).each { |a, b| p a, b }",
+        &spread("Array[Int]", 2),
+    );
+    ok("xs: Array[Array[Int]] = [[1, 2]]\nxs.each { |row| row => [a, *r]\n p a, r }");
     // A tuple only into its arity.
     err(
         "ts: Array[[Int, String, Bool]] = [[1, \"x\", true]]\nts.each { |a, b| p a }",

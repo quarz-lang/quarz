@@ -1,10 +1,7 @@
-# #531 (docs/01 §9): an `Array[T]` element spread over several block
-# parameters pads a shorter one with `nil`, each parameter typed `T?`; a
-# `*rest` takes the elements left (none for a short one); a tuple is spread
-# only into its arity.
-xs: Array[Array[Int]] = [[1], [2, 3], [4, 5, 6]]
-xs.each { |a: Int?, b: Int?| puts "#{a.inspect} #{b.inspect}" }
-xs.each { |a, *rest| puts "#{a.inspect} #{rest.inspect}" }
+# docs/01 §9: a tuple is spread over several block parameters only into
+# its arity, a `*rest` taking the elements left; an `Array[T]` element is
+# not spread at all (#1072, a compile error; it was padded with `nil`
+# here, #531).
 ts: Array[[Int, String]] = [[1, "x"], [2, "y"]]
 ts.each { |n, s| puts "#{n + 1} #{s.upcase}" }
 h = {"k" => 1}
