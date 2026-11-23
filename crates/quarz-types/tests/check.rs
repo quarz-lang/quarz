@@ -2417,6 +2417,32 @@ fn breaks_inside_expressions_and_blocks() {
     );
 }
 
+/// #1090: a class-value argument (`t: Type[U]`) fixes `U` as written,
+/// whatever its place among the arguments: a later `U` argument of a
+/// subclass (an enum's variant, `B < A`) does not narrow it first. The
+/// arguments were typed in a hash map's order, so `f(n, t, d)` took `d`'s.
+#[test]
+fn a_class_value_argument_fixes_its_type_parameter_first() {
+    let defs = "enum Order = Defined | Random\nclass A; end\nclass B < A; end\n";
+    for call in [
+        "def f[U](n: Int, t: Type[U], d: U) -> U = d\ny = f(1, Order, Order::Defined)",
+        "def f[U](t: Type[U], d: U) -> U = d\ny = f(Order, Order::Defined)",
+        "def f[U](n: Int, d: U, t: Type[U]) -> U = d\ny = f(1, Order::Defined, Order)",
+        "def f[U](n: Symbol, t: Type[U], *, d: U) -> U = d\ny = f(:o, Order, d: Order::Defined)",
+    ] {
+        // `y` is an `Order`, not an `Order::Defined`: it takes another.
+        ok(&format!("{defs}{call}\ny = Order::Random\np y"));
+    }
+    ok(&format!(
+        "{defs}def f[U](n: Int, t: Type[U], d: U) -> U = d\na: A = f(1, A, B.new)\np a"
+    ));
+    // A later argument that is no `U` is still refused.
+    err(
+        &format!("{defs}def f[U](n: Int, t: Type[U], d: U) -> U = d\nf(1, Order, 3)"),
+        "expects Order but found Int",
+    );
+}
+
 #[test]
 fn inference_never_binds_a_variable_to_itself() {
     // Found by a generated program: an inference variable bound to a
