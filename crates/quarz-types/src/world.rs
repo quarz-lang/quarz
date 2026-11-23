@@ -2815,14 +2815,16 @@ impl World {
     /// `Meta::ClassDef[...]`), and an extension declares no `static def`
     /// (`check_extension_static`).
     /// Conservative, by design: it answers no for any such extension or
-    /// method, even one whose names change nothing (an exact rule would
-    /// compare names with the prelude's, the "fresh names" variant #551's
-    /// decision left out), never yes for one that does; a no only costs
-    /// the computation a yes saves. No issue to make it exact is planned:
-    /// the programs it refuses in practice extend prelude types with
-    /// methods of names the prelude has (rotor's `<`, `<=`, `>`, `>=` on
-    /// `Int`, `Float`, `String`, `Date`, ..., and so every cog on rotor),
-    /// which the exact rule would refuse as well (#1092's counts).
+    /// method, even one that changes none of the prelude's entries, never
+    /// yes for one that does; a no only costs the computation a yes saves.
+    /// The programs it refuses in practice are those on rotor, whose
+    /// extensions of prelude types (`<`, `<=`, `>`, `>=` on `Int`,
+    /// `Float`, `String`, `Date`, ..., under `using`) change none of the
+    /// prelude's share: the snapshot would give them the same tables
+    /// (#551's estimate), so an exact rule would accept them. None is
+    /// planned: it needs its own soundness argument (which extensions can
+    /// reach a prelude row: an `include`, a conformance, an override), for
+    /// a saving of about 1% of such a program's `check` (#551).
     pub fn prelude_unchanged(&self, classes: usize, methods: usize, extensions: usize) -> bool {
         let prelude = |c: ClassId| (c as usize) < classes;
         self.extensions[extensions.min(self.extensions.len())..]
