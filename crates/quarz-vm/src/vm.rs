@@ -399,19 +399,21 @@ fn own_cache<'a>(
 /// at least `fixed` of them (`destructure_fixed`: the positional
 /// parameters, which the checker held to the tuple's arity; an array is
 /// not spread, #1072; a `*rest` takes what is left, nothing when nothing
-/// is). `None` when the call is not one array value. The rule
-/// `call_block_kw` and `BlockCaller::call` share.
-pub(crate) fn destructured(args: &[Value], fixed: usize) -> Option<ArgVec> {
+/// is). `None` when the call is not one array value. Fewer elements than
+/// `fixed` is an internal error (the message, which the caller raises):
+/// no parameter is left unbound or padded (one length compare a call).
+/// The rule `call_block_kw` and `BlockCaller::call` share.
+pub(crate) fn destructured(args: &[Value], fixed: usize) -> Option<Result<ArgVec, String>> {
     let [Value::Array(a)] = args else {
         return None;
     };
-    let items: ArgVec = a.iter().collect();
-    debug_assert!(
-        items.len() >= fixed,
-        "a tuple of {} spread over {fixed} parameters",
-        items.len()
-    );
-    Some(items)
+    if a.len() < fixed {
+        return Some(Err(format!(
+            "internal error: a tuple of {} spread over {fixed} parameters (#1072)",
+            a.len()
+        )));
+    }
+    Some(Ok(a.iter().collect()))
 }
 
 /// For `destructured`: how many parameters a destructuring block of `n`
@@ -518,8 +520,12 @@ impl BlockCaller {
         // apart, so that the common path keeps no list of its own.)
         if let Some(fixed) = destructure {
             if args.len() == 1 {
-                if let Some(items) = destructured(args, fixed) {
-                    return self.call_spread(&items);
+                match destructured(args, fixed) {
+                    Some(Ok(items)) => return self.call_spread(&items),
+                    Some(Err(why)) => {
+                        return Err(interp.raise(interp.program.exc.runtime_error, &why))
+                    }
+                    None => {}
                 }
             }
         }
@@ -1599,8 +1605,12 @@ impl Interp {
                 };
                 // Destructure a single array argument over several parameters.
                 if let Some(n) = closure.destructure {
-                    if let Some(items) = destructured(&args, destructure_fixed(n, &f.param_kinds)) {
-                        args = items;
+                    match destructured(&args, destructure_fixed(n, &f.param_kinds)) {
+                        Some(Ok(items)) => args = items,
+                        Some(Err(why)) => {
+                            return Err(self.raise(self.program.exc.runtime_error, &why))
+                        }
+                        None => {}
                     }
                 }
                 let file = closure.file;
