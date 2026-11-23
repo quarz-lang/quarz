@@ -26,11 +26,11 @@ def col(name: String, v: Int) -> Cond = Eq.new(name, v)
 
 q = col("a", 1) && col("b", 2) || col("c", 3)
 puts q
-r = (col("x", 1) and col("y", 2))
+r = (col("x", 1) && col("y", 2))
 puts r
-r = (col("x", 1) or col("y", 2))
+r = (col("x", 1) || col("y", 2))
 puts r
-r = (col("x", 1) or col("y", 2) and col("z", 3))
+r = ((col("x", 1) || col("y", 2)) && col("z", 3))
 puts r
 q ||= col("d", 4)
 puts q

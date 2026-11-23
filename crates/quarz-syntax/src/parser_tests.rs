@@ -34,11 +34,18 @@ fn precedence() {
         sexp("a || b && c"),
         "(or (call _ a) (and (call _ b) (call _ c)))"
     );
-    assert_eq!(
-        sexp("a and b or c"),
-        "(or (and (call _ a) (call _ b)) (call _ c))"
-    );
-    assert_eq!(sexp("not a == b"), "(not (call (call _ a) == (call _ b)))");
+    // No `and`, `or`, `not` (#1073): one error each, at the keyword.
+    let and = "Quarz has no `and`: write `&&` (it binds tighter than `=`, where `and` bound looser: `(x = a) && b` keeps that reading)";
+    let or = "Quarz has no `or`: write `||` (it binds tighter than `=`, where `or` bound looser: `(x = a) || b` keeps that reading)";
+    let not = "Quarz has no `not`: write `!` (it binds tighter than `==`, where `not` bound looser: `!(a == b)` keeps that reading)";
+    assert_eq!(errors("a and b or c"), vec![and, or]);
+    assert_eq!(errors("x = a or b"), vec![or]);
+    assert_eq!(errors("not a == b"), vec![not]);
+    assert_eq!(errors("if not x\n  1\nend"), vec![not]);
+    // Still names after `.`, symbols and labels.
+    assert_eq!(sexp("x.not"), "(call (call _ x) not)");
+    assert_eq!(sexp(":and"), ":and");
+    assert_eq!(sexp("f(or: 1)"), "(call _ f or: 1)");
     assert_eq!(sexp("!a == b"), "(call (not (call _ a)) == (call _ b))");
     assert_eq!(
         sexp("a ? b : c"),
