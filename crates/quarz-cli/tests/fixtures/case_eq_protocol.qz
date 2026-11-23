@@ -85,3 +85,14 @@ when f then puts "f called"
 end
 def same(a: Object, b: Object) -> Bool = a === b
 p same(f, 5), same(f, f)
+# The advice of the error for a subject the procedure does not take: the
+# arms before it take the other types, and it gets the rest.
+def t(x: Int | String) -> String
+  g = ->(n: Int) { n > 1 }
+  case x
+  when String then "string"
+  when g then "g"
+  else "small"
+  end
+end
+puts t(5), t("a"), t(0)

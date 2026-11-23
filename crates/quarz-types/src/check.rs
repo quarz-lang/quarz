@@ -9337,9 +9337,26 @@ impl Checker {
         let subject = self.resolve(subject);
         if !self.coerce(&subject, &param) {
             let (pt, st) = (self.name(&param), self.name(&subject));
+            // (The members the parameter does not take, for the advice.)
+            let members = match &subject {
+                Type::Union(ms) => ms.clone(),
+                t => vec![t.clone()],
+            };
+            let others: Vec<String> = members
+                .iter()
+                .filter(|m| !self.world.is_subtype(m, &param))
+                .map(|m| format!("`{}`", self.name(m)))
+                .collect();
+            let first = if kw == "===" {
+                format!("narrow the operand to `{pt}` first")
+            } else if others.len() < members.len() {
+                format!("take {} in a `{kw}` before it", others.join(" and "))
+            } else {
+                format!("give it a subject of type `{pt}`")
+            };
             self.error(
                 format!(
-                    "`{kw}` calls the procedure with the subject: `{pname}` takes `{pt}`, not `{st}`; narrow the subject first (a `when {pt}` before it), or give the procedure an `Object` parameter"
+                    "`{kw}` calls the procedure with the subject: `{pname}` takes `{pt}`, not `{st}`; {first}, or give the procedure an `Object` parameter"
                 ),
                 span,
             );
@@ -9405,7 +9422,10 @@ impl Checker {
                     // (A type parameter's class value: a test, #598.)
                     let st2 = self.resolve(st);
                     self.check_testable_param(&st2, &ct, "when", ce.span);
-                    self.proc_pattern(ce, &ct, &st2, "when");
+                    // (What the arms before have not taken: a procedure
+                    // after `when String` gets the rest.)
+                    let left = remaining.clone().unwrap_or(st2);
+                    self.proc_pattern(ce, &ct, &left, "when");
                     // Value comparison with `===`.
                     narrowed_to.push(self.resolve(st));
                 }
