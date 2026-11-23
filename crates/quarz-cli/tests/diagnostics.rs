@@ -534,6 +534,15 @@ class SameLong < CommandLine
   flag :color
   flag :b, long: "color"
 end
+
+enum Shape
+  variant Circle(r: Float)
+  variant Point
+end
+
+class Shapes < CommandLine
+  option :shape, Shape, default: nil
+end
 "#,
     )
     .unwrap();
@@ -552,7 +561,7 @@ end
         "bad.qz:14:3: error: `flag` raised ArgumentError: CommandLine: `--help` is the help's own",
         "bad.qz:18:3: error: `flag` raised ArgumentError: CommandLine: `-h` is the help's own",
         "bad.qz:22:3: error: `flag` raised ArgumentError: CommandLine: the short name of `all` must be one letter or digit, not \"ab\"",
-        "bad.qz:26:3: error: `option` raised ArgumentError: CommandLine: `Time` is not a value type (String, Int, Float, Bool)",
+        "bad.qz:26:3: error: `option` raised ArgumentError: CommandLine: `Time` is not a value type (String, Int, Float, Bool, an enum whose variants have no fields)",
         "bad.qz:31:3: error: `rest` raised ArgumentError: CommandLine: `rest` is declared twice",
         "bad.qz:36:3: error: `rest` raised ArgumentError: CommandLine: a class with commands takes no `rest`",
         "bad.qz:43:1: error: `CommandLine.inherited`, run for `Child`, raised ArgumentError: CommandLine: options are declared on a direct subclass of CommandLine (`Child` is below one that declares them)",
@@ -566,6 +575,7 @@ end
         "bad.qz:76:3: error: `flag` raised ArgumentError: CommandLine: \"-a\" is not a long name for `a` (letters, digits and `-`, not starting with `-`)",
         "bad.qz:81:3: error: `option` raised ArgumentError: CommandLine: `--no-color` would both negate a flag and name an option",
         "bad.qz:86:3: error: `flag` raised ArgumentError: CommandLine: `--color` is declared twice",
+        "bad.qz:95:3: error: `option` raised ArgumentError: CommandLine: `Shape` is not a value type (String, Int, Float, Bool, an enum whose variants have no fields): its variant `Shape::Circle` has fields",
     ];
     for e in expected {
         assert!(err.contains(e), "{e}\n{err}");

@@ -63,6 +63,18 @@ class Site < CommandLine
   command :remote, Remote
 end
 
+enum Unit = Bytes | Chars | NoKeyUpdate
+enum Order = Defined | Random
+
+class Enums < CommandLine
+  option :unit, Unit, default: Unit::Bytes, help: "what to count"
+  option :order, Order, default: nil
+  option :need, Order
+  option :mode, Unit, default: Unit::Chars, bare: Unit::NoKeyUpdate
+  list :units, Unit, short: "u"
+  rest :orders, Order
+end
+
 # Hands its arguments on as given.
 class Migrate < CommandLine
   about "Run the pending migrations."
@@ -347,6 +359,42 @@ Options:
   -h, --help       print this help and exit
 TEXT
     assert_equal(serve, assert_raise(CommandLine::Help) { Site.parse(["serve", "--help"], exit: false); nil }.message)
+  end
+
+  def test_enum_values_by_variant
+    e = Enums.parse(["--need=random", "--unit", "no-key-update", "-u", "chars", "-ubytes", "--mode", "defined"], exit: false)
+    u: Unit = e.unit
+    assert_equal[Unit](Unit::NoKeyUpdate, u)
+    o: Order? = e.order
+    assert_nil(o)
+    assert_equal[Order](Order::Random, e.need)
+    assert_equal[Unit](Unit::NoKeyUpdate, e.mode)
+    assert_equal[Array[Unit]]([Unit::Chars, Unit::Bytes], e.units)
+    assert_equal[Array[Order]]([Order::Defined], e.orders)
+    d = Enums.parse(["--need=defined", "--mode=bytes"], exit: false)
+    assert_equal[Unit](Unit::Bytes, d.unit)
+    assert_equal[Unit](Unit::Bytes, d.mode)
+    assert_equal("option '--need': 'sideways' is not one of defined, random", error_of { Enums.parse(["--need=sideways"], exit: false); nil })
+    assert_equal("option '--need': 'Random' is not one of defined, random", error_of { Enums.parse(["--need=Random"], exit: false); nil })
+    assert_equal("argument ORDERS: 'x' is not one of defined, random", error_of { Enums.parse(["--need=random", "x"], exit: false); nil })
+  end
+
+  def test_enum_help
+    expected = <<-TEXT
+usage: enums [options] --need=NEED [ORDERS...]
+
+Options:
+      --unit=UNIT    what to count: bytes, chars, no-key-update (default: bytes)
+      --order=ORDER  one of defined, random
+      --need=NEED    one of defined, random (required)
+      --mode[=MODE]  one of bytes, chars, no-key-update; MODE is no-key-update when omitted (default: chars)
+  -u, --units=UNITS  one of bytes, chars, no-key-update (may repeat)
+  -h, --help         print this help and exit
+
+Arguments:
+  ORDERS  one of defined, random
+TEXT
+    assert_equal(expected, Enums.help)
   end
 
   def test_long_names
