@@ -255,9 +255,14 @@ fn assignment_targets() {
     );
     assert_eq!(sexp("@x ||= 1"), "(||= @x 1)");
     assert_eq!(sexp("Foo = 1"), "(const Foo 1)");
+    // No `rescue` modifier (#1074), after an assignment's value or a
+    // statement; one error each, the next statement parsed.
+    let removed = "Quarz has no `rescue` modifier: it would rescue every `StandardError` the expression raises; write `begin ... rescue K ... end` naming the class, or use the method's `?` variant where there is one (`[]?`, `first?`, `Date.parse?`)";
+    assert_eq!(errors("x = risky rescue 0"), vec![removed]);
+    assert_eq!(errors("risky rescue nil"), vec![removed]);
     assert_eq!(
-        sexp("x = risky rescue 0"),
-        "(= x (begin (call _ risky) (rescue 0)))"
+        errors("@x = f(1) rescue g(2)\ny = 1 +"),
+        vec![removed, "expected an expression, found end of file"]
     );
     assert!(!errors("1 = 2").is_empty());
     assert!(!errors("x += 1").is_empty());
