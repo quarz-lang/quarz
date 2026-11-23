@@ -631,7 +631,7 @@ impl<'src> Parser<'src> {
     fn rescue_modifier(&mut self, in_value: bool) -> PResult<()> {
         let span = self.bump().span;
         self.error_at(
-            "the `rescue` modifier is removed: it rescues every `StandardError` the expression raises; write `begin ... rescue K ... end` naming the class, or use the method's `?` variant where there is one (`[]?`, `first?`, `Date.parse?`)",
+            "Quarz has no `rescue` modifier: it would rescue every `StandardError` the expression raises; write `begin ... rescue K ... end` naming the class, or use the method's `?` variant where there is one (`[]?`, `first?`, `Date.parse?`)",
             span,
         );
         if in_value {
