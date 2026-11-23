@@ -1003,12 +1003,14 @@ pub struct Interp {
     /// functions loaded when it was taken.
     pub(crate) image_cache: RefCell<Option<(usize, std::sync::Arc<crate::transfer::ProgramImage>)>>,
     name_cache: RefCell<FxHashMap<NameKey, FxHashMap<String, Option<MethodId>>>>,
-    /// A class's own `===` (`has_user_method`), by class, for
-    /// `case_eq`'s object arm: one map lookup a `when` instead of
-    /// `find_method`'s by name (#1075). As `name_cache`, kept for the
-    /// interpreter's life; not used in a compile-time run, whose
-    /// `refuse_generated_over` applies to each dispatch.
-    case_eq_methods: RefCell<FxHashMap<ClassId, Option<MethodId>>>,
+    /// What `case_eq`'s object arm runs for a pattern of a class: its own
+    /// `===`, else its own `==`, else the default comparison
+    /// (`has_user_method` for each), by class: one map lookup a `when`
+    /// instead of two, the second by name (#1075, #1088). As
+    /// `name_cache`, kept for the interpreter's life; not used in a
+    /// compile-time run, whose `refuse_generated_over` applies to each
+    /// dispatch.
+    case_eq_methods: RefCell<FxHashMap<ClassId, CaseEq>>,
     next_tag: Rc<Cell<u64>>,
     /// The activations in progress, innermost last (all tasks share the
     /// vector; entries are tagged with their task). Raw pointers: an
@@ -4033,27 +4035,43 @@ impl Interp {
             Value::Class(cid) => Ok(self.case_eq_class(*cid, v)),
             Value::Range(r) => self.range_covers(r, v),
             Value::Regexp(re) => self.case_eq_regexp(re, v),
-            Value::Object(_) => match self.own_case_eq(pattern)? {
-                Some(mid) => Ok(self
+            Value::Object(_) => match self.object_case_eq(pattern)? {
+                CaseEq::Own(mid) | CaseEq::Eq(mid) => Ok(self
                     .invoke(mid, pattern.clone(), smallvec![v.clone()], vec![], None)?
                     .is_truthy()),
-                None => self.values_equal(pattern, v),
+                // (As `values_equal` past its lookup of `==`.)
+                CaseEq::Default => {
+                    let eq = pattern == v;
+                    crate::keys::check()?;
+                    Ok(eq)
+                }
             },
             _ => self.values_equal(pattern, v),
         }
     }
 
-    /// The pattern's class's own `===` (`has_user_method`), cached by
-    /// class outside a compile-time run (`case_eq_methods`).
-    fn own_case_eq(&self, pattern: &Value) -> Result<Option<MethodId>, Flow> {
+    /// What an object pattern runs (`CaseEq`): its class's own `===`,
+    /// else its own `==` (`values_equal`'s), else the default, each by
+    /// `has_user_method`; cached by class outside a compile-time run
+    /// (`case_eq_methods`).
+    fn object_case_eq(&self, pattern: &Value) -> Result<CaseEq, Flow> {
+        let find = || -> Result<CaseEq, Flow> {
+            Ok(match self.has_user_method(pattern, "===", 1)? {
+                Some(mid) => CaseEq::Own(mid),
+                None => match self.has_user_method(pattern, "==", 1)? {
+                    Some(mid) => CaseEq::Eq(mid),
+                    None => CaseEq::Default,
+                },
+            })
+        };
         if self.generated_any.get() {
-            return self.has_user_method(pattern, "===", 1);
+            return find();
         }
         let cid = self.class_of(pattern);
         if let Some(found) = self.case_eq_methods.borrow().get(&cid) {
             return Ok(*found);
         }
-        let found = self.has_user_method(pattern, "===", 1)?;
+        let found = find()?;
         self.case_eq_methods.borrow_mut().insert(cid, found);
         Ok(found)
     }
@@ -4913,4 +4931,16 @@ mod sort_tests {
             assert_eq!(seen, (0..n).collect::<Vec<_>>(), "a permutation");
         }
     }
+}
+
+/// What `Interp::case_eq` runs for an object pattern of a class
+/// (`Interp::case_eq_methods`, #1088).
+#[derive(Clone, Copy, Debug)]
+enum CaseEq {
+    /// The class's own `===`.
+    Own(MethodId),
+    /// No `===` of its own: its own `==`, which `Object#===` calls.
+    Eq(MethodId),
+    /// Neither: the default comparison (`Value`'s `==`).
+    Default,
 }
