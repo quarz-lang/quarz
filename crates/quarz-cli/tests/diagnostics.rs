@@ -433,7 +433,8 @@ fn decimal_mixes_with_no_float_and_orders_only_decimals() {
 }
 
 /// `CommandLine`'s declarations (std/command_line.qz, #1089) refuse at
-/// the statement a name, long name or short name taken, the help's own
+/// the statement a name, long name or short name taken, a name the
+/// instances already answer or one starting with `__`, the help's own
 /// names, a short name that is not one character, a type that is not a
 /// value type, a second `rest` or `program`, `rest` beside `command`, a
 /// `min:` above `max:`; and at the `class` line a class below a command
@@ -502,6 +503,12 @@ class Programs < CommandLine
   program "a"
   program "b"
 end
+
+class Methods < CommandLine
+  option :hash, String, default: nil
+  flag :error
+  list :__values_of, String
+end
 "#,
     )
     .unwrap();
@@ -526,6 +533,9 @@ end
         "bad.qz:43:1: error: `CommandLine.inherited`, run for `Child`, raised ArgumentError: CommandLine: options are declared on a direct subclass of CommandLine (`Child` is below one that declares them)",
         "bad.qz:51:3: error: `rest` raised ArgumentError: CommandLine: `min:` of `a` is above its `max:`",
         "bad.qz:56:3: error: `program` raised ArgumentError: CommandLine: `program` is given twice",
+        "bad.qz:60:3: error: `option` raised ArgumentError: CommandLine: `hash` cannot name an option: `Methods` already has a method of that name (its reader would replace it); name the option otherwise",
+        "bad.qz:61:3: error: `flag` raised ArgumentError: CommandLine: `error` cannot name an option: `Methods` already has a method of that name (its reader would replace it); name the option otherwise",
+        "bad.qz:62:3: error: `list` raised ArgumentError: CommandLine: `__values_of` cannot name an option: names starting with `__` are CommandLine's own",
     ];
     for e in expected {
         assert!(err.contains(e), "{e}\n{err}");

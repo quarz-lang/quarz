@@ -63,6 +63,10 @@ class Site < CommandLine
   command :remote, Remote
 end
 
+# Named `http-server` in its usage line.
+class HTTPServer < CommandLine
+end
+
 # A class named in kebab case for its usage line, with a banner.
 class WordCount < CommandLine
   banner "usage: wc2 [-l] FILE..."
@@ -187,7 +191,7 @@ class CommandLineTest < Test::Case
     assert_equal("unexpected argument 'c'", error_of { Ports.parse(["--port=1", "--port=2", "a", "b", "c"], exit: false); nil })
     assert_equal("needs at least 2 X arguments", error_of { Numbers.parse(["1"], exit: false); nil })
     assert_equal([1.0, 2.5], Numbers.parse(["1", "2.5"], exit: false).values)
-    assert_equal("option 'X': 'a' is not a number", error_of { Numbers.parse(["1", "a"], exit: false); nil })
+    assert_equal("argument X: 'a' is not a number", error_of { Numbers.parse(["1", "a"], exit: false); nil })
     assert_equal("unexpected argument 'x'", error_of { Bare.parse(["x"], exit: false); nil })
   end
 
@@ -233,6 +237,12 @@ TEXT
     assert_equal(expected, assert_raise(CommandLine::Help) { Wc.parse(["--bogus", "--help"], exit: false); nil }.message)
     # After `--` it is an operand.
     assert_equal(["--help"], wc(["--", "--help"]).files)
+    # An option's value is no help, before a mistake too.
+    assert_equal("-h", wc(["--files-from", "-h"]).files_from)
+    assert_equal("option '--jobs': 'x' is not an integer", error_of { wc(["--files-from", "-h", "--jobs=x"]); nil })
+    assert_equal("option '--jobs': 'x' is not an integer", error_of { Wc.parse(["-o", "-h", "--jobs=x"], exit: false); nil })
+    assert_equal("option '-j': '-h' is not an integer", error_of { wc(["-j", "-h"]); nil })
+    assert_equal(expected, assert_raise(CommandLine::Help) { Wc.parse(["-j", "-h", "-h"], exit: false); nil }.message)
   end
 
   def test_help_with_operands_and_lists
@@ -254,6 +264,8 @@ TEXT
     assert_equal(expected, assert_raise(CommandLine::Help) { WordCount.parse(["-h"], exit: false); nil }.message)
     e = assert_raise(CommandLine::Error) { WordCount.parse(["-x"], exit: false); nil }
     assert_equal("word-count", e.as(CommandLine::Error).program)
+    e = assert_raise(CommandLine::Error) { HTTPServer.parse(["x"], exit: false); nil }
+    assert_equal("http-server", e.as(CommandLine::Error).program)
   end
 
   def test_subcommands

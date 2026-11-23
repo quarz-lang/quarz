@@ -59,7 +59,12 @@
 # An option's name is its reader's, and its long name the same with `-`
 # for `_` (`:files_from` is `--files-from`); `short:` is one letter or
 # digit. `--help` and `-h` are the help's own, and a name or short name
-# used twice is a compile error at the statement.
+# used twice, or a name the class's instances already answer (`hash`,
+# `to_s`, `command`, `error`), is a compile error at the statement.
+#
+# A command class writes no `initialize` of its own: [parse] makes its
+# instances with [CommandLine]'s, and the checker refuses one that does
+# not take its arguments.
 #
 # ## Parsing
 #
@@ -81,6 +86,8 @@
 # option '--ratio': 'x' is not a number
 # option '--cache': 'yes' is not true or false
 # missing option '--out'
+# option '--port' needs at least 2 values
+# argument FILE: 'x' is not an integer
 # missing FILE
 # needs at least 2 FILE arguments
 # unexpected argument 'x'
@@ -202,46 +209,17 @@ class CommandLine
   end
 
   # :nodoc:
-  # One declared option or the operands, as the statements record it.
-  data Decl = (
-    kind: Symbol,          # :flag, :option, :list or :rest
-    name: Symbol,
-    long: String,          # the long name, without `--`
-    short: String,         # "" for none
-    value: Symbol,         # :string, :int, :float or :bool (a flag's is :bool)
-    required: Bool,
-    default_text: String,  # what the help shows as the default, "" for none
-    bare: String?,         # the text of an optional value's `bare` value
-    arg: String,
-    help: String,
-    min: Int,
-    max: Int?
-  )
-
-  # :nodoc:
-  # A line of the help: an option or command and its text.
-  data Row = (left: String, text: String)
-
-  # :nodoc:
-  data Cmd = (name: Symbol, type: Type[CommandLine], help: String?)
-
-  # :nodoc:
-  # What a class declared: the statements' values, gathered by
-  # [inherited].
-  data Spec = (program: String?, about: String?, banner: String?, decls: Array[Decl], commands: Array[Cmd])
-
-  # :nodoc:
   # Gathers the class's declarations into its [__spec] (the `inherited`
   # hook, docs/14 §5).
   static def self.inherited -> Void
-    decls = statement_values[Decl](:command_line_decls).values
-    commands = statement_values[Cmd](:command_line_commands).values
+    decls = statement_values[Support::Decl](:command_line_decls).values
+    commands = statement_values[Support::Cmd](:command_line_commands).values
     program = statement_values[String](:command_line_program).values
     about = statement_values[String](:command_line_about).values
     banner = statement_values[String](:command_line_banner).values
     return if decls.empty? && commands.empty? && program.empty? && about.empty? && banner.empty?
     raise ArgumentError, "CommandLine: options are declared on a direct subclass of CommandLine (`#{name}` is below one that declares them)" unless field(:__command_line_declared).nil?
-    spec = Spec.new(program.first?, about.first?, banner.first?, decls, commands)
+    spec = Support::Spec.new(program.first?, about.first?, banner.first?, decls, commands)
     def_class_method(:__spec, override: true) { spec }
     def_field(:__command_line_declared, Bool, true)
   end
@@ -249,27 +227,27 @@ class CommandLine
   # The command's name in the usage and error lines (by default the
   # class's name in kebab case).
   static def self.program(name: String) -> Void
-    CommandLine.once(self, :command_line_program, "program", name)
+    Support.once(self, :command_line_program, "program", name)
   end
 
   # The paragraph the help gives under the usage line; its first line is
   # the command's summary in its parent's list of commands.
   static def self.about(text: String) -> Void
-    CommandLine.once(self, :command_line_about, "about", text)
+    Support.once(self, :command_line_about, "about", text)
   end
 
   # A usage text that replaces the generated usage line.
   static def self.banner(text: String) -> Void
-    CommandLine.once(self, :command_line_banner, "banner", text)
+    Support.once(self, :command_line_banner, "banner", text)
   end
 
   # A flag: `--name` sets it, `--no-name` clears it, `short:` is its
   # one-character name. Its reader gives [default] when neither is given.
   static def self.flag(name: Symbol, *, short: String? = nil, default: Bool = false, help: String = "") -> Void
-    CommandLine.declare(self, Decl.new(:flag, name, CommandLine.long_name(name), short || "", :bool, false,
-                                       default ? "on" : "", nil, "", help, 0, nil))
+    Support.declare(self, Support::Decl.new(:flag, name, Support.long_name(name), short || "", :bool, false,
+                                            default ? "on" : "", nil, "", help, 0, nil))
     def_method(name) do -> Bool
-      v = value_of(name)
+      v = __value_of(name)
       v.nil? ? default : v == true
     end
   end
@@ -278,10 +256,10 @@ class CommandLine
   # [Float] or [Bool]); `arg:` names the value in the help (by default
   # the name in upper case).
   static def self.option[U](name: Symbol, type: Type[U], *, short: String? = nil, arg: String? = nil, help: String = "") -> Void
-    CommandLine.declare(self, Decl.new(:option, name, CommandLine.long_name(name), short || "", CommandLine.value_kind(type),
-                                       true, "", nil, arg || CommandLine.arg_name(name), help, 0, nil))
+    Support.declare(self, Support::Decl.new(:option, name, Support.long_name(name), short || "", Support.value_kind(type),
+                                            true, "", nil, arg || Support.arg_name(name), help, 0, nil))
     def_method(name) do -> U
-      type.cast(value_of(name))
+      type.cast(__value_of(name))
     end
   end
 
@@ -290,22 +268,22 @@ class CommandLine
   # [bare], and only an attached value (`--name=value`, `-nvalue`)
   # another.
   static def self.option[U](name: Symbol, type: Type[U], *, default: U, bare: U? = nil, short: String? = nil, arg: String? = nil, help: String = "") -> Void
-    kind = CommandLine.value_kind(type)
-    CommandLine.declare(self, Decl.new(:option, name, CommandLine.long_name(name), short || "", kind, false,
-                                       CommandLine.default_text(default), bare.nil? ? nil : bare.to_s,
-                                       arg || CommandLine.arg_name(name), help, 0, nil))
+    kind = Support.value_kind(type)
+    Support.declare(self, Support::Decl.new(:option, name, Support.long_name(name), short || "", kind, false,
+                                            Support.default_text(default), bare.nil? ? nil : bare.to_s,
+                                            arg || Support.arg_name(name), help, 0, nil))
     def_method(name) do -> U
-      v = value_of(name)
+      v = __value_of(name)
       v.nil? ? default : type.cast(v)
     end
   end
 
   # An option with a value of type [type], nil when it is not given.
   static def self.option[U](name: Symbol, type: Type[U], *, default: Nil, short: String? = nil, arg: String? = nil, help: String = "") -> Void
-    CommandLine.declare(self, Decl.new(:option, name, CommandLine.long_name(name), short || "", CommandLine.value_kind(type),
-                                       false, "", nil, arg || CommandLine.arg_name(name), help, 0, nil))
+    Support.declare(self, Support::Decl.new(:option, name, Support.long_name(name), short || "", Support.value_kind(type),
+                                            false, "", nil, arg || Support.arg_name(name), help, 0, nil))
     def_method(name) do -> U?
-      v = value_of(name)
+      v = __value_of(name)
       v.nil? ? nil : type.cast(v)
     end
   end
@@ -314,27 +292,27 @@ class CommandLine
   # (empty when none was); at least [min] of them are required.
   static def self.list[U](name: Symbol, type: Type[U], *, min: Int = 0, short: String? = nil, arg: String? = nil, help: String = "") -> Void
     raise ArgumentError, "CommandLine: `min:` of `#{name}` is negative" if min < 0
-    CommandLine.declare(self, Decl.new(:list, name, CommandLine.long_name(name), short || "", CommandLine.value_kind(type),
-                                       min > 0, "", nil, arg || CommandLine.arg_name(name), help, min, nil))
+    Support.declare(self, Support::Decl.new(:list, name, Support.long_name(name), short || "", Support.value_kind(type),
+                                            min > 0, "", nil, arg || Support.arg_name(name), help, min, nil))
     def_method(name) do -> Array[U]
-      values_of(name).map { |v| type.cast(v) }
+      __values_of(name).map { |v| type.cast(v) }
     end
   end
 
   # The operands, as strings: at least [min], at most [max]; `arg:`
   # names one in the usage line (by default the name in upper case).
   static def self.rest(name: Symbol, *, min: Int = 0, max: Int? = nil, arg: String? = nil, help: String = "") -> Void
-    CommandLine.declare_rest(self, name, :string, min, max, arg, help)
+    Support.declare_rest(self, name, :string, min, max, arg, help)
     def_method(name) do -> Array[String]
-      values_of(name).map { |v| String.cast(v) }
+      __values_of(name).map { |v| String.cast(v) }
     end
   end
 
   # The operands, as values of type [type].
   static def self.rest[U](name: Symbol, type: Type[U], *, min: Int = 0, max: Int? = nil, arg: String? = nil, help: String = "") -> Void
-    CommandLine.declare_rest(self, name, CommandLine.value_kind(type), min, max, arg, help)
+    Support.declare_rest(self, name, Support.value_kind(type), min, max, arg, help)
     def_method(name) do -> Array[U]
-      values_of(name).map { |v| type.cast(v) }
+      __values_of(name).map { |v| type.cast(v) }
     end
   end
 
@@ -343,71 +321,16 @@ class CommandLine
   # of its [about]). [command] and [command_name] say which one was
   # given.
   static def self.command[U <: CommandLine](name: Symbol, type: Type[U], *, help: String? = nil) -> Void
-    taken = statement_values[Cmd](:command_line_commands).values
+    taken = statement_values[Support::Cmd](:command_line_commands).values
     raise ArgumentError, "CommandLine: the command `#{name}` is declared twice" if taken.any? { |c| c.name == name }
-    raise ArgumentError, "CommandLine: a class with commands takes no `rest`" if statement_values[Decl](:command_line_decls).values.any? { |d| d.kind == :rest }
-    statement_values[Cmd](:command_line_commands).add(Cmd.new(name, type, help))
-  end
-
-  # :nodoc:
-  # A statement that may be given once.
-  static def self.once(cls: Meta::ClassDef[CommandLine], key: Symbol, what: String, text: String) -> Void
-    values = cls.statement_values[String](key)
-    raise ArgumentError, "CommandLine: `#{what}` is given twice" if values.size > 0
-    values.add(text)
-  end
-
-  # :nodoc:
-  # Records an option, refusing a name, long name or short name taken.
-  static def self.declare(cls: Meta::ClassDef[CommandLine], d: Decl) -> Void
-    values = cls.statement_values[Decl](:command_line_decls)
-    taken = values.values
-    raise ArgumentError, "CommandLine: `--help` is the help's own" if d.long == "help"
-    raise ArgumentError, "CommandLine: `-h` is the help's own" if d.short == "h"
-    raise ArgumentError, "CommandLine: the short name of `#{d.name}` must be one letter or digit, not #{d.short.inspect}" unless d.short.empty? || d.short.match?(/\A[A-Za-z0-9]\z/)
-    raise ArgumentError, "CommandLine: `#{d.name}` is declared twice" if taken.any? { |t| t.name == d.name }
-    raise ArgumentError, "CommandLine: `--#{d.long}` is declared twice" if d.kind != :rest && taken.any? { |t| t.kind != :rest && t.long == d.long }
-    raise ArgumentError, "CommandLine: `-#{d.short}` is declared twice" if !d.short.empty? && taken.any? { |t| t.short == d.short }
-    values.add(d)
-  end
-
-  # :nodoc:
-  static def self.declare_rest(cls: Meta::ClassDef[CommandLine], name: Symbol, kind: Symbol, min: Int, max: Int?, arg: String?, help: String) -> Void
-    raise ArgumentError, "CommandLine: `rest` is declared twice" if cls.statement_values[Decl](:command_line_decls).values.any? { |d| d.kind == :rest }
-    raise ArgumentError, "CommandLine: a class with commands takes no `rest`" if cls.statement_values[Cmd](:command_line_commands).size > 0
-    raise ArgumentError, "CommandLine: `min:` of `#{name}` is negative" if min < 0
-    raise ArgumentError, "CommandLine: `min:` of `#{name}` is above its `max:`" if !max.nil? && min > max
-    declare(cls, Decl.new(:rest, name, CommandLine.long_name(name), "", kind, min > 0, "", nil,
-                          arg || CommandLine.arg_name(name), help, min, max))
-  end
-
-  # :nodoc:
-  # The kind of value [type] is, or the error for a type that is not one.
-  def self.value_kind(type: Type[Object]) -> Symbol
-    return :string if type == String
-    return :int if type == Int
-    return :float if type == Float
-    return :bool if type == Bool
-    raise ArgumentError, "CommandLine: `#{type.name}` is not a value type (String, Int, Float, Bool)"
-  end
-
-  # :nodoc:
-  def self.long_name(name: Symbol) -> String = name.to_s.tr("_", "-")
-
-  # :nodoc:
-  def self.arg_name(name: Symbol) -> String = name.to_s.tr("_", "-").upcase
-
-  # :nodoc:
-  # What the help shows as a default: nothing for nil, false and "".
-  def self.default_text(value: Object?) -> String
-    return "" if value.nil? || value == false
-    value.to_s
+    raise ArgumentError, "CommandLine: a class with commands takes no `rest`" if statement_values[Support::Decl](:command_line_decls).values.any? { |d| d.kind == :rest }
+    statement_values[Support::Cmd](:command_line_commands).add(Support::Cmd.new(name, type, help))
   end
 
   # :nodoc:
   # The class's declarations; [inherited] overrides it in each class that
   # declares some.
-  def self.__spec -> Spec = Spec.new(nil, nil, nil, [], [])
+  def self.__spec -> Support::Spec = Support::Spec.new(nil, nil, nil, [], [])
 
   # Parses [argv] (a program's `ARGV`) as the class declares, giving an
   # instance whose readers hold the values.
@@ -424,9 +347,9 @@ class CommandLine
   # says which), [CommandLine::Help] for `--help` or `-h` (its message is
   # the help text).
   def self.parse(argv: Array[String], *, exit: Bool = true) -> Self
-    return parse_as(argv, nil) unless exit
+    return __parse_as(argv, nil) unless exit
     begin
-      parse_as(argv, nil)
+      __parse_as(argv, nil)
     rescue Help => e
       STDOUT.print(e.message)
       Kernel.exit(0)
@@ -441,11 +364,11 @@ class CommandLine
   # :nodoc:
   # [parse], raising, for the command named [program] (nil: the class's
   # own name).
-  def self.parse_as(argv: Array[String], program: String?) -> Self
+  def self.__parse_as(argv: Array[String], program: String?) -> Self
     spec = __spec
-    prog = program || spec.program || CommandLine.kebab(name)
-    usage = CommandLine.usage_text(spec, prog)
-    values = Parser.new(spec, prog, usage).run(argv)
+    prog = program || spec.program || Support.kebab(name)
+    usage = Support.usage_text(spec, prog)
+    values = Support::Parser.new(spec, prog, usage).run(argv)
     line = new(values, prog, usage)
     begin
       line.validate
@@ -454,289 +377,6 @@ class CommandLine
       raise Error.new(e.message, prog, usage)
     end
     line
-  end
-
-  # :nodoc:
-  # `WordCount` → `word-count`, from a class's last name.
-  def self.kebab(class_name: String) -> String
-    last = class_name.split("::").last? || class_name
-    last.gsub(/([a-z0-9])([A-Z])/) { |_, m| "#{m[1]}-#{m[2]}" }.downcase
-  end
-
-  # :nodoc:
-  # The usage line (or the [banner]), ending in a newline.
-  def self.usage_text(spec: Spec, program: String) -> String
-    banner = spec.banner
-    return banner.end_with?("\n") ? banner : "#{banner}\n" unless banner.nil?
-    parts = ["usage: #{program}"]
-    parts = parts.push("[options]")
-    spec.decls.each do |d|
-      next unless d.required && d.kind != :rest
-      parts = parts.push(d.kind == :flag ? "--#{d.long}" : "--#{d.long}=#{d.arg}")
-    end
-    if spec.commands.size > 0
-      parts = parts.push("COMMAND").push("[ARGS...]")
-    end
-    spec.decls.each do |d|
-      next unless d.kind == :rest
-      one = d.arg
-      max = d.max
-      text = if max == 1
-               d.min == 1 ? one : "[#{one}]"
-             else
-               d.min > 0 ? "#{one}..." : "[#{one}...]"
-             end
-      parts = parts.push(text)
-    end
-    "#{parts.join(" ")}\n"
-  end
-
-  # :nodoc:
-  # The help text of a command.
-  def self.help_text(spec: Spec, program: String) -> String
-    out = usage_text(spec, program)
-    about = spec.about
-    out += "\n#{about.chomp}\n" unless about.nil?
-    rows: Array[Row] = []
-    spec.decls.each do |d|
-      next if d.kind == :rest
-      left = d.short.empty? ? "      " : "  -#{d.short}, "
-      left += case d.kind
-              when :flag then d.default_text == "on" ? "--[no-]#{d.long}" : "--#{d.long}"
-              else d.bare.nil? ? "--#{d.long}=#{d.arg}" : "--#{d.long}[=#{d.arg}]"
-              end
-      text = d.help
-      bare = d.bare
-      text += "; #{d.arg} is #{bare} when omitted" unless bare.nil?
-      notes: Array[String] = []
-      notes = notes.push("required") if d.required && d.kind == :option
-      notes = notes.push("may repeat") if d.kind == :list
-      notes = notes.push("at least #{d.min}") if d.kind == :list && d.min > 1
-      notes = notes.push("default: #{d.default_text}") unless d.default_text.empty?
-      text = notes.empty? ? text : "#{text} (#{notes.join(", ")})".lstrip
-      rows = rows.push(Row.new(left, text))
-    end
-    rows = rows.push(Row.new("  -h, --help", "print this help and exit"))
-    out += "\nOptions:\n#{CommandLine.columns(rows)}"
-    args = spec.decls.select { |d| d.kind == :rest && !d.help.empty? }
-    unless args.empty?
-      out += "\nArguments:\n#{CommandLine.columns(args.map { |d| Row.new("  #{d.arg}", d.help) })}"
-    end
-    unless spec.commands.empty?
-      cmds = spec.commands.map do |c|
-        summary = c.help || (c.type.__spec.about || "").lines.first?&.chomp || ""
-        Row.new("  #{c.name}", summary)
-      end
-      out += "\nCommands:\n#{CommandLine.columns(cmds)}"
-      out += "\nRun '#{program} COMMAND --help' for a command's options.\n"
-    end
-    out
-  end
-
-  # :nodoc:
-  # Two columns: the second starts two spaces after the longest first
-  # entry, at most at column 30; a longer entry puts it on the next line.
-  def self.columns(rows: Array[Row]) -> String
-    width = 0
-    rows.each { |r| width = r.left.size if r.left.size > width }
-    col = width + 2 > 30 ? 30 : width + 2
-    rows.map do |r|
-      left = r.left
-      text = r.text
-      if text.empty?
-        "#{left}\n"
-      elsif left.size + 2 > col
-        "#{left}\n#{" " * col}#{text}\n"
-      else
-        "#{left.ljust(col)}#{text}\n"
-      end
-    end.join
-  end
-
-  # :nodoc:
-  # Reads an argument list against a [Spec].
-  class Parser
-    @spec: Spec
-    @program: String
-    @usage: String
-    var @values: Hash[Symbol, Object] = {}
-    var @operands: Array[String] = []
-    # Whether `--help` or `-h` is among the arguments (before `--` and a
-    # command's name): help comes before any mistake.
-    var @help: Bool = false
-
-    def initialize(@spec: Spec, @program: String, @usage: String); end
-
-    def fail(message: String) -> Nothing
-      raise Help, CommandLine.help_text(@spec, @program) if @help
-      raise Error.new(message, @program, @usage)
-    end
-
-    def run(argv: Array[String]) -> Hash[Symbol, Object]
-      argv.each do |a|
-        break if a == "--" || @spec.commands.any? { |c| c.name.to_s == a }
-        @help = true if a == "--help" || a == "-h"
-      end
-      i = 0
-      options = true
-      while i < argv.size
-        a = argv[i]
-        i += 1
-        if !options || a == "-" || !a.start_with?("-")
-          if @spec.commands.empty?
-            @operands = @operands.push(a)
-            next
-          end
-          command(a, argv[i..])
-          break
-        elsif a == "--"
-          options = false
-        elsif a.start_with?("--")
-          i = long(a, argv, i)
-        else
-          i = shorts(a, argv, i)
-        end
-      end
-      finish
-      @values
-    end
-
-    def long(a: String, argv: Array[String], i: Int) -> Int
-      body = a[2..]
-      eq = body.index("=")
-      name = eq.nil? ? body : body[0...eq]
-      attached = eq.nil? ? nil : body[(eq + 1)..]
-      raise Help, CommandLine.help_text(@spec, @program) if name == "help"
-      d = @spec.decls.find { |x| x.kind != :rest && x.long == name }
-      if d.nil? && name.start_with?("no-")
-        f = @spec.decls.find { |x| x.kind == :flag && x.long == name[3..] }
-        unless f.nil?
-          fail("option '--#{name}' takes no value") unless attached.nil?
-          set(f, false)
-          return i
-        end
-      end
-      fail("unknown option '--#{name}'") if d.nil?
-      if d.kind == :flag
-        fail("option '--#{name}' takes no value") unless attached.nil?
-        set(d, true)
-        return i
-      end
-      unless attached.nil?
-        set(d, convert(d, "--#{name}", attached))
-        return i
-      end
-      bare = d.bare
-      unless bare.nil?
-        set(d, convert(d, "--#{name}", bare))
-        return i
-      end
-      fail("option '--#{name}' needs a value") if i >= argv.size
-      set(d, convert(d, "--#{name}", argv[i]))
-      i + 1
-    end
-
-    def shorts(a: String, argv: Array[String], i: Int) -> Int
-      k = 1
-      while k < a.size
-        c = a[k]
-        k += 1
-        raise Help, CommandLine.help_text(@spec, @program) if c == "h"
-        d = @spec.decls.find { |x| x.short == c }
-        fail("unknown option '-#{c}'") if d.nil?
-        if d.kind == :flag
-          set(d, true)
-          next
-        end
-        if k < a.size
-          set(d, convert(d, "-#{c}", a[k..]))
-          return i
-        end
-        bare = d.bare
-        unless bare.nil?
-          set(d, convert(d, "-#{c}", bare))
-          return i
-        end
-        fail("option '-#{c}' needs a value") if i >= argv.size
-        set(d, convert(d, "-#{c}", argv[i]))
-        return i + 1
-      end
-      i
-    end
-
-    def command(name: String, rest: Array[String]) -> Void
-      names = @spec.commands.map { |c| c.name.to_s }.join(", ")
-      c = @spec.commands.find { |x| x.name.to_s == name }
-      fail("unknown command '#{name}' (one of #{names})") if c.nil?
-      line = c.type.parse_as(rest, "#{@program} #{name}")
-      @values = @values.put(:__command, line).put(:__command_name, c.name)
-    end
-
-    def set(d: Decl, value: Object) -> Void
-      if d.kind == :list
-        empty: Array[Object] = []
-        @values = @values.put(d.name, @values.fetch(d.name, empty).as(Array[Object]).push(value))
-      else
-        @values = @values.put(d.name, value)
-      end
-    end
-
-    # The value [text] of the option [d], given as [given] (`--jobs`, `-j`).
-    def convert(d: Decl, given: String, text: String) -> Object
-      quoted = "'#{text}'"
-      case d.value
-      when :int
-        fail("option '#{given}': #{quoted} is not an integer") unless text.match?(/\A[+-]?[0-9]+\z/)
-        fail("option '#{given}': #{quoted} is out of range") unless CommandLine.fits_int?(text)
-        text.to_i
-      when :float
-        fail("option '#{given}': #{quoted} is not a number") unless text.match?(/\A[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?\z/)
-        text.to_f
-      when :bool
-        fail("option '#{given}': #{quoted} is not true or false") unless text == "true" || text == "false"
-        text == "true"
-      else
-        text
-      end
-    end
-
-    def finish -> Void
-      if !@spec.commands.empty? && !@values.key?(:__command)
-        fail("missing command (one of #{@spec.commands.map { |c| c.name.to_s }.join(", ")})")
-      end
-      @spec.decls.each do |d|
-        case d.kind
-        when :option
-          fail("missing option '--#{d.long}'") if d.required && !@values.key?(d.name)
-        when :list
-          n = @values.key?(d.name) ? @values[d.name].as(Array[Object]).size : 0
-          fail("missing option '--#{d.long}'") if n == 0 && d.min > 0
-          fail("option '--#{d.long}' needs at least #{d.min} values") if n < d.min
-        when :rest
-          n = @operands.size
-          if n < d.min
-            fail(d.min == 1 ? "missing #{d.arg}" : "needs at least #{d.min} #{d.arg} arguments")
-          end
-          max = d.max
-          fail("unexpected argument '#{@operands[max]}'") if !max.nil? && n > max
-          vs: Array[Object] = []
-          @operands.each { |o| vs = vs.push(convert(d, d.arg, o)) }
-          @values = @values.put(d.name, vs)
-        end
-      end
-      has_rest = @spec.decls.any? { |d| d.kind == :rest }
-      fail("unexpected argument '#{@operands[0]}'") if !has_rest && !@operands.empty?
-    end
-  end
-
-  # :nodoc:
-  # Whether a string of digits (with a sign) is an [Int].
-  def self.fits_int?(text: String) -> Bool
-    negative = text.start_with?("-")
-    digits = text.delete_prefix("-").delete_prefix("+").sub(/\A0+/, "")
-    return true if digits.size < 19
-    return false if digits.size > 19
-    digits <= (negative ? "9223372036854775808" : "9223372036854775807")
   end
 
   @values: Hash[Symbol, Object]
@@ -772,11 +412,409 @@ class CommandLine
   end
 
   # :nodoc:
-  def value_of(name: Symbol) -> Object? = @values[name]?
+  def __value_of(name: Symbol) -> Object? = @values[name]?
 
   # :nodoc:
-  def values_of(name: Symbol) -> Array[Object]
+  def __values_of(name: Symbol) -> Array[Object]
     empty: Array[Object] = []
     @values.key?(name) ? @values[name].as(Array[Object]) : empty
+  end
+
+  # :nodoc:
+  # What the declarations and the parser are made of, kept out of the
+  # command classes' own namespace.
+  module Support
+    # One declared option or the operands, as the statements record it.
+    data Decl = (
+      kind: Symbol,          # :flag, :option, :list or :rest
+      name: Symbol,
+      long: String,          # the long name, without `--`
+      short: String,         # "" for none
+      value: Symbol,         # :string, :int, :float or :bool (a flag's is :bool)
+      required: Bool,
+      default_text: String,  # what the help shows as the default, "" for none
+      bare: String?,         # the text of an optional value's `bare` value
+      arg: String,
+      help: String,
+      min: Int,
+      max: Int?
+    )
+
+    # A line of the help: an option or command and its text.
+    data Row = (left: String, text: String)
+
+    # A declared command.
+    data Cmd = (name: Symbol, type: Type[CommandLine], help: String?)
+
+    # What a class declared: the statements' values, gathered by
+    # `inherited`.
+    data Spec = (program: String?, about: String?, banner: String?, decls: Array[Decl], commands: Array[Cmd])
+
+    # A statement that may be given once.
+    static def self.once(cls: Meta::ClassDef[CommandLine], key: Symbol, what: String, text: String) -> Void
+      values = cls.statement_values[String](key)
+      raise ArgumentError, "CommandLine: `#{what}` is given twice" if values.size > 0
+      values.add(text)
+    end
+
+    # Records an option, refusing a name, long name or short name taken,
+    # and a name the class's instances already answer.
+    static def self.declare(cls: Meta::ClassDef[CommandLine], d: Decl) -> Void
+      values = cls.statement_values[Decl](:command_line_decls)
+      taken = values.values
+      raise ArgumentError, "CommandLine: `--help` is the help's own" if d.long == "help"
+      raise ArgumentError, "CommandLine: `-h` is the help's own" if d.short == "h"
+      raise ArgumentError, "CommandLine: the short name of `#{d.name}` must be one letter or digit, not #{d.short.inspect}" unless d.short.empty? || d.short.match?(/\A[A-Za-z0-9]\z/)
+      raise ArgumentError, "CommandLine: `#{d.name}` is declared twice" if taken.any? { |t| t.name == d.name }
+      raise ArgumentError, "CommandLine: `--#{d.long}` is declared twice" if d.kind != :rest && taken.any? { |t| t.kind != :rest && t.long == d.long }
+      raise ArgumentError, "CommandLine: `-#{d.short}` is declared twice" if !d.short.empty? && taken.any? { |t| t.short == d.short }
+      raise ArgumentError, "CommandLine: `#{d.name}` cannot name an option: names starting with `__` are CommandLine's own" if d.name.to_s.start_with?("__")
+      if cls.method?(d.name)
+        raise ArgumentError, "CommandLine: `#{d.name}` cannot name an option: `#{cls.name}` already has a method of that name (its reader would replace it); name the option otherwise"
+      end
+      values.add(d)
+    end
+
+    # Records the operands.
+    static def self.declare_rest(cls: Meta::ClassDef[CommandLine], name: Symbol, kind: Symbol, min: Int, max: Int?, arg: String?, help: String) -> Void
+      raise ArgumentError, "CommandLine: `rest` is declared twice" if cls.statement_values[Decl](:command_line_decls).values.any? { |d| d.kind == :rest }
+      raise ArgumentError, "CommandLine: a class with commands takes no `rest`" if cls.statement_values[Cmd](:command_line_commands).size > 0
+      raise ArgumentError, "CommandLine: `min:` of `#{name}` is negative" if min < 0
+      raise ArgumentError, "CommandLine: `min:` of `#{name}` is above its `max:`" if !max.nil? && min > max
+      declare(cls, Decl.new(:rest, name, long_name(name), "", kind, min > 0, "", nil,
+                            arg || arg_name(name), help, min, max))
+    end
+
+    # The kind of value [type] is, or the error for a type that is not one.
+    def self.value_kind(type: Type[Object]) -> Symbol
+      return :string if type == String
+      return :int if type == Int
+      return :float if type == Float
+      return :bool if type == Bool
+      raise ArgumentError, "CommandLine: `#{type.name}` is not a value type (String, Int, Float, Bool)"
+    end
+
+    def self.long_name(name: Symbol) -> String = name.to_s.tr("_", "-")
+
+    def self.arg_name(name: Symbol) -> String = name.to_s.tr("_", "-").upcase
+
+    # What the help shows as a default: nothing for nil, false and "".
+    def self.default_text(value: Object?) -> String
+      return "" if value.nil? || value == false
+      value.to_s
+    end
+
+    # `WordCount` → `word-count`, `HTTPServer` → `http-server`, from a
+    # class's last name.
+    def self.kebab(class_name: String) -> String
+      last = class_name.split("::").last? || class_name
+      last.gsub(/([A-Z]+)([A-Z][a-z])/) { |_, m| "#{m[1]}-#{m[2]}" }
+          .gsub(/([a-z0-9])([A-Z])/) { |_, m| "#{m[1]}-#{m[2]}" }.downcase
+    end
+
+    # The usage line (or the banner), ending in a newline.
+    def self.usage_text(spec: Spec, program: String) -> String
+      banner = spec.banner
+      return banner.end_with?("\n") ? banner : "#{banner}\n" unless banner.nil?
+      parts = ["usage: #{program}"]
+      parts = parts.push("[options]")
+      spec.decls.each do |d|
+        next unless d.required && d.kind != :rest
+        parts = parts.push(d.kind == :flag ? "--#{d.long}" : "--#{d.long}=#{d.arg}")
+      end
+      if spec.commands.size > 0
+        parts = parts.push("COMMAND").push("[ARGS...]")
+      end
+      spec.decls.each do |d|
+        next unless d.kind == :rest
+        one = d.arg
+        max = d.max
+        text = if max == 1
+                 d.min == 1 ? one : "[#{one}]"
+               else
+                 d.min > 0 ? "#{one}..." : "[#{one}...]"
+               end
+        parts = parts.push(text)
+      end
+      "#{parts.join(" ")}\n"
+    end
+
+    # The help text of a command.
+    def self.help_text(spec: Spec, program: String) -> String
+      out = usage_text(spec, program)
+      about = spec.about
+      out += "\n#{about.chomp}\n" unless about.nil?
+      rows: Array[Row] = []
+      spec.decls.each do |d|
+        next if d.kind == :rest
+        left = d.short.empty? ? "      " : "  -#{d.short}, "
+        left += case d.kind
+                when :flag then d.default_text == "on" ? "--[no-]#{d.long}" : "--#{d.long}"
+                else d.bare.nil? ? "--#{d.long}=#{d.arg}" : "--#{d.long}[=#{d.arg}]"
+                end
+        text = d.help
+        bare = d.bare
+        text += "; #{d.arg} is #{bare} when omitted" unless bare.nil?
+        notes: Array[String] = []
+        notes = notes.push("required") if d.required && d.kind == :option
+        notes = notes.push("may repeat") if d.kind == :list
+        notes = notes.push("at least #{d.min}") if d.kind == :list && d.min > 1
+        notes = notes.push("default: #{d.default_text}") unless d.default_text.empty?
+        text = notes.empty? ? text : "#{text} (#{notes.join(", ")})".lstrip
+        rows = rows.push(Row.new(left, text))
+      end
+      rows = rows.push(Row.new("  -h, --help", "print this help and exit"))
+      out += "\nOptions:\n#{columns(rows)}"
+      args = spec.decls.select { |d| d.kind == :rest && !d.help.empty? }
+      unless args.empty?
+        out += "\nArguments:\n#{columns(args.map { |d| Row.new("  #{d.arg}", d.help) })}"
+      end
+      unless spec.commands.empty?
+        cmds = spec.commands.map do |c|
+          summary = c.help || (c.type.__spec.about || "").lines.first?&.chomp || ""
+          Row.new("  #{c.name}", summary)
+        end
+        out += "\nCommands:\n#{columns(cmds)}"
+        out += "\nRun '#{program} COMMAND --help' for a command's options.\n"
+      end
+      out
+    end
+
+    # Two columns: the second starts two spaces after the longest first
+    # entry, at most at column 30; a longer entry puts it on the next line.
+    def self.columns(rows: Array[Row]) -> String
+      width = 0
+      rows.each { |r| width = r.left.size if r.left.size > width }
+      col = width + 2 > 30 ? 30 : width + 2
+      rows.map do |r|
+        left = r.left
+        text = r.text
+        if text.empty?
+          "#{left}\n"
+        elsif left.size + 2 > col
+          "#{left}\n#{" " * col}#{text}\n"
+        else
+          "#{left.ljust(col)}#{text}\n"
+        end
+      end.join
+    end
+
+    # Whether a string of digits (with a sign) is an [Int].
+    def self.fits_int?(text: String) -> Bool
+      negative = text.start_with?("-")
+      digits = text.delete_prefix("-").delete_prefix("+").sub(/\A0+/, "")
+      return true if digits.size < 19
+      return false if digits.size > 19
+      digits <= (negative ? "9223372036854775808" : "9223372036854775807")
+    end
+
+    # Whether `--help` or `-h` is among the arguments as an option, read
+    # by the parser's rules (an option's value is skipped), before `--`
+    # and a command's name: help comes before any mistake.
+    def self.help?(spec: Spec, argv: Array[String]) -> Bool
+      i = 0
+      while i < argv.size
+        a = argv[i]
+        i += 1
+        return false if a == "--"
+        if a == "-" || !a.start_with?("-")
+          return false unless spec.commands.empty?
+          next
+        end
+        if a.start_with?("--")
+          name = a[2..]
+          return true if name == "help"
+          next if name.include?("=")
+          d = spec.decls.find { |x| x.kind != :rest && x.long == name }
+          i += 1 if !d.nil? && d.kind != :flag && d.bare.nil?
+          next
+        end
+        k = 1
+        while k < a.size
+          c = a[k]
+          k += 1
+          return true if c == "h"
+          d = spec.decls.find { |x| x.short == c }
+          next if d.nil? || d.kind == :flag
+          i += 1 if k >= a.size && d.bare.nil?
+          break
+        end
+      end
+      false
+    end
+
+    # Reads an argument list against a [Spec].
+    class Parser
+      @spec: Spec
+      @program: String
+      @usage: String
+      var @values: Hash[Symbol, Object] = {}
+      var @operands: Array[String] = []
+      # Whether `--help` or `-h` is among the arguments (`Support.help?`).
+      var @help: Bool = false
+
+      def initialize(@spec: Spec, @program: String, @usage: String); end
+
+      def fail(message: String) -> Nothing
+        raise CommandLine::Help, Support.help_text(@spec, @program) if @help
+        raise CommandLine::Error.new(message, @program, @usage)
+      end
+
+      def run(argv: Array[String]) -> Hash[Symbol, Object]
+        @help = Support.help?(@spec, argv)
+        i = 0
+        options = true
+        while i < argv.size
+          a = argv[i]
+          i += 1
+          if !options || a == "-" || !a.start_with?("-")
+            if @spec.commands.empty?
+              @operands = @operands.push(a)
+              next
+            end
+            command(a, argv[i..])
+            break
+          elsif a == "--"
+            options = false
+          elsif a.start_with?("--")
+            i = long(a, argv, i)
+          else
+            i = shorts(a, argv, i)
+          end
+        end
+        finish
+        @values
+      end
+
+      def long(a: String, argv: Array[String], i: Int) -> Int
+        body = a[2..]
+        eq = body.index("=")
+        name = eq.nil? ? body : body[0...eq]
+        attached = eq.nil? ? nil : body[(eq + 1)..]
+        raise CommandLine::Help, Support.help_text(@spec, @program) if name == "help"
+        d = @spec.decls.find { |x| x.kind != :rest && x.long == name }
+        if d.nil? && name.start_with?("no-")
+          f = @spec.decls.find { |x| x.kind == :flag && x.long == name[3..] }
+          unless f.nil?
+            fail("option '--#{name}' takes no value") unless attached.nil?
+            set(f, false)
+            return i
+          end
+        end
+        fail("unknown option '--#{name}'") if d.nil?
+        if d.kind == :flag
+          fail("option '--#{name}' takes no value") unless attached.nil?
+          set(d, true)
+          return i
+        end
+        given = "option '--#{name}'"
+        unless attached.nil?
+          set(d, convert(d, given, attached))
+          return i
+        end
+        bare = d.bare
+        unless bare.nil?
+          set(d, convert(d, given, bare))
+          return i
+        end
+        fail("option '--#{name}' needs a value") if i >= argv.size
+        set(d, convert(d, given, argv[i]))
+        i + 1
+      end
+
+      def shorts(a: String, argv: Array[String], i: Int) -> Int
+        k = 1
+        while k < a.size
+          c = a[k]
+          k += 1
+          raise CommandLine::Help, Support.help_text(@spec, @program) if c == "h"
+          d = @spec.decls.find { |x| x.short == c }
+          fail("unknown option '-#{c}'") if d.nil?
+          if d.kind == :flag
+            set(d, true)
+            next
+          end
+          given = "option '-#{c}'"
+          if k < a.size
+            set(d, convert(d, given, a[k..]))
+            return i
+          end
+          bare = d.bare
+          unless bare.nil?
+            set(d, convert(d, given, bare))
+            return i
+          end
+          fail("option '-#{c}' needs a value") if i >= argv.size
+          set(d, convert(d, given, argv[i]))
+          return i + 1
+        end
+        i
+      end
+
+      def command(name: String, rest: Array[String]) -> Void
+        names = @spec.commands.map { |c| c.name.to_s }.join(", ")
+        c = @spec.commands.find { |x| x.name.to_s == name }
+        fail("unknown command '#{name}' (one of #{names})") if c.nil?
+        line = c.type.__parse_as(rest, "#{@program} #{name}")
+        @values = @values.put(:__command, line).put(:__command_name, c.name)
+      end
+
+      def set(d: Decl, value: Object) -> Void
+        if d.kind == :list
+          empty: Array[Object] = []
+          @values = @values.put(d.name, @values.fetch(d.name, empty).as(Array[Object]).push(value))
+        else
+          @values = @values.put(d.name, value)
+        end
+      end
+
+      # The value [text] of [d], which a message names as [given]
+      # (`option '--jobs'`, `argument FILE`).
+      def convert(d: Decl, given: String, text: String) -> Object
+        quoted = "'#{text}'"
+        case d.value
+        when :int
+          fail("#{given}: #{quoted} is not an integer") unless text.match?(/\A[+-]?[0-9]+\z/)
+          fail("#{given}: #{quoted} is out of range") unless Support.fits_int?(text)
+          text.to_i
+        when :float
+          fail("#{given}: #{quoted} is not a number") unless text.match?(/\A[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?\z/)
+          text.to_f
+        when :bool
+          fail("#{given}: #{quoted} is not true or false") unless text == "true" || text == "false"
+          text == "true"
+        else
+          text
+        end
+      end
+
+      def finish -> Void
+        if !@spec.commands.empty? && !@values.key?(:__command)
+          fail("missing command (one of #{@spec.commands.map { |c| c.name.to_s }.join(", ")})")
+        end
+        @spec.decls.each do |d|
+          case d.kind
+          when :option
+            fail("missing option '--#{d.long}'") if d.required && !@values.key?(d.name)
+          when :list
+            n = @values.key?(d.name) ? @values[d.name].as(Array[Object]).size : 0
+            fail("missing option '--#{d.long}'") if n == 0 && d.min > 0
+            fail("option '--#{d.long}' needs at least #{d.min} values") if n < d.min
+          when :rest
+            n = @operands.size
+            if n < d.min
+              fail(d.min == 1 ? "missing #{d.arg}" : "needs at least #{d.min} #{d.arg} arguments")
+            end
+            max = d.max
+            fail("unexpected argument '#{@operands[max]}'") if !max.nil? && n > max
+            vs: Array[Object] = []
+            @operands.each { |o| vs = vs.push(convert(d, "argument #{d.arg}", o)) }
+            @values = @values.put(d.name, vs)
+          end
+        end
+        has_rest = @spec.decls.any? { |d| d.kind == :rest }
+        fail("unexpected argument '#{@operands[0]}'") if !has_rest && !@operands.empty?
+      end
+    end
   end
 end
