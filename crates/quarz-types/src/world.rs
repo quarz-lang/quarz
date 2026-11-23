@@ -2797,22 +2797,32 @@ impl World {
     /// Whether what the prelude's classes and methods contribute to the
     /// runtime's tables (their rows, their override table entries, their
     /// include overrides and witnesses) is what the prelude alone gives
-    /// (#551): no `extension` declared outside the prelude (in the
-    /// program, a cog or a std module) targets a prelude class or module,
-    /// and no method declared outside it has a prelude owner. Those are the
-    /// only ways a program reaches the prelude's entries: classes and
+    /// (#551), the prelude being the world's first `classes` classes,
+    /// `methods` methods and `extensions` extensions (by id, not by file:
+    /// what is made rather than declared, a cog's root module, has file 0
+    /// too): no extension after the prelude's (the program's, a cog's, a
+    /// std module's, made or declared) targets a prelude class or module,
+    /// and no method after the prelude's has a prelude owner. Those are
+    /// the only ways a program reaches the prelude's entries: classes and
     /// modules are not reopened (docs/01), and a program's classes add
-    /// entries of their own, keyed by them. Conservative: it answers no for
-    /// any such extension, even one whose names change nothing, never yes
-    /// for one that does; a no only costs the computation a yes saves.
-    pub fn prelude_unchanged(&self) -> bool {
-        self.extensions
+    /// entries of their own, keyed by them.
+    /// Conservative, by design: it answers no for any such extension or
+    /// method, even one whose names change nothing (an exact rule would
+    /// compare names with the prelude's, the "fresh names" variant #551's
+    /// decision left out), never yes for one that does; a no only costs
+    /// the computation a yes saves. No issue to make it exact is planned:
+    /// the programs it refuses in practice extend prelude types with
+    /// methods of names the prelude has (rotor's `<`, `<=`, `>`, `>=` on
+    /// `Int`, `Float`, `String`, `Date`, ..., and so every cog on rotor),
+    /// which the exact rule would refuse as well (#1092's counts).
+    pub fn prelude_unchanged(&self, classes: usize, methods: usize, extensions: usize) -> bool {
+        let prelude = |c: ClassId| (c as usize) < classes;
+        self.extensions[extensions.min(self.extensions.len())..]
             .iter()
-            .all(|e| e.file == 0 || self.class(e.target).file != 0)
-            && self
-                .methods
+            .all(|e| !prelude(e.target))
+            && self.methods[methods.min(self.methods.len())..]
                 .iter()
-                .all(|m| m.file == 0 || self.class(m.owner).file != 0)
+                .all(|m| !prelude(m.owner))
     }
 
     /// `include_overrides` for class `id`, each side with how it is seen

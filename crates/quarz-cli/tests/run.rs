@@ -380,6 +380,127 @@ p k.fire
     );
 }
 
+/// The prelude's share of the runtime's tables comes from the snapshot
+/// made when `quarz` was built, for a program that changes none of it
+/// (#551), and is made at start-up otherwise; a debug build (this test's
+/// `quarz`) compares the two every time it takes it. Seen through the
+/// debug-only log `QUARZ_PRELUDE_SNAPSHOT_LOG`. "The prelude's" is by id
+/// (the snapshot's first classes, methods and extensions), not by file:
+/// a cog's root module has file 0, and it and what a program's
+/// statements or declarations make all have ids past the prelude's. (A method generated into
+/// a prelude class cannot be written: `def_method` generates into the
+/// class whose `Meta::ClassDef` a statement runs on, a program's.)
+#[test]
+fn the_prelude_snapshot_is_taken_only_where_nothing_changes_it() {
+    let dir = std::env::temp_dir().join(format!("quarz-prelude-snapshot-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cases = [
+        ("plain", "puts 1\n", &[][..], "taken, compared"),
+        (
+            "class",
+            "module M\n  extension String\n    def shout -> String = upcase\n  end\nend\nputs 1\n",
+            &[][..],
+            "refused: prelude_unchanged",
+        ),
+        (
+            "module",
+            "module M\n  extension Comparable[T]\n    def same?(o: T) -> Bool = true\n  end\nend\nputs 1\n",
+            &[][..],
+            "refused: prelude_unchanged",
+        ),
+        ("off", "puts 1\n", &[("QUARZ_NO_PRELUDE_CACHE", "1")][..], "none"),
+    ];
+    for (name, src, env, expected) in cases {
+        let file = dir.join(format!("{name}.qz"));
+        let log = dir.join(format!("{name}.log"));
+        std::fs::write(&file, src).unwrap();
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+            .arg("run")
+            .arg(&file)
+            .env("QUARZ_NO_CACHE", "1")
+            .env("QUARZ_PRELUDE_SNAPSHOT_LOG", &log)
+            .envs(env.iter().copied())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n", "{name}");
+        let logged = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            !logged.is_empty() && logged.lines().all(|l| l == expected),
+            "{name}: expected every start-up to log {expected:?}, got {logged:?}"
+        );
+    }
+    // Methods made rather than declared, a `def_method`'s and a `data`
+    // type's and an `attr_reader`'s, all of the program's classes: taken.
+    std::fs::write(
+        dir.join("lib.qz"),
+        "class Base\n  static def self.gen -> Void\n    def_method(:made) { 7 }\n  end\nend\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("made.qz"),
+        "require_relative \"lib\"\ndata P = (x: Int)\nclass App < Base\n  gen\n  attr_reader :y\n  @y: Int = 1\nend\np App.new.made + P.new(1).x\n",
+    )
+    .unwrap();
+    let log = dir.join("made.log");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .arg("run")
+        .arg(dir.join("made.qz"))
+        .env("QUARZ_NO_CACHE", "1")
+        .env("QUARZ_PRELUDE_SNAPSHOT_LOG", &log)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "made: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "8\n");
+    let logged = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        !logged.is_empty() && logged.lines().all(|l| l == "taken, compared"),
+        "made: {logged:?}"
+    );
+    // A library cog: its root module is made, not declared in a file
+    // (file 0), and is no prelude class (its id is past the prelude's):
+    // the snapshot is taken.
+    let cog = dir.join("tiny");
+    std::fs::create_dir_all(cog.join("src")).unwrap();
+    std::fs::write(
+        cog.join("Cog.toml"),
+        "[cog]\nname = \"tiny\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        cog.join("src/tiny.qz"),
+        "class Tiny\n  def x -> Int = 1\nend\n",
+    )
+    .unwrap();
+    let log = dir.join("cog.log");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .arg("check")
+        .current_dir(&cog)
+        .env("QUARZ_NO_CACHE", "1")
+        .env("QUARZ_PRELUDE_SNAPSHOT_LOG", &log)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "cog: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let logged = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        !logged.is_empty() && logged.lines().all(|l| l == "taken, compared"),
+        "cog: {logged:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `quarz --version` prints Cargo's version of the workspace, which a
 /// release tag (`v` and the version) names too, and the commit it was
 /// built from when built from a checkout (#449).

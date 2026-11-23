@@ -165,12 +165,19 @@ pub fn declared(world: &World, out: &types::Output) -> RtWorld {
 /// program changes none of it (`crate::prelude`, #551), the rest made
 /// here; otherwise everything made here (`declared_with`).
 pub fn declared_table(world: &World, out: &types::Output) -> (RtWorld, Vec<Vec<MethodId>>) {
-    let Some(snap) = crate::prelude::usable(world) else {
-        return declared_with(world, out, witness_record(world));
+    let snap = match crate::prelude::usable(world) {
+        Ok(snap) => snap,
+        Err(why) => {
+            crate::prelude::log(why);
+            return declared_with(world, out, witness_record(world));
+        }
     };
     let made = declared_over(world, out, snap);
     if crate::prelude::verify() {
         crate::prelude::compare(&made, &declared_with(world, out, witness_record(world)));
+        crate::prelude::log("taken, compared");
+    } else {
+        crate::prelude::log("taken");
     }
     made
 }

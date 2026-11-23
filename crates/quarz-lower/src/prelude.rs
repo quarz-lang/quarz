@@ -30,6 +30,9 @@ pub struct PreludeRt {
     /// world must start with for the ids to be the same.
     pub class_names: Vec<String>,
     pub method_names: Vec<(ClassId, String)>,
+    /// The targets of the prelude's extensions, which the program's
+    /// world's first extensions must be.
+    pub extension_targets: Vec<ClassId>,
 }
 
 impl PreludeRt {
@@ -57,6 +60,7 @@ pub fn make(world: &World, out: &quarz_types::Output) -> PreludeRt {
             .iter()
             .map(|m| (m.owner, m.name.clone()))
             .collect(),
+        extension_targets: world.extensions.iter().map(|e| e.target).collect(),
         classes: rt.classes,
         methods: rt.methods,
         table,
@@ -78,17 +82,27 @@ pub fn set_snapshot(bytes: &'static [u8]) {
     let _ = BYTES.set(bytes);
 }
 
-/// The snapshot, when there is one and `world` may use it: the program
-/// changes none of the prelude's share (`World::prelude_unchanged`) and
-/// its world starts with the prelude's classes and methods, which alone
-/// are from the prelude's file.
-pub(crate) fn usable(world: &World) -> Option<&'static PreludeRt> {
-    let snap = SNAPSHOT
+/// The snapshot, when there is one and `world` may use it: its world
+/// starts with the prelude's classes, methods and extensions (the
+/// snapshot's, by name and owner, and by target: the ids line up), and
+/// the program changes none of the prelude's share
+/// (`World::prelude_unchanged`, over those ids). Otherwise why not
+/// (`log`'s words).
+pub(crate) fn usable(world: &World) -> Result<&'static PreludeRt, &'static str> {
+    let Some(snap) = SNAPSHOT
         .get_or_init(|| BYTES.get().map(|b| PreludeRt::decode(b)))
-        .as_ref()?;
-    let (pc, pm) = (snap.class_names.len(), snap.method_names.len());
+        .as_ref()
+    else {
+        return Err("none");
+    };
+    let (pc, pm, pe) = (
+        snap.class_names.len(),
+        snap.method_names.len(),
+        snap.extension_targets.len(),
+    );
     let fits = world.classes.len() >= pc
         && world.methods.len() >= pm
+        && world.extensions.len() >= pe
         && world.classes[..pc]
             .iter()
             .map(|c| &c.name)
@@ -97,9 +111,39 @@ pub(crate) fn usable(world: &World) -> Option<&'static PreludeRt> {
             .iter()
             .map(|m| (m.owner, &m.name))
             .eq(snap.method_names.iter().map(|(o, n)| (*o, n)))
-        && world.classes[pc..].iter().all(|c| c.file != 0)
-        && world.methods[pm..].iter().all(|m| m.file != 0);
-    (fits && world.prelude_unchanged()).then_some(snap)
+        && world.extensions[..pe]
+            .iter()
+            .map(|e| e.target)
+            .eq(snap.extension_targets.iter().copied());
+    if !fits {
+        return Err("refused: the ids do not line up");
+    }
+    if !world.prelude_unchanged(pc, pm, pe) {
+        return Err("refused: prelude_unchanged");
+    }
+    Ok(snap)
+}
+
+/// In a debug build, with `QUARZ_PRELUDE_SNAPSHOT_LOG` naming a file:
+/// what `rtworld::declared_table` did with the snapshot, a line appended
+/// per call (`taken`, `taken, compared`, `refused: ...`, `none`), for the
+/// tests that show the path (`tests/run.rs`) and for counting
+/// it over the cogs. Nothing in a release build.
+pub(crate) fn log(outcome: &str) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    let Some(path) = std::env::var_os("QUARZ_PRELUDE_SNAPSHOT_LOG") else {
+        return;
+    };
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = f.write_all(format!("{outcome}\n").as_bytes());
+    }
 }
 
 /// Whether the tables taken from the snapshot are made again and
