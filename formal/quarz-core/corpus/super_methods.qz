@@ -1,6 +1,6 @@
 # `super` outside `initialize` (design §20): the method the checker
 # resolved it to, statically, whatever the receiver's class (an alias of
-# it that nothing overrides); a bare `super` passes the method's
+# it that nothing overrides); `super(...)` passes the method's
 # parameters as they are then.
 class A
   def f(x: Int) -> Int = x + 1
@@ -8,10 +8,10 @@ class A
 end
 
 class B < A
-  def f(x: Int) -> Int = super * 10
+  def f(x: Int) -> Int = super(...) * 10
   def g(s: String) -> String
     s = s + "!"
-    [1].map { |i| super }.first.to_s + "B"
+    [1].map { |i| super(...) }.first.to_s + "B"
   end
 end
 

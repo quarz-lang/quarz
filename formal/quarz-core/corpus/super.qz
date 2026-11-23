@@ -26,12 +26,12 @@ class Circle < Shape
   end
 end
 
-# Two levels up, and a bare `super` passing the same arguments.
+# Two levels up, and `super(...)` passing the same arguments.
 class Unit < Circle
   @tag: String
   def initialize(r: Int)
     @tag = "unit"
-    super
+    super(...)
     puts @tag
   end
 end

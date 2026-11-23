@@ -60,7 +60,7 @@ class TwoOver < Two
   end
   def self.mk(n: Int) -> Self
     puts "override"
-    super
+    super(...)
   end
 end
 p TwoOver.mk(8).n

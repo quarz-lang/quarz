@@ -546,6 +546,13 @@ def positional (a : Json) : M Json := do
   | ("Positional", e) => pure e
   | (k, _) => throw s!"a {k} argument"
 
+/-- A `super`'s arguments, `super(...)`'s (a forwarding argument alone,
+`Arg::Forward`) as a bare `super`'s (`null`): the method's own. -/
+def superArgs (a : Json) : Json :=
+  match a with
+  | .arr #[o] => if (o.getObjVal? "Forward").toOption.isSome then .null else a
+  | _ => a
+
 /-- Whether an expression has a `return` (in a block of it too). -/
 partial def hasRet : Expr → Bool
   | .ret _ => true
@@ -1475,8 +1482,9 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
           (T.modCopies o).isNone && (← field m "native") != .bool true && (← str (← field m "synth")) == "None" &&
           (← field m "singleton") != .bool true && (← field m "extension") == .null do
         throw "super to a method out of range"
-      let args ← match ← field v "args" with
-        -- A bare `super` passes the method's own parameters.
+      let args ← match superArgs (← field v "args") with
+        -- `super(...)` (and a bare `super`) passes the method's own
+        -- parameters.
         | .null => do
           let w ← read
           let some _ := w.rcls | throw "a bare super outside a method"
@@ -1494,8 +1502,8 @@ partial def expr (T : Tables) (e : Json) : CM Expr := do
         if sj != .null then
           if ← T.excInit (← nat (← field sj "id")) then
             throw "super into a built-in exception's initialize"
-    let args ← match ← field v "args" with
-      -- A bare `super` passes the method's arguments.
+    let args ← match superArgs (← field v "args") with
+      -- `super(...)` (and a bare `super`) passes the method's arguments.
       | .null => pure (params.map fun (x, t) => Expr.var x t)
       | a => (← arr a).toList.mapM fun a => do expr T (← positional a)
     -- (Leaving the superclass's `initialize`'s parameters with defaults:

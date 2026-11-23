@@ -1,4 +1,4 @@
-# A bare `super` forwards the method's parameters themselves, with their
+# `super(...)` forwards the method's parameters themselves, with their
 # values and types where it is: a name hidden by a block's parameter, a
 # `:=` or a pattern binding is not what it forwards.
 class A
@@ -8,7 +8,7 @@ end
 class B < A
   def f(x: Int?) -> Int
     if x
-      super
+      super(...)
     else
       0
     end
@@ -16,7 +16,7 @@ class B < A
   def g(x: Int, &b: (Int) -> Int) -> Int
     r = 0
     [1].each do |x|
-      r = super
+      r = super(...)
     end
     r
   end
@@ -24,19 +24,19 @@ end
 class C < A
   def f(x: Int?) -> Int
     x = 5
-    super
+    super(...)
   end
 end
 class D < A
-  # A hiding local of another type is fine: `super` forwards the parameter.
+  # A hiding local of another type is fine: `super(...)` forwards the parameter.
   def f(x: Int) -> Int
     r = 0
     [1].each do |i|
       x := "hidden"
-      r = super
+      r = super(...)
     end
     case "s"
-    in String => x then r += super
+    in String => x then r += super(...)
     end
     r
   end

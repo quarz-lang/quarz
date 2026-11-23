@@ -10,14 +10,14 @@ end
 class Fits < Two
   def initialize(s: String); @n = s.size; end
   def initialize(@n: Int); puts "fits int"; end
-  def self.mk(n: Int) -> Self = super
+  def self.mk(n: Int) -> Self = super(...)
 end
 class NoSuper < Two
   def initialize(s: String); @n = s.size; end
   def self.mk(n: Int) -> Self = new("abc")
 end
 class Mid < Two
-  def self.mk(n: Int) -> Self = super
+  def self.mk(n: Int) -> Self = super(...)
 end
 class Leaf < Mid
   def initialize(s: String); @n = s.size; end

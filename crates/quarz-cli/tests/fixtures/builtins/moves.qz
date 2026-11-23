@@ -39,7 +39,7 @@ class A
 end
 class B < A
   def f(xs: Array[Int]) -> Array[Int]
-    r = super
+    r = super(...)
     p xs
     r.push(2)
   end

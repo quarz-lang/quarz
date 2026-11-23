@@ -21,7 +21,7 @@ class Base
 end
 
 class Child < Base
-  def run(n: Int, **kw: Int) -> String = "child " + super
+  def run(n: Int, **kw: Int) -> String = "child " + super(...)
 end
 
 puts Child.new.run(1, x: 2)
