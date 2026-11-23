@@ -63,6 +63,25 @@ class Site < CommandLine
   command :remote, Remote
 end
 
+# Hands its arguments on as given.
+class Migrate < CommandLine
+  about "Run the pending migrations."
+  rest :args, raw: true, arg: "ARGS"
+end
+
+class Exec < CommandLine
+  rest :argv, raw: true, min: 1, max: 3, arg: "COMMAND"
+end
+
+class Tool < CommandLine
+  flag :verbose, short: "v"
+  option :hash_name, String, long: "hash", default: nil, help: "the hash"
+  list :include_dir, String, long: "include", short: "I"
+  flag :colour, long: "color", default: true
+  command :migrate, Migrate
+  command :exec, Exec
+end
+
 # Named `http-server` in its usage line.
 class HTTPServer < CommandLine
 end
@@ -328,6 +347,37 @@ Options:
   -h, --help       print this help and exit
 TEXT
     assert_equal(serve, assert_raise(CommandLine::Help) { Site.parse(["serve", "--help"], exit: false); nil }.message)
+  end
+
+  def test_long_names
+    t = Tool.parse(["--hash=abc", "--include", "a", "-Ib", "--no-color", "exec", "x"], exit: false)
+    assert_equal("abc", t.hash_name)
+    assert_equal(["a", "b"], t.include_dir)
+    assert_equal(false, t.colour)
+    assert_equal("unknown option '--hash-name'", error_of { Tool.parse(["--hash-name=x", "exec", "x"], exit: false); nil })
+    help = Tool.help
+    assert(help.include?("      --hash=HASH        the hash\n"), help)
+    assert(help.include?("  -I, --include=INCLUDE  (may repeat)\n"), help)
+    assert(help.include?("      --[no-]color       (default: on)\n"), help)
+  end
+
+  def test_a_raw_rest_takes_the_arguments_as_given
+    t = Tool.parse(["-v", "migrate", "--to", "5", "-v", "--", "-h", "--help", "x"], exit: false)
+    assert(t.verbose)
+    m = t.command
+    assert_equal(["--to", "5", "-v", "--", "-h", "--help", "x"], m.is_a?(Migrate) ? m.args : ["not Migrate"])
+    m = Tool.parse(["migrate"], exit: false).command
+    assert_equal(0, m.is_a?(Migrate) ? m.args.size : -1)
+    assert_equal("missing COMMAND", error_of { Tool.parse(["exec"], exit: false); nil })
+    assert_equal("unexpected argument 'd'", error_of { Tool.parse(["exec", "a", "b", "c", "d"], exit: false); nil })
+    e = assert_raise(CommandLine::Error) { Tool.parse(["exec"], exit: false); nil }
+    assert_equal("usage: tool exec COMMAND...\n", e.as(CommandLine::Error).usage)
+  end
+
+  def test_help_without_parsing
+    assert_equal(assert_raise(CommandLine::Help) { Wc.parse(["--help"], exit: false); nil }.message, Wc.help)
+    assert_equal("usage: migrate [ARGS...]\n\nRun the pending migrations.\n", Migrate.help)
+    assert(Tool.help.include?("Commands:\n  migrate  Run the pending migrations.\n  exec\n"), Tool.help)
   end
 
   # The default `parse` ends the program with `exit`, which raises

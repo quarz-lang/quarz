@@ -27,7 +27,8 @@
 # error and the usage to standard error and exits with 2, and on `--help`
 # or `-h` it prints the help to standard output and exits with 0. With
 # `exit: false` it raises [CommandLine::Error] or [CommandLine::Help]
-# instead, which is how a test or a library calls it.
+# instead, which is how a test or a library calls it; [help] gives the
+# help text without parsing (for a `help` command, say).
 #
 # ## Declarations
 #
@@ -48,7 +49,11 @@
 # - [list]: a repeated option, `-x a -x b`, read as an [Array] in the
 #   order given.
 # - [rest]: the operands, the arguments that are not options, read as an
-#   [Array] of [String] (or of the type given).
+#   [Array] of [String] (or of the type given). With `raw: true`, every
+#   argument after the command's name, as given (options, `--` and
+#   `--help` included), for a command that hands them to another
+#   program: such a class declares nothing else but [program], [about]
+#   and [banner].
 # - [command]: a subcommand, a class of its own below [CommandLine]
 #   (below).
 # - [program], [about] and [banner]: the name in the usage and error
@@ -57,8 +62,9 @@
 #   a usage text that replaces the generated one.
 #
 # An option's name is its reader's, and its long name the same with `-`
-# for `_` (`:files_from` is `--files-from`); `short:` is one letter or
-# digit. `--help` and `-h` are the help's own, and a name or short name
+# for `_` (`:files_from` is `--files-from`), or the one `long:` gives
+# (`option :hash_name, String, long: "hash"` is `--hash`); `short:` is
+# one letter or digit. `--help` and `-h` are the help's own, and a name or short name
 # used twice, or a name the class's instances already answer (`hash`,
 # `to_s`, `command`, `error`), is a compile error at the statement.
 #
@@ -243,9 +249,9 @@ class CommandLine
 
   # A flag: `--name` sets it, `--no-name` clears it, `short:` is its
   # one-character name. Its reader gives [default] when neither is given.
-  static def self.flag(name: Symbol, *, short: String? = nil, default: Bool = false, help: String = "") -> Void
-    Support.declare(self, Support::Decl.new(:flag, name, Support.long_name(name), short || "", :bool, false,
-                                            default ? "on" : "", nil, "", help, 0, nil))
+  static def self.flag(name: Symbol, *, short: String? = nil, long: String? = nil, default: Bool = false, help: String = "") -> Void
+    Support.declare(self, Support::Decl.new(:flag, name, long || Support.long_name(name), short || "", :bool, false,
+                                            default ? "on" : "", nil, "", help, 0, nil, false))
     def_method(name) do -> Bool
       v = __value_of(name)
       v.nil? ? default : v == true
@@ -255,9 +261,10 @@ class CommandLine
   # A required option with a value of type [type] ([String], [Int],
   # [Float] or [Bool]); `arg:` names the value in the help (by default
   # the name in upper case).
-  static def self.option[U](name: Symbol, type: Type[U], *, short: String? = nil, arg: String? = nil, help: String = "") -> Void
-    Support.declare(self, Support::Decl.new(:option, name, Support.long_name(name), short || "", Support.value_kind(type),
-                                            true, "", nil, arg || Support.arg_name(name), help, 0, nil))
+  static def self.option[U](name: Symbol, type: Type[U], *, short: String? = nil, long: String? = nil, arg: String? = nil, help: String = "") -> Void
+    lg = long || Support.long_name(name)
+    Support.declare(self, Support::Decl.new(:option, name, lg, short || "", Support.value_kind(type),
+                                            true, "", nil, arg || Support.arg_name(lg), help, 0, nil, false))
     def_method(name) do -> U
       type.cast(__value_of(name))
     end
@@ -267,11 +274,12 @@ class CommandLine
   # given. With [bare], the value is optional: the option alone gives
   # [bare], and only an attached value (`--name=value`, `-nvalue`)
   # another.
-  static def self.option[U](name: Symbol, type: Type[U], *, default: U, bare: U? = nil, short: String? = nil, arg: String? = nil, help: String = "") -> Void
+  static def self.option[U](name: Symbol, type: Type[U], *, default: U, bare: U? = nil, short: String? = nil, long: String? = nil, arg: String? = nil, help: String = "") -> Void
     kind = Support.value_kind(type)
-    Support.declare(self, Support::Decl.new(:option, name, Support.long_name(name), short || "", kind, false,
+    lg = long || Support.long_name(name)
+    Support.declare(self, Support::Decl.new(:option, name, lg, short || "", kind, false,
                                             Support.default_text(default), bare.nil? ? nil : bare.to_s,
-                                            arg || Support.arg_name(name), help, 0, nil))
+                                            arg || Support.arg_name(lg), help, 0, nil, false))
     def_method(name) do -> U
       v = __value_of(name)
       v.nil? ? default : type.cast(v)
@@ -279,9 +287,10 @@ class CommandLine
   end
 
   # An option with a value of type [type], nil when it is not given.
-  static def self.option[U](name: Symbol, type: Type[U], *, default: Nil, short: String? = nil, arg: String? = nil, help: String = "") -> Void
-    Support.declare(self, Support::Decl.new(:option, name, Support.long_name(name), short || "", Support.value_kind(type),
-                                            false, "", nil, arg || Support.arg_name(name), help, 0, nil))
+  static def self.option[U](name: Symbol, type: Type[U], *, default: Nil, short: String? = nil, long: String? = nil, arg: String? = nil, help: String = "") -> Void
+    lg = long || Support.long_name(name)
+    Support.declare(self, Support::Decl.new(:option, name, lg, short || "", Support.value_kind(type),
+                                            false, "", nil, arg || Support.arg_name(lg), help, 0, nil, false))
     def_method(name) do -> U?
       v = __value_of(name)
       v.nil? ? nil : type.cast(v)
@@ -290,10 +299,11 @@ class CommandLine
 
   # A repeated option: its reader gives every value, in the order given
   # (empty when none was); at least [min] of them are required.
-  static def self.list[U](name: Symbol, type: Type[U], *, min: Int = 0, short: String? = nil, arg: String? = nil, help: String = "") -> Void
+  static def self.list[U](name: Symbol, type: Type[U], *, min: Int = 0, short: String? = nil, long: String? = nil, arg: String? = nil, help: String = "") -> Void
     raise ArgumentError, "CommandLine: `min:` of `#{name}` is negative" if min < 0
-    Support.declare(self, Support::Decl.new(:list, name, Support.long_name(name), short || "", Support.value_kind(type),
-                                            min > 0, "", nil, arg || Support.arg_name(name), help, min, nil))
+    lg = long || Support.long_name(name)
+    Support.declare(self, Support::Decl.new(:list, name, lg, short || "", Support.value_kind(type),
+                                            min > 0, "", nil, arg || Support.arg_name(lg), help, min, nil, false))
     def_method(name) do -> Array[U]
       __values_of(name).map { |v| type.cast(v) }
     end
@@ -301,8 +311,13 @@ class CommandLine
 
   # The operands, as strings: at least [min], at most [max]; `arg:`
   # names one in the usage line (by default the name in upper case).
-  static def self.rest(name: Symbol, *, min: Int = 0, max: Int? = nil, arg: String? = nil, help: String = "") -> Void
-    Support.declare_rest(self, name, :string, min, max, arg, help)
+  #
+  # With `raw: true` they are every argument after the command's name,
+  # as given: options, `--` and `--help` included, for a command that
+  # hands them to another program. Such a class declares nothing else
+  # but [program], [about] and [banner], and no commands.
+  static def self.rest(name: Symbol, *, min: Int = 0, max: Int? = nil, raw: Bool = false, arg: String? = nil, help: String = "") -> Void
+    Support.declare_rest(self, name, :string, min, max, arg, help, raw)
     def_method(name) do -> Array[String]
       __values_of(name).map { |v| String.cast(v) }
     end
@@ -310,7 +325,7 @@ class CommandLine
 
   # The operands, as values of type [type].
   static def self.rest[U](name: Symbol, type: Type[U], *, min: Int = 0, max: Int? = nil, arg: String? = nil, help: String = "") -> Void
-    Support.declare_rest(self, name, Support.value_kind(type), min, max, arg, help)
+    Support.declare_rest(self, name, Support.value_kind(type), min, max, arg, help, false)
     def_method(name) do -> Array[U]
       __values_of(name).map { |v| type.cast(v) }
     end
@@ -359,6 +374,20 @@ class CommandLine
       STDERR.puts "Try '#{e.program} --help' for more information."
       Kernel.exit(2)
     end
+  end
+
+  # The help text `--help` prints for this class: the usage line, the
+  # [about] text, the options and the commands.
+  #
+  # ```
+  # class Greet < CommandLine
+  #   flag :loud, help: "shout"
+  # end
+  # Greet.help.lines[0]   # => "usage: greet [options]\n"
+  # ```
+  def self.help -> String
+    spec = __spec
+    Support.help_text(spec, spec.program || Support.kebab(name))
   end
 
   # :nodoc:
@@ -437,7 +466,8 @@ class CommandLine
       arg: String,
       help: String,
       min: Int,
-      max: Int?
+      max: Int?,
+      raw: Bool              # a `rest` taking every argument as given
     )
 
     # A line of the help: an option or command and its text.
@@ -470,19 +500,36 @@ class CommandLine
       raise ArgumentError, "CommandLine: `-#{d.short}` is declared twice" if !d.short.empty? && taken.any? { |t| t.short == d.short }
       raise ArgumentError, "CommandLine: `#{d.name}` cannot name an option: names starting with `__` are CommandLine's own" if d.name.to_s.start_with?("__")
       if cls.method?(d.name)
-        raise ArgumentError, "CommandLine: `#{d.name}` cannot name an option: `#{cls.name}` already has a method of that name (its reader would replace it); name the option otherwise"
+        hint = d.kind == :rest ? "name it otherwise" : "name it otherwise, and keep `--#{d.long}` with `long: \"#{d.long}\"`"
+        raise ArgumentError, "CommandLine: `#{d.name}` cannot name an option: `#{cls.name}` already has a method of that name (its reader would replace it); #{hint}"
+      end
+      if d.kind != :rest && !d.long.match?(/\A[A-Za-z0-9][A-Za-z0-9-]*\z/)
+        raise ArgumentError, "CommandLine: #{d.long.inspect} is not a long name for `#{d.name}` (letters, digits and `-`, not starting with `-`)"
+      end
+      taken.each do |t|
+        next if t.kind == :rest || d.kind == :rest
+        if (d.kind == :flag && t.long == "no-#{d.long}") || (t.kind == :flag && d.long == "no-#{t.long}")
+          raise ArgumentError, "CommandLine: `--no-#{d.kind == :flag ? d.long : t.long}` would both negate a flag and name an option"
+        end
+      end
+      raw = taken.find { |t| t.raw }
+      unless raw.nil?
+        raise ArgumentError, "CommandLine: `#{cls.name}` takes its arguments as given (`rest :#{raw.name}, raw: true`), so it declares nothing beside it"
+      end
+      if d.raw && !taken.empty?
+        raise ArgumentError, "CommandLine: a `rest` with `raw: true` takes every argument as given, so `#{cls.name}` declares nothing beside it (`#{taken[0].name}` is declared)"
       end
       values.add(d)
     end
 
     # Records the operands.
-    static def self.declare_rest(cls: Meta::ClassDef[CommandLine], name: Symbol, kind: Symbol, min: Int, max: Int?, arg: String?, help: String) -> Void
+    static def self.declare_rest(cls: Meta::ClassDef[CommandLine], name: Symbol, kind: Symbol, min: Int, max: Int?, arg: String?, help: String, raw: Bool) -> Void
       raise ArgumentError, "CommandLine: `rest` is declared twice" if cls.statement_values[Decl](:command_line_decls).values.any? { |d| d.kind == :rest }
       raise ArgumentError, "CommandLine: a class with commands takes no `rest`" if cls.statement_values[Cmd](:command_line_commands).size > 0
       raise ArgumentError, "CommandLine: `min:` of `#{name}` is negative" if min < 0
       raise ArgumentError, "CommandLine: `min:` of `#{name}` is above its `max:`" if !max.nil? && min > max
       declare(cls, Decl.new(:rest, name, long_name(name), "", kind, min > 0, "", nil,
-                            arg || arg_name(name), help, min, max))
+                            arg || arg_name(long_name(name)), help, min, max, raw))
     end
 
     # The kind of value [type] is, or the error for a type that is not one.
@@ -496,7 +543,7 @@ class CommandLine
 
     def self.long_name(name: Symbol) -> String = name.to_s.tr("_", "-")
 
-    def self.arg_name(name: Symbol) -> String = name.to_s.tr("_", "-").upcase
+    def self.arg_name(long: String) -> String = long.upcase
 
     # What the help shows as a default: nothing for nil, false and "".
     def self.default_text(value: Object?) -> String
@@ -517,7 +564,7 @@ class CommandLine
       banner = spec.banner
       return banner.end_with?("\n") ? banner : "#{banner}\n" unless banner.nil?
       parts = ["usage: #{program}"]
-      parts = parts.push("[options]")
+      parts = parts.push("[options]") unless spec.decls.any? { |d| d.raw }
       spec.decls.each do |d|
         next unless d.required && d.kind != :rest
         parts = parts.push(d.kind == :flag ? "--#{d.long}" : "--#{d.long}=#{d.arg}")
@@ -563,8 +610,10 @@ class CommandLine
         text = notes.empty? ? text : "#{text} (#{notes.join(", ")})".lstrip
         rows = rows.push(Row.new(left, text))
       end
-      rows = rows.push(Row.new("  -h, --help", "print this help and exit"))
-      out += "\nOptions:\n#{columns(rows)}"
+      unless spec.decls.any? { |d| d.raw }
+        rows = rows.push(Row.new("  -h, --help", "print this help and exit"))
+        out += "\nOptions:\n#{columns(rows)}"
+      end
       args = spec.decls.select { |d| d.kind == :rest && !d.help.empty? }
       unless args.empty?
         out += "\nArguments:\n#{columns(args.map { |d| Row.new("  #{d.arg}", d.help) })}"
@@ -661,6 +710,11 @@ class CommandLine
       end
 
       def run(argv: Array[String]) -> Hash[Symbol, Object]
+        if @spec.decls.any? { |d| d.raw }
+          @operands = argv
+          finish
+          return @values
+        end
         @help = Support.help?(@spec, argv)
         i = 0
         options = true
