@@ -147,6 +147,67 @@ fn an_exit_in_a_test_is_caught_in_it() {
     }
 }
 
+/// An `exit` a test does not catch, in its setup, its body or its
+/// teardown and whatever its status (`exit(0)` too), is that test's
+/// error: the run goes on and ends with 1, run in parallel or not, and
+/// the JUnit report lists it as an error (#1096).
+#[test]
+fn an_uncaught_exit_in_a_test_is_its_error() {
+    static N: AtomicU32 = AtomicU32::new(0);
+    for parallel in [false, true] {
+        let xml = std::env::temp_dir().join(format!(
+            "quarz-junit-exit-{}-{}.xml",
+            std::process::id(),
+            N.fetch_add(1, Ordering::SeqCst)
+        ));
+        let junit = format!("--junit={}", xml.display());
+        let mut args = vec!["test_cmd/exit_error_test.qz", junit.as_str()];
+        if parallel {
+            args.push("--parallel=4");
+        }
+        let out = Command::new(env!("CARGO_BIN_EXE_quarz"))
+            .arg("test")
+            .args(&args)
+            .current_dir(tests_dir())
+            .env("QUARZ_THREADS", "4")
+            .output()
+            .unwrap();
+        let text = stdout(&out);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{args:?}: {text}{}",
+            stderr(&out)
+        );
+        assert!(
+            text.contains("5 tests, 2 assertions, 0 failures, 4 errors"),
+            "{args:?}: {text}"
+        );
+        let why =
+            "(an `exit` inside a test; catch it with assert_raise(SystemExit) if it is expected)";
+        for expected in [
+            format!("Error: test_a_body_exits(ExitErrorTest) [test_cmd/exit_error_test.qz:5]:\nexited with status 2 {why}\n"),
+            format!("Error: test_b_exit_zero(ExitErrorTest) [test_cmd/exit_error_test.qz:9]:\nexited with status 0 {why}\n"),
+            format!("Error: test_setup_exits(ExitInSetupTest) [test_cmd/exit_error_test.qz:19]:\nexited with status 3 {why}\n"),
+            format!(
+                "Error: test_teardown_exits(ExitInTeardownTest) [test_cmd/exit_error_test.qz:29]:\nteardown: exited with status 4 {why}\n"
+            ),
+        ] {
+            assert!(text.contains(&expected), "{args:?}: {expected}\n{text}");
+        }
+        let report = std::fs::read_to_string(&xml).unwrap();
+        let _ = std::fs::remove_file(&xml);
+        assert!(
+            report.contains("<testsuites tests=\"5\" failures=\"0\" errors=\"4\" skipped=\"0\""),
+            "{report}"
+        );
+        assert!(
+            report.contains("<error message=\"exited with status 2 (an `exit` inside a test;"),
+            "{report}"
+        );
+    }
+}
+
 /// #877: `quarz test` and `quarz run` give the program the running
 /// `quarz` as `QUARZ` when it is not set (a test that runs `quarz` on a
 /// fixture then checks with the same binary), interpreted and compiled;

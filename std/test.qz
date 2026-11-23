@@ -737,10 +737,10 @@ module Test
         location = Test.location(e)
       end
     rescue SystemExit => e
-      # Its teardown first, as an `ensure` would (what goes wrong in it is
-      # lost: the program is ending).
-      Test.teardown(c, limit)
-      raise e
+      # An `exit` the test did not catch is its error; the run goes on.
+      kind = :error
+      message = Test.exit_text(e)
+      location = Test.location(e)
     rescue Exception => e
       kind = :error
       message = Test.error_text(e)
@@ -790,12 +790,20 @@ module Test
         ["teardown: #{Test.error_text(e)}", Test.location(e), false]
       end
     rescue SystemExit => e
-      raise e
+      ["teardown: #{Test.exit_text(e)}", Test.location(e), false]
     rescue AssertionFailed => e
       ["teardown: #{e.message}", Test.location(e), true]
     rescue Exception => e
       ["teardown: #{Test.error_text(e)}", Test.location(e), false]
     end
+  end
+
+  # :nodoc:
+  # An `exit` a test did not catch, with the test's frames of where it
+  # was called.
+  def self.exit_text(e: SystemExit) -> String
+    text = "exited with status #{e.status} (an `exit` inside a test; catch it with assert_raise(SystemExit) if it is expected)"
+    "#{text}\n" + Test.user_frames(e).map { |f| "    #{f}" }.join("\n")
   end
 
   # :nodoc:

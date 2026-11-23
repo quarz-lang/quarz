@@ -1,0 +1,35 @@
+# An `exit` a test does not catch is that test's error, in its setup,
+# its body or its teardown, whatever its status; the run goes on.
+class ExitErrorTest < Test::Case
+  def test_a_body_exits
+    exit(2)
+  end
+
+  def test_b_exit_zero
+    exit(0)
+  end
+
+  def test_c_after
+    assert(true)
+  end
+end
+
+class ExitInSetupTest < Test::Case
+  def setup
+    exit(3)
+  end
+
+  def test_setup_exits
+    assert(true)
+  end
+end
+
+class ExitInTeardownTest < Test::Case
+  def teardown
+    exit(4)
+  end
+
+  def test_teardown_exits
+    assert(true)
+  end
+end
