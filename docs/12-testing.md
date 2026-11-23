@@ -175,18 +175,21 @@ exit Test.run(ARGV, suites)
 
 Options:
 
+The options follow GNU's conventions (the standard library's `command_line`, which the runner parses them with): a value goes after `=` or in the next argument (`--seed=42`, `--seed 42`, `-nNAME`, `-n NAME`), short options group (`-vn NAME`), and `--parallel` takes its value after `=` only. A bad option or value makes `quarz test` print the error and exit with 2.
+
 | Option | Meaning |
 |---|---|
 | `-n NAME`, `--name=NAME` | Run the tests whose `Class#method` (or method, or `method[label]`) contains `NAME`; `/regexp/` for a pattern. May repeat |
 | `-v`, `--verbose` | A line per test, with its time |
 | `--list` | Print the tests and exit |
-| `--order=defined\|random`, `--seed=N` | Order; `random` prints its seed |
+| `--order=defined\|random`, `--seed=N` | Order; `random` prints its seed, and a seed sets it |
 | `--fail-fast` | Stop at the first failure or error |
 | `--parallel[=N]` | Run tests in up to N tasks at once (§6; default 4) |
 | `--timeout=DURATION` | The limit per test (`60s`; a class's `self.timeout` overrides; `0` for none) |
 | `--release` | Compile the tests natively (`quarz build`) instead of interpreting; slower to start, faster to run |
 | `--junit=PATH` | Also write a JUnit XML report (CI) |
 | `--locked`, `--offline` | As for `quarz run`, for a cog's dependencies |
+| `-h`, `--help` | Print the options and exit |
 
 ## 6. Parallel Tests
 

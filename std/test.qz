@@ -1,3 +1,5 @@
+require "command_line"
+
 # Tests: `require "test"`, run by `quarz test` (docs/12-testing.md). A
 # test is a `test_*` method of a class that inherits [Test::Case], and the
 # compiler finds them and generates the runner.
@@ -548,71 +550,68 @@ module Test
   )
 
   # :nodoc:
-  # Parse the command line; an error message for a bad option.
-  def self.parse_options(argv: Array[String]) -> Options | String
+  # `quarz test`'s options. The command handles `--release`, `--doc`,
+  # `--no-doc`, `--std`, `--locked` and `--offline` itself and passes the
+  # others to the program; they are declared here for the help.
+  class QuarzTest < CommandLine
+    program "quarz test"
+    banner "usage: quarz test [options] [PATH...]"
+    about "Run the tests of each PATH (a `*_test.qz` file, or a directory searched for them)."
+    list   :name, String, short: "n", arg: "NAME",
+           help: "run the tests whose Class#method contains NAME, or matches /REGEXP/"
+    flag   :verbose, short: "v", help: "a line per test, with its time"
+    flag   :list, help: "print the tests and exit"
+    option :order, String, default: "defined", arg: "ORDER", help: "defined or random"
+    option :seed, String, default: nil, arg: "N", help: "the random order's seed (implies --order=random)"
+    flag   :fail_fast, help: "stop at the first failure or error"
+    option :parallel, String, default: "1", bare: "4", arg: "N", help: "run tests in up to N tasks at once"
+    option :timeout, String, default: "60s", arg: "DURATION", help: "the limit per test, 0 for none"
+    option :junit, String, default: nil, arg: "PATH", help: "also write a JUnit XML report"
+    flag   :release, help: "compile the tests natively instead of interpreting them"
+    flag   :doc, help: "run only the documentation examples (--no-doc: none of them)"
+    option :std, String, default: nil, arg: "NAME", help: "run the standard library's examples, of module NAME (alone: of every module)"
+    flag   :locked, help: "as for `quarz run`, for a cog's dependencies"
+    flag   :offline, help: "as for `quarz run`, for a cog's dependencies"
+
+    def validate -> Void
+      name.each do |n|
+        picked = Test.name_option(n)
+        error(picked) if picked.is_a?(String)
+      end
+      error("bad --order: #{order}") unless order == "defined" || order == "random"
+      s = seed
+      error("bad seed: #{s}") if !s.nil? && !s.match?(/\A[0-9]{1,18}\z/)
+      error("bad --parallel: #{parallel}") unless parallel.match?(/\A[1-9][0-9]{0,5}\z/)
+      error("bad --timeout: --timeout=#{timeout}") if Test.parse_duration(timeout).nil?
+    end
+  end
+
+  # :nodoc:
+  # Parse the command line: the options, an error message for a bad
+  # option, or the help (`--help`).
+  def self.parse_options(argv: Array[String]) -> Options | String | CommandLine::Help
+    line = begin
+      QuarzTest.parse(argv, exit: false)
+    rescue CommandLine::Error => e
+      return e.message
+    rescue CommandLine::Help => h
+      return h
+    end
     names: Array[String] = []
     patterns: Array[Regexp] = []
-    verbose = false
-    list = false
-    random = false
-    seed = (Time.now.to_i * 7919 + Process.pid) % 100_000
-    fail_fast = false
-    parallel = 1
-    timeout: Duration? = 60.seconds
-    junit: String? = nil
-    i = 0
-    while i < argv.size
-      a = argv[i]
-      value = ->(prefix: String) { a.delete_prefix(prefix) }
-      if a == "-n" || a == "--name"
-        i += 1
-        return "#{a} needs a name" if i >= argv.size
-        picked = Test.name_option(argv[i])
-        return picked if picked.is_a?(String)
-        case picked
-        in Regexp => r then patterns = patterns.push(r)
-        in [String] => n then names = names.push(n[0])
-        end
-      elsif a.start_with?("--name=")
-        picked = Test.name_option(value.call("--name="))
-        return picked if picked.is_a?(String)
-        case picked
-        in Regexp => r then patterns = patterns.push(r)
-        in [String] => n then names = names.push(n[0])
-        end
-      elsif a == "-v" || a == "--verbose"
-        verbose = true
-      elsif a == "--list"
-        list = true
-      elsif a == "--order=random"
-        random = true
-      elsif a == "--order=defined"
-        random = false
-      elsif a.start_with?("--seed=")
-        s = value.call("--seed=")
-        return "bad seed: #{s}" unless s.match?(/\A[0-9]{1,18}\z/)
-        seed = s.to_i
-        random = true
-      elsif a == "--fail-fast"
-        fail_fast = true
-      elsif a == "--parallel"
-        parallel = 4
-      elsif a.start_with?("--parallel=")
-        s = value.call("--parallel=")
-        return "bad --parallel: #{s}" unless s.match?(/\A[1-9][0-9]{0,5}\z/)
-        parallel = s.to_i
-      elsif a.start_with?("--timeout=")
-        d = Test.parse_duration(value.call("--timeout="))
-        return "bad --timeout: #{a}" if d.nil?
-        timeout = d.to_f == 0.0 ? nil : d
-      elsif a.start_with?("--junit=")
-        junit = value.call("--junit=")
-      else
-        return "unknown option: #{a}"
+    line.name.each do |n|
+      case Test.name_option(n)
+      in Regexp => r then patterns = patterns.push(r)
+      in [String] => one then names = names.push(one[0])
+      in String then nil
       end
-      i += 1
     end
-    Options.new(names, patterns, verbose, list, random, seed, fail_fast, parallel, timeout, junit)
+    s = line.seed
+    seed = s.nil? ? (Time.now.to_i * 7919 + Process.pid) % 100_000 : s.to_i
+    d = Test.parse_duration(line.timeout)
+    timeout = d.nil? || d.to_f == 0.0 ? nil : d
+    Options.new(names, patterns, line.verbose, line.list, line.order == "random" || !s.nil?, seed,
+                line.fail_fast, line.parallel.to_i, timeout, line.junit)
   end
 
   # :nodoc:
@@ -851,6 +850,9 @@ module Test
               in String => err
                 STDERR.puts "quarz test: #{err}"
                 return 2
+              in CommandLine::Help => h
+                print h.message
+                return 0
               end
     all = items(suites, options)
     if options.list
