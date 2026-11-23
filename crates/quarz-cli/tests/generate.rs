@@ -418,6 +418,54 @@ end
     assert!(!err.contains("lib2.qz:10:"), "{err}");
 }
 
+/// #1093: `Type[T]#variants` gives an enum's values at compile time, in
+/// declaration order, which a generated method can bake, interpreted and
+/// compiled; an enum with a variant that has fields, and a class that is
+/// no enum, fail the statement with the texts of docs/14 §4.
+#[test]
+fn an_enums_variants_at_compile_time() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Cli\n  static def self.choices[U](name: Symbol, t: Type[U]) -> Void\n    vs = t.variants\n    def_method(name) { vs }\n  end\nend\n",
+    );
+    let app = write(
+        &d.0,
+        "app.qz",
+        "require_relative \"lib\"\nenum Order = Defined | Random\nclass App < Cli\n  choices :orders, Order\nend\np App.new.orders\n",
+    );
+    let expected = "[Order::Defined, Order::Random]\n";
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, expected);
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", "app.bin"],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let out = std::process::Command::new(d.0.join("app.bin"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+    for (src, expected) in [
+        (
+            "require_relative \"lib\"\nenum Shape\n  variant Point\n  variant Circle(r: Float)\nend\nclass App < Cli\n  choices :shapes, Shape\nend\n",
+            "app2.qz:7:3: error: `choices` raised ArgumentError: `variants` gives the values of an enum whose variants have no fields: `Shape::Circle` has fields (`r`); list the variants by name",
+        ),
+        (
+            "require_relative \"lib\"\nclass Plain\nend\nclass App < Cli\n  choices :xs, Plain\nend\n",
+            "app2.qz:5:3: error: `choices` raised ArgumentError: `variants` gives an enum's values: `Plain` is not an enum",
+        ),
+    ] {
+        let app2 = write(&d.0, "app2.qz", src);
+        let (ok, _, err) = quarz(&d.0, &["check", app2.to_str().unwrap()], &[]);
+        assert!(!ok);
+        assert!(err.contains(expected), "{err}");
+    }
+}
+
 #[test]
 fn what_cannot_be_generated() {
     let d = dir();

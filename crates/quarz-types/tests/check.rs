@@ -3470,6 +3470,10 @@ fn static_declarations() {
     // Reflection is compile-time only: not from ordinary code.
     err("p Int.fields", "`fields` runs at compile time only");
     err(
+        "enum Order = Defined | Random\np Order.variants",
+        "`variants` runs at compile time only",
+    );
+    err(
         "def f[T](t: Type[T]) -> Bool = t.method?(:x)",
         "`method?` runs at compile time only",
     );

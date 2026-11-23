@@ -89,6 +89,19 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let out: Result<Vec<Value>, Flow> = sigs.iter().map(|m| meta_method(i, m)).collect();
         Ok(Value::array(out?))
     });
+    // An enum's values (docs/14 §4, #1093): its variants', in declaration
+    // order (`RtClass::variants`), when none has fields.
+    native!(m, "Type#variants", |i, r, _| {
+        let class = read_class(i, r)?;
+        let why = variants_refusal(&i.program.world, class);
+        if let Some(why) = why {
+            return Err(i.err_arg(&why));
+        }
+        let vs = &i.program.world.class(class).variants;
+        Ok(Value::array(
+            vs.iter().map(|v| i.variant_singleton(*v)).collect(),
+        ))
+    });
     native!(m, "Type#method?", |i, r, a| {
         let class = read_class(i, r)?;
         let Value::Symbol(name) = a.arg(0) else {
@@ -761,6 +774,31 @@ fn method_handle(
             Value::Class(class)
         ],
     )))
+}
+
+/// Why `Type#variants` gives nothing for `class`: no enum, or an enum
+/// with a variant that has fields (#1093). The one place that decides
+/// it: the call runs at compile time only, so a class written out
+/// (`Order.variants`) is refused by its statement as a parameter's is.
+fn variants_refusal(world: &quarz_ir::RtWorld, class: ClassId) -> Option<String> {
+    let c = world.class(class);
+    if c.kind != quarz_ir::RtClassKind::Enum {
+        return Some(format!(
+            "`variants` gives an enum's values: `{}` is not an enum",
+            c.name
+        ));
+    }
+    let v = c
+        .variants
+        .iter()
+        .map(|v| world.class(*v))
+        .find(|v| !v.fields.is_empty())?;
+    let names: Vec<String> = v.fields.iter().map(|f| format!("`{}`", f.name)).collect();
+    Some(format!(
+        "`variants` gives the values of an enum whose variants have no fields: `{}` has fields ({}); list the variants by name",
+        v.name,
+        names.join(", ")
+    ))
 }
 
 fn reflect_of(interp: &Interp) -> Result<std::rc::Rc<dyn crate::reflect::Reflect>, Flow> {
