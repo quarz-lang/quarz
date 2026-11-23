@@ -12,7 +12,7 @@ use quarz_syntax::Span;
 use quarz_types::{Output, VarRef, World};
 
 /// A place where the checker recorded a variable reference, or an
-/// implicit reference to every parameter (`...`, a bare `super`).
+/// implicit reference to every parameter (`...`).
 #[derive(Clone, Copy, Debug)]
 pub enum Site<'a> {
     Var(Span),
@@ -26,7 +26,7 @@ pub enum Site<'a> {
     Call(quarz_syntax::ast::NodeId, quarz_syntax::Span, bool, &'a str),
     /// A `super` call.
     Super,
-    /// `...` (a bare `super` too): reads every parameter.
+    /// `...`: reads every parameter.
     Forward,
     /// A use of the function's `self`: `self`, a field, `super`, a call on
     /// the implicit receiver that passes it.
@@ -416,9 +416,9 @@ pub fn walk_expr(e: &Expr, nest: Nest, cx: &mut Cx) {
                 (cx.visit)(Site::Var(e.span), nest);
             }
             (cx.visit)(Site::SelfUse, nest);
-            match args {
-                Some(args) => walk_args(args, nest, cx),
-                None => (cx.visit)(Site::Forward, nest),
+            // (A bare `super` passes nothing, docs/01 §3.)
+            if let Some(args) = args {
+                walk_args(args, nest, cx);
             }
             if let Some(b) = block {
                 walk_block(b, nest, cx, false);

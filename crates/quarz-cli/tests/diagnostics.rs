@@ -4177,9 +4177,8 @@ fn super_past_an_abstract_declaration_with_nothing_after() {
 /// #511: `...` forwards the enclosing method's arguments, written alone
 /// as a call's whole argument list; each refusal with its text: beside
 /// other arguments, without parentheses, in a parameter's default (the
-/// parameters after it have no value yet; a bare `super` too, #1078),
-/// outside a method, in `yield`,
-/// in a quoted block, and the method's block where the callee takes
+/// parameters after it have no value yet, #1078), outside a method, in
+/// `yield`, in a quoted block, and the method's block where the callee takes
 /// none or may keep an anonymous one (the forwarded block counts as
 /// given, as `&` would).
 #[test]
@@ -4189,7 +4188,6 @@ fn forwarding_where_it_is_refused() {
         ("def f(x: Int) -> Int = g(..., k: 1)\n", "test:1:26: error: `...` forwards the method's arguments and is written alone: `f(...)`"),
         ("def f(x: Int) -> Object = g ...\n", "test:1:29: error: `g ...` is not a call: write `g(...)` to forward the method's arguments (an endless range is written `g...`)"),
         ("def h(a: Int, b: Int = 7) -> Int = a * 10 + b\ndef g(a: Int, b: Int = h(...)) -> Int = a + b\n", "test:2:26: error: `...` in a parameter's default: the parameters after it have no value yet; write the arguments"),
-        ("class P\n  def initialize(a: Int, b: Int = 0); end\nend\nclass C < P\n  def initialize(a: Int, b: Int = (super; 1)); end\nend\n", "test:5:36: error: a bare `super` in a parameter's default passes the method's arguments, and the parameters after it have no value yet; write the arguments (`super(a)`)"),
         ("puts(...)\n", "test:1:6: error: `...` forwards the enclosing method's arguments: there is no method here"),
         ("def f(x: Int, &: (Int) -> Void) -> Void\n  yield(...)\nend\n", "test:2:9: error: `...` forwards the method's arguments to a call: `yield` passes values to the block, write them"),
         ("def g(x: Int) -> Int = x\ndef f(x: Int, &b: () -> Int) -> Int = g(...)\n", "test:2:39: error: g(x: Int) -> Int does not take a block"),
@@ -4201,6 +4199,69 @@ fn forwarding_where_it_is_refused() {
         assert!(
             out.iter().any(|d| d.starts_with(expected)),
             "{src:?}: {out:#?}"
+        );
+    }
+}
+
+/// #511 step 3: a bare `super` is `super()`; where the method has a
+/// parameter or a block and `super(...)` would compile as well, it is
+/// an error; where only `super(...)` would, `super()`'s error says so.
+/// The rows of the decision's table, the three shapes that would have
+/// changed meaning silently (`*rest`/`**opts`, an overload `super()`
+/// picks, a parameter the parent defaults), a method with a block only,
+/// and a bare `super` in a block, a lambda and `initialize`.
+#[test]
+fn a_bare_super_passes_nothing() {
+    const BOTH: &str = "a bare `super` passes nothing here, but `super(...)` would pass the method's arguments and also compile: write `super()` to pass none, or `super(...)` to pass the method's arguments";
+    const HINT: &str =
+        " (a bare `super` passes nothing: write `super(...)` to pass the method's arguments)";
+    let errors = |src: &str| -> Vec<String> {
+        common::diagnostics(src)
+            .into_iter()
+            .filter(|d| d.contains(": error: "))
+            .map(|d| d.lines().next().unwrap().to_string())
+            .collect()
+    };
+    let ok = [
+        // No parameters over no parameters; parameters over none; none
+        // over optional ones.
+        "class A\n  def f -> Int = 1\nend\nclass B < A\n  def f -> Int = super + 1\nend\n",
+        "class A\n  def f -> Int = 1\nend\nclass B < A\n  def f(x: Int) -> Int = super + x\nend\n",
+        "class A\n  def f(x: Int = 1) -> Int = x\nend\nclass B < A\n  def f -> Int = super\nend\n",
+        // `super()` and `super(...)` written are each what they say.
+        "class A\n  def f(x: Int = 1) -> Int = x\nend\nclass B < A\n  def f(x: Int = 1) -> Int = super() + super(...)\nend\n",
+        // In a parameter's default, `super(...)` is refused (#1078): a bare
+        // `super` there is `super()` alone.
+        "class P\n  def initialize(a: Int = 1, b: Int = 0); end\nend\nclass C < P\n  def initialize(a: Int, b: Int = (super; 1)); end\nend\n",
+    ];
+    for src in ok {
+        assert_eq!(errors(src), Vec::<String>::new(), "{src}");
+    }
+    let refused = [
+        // Parameters over the same, taken optionally (the parent's
+        // default), `*rest` and `**opts`, an overload `super()` picks.
+        ("class A\n  def f(x: Int = 1) -> Int = x\nend\nclass B < A\n  def f(x: Int = 1) -> Int = super\nend\n", format!("test:5:30: error: {BOTH}")),
+        ("class A\n  def g(*xs: Int, **kw: String) -> Int = xs.size + kw.size\nend\nclass B < A\n  def g(*xs: Int, **kw: String) -> Int = super + 100\nend\n", format!("test:5:42: error: {BOTH}")),
+        ("class A\n  def it -> String = \"A\"\n  def it(x: Int) -> String = \"A#{x}\"\nend\nclass B < A\n  def it(x: Int) -> String = \"B>\" + super\nend\n", format!("test:6:37: error: {BOTH}")),
+        // A block only, over a parent whose block is optional.
+        ("class A\n  def r(&b: (() -> Int)?) -> Int = 0\nend\nclass B < A\n  def r(&b: (() -> Int)?) -> Int = super\nend\n", format!("test:5:36: error: {BOTH}")),
+        // Parameters over required ones: `super()`'s error, and the hint;
+        // in a block and a lambda, and in `initialize`.
+        ("class A\n  def f(x: Int) -> Int = x\nend\nclass B < A\n  def f(x: Int) -> Int = super\nend\n", format!("test:5:26: error: f(x: Int) -> Int is missing the argument `x`{HINT}")),
+        ("class A\n  def f(x: Int) -> Int = x\nend\nclass B < A\n  def f(x: Int) -> Int = [1].map { |i| super }.sum\nend\n", format!("test:5:40: error: f(x: Int) -> Int is missing the argument `x`{HINT}")),
+        ("class A\n  def f(x: Int) -> Int = x\nend\nclass B < A\n  def f(x: Int) -> Int\n    g = -> { super }\n    g.call\n  end\nend\n", format!("test:6:14: error: f(x: Int) -> Int is missing the argument `x`{HINT}")),
+        ("class A\n  @x: Int\n  def initialize(@x: Int); end\nend\nclass B < A\n  def initialize(x: Int)\n    super\n  end\nend\n", format!("test:7:5: error: initialize(x: Int) -> Void is missing the argument `x`{HINT}")),
+        // A block only, over a parent that requires it; an anonymous one.
+        // #1080: `super(...)` hands the anonymous block to a parent that
+        // may keep it: refused, as `f(&)` would be.
+        ("class A\n  def r(&b: (() -> Int)?) -> Int = 0\nend\nclass B < A\n  def r(&: (() -> Int)?) -> Int = super(...)\nend\n", "test:5:41: error: the method's block (`&`) cannot be passed to `r`, which may keep it: name the block parameter (`&blk`) to keep it".to_string()),
+        ("class A\n  def r(&: () -> Int) -> Int = yield\nend\nclass B < A\n  def r(&: () -> Int) -> Int = super\nend\n", format!("test:5:32: error: r(&: () -> Int) -> Int requires a block{HINT}")),
+    ];
+    for (src, expected) in refused {
+        let got = errors(src);
+        assert!(
+            got.contains(&expected),
+            "{src}\nexpected {expected}\ngot {got:#?}"
         );
     }
 }

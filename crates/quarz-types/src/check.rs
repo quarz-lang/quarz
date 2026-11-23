@@ -50,17 +50,14 @@ pub enum Forward {
     KeywordRest,
 }
 
-/// Whether a `...` passes the method's block on (`Checker::forwarding`).
-#[derive(Clone, Copy)]
-enum ForwardBlock {
-    /// No: the call has a block of its own.
-    Own,
-    /// A `super`'s: unless the block is optional (it is passed at run
-    /// time all the same).
-    Super,
-    /// Any other call's.
-    Call,
-}
+/// A bare `super` that `super(...)` would also resolve (docs/01 §3,
+/// #511): both readings compile.
+const BARE_SUPER_BOTH: &str = "a bare `super` passes nothing here, but `super(...)` would pass the method's arguments and also compile: write `super()` to pass none, or `super(...)` to pass the method's arguments";
+
+/// Appended to the error of a bare `super` that fails as `super()` where
+/// `super(...)` would resolve (docs/01 §3, #511).
+const BARE_SUPER_HINT: &str =
+    " (a bare `super` passes nothing: write `super(...)` to pass the method's arguments)";
 
 /// A call's record kept apart from its node's own (`calls`,
 /// `union_calls`, `union_conflicts`, `dynamic_calls`): a compound
@@ -5464,8 +5461,8 @@ impl Checker {
     /// one place that decides it: the parameters of the method it is in,
     /// each read from its own variable (`forwarded_local`) and passed as
     /// the method takes it (positionally, by keyword, `*rest` and
-    /// `**opts` splatted), then the method's block when `block` (a call
-    /// without a block of its own). In a block or lambda, the enclosing
+    /// `**opts` splatted), then the method's block when `pass_block` (a
+    /// call without a block of its own). In a block or lambda, the enclosing
     /// method's; in a block given to `def_method`, the block's, which
     /// become the generated method's (docs/14 §5; it takes no block). The
     /// call is then checked as one written with these arguments; the
@@ -5476,18 +5473,13 @@ impl Checker {
         &mut self,
         id: NodeId,
         span: Span,
-        block: ForwardBlock,
-        bare_super: bool,
+        pass_block: bool,
     ) -> Option<(Vec<Arg>, Vec<VarRef>)> {
         // In a parameter's default, the parameters after it have no value
-        // yet (#1078): a bare `super` there forwards them too.
+        // yet (#1078).
         if self.env.in_param_default {
             self.error(
-                if bare_super {
-                    "a bare `super` in a parameter's default passes the method's arguments, and the parameters after it have no value yet; write the arguments (`super(a)`)"
-                } else {
-                    "`...` in a parameter's default: the parameters after it have no value yet; write the arguments"
-                },
+                "`...` in a parameter's default: the parameters after it have no value yet; write the arguments",
                 span,
             );
             return None;
@@ -5534,15 +5526,10 @@ impl Checker {
                 params.push((p.name.clone(), r, kind));
             }
             // The method's block (`&` when anonymous), unless the call
-            // has one of its own. (For `super`, an optional one is not
-            // written: the superclass may take none, and one that takes
-            // an optional block gets it at run time all the same.)
-            let pass = match block {
-                ForwardBlock::Own => false,
-                ForwardBlock::Super => !m.block_optional,
-                ForwardBlock::Call => true,
-            };
-            if let (Some((name, _)), true) = (&m.block, pass) {
+            // has one of its own; an optional one too, as a nilable block,
+            // which a callee whose block is required refuses (#1080: what
+            // is passed is what the checker sees).
+            if let (Some((name, _)), true) = (&m.block, pass_block) {
                 block_var = Some((
                     name.clone(),
                     VarRef {
@@ -5610,12 +5597,7 @@ impl Checker {
         span: Span,
         expected: Option<&Type>,
     ) -> Type {
-        let own = if call.block.is_some() {
-            ForwardBlock::Own
-        } else {
-            ForwardBlock::Call
-        };
-        let Some((args, vars)) = self.forwarding(id, span, own, false) else {
+        let Some((args, vars)) = self.forwarding(id, span, call.block.is_none()) else {
             self.check_args_blindly(&Call {
                 args: Vec::new(),
                 ..call.clone()
@@ -18373,25 +18355,17 @@ impl Checker {
             );
             return Type::Nothing;
         }
-        // `super(...)`, and a bare `super`, which means it for now (docs/01
-        // §3): checked as written with what `...` stands for.
+        // `super(...)`: checked as written with what `...` stands for. A
+        // bare `super` is `super()` (docs/01 §3).
         let forward = match args {
-            None => Some((expr.id, expr.span)),
             Some([Arg::Forward { id, span }]) => Some((*id, *span)),
-            Some(_) => None,
+            _ => None,
         };
         let (call_args, vars) = match forward {
-            Some((id, span)) => {
-                let own = if block.is_some() {
-                    ForwardBlock::Own
-                } else {
-                    ForwardBlock::Super
-                };
-                match self.forwarding(id, span, own, args.is_none()) {
-                    Some((a, vars)) => (a, Some(vars)),
-                    None => return Type::Nothing,
-                }
-            }
+            Some((id, span)) => match self.forwarding(id, span, block.is_none()) {
+                Some((a, vars)) => (a, Some(vars)),
+                None => return Type::Nothing,
+            },
             None => (args.unwrap_or(&[]).to_vec(), None),
         };
         let call = Call {
@@ -18473,18 +18447,20 @@ impl Checker {
         } else {
             cands
         };
-        let t = self.resolve_overloads_as(
-            expr,
-            &call,
-            &self_ty,
-            cands,
-            true,
-            None,
-            // (`super` in `deinitialize` chains the parent's, the one
-            // other call of it, docs/03 §4.)
-            m.name == "initialize" || (m.name == "deinitialize" && !m.singleton),
-        );
+        // (`super` in `deinitialize` chains the parent's, the one other
+        // call of it, docs/03 §4.)
+        let initish = m.name == "initialize" || (m.name == "deinitialize" && !m.singleton);
+        // A bare `super` in a method with a parameter or a block: would
+        // `super(...)` resolve too?
+        let both = args.is_none()
+            && (!m.params.is_empty() || m.block.is_some())
+            && self.forwarding_resolves(expr, &call, &self_ty, cands.clone(), initish);
+        let reported = self.diagnostics.len();
+        let t = self.resolve_overloads_as(expr, &call, &self_ty, cands, true, None, initish);
         self.forward_vars = saved;
+        if both {
+            self.bare_super_readings(expr, reported);
+        }
         if let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id).cloned() {
             self.out.calls.insert(expr.id, CallTarget::Super { method });
             if let (Some(args), None) = (args, forward) {
@@ -18506,6 +18482,62 @@ impl Checker {
             }
         }
         t
+    }
+
+    /// For a bare `super`, which is `super()` (docs/01 §3, #511), in a
+    /// method with a parameter or a block: whether `super(...)` would
+    /// resolve too among `cands`, as `call` with what `...` stands for
+    /// (`forwarding`; one it refuses does not). A trial: its diagnostics,
+    /// tables, inference and environment are undone.
+    fn forwarding_resolves(
+        &mut self,
+        expr: &Expr,
+        call: &Call,
+        self_ty: &Type,
+        cands: Vec<(MethodId, HashMap<TypeParamId, Type>)>,
+        initish: bool,
+    ) -> bool {
+        let infer = self.infer.save();
+        let env = self.env.clone();
+        let reported = self.diagnostics.len();
+        let tables = self.table_mark();
+        let last = self.last_winner;
+        let fits = match self.forwarding(expr.id, expr.span, call.block.is_none()) {
+            Some((args, vars)) => {
+                let trial = Call {
+                    args,
+                    ..call.clone()
+                };
+                let saved = self.forward_vars.replace(vars);
+                self.resolve_overloads_as(expr, &trial, self_ty, cands, true, None, initish);
+                self.forward_vars = saved;
+                !self.diagnostics[reported..]
+                    .iter()
+                    .any(|(_, d)| d.is_error())
+            }
+            None => false,
+        };
+        self.out.forwards.remove(&expr.id);
+        self.truncate_diagnostics(reported);
+        self.discard_tables(tables);
+        self.infer.restore(infer);
+        self.env = env;
+        self.last_winner = last;
+        fits
+    }
+
+    /// A bare `super` that `super(...)` would also resolve, once its
+    /// `super()` was resolved (its diagnostics from `reported` on): an
+    /// error where `super()` resolved too (both readings compile), else
+    /// the hint added to `super()`'s first error (docs/01 §3, #511).
+    fn bare_super_readings(&mut self, expr: &Expr, reported: usize) {
+        match self.diagnostics[reported..]
+            .iter_mut()
+            .find(|(_, d)| d.is_error())
+        {
+            Some((_, d)) => d.message.push_str(BARE_SUPER_HINT),
+            None => self.error(BARE_SUPER_BOTH, expr.span),
+        }
     }
 
     /// `super(args)` in a block given to `def_initialize` (docs/14 §5),
@@ -18539,21 +18571,13 @@ impl Checker {
             self.check_args_blindly(&call);
             return Type::Nothing;
         }
-        if args.is_none() {
-            self.error(
-                "a bare `super` forwards a method's parameters: in a block given to `def_initialize`, write the arguments (`super(x)`)",
-                expr.span,
-            );
-            return Type::Nothing;
-        }
-        // `super(...)`: the block's parameters (`forwarding`).
+        // `super(...)`: the block's parameters (`forwarding`); a bare
+        // `super`, `super()` (docs/01 §3).
         let (call, vars) = match args {
-            Some([Arg::Forward { id, span }]) => {
-                match self.forwarding(*id, *span, ForwardBlock::Own, false) {
-                    Some((a, vars)) => (Call { args: a, ..call }, Some(vars)),
-                    None => return Type::Nothing,
-                }
-            }
+            Some([Arg::Forward { id, span }]) => match self.forwarding(*id, *span, false) {
+                Some((a, vars)) => (Call { args: a, ..call }, Some(vars)),
+                None => return Type::Nothing,
+            },
             _ => (call, None),
         };
         let self_ty = self.env.self_type.clone();
@@ -18574,10 +18598,19 @@ impl Checker {
             self.check_args_blindly(&call);
             return Type::Nothing;
         }
+        // (A bare `super`, where the block has parameters: would
+        // `super(...)` resolve too?)
+        let both = args.is_none()
+            && self.env.blocks[pos].lifted_params.is_some_and(|n| n > 0)
+            && self.forwarding_resolves(expr, &call, &self_ty, cands.clone(), true);
+        let reported = self.diagnostics.len();
         let saved = std::mem::replace(&mut self.forward_vars, vars);
         let t = self.resolve_overloads_as(expr, &call, &self_ty, cands, true, None, true);
         let forwarded = self.forward_vars.is_some();
         self.forward_vars = saved;
+        if both {
+            self.bare_super_readings(expr, reported);
+        }
         if let Some(CallTarget::Method { method }) = self.out.calls.get(&expr.id).cloned() {
             self.out.calls.insert(expr.id, CallTarget::Super { method });
             if let (Some(args), false) = (args, forwarded) {
