@@ -409,6 +409,11 @@ fn the_prelude_snapshot_is_taken_only_where_nothing_changes_it() {
             "refused: prelude_unchanged",
         ),
         ("off", "puts 1\n", &[("QUARZ_NO_PRELUDE_CACHE", "1")][..], "none"),
+        // Programs started from a precompiled std set (#1115): the
+        // prelude's ids come first there too.
+        ("command_line", "require \"command_line\"\nputs 1\n", &[][..], "taken, compared"),
+        ("json", "require \"json\"\nputs 1\n", &[][..], "taken, compared"),
+        ("test", "require \"test\"\nputs 1\n", &[][..], "taken, compared"),
     ];
     for (name, src, env, expected) in cases {
         let file = dir.join(format!("{name}.qz"));

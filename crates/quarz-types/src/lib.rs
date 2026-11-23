@@ -1045,6 +1045,13 @@ pub fn std_state(prelude: &Program, modules: &[&str]) -> (PreludeState, Vec<File
         .collect();
     let mut declarer = declare::Declarer::new();
     declarer.collect_prelude(prelude);
+    // The prelude resolved alone first, as `prelude_state` has it and as a
+    // program checked from it adds its units on top: so that the
+    // prelude's ids (its extensions' methods, resolved after classes'
+    // members) come before the modules', as in `prelude.bin`, and its
+    // runtime snapshot applies to a program started from this state
+    // (#1115, `quarz_lower::prelude::usable`).
+    declarer.resolve_headers();
     for (i, (name, program)) in parsed.iter().enumerate() {
         let file = i as u32 + 1;
         declarer.world.std_files.insert(file);
