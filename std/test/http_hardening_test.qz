@@ -15,25 +15,66 @@ class HttpHardeningParseTest < Test::Case
   # Strict framing.
   def data_strict_framing -> Hash[String, [String, String]]
     {
-      "bare LF after chunk data" => ["POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\n0\r\n\r\n", "400 bare LF"],
-      "bare LF after chunk size" => ["POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n3\nabc\r\n0\r\n\r\n", "400 bare LF"],
-      "spaces around chunk size" => ["POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n 3 \r\nabc\r\n0\r\n\r\n", "400 bad chunk size"],
-      "chunk extension" => ["POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n3;x=y\r\nabc\r\n0\r\n\r\n", "POST /  \"abc\""],
-      "two spaces after method" => ["GET  /a HTTP/1.1\r\n\r\n", "400 bad request line"],
+      "bare LF after chunk data" => ["POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\n0\r\n\r\n", "400 bare LF"],
+      "bare LF after chunk size" => ["POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\nabc\r\n0\r\n\r\n", "400 bare LF"],
+      "spaces around chunk size" => ["POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n 3 \r\nabc\r\n0\r\n\r\n", "400 bad chunk size"],
+      "chunk extension" => ["POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3;x=y\r\nabc\r\n0\r\n\r\n", "POST /  \"abc\""],
+      "two spaces after method" => ["GET  /a HTTP/1.1\r\nHost: x\r\n\r\n", "400 bad request line"],
       "space before method" => [" GET /a HTTP/1.1\r\n\r\n", "400 bad method"],
       "tab after method" => ["GET\t/a HTTP/1.1\r\n\r\n", "400 bad request line"],
       "control character in target" => ["GET /a\x01b HTTP/1.1\r\n\r\n", "400 bad request target"],
-      "CR in header value" => ["GET / HTTP/1.1\r\nX: a\rb\r\n\r\n", "400 bad header value"],
-      "NUL in header value" => ["GET / HTTP/1.1\r\nX: a\x00b\r\n\r\n", "400 bad header value"],
-      "tab in header value" => ["GET / HTTP/1.1\r\nX: a\tb\r\n\r\n", "GET /  \"\""],
+      "CR in header value" => ["GET / HTTP/1.1\r\nHost: x\r\nX: a\rb\r\n\r\n", "400 bad header value"],
+      "NUL in header value" => ["GET / HTTP/1.1\r\nHost: x\r\nX: a\x00b\r\n\r\n", "400 bad header value"],
+      "tab in header value" => ["GET / HTTP/1.1\r\nHost: x\r\nX: a\tb\r\n\r\n", "GET /  \"\""],
       "many leading empty lines" => ["#{"\r\n" * 60}GET / HTTP/1.1\r\n\r\n", "431 Request Header Fields Too Large"],
-      "absolute target without path" => ["GET http://h?x=1 HTTP/1.1\r\n\r\n", "GET / x=1 \"\""],
-      "absolute target, host only" => ["GET http://h HTTP/1.1\r\n\r\n", "GET /  \"\""],
+      "absolute target without path" => ["GET http://h?x=1 HTTP/1.1\r\nHost: x\r\n\r\n", "GET / x=1 \"\""],
+      "absolute target, host only" => ["GET http://h HTTP/1.1\r\nHost: x\r\n\r\n", "GET /  \"\""],
       "space after version" => ["GET / HTTP/1.1 \r\n\r\n", "400 bad request line"],
       "lower-case version" => ["GET / http/1.1\r\n\r\n", "400 bad request line"],
-      "fragment in target" => ["GET /p#frag HTTP/1.1\r\n\r\n", "400 bad request target"],
-      "chunk size with many zeros" => ["POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n#{"0" * 2000}3\r\nabc\r\n0\r\n\r\n", "400 bad chunk size"],
+      "fragment in target" => ["GET /p#frag HTTP/1.1\r\nHost: x\r\n\r\n", "400 bad request target"],
+      "chunk size with many zeros" => ["POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n#{"0" * 2000}3\r\nabc\r\n0\r\n\r\n", "400 bad chunk size"],
     }
+  end
+
+  # #1126: a framing field is trimmed of spaces and tabs only (RFC 9110
+  # §5.6.3), so other whitespace makes it no match, as a proxy that does
+  # not trim it would read it; only CRLF ends a line of the request head;
+  # an HTTP/1.1 request has one Host, any request at most one (RFC 9112
+  # §3.2).
+  def data_strict_head -> Hash[String, [String, String]]
+    {
+      "U+00A0 before chunked" => ["POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: \u00a0chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n", "400 bad Transfer-Encoding"],
+      "U+3000 after chunked" => ["POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\u3000\r\n\r\n3\r\nabc\r\n0\r\n\r\n", "400 bad Transfer-Encoding"],
+      "U+0085 in a coding list" => ["POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip,\u0085chunked\r\n\r\n", "400 bad Transfer-Encoding"],
+      "unknown coding" => ["POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n", "501 Not Implemented"],
+      "spaces and tabs around chunked" => ["POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: \t chunked \t\r\n\r\n3\r\nabc\r\n0\r\n\r\n", "POST /  \"abc\""],
+      "U+00A0 before a length" => ["POST / HTTP/1.1\r\nHost: x\r\nContent-Length: \u00a03\r\n\r\nabc", "400 bad Content-Length"],
+      "U+3000 after a length" => ["POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 3\u3000\r\n\r\nabc", "400 bad Content-Length"],
+      "spaces and tabs around a length" => ["POST / HTTP/1.1\r\nHost: x\r\nContent-Length: \t 3 \t\r\n\r\nabc", "POST /  \"abc\""],
+      "bare LF before the request" => ["\nGET / HTTP/1.1\r\nHost: x\r\n\r\n", "400 bare LF"],
+      "bare LF after the request line" => ["GET / HTTP/1.1\nHost: x\r\n\r\n", "400 bare LF"],
+      "bare LF after a header" => ["GET / HTTP/1.1\r\nHost: x\n\r\n", "400 bare LF"],
+      "bare LF ending the head" => ["GET / HTTP/1.1\r\nHost: x\r\n\n", "400 bare LF"],
+      "no Host in HTTP/1.1" => ["GET / HTTP/1.1\r\n\r\n", "400 missing Host header"],
+      "two Hosts" => ["GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n", "400 more than one Host header"],
+      "two Hosts in HTTP/1.0" => ["GET / HTTP/1.0\r\nHost: a\r\nHost: a\r\n\r\n", "400 more than one Host header"],
+      "no Host in HTTP/1.0" => ["GET / HTTP/1.0\r\n\r\n", "GET /  \"\""],
+      "an empty Host" => ["GET / HTTP/1.1\r\nHost:\r\n\r\n", "GET /  \"\""],
+    }
+  end
+
+  def test_strict_head(data: [String, String])
+    text, expected = data
+    assert_equal(expected, parse(text))
+  end
+
+  # #1126: other fields keep whitespace that is not a space or a tab.
+  def test_field_values_trimmed_of_spaces_and_tabs_only
+    r = HTTP::Reader.of("GET / HTTP/1.1\r\nHost: x\r\nA: \t a \t\r\nB: \u0085b\u00a0\r\n\r\n".to_bytes)
+    req = HTTP.read_request(r, 100, 100, nil, HTTP::Proxies.none, false)
+    raise "no request" if req.nil?
+    assert_equal("a", req.headers["a"])
+    assert_equal("\u0085b\u00a0", req.headers["b"])
   end
 
   def test_strict_framing(data: [String, String])
@@ -123,7 +164,7 @@ class HttpHardeningServerTest < Test::Case
         yield port
         # Whatever the test sent, the server goes on, and it reported
         # nothing the test did not take.
-        alive = HttpHardeningServerTest.raw(port, "GET /alive HTTP/1.1\r\nConnection: close\r\n\r\n")
+        alive = HttpHardeningServerTest.raw(port, "GET /alive HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
         assert_match(/\AHTTP\/1\.1 200 OK\|/, alive)
         assert_true(alive.end_with?("||ok "), alive)
         assert_nil(@errors.try_receive)
@@ -159,8 +200,8 @@ class HttpHardeningServerTest < Test::Case
       begin
         port = server.local_address.port
         assert_equal("HTTP/1.1 500 Internal Server Error|Content-Length: 0|Connection: close||",
-                     raw(port, "GET /deep HTTP/1.1\r\nConnection: close\r\n\r\n"))
-        assert_match(/\AHTTP\/1\.1 200 OK\|/, raw(port, "GET /alive HTTP/1.1\r\nConnection: close\r\n\r\n"))
+                     raw(port, "GET /deep HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
+        assert_match(/\AHTTP\/1\.1 200 OK\|/, raw(port, "GET /alive HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
       ensure
         server.shutdown
       end
@@ -171,22 +212,22 @@ class HttpHardeningServerTest < Test::Case
     serving do |port|
       # In the handler: a 500, reported (not a `StandardError`, #377).
       assert_equal("HTTP/1.1 500 Internal Server Error|Content-Length: 0|Connection: close||",
-                   raw(port, "GET /deep HTTP/1.1\r\nConnection: close\r\n\r\n"))
+                   raw(port, "GET /deep HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
       assert_equal("stack level too deep", @errors.receive)
       # In a stream body, once the response started: its connection
       # closed, reported.
-      assert_equal("HTTP/1.1 200 OK|Transfer-Encoding: chunked||1|x|", raw(port, "GET /deep-stream HTTP/1.1\r\n\r\n"))
+      assert_equal("HTTP/1.1 200 OK|Transfer-Encoding: chunked||1|x|", raw(port, "GET /deep-stream HTTP/1.1\r\nHost: x\r\n\r\n"))
       assert_equal("stack level too deep", @errors.receive)
     end
   end
 
   def test_failing_stream_ends_its_connection_only
     serving do |port|
-      assert_equal("HTTP/1.1 200 OK|Transfer-Encoding: chunked||1|x|", raw(port, "GET /stream-fails HTTP/1.1\r\n\r\n"))
+      assert_equal("HTTP/1.1 200 OK|Transfer-Encoding: chunked||1|x|", raw(port, "GET /stream-fails HTTP/1.1\r\nHost: x\r\n\r\n"))
       assert_equal("stream broke", @errors.receive)
       # The server goes on.
       assert_equal("HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 3|Connection: close||ok ",
-                   raw(port, "GET / HTTP/1.1\r\nConnection: close\r\n\r\n"))
+                   raw(port, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
     end
   end
 
@@ -194,10 +235,10 @@ class HttpHardeningServerTest < Test::Case
     serving do |port|
       # `header` raises in the handler, which is a 500.
       assert_equal("HTTP/1.1 500 Internal Server Error|Content-Length: 0|Connection: close||",
-                   raw(port, "GET /inject HTTP/1.1\r\nConnection: close\r\n\r\n"))
+                   raw(port, "GET /inject HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
       assert_equal("invalid header value for x-user (a control character)", @errors.receive)
       assert_equal("HTTP/1.1 500 Internal Server Error|Content-Length: 0|Connection: close||",
-                   raw(port, "GET /inject-field HTTP/1.1\r\nConnection: close\r\n\r\n"))
+                   raw(port, "GET /inject-field HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
       assert_equal("invalid response header (a control character or a bad name)", @errors.receive)
     end
   end
@@ -214,7 +255,7 @@ class HttpHardeningServerTest < Test::Case
     # 400 and closed, nothing after it is served.
     serving do |port|
       assert_equal("HTTP/1.1 400 Bad Request|Content-Type: text/plain; charset=utf-8|Content-Length: 14|Connection: close||bad chunk size",
-                   raw(port, "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5 \r\n0\r\n\r\n\r\nGET /smuggled HTTP/1.1\r\n\r\n"))
+                   raw(port, "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5 \r\n0\r\n\r\n\r\nGET /smuggled HTTP/1.1\r\n\r\n"))
     end
   end
 
@@ -222,26 +263,26 @@ class HttpHardeningServerTest < Test::Case
   def test_handler_transfer_encoding_replaced
     serving do |port|
       assert_equal("HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 5|Connection: close||hello",
-                   raw(port, "GET /te HTTP/1.1\r\nConnection: close\r\n\r\n"))
+                   raw(port, "GET /te HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
     end
   end
 
   def test_handler_content_length_replaced
     serving do |port|
-      assert_equal("HTTP/1.1 200 OK|Content-Length: 0|Connection: close||", raw(port, "GET /cl HTTP/1.1\r\nConnection: close\r\n\r\n"))
+      assert_equal("HTTP/1.1 200 OK|Content-Length: 0|Connection: close||", raw(port, "GET /cl HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
     end
   end
 
   def test_head_keeps_handler_content_length
     serving do |port|
-      assert_equal("HTTP/1.1 200 OK|Content-Length: 5|Connection: close||", raw(port, "HEAD /cl HTTP/1.1\r\nConnection: close\r\n\r\n"))
+      assert_equal("HTTP/1.1 200 OK|Content-Length: 5|Connection: close||", raw(port, "HEAD /cl HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
     end
   end
 
   def test_invalid_status
     serving do |port|
       assert_equal("HTTP/1.1 500 Internal Server Error|Content-Length: 0|Connection: close||",
-                   raw(port, "GET /status HTTP/1.1\r\nConnection: close\r\n\r\n"))
+                   raw(port, "GET /status HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
       assert_equal("invalid response status 1000", @errors.receive)
     end
   end
@@ -249,7 +290,7 @@ class HttpHardeningServerTest < Test::Case
   def test_interim_status_raised
     serving do |port|
       assert_equal("HTTP/1.1 500 Internal Server Error|Content-Length: 0|Connection: close||",
-                   raw(port, "GET /interim HTTP/1.1\r\nConnection: close\r\n\r\n"))
+                   raw(port, "GET /interim HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
     end
   end
 
@@ -257,7 +298,7 @@ class HttpHardeningServerTest < Test::Case
     # Closed after read_timeout.
     serving do |port|
       assert_equal("HTTP/1.1 408 Request Timeout|Content-Type: text/plain; charset=utf-8|Content-Length: 15|Connection: close||Request Timeout",
-                   raw(port, "POST / HTTP/1.1\r\nContent-Length: 10\r\n\r\nabc"))
+                   raw(port, "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nabc"))
     end
   end
 
@@ -285,7 +326,7 @@ class HttpHardeningServerTest < Test::Case
     Task.scope do |scope|
       scope.spawn { s3.serve }
       begin
-        c = scope.spawn { HttpHardeningServerTest.raw(port3, "GET / HTTP/1.1\r\n\r\n") }
+        c = scope.spawn { HttpHardeningServerTest.raw(port3, "GET / HTTP/1.1\r\nHost: x\r\n\r\n") }
         busy.receive
         started = Time.monotonic
         s3.shutdown(timeout: 100.ms)

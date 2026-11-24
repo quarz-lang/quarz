@@ -41,13 +41,13 @@ class HttpShutdownTest < Test::Case
         served = Channel[String].new(capacity: 1)
         idle = scope.spawn do
           Socket.tcp("127.0.0.1", port) do |s|
-            s.write("GET / HTTP/1.1\r\n\r\n")
+            s.write("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
             served.send(s.readpartial(4096).lines[0].chomp)
             s.readpartial?(4096) || "closed"
           end
         end
         assert_equal("HTTP/1.1 200 OK", served.receive)
-        waiting = scope.spawn { HttpShutdownTest.raw(port, "GET /wait HTTP/1.1\r\n\r\n") }
+        waiting = scope.spawn { HttpShutdownTest.raw(port, "GET /wait HTTP/1.1\r\nHost: x\r\n\r\n") }
         assert_equal("wait", @entered.receive)
         stopper = scope.spawn { server.shutdown(timeout: 5.seconds); "stopped" }
         # The idle connection is closed at once, the busy one answers.
@@ -56,7 +56,7 @@ class HttpShutdownTest < Test::Case
         assert_equal("HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 6|Connection: close||waited", waiting.await)
         assert_equal("stopped", stopper.await)
         refused = begin
-                    raw(port, "GET / HTTP/1.1\r\n\r\n")
+                    raw(port, "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
                   rescue SystemCallError
                     "refused"
                   end
@@ -79,7 +79,7 @@ class HttpShutdownTest < Test::Case
     Task.scope do |scope|
       scope.spawn { s2.serve }
       begin
-        c = scope.spawn { HttpShutdownTest.raw(port2, "GET / HTTP/1.1\r\n\r\n") }
+        c = scope.spawn { HttpShutdownTest.raw(port2, "GET / HTTP/1.1\r\nHost: x\r\n\r\n") }
         assert_equal("stuck", @entered.receive)
         started = Time.monotonic
         s2.shutdown(timeout: 100.ms)
@@ -120,7 +120,7 @@ class HttpShutdownTest < Test::Case
     tasks.send(t)
     # (The response, or nothing when the cancellation reached the
     # connection first: `serve`'s scope cancels its tasks as it ends.)
-    out = raw(port9, "GET / HTTP/1.1\r\nConnection: close\r\n\r\n")
+    out = raw(port9, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
     assert_true(out.empty? || out.start_with?("HTTP/1.1 200 OK"))
     ended = begin
               t.await
@@ -131,7 +131,7 @@ class HttpShutdownTest < Test::Case
     assert_equal("cancelled", ended)
     s9.wait
     refused = begin
-                raw(port9, "GET / HTTP/1.1\r\n\r\n")
+                raw(port9, "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
               rescue SystemCallError
                 "refused"
               end
@@ -150,7 +150,7 @@ class HttpShutdownTest < Test::Case
     Task.scope do |scope|
       scope.spawn { s5.serve }
       begin
-        c = scope.spawn { HttpShutdownTest.raw(port5, "GET / HTTP/1.1\r\n\r\n") }
+        c = scope.spawn { HttpShutdownTest.raw(port5, "GET / HTTP/1.1\r\nHost: x\r\n\r\n") }
         assert_equal("slow", @entered.receive)
         s5.shutdown(timeout: 5.seconds)
         s5.wait
@@ -182,7 +182,7 @@ class HttpShutdownTest < Test::Case
   def self.https_get(sock: TCPSocket, config: TLS::Config, close: Bool, got: Channel[String]? = nil) -> [String, String]
     tls = TLSSocket.connect(sock, "localhost", config)
     begin
-      tls.write(close ? "GET / HTTP/1.1\r\nConnection: close\r\n\r\n" : "GET / HTTP/1.1\r\n\r\n")
+      tls.write(close ? "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n" : "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
       status = tls.readpartial(4096).lines[0].chomp
       got.send(status) if got
       [status, tls.readpartial?(4096) || "closed"]
@@ -313,9 +313,9 @@ class HttpShutdownTest < Test::Case
     Task.scope do |scope|
       scope.spawn { s3.serve }
       begin
-        a = scope.spawn { HttpShutdownTest.raw(port3, "GET /a HTTP/1.1\r\nConnection: close\r\n\r\n") }
+        a = scope.spawn { HttpShutdownTest.raw(port3, "GET /a HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n") }
         @entered.receive
-        b = scope.spawn { HttpShutdownTest.raw(port3, "GET /b HTTP/1.1\r\nConnection: close\r\n\r\n") }
+        b = scope.spawn { HttpShutdownTest.raw(port3, "GET /b HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n") }
         a.await
         b.await
         assert_equal(["in /a", "out /a", "in /b", "out /b"], 4.times.map { |_| order.receive })
@@ -332,7 +332,7 @@ class HttpShutdownTest < Test::Case
       scope.spawn { s4.serve }
       begin
         out = Socket.unix(path) do |s|
-          s.write("GET / HTTP/1.1\r\nX-Forwarded-For: 203.0.113.9\r\nX-Forwarded-Proto: https\r\nConnection: close\r\n\r\n")
+          s.write("GET / HTTP/1.1\r\nHost: x\r\nX-Forwarded-For: 203.0.113.9\r\nX-Forwarded-Proto: https\r\nConnection: close\r\n\r\n")
           s.read
         end
         assert_equal("HTTP/1.1 200 OK|Content-Type: text/plain; charset=utf-8|Content-Length: 17|Connection: close||203.0.113.9 https",

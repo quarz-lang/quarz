@@ -361,6 +361,25 @@ class HttpClientTest < Test::Case
     end
   end
 
+  # #1126: a response's framing fields are trimmed of spaces and tabs
+  # only: other whitespace makes them no match, refused rather than read
+  # otherwise than a proxy would; other fields keep it.
+  def test_framing_fields_trimmed_of_spaces_and_tabs_only
+    by_hand(["HTTP/1.1 200 OK\r\nTransfer-Encoding: \u00a0chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n"]) do |base|
+      e = assert_raise(HTTP::Client::ProtocolError) { client.get("#{base}/"); nil }
+      assert_equal("bad Transfer-Encoding", e.message)
+    end
+    by_hand(["HTTP/1.1 200 OK\r\nContent-Length: 3\u3000\r\n\r\nabc"]) do |base|
+      e = assert_raise(HTTP::Client::ProtocolError) { client.get("#{base}/"); nil }
+      assert_equal("bad Content-Length", e.message)
+    end
+    by_hand(["HTTP/1.1 200 OK\r\nContent-Length: \t3 \r\nX: \u0085x\r\n\r\nabc"]) do |base|
+      res = client.get("#{base}/")
+      assert_equal("abc", res.body.read)
+      assert_equal("\u0085x", res.headers["x"])
+    end
+  end
+
   def test_connect_errors
     listener = TCPServer.new("127.0.0.1", 0)
     port = listener.local_address.port

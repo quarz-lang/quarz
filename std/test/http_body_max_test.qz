@@ -10,11 +10,11 @@ class HttpBodyMaxTest < Test::Case
     req ? req.body : HTTP::Body.empty
   end
 
-  def sized(content: String) -> HTTP::Body = body("POST / HTTP/1.1\r\nContent-Length: #{content.bytesize}\r\n\r\n#{content}")
+  def sized(content: String) -> HTTP::Body = body("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: #{content.bytesize}\r\n\r\n#{content}")
 
   def chunked(parts: Array[String]) -> HTTP::Body
     chunks = parts.map { |p| "#{p.bytesize.to_s(16)}\r\n#{p}\r\n" }.join
-    body("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n#{chunks}0\r\n\r\n")
+    body("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n#{chunks}0\r\n\r\n")
   end
 
   def test_read_up_to_max
@@ -134,13 +134,13 @@ class HttpBodyMaxServerTest < Test::Case
 
   def test_a_handlers_max_answers_413
     serving do |port|
-      assert_equal("HTTP/1.1 200 OK", statuses(port, "POST /small HTTP/1.1\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabcd"))
+      assert_equal("HTTP/1.1 200 OK", statuses(port, "POST /small HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabcd"))
       assert_equal("HTTP/1.1 413 Payload Too Large",
-                   statuses(port, "POST /small HTTP/1.1\r\nContent-Length: 5\r\nConnection: close\r\n\r\nabcde"))
+                   statuses(port, "POST /small HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nConnection: close\r\n\r\nabcde"))
       assert_equal("HTTP/1.1 413 Payload Too Large",
-                   statuses(port, "POST /chunks HTTP/1.1\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n"))
+                   statuses(port, "POST /chunks HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n"))
       assert_equal("HTTP/1.1 200 OK",
-                   statuses(port, "POST /chunks HTTP/1.1\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n1\r\nd\r\n0\r\n\r\n"))
+                   statuses(port, "POST /chunks HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n3\r\nabc\r\n1\r\nd\r\n0\r\n\r\n"))
     end
   end
 
@@ -149,9 +149,9 @@ class HttpBodyMaxServerTest < Test::Case
   # behind it on the same connection is not answered.
   def test_the_connection_is_closed_after_a_crossing_chunked_body
     serving do |port|
-      second = "GET /hello HTTP/1.1\r\nConnection: close\r\n\r\n"
+      second = "GET /hello HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
       assert_equal("HTTP/1.1 413 Payload Too Large",
-                   statuses(port, "POST /chunks HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n#{second}"))
+                   statuses(port, "POST /chunks HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n#{second}"))
     end
   end
 
@@ -159,9 +159,9 @@ class HttpBodyMaxServerTest < Test::Case
   # be read and dropped after the 413, so the connection goes on.
   def test_a_refused_content_length_body_is_dropped_and_the_connection_kept
     serving do |port|
-      second = "GET /hello HTTP/1.1\r\nConnection: close\r\n\r\n"
+      second = "GET /hello HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
       assert_equal("HTTP/1.1 413 Payload Too Large|HTTP/1.1 200 OK",
-                   statuses(port, "POST /small HTTP/1.1\r\nContent-Length: 5\r\n\r\nabcde#{second}"))
+                   statuses(port, "POST /small HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nabcde#{second}"))
     end
   end
 
@@ -170,9 +170,9 @@ class HttpBodyMaxServerTest < Test::Case
   def test_no_100_continue_past_max
     serving do |port|
       assert_equal("HTTP/1.1 413 Payload Too Large",
-                   statuses(port, "POST /small HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n"))
+                   statuses(port, "POST /small HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n"))
       assert_equal("HTTP/1.1 100 Continue|HTTP/1.1 200 OK",
-                   statuses(port, "POST /small HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabcd"))
+                   statuses(port, "POST /small HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabcd"))
     end
   end
 end
