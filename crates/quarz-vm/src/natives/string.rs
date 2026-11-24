@@ -15,9 +15,10 @@ use super::{block, int, string};
 pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "String.build", string_build);
     native!(m, "String#*", |i, r, a| {
-        Ok(Value::string(
-            s(i, r)?.repeat(int(i, a.arg(0), "count")?.max(0) as usize),
-        ))
+        let text = s(i, r)?;
+        let n = int(i, a.arg(0), "count")?.max(0) as usize;
+        super::sized(i, &[text.len(), n])?;
+        Ok(Value::string(text.repeat(n)))
     });
     native!(m, "String#<=>", |i, r, a| {
         Ok(Value::Int(
@@ -554,6 +555,8 @@ fn pad(interp: &Interp, recv: &Value, args: Args, how: Pad) -> EvalResult {
         return Ok(recv.clone());
     }
     let total = width - len;
+    let widest = padstr.chars().map(char::len_utf8).max().unwrap_or(1);
+    super::sized(interp, &[total, widest])?;
     let make = |n: usize| -> String { padstr.chars().cycle().take(n).collect() };
     Ok(Value::string(match how {
         Pad::Left => format!("{text}{}", make(total)),

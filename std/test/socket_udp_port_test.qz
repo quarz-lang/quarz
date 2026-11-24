@@ -31,6 +31,18 @@ class UDPSocketPortTest < Test::Case
     sock.close
   end
 
+  # #1141: a receive length from input does not size the buffer: a
+  # datagram holds at most 65,535 bytes.
+  def test_recv_with_a_huge_length
+    a = UDPSocket.new
+    a.bind("127.0.0.1", 0)
+    b = UDPSocket.new
+    b.send("hello", "127.0.0.1", a.local_address.port)
+    assert_equal("hello", a.recv(4_000_000_000_000_000))
+    a.close
+    b.close
+  end
+
   def test_tcp_refuses_the_same(port: Int)
     e = assert_raise(ArgumentError) { TCPSocket.new("127.0.0.1", port); nil }
     assert_equal("port #{port} out of range", e.message)

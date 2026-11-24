@@ -282,6 +282,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         }
         let n = int(i, a.arg(0), "count")?.max(0) as usize;
         let items = arr(i, r)?;
+        super::sized(i, &[items.len(), n, std::mem::size_of::<Value>()])?;
         Ok(Value::array(
             items
                 .iter()
@@ -1689,6 +1690,7 @@ fn ab_new(interp: &Interp, _: &Value, args: Args) -> EvalResult {
         None => Vec::new(),
         Some(n) => {
             let n = int(interp, n, "size")?.max(0) as usize;
+            super::sized(interp, &[n, std::mem::size_of::<Value>()])?;
             vec![args.arg(1).clone(); n]
         }
     };

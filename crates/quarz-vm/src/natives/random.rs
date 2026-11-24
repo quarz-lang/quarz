@@ -53,6 +53,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Random.rand", |i, _, a| with_default(|s| draw(i, s, &a)));
     native!(m, "Random.bytes", |i, _, a| {
         let n = int(i, a.arg(0), "size")?.max(0) as usize;
+        super::sized(i, &[n])?;
         Ok(Value::bytes(with_default(|s| random_bytes(s, n))))
     });
     native!(m, "Random#seed", |i, r, _| {
@@ -63,6 +64,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "Random#bytes", |i, r, a| {
         let n = int(i, a.arg(0), "size")?.max(0) as usize;
+        super::sized(i, &[n])?;
         Ok(Value::bytes(random_bytes(&mut rng(i, r)?.borrow_mut(), n)))
     });
     native!(m, "Random#==", |i, r, a| {

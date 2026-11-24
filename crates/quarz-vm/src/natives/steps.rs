@@ -174,7 +174,9 @@ pub(super) fn step(interp: &Interp, st: &mut Stepper, recv: &Value) -> Result<Op
             None => None,
         },
         Stepper::Slices(base, n) => {
-            let mut slice = Vec::with_capacity(*n);
+            // Room as the slice fills, not `n` up front: `n` may come
+            // from input (#1141).
+            let mut slice = Vec::with_capacity((*n).min(1 << 10));
             while slice.len() < *n {
                 match step(interp, base, recv)? {
                     Some(x) => slice.push(x),

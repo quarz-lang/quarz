@@ -1599,17 +1599,11 @@ fn read_up_to(
     limit: Option<usize>,
 ) -> std::io::Result<()> {
     match limit {
+        // Growing as it reads, not `n` up front: a limit far beyond
+        // what is there (a count from input) is never asked of the
+        // allocator at once (#1141).
         Some(n) => {
-            buf.resize(n, 0);
-            let mut filled = 0;
-            while filled < n {
-                let got = reader.read(&mut buf[filled..])?;
-                if got == 0 {
-                    break;
-                }
-                filled += got;
-            }
-            buf.truncate(filled);
+            reader.take(n as u64).read_to_end(buf)?;
         }
         None => {
             reader.read_to_end(buf)?;
