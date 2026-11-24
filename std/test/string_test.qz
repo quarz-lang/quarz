@@ -27,6 +27,26 @@ class StringTest < Test::Case
     assert_equal("hELLO wORLD", "Hello World".swapcase)
   end
 
+  # #1141: a size from input past what can be made is an ArgumentError
+  # ("argument too big", as `Array#fill`), where the allocation aborted
+  # the process. Every size is past any machine's address space (2^57
+  # bytes, 1.4e17) or overflows, so that no machine grants it and the test
+  # does not depend on its memory or overcommit setting.
+  def test_sized_strings_past_the_bound
+    e = assert_raise(ArgumentError) { _ = "ab" * 400_000_000_000_000_000; nil }
+    assert_equal("argument too big", e.message)
+    assert_raise(ArgumentError) { _ = "ab" * 4_611_686_018_427_387_904; nil }
+    assert_raise(ArgumentError) { _ = "x".center(400_000_000_000_000_000); nil }
+    assert_raise(ArgumentError) { _ = "x".ljust(400_000_000_000_000_000, "é"); nil }
+    assert_raise(ArgumentError) { _ = "x".rjust(400_000_000_000_000_000); nil }
+    assert_raise(ArgumentError) { _ = format("%400000000000000000d", 1); nil }
+    assert_raise(ArgumentError) { _ = format("%99999999999999999999999d", 1); nil }
+    assert_raise(ArgumentError) { _ = Random.bytes(400_000_000_000_000_000); nil }
+    assert_raise(ArgumentError) { _ = Random.new(1).bytes(400_000_000_000_000_000); nil }
+    assert_equal("ababab", "ab" * 3)
+    assert_equal("  1", format("%3d", 1))
+  end
+
   def test_indexing_counts_characters
     assert_equal("é", "héllo"[1])
     assert_equal("o", "héllo"[-1])

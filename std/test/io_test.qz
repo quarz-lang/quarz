@@ -19,6 +19,19 @@ class FileReadWriteTest < Test::Case
     end
   end
 
+  # #1141: a read's limit far beyond what the file holds reads what is
+  # there, growing as it reads, not reserving the limit first.
+  def test_a_read_with_a_huge_limit
+    p = path("huge-limit")
+    File.write(p, "abc")
+    begin
+      got = File.open(p, "r") { |f| f.read(4_000_000_000_000_000) }
+      assert_equal("abc", got)
+    ensure
+      File.delete(p)
+    end
+  end
+
   def test_rewind_after_a_read_and_a_write
     p = path("rewind")
     File.write(p, "abc")

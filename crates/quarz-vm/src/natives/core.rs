@@ -1353,7 +1353,12 @@ pub fn format_values(interp: &Interp, fmt: &str, args: &[Value]) -> Result<Strin
             }
         }
         while let Some(d) = chars.peek().and_then(|c| c.to_digit(10)) {
-            width = Some(width.unwrap_or(0) * 10 + d as usize);
+            width = Some(
+                width
+                    .unwrap_or(0)
+                    .saturating_mul(10)
+                    .saturating_add(d as usize),
+            );
             chars.next();
         }
         if chars.peek() == Some(&'.') {
@@ -1417,6 +1422,7 @@ pub fn format_values(interp: &Interp, fmt: &str, args: &[Value]) -> Result<Strin
         let padded = match width {
             Some(w) if body.chars().count() < w => {
                 let pad = w - body.chars().count();
+                super::sized(interp, &[pad])?;
                 if left {
                     format!("{body}{}", " ".repeat(pad))
                 } else if zero && matches!(conv, 'd' | 'i' | 'f' | 'e' | 'x' | 'X' | 'o' | 'b') {

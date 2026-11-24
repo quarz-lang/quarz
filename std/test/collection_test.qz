@@ -210,6 +210,32 @@ class CollectionEdgeTest < Test::Case
     assert_raise(ArgumentError) { _ = [1, 2].fill(0, 0, 9223372036854775807); nil }
   end
 
+  # #1141: a size from input past what can be made is an ArgumentError,
+  # as `fill` gives, where the allocation aborted the process.
+  #
+  # The bound is what the allocator grants, so a size it could grant
+  # (with overcommit, anything within the address space) would really be
+  # made and written. Every size here is past any machine's: 4e17
+  # elements of 16 bytes is 6.4e18 bytes, beyond a 57-bit address space
+  # (1.4e17), or the byte count overflows.
+  def test_sized_results_past_the_bound
+    e = assert_raise(ArgumentError) { _ = [1] * 400_000_000_000_000_000; nil }
+    assert_equal("argument too big", e.message)
+    assert_raise(ArgumentError) { _ = [1, 2] * 4_611_686_018_427_387_904; nil }
+    assert_raise(ArgumentError) { _ = Array::Builder[Int].new(400_000_000_000_000_000, 0); nil }
+    assert_raise(ArgumentError) { _ = [1].fill(0, 0, 400_000_000_000_000_000); nil }
+    assert_equal([1, 1, 1], [1] * 3)
+    assert_equal([0, 0], Array::Builder[Int].new(2, 0).to_a)
+  end
+
+  # Slices stepped by `next` are made as they fill: a huge slice size
+  # gives one slice (at most 1 Ki elements are reserved up front, whatever
+  # the size, so the size need not be past the address space).
+  def test_each_slice_of_a_huge_size_by_next
+    e = [1, 2, 3].each_slice(4_000_000_000_000)
+    assert_equal([1, 2, 3], e.next)
+  end
+
   def test_builder_store_past_the_end
     b = Array::Builder[Int].new
     b << 1

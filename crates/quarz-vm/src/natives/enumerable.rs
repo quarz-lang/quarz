@@ -670,10 +670,9 @@ fn fill_within(interp: &Interp, start: usize, len: usize, size: usize) -> Result
     let Some(end) = start.checked_add(len) else {
         return Err(interp.err_arg("argument too big"));
     };
-    // Growing by much: whether the memory is there, before the fill
-    // takes it (allocation failing aborts the program).
-    if end > size + (1 << 20) && Vec::<Value>::new().try_reserve_exact(end).is_err() {
-        return Err(interp.err_arg("argument too big"));
+    // Growing: whether the memory is there, before the fill takes it.
+    if end > size {
+        super::sized(interp, &[end, std::mem::size_of::<Value>()])?;
     }
     Ok(())
 }

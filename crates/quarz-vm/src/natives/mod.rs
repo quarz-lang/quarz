@@ -758,6 +758,28 @@ fn owned_registry() -> Registry<OwnedNativeFn> {
 
 // ----- argument helpers -------------------------------------------------------
 
+/// Above this many bytes, [`sized`] asks the allocator.
+const ASK_ABOVE: usize = 1 << 24;
+
+/// A result of the product of `factors` bytes (a count times an item's
+/// size), made at once: an `ArgumentError`, "argument too big" (Ruby's
+/// text, and `Array#fill`'s), when the product overflows or the
+/// allocator would not grant it, where asking for it would abort the
+/// process (#1141). Up to 16 MiB passes unasked; above, the room is
+/// reserved and given back at once, which costs address space, not
+/// memory. So the bound is what the allocator grants, not a fixed size:
+/// a size it grants but the system cannot fill (overcommit) is still
+/// ended by the system when the result is written.
+pub fn sized(interp: &Interp, factors: &[usize]) -> Result<(), Flow> {
+    let bytes = factors
+        .iter()
+        .try_fold(1usize, |acc, &f| acc.checked_mul(f));
+    match bytes {
+        Some(b) if b <= ASK_ABOVE || Vec::<u8>::new().try_reserve_exact(b).is_ok() => Ok(()),
+        _ => Err(interp.err_arg("argument too big")),
+    }
+}
+
 pub fn int(interp: &Interp, v: &Value, what: &str) -> Result<i64, Flow> {
     match v {
         Value::Int(i) => Ok(*i),

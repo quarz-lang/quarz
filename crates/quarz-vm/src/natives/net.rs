@@ -1249,7 +1249,9 @@ fn udp_recv(
     let max = int(interp, args.arg(0), "length")?.max(0) as usize;
     let st = udp(interp, recv)?;
     let fd = udp_fd(interp, st)?;
-    let mut buf = vec![0u8; max.max(1)];
+    // A datagram holds at most 65,535 bytes: room for more is never
+    // filled, and a `length` from input must not size the buffer (#1141).
+    let mut buf = vec![0u8; max.clamp(1, 1 << 16)];
     loop {
         let r = {
             let s = st.borrow();
