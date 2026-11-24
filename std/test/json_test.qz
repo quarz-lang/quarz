@@ -179,6 +179,21 @@ class JsonErrorTest < Test::Case
     assert_equal(100, JSON.parse("[" * 100 + "]" * 100).then { |v| depth(v) })
   end
 
+  # #1125: an integer of more than 10,000 digits is refused (its
+  # conversion is quadratic in them); 10,000 digits, a sign, and a float's
+  # long mantissa are not.
+  def test_integer_digits_bounded
+    nines = "9" * 10_000
+    assert_equal(Integer.parse(nines), JSON.parse("[#{nines}]")[0].as_integer)
+    assert_equal(Integer.parse("-#{nines}"), JSON.parse("-#{nines}").as_integer)
+    e = assert_raise(JSON::ParseError) { JSON.parse("[1, #{nines}9]"); nil }
+    assert_equal("integer of more than 10000 digits at line 1 column 5", e.message)
+    assert_raise(JSON::ParseError) { JSON.parse("-#{nines}9"); nil }
+    assert_raise(JSON::ParseError) { JSON.decode[Integer]("#{nines}9"); nil }
+    assert_raise(JSON::ParseError) { JSON.decode[Array[Int]]("[#{nines}9]"); nil }
+    assert_equal(1.0, JSON.parse("1.#{"0" * 20_000}").as_f)
+  end
+
   def depth(v: JSON::Value) -> Int
     case v
     in JSON::Value::Array(items) then 1 + (items.map { |x| depth(x) }.max || 0)

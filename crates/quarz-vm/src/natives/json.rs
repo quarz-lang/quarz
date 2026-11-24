@@ -660,6 +660,12 @@ fn number_float(text: &str) -> Option<f64> {
     text.parse().ok()
 }
 
+/// The most digits a JSON integer may have (#1125): converting decimal
+/// digits to an `Integer` takes time quadratic in their number, so a
+/// longer one is a parse error rather than seconds of one native's time.
+/// The same bound as `Decimal`'s `MAX_DIGITS`.
+const MAX_INTEGER_DIGITS: usize = 10_000;
+
 /// The deepest nesting `JSON.generate` writes, and the most a parse may
 /// allow (`max_nesting:`, its default).
 const MAX_NESTING: usize = 100;
@@ -851,6 +857,7 @@ impl Parser<'_> {
         if digits.is_empty() || (digits.len() > 1 && digits[0] == b'0') {
             return Err(self.error("invalid number"));
         }
+        let digits_len = digits.len();
         let mut is_float = false;
         if self.peek() == Some(b'.') {
             is_float = true;
@@ -888,7 +895,14 @@ impl Parser<'_> {
             let f = number_float(text).ok_or_else(|| self.error("invalid number"))?;
             Ok(variant(self.classes.number, Value::Float(f)))
         } else {
-            // An integer: an `Int`, or an `Integer` (exact) when too large.
+            // An integer: an `Int`, or an `Integer` (exact) when too large,
+            // of at most `MAX_INTEGER_DIGITS` digits.
+            if digits_len > MAX_INTEGER_DIGITS {
+                self.pos = start;
+                return Err(
+                    self.error(&format!("integer of more than {MAX_INTEGER_DIGITS} digits"))
+                );
+            }
             match text.parse::<i64>() {
                 Ok(i) => Ok(variant(self.classes.number, Value::Int(i))),
                 Err(_) => Ok(variant(
