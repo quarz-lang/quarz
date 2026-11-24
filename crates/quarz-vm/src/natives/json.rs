@@ -355,7 +355,16 @@ impl Decoder<'_> {
                 Some(Value::Int(i)) => Ok(Value::Float(i as f64)),
                 Some(Value::BigInt(b)) => {
                     use num_traits::ToPrimitive;
-                    Ok(Value::Float(b.to_f64().unwrap_or(f64::NAN)))
+                    match b.to_f64() {
+                        Some(f) if f.is_finite() => Ok(Value::Float(f)),
+                        // An integer past a Float's range (#1133): the
+                        // text is JSON, the target cannot hold it, so a
+                        // decode error (decided 2026-11-24).
+                        _ => Err(DecodeFail::Shape(format!(
+                            "{}: expected a number that fits a Float, found a larger integer",
+                            self.path
+                        ))),
+                    }
                 }
                 Some(f @ Value::Float(_)) => Ok(f),
                 _ => Err(self.shape(&node, &self.found(v))),
@@ -513,10 +522,17 @@ impl Decoder<'_> {
             Some(Value::Str(_) | Value::Short(_)) if o.class == c.number => {
                 let text =
                     string(self.interp, &o.field(0).unwrap_or(Value::Nil), "number")?.to_string();
-                // (The parser's conversion, which checked the text.)
+                // (The parser's conversion, which checked the text; a
+                // number past a Float's range is refused as the parser
+                // refuses it, #1133.)
                 let f = number_float(&text).ok_or_else(|| {
                     DecodeFail::Raised(self.interp.raise(c.parse_error, "invalid number"))
                 })?;
+                if !f.is_finite() {
+                    return Err(DecodeFail::Raised(
+                        self.interp.raise(c.parse_error, "number out of range"),
+                    ));
+                }
                 variant(c.number, Value::Float(f))
             }
             Some(Value::Array(items)) if o.class == c.array => {
@@ -893,6 +909,13 @@ impl Parser<'_> {
         }
         if is_float {
             let f = number_float(text).ok_or_else(|| self.error("invalid number"))?;
+            // Past a Float's range: infinity, which `JSON.generate` refuses
+            // to write, so a value read could not be written back (#1133).
+            // (Below its range, zero: finite, as other parsers take it.)
+            if !f.is_finite() {
+                self.pos = start;
+                return Err(self.error("number out of range"));
+            }
             Ok(variant(self.classes.number, Value::Float(f)))
         } else {
             // An integer: an `Int`, or an `Integer` (exact) when too large,

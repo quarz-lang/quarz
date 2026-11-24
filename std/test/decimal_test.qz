@@ -312,16 +312,17 @@ class DecimalTest < Test::Case
       assert_equal(p.big, r.big, text)
       assert_equal(p.h.inspect, r.h.inspect, text)
     end
-    # Past a `Float`'s range: what the parser gives, through both types.
+    # Past a `Float`'s range (#1133): refused where a Float would hold it,
+    # through both types (the raw text has no position left to name); a
+    # `Decimal` field may hold it.
     big = "{\"d\": 1, \"v\": [1e400, -1e400], \"h\": {\"x\": 1e400}, \"a\": [-1e400], \"n\": {\"w\": 1e400}, \"f\": 1e400, \"i\": 1, \"big\": 1}"
-    r = JSON.decode[RawProbe](big)
-    p = JSON.decode[PlainProbe](big)
-    parsed = JSON.parse(big)
-    assert_equal(parsed["v"].inspect, r.v.inspect)
-    assert_equal(p.v.inspect, r.v.inspect)
-    assert_equal(p.h.inspect, r.h.inspect)
-    assert_equal(p.f, r.f)
-    assert(r.f.infinite?)
+    e = assert_raise(JSON::ParseError) { JSON.decode[RawProbe](big); nil }
+    assert_equal("number out of range", e.message)
+    e = assert_raise(JSON::ParseError) { JSON.decode[PlainProbe](big); nil }
+    assert_equal("number out of range at line 1 column 16", e.message)
+    assert_raise(JSON::ParseError) { JSON.parse(big); nil }
+    huge = "{\"d\": 1e400, \"v\": 1, \"h\": {}, \"a\": [], \"n\": {\"w\": 1}, \"f\": 1, \"i\": 1, \"big\": 1}"
+    assert_equal(Decimal("1e400"), JSON.decode[RawProbe](huge).d)
     # The same errors as without a `Decimal`: `1.0` is no `Int`.
     a = assert_raise(JSON::DecodeError) { JSON.decode[RawProbe]("{\"d\": 1, \"v\": 1, \"h\": {}, \"a\": [], \"n\": {\"w\": 1}, \"f\": 1, \"i\": 1.0, \"big\": 1}") }
     b = assert_raise(JSON::DecodeError) { JSON.decode[PlainProbe]("{\"v\": 1, \"h\": {}, \"f\": 1, \"i\": 1.0, \"big\": 1}") }

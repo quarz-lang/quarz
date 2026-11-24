@@ -194,6 +194,26 @@ class JsonErrorTest < Test::Case
     assert_equal(1.0, JSON.parse("1.#{"0" * 20_000}").as_f)
   end
 
+  # #1133: a number past a Float's range is refused, as JSON.generate
+  # refuses to write infinity; below it, zero (finite) is kept.
+  def test_float_range
+    e = assert_raise(JSON::ParseError) { JSON.parse("1e999"); nil }
+    assert_equal("number out of range at line 1 column 1", e.message)
+    e = assert_raise(JSON::ParseError) { JSON.parse("[1, -1e999]"); nil }
+    assert_equal("number out of range at line 1 column 5", e.message)
+    assert_raise(JSON::ParseError) { JSON.parse("1.8e308"); nil }
+    largest = JSON.parse("1.7976931348623157e308")
+    assert_equal("1.7976931348623157e+308", JSON.generate(largest))
+    assert_equal(0.0, JSON.parse("1e-999").as_f)
+    e = assert_raise(JSON::ParseError) { JSON.decode[Float]("1e999"); nil }
+    assert_equal("number out of range at line 1 column 1", e.message)
+    assert_raise(JSON::ParseError) { JSON.decode[Array[Float]]("[1.0, 1e999]"); nil }
+    # An integer too large for a Float: valid JSON its target cannot hold.
+    e = assert_raise(JSON::DecodeError) { JSON.decode[Float]("9" * 400); nil }
+    assert_equal("$: expected a number that fits a Float, found a larger integer", e.message)
+    assert_equal(1e300, JSON.decode[Float]("1" + "0" * 300))
+  end
+
   def depth(v: JSON::Value) -> Int
     case v
     in JSON::Value::Array(items) then 1 + (items.map { |x| depth(x) }.max || 0)
