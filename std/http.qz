@@ -248,6 +248,10 @@ module HTTP
 
     def initialize(@io: IO?, @buf: Bytes = Bytes.new); end
 
+    # :nodoc:
+    # The connection read from; nil for a reader of bytes.
+    def io -> IO? = @io
+
     def self.of(bytes: Bytes) -> Reader = Reader.new(nil, bytes)
 
     def buffered -> Int = @buf.size - @pos
@@ -481,7 +485,17 @@ module HTTP
       return Bytes.new if @done
       if @until_eof
         part = @reader.read_some(max)
-        ended if part.empty?
+        if part.empty?
+          # The end of the connection is this body's only framing: over
+          # TLS, an end without close_notify may be someone on the path
+          # cutting it, so a client refuses it (#1127).
+          io = @reader.io
+          if @client && io.is_a?(TLSSocket) && !io.as(TLSSocket).clean_close?
+            @failed = true
+            raise Client::ProtocolError.new("the connection ended without close_notify: the body may be cut short")
+          end
+          ended
+        end
         return part
       end
       if @chunked && @remaining == 0

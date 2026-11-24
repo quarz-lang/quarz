@@ -88,6 +88,9 @@ pub struct TlsState {
     pub verified: bool,
     /// close_notify is queued: nothing more is written.
     pub notified: bool,
+    /// The peer ended the stream with close_notify (`TLSSocket#clean_close?`);
+    /// false until the end, and after an end without it (#1127).
+    pub clean_close: bool,
 }
 
 impl std::fmt::Debug for TlsState {
@@ -204,6 +207,7 @@ impl Readable for TlsState {
             match self.session.read_plain(chunk) {
                 Ok(0) => {
                     self.sock.eof = true;
+                    self.clean_close = true;
                     return Fill::More;
                 }
                 Ok(n) => {
@@ -213,7 +217,9 @@ impl Readable for TlsState {
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 // The peer closed without close_notify: the end, as for a
-                // socket (`strict_close` would make it an error).
+                // socket; `clean_close` stays false, so that a reader whose
+                // only framing is the end (an HTTP body read to the end of
+                // the connection) can tell a cut from an end (#1127).
                 Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     self.sock.eof = true;
                     return Fill::More;
@@ -425,6 +431,9 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "TLSSocket#verified?", |i, r, _| -> EvalResult {
         Ok(Value::Bool(tls_state(i, r)?.borrow().verified))
+    });
+    native!(m, "TLSSocket#clean_close?", |i, r, _| -> EvalResult {
+        Ok(Value::Bool(tls_state(i, r)?.borrow().clean_close))
     });
     native!(m, "TLSSocket#server_name", |i, r, _| -> EvalResult {
         let name = tls_state(i, r)?.borrow().server_name();

@@ -1,0 +1,140 @@
+# #1127: a TLS stream records whether the peer ended it with
+# close_notify, and HTTP::Client refuses a body framed only by the end of
+# the connection when it ended without one. A proxy in the middle cuts
+# the connection by dropping the server's last TLS record (its
+# close_notify) before closing.
+require "http"
+require "tls"
+require "test"
+
+class HttpTlsCloseTest < Test::Case
+  # Exactly `n` bytes from `io`, or nil when it ends first.
+  def self.read_exact(io: IO, n: Int) -> Bytes?
+    out = Bytes::Builder.new
+    while out.size < n
+      part = io.read_bytes(n - out.size)
+      return nil if part.empty?
+      out << part
+    end
+    out.to_bytes
+  end
+
+  # Serves one connection on `listener` with `answer` (after reading the
+  # request's head), then closes it with close_notify.
+  def self.serve_once(listener: TCPServer, cert: TLS::Testing::Certificate, answer: String) -> Void
+    config = TLS::ServerConfig.new(certificate: cert.certificate, private_key: cert.private_key)
+    tls = TLSSocket.accept(listener.accept, config)
+    loop do
+      line = tls.gets?
+      break if line.nil? || line == "\r\n"
+    end
+    tls.write(answer)
+    tls.close
+  end
+
+  # Forwards one connection from `listener` to `port`, record by record
+  # from the server, dropping the server's close_notify: in TLS 1.3 an
+  # encrypted alert is an application-data record of 19 bytes (the
+  # alert's 2, its content type and a 16-byte tag), and every record of
+  # this test's data is longer. At the server's end the client's side is
+  # closed, as a cut on the path would.
+  def self.cutting_proxy(listener: TCPServer, port: Int) -> Void
+    client = listener.accept
+    server = TCPSocket.new("127.0.0.1", port)
+    Task.scope do |scope|
+      scope.spawn do
+        begin
+          loop do
+            part = client.read_bytes(16_384)
+            break if part.empty?
+            server.write(part)
+          end
+        rescue IOError, SystemCallError
+          nil
+        end
+        nil
+      end
+      loop do
+        head = read_exact(server, 5)
+        break if head.nil?
+        size = (head[3] << 8) | head[4]
+        body = read_exact(server, size)
+        break if body.nil?
+        client.write(head + body) unless head[0] == 23 && size == 19
+      end
+      client.close
+      server.close
+    end
+  end
+
+  def client(cert: TLS::Testing::Certificate) -> HTTP::Client
+    HTTP::Client.new(tls: TLS::Config.new(roots: TLS::Roots.from_pem(cert.certificate)))
+  end
+
+  # The body the client reads from a server answering `answer`, through
+  # the cutting proxy when `cut`; what it raised otherwise.
+  def fetch(answer: String, cut: Bool) -> String
+    cert = TLS::Testing.self_signed(["127.0.0.1"])
+    origin = TCPServer.new("127.0.0.1", 0)
+    front = TCPServer.new("127.0.0.1", 0)
+    Task.scope do |scope|
+      scope.spawn { HttpTlsCloseTest.serve_once(origin, cert, answer) }
+      origin_port = origin.local_address.port
+      if cut
+        scope.spawn { HttpTlsCloseTest.cutting_proxy(front, origin_port) }
+      end
+      port = cut ? front.local_address.port : origin_port
+      result = begin
+        client(cert).get("https://127.0.0.1:#{port}/").body.read
+      rescue HTTP::Client::ProtocolError => e
+        "ProtocolError: #{e.message}"
+      end
+      origin.close
+      front.close
+      result
+    end
+  end
+
+  UNFRAMED = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nthe whole body"
+  FRAMED = "HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\nthe whole body"
+
+  def test_an_unframed_body_ended_with_close_notify
+    assert_equal("the whole body", fetch(UNFRAMED, false))
+  end
+
+  def test_an_unframed_body_cut_without_close_notify
+    assert_equal("ProtocolError: the connection ended without close_notify: the body may be cut short",
+                 fetch(UNFRAMED, true))
+  end
+
+  # A body complete by its own framing is read whole either way.
+  def test_a_framed_body_without_close_notify
+    assert_equal("the whole body", fetch(FRAMED, true))
+  end
+
+  # The stream's own record of it.
+  def test_clean_close
+    cert = TLS::Testing.self_signed(["127.0.0.1"])
+    [false, true].each do |cut|
+      origin = TCPServer.new("127.0.0.1", 0)
+      front = TCPServer.new("127.0.0.1", 0)
+      Task.scope do |scope|
+        scope.spawn { HttpTlsCloseTest.serve_once(origin, cert, "bye") }
+        origin_port = origin.local_address.port
+        if cut
+          scope.spawn { HttpTlsCloseTest.cutting_proxy(front, origin_port) }
+        end
+        port = cut ? front.local_address.port : origin_port
+        config = TLS::Config.new(roots: TLS::Roots.from_pem(cert.certificate))
+        tls = TLSSocket.connect(TCPSocket.new("127.0.0.1", port), "127.0.0.1", config)
+        assert_false(tls.clean_close?)
+        tls.write("GET / HTTP/1.1\r\n\r\n")
+        assert_equal("bye", tls.read)
+        assert_equal(!cut, tls.clean_close?, "cut: #{cut}")
+        tls.close
+        origin.close
+        front.close
+      end
+    end
+  end
+end

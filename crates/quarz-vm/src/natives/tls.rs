@@ -111,6 +111,7 @@ fn connection(
         server_name,
         verified,
         notified: false,
+        clean_close: false,
     })));
     let Value::Io(v) = &tls else { unreachable!() };
     let IoKind::Tls(st) = &v.kind else {

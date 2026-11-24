@@ -61,6 +61,13 @@ class TLSSocket < IO
   # `verify: false` in the config, and on the server's side (no client
   # certificate is asked for).
   native def verified? -> Bool
+  # Whether the peer ended the stream with close_notify: false until the
+  # end of the stream, and after an end without it. A peer that closes
+  # the connection without close_notify is the end of the stream as for
+  # a socket; a reader for which the end is the only framing (an HTTP
+  # body read to the end of the connection) checks this, since someone
+  # on the path can cut the connection.
+  native def clean_close? -> Bool
   # The server's name: the one given to `connect`; on the server's side,
   # the one the client sent (SNI), nil when it sent none.
   native def server_name -> String?
