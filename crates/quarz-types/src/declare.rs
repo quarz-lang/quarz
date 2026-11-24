@@ -7339,11 +7339,14 @@ impl<'ast> Declarer<'ast> {
     }
 
     /// Whether `name`, seen from `scope`, is a type of the prelude or the
-    /// standard library (a class, module or alias).
+    /// standard library (a class, module or alias). A cog's root module
+    /// is made, not declared, with file 0 too, and is the program's name
+    /// for the cog (a dependency's key): not built in (#1121).
     fn is_builtin_type_name(&self, name: &str, scope: Option<ClassId>) -> bool {
         let std = |file: u32| file == 0 || self.world.std_files.contains(&file);
         // (An ambiguous name is reported where it is resolved.)
         match self.world.resolve_member(scope, name).found() {
+            Some(Member::Class(c)) if self.world.class(c).cog.is_some() => false,
             Some(Member::Class(c)) => std(self.world.class(c).file),
             Some(Member::Alias(a)) => std(self.world.aliases[a as usize].file),
             _ => false,

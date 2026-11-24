@@ -833,6 +833,22 @@ fn a_cog_key_and_an_inherited_name_are_ambiguous() {
     );
 }
 
+/// #1121: a dependency's key is the program's own name for the cog (its
+/// root module, made with file 0), not a built-in type: a type parameter
+/// of that name shadows it, as it shadows the program's own types.
+#[test]
+fn a_type_parameter_may_be_named_like_a_dependency_key() {
+    let w = World::new();
+    w.write("t/Cog.toml", "[cog]\nname = \"t\"\nversion = \"1.0.0\"\n");
+    w.write("t/src/v.qz", "V = 1\n");
+    w.commit("t", Some("v1.0.0"));
+    w.app(
+        &format!("T = {{ git = \"{}\", tag = \"v1.0.0\" }}\n", w.url("t")),
+        "class Box[T]\n  @x: T\n  def initialize(@x: T); end\n  def x -> T = @x\nend\np Box.new(1).x\np T::V\n",
+    );
+    assert_eq!(w.ok("app", &["run"]), "1\n1\n");
+}
+
 #[test]
 fn cog_files_hold_declarations_only() {
     let w = World::new();
