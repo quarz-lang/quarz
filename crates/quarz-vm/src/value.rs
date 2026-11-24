@@ -12,17 +12,18 @@ use std::hash::{Hash, Hasher};
 
 use indexmap::IndexMap;
 
-/// The maps and sets of values, hashed with the Fx hasher.
-pub type ValueMap = IndexMap<Value, Value, rustc_hash::FxBuildHasher>;
+/// The maps and sets of values, hashed with keys of the process
+/// (`table_hasher`).
+pub type ValueMap = IndexMap<Value, Value, crate::table_hasher::TableHasher>;
 /// A set's members, in insertion order: a map to nothing, so that a
 /// member can be looked up by a hash computed once and placed without
 /// comparing again (the raw entries `crate::keys` uses), which an
 /// `IndexSet` does not offer. Its methods are an `IndexSet`'s.
 #[derive(Clone, Default, Debug)]
-pub struct ValueSet(pub IndexMap<Value, (), rustc_hash::FxBuildHasher>);
+pub struct ValueSet(pub IndexMap<Value, (), crate::table_hasher::TableHasher>);
 
 impl ValueSet {
-    pub fn with_capacity_and_hasher(n: usize, h: rustc_hash::FxBuildHasher) -> ValueSet {
+    pub fn with_capacity_and_hasher(n: usize, h: crate::table_hasher::TableHasher) -> ValueSet {
         ValueSet(IndexMap::with_capacity_and_hasher(n, h))
     }
     pub fn len(&self) -> usize {
@@ -124,7 +125,7 @@ impl<'a> IntoIterator for &'a ValueSet {
     }
 }
 /// A hash whose keys and values are all `Int`, stored unboxed.
-pub type IntMap = IndexMap<i64, i64, rustc_hash::FxBuildHasher>;
+pub type IntMap = IndexMap<i64, i64, crate::table_hasher::TableHasher>;
 
 /// The updates that had to copy a shared collection, on every thread (a
 /// copy is rare enough for an atomic count).

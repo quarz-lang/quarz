@@ -254,13 +254,13 @@ fn reaches(v: &Value, depth: u32) -> bool {
 }
 
 /// A table's map, by which `find` and `place` look keys up.
-pub type Table<V> = indexmap::IndexMap<Value, V, rustc_hash::FxBuildHasher>;
+pub type Table<V> = indexmap::IndexMap<Value, V, crate::table_hasher::TableHasher>;
 
 /// The hash a table gives `key`, its own `hash` called once, or the error
 /// that raised.
 pub fn table_hash(key: &Value) -> Result<u64, Flow> {
     use std::hash::BuildHasher;
-    let h = rustc_hash::FxBuildHasher.hash_one(key);
+    let h = crate::table_hasher::TableHasher.hash_one(key);
     check()?;
     Ok(h)
 }
