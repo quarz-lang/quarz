@@ -33,6 +33,12 @@ class HttpHardeningParseTest < Test::Case
       "lower-case version" => ["GET / http/1.1\r\n\r\n", "400 bad request line"],
       "fragment in target" => ["GET /p#frag HTTP/1.1\r\nHost: x\r\n\r\n", "400 bad request target"],
       "chunk size with many zeros" => ["POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n#{"0" * 2000}3\r\nabc\r\n0\r\n\r\n", "400 bad chunk size"],
+      # #1131: extensions and trailers count as the body's bytes
+      # (max_body_bytes 100 here).
+      "extensions within the limit" => ["POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n1;#{"e" * 40}\r\na\r\n1;#{"e" * 40}\r\nb\r\n0\r\n\r\n", "POST /  \"ab\""],
+      "extensions past the limit" => ["POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n1;#{"e" * 60}\r\na\r\n1;#{"e" * 60}\r\nb\r\n0\r\n\r\n", "413 Payload Too Large"],
+      "extensions and data past the limit" => ["POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5;#{"e" * 60}\r\n#{"d" * 5}\r\n28\r\n#{"d" * 40}\r\n0\r\n\r\n", "413 Payload Too Large"],
+      "trailers past the limit" => ["POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n0\r\nX-A: #{"t" * 60}\r\nX-B: #{"t" * 60}\r\n\r\n", "413 Payload Too Large"],
     }
   end
 
@@ -370,5 +376,58 @@ class HttpHeaderValidationTest < Test::Case
     res = HTTP::Server::Response.text("a").header("x-a", "1\t2").header("x-b", "héllo")
     assert_equal("1\t2", res.headers["x-a"])
     assert_equal("héllo", res.headers["x-b"])
+  end
+end
+
+# #1131: a request may make the server wait `request_timeout` in all,
+# from its first byte: a body sent a byte at a time, each within
+# `read_timeout`, is answered 408 once the total runs out; time the
+# handler spends before reading does not count.
+class HttpRequestTimeoutTest < Test::Case
+  def serving(&: (Int) -> Void) -> Void
+    handler = HTTP.handler do |req|
+      Task.sleep(900.ms) if req.path == "/slow"
+      HTTP::Server::Response.text("ok #{req.body.read}")
+    end
+    server = HTTP::Server.new(handler, host: "127.0.0.1", port: 0, read_timeout: 400.ms, request_timeout: 600.ms)
+    Task.scope do |scope|
+      scope.spawn { server.serve }
+      begin
+        yield server.local_address.port
+      ensure
+        server.shutdown
+      end
+    end
+    nil
+  end
+
+  def test_a_body_dripping_past_the_request_timeout
+    serving do |port|
+      answer = Socket.tcp("127.0.0.1", port) do |s|
+        s.write("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 20\r\nConnection: close\r\n\r\n")
+        Task.scope do |scope|
+          scope.spawn do
+            begin
+              20.times { Task.sleep(200.ms); s.write("x") }
+            rescue IOError, SystemCallError
+              nil
+            end
+            nil
+          end
+          s.read
+        end
+      end
+      assert_match(/\AHTTP\/1\.1 408 Request Timeout\r\n/, answer)
+    end
+  end
+
+  def test_handler_time_does_not_count
+    serving do |port|
+      answer = Socket.tcp("127.0.0.1", port) do |s|
+        s.write("POST /slow HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc")
+        s.read
+      end
+      assert_true(answer.end_with?("\r\n\r\nok abc"), answer)
+    end
   end
 end

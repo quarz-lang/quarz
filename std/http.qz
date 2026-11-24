@@ -240,6 +240,9 @@ module HTTP
     var @pos: Int = 0
     # Bounds each read from the connection (the body's reads).
     var @read_timeout: Duration? = nil
+    # The time the request being read may still make the server wait for
+    # the connection, all reads together (`request_timeout`); nil: none.
+    var @budget: Duration? = nil
     # How many bytes have come from the connection.
     var @received: Int = 0
 
@@ -256,16 +259,30 @@ module HTTP
       @read_timeout = d
     end
 
+    # The time the reads from here may wait for the connection in all
+    # (`408` past it); nil: no such bound.
+    def budget=(d: Duration?) -> Void
+      @budget = d
+    end
+
     # Read more into the buffer; false at the end of the stream.
     def fill -> Bool
       io = @io
       return false if io.nil?
       limit = @read_timeout
+      budget = @budget
+      if budget
+        raise Error.new(408, "Request Timeout") if budget <= 0.ms
+        limit = budget if limit.nil? || budget < limit
+      end
+      began = Time.monotonic
       more = if limit
         begin
           Task.timeout(limit) { io.read_bytes(16_384) }
         rescue Task::Timeout
           raise Error.new(408, "Request Timeout")
+        ensure
+          @budget = budget - (Time.monotonic - began) if budget
         end
       else
         io.read_bytes(16_384)
@@ -354,6 +371,9 @@ module HTTP
     # Called once, when the body has been read to its end (true) or given
     # up (false).
     var @on_end: ((Bool) -> Void)? = nil
+    # The bytes of chunk extensions and trailers read so far: they count
+    # as the body's against its limits (#1131).
+    var @extra: Int = 0
 
     # A body read from `reader`: `length` bytes, or chunked, or (a
     # client's, `until_eof`) up to the end of the connection, accepting up
@@ -501,7 +521,7 @@ module HTTP
           part = read_chunk
           break if part.empty?
           seen += part.size
-          too_large(cap) if seen > cap
+          too_large(cap) if seen + @extra > cap
           yield part
         end
       else
@@ -534,7 +554,7 @@ module HTTP
         out = Bytes::Builder.new
         each_chunk do |part|
           out << part
-          too_large(cap) if out.size > cap
+          too_large(cap) if out.size + @extra > cap
         end
         out.to_bytes
       rescue Error => e
@@ -588,9 +608,17 @@ module HTTP
       until @done
         part = read_chunk
         seen += part.size
-        return false if seen > max
+        return false if seen + @extra > max
       end
       true
+    end
+
+    # `n` more bytes of extensions or trailers: past the body's limit
+    # with them alone, too large whatever the read (a read with a limit
+    # also counts them with the data, `@extra`).
+    private def count_extra(n: Int) -> Void
+      @extra += n
+      too_large(@limit) if @extra > @limit
     end
 
     private def next_chunk -> Void
@@ -602,9 +630,14 @@ module HTTP
       raise BadRequest.new("unexpected end of body") if line.nil?
       text = line.decode?
       raise BadRequest.new("bad chunk size") if text.nil? || !text.match?(/\A[0-9A-Fa-f]{1,15}(;[^\x00-\x08\x0a-\x1f\x7f]*)?\z/)
-      @remaining = text.partition(";")[0].to_i(16)
+      size, semi, extension = text.partition(";")
+      @remaining = size.to_i(16)
+      # An extension is read and dropped, but its bytes count as the
+      # body's: without, a chunk of one byte could bring a kilobyte each.
+      count_extra(extension.bytesize + 1) unless semi.empty?
       if @remaining == 0
-        # Trailers: read and dropped, up to the blank line, 8 KiB in all.
+        # Trailers: read and dropped, up to the blank line, 8 KiB in all,
+        # and counted as the body's too.
         left = 8192
         loop do
           t = @reader.read_line(left, true)
@@ -612,6 +645,7 @@ module HTTP
           break if t.empty?
           left -= t.size + 2
           raise HeadersTooLarge.new if left < 0
+          count_extra(t.size + 2)
         end
         ended
       end
@@ -1084,6 +1118,11 @@ module HTTP
     idle_timeout: Duration,
     # The limit on each read of a request's body (`408` when it runs out).
     read_timeout: Duration,
+    # The limit on the time one request (its head and its body) may make
+    # the server wait for its bytes, all reads together, from its first
+    # byte (`408` when it runs out). Time the handler spends between
+    # reads does not count.
+    request_timeout: Duration,
     # The limit on writing one response, or one chunk of a
     # [Content::Stream] body.
     write_timeout: Duration,
@@ -1411,7 +1450,7 @@ module HTTP
     def initialize(@handler: Handler, *, host: String = "0.0.0.0", port: Int = 8080,
                    path: String? = nil,
                    read_header_timeout: Duration = 10.seconds, idle_timeout: Duration = 60.seconds,
-                   read_timeout: Duration = 30.seconds,
+                   read_timeout: Duration = 30.seconds, request_timeout: Duration = 120.seconds,
                    write_timeout: Duration = 30.seconds, max_header_bytes: Int = 65_536,
                    max_body_bytes: Int = 1_048_576, max_connections: Int = 10_000,
                    trusted_proxies: Array[String] = [],
@@ -1422,7 +1461,7 @@ module HTTP
         other = tls.alpn.find { |p| p != "http/1.1" && p != "http/1.0" }
         raise ArgumentError, "tls: the server speaks HTTP/1.1, not #{other.inspect} (alpn:)" if other
       end
-      @options = Options.new(read_header_timeout, idle_timeout, read_timeout, write_timeout,
+      @options = Options.new(read_header_timeout, idle_timeout, read_timeout, request_timeout, write_timeout,
                              max_header_bytes, max_body_bytes, max_connections,
                              Proxies.of(trusted_proxies), on_error, tls)
       @tcp = path ? nil : TCPServer.new(host, port)
@@ -1443,12 +1482,13 @@ module HTTP
     # `scheme` come from the `X-Forwarded-*` headers.
     def self.unix(handler: Handler, path: String, *,
                   read_header_timeout: Duration = 10.seconds, idle_timeout: Duration = 60.seconds,
-                  read_timeout: Duration = 30.seconds,
+                  read_timeout: Duration = 30.seconds, request_timeout: Duration = 120.seconds,
                   write_timeout: Duration = 30.seconds, max_header_bytes: Int = 65_536,
                   max_body_bytes: Int = 1_048_576, max_connections: Int = 10_000,
                   on_error: (shareable (Exception, Request?) -> Void)? = nil) -> Server
       Server.new(handler, path: path, read_header_timeout: read_header_timeout,
-                 idle_timeout: idle_timeout, read_timeout: read_timeout, write_timeout: write_timeout,
+                 idle_timeout: idle_timeout, read_timeout: read_timeout, request_timeout: request_timeout,
+                 write_timeout: write_timeout,
                  max_header_bytes: max_header_bytes, max_body_bytes: max_body_bytes,
                  max_connections: max_connections, on_error: on_error)
     end
@@ -1684,6 +1724,7 @@ module HTTP
         loop do
           current = nil
           reader.read_timeout = nil
+          reader.budget = nil
           # Waiting for a request: shutdown may close the connection.
           @idle.update { |h| h.put(id, conn) }
           break if stopping?
@@ -1693,6 +1734,10 @@ module HTTP
           more = Task.timeout(wait) { !reader.eof? }
           @idle.update { |h| h.delete(id) }
           break unless more
+          # From its first byte, the request may make the server wait
+          # `request_timeout` in all (#1131: a body sent a byte at a time
+          # keeps each read within `read_timeout`).
+          reader.budget = opts.request_timeout
           req = begin
             Task.timeout(opts.read_header_timeout) do
               HTTP.read_request(reader, opts.max_header_bytes, opts.max_body_bytes, peer,
