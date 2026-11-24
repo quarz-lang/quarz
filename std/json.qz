@@ -335,9 +335,11 @@ module JSON
   # ## Raises
   #
   # [JSON::ParseError] on malformed input (anything but one value
-  # included), with the line and column in its message, and for a
+  # included), with the line and column in its message, for a
   # document nested deeper than [max_nesting] (the message names the
-  # limit); [ArgumentError] for a [max_nesting] out of 1 to 100.
+  # limit), and for an integer of more than 10,000 digits (its conversion
+  # takes time quadratic in them); [ArgumentError] for a [max_nesting] out
+  # of 1 to 100.
   #
   # ```
   # JSON.parse(" null ")       # => JSON::Value::Null
@@ -403,8 +405,9 @@ module JSON
   #
   # ## Raises
   #
-  # [JSON::ParseError] on malformed text, or text nested deeper than
-  # [max_nesting] (as [.parse] counts it); [JSON::DecodeError] when the
+  # [JSON::ParseError] on malformed text, text nested deeper than
+  # [max_nesting] (as [.parse] counts it), or an integer of more than
+  # 10,000 digits (as for [.parse]); [JSON::DecodeError] when the
   # document does not have the shape of `T` (the message gives where);
   # [ArgumentError] for a [max_nesting] out of 1 to 100.
   native def self.decode[T](text: String, *, max_nesting: Int = 100) -> T
