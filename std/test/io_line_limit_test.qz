@@ -1,0 +1,147 @@
+# #1135: a line read from a socket or a TLS stream is bounded, 65,536
+# bytes before its newline by default; past it, IO::LineTooLong, with the
+# bytes left unread. `limit:` sets the bound for one call, `nil` for none.
+# A pipe has no bound by default.
+require "socket"
+require "test"
+
+class IoLineLimitTest < Test::Case
+  # A connected client socket whose peer sends `text` and closes. The
+  # listener is closed only once the peer's task is done: a test that
+  # reads nothing may end before the peer was accepted (four workers).
+  def peer_sending(text: String, &: (TCPSocket) -> Void) -> Void
+    listener = TCPServer.new("127.0.0.1", 0)
+    Task.scope do |scope|
+      peer = scope.spawn do
+        s = listener.accept
+        begin
+          s.write(text)
+        rescue IOError, SystemCallError
+          # (The client may close without reading it all.)
+          nil
+        end
+        s.close
+      end
+      sock = TCPSocket.new("127.0.0.1", listener.local_address.port)
+      begin
+        yield sock
+      ensure
+        sock.close
+        peer.await
+        listener.close
+      end
+    end
+    nil
+  end
+
+  def test_default_bound_on_a_socket
+    long = "x" * 65_537
+    peer_sending("#{long}\nnext\n") do |s|
+      e = assert_raise(IO::LineTooLong) { s.gets; nil }
+      assert_equal("line longer than 65536 bytes (limit:)", e.message)
+      # The bytes stay: read past them, then the next line.
+      assert_equal(65_538, s.read_bytes(65_538).size)
+      assert_equal("next\n", s.gets)
+    end
+  end
+
+  def test_a_line_at_the_bound
+    line = "y" * 65_536
+    peer_sending("#{line}\n") { |s| assert_equal("#{line}\n", s.gets) }
+  end
+
+  def test_limit_given
+    peer_sending("short\n#{"z" * 11}\n") do |s|
+      assert_equal("short\n", s.gets(limit: 10))
+      e = assert_raise(IO::LineTooLong) { s.gets?(limit: 10); nil }
+      assert_equal("line longer than 10 bytes (limit:)", e.message)
+      assert_raise(IO::LineTooLong) { s.readline(limit: 10); nil }
+      assert_equal("#{"z" * 11}\n", s.gets(limit: 11))
+    end
+  end
+
+  def test_limit_nil_lifts_the_bound
+    long = "x" * 70_000
+    peer_sending("#{long}\n") { |s| assert_equal("#{long}\n", s.gets(limit: nil)) }
+  end
+
+  # A last line without a newline is bounded too.
+  def test_last_line_without_a_newline
+    peer_sending("abcdef") do |s|
+      assert_raise(IO::LineTooLong) { s.gets(limit: 5); nil }
+      assert_equal("abcdef", s.gets(limit: 6))
+    end
+  end
+
+  def test_each_line_and_readlines
+    peer_sending("a\nbb\nccc\n") do |s|
+      seen: Array[String] = []
+      e = assert_raise(IO::LineTooLong) { s.each_line(limit: 2) { |l| seen = seen.push(l) }; nil }
+      assert_equal("line longer than 2 bytes (limit:)", e.message)
+      assert_equal(["a\n", "bb\n"], seen)
+      assert_equal(["ccc\n"], s.readlines(limit: 3))
+    end
+  end
+
+  def test_negative_limit
+    peer_sending("a\n") do |s|
+      e = assert_raise(ArgumentError) { s.gets(limit: -1); nil }
+      assert_equal("negative limit: -1", e.message)
+    end
+  end
+
+  # A pipe from a child: no bound by default; `limit:` as on a socket.
+  def test_pipe_unbounded_by_default
+    child = Process.spawn("sh", "-c", "head -c 70000 /dev/zero | tr '\\0' x; echo; echo abcdef", stdout: :pipe)
+    out = child.stdout
+    assert_equal(70_001, out.gets.bytesize)
+    assert_raise(IO::LineTooLong) { out.gets(limit: 3); nil }
+    assert_equal("abcdef\n", out.gets)
+    child.wait
+  end
+
+  # A file takes `limit:` (none by default): past the bound, its reader
+  # cannot leave the line unread, so it reads `limit + 1` bytes and stops
+  # after them.
+  def test_limit_on_a_file
+    path = "#{Dir.tmpdir}/quarz-line-limit-test-#{Process.pid}"
+    File.write(path, "abc\nlonger-line\n#{"q" * 70_000}\nz")
+    begin
+      File.open(path) do |f|
+        assert_equal("abc\n", f.gets(limit: 3))
+        e = assert_raise(IO::LineTooLong) { f.gets(limit: 3); nil }
+        assert_equal("line longer than 3 bytes (limit:)", e.message)
+        # After the 4 bytes read.
+        assert_equal("er-line\n", f.gets)
+        assert_equal(70_001, f.gets.bytesize)
+        assert_equal("z", f.gets(limit: 1))
+        assert_nil(f.gets?(limit: 1))
+      end
+      # A bound past the buffer's size, reached on the slow path.
+      File.open(path) do |f|
+        f.gets
+        f.gets
+        assert_raise(IO::LineTooLong) { f.gets(limit: 65_536); nil }
+        assert_equal(70_000 - 65_537 + 1, f.gets.bytesize)
+      end
+    ensure
+      File.delete(path)
+    end
+  end
+
+  # Standard input likewise, in a child program.
+  def test_limit_on_standard_input
+    quarz = ENV["QUARZ"]? || "quarz"
+    script = "#{Dir.tmpdir}/quarz-line-limit-stdin-#{Process.pid}.qz"
+    File.write(script, "begin\n  STDIN.gets(limit: 3)\nrescue IO::LineTooLong => e\n  puts e.message\nend\nputs STDIN.gets.inspect\n")
+    begin
+      child = Process.spawn(quarz, "run", script, stdin: :pipe, stdout: :pipe)
+      child.stdin.write("abcdef\nok\n")
+      child.stdin.close
+      assert_equal("line longer than 3 bytes (limit:)\n\"ef\\n\"\n", child.stdout.read)
+      child.wait
+    ensure
+      File.delete(script)
+    end
+  end
+end

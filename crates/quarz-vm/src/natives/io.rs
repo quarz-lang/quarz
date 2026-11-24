@@ -91,13 +91,29 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         io_write_bytes(i, r, &bytes)?;
         Ok(r.clone())
     });
-    native!(m, "IO#gets", |i, r, _| io_gets(i, r, true));
-    native!(m, "IO#gets?", |i, r, _| io_gets(i, r, false));
-    native!(m, "IO#readline", |i, r, _| io_gets(i, r, true));
-    native!(m, "IO#readlines", |i, r, _| {
+    native!(m, "IO#gets", |i, r, a| io_gets(
+        i,
+        r,
+        true,
+        line_limit(i, &a)?
+    ));
+    native!(m, "IO#gets?", |i, r, a| io_gets(
+        i,
+        r,
+        false,
+        line_limit(i, &a)?
+    ));
+    native!(m, "IO#readline", |i, r, a| io_gets(
+        i,
+        r,
+        true,
+        line_limit(i, &a)?
+    ));
+    native!(m, "IO#readlines", |i, r, a| {
+        let limit = line_limit(i, &a)?;
         let mut lines = Vec::new();
         loop {
-            match io_gets(i, r, false)? {
+            match io_gets(i, r, false, limit)? {
                 Value::Nil => break,
                 line => lines.push(line),
             }
@@ -143,9 +159,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "IO#each_line", |i, r, a| {
         let b = block(i, &a)?;
+        let limit = line_limit(i, &a)?;
         let rb = i.repeated_block(&b);
         loop {
-            match io_gets(i, r, false)? {
+            match io_gets(i, r, false, limit)? {
                 Value::Nil => return Ok(Value::Nil),
                 line => {
                     rb.call(i, smallvec![line])?;
@@ -1388,6 +1405,54 @@ fn line_slow<R: Read>(r: &mut BufReader<R>) -> std::io::Result<Vec<u8>> {
     Ok(line)
 }
 
+/// `line_buffered` with a bound (#1135): the line when the buffer holds
+/// it within `limit` bytes before its newline, `None` inside when it holds
+/// `limit + 1` bytes without one (taken), and nothing when it cannot tell.
+fn line_buffered_limited<R: Read>(
+    r: &mut BufReader<R>,
+    limit: usize,
+) -> Option<std::io::Result<Option<Vec<u8>>>> {
+    let buf = r.buffer();
+    let window = &buf[..buf.len().min(limit.saturating_add(1))];
+    if let Some(i) = window.iter().position(|b| *b == b'\n') {
+        let line = buf[..=i].to_vec();
+        r.consume(i + 1);
+        return Some(Ok(Some(line)));
+    }
+    if window.len() == limit.saturating_add(1) {
+        r.consume(window.len());
+        return Some(Ok(None));
+    }
+    None
+}
+
+/// `line_slow` with a bound (#1135): reads at most `limit + 1` bytes; a
+/// line (its newline included) when one ends within `limit` bytes, or at
+/// the end of the stream; `None` once `limit + 1` bytes held no newline,
+/// the reader left after them.
+fn line_limited<R: Read>(r: &mut BufReader<R>, limit: usize) -> std::io::Result<Option<Vec<u8>>> {
+    let mut line = Vec::new();
+    let cap = limit.saturating_add(1);
+    loop {
+        let buf = r.fill_buf()?;
+        if buf.is_empty() {
+            return Ok(Some(line));
+        }
+        let window = &buf[..buf.len().min(cap - line.len())];
+        if let Some(i) = window.iter().position(|b| *b == b'\n') {
+            line.extend_from_slice(&window[..=i]);
+            r.consume(i + 1);
+            return Ok(Some(line));
+        }
+        let n = window.len();
+        line.extend_from_slice(window);
+        r.consume(n);
+        if line.len() == cap {
+            return Ok(None);
+        }
+    }
+}
+
 /// `limit` bytes, when the buffer holds them.
 fn bytes_buffered<R: Read>(
     r: &mut BufReader<R>,
@@ -1504,11 +1569,72 @@ fn io_write_bytes(interp: &Interp, recv: &Value, bytes: &[u8]) -> Result<(), Flo
     Ok(())
 }
 
+/// The bound on a line a read was given (`limit:`, #1135).
+#[derive(Clone, Copy)]
+enum LineLimit {
+    /// None given: the stream's own (`net::SOCKET_LINE_LIMIT` on a socket
+    /// or a TLS stream, none on a pipe, a file or standard input).
+    Default,
+    /// `limit: n`, or `limit: nil` for none.
+    Given(Option<usize>),
+}
+
+/// A line read's `limit:` keyword: absent, a size, or nil.
+fn line_limit(interp: &Interp, args: &crate::interp::Args) -> Result<LineLimit, Flow> {
+    Ok(match args.kw(interp, "limit") {
+        None => LineLimit::Default,
+        Some(Value::Nil) => LineLimit::Given(None),
+        Some(v) => {
+            let n = super::int(interp, v, "limit")?;
+            let n =
+                usize::try_from(n).map_err(|_| interp.err_arg(&format!("negative limit: {n}")))?;
+            LineLimit::Given(Some(n))
+        }
+    })
+}
+
 /// One line (with its newline), `nil` at the end of the stream, or an
-/// `EOFError` when `raise_on_eof`.
-fn io_gets(interp: &Interp, recv: &Value, raise_on_eof: bool) -> EvalResult {
+/// `EOFError` when `raise_on_eof`; `IO::LineTooLong` past `limit`.
+fn io_gets(interp: &Interp, recv: &Value, raise_on_eof: bool, limit: LineLimit) -> EvalResult {
+    // A file's and standard input's bound, given only: their reader
+    // cannot leave a long line unread, so past `n` bytes it reads `n + 1`
+    // and stops after them (#1135, decided 2026-11-24).
+    let given = match limit {
+        LineLimit::Given(Some(n)) => Some(n),
+        _ => None,
+    };
     let line = match &io_of(interp, recv)?.kind {
-        IoKind::Stdin => return super::core_gets(interp, raise_on_eof),
+        IoKind::Stdin => match given {
+            None => return super::core_gets(interp, raise_on_eof),
+            Some(n) => {
+                interp.flush();
+                let r = buffered(
+                    interp,
+                    stdin_state(),
+                    |r| line_buffered_limited(r, n),
+                    move |r| line_limited(r, n),
+                )?
+                .map_err(|e| interp.raise(interp.program.exc.io_error, &e.to_string()))?;
+                let buf = r.ok_or_else(|| net::line_too_long(interp, n))?;
+                (!buf.is_empty()).then(|| String::from_utf8_lossy(&buf).into_owned())
+            }
+        },
+        IoKind::File(f) if given.is_some() => {
+            let n = given.unwrap_or(0);
+            let io = readable_io(interp, f)?;
+            let r = buffered(
+                interp,
+                &io,
+                |io| reader_of(io).and_then(|r| line_buffered_limited(r, n)),
+                move |io| match reader_for_read(io)? {
+                    Some(r) => line_limited(r, n),
+                    None => Ok(Some(Vec::new())),
+                },
+            )?
+            .map_err(|e| os_error(interp, e, "read"))?;
+            let buf = r.ok_or_else(|| net::line_too_long(interp, n))?;
+            (!buf.is_empty()).then(|| String::from_utf8_lossy(&buf).into_owned())
+        }
         IoKind::File(f) => {
             let io = readable_io(interp, f)?;
             let buf = buffered(
@@ -1523,8 +1649,22 @@ fn io_gets(interp: &Interp, recv: &Value, raise_on_eof: bool) -> EvalResult {
             .map_err(|e| os_error(interp, e, "read"))?;
             (!buf.is_empty()).then(|| String::from_utf8_lossy(&buf).into_owned())
         }
-        IoKind::Socket(st) => net::socket_gets(interp, st)?,
-        IoKind::Tls(st) => net::socket_gets(interp, st)?,
+        IoKind::Socket(st) => {
+            // A pipe (a child process's output) has no bound by default.
+            let limit = match limit {
+                LineLimit::Given(n) => n,
+                LineLimit::Default if st.borrow().pipe.is_some() => None,
+                LineLimit::Default => Some(net::SOCKET_LINE_LIMIT),
+            };
+            net::socket_gets(interp, st, limit)?
+        }
+        IoKind::Tls(st) => {
+            let limit = match limit {
+                LineLimit::Given(n) => n,
+                LineLimit::Default => Some(net::SOCKET_LINE_LIMIT),
+            };
+            net::socket_gets(interp, st, limit)?
+        }
         _ => return Err(interp.raise(interp.program.exc.io_error, "not opened for reading")),
     };
     match line {
