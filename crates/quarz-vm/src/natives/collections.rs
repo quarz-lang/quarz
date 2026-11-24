@@ -1382,12 +1382,20 @@ fn array_eq(interp: &Interp, a: &Value, b: &Value) -> Result<bool, Flow> {
 
 // ----- Array -------------------------------------------------------------------------
 
+/// The most elements `Array.new(n) { }` reserves before its block has
+/// run: 64 Ki elements (1 MiB of values).
+const RESERVE_AT_MOST: usize = 1 << 16;
+
 fn array_new(interp: &Interp, _: &Value, args: Args) -> EvalResult {
     match (args.pos.first(), &args.block) {
         (None, _) => Ok(Value::array(vec![])),
         (Some(n), Some(b)) => {
             let n = int(interp, n, "size")?.max(0);
-            let mut out = Vec::with_capacity(n as usize);
+            // Room for at most `RESERVE_AT_MOST` up front, the rest as the
+            // block fills it: a count from input far beyond what is filled
+            // (a block that raises, a reader out of input) is not asked of
+            // the allocator at once, where a failure aborts (#1140).
+            let mut out = Vec::with_capacity((n as usize).min(RESERVE_AT_MOST));
             let rb = interp.repeated_block(b);
             for i in 0..n {
                 out.push(rb.call(interp, smallvec![Value::Int(i)])?);
