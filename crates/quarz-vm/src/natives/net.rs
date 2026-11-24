@@ -547,6 +547,7 @@ fn make_socket_from(
         unix,
         pipe,
         rbuf: Vec::new(),
+        rbuf_appended: 0,
         eof: false,
         closed: false,
         path,
@@ -682,8 +683,15 @@ fn udp_fd(interp: &Interp, st: &IoCell<UdpState>) -> Result<RawFd, Flow> {
 /// A stream the read natives take from: the bytes read but not yet
 /// taken, whether the stream has ended, and how to read more without
 /// waiting (a socket, or a TLS connection over one).
+///
+/// The buffer grows only at its end (`fill`) and is taken from only at
+/// its front, so a buffered byte keeps its offset in the stream,
+/// `appended() - buffer.len() + index`, until it is taken: `socket_gets`
+/// resumes its search from such an offset (#1135).
 pub(crate) trait Readable: Watched {
     fn buffer(&mut self) -> (&mut Vec<u8>, bool);
+    /// How many bytes `fill` has ever appended to the buffer.
+    fn appended(&self) -> u64;
     fn fill(&mut self, chunk: &mut [u8]) -> Fill;
     /// Not to read from (the end of a pipe the program writes).
     fn write_only(&self) -> bool {
@@ -724,6 +732,10 @@ impl Readable for SocketState {
         (&mut self.rbuf, self.eof)
     }
 
+    fn appended(&self) -> u64 {
+        self.rbuf_appended
+    }
+
     fn write_only(&self) -> bool {
         self.pipe == Some(PipeEnd::Write)
     }
@@ -734,7 +746,10 @@ impl Readable for SocketState {
         };
         match stream.read(chunk) {
             Ok(0) => self.eof = true,
-            Ok(n) => self.rbuf.extend_from_slice(&chunk[..n]),
+            Ok(n) => {
+                self.rbuf.extend_from_slice(&chunk[..n]);
+                self.rbuf_appended += n as u64;
+            }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Fill::Wait(stream.fd()),
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Fill::Failed(StreamError::Os(e, "read")),
@@ -744,7 +759,8 @@ impl Readable for SocketState {
 }
 
 /// Read from the stream until `take` can take what it wants from the
-/// buffer (it sees whether the stream has ended). Taking, and reading
+/// buffer (it sees whether the stream has ended, and the buffer's
+/// `Readable::appended`). Taking, and reading
 /// more when it cannot, happen under the state's lock, released only to
 /// wait for the descriptor: with tasks on several threads, a read call
 /// takes a whole unit (a line, all of the rest) however they interleave.
@@ -756,7 +772,7 @@ impl Readable for SocketState {
 fn read_with<S: Readable, R>(
     interp: &Interp,
     st: &IoCell<S>,
-    mut take: impl FnMut(&mut Vec<u8>, bool) -> Option<R>,
+    mut take: impl FnMut(&mut Vec<u8>, bool, u64) -> Option<R>,
 ) -> Result<R, Flow> {
     if st.borrow().write_only() {
         return Err(interp.raise(interp.program.exc.io_error, "not opened for reading"));
@@ -767,8 +783,9 @@ fn read_with<S: Readable, R>(
         // Whether this call read into the buffer (or saw the end).
         let mut filled = false;
         let fd = loop {
+            let appended = s.appended();
             let (buf, ended) = s.buffer();
-            if let Some(r) = take(buf, ended) {
+            if let Some(r) = take(buf, ended, appended) {
                 let others = leftover_waiters(&mut *s);
                 drop(s);
                 wake_all(interp, others);
@@ -829,8 +846,12 @@ pub(crate) fn socket_gets<S: Readable>(
     interp: &Interp,
     st: &IoCell<S>,
 ) -> Result<Option<String>, Flow> {
-    read_with(interp, st, |buf, ended| {
-        if let Some(pos) = buf.iter().position(|b| *b == b'\n') {
+    // The stream offset up to which the buffer was searched and holds no
+    // newline: each fill's bytes are searched once, not the whole buffer
+    // again (#1135).
+    let mut searched = 0;
+    read_with(interp, st, |buf, ended, appended| {
+        if let Some(pos) = find_newline(buf, appended, &mut searched).0 {
             let line: Vec<u8> = buf.drain(..=pos).collect();
             return Some(Some(String::from_utf8_lossy(&line).into_owned()));
         }
@@ -845,13 +866,30 @@ pub(crate) fn socket_gets<S: Readable>(
     })
 }
 
+/// The index of the first newline in `buf`, whose end is the stream
+/// offset `appended`, searching from the stream offset `searched` (which
+/// moves to the end when there is none); and how many bytes it looked
+/// at. Bytes taken from the front by another reader meanwhile only move
+/// the start past `searched`.
+fn find_newline(buf: &[u8], appended: u64, searched: &mut u64) -> (Option<usize>, usize) {
+    let start = appended.saturating_sub(buf.len() as u64);
+    let from = (searched.saturating_sub(start) as usize).min(buf.len());
+    match buf[from..].iter().position(|b| *b == b'\n') {
+        Some(i) => (Some(from + i), i + 1),
+        None => {
+            *searched = appended;
+            (None, buf.len() - from)
+        }
+    }
+}
+
 /// Everything up to the end of the stream, or up to `limit` bytes.
 pub(crate) fn socket_read<S: Readable>(
     interp: &Interp,
     st: &IoCell<S>,
     limit: Option<usize>,
 ) -> Result<Vec<u8>, Flow> {
-    read_with(interp, st, |buf, ended| {
+    read_with(interp, st, |buf, ended, _| {
         if let Some(n) = limit {
             if buf.len() >= n {
                 return Some(buf.drain(..n).collect());
@@ -868,7 +906,7 @@ pub(crate) fn socket_read_partial<S: Readable>(
     st: &IoCell<S>,
     max: usize,
 ) -> Result<Option<Vec<u8>>, Flow> {
-    read_with(interp, st, |buf, ended| {
+    read_with(interp, st, |buf, ended, _| {
         if !buf.is_empty() {
             let n = max.min(buf.len());
             return Some(Some(buf.drain(..n).collect()));
@@ -952,7 +990,7 @@ pub(crate) fn socket_eof<S: Readable>(interp: &Interp, st: &IoCell<S>) -> Result
     if st.borrow().write_only() {
         return Ok(true);
     }
-    read_with(interp, st, |buf, ended| {
+    read_with(interp, st, |buf, ended, _| {
         if !buf.is_empty() {
             return Some(false);
         }
@@ -1305,5 +1343,97 @@ pub fn inspect_socket(interp: &Interp, io: &Rc<IoVal>) -> String {
             )
         }
         _ => interp.class_name(&Value::Io(io.clone())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_newline;
+
+    /// A reader's buffer: the bytes not yet taken and how many were
+    /// ever appended, as a `Readable` keeps them.
+    struct Buffer {
+        bytes: Vec<u8>,
+        appended: u64,
+    }
+
+    impl Buffer {
+        fn fill(&mut self, chunk: &[u8]) {
+            self.bytes.extend_from_slice(chunk);
+            self.appended += chunk.len() as u64;
+        }
+    }
+
+    /// #1135: a line arriving in many fills is searched once, each byte
+    /// looked at once, not the whole buffer again after every fill.
+    #[test]
+    fn a_long_line_is_searched_once() {
+        let mut buf = Buffer {
+            bytes: Vec::new(),
+            appended: 0,
+        };
+        let mut searched = 0;
+        let mut looked = 0;
+        let fills = 4096;
+        for _ in 0..fills {
+            buf.fill(&[b'x'; 100]);
+            let (found, n) = find_newline(&buf.bytes, buf.appended, &mut searched);
+            assert_eq!(found, None);
+            looked += n;
+        }
+        buf.fill(b"yz\nrest");
+        let (found, n) = find_newline(&buf.bytes, buf.appended, &mut searched);
+        looked += n;
+        assert_eq!(found, Some(fills * 100 + 2));
+        // Every byte up to the newline once (the whole-buffer search
+        // looked at about fills² × 50).
+        assert_eq!(looked, fills * 100 + 3);
+    }
+
+    /// Another reader taking bytes from the front while this one waits
+    /// moves the buffer's start: the search goes on from where it was,
+    /// or from the new start when that is past it.
+    #[test]
+    fn bytes_taken_from_the_front_meanwhile_are_followed() {
+        let mut buf = Buffer {
+            bytes: Vec::new(),
+            appended: 0,
+        };
+        let mut searched = 0;
+        buf.fill(b"abcdef");
+        assert_eq!(
+            find_newline(&buf.bytes, buf.appended, &mut searched),
+            (None, 6)
+        );
+        // Two bytes taken by another reader, then more arrive.
+        buf.bytes.drain(..2);
+        buf.fill(b"gh\nij");
+        assert_eq!(
+            find_newline(&buf.bytes, buf.appended, &mut searched),
+            (Some(6), 3)
+        );
+        // Everything searched taken, and a line that came after.
+        buf.bytes.drain(..7);
+        buf.fill(b"k\n");
+        assert_eq!(buf.bytes, b"ijk\n");
+        let mut searched_before = 6;
+        assert_eq!(
+            find_newline(&buf.bytes, buf.appended, &mut searched_before),
+            (Some(3), 4)
+        );
+    }
+
+    /// A fresh search (a new `gets`) starts at the front.
+    #[test]
+    fn a_new_search_starts_at_the_front() {
+        let buf = Buffer {
+            bytes: b"one\ntwo\n".to_vec(),
+            appended: 108,
+        };
+        let mut searched = 0;
+        assert_eq!(
+            find_newline(&buf.bytes, buf.appended, &mut searched),
+            (Some(3), 4)
+        );
     }
 }

@@ -2941,6 +2941,9 @@ pub struct SocketState {
     pub pipe: Option<PipeEnd>,
     /// Bytes read from the socket but not yet consumed.
     pub rbuf: Vec<u8>,
+    /// How many bytes were ever appended to `rbuf`
+    /// (`net::Readable::appended`).
+    pub rbuf_appended: u64,
     pub eof: bool,
     pub closed: bool,
     /// The path of a Unix socket.
