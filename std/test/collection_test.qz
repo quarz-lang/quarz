@@ -70,6 +70,17 @@ class ArrayQueryTest < Test::Case
 end
 
 class ArrayUpdateTest < Test::Case
+  # #1140: a count far beyond what the block fills is not reserved up
+  # front: the block's own error ends it, where asking the allocator for
+  # the whole count at once aborted the process.
+  def test_array_new_reserves_as_it_fills
+    assert_equal("[0, 1, 4]", Array.new(3) { |i| i * i }.inspect)
+    e = assert_raise(RuntimeError) do
+      Array.new(4_000_000_000_000) { |i| i < 3 ? i : raise("out of input at #{i}") }
+    end
+    assert_equal("out of input at 3", e.message)
+  end
+
   def test_builder
     b = Array::Builder[Int].new
     b << 3 << 1 << 2
