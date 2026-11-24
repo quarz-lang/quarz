@@ -47,6 +47,16 @@ class StringTest < Test::Case
     assert_equal("  1", format("%3d", 1))
   end
 
+  # #1147: a character whose mapping is several characters maps to all of
+  # them, as `upcase` and `downcase` do.
+  def test_swapcase_keeps_a_whole_mapping
+    assert_equal("SS", "ß".swapcase)
+    assert_equal("STRASSE", "straße".swapcase)
+    assert_equal("i\u0307", "İ".swapcase)
+    assert_equal("ʼN", "ŉ".swapcase)
+    assert_equal("hELLO", "Hello".swapcase)
+  end
+
   def test_indexing_counts_characters
     assert_equal("é", "héllo"[1])
     assert_equal("o", "héllo"[-1])
