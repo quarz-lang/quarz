@@ -205,6 +205,110 @@ fn a_deadlock_ends_the_program_with_1() {
     assert_eq!(out, "waiting\n");
 }
 
+/// Run `src` with `quarz run` and `env`, in a directory of the test's
+/// own: (status, stdout, stderr).
+#[cfg(debug_assertions)]
+fn run_with_env(name: &str, src: &str, env: &[(&str, &str)]) -> (i32, String, String) {
+    let dir = std::env::temp_dir().join(format!("quarz-run-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("main.qz");
+    std::fs::write(&file, src).unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .arg("run")
+        .arg(&file)
+        .current_dir(&dir)
+        .envs(env.iter().copied())
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// Six lookups at once, each made to take 400 ms (a debug build's
+/// `QUARZ_TEST_SLOW_LOOKUP`): with two lookup threads they run two at a
+/// time, so they take three rounds; with six, one (#1128).
+#[cfg(debug_assertions)]
+#[test]
+fn name_resolution_takes_at_most_its_threads() {
+    let src = "require \"socket\"\nt0 = Time.monotonic\n\
+               ts = (1..6).map { |_| Task.spawn { Socket.getaddrinfo(\"localhost\", 80).size } }\n\
+               ts.each { |t| t.await }\nputs (Time.monotonic - t0).to_ms\n";
+    let ms = |threads: &str| -> u64 {
+        let (code, out, err) = run_with_env(
+            &format!("lookup-slots-{threads}"),
+            src,
+            &[
+                ("QUARZ_LOOKUP_THREADS", threads),
+                ("QUARZ_TEST_SLOW_LOOKUP", "400"),
+            ],
+        );
+        assert_eq!(code, 0, "{err}");
+        out.trim().parse().unwrap()
+    };
+    let two = ms("2");
+    assert!(two >= 1200, "two threads, six lookups of 400 ms: {two} ms");
+    let six = ms("6");
+    assert!(six < 1200, "six threads, six lookups of 400 ms: {six} ms");
+}
+
+/// A lookup waiting for the only lookup thread, whose task a timeout
+/// cancels, is dropped unrun: the thread then has nothing to resolve
+/// for it (#1128).
+#[cfg(debug_assertions)]
+#[test]
+fn a_cancelled_lookup_waiting_for_a_thread_is_dropped() {
+    let (code, out, err) = run_with_env(
+        "lookup-dropped",
+        "require \"socket\"\n\
+         a = Task.spawn { Socket.getaddrinfo(\"localhost\", 80).size }\n\
+         Task.sleep(50.ms)\n\
+         begin\n  Task.timeout(100.ms) { Socket.getaddrinfo(\"localhost\", 80).size }\n\
+         rescue Task::Timeout\n  puts \"timed out\"\nend\n\
+         a.await\nTask.sleep(500.ms)\nputs \"done\"\n",
+        &[
+            ("QUARZ_LOOKUP_THREADS", "1"),
+            ("QUARZ_TEST_SLOW_LOOKUP", "600"),
+        ],
+    );
+    assert_eq!((code, out.as_str()), (0, "timed out\ndone\n"), "{err}");
+    assert_eq!(
+        err.matches("quarz: dropped a cancelled helper job").count(),
+        1,
+        "{err}"
+    );
+}
+
+/// A helper thread that cannot be started (`QUARZ_TEST_HELPER_SPAWNS`
+/// lets a debug build start only so many): while the pool has another,
+/// the job waits for it; with none, the task gets a `SystemCallError`,
+/// where the process used to panic (#1128).
+#[cfg(debug_assertions)]
+#[test]
+fn a_helper_thread_that_cannot_start_is_an_error_not_a_panic() {
+    let (code, out, err) = run_with_env(
+        "helper-spawn",
+        "require \"socket\"\nFile.write(\"a.txt\", \"abc\")\n\
+         ts = (1..4).map { |_| Task.spawn { File.read(\"a.txt\") } }\n\
+         puts ts.map { |t| t.await }.join(\" \")\n\
+         begin\n  Socket.getaddrinfo(\"localhost\", 80)\n\
+         rescue SystemCallError => e\n  puts \"#{e.class}: #{e.message}\"\nend\n",
+        &[("QUARZ_TEST_HELPER_SPAWNS", "1")],
+    );
+    assert_eq!(
+        (code, out.as_str()),
+        (
+            0,
+            "abc abc abc abc\n\
+             SystemCallError: start a helper thread: Resource temporarily unavailable (os error 11)\n"
+        ),
+        "{err}"
+    );
+}
+
 #[test]
 fn arguments() {
     expect("puts ARGV.inspect", "[]\n");

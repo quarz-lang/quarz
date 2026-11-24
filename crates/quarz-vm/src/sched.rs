@@ -1267,24 +1267,39 @@ impl Scheduler {
         }
     }
 
-    /// Run `job` on a helper thread; the task `id` is woken when it
-    /// finishes and takes the result from the returned receiver.
+    /// Run `job` on a helper thread of `kind`'s pool; the task `id` is
+    /// woken when it finishes and takes the result from the returned
+    /// receiver. Setting the returned flag before a helper takes the job
+    /// drops it unrun (the task stopped waiting: `Task::Cancelled`). An
+    /// error: the pool has no helper and none could be started.
     pub fn offload<T: Send + 'static>(
         &mut self,
         id: TaskId,
+        kind: JobKind,
         job: impl FnOnce() -> T + Send + 'static,
-    ) -> std::sync::mpsc::Receiver<T> {
+    ) -> std::io::Result<(std::sync::mpsc::Receiver<T>, Arc<AtomicBool>)> {
         let (tx, rx) = std::sync::mpsc::channel();
         let completions = self.reactor.completions.clone();
         let poller = self.reactor.poller.clone();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let flag = dropped.clone();
+        pool_submit(
+            kind,
+            Box::new(move || {
+                if flag.load(Ordering::Acquire) {
+                    debug_hooks::skipped();
+                } else {
+                    debug_hooks::slow(kind);
+                    let _ = tx.send(job());
+                }
+                // One completion per job, run or dropped: it balances
+                // `pending_jobs`.
+                completions.lock().unwrap().push(id);
+                let _ = poller.notify();
+            }),
+        )?;
         self.reactor.pending_jobs += 1;
-        pool_submit(Box::new(move || {
-            let result = job();
-            let _ = tx.send(result);
-            completions.lock().unwrap().push(id);
-            let _ = poller.notify();
-        }));
-        rx
+        Ok((rx, dropped))
     }
 
     /// Wait for IO events (at most `timeout`) and wake the tasks they
@@ -1752,55 +1767,176 @@ pub fn resume(task: &TaskHandle, co: &mut TaskCoroutine) -> CoroutineResult<(), 
     r
 }
 
-// ----- the helper thread pool ---------------------------------------------------------
+// ----- the helper thread pools --------------------------------------------------------
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
-/// Threads for offloaded work. A job never waits for a thread: when all
-/// of them are busy a new one is started, so a long `Task.blocking`
-/// computation cannot hold up file IO. Idle threads are kept.
-struct Pool {
-    queue: Mutex<(VecDeque<Job>, usize)>,
-    available: std::sync::Condvar,
+/// Which pool an offloaded job runs in (#1128).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum JobKind {
+    /// Everything but name resolution: file IO, binds, child processes,
+    /// `Task.blocking`. Never waits for a thread: when all are busy a new
+    /// one is started, so a long `Task.blocking` computation cannot hold
+    /// up file IO.
+    General,
+    /// Name resolution (`getaddrinfo`), which a peer choosing the names
+    /// can make slow: at most `QUARZ_LOOKUP_THREADS` threads, further
+    /// lookups waiting for one.
+    Lookup,
 }
 
-static POOL: std::sync::OnceLock<Pool> = std::sync::OnceLock::new();
+/// The name-resolution threads by default.
+pub const LOOKUP_THREADS: usize = 16;
 
-fn pool_submit(job: Job) {
-    let pool = POOL.get_or_init(|| Pool {
-        queue: Mutex::new((VecDeque::new(), 0)),
+/// `QUARZ_LOOKUP_THREADS`, read as `QUARZ_THREADS` is: unset, malformed
+/// or below 1 gives the default.
+pub fn lookup_threads_from_env() -> usize {
+    std::env::var("QUARZ_LOOKUP_THREADS")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(LOOKUP_THREADS)
+}
+
+/// Threads for offloaded work of one kind, kept once started.
+struct Pool {
+    state: Mutex<PoolState>,
+    available: std::sync::Condvar,
+    /// The most threads; `None`: unbounded.
+    max: Option<usize>,
+}
+
+#[derive(Default)]
+struct PoolState {
+    jobs: VecDeque<Job>,
+    /// Threads waiting for a job, including ones still starting.
+    idle: usize,
+    /// Threads started, busy or idle.
+    threads: usize,
+}
+
+fn pool(kind: JobKind) -> &'static Pool {
+    static GENERAL: std::sync::OnceLock<Pool> = std::sync::OnceLock::new();
+    static LOOKUP: std::sync::OnceLock<Pool> = std::sync::OnceLock::new();
+    let (cell, max) = match kind {
+        JobKind::General => (&GENERAL, None),
+        JobKind::Lookup => (&LOOKUP, Some(lookup_threads_from_env())),
+    };
+    cell.get_or_init(|| Pool {
+        state: Mutex::new(PoolState::default()),
         available: std::sync::Condvar::new(),
-    });
-    let mut q = pool.queue.lock().unwrap();
-    q.0.push_back(job);
-    if q.1 < q.0.len() {
-        // Fewer idle threads (including ones still starting) than
-        // queued jobs: start one. It counts as idle until it takes a job.
-        q.1 += 1;
+        max,
+    })
+}
+
+/// Queue `job`, starting a thread when fewer are idle than jobs wait and
+/// the pool has room. A thread that cannot be started is no error while
+/// the pool has another, which takes the job when free; with none, the
+/// job is given back as the error and nothing is queued (#1128).
+fn pool_submit(kind: JobKind, job: Job) -> std::io::Result<()> {
+    let pool = pool(kind);
+    let mut q = pool.state.lock().unwrap();
+    let wanted = q.idle < q.jobs.len() + 1 && pool.max.is_none_or(|m| q.threads < m);
+    if !wanted {
+        q.jobs.push_back(job);
         drop(q);
+        pool.available.notify_one();
+        return Ok(());
+    }
+    // It counts as idle until it takes a job.
+    q.idle += 1;
+    q.threads += 1;
+    drop(q);
+    let started = debug_hooks::spawn_allowed().and_then(|()| {
         std::thread::Builder::new()
             .name("quarz-helper".to_string())
             .spawn(move || pool_worker(pool))
-            .expect("spawn a helper thread");
-    } else {
-        drop(q);
-        pool.available.notify_one();
+    });
+    let mut q = pool.state.lock().unwrap();
+    if let Err(e) = started {
+        q.idle -= 1;
+        q.threads -= 1;
+        if q.threads == 0 {
+            return Err(e);
+        }
     }
+    q.jobs.push_back(job);
+    drop(q);
+    pool.available.notify_one();
+    Ok(())
 }
 
 fn pool_worker(pool: &'static Pool) {
     loop {
         let job = {
-            let mut q = pool.queue.lock().unwrap();
+            let mut q = pool.state.lock().unwrap();
             loop {
-                if let Some(job) = q.0.pop_front() {
-                    q.1 -= 1;
+                if let Some(job) = q.jobs.pop_front() {
+                    q.idle -= 1;
                     break job;
                 }
                 q = pool.available.wait(q).unwrap();
             }
         };
         job();
-        pool.queue.lock().unwrap().1 += 1;
+        pool.state.lock().unwrap().idle += 1;
     }
+}
+
+/// Test devices for the pools, read only in debug builds (#1128): a
+/// release build has none of them.
+///
+/// - `QUARZ_TEST_SLOW_LOOKUP=ms`: a lookup job sleeps that long before
+///   it runs (name resolution cannot be stubbed without root).
+/// - `QUARZ_TEST_HELPER_SPAWNS=n`: after `n` helper threads, starting
+///   one fails as under a thread limit (`RLIMIT_NPROC` counts every
+///   thread of the user, other tests' included, so it cannot be set for
+///   one program).
+/// - Either set: a job dropped unrun (its task cancelled) prints
+///   `quarz: dropped a cancelled helper job` on standard error.
+mod debug_hooks {
+    #[cfg(debug_assertions)]
+    fn var(name: &str) -> Option<u64> {
+        std::env::var(name).ok()?.trim().parse().ok()
+    }
+
+    #[cfg(debug_assertions)]
+    pub(super) fn slow(kind: super::JobKind) {
+        if kind != super::JobKind::Lookup {
+            return;
+        }
+        if let Some(ms) = var("QUARZ_TEST_SLOW_LOOKUP") {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    pub(super) fn spawn_allowed() -> std::io::Result<()> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static STARTED: AtomicU64 = AtomicU64::new(0);
+        match var("QUARZ_TEST_HELPER_SPAWNS") {
+            Some(n) if STARTED.fetch_add(1, Ordering::AcqRel) >= n => {
+                Err(std::io::Error::from_raw_os_error(libc::EAGAIN))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    pub(super) fn skipped() {
+        if var("QUARZ_TEST_SLOW_LOOKUP").is_some() || var("QUARZ_TEST_HELPER_SPAWNS").is_some() {
+            eprintln!("quarz: dropped a cancelled helper job");
+        }
+    }
+
+    #[cfg(not(debug_assertions))]
+    pub(super) fn slow(_: super::JobKind) {}
+
+    #[cfg(not(debug_assertions))]
+    pub(super) fn spawn_allowed() -> std::io::Result<()> {
+        Ok(())
+    }
+
+    #[cfg(not(debug_assertions))]
+    pub(super) fn skipped() {}
 }
