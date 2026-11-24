@@ -104,6 +104,9 @@ impl Watched for TlsState {
     fn watch(&mut self) -> &mut IoWatch {
         &mut self.sock.watch
     }
+    fn closed(&self) -> bool {
+        self.sock.closed
+    }
 }
 
 impl WriteTurn for TlsState {

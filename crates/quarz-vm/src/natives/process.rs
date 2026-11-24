@@ -63,6 +63,11 @@ impl Watched for ChildState {
     fn watch(&mut self) -> &mut IoWatch {
         &mut self.watch
     }
+    /// (Its pidfd is not closed under a wait: `wait` holds the state
+    /// from `poll` to the registration.)
+    fn closed(&self) -> bool {
+        false
+    }
 }
 
 impl ChildState {

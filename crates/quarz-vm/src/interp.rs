@@ -2173,6 +2173,13 @@ impl Interp {
     /// wakes it (a wake that comes before the park is not lost: another
     /// worker's is posted and delivered once this worker suspends the
     /// task, and this worker runs nothing else before it).
+    ///
+    /// A state closed meanwhile is not waited on: `close` took the waiters
+    /// to wake and dropped the descriptor before this registration, so no
+    /// wake would come (#1134: a writer that released the lock at
+    /// `WouldBlock`, a TLS pump, ...). It returns at once, and the
+    /// caller's loop finds the state closed as if the close had come
+    /// first.
     pub fn wait_io_held<T: Watched>(
         &self,
         st: &IoCell<T>,
@@ -2180,6 +2187,9 @@ impl Interp {
         fd: std::os::fd::RawFd,
         writable: bool,
     ) -> Result<(), Flow> {
+        if held.closed() {
+            return Ok(());
+        }
         let me = self.sched.borrow().current_ref();
         let w = held.watch();
         w.waiters.push(me);

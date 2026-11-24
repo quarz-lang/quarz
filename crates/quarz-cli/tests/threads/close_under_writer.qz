@@ -1,0 +1,84 @@
+# #1134: a socket closed by one task while another task's write is
+# blocked on it, the two on different workers. The writer must raise at
+# the close (`IOError`, as when the close comes first), never stay parked:
+# `close` takes the waiters to wake, and a wait registered after it would
+# be woken by nothing. A writer still parked at its timeout counts as
+# parked. Plain TCP sockets and TLS sockets (whose writes go through the
+# TLS pump), on loopback, a peer that reads in small pieces so that the
+# writes block, and closes at varying moments.
+require "socket"
+require "tls"
+
+PIECE = 4096
+DATA = "x" * 131_072
+
+# One trial: `writer` writes until `closer` closes its end; whether the
+# writer raised at the close (`true`) or was still parked at its timeout.
+def trial(conn: IO, end_: IO, delay: Int) -> Bool
+  reader = Task.spawn do
+    begin
+      loop do
+        part = conn.read_bytes(PIECE)
+        break if part.empty?
+      end
+    rescue IOError, SystemCallError, TLS::Error
+      nil
+    end
+    nil
+  end
+  writer = Task.spawn do
+    begin
+      Task.timeout(2.seconds) do
+        loop { end_.write(DATA) }
+      end
+      false
+    rescue Task::Timeout
+      false
+    rescue IOError, SystemCallError, TLS::Error
+      true
+    end
+  end
+  closer = Task.spawn do
+    Task.sleep(delay.ms)
+    end_.close
+    nil
+  end
+  closer.await
+  raised = writer.await
+  conn.close
+  reader.await
+  raised
+end
+
+def plain(trials: Int) -> Int
+  server = TCPServer.new("127.0.0.1", 0)
+  port = server.local_address.port
+  parked = 0
+  trials.times do |i|
+    end_ = TCPSocket.new("127.0.0.1", port)
+    conn = server.accept
+    parked += 1 unless trial(conn, end_, 1 + i % 5)
+  end
+  server.close
+  parked
+end
+
+def tls(trials: Int) -> Int
+  cert = TLS::Testing.self_signed(["127.0.0.1"])
+  server_config = TLS::ServerConfig.new(certificate: cert.certificate, private_key: cert.private_key)
+  client_config = TLS::Config.new(roots: TLS::Roots.from_pem(cert.certificate))
+  server = TCPServer.new("127.0.0.1", 0)
+  port = server.local_address.port
+  parked = 0
+  trials.times do |i|
+    accepted = Task.spawn { TLSSocket.accept(server.accept, server_config) }
+    end_ = TLSSocket.connect(TCPSocket.new("127.0.0.1", port), "127.0.0.1", client_config)
+    conn = accepted.await
+    parked += 1 unless trial(conn, end_, 1 + i % 5)
+  end
+  server.close
+  parked
+end
+
+puts "plain writers parked: #{plain(1500)}"
+puts "TLS writers parked: #{tls(200)}"
