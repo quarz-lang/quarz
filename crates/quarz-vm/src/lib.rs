@@ -20,6 +20,7 @@ pub mod ops;
 pub mod rc;
 pub mod reflect;
 pub mod sched;
+pub mod table_hasher;
 pub mod transfer;
 pub mod value;
 pub mod verify;

@@ -695,6 +695,42 @@ fn the_prelude_snapshot_is_taken_only_where_nothing_changes_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The run-time tables hash with keys chosen per process (#1124), so that
+/// keys prepared in advance do not collide: two runs hash one string
+/// apart, and alike only under one `QUARZ_HASH_SEED`. A debug build's
+/// `QUARZ_TEST_TABLE_HASH` prints the hash.
+#[cfg(debug_assertions)]
+#[test]
+fn tables_hash_with_keys_of_the_process() {
+    let dir = std::env::temp_dir().join(format!("quarz-table-hash-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("main.qz");
+    std::fs::write(&file, "h = {\"key\" => 1}\nputs h[\"key\"]\n").unwrap();
+    let hash = |seed: Option<&str>| -> String {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"));
+        cmd.arg("run")
+            .arg(&file)
+            .env("QUARZ_TEST_TABLE_HASH", "key")
+            .env_remove("QUARZ_HASH_SEED");
+        if let Some(seed) = seed {
+            cmd.env("QUARZ_HASH_SEED", seed);
+        }
+        let out = cmd.output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        let line = err
+            .lines()
+            .find(|l| l.starts_with("quarz: table hash "))
+            .unwrap_or_else(|| panic!("{err}"));
+        line.to_string()
+    };
+    let (a, b) = (hash(None), hash(None));
+    assert_ne!(a, b, "two processes with random keys");
+    assert_eq!(hash(Some("7")), hash(Some("7")));
+    assert_ne!(hash(Some("7")), hash(Some("8")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `quarz --version` prints Cargo's version of the workspace, which a
 /// release tag (`v` and the version) names too, and the commit it was
 /// built from when built from a checkout (#449).
