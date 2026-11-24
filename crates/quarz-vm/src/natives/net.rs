@@ -408,7 +408,9 @@ fn getaddrinfo(
         });
     }
     let label = host.clone();
-    let found = interp.block_on(move || lookup(&host, port, family))?;
+    let found = interp.block_on_kind(crate::sched::JobKind::Lookup, move || {
+        lookup(&host, port, family)
+    })?;
     found.map_err(|e| {
         interp.raise(
             interp.program.exc.socket_error,
@@ -587,7 +589,7 @@ fn resolve(interp: &Interp, host: &str, port: u16) -> Result<SocketAddr, Flow> {
     let label = format!("{host}:{port}");
     let host = host.to_string();
     let addrs = interp
-        .block_on(move || {
+        .block_on_kind(crate::sched::JobKind::Lookup, move || {
             (host.as_str(), port)
                 .to_socket_addrs()
                 .map(|a| a.collect::<Vec<_>>())

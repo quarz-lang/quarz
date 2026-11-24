@@ -2206,21 +2206,44 @@ impl Interp {
     }
 
     /// Run a blocking job on another thread, parking the task until it
-    /// finishes (file IO, name resolution, child processes).
+    /// finishes (file IO, child processes, `Task.blocking`).
     pub fn block_on<T: Send + 'static>(
         &self,
         job: impl FnOnce() -> T + Send + 'static,
     ) -> Result<T, Flow> {
+        self.block_on_kind(sched::JobKind::General, job)
+    }
+
+    /// `block_on` in `kind`'s pool (`JobKind::Lookup` for name
+    /// resolution). No helper to run it: a `SystemCallError`, where the
+    /// process used to end (#1128). The task cancelled while the job
+    /// waits for a helper: the job is dropped unrun.
+    pub fn block_on_kind<T: Send + 'static>(
+        &self,
+        kind: sched::JobKind,
+        job: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<T, Flow> {
         use std::sync::mpsc::TryRecvError;
         let id = self.current_task().id;
-        let rx = self.sched.borrow_mut().offload(id, job);
+        let (rx, dropped) = self.sched.borrow_mut().offload(id, kind, job);
         loop {
             match rx.try_recv() {
-                Ok(v) => return Ok(v),
+                Ok(Ok(v)) => return Ok(v),
+                Ok(Err(e)) => {
+                    return Err(self.raise(
+                        self.program.exc.system_call_error,
+                        &format!("start a helper thread: {e}"),
+                    ))
+                }
                 Err(TryRecvError::Disconnected) => {
                     return Err(self.raise(self.program.exc.runtime_error, "background job failed"))
                 }
-                Err(TryRecvError::Empty) => self.park()?,
+                Err(TryRecvError::Empty) => {
+                    if let Err(flow) = self.park() {
+                        dropped.store(true, std::sync::atomic::Ordering::Release);
+                        return Err(flow);
+                    }
+                }
             }
         }
     }
