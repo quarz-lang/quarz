@@ -69,7 +69,7 @@ class HTTP::Server   # (its requests and responses are its own types)
     def content_length -> Int?
     def query_params -> Hash[String, Array[String]]  # decoded; a key may repeat
     def form_params -> Hash[String, Array[String]]   # application/x-www-form-urlencoded body
-    def scheme -> String                             # "https" over tls:, else "http"; X-Forwarded-Proto from a trusted proxy
+    def scheme -> String                             # "https" over tls:, else "http"; X-Forwarded-Proto's last value from a trusted proxy
     def remote_ip -> String?                         # remote_address.host, or X-Forwarded-For's client from a trusted proxy
     def keep_alive? -> Bool
   end
@@ -208,7 +208,7 @@ A server on a UNIX socket (`Server.unix`) has no peer addresses: `remote_address
 
 ### Behind a proxy
 
-With `trusted_proxies: ["127.0.0.1", "::1"]` (addresses, or networks as `"10.0.0.0/8"`), a request from one of them has its `scheme` taken from `X-Forwarded-Proto` and its `remote_ip` from `X-Forwarded-For`: the values of every such header joined in order, read from the right, skipping the trusted proxies; the first other address is the client. When there is none (no header, a malformed one, or every address trusted), `remote_ip` is the peer's address. From any other peer, the headers are ignored. `Host` is passed on as received: the proxy sets it.
+With `trusted_proxies: ["127.0.0.1", "::1"]` (addresses, or networks as `"10.0.0.0/8"`), a request from one of them has its `scheme` taken from the last value of `X-Forwarded-Proto` (the one the nearest proxy wrote; a proxy that appends leaves the client's own values before it) and its `remote_ip` from `X-Forwarded-For`: the values of every such header joined in order, read from the right, skipping the trusted proxies; the first other address is the client. When there is none (no header, a malformed one, or every address trusted), `remote_ip` is the peer's address. From any other peer, the headers are ignored. `Host` is passed on as received: the proxy sets it.
 
 ### Shutdown and signals
 

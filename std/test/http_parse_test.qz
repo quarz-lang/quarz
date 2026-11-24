@@ -130,6 +130,29 @@ class HttpParseTest < Test::Case
     assert_equal("https", fwd.scheme)
   end
 
+  # #1132: the last X-Forwarded-Proto value is the nearest proxy's; one
+  # that appends leaves the client's own before it. Values across several
+  # headers join in order, as X-Forwarded-For's do.
+  def data_forwarded_proto -> Hash[String, [Array[String], String]]
+    {
+      "one value" => [["https"], "https"],
+      "appended after the client's" => [["https, http"], "http"],
+      "appended after the client's, other way" => [["http, https"], "https"],
+      "over two headers" => [["https", "http"], "http"],
+      "last not a scheme" => [["https, gopher"], "http"],
+      "spaces around the last" => [["http,  HTTPS "], "https"],
+      "U+00A0 before the last" => [["http, \u00a0https"], "http"],
+    }
+  end
+
+  def test_forwarded_proto(data: [Array[String], String])
+    values, expected = data
+    headers = values.reduce(HTTP::Headers.empty) { |h, v| h.add("X-Forwarded-Proto", v) }
+    req = HTTP::Server::Request.get("/", headers)
+            .with(remote_address: Socket::Address.new("127.0.0.1", 9), proxies: @proxies, trusted: true)
+    assert_equal(expected, req.scheme)
+  end
+
   def test_forwarded_untrusted
     fwd = forwarded.with(trusted: false)
     assert_equal("127.0.0.1", fwd.remote_ip)

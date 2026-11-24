@@ -1290,12 +1290,16 @@ module HTTP
 
       # `"https"` on a TLS connection (the server's `tls:`), `"http"`
       # otherwise; from a trusted proxy, what its `X-Forwarded-Proto` says
-      # (what the client used to reach the proxy).
+      # (what the client used to reach the proxy): the last value, the one
+      # the nearest proxy wrote, as [#remote_ip] reads `X-Forwarded-For`
+      # from the right. A proxy that appends to the header leaves the
+      # client's own values before its own (#1132).
       def scheme -> String
         if trusted
-          proto = headers["x-forwarded-proto"]
-          if proto
-            p = proto.split(",")[0].strip.downcase
+          values = headers.all("x-forwarded-proto").flat_map { |v| v.split(",") }
+          last = values.last?
+          if last
+            p = HTTP.trim_ows(last).downcase
             return p if p == "http" || p == "https"
           end
         end
