@@ -78,6 +78,9 @@ pub struct TlsState {
     pub session: Box<dyn TlsSession>,
     /// Plaintext received but not yet taken.
     pub plain: Vec<u8>,
+    /// How many bytes were ever appended to `plain`
+    /// (`net::Readable::appended`).
+    pub plain_appended: u64,
     /// The name given to `connect`; a server's is the session's SNI.
     pub server_name: Option<String>,
     /// Whether the peer's certificate was verified (`verify: false` in
@@ -185,6 +188,10 @@ impl Readable for TlsState {
         (&mut self.plain, self.sock.eof)
     }
 
+    fn appended(&self) -> u64 {
+        self.plain_appended
+    }
+
     fn fill(&mut self, chunk: &mut [u8]) -> Fill {
         let Some(fd) = self.sock.stream.as_ref().map(|s| s.fd()) else {
             return Fill::Closed;
@@ -201,6 +208,7 @@ impl Readable for TlsState {
                 }
                 Ok(n) => {
                     self.plain.extend_from_slice(&chunk[..n]);
+                    self.plain_appended += n as u64;
                     got = true;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
