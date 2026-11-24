@@ -666,6 +666,8 @@ pub struct ExcClasses {
     /// `Bytes::Secret::WipedError`: a use of a wiped secret.
     pub secret_wiped: ClassId,
     pub eof_error: ClassId,
+    /// `IO::LineTooLong`: a line read past its `limit:` (#1135).
+    pub line_too_long: ClassId,
     pub not_implemented: ClassId,
     pub system_exit: ClassId,
     pub range_error: ClassId,
@@ -1209,6 +1211,7 @@ impl Interp {
             crypto_error: library_class("Crypto::Error"),
             secret_wiped: class_by_name("Bytes::Secret::WipedError"),
             eof_error: class_by_name("EOFError"),
+            line_too_long: class_by_name("IO::LineTooLong"),
             not_implemented: class_by_name("NotImplementedError"),
             system_exit: class_by_name("SystemExit"),
             range_error: class_by_name("RangeError"),

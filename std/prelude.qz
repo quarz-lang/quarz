@@ -7160,6 +7160,12 @@ end
 # f.close
 # ```
 class IO
+  # A line longer than the bound of the read ([IO#gets] and its kin):
+  # 65,536 bytes on a socket or a TLS stream unless `limit:` gives
+  # another. The line stays unread.
+  class LineTooLong < IOError
+  end
+
   include Shareable
 
   # Writes each argument followed by a newline, unless it already ends in
@@ -7181,16 +7187,34 @@ class IO
   native def <<(value: Object) -> Self
   # The next line, with its newline (the last line may have none).
   #
+  # A line from a socket or a TLS stream is bounded: past 65,536 bytes
+  # before its newline, [IO::LineTooLong] is raised and the bytes stay
+  # unread (the stream can still be read with [#read_bytes]). Lines from
+  # a pipe, a file or standard input have no bound. `limit:` sets the
+  # bound for one call, `nil` for none: read a peer's lines with a bound
+  # that suits the protocol.
+  #
   # ## Raises
   #
-  # [EOFError] at the end of the stream.
+  # [EOFError] at the end of the stream; [IO::LineTooLong] past the
+  # bound.
   native def gets -> String
-  # The next line, with its newline, or nil at the end of the stream.
+  # :ditto:
+  native def gets(*, limit: Int?) -> String
+  # The next line, with its newline, or nil at the end of the stream;
+  # bounded as [#gets] is.
   native def gets? -> String?
+  # :ditto:
+  native def gets?(*, limit: Int?) -> String?
   # The next line, as [#gets] ([EOFError] at the end).
   native def readline -> String
-  # The remaining lines, each with its newline; empty at the end.
+  # :ditto:
+  native def readline(*, limit: Int?) -> String
+  # The remaining lines, each with its newline; empty at the end. Each
+  # line is bounded as [#gets] bounds one.
   native def readlines -> Array[String]
+  # :ditto:
+  native def readlines(*, limit: Int?) -> Array[String]
   # The rest of the stream; `""` at the end.
   native def read -> String
   # The next `length` bytes (fewer only at the end of the stream) as a
@@ -7221,8 +7245,11 @@ class IO
   native def readpartial?(length: Int) -> String?
   # Raw bytes, up to `length` (empty at the end). [write] accepts Bytes.
   native def read_bytes(length: Int) -> Bytes
-  # Yields each remaining line, with its newline.
+  # Yields each remaining line, with its newline; each is bounded as
+  # [#gets] bounds one.
   native def each_line(&: (String) -> Void) -> Void
+  # :ditto:
+  native def each_line(*, limit: Int?, &: (String) -> Void) -> Void
   # Shuts down the writing side of a socket: the peer reads the end of the
   # stream, and the socket can still be read. On the pipe to a child's
   # standard input ([Process::Child#stdin]), closes it: the child reads the

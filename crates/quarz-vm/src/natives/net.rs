@@ -842,29 +842,55 @@ fn wake_all(interp: &Interp, tasks: Vec<crate::sched::TaskRef>) {
 }
 
 /// One line including its newline; `None` at the end of the stream.
+/// With `limit`, a line of more than `limit` bytes before its newline
+/// raises `IO::LineTooLong` and is left in the buffer (#1135), checked as
+/// the bytes come: a peer that sends no newline does not make the buffer
+/// grow past the limit's chunk.
 pub(crate) fn socket_gets<S: Readable>(
     interp: &Interp,
     st: &IoCell<S>,
+    limit: Option<usize>,
 ) -> Result<Option<String>, Flow> {
     // The stream offset up to which the buffer was searched and holds no
     // newline: each fill's bytes are searched once, not the whole buffer
     // again (#1135).
     let mut searched = 0;
-    read_with(interp, st, |buf, ended, appended| {
+    let over = |n: usize| limit.is_some_and(|l| n > l);
+    let got = read_with(interp, st, |buf, ended, appended| {
         if let Some(pos) = find_newline(buf, appended, &mut searched).0 {
+            if over(pos) {
+                return Some(Err(()));
+            }
             let line: Vec<u8> = buf.drain(..=pos).collect();
-            return Some(Some(String::from_utf8_lossy(&line).into_owned()));
+            return Some(Ok(Some(String::from_utf8_lossy(&line).into_owned())));
+        }
+        if over(buf.len()) {
+            return Some(Err(()));
         }
         if !ended {
             return None;
         }
         if buf.is_empty() {
-            return Some(None);
+            return Some(Ok(None));
         }
         let rest = std::mem::take(buf);
-        Some(Some(String::from_utf8_lossy(&rest).into_owned()))
-    })
+        Some(Ok(Some(String::from_utf8_lossy(&rest).into_owned())))
+    })?;
+    got.map_err(|()| line_too_long(interp, limit.unwrap_or(0)))
 }
+
+/// `IO::LineTooLong` for a line past `limit` bytes.
+pub(crate) fn line_too_long(interp: &Interp, limit: usize) -> Flow {
+    interp.raise(
+        interp.program.exc.line_too_long,
+        &format!("line longer than {limit} bytes (limit:)"),
+    )
+}
+
+/// The bound a line read from a socket or a TLS stream has unless the
+/// call gives one (`limit:`), as Go's `bufio.Scanner` and Python's asyncio
+/// streams have (#1135); pipes, files and standard input have none.
+pub(crate) const SOCKET_LINE_LIMIT: usize = 65_536;
 
 /// The index of the first newline in `buf`, whose end is the stream
 /// offset `appended`, searching from the stream offset `searched` (which
