@@ -2889,11 +2889,18 @@ impl Default for IoWatch {
 /// An IO state with a descriptor tasks wait on.
 pub trait Watched {
     fn watch(&mut self) -> &mut IoWatch;
+    /// Whether the descriptor was closed (`close` took the waiters and
+    /// dropped it): a wait registered after that would never be woken
+    /// (`Interp::wait_io_held`, #1134).
+    fn closed(&self) -> bool;
 }
 
 impl Watched for SocketState {
     fn watch(&mut self) -> &mut IoWatch {
         &mut self.watch
+    }
+    fn closed(&self) -> bool {
+        self.closed
     }
 }
 
@@ -2901,11 +2908,17 @@ impl Watched for ListenerState {
     fn watch(&mut self) -> &mut IoWatch {
         &mut self.watch
     }
+    fn closed(&self) -> bool {
+        self.closed
+    }
 }
 
 impl Watched for UdpState {
     fn watch(&mut self) -> &mut IoWatch {
         &mut self.watch
+    }
+    fn closed(&self) -> bool {
+        self.closed
     }
 }
 
