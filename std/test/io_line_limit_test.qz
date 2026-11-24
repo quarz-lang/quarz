@@ -6,13 +6,20 @@ require "socket"
 require "test"
 
 class IoLineLimitTest < Test::Case
-  # A connected client socket whose peer sends `text` and closes.
+  # A connected client socket whose peer sends `text` and closes. The
+  # listener is closed only once the peer's task is done: a test that
+  # reads nothing may end before the peer was accepted (four workers).
   def peer_sending(text: String, &: (TCPSocket) -> Void) -> Void
     listener = TCPServer.new("127.0.0.1", 0)
     Task.scope do |scope|
-      scope.spawn do
+      peer = scope.spawn do
         s = listener.accept
-        s.write(text)
+        begin
+          s.write(text)
+        rescue IOError, SystemCallError
+          # (The client may close without reading it all.)
+          nil
+        end
         s.close
       end
       sock = TCPSocket.new("127.0.0.1", listener.local_address.port)
@@ -20,6 +27,7 @@ class IoLineLimitTest < Test::Case
         yield sock
       ensure
         sock.close
+        peer.await
         listener.close
       end
     end
