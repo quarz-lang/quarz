@@ -7162,7 +7162,8 @@ end
 class IO
   # A line longer than the bound of the read ([IO#gets] and its kin):
   # 65,536 bytes on a socket or a TLS stream unless `limit:` gives
-  # another. The line stays unread.
+  # another. On a socket, a TLS stream or a pipe the line stays unread; on
+  # a file or standard input, `limit + 1` bytes of it were read.
   class LineTooLong < IOError
   end
 
@@ -7192,7 +7193,9 @@ class IO
   # unread (the stream can still be read with [#read_bytes]). Lines from
   # a pipe, a file or standard input have no bound. `limit:` sets the
   # bound for one call, `nil` for none: read a peer's lines with a bound
-  # that suits the protocol.
+  # that suits the protocol. On a file or standard input, whose reader
+  # cannot leave a long line unread, a line past `limit:` reads
+  # `limit + 1` bytes and the next read starts after them.
   #
   # ## Raises
   #

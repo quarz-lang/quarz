@@ -92,18 +92,48 @@ class IoLineLimitTest < Test::Case
     child.wait
   end
 
-  # Not yet on a file or standard input (#1135, pending).
-  def test_limit_on_a_file_not_yet
+  # A file takes `limit:` (none by default): past the bound, its reader
+  # cannot leave the line unread, so it reads `limit + 1` bytes and stops
+  # after them.
+  def test_limit_on_a_file
     path = "#{Dir.tmpdir}/quarz-line-limit-test-#{Process.pid}"
-    File.write(path, "first line\n")
+    File.write(path, "abc\nlonger-line\n#{"q" * 70_000}\nz")
     begin
       File.open(path) do |f|
-        e = assert_raise(ArgumentError) { f.gets(limit: 10); nil }
-        assert_equal("limit: is not supported yet on a file or standard input", e.message)
-        assert_equal("first line\n", f.gets)
+        assert_equal("abc\n", f.gets(limit: 3))
+        e = assert_raise(IO::LineTooLong) { f.gets(limit: 3); nil }
+        assert_equal("line longer than 3 bytes (limit:)", e.message)
+        # After the 4 bytes read.
+        assert_equal("er-line\n", f.gets)
+        assert_equal(70_001, f.gets.bytesize)
+        assert_equal("z", f.gets(limit: 1))
+        assert_nil(f.gets?(limit: 1))
+      end
+      # A bound past the buffer's size, reached on the slow path.
+      File.open(path) do |f|
+        f.gets
+        f.gets
+        assert_raise(IO::LineTooLong) { f.gets(limit: 65_536); nil }
+        assert_equal(70_000 - 65_537 + 1, f.gets.bytesize)
       end
     ensure
       File.delete(path)
+    end
+  end
+
+  # Standard input likewise, in a child program.
+  def test_limit_on_standard_input
+    quarz = ENV["QUARZ"]? || "quarz"
+    script = "#{Dir.tmpdir}/quarz-line-limit-stdin-#{Process.pid}.qz"
+    File.write(script, "begin\n  STDIN.gets(limit: 3)\nrescue IO::LineTooLong => e\n  puts e.message\nend\nputs STDIN.gets.inspect\n")
+    begin
+      child = Process.spawn(quarz, "run", script, stdin: :pipe, stdout: :pipe)
+      child.stdin.write("abcdef\nok\n")
+      child.stdin.close
+      assert_equal("line longer than 3 bytes (limit:)\n\"ef\\n\"\n", child.stdout.read)
+      child.wait
+    ensure
+      File.delete(script)
     end
   end
 end
