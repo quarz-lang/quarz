@@ -1,0 +1,38 @@
+# #1130: a port outside 0..65535 given to UDPSocket#connect or #send is
+# refused as the TCP paths refuse it, not cut to its low 16 bits (65589
+# would reach port 53).
+require "socket"
+require "test"
+
+class UDPSocketPortTest < Test::Case
+  def ports -> Hash[String, Int]
+    {
+      "one above the top" => 65536,
+      "65589, 53 in the low bits" => 65589,
+      "negative" => -1,
+    }
+  end
+
+  def data_connect_refuses -> Hash[String, Int] = ports
+  def data_send_refuses -> Hash[String, Int] = ports
+  def data_tcp_refuses_the_same -> Hash[String, Int] = ports
+
+  def test_connect_refuses(port: Int)
+    sock = UDPSocket.new
+    e = assert_raise(ArgumentError) { sock.connect("127.0.0.1", port); nil }
+    assert_equal("port #{port} out of range", e.message)
+    sock.close
+  end
+
+  def test_send_refuses(port: Int)
+    sock = UDPSocket.new
+    e = assert_raise(ArgumentError) { sock.send("x", "127.0.0.1", port); nil }
+    assert_equal("port #{port} out of range", e.message)
+    sock.close
+  end
+
+  def test_tcp_refuses_the_same(port: Int)
+    e = assert_raise(ArgumentError) { TCPSocket.new("127.0.0.1", port); nil }
+    assert_equal("port #{port} out of range", e.message)
+  end
+end

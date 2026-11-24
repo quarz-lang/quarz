@@ -117,7 +117,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "UDPSocket#connect", |i, r, a| {
         let host = string(i, a.arg(0), "host")?.to_string();
-        let port = int(i, a.arg(1), "port")?;
+        let port = port_number(i, a.arg(1))?;
         let addr = resolve(i, &host, port)?;
         let st = udp(i, r)?;
         let r = match &st.borrow().socket {
@@ -134,7 +134,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let target = match a.pos.len() {
             3 => {
                 let host = string(i, a.arg(1), "host")?.to_string();
-                let port = int(i, a.arg(2), "port")?;
+                let port = port_number(i, a.arg(2))?;
                 Some(resolve(i, &host, port)?)
             }
             _ => None,
@@ -579,14 +579,15 @@ fn with_closing(interp: &Interp, sock: Value, args: &Args) -> EvalResult {
     result
 }
 
-/// Resolve `host:port` on a helper thread.
-fn resolve(interp: &Interp, host: &str, port: i64) -> Result<SocketAddr, Flow> {
+/// Resolve `host:port` on a helper thread; the port was checked by
+/// `port_number` (#1130).
+fn resolve(interp: &Interp, host: &str, port: u16) -> Result<SocketAddr, Flow> {
     use std::net::ToSocketAddrs;
     let label = format!("{host}:{port}");
     let host = host.to_string();
     let addrs = interp
         .block_on(move || {
-            (host.as_str(), port as u16)
+            (host.as_str(), port)
                 .to_socket_addrs()
                 .map(|a| a.collect::<Vec<_>>())
         })?
