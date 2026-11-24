@@ -45,18 +45,17 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "String#=~", string_match_index);
     native!(m, "String#capitalize", string_capitalize);
     native!(m, "String#swapcase", |i, r, _| {
-        Ok(Value::string(
-            s(i, r)?
-                .chars()
-                .map(|c| {
-                    if c.is_uppercase() {
-                        c.to_lowercase().next().unwrap_or(c)
-                    } else {
-                        c.to_uppercase().next().unwrap_or(c)
-                    }
-                })
-                .collect(),
-        ))
+        // A character's whole mapping, which may be several characters
+        // ("ß" to "SS", "İ" to "i̇"), as `upcase`/`downcase` give (#1147).
+        let mut out = String::new();
+        for c in s(i, r)?.chars() {
+            if c.is_uppercase() {
+                out.extend(c.to_lowercase());
+            } else {
+                out.extend(c.to_uppercase());
+            }
+        }
+        Ok(Value::string(out))
     });
     native!(m, "String#strip", |i, r, _| Ok(Value::str(s(i, r)?.trim())));
     native!(m, "String#lstrip", |i, r, _| {
