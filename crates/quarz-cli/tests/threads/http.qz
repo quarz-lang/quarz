@@ -30,8 +30,8 @@ results = Task.scope do |scope|
   clients = (0...40).map do |i|
     scope.spawn do
       Socket.tcp("127.0.0.1", port) do |s|
-        a = get(s, "GET /count HTTP/1.1\r\n\r\n")
-        b = get(s, "POST /echo/c#{i} HTTP/1.1\r\nContent-Length: #{i.to_s.size}\r\n\r\n#{i}")
+        a = get(s, "GET /count HTTP/1.1\r\nHost: x\r\n\r\n")
+        b = get(s, "POST /echo/c#{i} HTTP/1.1\r\nHost: x\r\nContent-Length: #{i.to_s.size}\r\n\r\n#{i}")
         a.to_i > 0 && b == "c#{i}:#{i}"
       end
     end

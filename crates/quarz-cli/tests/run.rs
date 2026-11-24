@@ -239,7 +239,7 @@ Task.scope do |scope|
   ["/a/b?token=secret", "/x%0d%0aforged%3Fa?b"].each do |target|
     Task.timeout(10.seconds) do
       Socket.tcp("127.0.0.1", port) do |c|
-        c.write("GET #{target} HTTP/1.1\r\nConnection: close\r\n\r\n")
+        c.write("GET #{target} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
         puts c.read.lines[0].chomp
       end
     end

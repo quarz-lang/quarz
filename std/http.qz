@@ -214,7 +214,7 @@ module HTTP
     # `Connection: keep-alive, Upgrade`.
     def token?(name: String, token: String) -> Bool
       t = token.downcase
-      all(name).any? { |v| v.split(",").any? { |p| p.strip.downcase == t } }
+      all(name).any? { |v| v.split(",").any? { |p| HTTP.trim_ows(p).downcase == t } }
     end
 
     # The conventional form of the field name `name`: each `-`-separated
@@ -764,13 +764,15 @@ module HTTP
   def self.read_request(reader: Reader, max_header_bytes: Int, max_body_bytes: Int,
                         remote_address: Socket::Address?, proxies: Proxies, trusted: Bool,
                         on_continue: (() -> Void)? = nil, tls: Bool = false) -> Server::Request?
-    # Blank lines before a request are ignored (RFC 9112 §2.2).
+    # Blank lines before a request are ignored (RFC 9112 §2.2). Only CRLF
+    # ends a line of the request head: a bare LF is `400`, which a front
+    # proxy that also refuses it cannot frame differently.
     budget = max_header_bytes
-    line = reader.read_line(budget)
+    line = reader.read_line(budget, true)
     while line && line.empty?
       budget -= 2
       raise HeadersTooLarge.new if budget < 0
-      line = reader.read_line(budget)
+      line = reader.read_line(budget, true)
     end
     return nil if line.nil?
     budget -= line.size + 2
@@ -785,7 +787,7 @@ module HTTP
     raise BadRequest.new("bad request line") unless version.match?(/\AHTTP\/[0-9]\.[0-9]\z/)
     raise HTTP::Error.new(505, "HTTP Version Not Supported") unless version == "HTTP/1.1" || version == "HTTP/1.0"
     raise BadRequest.new("bad request target") if target.include?("#")
-    headers = read_headers(reader, budget)
+    headers = read_headers(reader, budget, crlf: true)
     # An absolute-form target (`http://host/path`) is reduced to its path.
     origin = if target.start_with?("/") || target == "*"
       target
@@ -807,27 +809,34 @@ module HTTP
     length: Int? = nil
     unless te.empty?
       raise BadRequest.new("Transfer-Encoding and Content-Length") unless cls.empty?
-      codings = te.flat_map { |v| v.split(",").map { |c| c.strip.downcase } }
+      codings = HTTP.codings(te)
+      raise BadRequest.new("bad Transfer-Encoding") if codings.nil?
       raise HTTP::Error.new(501, "Not Implemented") unless codings == ["chunked"]
       chunked = true
     end
     unless cls.empty?
-      values = cls.flat_map { |v| v.split(",").map(&:strip) }.uniq
+      values = cls.flat_map { |v| v.split(",").map { |c| HTTP.trim_ows(c) } }.uniq
       raise BadRequest.new("bad Content-Length") unless values.size == 1 && values[0].match?(/\A[0-9]{1,18}\z/)
       length = values[0].to_i
     end
+    # One Host, required in HTTP/1.1 (RFC 9112 §3.2).
+    hosts = headers.all("host").size
+    raise BadRequest.new("more than one Host header") if hosts > 1
+    raise BadRequest.new("missing Host header") if hosts == 0 && version == "HTTP/1.1"
     continue = version == "HTTP/1.1" && headers.token?("expect", "100-continue") ? on_continue : nil
     body = Body.new(reader, length, chunked, max_body_bytes, continue)
     Server::Request.new(method, target, path, query, version, headers, body, remote_address, {}, proxies, trusted, tls)
   end
 
   # :nodoc:
-  def self.read_headers(reader: Reader, budget: Int) -> Headers
+  # The header lines up to the blank line; `crlf`: only CRLF ends a line
+  # (a request's head; a response's also takes a bare LF).
+  def self.read_headers(reader: Reader, budget: Int, *, crlf: Bool = false) -> Headers
     entries: Array[Field] = []
     left = budget
     loop do
       raise HeadersTooLarge.new if left < 0
-      line = reader.read_line(left < 0 ? 0 : left)
+      line = reader.read_line(left < 0 ? 0 : left, crlf)
       raise BadRequest.new("unexpected end of headers") if line.nil?
       left -= line.size + 2
       break if line.empty?
@@ -837,10 +846,28 @@ module HTTP
       name, colon, value = text.partition(":")
       raise BadRequest.new("bad header") if colon.empty? || !name.match?(TOKEN)
       raise BadRequest.new("bad header value") if value.match?(CONTROL)
-      entries = entries.push(Field.new(name.downcase, value.strip))
+      entries = entries.push(Field.new(name.downcase, trim_ows(value)))
     end
     raise HeadersTooLarge.new if left < 0
     Headers.new(entries)
+  end
+
+  # :nodoc:
+  # `text` without the spaces and tabs around it: the optional whitespace
+  # around a field value or a list member (RFC 9110 §5.6.3), and no other
+  # (U+00A0, U+0085, ... stay part of the value).
+  def self.trim_ows(text: String) -> String
+    return text unless text.match?(/\A[ \t]|[ \t]\z/)
+    text.sub(/\A[ \t]+/, "").sub(/[ \t]+\z/, "")
+  end
+
+  # :nodoc:
+  # The codings of `Transfer-Encoding` fields, lower case; nil when one is
+  # not a token once trimmed of spaces and tabs (a framing field read
+  # otherwise than a proxy might).
+  def self.codings(fields: Array[String]) -> Array[String]?
+    codings = fields.flat_map { |v| v.split(",").map { |c| trim_ows(c).downcase } }
+    codings.all? { |c| c.match?(TOKEN) } ? codings : nil
   end
 
   # ----- responses ------------------------------------------------------------------
@@ -1172,7 +1199,9 @@ module HTTP
         build("PATCH", target, headers, body)
       end
 
-      # The Host header, as received.
+      # The Host header, as received: one in a request the server read,
+      # which refuses an HTTP/1.1 request without it (`400`); nil in an
+      # HTTP/1.0 request that has none.
       def host -> String? = headers["host"]
 
       # The body's `Content-Length`; `nil` for a chunked body.
@@ -3086,7 +3115,8 @@ module HTTP
           # Both, or chunked in HTTP/1.0: read as chunked (or to the end)
           # but not kept (RFC 9112 §6.3).
           keep = false if !cls.empty? || version == "HTTP/1.0"
-          codings = te.flat_map { |v| v.split(",").map { |c| c.strip.downcase } }
+          codings = HTTP.codings(te)
+          raise ProtocolError.new("bad Transfer-Encoding") if codings.nil?
           if codings.last? == "chunked"
             Body.new(reader, nil, true, @max_body_bytes, client: true)
           else
@@ -3094,7 +3124,7 @@ module HTTP
             Body.new(reader, nil, false, @max_body_bytes, until_eof: true, client: true)
           end
         elsif !cls.empty?
-          values = cls.flat_map { |v| v.split(",").map(&:strip) }.uniq
+          values = cls.flat_map { |v| v.split(",").map { |c| HTTP.trim_ows(c) } }.uniq
           unless values.size == 1 && values[0].match?(/\A[0-9]{1,18}\z/)
             raise ProtocolError.new("bad Content-Length")
           end
