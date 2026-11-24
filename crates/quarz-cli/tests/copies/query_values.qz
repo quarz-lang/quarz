@@ -1,0 +1,9 @@
+# #1123: the values of one name gather without copying the ones before.
+require "http"
+require "uri"
+
+q = (["a=1", "b=2"] * 200).join("&")
+h = HTTP.parse_query(q)
+u = URI.decode_www_form(q)
+puts h.keys.join(","), h["a"].size, h["b"].size
+puts u.keys.join(","), u["a"].size, u["b"].size

@@ -324,15 +324,24 @@ data URI(
   # URI.decode_www_form("q=a+b&tag=x&tag=y%26z")   # => {"q" => ["a b"], "tag" => ["x", "y&z"]}
   # ```
   def self.decode_www_form(text: String) -> Hash[String, Array[String]]
-    out = Hash::Builder[String, Array[String]].new
+    # Gathered in an `Array::Builder` per name, as `HTTP.parse_query`
+    # (#1123): pushing onto an array the hash builder holds copies it.
+    groups = Hash::Builder[String, Array::Builder[String]].new
     text.split("&").each do |pair|
       next if pair.empty?
       k, _, v = pair.partition("=")
       key = decode(k, true) || k
       val = decode(v, true) || v
-      out[key] = (out[key]? || []).push(val)
+      bucket = groups[key]?
+      if bucket
+        bucket << val
+      else
+        groups[key] = Array::Builder[String].new.push(val)
+      end
     end
-    out.to_h
+    Hash.build do |out|
+      groups.each { |name, values| out[name] = values.to_a }
+    end
   end
 
   # :nodoc:

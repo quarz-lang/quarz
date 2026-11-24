@@ -121,6 +121,14 @@ fn a_kept_block_caller_copies_no_more_than_before() {
     check("kept_block_args.qz", 1100);
 }
 
+/// #1123: `HTTP.parse_query` and `URI.decode_www_form` gather the values
+/// of one name without copying those before (main: 796 on the VM, one
+/// per value but each name's first).
+#[test]
+fn query_values_of_one_name_copy_nothing() {
+    check("query_values.qz", 0);
+}
+
 /// #993: `Hash#each` and `Hash::Builder#each` hand a destructuring block the
 /// key and the value apart: a value the hash holds still copies once when
 /// the block updates it, and a `|pair|` block's fresh pair once, as on

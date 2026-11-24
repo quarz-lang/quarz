@@ -728,15 +728,25 @@ module HTTP
   # HTTP.parse_query("a+b=c%20d&&e")  # => {"a b" => ["c d"], "e" => [""]}
   # ```
   def self.parse_query(q: String) -> Hash[String, Array[String]]
-    out = Hash::Builder[String, Array[String]].new
+    # Each name's values gather in an `Array::Builder`, appended in place:
+    # pushing onto an array the hash builder still holds would copy it,
+    # quadratic in the values of one name (#1123).
+    groups = Hash::Builder[String, Array::Builder[String]].new
     q.split("&").each do |pair|
       next if pair.empty?
       k, _, v = pair.partition("=")
       key = percent_decode(k, plus: true) || k
       val = percent_decode(v, plus: true) || v
-      out[key] = (out[key]? || []).push(val)
+      bucket = groups[key]?
+      if bucket
+        bucket << val
+      else
+        groups[key] = Array::Builder[String].new.push(val)
+      end
     end
-    out.to_h
+    Hash.build do |out|
+      groups.each { |name, values| out[name] = values.to_a }
+    end
   end
 
   # ----- parsing --------------------------------------------------------------------
