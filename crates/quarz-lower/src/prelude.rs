@@ -115,6 +115,22 @@ pub(crate) fn usable(world: &World) -> Result<&'static PreludeRt, &'static str> 
             .iter()
             .map(|e| e.target)
             .eq(snap.extension_targets.iter().copied());
+    if !fits && std::env::var_os("QUARZ_DIAG1098").is_some() {
+        let c1 = world.classes.len() >= pc && world.classes[..pc].iter().map(|c| &c.name).eq(snap.class_names.iter());
+        let c2 = world.methods.len() >= pm && world.methods[..pm].iter().map(|m| (m.owner, &m.name)).eq(snap.method_names.iter().map(|(o, n)| (*o, n)));
+        let c3 = world.extensions.len() >= pe && world.extensions[..pe].iter().map(|e| e.target).eq(snap.extension_targets.iter().copied());
+        eprintln!("DIAG1098 classes={c1} methods={c2} extensions={c3} pc={pc} pm={pm} pe={pe} wc={} wm={} we={}", world.classes.len(), world.methods.len(), world.extensions.len());
+        if !c2 {
+            if let Some((i, (m, (o, n)))) = world.methods.iter().zip(snap.method_names.iter()).enumerate().find(|(_, (m, (o, n)))| (m.owner, &m.name) != (*o, n)) {
+                eprintln!("DIAG1098 method {i}: world {}#{} snap {}#{}", world.class(m.owner).name, m.name, world.class(*o).name, n);
+            }
+        }
+        if !c1 {
+            if let Some((i, (c, n))) = world.classes.iter().zip(snap.class_names.iter()).enumerate().find(|(_, (c, n))| &c.name != *n) {
+                eprintln!("DIAG1098 class {i}: world {} snap {}", c.name, n);
+            }
+        }
+    }
     if !fits {
         return Err("refused: the ids do not line up");
     }
@@ -193,4 +209,50 @@ pub(crate) fn compare(made: &(RtWorld, Vec<Vec<MethodId>>), again: &(RtWorld, Ve
         a == b,
         "internal error: the prelude's snapshot gave other tables than made again (#551)"
     );
+}
+
+/// PROBE (#551 estimate, not for merging): what of the prelude's share a
+/// refused program changes, against the snapshot.
+pub(crate) fn probe(world: &World, full: &(RtWorld, Vec<Vec<MethodId>>)) {
+    let Some(snap) = SNAPSHOT
+        .get_or_init(|| BYTES.get().map(|b| PreludeRt::decode(b)))
+        .as_ref()
+    else {
+        return;
+    };
+    let (rt, table) = full;
+    let pc = snap.classes.len();
+    let pm = snap.methods.len();
+    let name = |c: ClassId| world.class(c).name.clone();
+    let cd: Vec<String> = (0..pc).filter(|&i| rt.classes[i] != snap.classes[i]).map(|i| name(i as ClassId)).collect();
+    let md: Vec<usize> = (0..pm).filter(|&i| rt.methods[i] != snap.methods[i]).collect();
+    let td: Vec<usize> = (0..pm).filter(|&i| table[i] != snap.table[i]).collect();
+    let mut owners: Vec<String> = md.iter().chain(td.iter()).map(|&i| name(world.methods[i].owner)).collect();
+    owners.sort(); owners.dedup();
+    fn rows<T: Ord + Clone>(a: &[T], b: &[T], keep: impl Fn(&T) -> bool) -> (usize, usize, usize) {
+        let mut x: Vec<T> = a.iter().filter(|e| keep(e)).cloned().collect();
+        let mut y: Vec<T> = b.iter().filter(|e| keep(e)).cloned().collect();
+        x.sort(); y.sort();
+        let only_x = x.iter().filter(|e| y.binary_search(e).is_err()).count();
+        let only_y = y.iter().filter(|e| x.binary_search(e).is_err()).count();
+        (y.len(), only_x, only_y)
+    }
+    let pre3 = |e: &(ClassId, MethodId, MethodId)| (e.0 as usize) < pc;
+    let pre3o = |e: &(ClassId, MethodId, Option<MethodId>)| (e.0 as usize) < pc;
+    eprintln!("PROBE551 prelude classes {pc}, methods {pm}; program classes {}, methods {}", world.classes.len() - pc, world.methods.len() - pm);
+    eprintln!("PROBE551 class rows differing: {} {:?}", cd.len(), cd);
+    eprintln!("PROBE551 method rows differing: {}; table entries differing: {}; their owners: {:?}", md.len(), td.len(), owners);
+    eprintln!("PROBE551 (snapshot size, only in full, only in snapshot) for prelude keys:");
+    eprintln!("PROBE551   include_overrides {:?}", rows(&rt.include_overrides, &snap.include_overrides, pre3));
+    eprintln!("PROBE551   override_rows {:?}", rows(&rt.override_rows, &snap.override_rows, pre3));
+    eprintln!("PROBE551   class_override_rows {:?}", rows(&rt.class_override_rows, &snap.class_override_rows, pre3));
+    eprintln!("PROBE551   witness_rows {:?}", rows(&rt.witness_rows, &snap.witness_rows, pre3o));
+    eprintln!("PROBE551   witness_record {:?}", rows(&rt.witness_record, &snap.record, pre3o));
+}
+
+/// PROBE: the snapshot whatever `usable` says.
+pub(crate) fn snapshot_any() -> Option<&'static PreludeRt> {
+    SNAPSHOT
+        .get_or_init(|| BYTES.get().map(|b| PreludeRt::decode(b)))
+        .as_ref()
 }

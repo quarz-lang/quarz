@@ -6308,6 +6308,94 @@ impl World {
     /// Inside a library cog the walk ends at its root module, then its
     /// imports, then the top level without the application's names.
     pub fn resolve_member(&self, scope: Option<ClassId>, name: &str) -> Option<Member> {
+        let today = self.resolve_member_today(scope, name);
+        if let Some(log) = std::env::var_os("QUARZ_PROBE1105") {
+            let ruby = self.resolve_member_ruby(scope, name);
+            // Option 3's set: a lexical scope's own member (an enclosing
+            // one, not the innermost class's own) and an ancestor's of any
+            // level, both found, different.
+            let mut lex: Option<Member> = None;
+            let mut anc: Option<Member> = None;
+            let mut cur = scope;
+            let mut first = true;
+            while let Some(cid) = cur {
+                if let Some(m) = self.class(cid).members.get(name) {
+                    if first {
+                        break;
+                    }
+                    if lex.is_none() {
+                        lex = Some(*m);
+                    }
+                }
+                if anc.is_none() {
+                    for a in self.ancestor_ids(cid) {
+                        if let Some(m) = self.class(a).members.get(name) {
+                            anc = Some(*m);
+                            break;
+                        }
+                    }
+                }
+                first = false;
+                cur = self.class(cid).parent;
+            }
+            let both = matches!((lex, anc), (Some(l), Some(a)) if l != a);
+            if ruby != today || both {
+                let d = |m: Option<Member>| match m {
+                    None => "none".to_string(),
+                    Some(Member::Class(c)) => format!("class {}", self.class(c).name),
+                    Some(Member::Const(c)) => {
+                        let k = &self.consts[c as usize];
+                        format!("const {}::{}", k.owner.map_or("<top>".to_string(), |o| self.class(o).name.clone()), k.name)
+                    }
+                    Some(Member::Alias(a)) => format!("alias {}", self.aliases[a as usize].name),
+                };
+                let line = format!(
+                    "PROBE1105 scope={} name={name} today={} ruby={} both={both}\n",
+                    scope.map_or("<top>".to_string(), |c| self.class(c).name.clone()),
+                    d(today),
+                    d(ruby)
+                );
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
+                    let _ = f.write_all(line.as_bytes());
+                }
+            }
+        }
+        today
+    }
+
+    /// PROBE (#1105, not for merging): Ruby's order. The lexical scopes'
+    /// own members first (and a cog root's imports, at its level), then
+    /// the innermost scope's ancestors, then the top level.
+    fn resolve_member_ruby(&self, scope: Option<ClassId>, name: &str) -> Option<Member> {
+        let mut cur = scope;
+        let mut in_library = false;
+        while let Some(cid) = cur {
+            if let Some(m) = self.class(cid).members.get(name) {
+                return Some(*m);
+            }
+            if let Some(cog) = self.class(cid).cog {
+                if let Some(root) = self.cogs[cog as usize].imports.get(name) {
+                    return Some(Member::Class(*root));
+                }
+                in_library = true;
+            }
+            cur = self.class(cid).parent;
+        }
+        if let Some(cid) = scope {
+            for anc in self.ancestor_ids(cid) {
+                if let Some(m) = self.class(anc).members.get(name) {
+                    return Some(*m);
+                }
+            }
+        }
+        if in_library && self.app_names.contains(name) {
+            return None;
+        }
+        self.top.get(name).copied()
+    }
+
+    fn resolve_member_today(&self, scope: Option<ClassId>, name: &str) -> Option<Member> {
         let mut cur = scope;
         let mut in_library = false;
         while let Some(cid) = cur {

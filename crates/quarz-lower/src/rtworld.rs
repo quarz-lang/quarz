@@ -169,7 +169,28 @@ pub fn declared_table(world: &World, out: &types::Output) -> (RtWorld, Vec<Vec<M
         Ok(snap) => snap,
         Err(why) => {
             crate::prelude::log(why);
-            return declared_with(world, out, witness_record(world));
+            if why == "refused: prelude_unchanged" && std::env::var_os("QUARZ_PROBE551_TAKE").is_some() {
+                if let Some(snap) = crate::prelude::snapshot_any() {
+                    return declared_over(world, out, snap);
+                }
+            }
+            let full = declared_with(world, out, witness_record(world));
+            if std::env::var_os("QUARZ_PROBE551").is_some() {
+                crate::prelude::probe(world, &full);
+            }
+            if std::env::var_os("QUARZ_PROBE551_FORCE").is_some() {
+                if let Some(snap) = crate::prelude::snapshot_any() {
+                    let t = std::time::Instant::now();
+                    let made = declared_over(world, out, snap);
+                    let over = t.elapsed();
+                    let t = std::time::Instant::now();
+                    let again = declared_with(world, out, witness_record(world));
+                    let with = t.elapsed();
+                    eprintln!("PROBE551 forced: equal={} over={over:?} with={with:?}", made == again);
+                    crate::prelude::compare(&made, &again);
+                }
+            }
+            return full;
         }
     };
     let made = declared_over(world, out, snap);

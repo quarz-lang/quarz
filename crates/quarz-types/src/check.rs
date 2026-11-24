@@ -8587,6 +8587,21 @@ impl Checker {
 
     fn check_const(&mut self, expr: &Expr, path: &ConstPath) -> Type {
         let namespace = self.env.scope.namespace;
+        if let Some(log) = std::env::var_os("QUARZ_PROBE1110") {
+            if path.names.len() == 1 && !path.absolute && !path.cog
+                && self.env.scope.params.iter().any(|(n, _)| *n == path.names[0])
+            {
+                let found = match self.world.resolve_member(namespace, &path.names[0]) {
+                    Some(Member::Class(c)) => format!("class {}", self.world.class(c).name),
+                    Some(m) => format!("{m:?}"),
+                    None => "unknown".to_string(),
+                };
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log) {
+                    let _ = writeln!(f, "PROBE1110 file={} span={:?} name={} today={found}", self.env.file, expr.span, path.names[0]);
+                }
+            }
+        }
         let Some(member) = self.resolve_path(namespace, path, expr.span) else {
             return Type::Nothing;
         };
