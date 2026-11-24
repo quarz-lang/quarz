@@ -2222,16 +2222,16 @@ impl Interp {
     ) -> Result<T, Flow> {
         use std::sync::mpsc::TryRecvError;
         let id = self.current_task().id;
-        let offloaded = self.sched.borrow_mut().offload(id, kind, job);
-        let (rx, dropped) = offloaded.map_err(|e| {
-            self.raise(
-                self.program.exc.system_call_error,
-                &format!("start a helper thread: {e}"),
-            )
-        })?;
+        let (rx, dropped) = self.sched.borrow_mut().offload(id, kind, job);
         loop {
             match rx.try_recv() {
-                Ok(v) => return Ok(v),
+                Ok(Ok(v)) => return Ok(v),
+                Ok(Err(e)) => {
+                    return Err(self.raise(
+                        self.program.exc.system_call_error,
+                        &format!("start a helper thread: {e}"),
+                    ))
+                }
                 Err(TryRecvError::Disconnected) => {
                     return Err(self.raise(self.program.exc.runtime_error, "background job failed"))
                 }

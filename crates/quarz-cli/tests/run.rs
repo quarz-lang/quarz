@@ -206,26 +206,63 @@ fn a_deadlock_ends_the_program_with_1() {
 }
 
 /// Run `src` with `quarz run` and `env`, in a directory of the test's
-/// own: (status, stdout, stderr).
+/// own (which `setup` may fill first): (status, stdout, stderr). A run
+/// past 20 seconds is killed and reported as status -2: a hang fails the
+/// test rather than holding up the run.
 #[cfg(debug_assertions)]
-fn run_with_env(name: &str, src: &str, env: &[(&str, &str)]) -> (i32, String, String) {
+fn run_with_env_in(
+    name: &str,
+    src: &str,
+    env: &[(&str, &str)],
+    setup: impl FnOnce(&std::path::Path),
+) -> (i32, String, String) {
+    use std::io::Read;
     let dir = std::env::temp_dir().join(format!("quarz-run-{name}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
+    setup(&dir);
     let file = dir.join("main.qz");
     std::fs::write(&file, src).unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_quarz"))
         .arg("run")
         .arg(&file)
         .current_dir(&dir)
         .envs(env.iter().copied())
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    let code = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status.code().unwrap_or(-1);
+        }
+        if started.elapsed() > std::time::Duration::from_secs(20) {
+            let _ = child.kill();
+            let _ = child.wait();
+            break -2;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let (mut out, mut err) = (String::new(), String::new());
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut out)
+        .unwrap();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut err)
         .unwrap();
     let _ = std::fs::remove_dir_all(&dir);
-    (
-        out.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    (code, out, err)
+}
+
+#[cfg(debug_assertions)]
+fn run_with_env(name: &str, src: &str, env: &[(&str, &str)]) -> (i32, String, String) {
+    run_with_env_in(name, src, env, |_| {})
 }
 
 /// Six lookups at once, each made to take 400 ms (a debug build's
@@ -307,6 +344,54 @@ fn a_helper_thread_that_cannot_start_is_an_error_not_a_panic() {
         ),
         "{err}"
     );
+}
+
+/// A job submitted while another worker's thread is still starting gets
+/// a thread of its own: it is not queued behind the starting one's job.
+/// Here the first job reads a FIFO and ends only when the second writes
+/// it, so one thread for both never ends (#1128, review round 1). Two
+/// workers, a spawn that takes 300 ms, the write 100 ms after the read.
+#[cfg(debug_assertions)]
+#[test]
+fn a_job_submitted_while_a_helper_starts_gets_its_own() {
+    let (code, out, err) = run_with_env_in(
+        "helper-starting",
+        "a = Task.spawn { File.read(\"fifo\") }\n\
+         b = Task.spawn { Task.sleep(100.ms); File.write(\"fifo\", \"through\"); nil }\n\
+         b.await\nputs a.await\n",
+        &[("QUARZ_THREADS", "2"), ("QUARZ_TEST_SPAWN_DELAY", "300")],
+        |dir| {
+            let made = std::process::Command::new("mkfifo")
+                .arg(dir.join("fifo"))
+                .status();
+            assert!(made.unwrap().success());
+        },
+    );
+    assert_eq!((code, out.as_str()), (0, "through\n"), "{err}");
+}
+
+/// A job queued while the pool's only thread is still starting, whose
+/// own start fails, is not left without a thread when that one fails
+/// too: both tasks get the error (#1128, review round 1). Two workers, no
+/// start allowed, each taking 300 ms; the second lookup 100 ms after the
+/// first.
+#[cfg(debug_assertions)]
+#[test]
+fn jobs_queued_on_a_starting_helper_fail_with_it() {
+    let (code, out, err) = run_with_env(
+        "helper-start-fails",
+        "require \"socket\"\n\
+         def look(wait: Duration) -> String\n  Task.sleep(wait)\n  Socket.getaddrinfo(\"localhost\", 80)\n  \"resolved\"\n\
+         rescue SystemCallError => e\n  e.message\nend\n\
+         a = Task.spawn { look(0.ms) }\nb = Task.spawn { look(100.ms) }\nputs a.await\nputs b.await\n",
+        &[
+            ("QUARZ_THREADS", "2"),
+            ("QUARZ_TEST_SPAWN_DELAY", "300"),
+            ("QUARZ_TEST_HELPER_SPAWNS", "0"),
+        ],
+    );
+    let failed = "start a helper thread: Resource temporarily unavailable (os error 11)\n";
+    assert_eq!((code, out), (0, format!("{failed}{failed}")), "{err}");
 }
 
 #[test]
