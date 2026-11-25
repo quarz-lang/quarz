@@ -10,7 +10,7 @@
 //! statements' runs reached) are kept as empty bodies, so that every id
 //! stays where the world's `Generated::func` names it.
 
-use quarz_ir::{FuncKind, Function, Inst};
+use quarz_ir::{FuncKind, Function};
 use quarz_types::World;
 
 use crate::Lowerer;
@@ -42,13 +42,7 @@ impl Lowerer {
             if std::mem::replace(k, true) {
                 continue;
             }
-            for b in &self.done[f as usize].blocks {
-                for inst in &b.insts {
-                    if let Inst::MakeBlock { func, .. } = inst {
-                        work.push(*func);
-                    }
-                }
-            }
+            work.extend(crate::lift::made_blocks(&self.done[f as usize]));
         }
         let functions = self
             .done

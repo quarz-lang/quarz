@@ -1129,8 +1129,18 @@ pub fn add_made_std_state(key: String, bytes: std::sync::Arc<Vec<u8>>, state: Pr
     });
 }
 
-/// The state made for `key` in this process, if any.
+thread_local! {
+    /// A set is being made on this thread (`check_movement_uncached`): its
+    /// modules are checked from source, whatever was registered.
+    static MAKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The state made for `key` in this process, if any (none while a set is
+/// being made).
 fn made_std_state(key: &str) -> Option<PreludeState> {
+    if MAKING.get() {
+        return None;
+    }
     MADE_STD.with_borrow_mut(|made| {
         let (_, bytes, decoded) = made.iter_mut().find(|(k, _, _)| k == key)?;
         Some(
@@ -1187,10 +1197,12 @@ thread_local! {
 }
 
 /// `check_movement_with` neither reading files' checks back from the
-/// cache nor keeping them: how a standard-library set made at first use
-/// is checked (#1097), so that what it makes is a function of the build
-/// and the sources alone (a file's checks read back give an equal check,
-/// not an equal encoding of the world).
+/// cache nor keeping them, nor starting from a set made at first use: how
+/// such a set is made (#1097), so that what it makes is a function of the
+/// build and the sources alone (a file's checks read back give an equal
+/// check, not an equal encoding of the world). The thread's flags are not
+/// restored if the check panics: no caller catches a panic and checks
+/// again.
 pub fn check_movement_uncached(
     prelude: &Program,
     units: &[Unit],
@@ -1198,8 +1210,10 @@ pub fn check_movement_uncached(
     runner: &mut (dyn StaticRunner + '_),
 ) -> (Option<Checked>, Vec<FileDiagnostic>) {
     let was = NO_CACHE.replace(true);
+    let making = MAKING.replace(true);
     let r = check_with_extra(prelude, units, cogs, None, Some(runner));
     NO_CACHE.set(was);
+    MAKING.set(making);
     r
 }
 

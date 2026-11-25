@@ -22,6 +22,19 @@ fn captured(depth: u32, own: u32, skip: u32) -> Option<u32> {
     depth.checked_sub(own + skip)
 }
 
+/// The functions of the blocks `f` makes (`MakeBlock`), in its order: the
+/// walk from a lifted block to the blocks lifted with it, here and in the
+/// seed a set made at first use keeps (`seed`).
+pub(crate) fn made_blocks(f: &Function) -> impl Iterator<Item = FuncId> + '_ {
+    f.blocks
+        .iter()
+        .flat_map(|b| &b.insts)
+        .filter_map(|inst| match inst {
+            Inst::MakeBlock { func, .. } => Some(*func),
+            _ => None,
+        })
+}
+
 /// Whether the block function `root` (and the blocks it makes) can be a
 /// method's body: the frame slots it reads outside itself, or why not.
 pub fn check(functions: &[Function], root: FuncId) -> Result<Vec<(u32, u32)>, String> {
@@ -94,13 +107,7 @@ pub fn handle_uses(
             continue;
         };
         let own = u32::from(f.frame_size > 0);
-        for b in &f.blocks {
-            for inst in &b.insts {
-                if let Inst::MakeBlock { func, .. } = inst {
-                    work.push((*func, skip + own));
-                }
-            }
-        }
+        work.extend(made_blocks(f).map(|func| (func, skip + own)));
         for (depth, slot, ty) in uses.get(&fid).into_iter().flatten() {
             if let Some(d) = captured(*depth, own, skip) {
                 out.push((d, *slot, ty.clone()));
@@ -208,13 +215,7 @@ impl Lowerer {
             copies.push((old, new, skip));
             let f = &self.done[old as usize];
             let own = u32::from(f.frame_size > 0);
-            for b in &f.blocks {
-                for inst in &b.insts {
-                    if let Inst::MakeBlock { func, .. } = inst {
-                        work.push((*func, skip + own));
-                    }
-                }
-            }
+            work.extend(made_blocks(f).map(|func| (func, skip + own)));
         }
         let renamed = |old: FuncId| -> FuncId {
             copies

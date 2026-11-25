@@ -512,6 +512,55 @@ fn a_damaged_or_foreign_set_entry_is_made_again() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An entry is kept for the executable that made it, not only its build
+/// id (which changes only with `build.rs` and its build-dependencies): a
+/// `quarz` linked again, here a copy with its own time, makes and keeps
+/// its own rather than read one another made. And none is made or kept
+/// under `QUARZ_NO_PRELUDE_CACHE=1`, which checks the prelude and every
+/// standard-library module from source.
+#[test]
+fn a_set_entry_is_kept_per_executable_and_not_without_the_prelude_cache() {
+    let dir = set_dir("per-executable");
+    std::fs::write(dir.join("prog_test.qz"), SET_PROGRAM).unwrap();
+    let cache = dir.join("cache");
+    let env = [("QUARZ_CACHE_DIR", cache.to_str().unwrap())];
+    let first = quarz_in(&dir, &["test", "prog_test.qz"], &env);
+    assert!(first.starts_with("status Some(0)"), "{first}");
+    let copy = dir.join("quarz-copy");
+    std::fs::copy(env!("CARGO_BIN_EXE_quarz"), &copy).unwrap();
+    let out = Command::new(&copy)
+        .args(["test", "prog_test.qz"])
+        .current_dir(&dir)
+        .env("QUARZ_THREADS", "1")
+        .env("QUARZ_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let entries = |c: &Path| {
+        std::fs::read_dir(c.join("sets"))
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "bin"))
+                    .count()
+            })
+            .unwrap_or(0)
+    };
+    assert_eq!(entries(&cache), 2, "one entry per executable");
+    let off = dir.join("cache-off");
+    let env = [
+        ("QUARZ_CACHE_DIR", off.to_str().unwrap()),
+        ("QUARZ_NO_PRELUDE_CACHE", "1"),
+    ];
+    let again = quarz_in(&dir, &["test", "prog_test.qz"], &env);
+    assert!(again.starts_with("status Some(0)"), "{again}");
+    assert_eq!(entries(&off), 0, "a set kept under QUARZ_NO_PRELUDE_CACHE");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A cache directory that cannot be written: the set is made in every
 /// process and kept in none, with the same result.
 #[cfg(unix)]

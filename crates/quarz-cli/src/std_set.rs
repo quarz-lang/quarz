@@ -37,9 +37,27 @@ fn leading_key(units: &[Unit]) -> String {
 
 /// `QUARZ_NO_STD_CACHE=1`: a set made at first use is not made, read or
 /// kept: the program checks its modules from source, statements run, as
-/// a module in no set.
+/// a module in no set. `QUARZ_NO_PRELUDE_CACHE=1` too, which checks the
+/// prelude and every standard-library module from source.
 fn off() -> bool {
-    std::env::var_os("QUARZ_NO_STD_CACHE").is_some_and(|v| v != "0")
+    let on = |name| std::env::var_os(name).is_some_and(|v| v != "0");
+    on("QUARZ_NO_STD_CACHE") || on("QUARZ_NO_PRELUDE_CACHE")
+}
+
+/// What an entry is kept under besides the set and the build id
+/// (`build_id.txt`, which changes only when `build.rs` or its
+/// build-dependencies do): the running executable's size and time, which
+/// change whenever any crate that makes the set does (the interpreter,
+/// the static runner, this module), the executable being linked again.
+/// `None` when they cannot be read: the set is then made and not kept.
+fn stamp() -> Option<String> {
+    let meta = std::env::current_exe().ok()?.metadata().ok()?;
+    let time = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some(format!("{}-{}", meta.len(), time.as_nanos()))
 }
 
 /// `QUARZ_VERIFY=std`: a set read back is made again and compared.
@@ -100,7 +118,12 @@ fn entry(
     files: &[SourceFile],
     key: &str,
 ) -> Option<(Entry, PreludeState)> {
-    let read = quarz_types::cache::load_set(key)
+    let stamp = stamp();
+    // (The name the entry is kept under: the set, and this executable.)
+    let kept = stamp.as_ref().map(|s| format!("{key}@{s}"));
+    let read = kept
+        .as_deref()
+        .and_then(quarz_types::cache::load_set)
         .and_then(|bytes| Entry::decode(&bytes))
         .map(|entry| {
             let state = PreludeState::decode(&entry.state);
@@ -114,7 +137,9 @@ fn entry(
         return Some((entry, state));
     }
     let entry = make(prelude, units, files)?;
-    quarz_types::cache::store_set(key, &entry.encode());
+    if let Some(kept) = &kept {
+        quarz_types::cache::store_set(kept, &entry.encode());
+    }
     let state = PreludeState::decode(&entry.state);
     Some((entry, state))
 }
