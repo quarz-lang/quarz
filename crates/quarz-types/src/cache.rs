@@ -554,6 +554,21 @@ pub fn load_set(set: &str, stamp: &str) -> Option<Vec<u8>> {
     Some(body)
 }
 
+/// Remove another build's directory of sets that the sweep has emptied
+/// (#1166): one left with only its `swept` mark. Another process of that
+/// build storing into it meanwhile may find it gone: its store fails, and
+/// it uses the set it made without keeping it.
+fn remove_if_swept_empty(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let names: Vec<std::ffi::OsString> = entries.flatten().map(|e| e.file_name()).collect();
+    if names.len() == 1 && names[0] == "swept" {
+        let _ = std::fs::remove_file(dir.join("swept"));
+        let _ = std::fs::remove_dir(dir);
+    }
+}
+
 /// Keep `body` as the state of the set `set` made by this build and the
 /// executable `stamp`: written aside and renamed into place, so that a
 /// reader sees the old entry, the new one or none. Two processes making
@@ -588,8 +603,12 @@ pub fn store_set(set: &str, stamp: &str, body: &[u8]) -> bool {
     if let Some(sets) = dir.parent() {
         if let Ok(builds) = std::fs::read_dir(sets) {
             for b in builds.flatten() {
-                if b.path().is_dir() {
-                    sweep(&b.path());
+                let path = b.path();
+                if path.is_dir() {
+                    sweep(&path);
+                    if path != dir {
+                        remove_if_swept_empty(&path);
+                    }
                 }
             }
         }

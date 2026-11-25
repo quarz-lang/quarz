@@ -645,6 +645,38 @@ fn a_set_made_by_any_command_serves_every_command() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Another build's directory of sets, emptied by the sweep (its entry
+/// unused for 30 days), is removed when a set is stored (#1166): every
+/// build id would otherwise leave one behind.
+#[test]
+fn an_emptied_build_directory_of_sets_is_removed() {
+    let dir = set_dir("old-build");
+    std::fs::write(dir.join("prog_test.qz"), SET_PROGRAM).unwrap();
+    let cache = dir.join("cache");
+    let old = cache.join("sets").join("0123456789abcdef");
+    std::fs::create_dir_all(&old).unwrap();
+    let day = std::time::Duration::from_secs(24 * 60 * 60);
+    let age = |path: &Path, days: u32| {
+        let f = std::fs::File::options().append(true).open(path).unwrap();
+        f.set_modified(std::time::SystemTime::now() - day * days)
+            .unwrap();
+    };
+    std::fs::write(old.join("0000000000000000-0000000000000000.bin"), b"old").unwrap();
+    age(&old.join("0000000000000000-0000000000000000.bin"), 40);
+    // (Its last sweep two days ago: the next store sweeps it again.)
+    std::fs::write(old.join("swept"), b"").unwrap();
+    age(&old.join("swept"), 2);
+    let env = [("QUARZ_CACHE_DIR", cache.to_str().unwrap())];
+    let out = quarz_in(&dir, &["test", "prog_test.qz"], &env);
+    assert!(out.starts_with("status Some(0)"), "{out}");
+    assert!(
+        !old.exists(),
+        "the emptied directory of another build is left"
+    );
+    assert_eq!(set_entries(&cache).len(), 1, "this build's entry");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A cache directory that cannot be written: the set is made in every
 /// process and kept in none, with the same result.
 #[cfg(unix)]
