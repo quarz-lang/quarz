@@ -3251,6 +3251,24 @@ impl Checker {
         self.reused_files.insert(file);
     }
 
+    /// How many of the world's `static` statements, from the first, have
+    /// run (or failed): a set made at first use records it, and a program
+    /// checked from the set's state does not run them again (#1097).
+    pub fn statements_done(&self) -> usize {
+        self.static_done.iter().take_while(|d| **d).count()
+    }
+
+    /// The first `n` `static` statements ran already, in the state this
+    /// check starts from (`PreludeState::statements_run`).
+    pub fn set_statements_done(&mut self, n: usize) {
+        if self.static_done.len() < n {
+            self.static_done.resize(n, false);
+        }
+        for d in &mut self.static_done[..n] {
+            *d = true;
+        }
+    }
+
     /// The class methods that call `new` on their own class, whose
     /// subclasses' constructors must accept the call.
     pub fn self_news(&self) -> &[SelfNew] {

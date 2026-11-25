@@ -7,6 +7,7 @@ module TestOptions
   def self.show(argv: Array[String]) -> String
     case Test.parse_options(argv)
     in String => message then "error: #{message}"
+    in CommandLine::Help then "help"
     in Test::Options => o
       timeout = o.timeout
       [
@@ -55,8 +56,8 @@ class TestOptionsTest < Test::Case
   end
 
   def test_a_name_option_needs_its_value
-    check(["-n"], "error: -n needs a name")
-    check(["--name"], "error: --name needs a name")
+    check(["-n"], "error: option '-n' needs a value")
+    check(["--name"], "error: option '--name' needs a value")
   end
 
   def test_flags
@@ -73,13 +74,18 @@ class TestOptionsTest < Test::Case
     check(["--seed=x"], "error: bad seed: x")
     check(["--seed="], "error: bad seed: ")
     check(["--seed=1234567890123456789"], "error: bad seed: 1234567890123456789")
-    check(["--order=sideways"], "error: unknown option: --order=sideways")
+    check(["--order=sideways"], "error: bad --order: sideways")
+    check(["--order", "random"], TestOptions.with({"random" => "true"}))
+    check(["--seed", "42"], TestOptions.with({"random" => "true"}))
+    # A seed sets the random order wherever it is.
+    check(["--seed=5", "--order=defined"], TestOptions.with({"random" => "true"}))
   end
 
   def test_the_seed_is_kept
     case Test.parse_options(["--seed=42"])
     in Test::Options => o then assert_equal(42, o.seed)
     in String => m then flunk(m)
+    in CommandLine::Help then flunk("help")
     end
   end
 
@@ -105,11 +111,16 @@ class TestOptionsTest < Test::Case
   end
 
   def test_unknown_options
-    check(["--bogus"], "error: unknown option: --bogus")
-    check(["-x"], "error: unknown option: -x")
-    check(["--verbose=1"], "error: unknown option: --verbose=1")
-    check(["--seed", "42"], "error: unknown option: --seed")
-    check(["-vn", "a"], "error: unknown option: -vn")
-    check(["--help"], "error: unknown option: --help")
+    check(["--bogus"], "error: unknown option '--bogus'")
+    check(["-x"], "error: unknown option '-x'")
+    check(["--verbose=1"], "error: option '--verbose' takes no value")
+    check(["-vn", "a"], TestOptions.with({"names" => "[\"a\"]", "verbose" => "true"}))
+    check(["-na"], TestOptions.with({"names" => "[\"a\"]"}))
+  end
+
+  def test_help
+    check(["--help"], "help")
+    check(["-h"], "help")
+    check(["--bogus", "-h"], "help")
   end
 end

@@ -400,7 +400,7 @@ fn load(opts: &Opts) -> Option<Loaded> {
     // the members they generate are documented too.
     let mut runner_files = vec![prelude_file.clone()];
     runner_files.extend(sources.iter().cloned());
-    let mut runner = quarz_cli::static_run::Runner::new(runner_files);
+    let mut runner = quarz_cli::std_set::runner_for(&prelude.program, &to_check, runner_files);
     let (checked, diagnostics) =
         quarz_types::check_movement_with(&prelude.program, &to_check, &decls, &mut runner);
     for (file_index, diag) in &diagnostics {

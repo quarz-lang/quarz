@@ -21,6 +21,30 @@ enum Docs {
     None,
 }
 
+/// Whether `a`, an option `quarz test` passes to the program, takes the
+/// next argument as its value (`Test::QuarzTest` in std/test.qz): a long
+/// option with a required value given without `=`, or a group of short
+/// options ending in `-n` (`-n`, `-vn`; `-nNAME` holds its value).
+fn takes_next_value(a: &str) -> bool {
+    match a {
+        "--name" | "--seed" | "--order" | "--timeout" | "--junit" => true,
+        _ => match a.strip_prefix('-') {
+            Some(group) if !group.starts_with('-') => {
+                for (k, c) in group.char_indices() {
+                    if c == 'n' {
+                        return k + 1 == group.len();
+                    }
+                    if c != 'v' && c != 'h' {
+                        return false;
+                    }
+                }
+                false
+            }
+            _ => false,
+        },
+    }
+}
+
 pub fn command(args: &[String]) -> ExitCode {
     let mut paths: Vec<PathBuf> = Vec::new();
     let mut argv: Vec<String> = Vec::new();
@@ -54,7 +78,7 @@ pub fn command(args: &[String]) -> ExitCode {
                 argv.extend(args[i + 1..].iter().cloned());
                 break;
             }
-            "-n" | "--name" => {
+            _ if takes_next_value(a) => {
                 argv.push(a.clone());
                 if let Some(v) = args.get(i + 1) {
                     argv.push(v.clone());
@@ -337,7 +361,9 @@ fn load_and_check(
     // The class bodies' `static` statements run during the check (docs/14).
     let mut runner_files = vec![prelude_file.clone()];
     runner_files.extend(sources.iter().cloned());
-    let mut runner = quarz_cli::static_run::Runner::new(runner_files.clone());
+    // (A standard-library set made at first use: read back or made, #1097.)
+    let mut runner =
+        quarz_cli::std_set::runner_for(&prelude.program, &to_check, runner_files.clone());
     let mut extra = |world: &World| {
         let mut all_files = vec![prelude_file.clone()];
         all_files.extend(sources.iter().cloned());

@@ -31,7 +31,8 @@ commands:
                  run the tests of PATHS (`*_test.qz` files, or directories
                  of them; default: the cog's test/), `--release` compiled;
                  OPTIONS: -n NAME, -v, --list, --order=random, --seed=N,
-                 --fail-fast, --parallel[=N], --timeout=D, --junit=PATH
+                 --fail-fast, --parallel[=N], --timeout=D, --junit=PATH,
+                 --help (all of them)
   repl           start an interactive session
   cog COMMAND    manage the cogs (packages) of the application here:
     init                      write a Cog.toml (and src/main.qz)
@@ -392,7 +393,8 @@ fn load_and_check_timed(
     let mut files = vec![prelude_file.clone()];
     files.extend(sources.iter().cloned());
     // The class bodies' `static` statements run during the check (docs/14).
-    let mut runner = quarz_cli::static_run::Runner::new(files.clone());
+    // (A standard-library set made at first use: read back or made, #1097.)
+    let mut runner = quarz_cli::std_set::runner_for(&prelude.program, &to_check, files.clone());
     let (checked, mut diagnostics) =
         quarz_types::check_movement_with(&prelude.program, &to_check, &cogs, &mut runner);
     let checked = checked.filter(|c| {
@@ -445,7 +447,12 @@ fn ir_file(target: &Target) -> ExitCode {
     let Some((checked, files, lowerer)) = load_and_check(target, false) else {
         return ExitCode::FAILURE;
     };
-    let module = quarz_cli::lower_with(&checked, &files, lowerer);
+    let mut module = quarz_cli::lower_with(&checked, &files, lowerer);
+    // `QUARZ_IR_SHAKE=1`: what `quarz build` keeps of it (`shake`): the
+    // tests that compare two ways of lowering a program (#1097).
+    if std::env::var_os("QUARZ_IR_SHAKE").is_some_and(|v| v != "0") {
+        quarz_ir::shake::shake(&mut module);
+    }
     print!("{}", quarz_ir::dump::dump_module(&module));
     ExitCode::SUCCESS
 }

@@ -379,6 +379,51 @@ fn random_order_is_set_by_the_seed() {
     let mut defined = first.clone();
     defined.sort();
     assert_ne!(first, defined);
+    // The values in the next argument, `-n` in a group: the same run.
+    let out = quarz(&[
+        "test_cmd/all_test.qz",
+        "--seed",
+        "42",
+        "-vn",
+        "Stack",
+        "--timeout",
+        "200ms",
+    ]);
+    let spaced: Vec<String> = stdout(&out)
+        .lines()
+        .filter(|l| l.starts_with("StackTest#"))
+        .map(|l| l.split(':').next().unwrap().to_string())
+        .collect();
+    assert_eq!(first, spaced);
+}
+
+/// `quarz test`'s options are parsed by `CommandLine` (std/test.qz,
+/// #1089): a mistake is printed after `quarz test: ` with the status 2,
+/// and `--help` prints the options with the status 0.
+#[test]
+fn a_bad_option_and_help() {
+    let out = quarz(&["test_cmd/all_test.qz", "--bogus"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert_eq!(stderr(&out), "quarz test: unknown option '--bogus'\n");
+    let out = quarz(&["test_cmd/all_test.qz", "--parallel=0"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert_eq!(stderr(&out), "quarz test: bad --parallel: 0\n");
+    let out = quarz(&["test_cmd/all_test.qz", "--help"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let help = stdout(&out);
+    assert!(
+        help.starts_with("usage: quarz test [options] [PATH...]\n"),
+        "{help}"
+    );
+    for line in [
+        "  -n, --name=NAME ",
+        "      --seed=N ",
+        "      --parallel[=N] ",
+        "      --release ",
+        "  -h, --help ",
+    ] {
+        assert!(help.contains(line), "{line}\n{help}");
+    }
 }
 
 #[test]
