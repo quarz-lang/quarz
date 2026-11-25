@@ -1172,6 +1172,8 @@ mod compile_time_tests {
         "kw",
         // (A symbol's.)
         "intern",
+        // (A symbol's, looked up in the program's, #1129.)
+        "declared_symbol",
         // (A task's, for messages.)
         "spawn_task",
         // (A field's.)
