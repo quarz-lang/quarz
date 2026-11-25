@@ -822,6 +822,11 @@ class CommandLine
       @program: String
       @usage: String
       var @values: Hash[Symbol, Object] = {}
+      # A `list` option's values, gathered in a builder per name and
+      # appended in place: pushing onto an array `@values` still holds
+      # would copy it, quadratic in the option's repetitions (#1138).
+      # `finish` hands them to `@values`.
+      @lists: Hash::Builder[Symbol, Array::Builder[Object]] = Hash::Builder[Symbol, Array::Builder[Object]].new
       var @operands: Array[String] = []
       # Whether `--help` or `-h` is among the arguments (`Support.help?`).
       var @help: Bool = false
@@ -939,8 +944,12 @@ class CommandLine
 
       def set(d: Decl, value: Object) -> Void
         if d.kind == :list
-          empty: Array[Object] = []
-          @values = @values.put(d.name, @values.fetch(d.name, empty).as(Array[Object]).push(value))
+          bucket = @lists[d.name]?
+          if bucket
+            bucket << value
+          else
+            @lists[d.name] = Array::Builder[Object].new.push(value)
+          end
         else
           @values = @values.put(d.name, value)
         end
@@ -971,6 +980,7 @@ class CommandLine
       end
 
       def finish -> Void
+        @lists.each { |name, values| @values = @values.put(name, values.to_a) }
         if !@spec.commands.empty? && !@values.key?(:__command)
           fail("missing command (one of #{@spec.commands.map { |c| c.word }.join(", ")})")
         end
