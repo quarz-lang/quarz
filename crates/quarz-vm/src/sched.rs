@@ -1299,6 +1299,7 @@ impl Scheduler {
                     None if flag.load(Ordering::Acquire) => debug_hooks::skipped(),
                     None => {
                         debug_hooks::slow(kind);
+                        debug_hooks::panic_in_job();
                         let _ = tx.send(Ok(job()));
                     }
                 }
@@ -1901,7 +1902,23 @@ fn pool_submit(kind: JobKind, job: Job) {
     }
 }
 
+/// Run `f` on a thread of the runtime's own (a worker, a helper): a panic
+/// in it ends the program with status 101, as one on the main thread
+/// does, the panic hook having printed it. Left to end only its thread,
+/// it would leave tasks waiting for what that thread was doing: a
+/// worker's tasks, or the task whose job a helper ran (#1156).
+pub(crate) fn exit_on_panic<R>(f: impl FnOnce() -> R) -> R {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(_) => std::process::exit(101),
+    }
+}
+
 fn pool_worker(pool: &'static Pool) {
+    exit_on_panic(|| pool_loop(pool))
+}
+
+fn pool_loop(pool: &'static Pool) -> ! {
     loop {
         let job = {
             let mut q = pool.state.lock().unwrap();
@@ -1929,8 +1946,11 @@ fn pool_worker(pool: &'static Pool) {
 ///   one program).
 /// - `QUARZ_TEST_SPAWN_DELAY=ms`: starting a helper thread takes that
 ///   long, so that another worker's submit falls while it starts.
-/// - Either set: a job dropped unrun (its task cancelled) prints
-///   `quarz: dropped a cancelled helper job` on standard error.
+/// - `QUARZ_TEST_PANIC_JOB=1`: a job panics before it runs, as a bug in
+///   a native's job would (#1156).
+/// - `QUARZ_TEST_SLOW_LOOKUP` or `QUARZ_TEST_HELPER_SPAWNS` set: a job
+///   dropped unrun (its task cancelled) prints `quarz: dropped a
+///   cancelled helper job` on standard error.
 mod debug_hooks {
     #[cfg(debug_assertions)]
     fn var(name: &str) -> Option<u64> {
@@ -1969,8 +1989,18 @@ mod debug_hooks {
         }
     }
 
+    #[cfg(debug_assertions)]
+    pub(super) fn panic_in_job() {
+        if var("QUARZ_TEST_PANIC_JOB").is_some_and(|n| n != 0) {
+            panic!("a helper thread's job panicked (QUARZ_TEST_PANIC_JOB)");
+        }
+    }
+
     #[cfg(not(debug_assertions))]
     pub(super) fn slow(_: super::JobKind) {}
+
+    #[cfg(not(debug_assertions))]
+    pub(super) fn panic_in_job() {}
 
     #[cfg(not(debug_assertions))]
     pub(super) fn spawn_allowed() -> std::io::Result<()> {
