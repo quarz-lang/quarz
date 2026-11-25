@@ -21,9 +21,11 @@ pub struct Program {
     /// (`it - 1`), for the error if no method `it` is found.
     #[serde(default)]
     pub it_hints: Vec<(Span, String)>,
-    /// The symbol literals the file writes, sorted, each once: what
-    /// "a symbol of the program" is for `JSON.decode` (#1129), recorded
-    /// as they are parsed, whatever later checks or lowers.
+    /// The symbol literals the file writes, and the names it writes that
+    /// are symbols at run time (a hash pattern's key, a call's keyword
+    /// label, a keyword parameter's name), sorted, each once: what "a
+    /// symbol of the program" is for `JSON.decode` (#1129), recorded as
+    /// they are parsed, whatever later checks or lowers.
     #[serde(default)]
     pub symbols: Vec<String>,
 }

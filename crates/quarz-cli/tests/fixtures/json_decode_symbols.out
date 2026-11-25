@@ -3,6 +3,9 @@ banana: :banana
 cherry: :cherry
 date: :date
 fig: :fig
+hickory: :hickory
+kiwi: :kiwi
+lime: :lime
 pkcs8: :pkcs8
 never_called: :never_called
 weight: :weight

@@ -939,8 +939,10 @@ pub struct Program {
     /// By-reference versions of some natives, by method id.
     pub fast_natives: Vec<Option<FastNativeFn>>,
     /// The symbols of the program (`RtWorld::symbols`, #1129): what a
-    /// decoded string may become (`Interp::declared_symbol`).
-    pub declared_symbols: FxHashSet<Box<str>>,
+    /// decoded string may become (`Interp::declared_symbol`). Made at the
+    /// first such lookup: a program that decodes no `Symbol` does not pay
+    /// for it at start-up.
+    pub declared_symbols: std::sync::OnceLock<FxHashSet<Box<str>>>,
     pub natives_owned: Vec<Option<OwnedNativeFn>>,
     /// The owned natives with an in-place fast path (`xs = xs.push(v)`).
     pub owned: OwnedIds,
@@ -1296,13 +1298,8 @@ impl Interp {
             vslots,
             nvslots,
         } = derived;
-        let declared_symbols: FxHashSet<Box<str>> = world
-            .symbols
-            .iter()
-            .map(|s| Box::from(s.as_str()))
-            .collect();
         let program = std::sync::Arc::new(Program {
-            declared_symbols,
+            declared_symbols: std::sync::OnceLock::new(),
             world,
             lazy,
             units,
@@ -1427,8 +1424,10 @@ impl Interp {
     /// nothing: for a string from outside (`JSON.decode`), which must not
     /// grow the symbol table, #1129.
     pub fn declared_symbol(&self, name: &str) -> Option<Symbol> {
+        let world = &self.program.world;
         self.program
             .declared_symbols
+            .get_or_init(|| world.symbols.iter().map(Box::from).collect())
             .contains(name)
             .then(|| self.intern(name))
     }

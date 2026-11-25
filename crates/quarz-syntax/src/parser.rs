@@ -393,7 +393,10 @@ impl<'src> Parser<'src> {
 
     fn node(&mut self, span: Span, kind: ExprKind) -> Expr {
         // Every symbol literal the source writes (`:a`, `:"a"`, `%i[a]`,
-        // `&:a`, a hash literal's `a:` key) is built here (#1129).
+        // `&:a`, a hash literal's `a:` key) is built here (#1129); the
+        // other names that are symbols at run time (a hash pattern's key,
+        // a call's keyword label, a keyword parameter's name) are recorded
+        // where they are parsed.
         if let ExprKind::Symbol(name) = &kind {
             self.symbols.push(name.clone());
         }
@@ -1910,6 +1913,8 @@ impl<'src> Parser<'src> {
                 self.parse_expr_no_label()?
             };
             let span = self.span_from(start);
+            // A call's keyword label is a symbol at run time (#1129).
+            self.symbols.push(name.clone());
             return Ok(Arg::Keyword { name, value, span });
         }
         // A string label: `"key": value` inside argument lists is not
@@ -3788,6 +3793,8 @@ impl<'src> Parser<'src> {
                     Some(self.parse_pattern()?)
                 };
                 let span = self.span_from(start);
+                // A hash pattern's key is a symbol at run time (#1129).
+                self.symbols.push(key.clone());
                 pairs.push(HashPatternPair { key, pattern, span });
             } else {
                 return Err(self.error_expected("a `key:` pattern"));
@@ -4818,6 +4825,10 @@ impl<'src> Parser<'src> {
             }
             _ => return Err(self.error_expected("a parameter")),
         };
+        // A keyword parameter's name is a symbol at run time (#1129).
+        if kind == ParamKind::KeywordOnly {
+            self.symbols.push(name.clone());
+        }
         self.declare(&name);
         let ty = if self.at(&T::Colon) {
             self.bump();

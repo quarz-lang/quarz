@@ -462,10 +462,12 @@ impl Decoder<'_> {
                     let sym = match node {
                         Node::HashSym(_) => match self.interp.declared_symbol(&k) {
                             Some(sym) => Some(sym),
-                            None => return Err(DecodeFail::Shape(format!(
+                            None => {
+                                return Err(DecodeFail::Shape(format!(
                                 "{}: expected keys that are symbols of the program, found another",
                                 self.path
-                            ))),
+                            )))
+                            }
                         },
                         _ => None,
                     };

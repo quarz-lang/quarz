@@ -2,12 +2,15 @@
 # symbol literal written anywhere in the program or the libraries it
 # requires (recorded by the parser, so wherever it is: a method nothing
 # calls, a generic method never instantiated, a `static def`, a hash
-# literal's key, `%i[...]`), or the name of a method or field. Any other
+# literal's key, `%i[...]`), a name written that is a symbol at run time
+# (a hash pattern's key, a call's keyword label, a keyword parameter's
+# name), or the name of a method or field. Any other
 # string is a decode error, so a peer's text never grows the symbol
 # table; a symbol made at run time does not count. Expected output from
 # the rule, the same on the VM and compiled. Cells skipped here: a
-# symbol written only in another cog, and a `static` statement run from
-# it (tests/cogs.rs), a later REPL input (tests/repl.rs).
+# symbol written only in another cog, a `static` statement run from it,
+# and a symbol a `static def` computes and bakes into generated code
+# (tests/cogs.rs), a later REPL input (tests/repl.rs).
 require "json"
 require "crypto"
 
@@ -33,6 +36,20 @@ end
 Lit = {date: 1}
 Fig = %i[fig]
 
+# Names that are symbols at run time without being literals: a hash
+# pattern's key, a call's keyword label, a keyword parameter's name.
+def pattern(h: Hash[Symbol, Int]) -> Int
+  case h
+  in {hickory: v} then v
+  else 0
+  end
+end
+
+def take(**opts: Int) -> Int = opts.size
+Took = take(kiwi: 1)
+
+def keyword_param(*, lime: Int = 0) -> Int = lime
+
 def decode(text: String) -> String
   pick = JSON.decode?[Pick]("{\"kind\": #{JSON.generate(text)}}")
   pick ? pick.kind.inspect : "refused"
@@ -44,6 +61,9 @@ end
   "cherry",         # a `static def`
   "date",           # a hash literal's key
   "fig",            # `%i[...]`
+  "hickory",        # a hash pattern's key
+  "kiwi",           # a call's keyword label
+  "lime",           # a keyword parameter's name
   "pkcs8",          # written only in std/crypto.qz, which the program requires
   "never_called",   # a method's name
   "weight",         # a field's name

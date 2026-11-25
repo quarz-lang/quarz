@@ -150,15 +150,18 @@ pub(crate) fn fill_rest(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_name
     // (Extend-only: a round's world, updated in place, has the earlier
     // rounds' symbols already, a fresh fill none.)
     let have = rt.symbols.len();
-    rt.symbols.extend_from_slice(&lw.symbols[have..]);
+    for name in &lw.symbols[have..] {
+        rt.symbols.push(name);
+    }
 }
 
 /// The symbols of the program (#1129): the symbol literals its files and
-/// the libraries it requires write (`World::symbol_literals`, recorded by
-/// the parser, so a literal counts wherever it is written: in a method
-/// nothing calls, a `static` statement, quoted code), and the names of
-/// its methods and fields (generated ones too), each once, in the order
-/// found. What `JSON.decode` accepts as a `Symbol`; the runtime reads it
+/// the libraries it requires write, and the names they write that are
+/// symbols at run time (`World::symbol_literals`, recorded by the parser,
+/// so a name counts wherever it is written: in a method nothing calls, a
+/// `static` statement, quoted code), and the names of its methods and
+/// fields (generated ones too), each once, in the order found. Not a
+/// symbol code computes (`to_sym`, baked into generated code too). What `JSON.decode` accepts as a `Symbol`; the runtime reads it
 /// from `RtWorld::symbols` and never interns a decoded string otherwise.
 ///
 /// Extend-only: it takes what the world added since the last call (its
@@ -648,7 +651,7 @@ fn declared_rest(
         file_names: Vec::new(),
         file_mains,
         // (Filled by the lowering: `declared_symbols`, `fill_rest`.)
-        symbols: Vec::new(),
+        symbols: Default::default(),
         // (Per round, `fill`.)
         deferred_conformance: Vec::new(),
     };
