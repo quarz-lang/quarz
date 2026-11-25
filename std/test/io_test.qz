@@ -305,6 +305,7 @@ end
 # #1159: exclusive creation ("wx", "w+x"), `perm:` at creation, File.chmod,
 # and `perm:` on Dir.mkdir and Dir.mkdir_p. Modes are read with GNU
 # `stat -c %a` (as on CI's Linux); a test is skipped where it is missing.
+# The expected modes assume a umask that leaves them whole (022 or 027).
 class FilePermTest < Test::Case
   def path(name: String) -> String = "#{Dir.tmpdir}/quarz-perm-test-#{Process.pid}-#{name}"
 

@@ -720,6 +720,7 @@ fn set_create_mode(
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
+        let _ = interp;
         options.mode(bits);
         Ok(())
     }

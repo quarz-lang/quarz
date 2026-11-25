@@ -7351,15 +7351,15 @@ class File
   # truncated), `"a"` (append, created), or one of them with `+` to read and
   # write too (`"r+"`, `"w+"`, `"a+"`); `"wx"` and `"w+x"` are `"w"` and
   # `"w+"` that create the file or fail when it exists (`O_EXCL`); a
-  # trailing `b` is accepted and ignored.
+  # trailing `b` is accepted and ignored. Reads and writes on such a stream
+  # share one position: a write after a read goes where the read stopped,
+  # and a read after a write starts after it (`"a+"` writes at the end
+  # whatever the position).
   #
   # `perm:` gives a file the call creates those mode bits (`0o600`), the
   # process's umask applied as for `open(2)`; a file that exists keeps its
   # mode ([.chmod] changes it). It is refused with `"r"` and `"r+"`, which
-  # create no file. Reads and writes on such a stream share one position: a
-  # write after a read goes where the read stopped, and a read after a
-  # write starts after it (`"a+"` writes at the end whatever the
-  # position).
+  # create no file.
   #
   # ## Raises
   #
