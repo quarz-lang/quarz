@@ -37,7 +37,33 @@ module JSON
   # the type asked for. The message gives where (`$.user.tags[2]`), what
   # was expected and what was found (a scalar as written; an array or an
   # object only by its kind).
+  #
+  # The message may quote the document's value, wherever decoding stops,
+  # and a value received or stored may be a secret: a text meant for a
+  # log is built from [path] and [expected] only.
+  #
+  # ```
+  # data Login = (pin: Int)
+  # logged = begin
+  #   JSON.decode[Login]("{\"pin\": \"s3cret\"}")
+  #   nil
+  # rescue JSON::DecodeError => e
+  #   "#{e.path}: expected #{e.expected}"
+  # end
+  # logged   # => "$.pin: expected an integer that fits an Int"
+  # ```
   class DecodeError < StandardError
+    @path: String?
+    @expected: String?
+
+    # Where in the document decoding stopped, as the message gives it
+    # (`"$.user.tags[2]"`); nil for an error a program made itself.
+    def path -> String? = @path
+
+    # What was expected there, as the message gives it (`"an integer
+    # that fits an Int"`); nil when the error names no expectation (a
+    # `Decimal` past its limits) or a program made it itself.
+    def expected -> String? = @expected
   end
 
   # A parsed JSON document, its variants named as Rust's serde_json
