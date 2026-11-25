@@ -383,6 +383,15 @@ module JSON
   # `T` (a class, an enum, a procedure, [Object], a type parameter) at the
   # call.
   #
+  # A [Symbol] (a field, an element, or a `Hash[Symbol, U]`'s key) is made
+  # only of a symbol of the program: a symbol literal written anywhere in
+  # the program or the libraries it requires (`:name`, `%i[...]`, a hash
+  # literal's `name:` key), or the name of one of its methods or fields.
+  # Another string is a [JSON::DecodeError] ("expected a symbol of the
+  # program"), so that what a peer sends never grows the symbol table,
+  # which is never freed; a symbol made at run time (`to_sym`) does not
+  # count. Decode open keys into `Hash[String, U]` (#1129).
+  #
   # A union takes at most one member from each kind of JSON value:
   # strings ([String], [Symbol], [Time], [Date], [Bytes]), numbers ([Int],
   # [Integer], [Float]), `true` and `false` ([Bool]), arrays ([Array],

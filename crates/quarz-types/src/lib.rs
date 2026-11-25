@@ -169,11 +169,13 @@ impl Session {
             span: quarz_syntax::Span::empty(0),
             docs: Vec::new(),
             it_hints: Vec::new(),
+            symbols: Vec::new(),
         };
         let cached = PRELUDE_CACHE.get().map(|bytes| PreludeState::decode(bytes));
         let mut prelude_output = None;
         let mut declarer = match cached {
             Some(state) => {
+                verify_state_symbols(&state, &[]);
                 prelude_output = Some((state.output, state.self_news));
                 declare::Declarer::with_world(state.world)
             }
@@ -957,6 +959,52 @@ fn layout_change_error(
     }
 }
 
+/// Whether an ahead-of-time state's symbol literals are compared with
+/// its files parsed again (`verify_state_symbols`): in a debug build
+/// unless `QUARZ_VERIFY=0`, in a release build when `QUARZ_VERIFY` names
+/// `prelude` (as `quarz_lower::prelude::verify` for its tables).
+fn verify_prelude() -> bool {
+    let var = std::env::var("QUARZ_VERIFY").unwrap_or_default();
+    if cfg!(debug_assertions) {
+        var != "0"
+    } else {
+        var.split(',').any(|v| v.trim() == "prelude")
+    }
+}
+
+/// The prelude's (and a standard library set's) state is used instead of
+/// parsing their sources: the symbol literals it kept
+/// (`World::symbol_literals`, #1129) must be the ones their sources give,
+/// the prelude's first, then each module's in order. An internal error
+/// otherwise; checked when `verify_prelude` says, once per process.
+fn verify_state_symbols(state: &PreludeState, modules: &[&str]) {
+    static DONE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    if !verify_prelude() {
+        return;
+    }
+    let key = modules.join(",");
+    {
+        let mut done = DONE.lock().unwrap_or_else(|e| e.into_inner());
+        if done.contains(&key) {
+            return;
+        }
+        done.push(key.clone());
+    }
+    let mut again = quarz_syntax::parse(PRELUDE_SOURCE).program.symbols;
+    for m in modules {
+        let (_, text) = load::STD_MODULES
+            .iter()
+            .find(|(n, _)| n == m)
+            .unwrap_or_else(|| panic!("internal error: no standard library module `{m}`"));
+        again.extend(quarz_syntax::parse(text).program.symbols);
+    }
+    assert!(
+        again == state.world.symbol_literals,
+        "internal error: the ahead-of-time state of {} kept other symbol literals than its sources give (#1129)",
+        if key.is_empty() { "the prelude".to_string() } else { format!("the prelude with {key}") }
+    );
+}
+
 /// The prelude declared and checked (every method body, so that a
 /// program's checking only adds to it): what `check_with_extra` starts
 /// from instead of the prelude's source when a command was built with it
@@ -1276,6 +1324,14 @@ pub fn check_with_extra(
         });
     let cached =
         std_cached.or_else(|| PRELUDE_CACHE.get().map(|bytes| PreludeState::decode(bytes)));
+    if let Some(state) = &cached {
+        let modules = if state.units.is_empty() {
+            &[][..]
+        } else {
+            &key[..]
+        };
+        verify_state_symbols(state, modules);
+    }
     let mut prelude_output = None;
     let mut std_units: Vec<CheckedUnit> = Vec::new();
     let mut statements_run = 0;

@@ -1877,6 +1877,14 @@ pub struct RtWorld {
     /// file index.
     #[serde(default)]
     pub file_mains: Vec<Option<ClassId>>,
+    /// The symbols of the program (`quarz_lower::rtworld::declared_symbols`,
+    /// #1129): the symbol literals its files and the libraries they require
+    /// write, and its methods' and fields' names. What `JSON.decode` turns
+    /// a string into a `Symbol` for; another string is a decode error, so
+    /// a peer's text never grows the symbol table. Never filtered by
+    /// `shake`: the VM and a compiled program read the same list.
+    #[serde(default)]
+    pub symbols: Vec<String>,
 }
 
 /// What `may_dispatch_to` reads of a program's classes and methods, so

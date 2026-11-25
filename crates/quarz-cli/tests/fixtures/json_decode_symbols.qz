@@ -1,0 +1,68 @@
+# #1129: JSON.decode makes a Symbol only of a symbol of the program: a
+# symbol literal written anywhere in the program or the libraries it
+# requires (recorded by the parser, so wherever it is: a method nothing
+# calls, a generic method never instantiated, a `static def`, a hash
+# literal's key, `%i[...]`), or the name of a method or field. Any other
+# string is a decode error, so a peer's text never grows the symbol
+# table; a symbol made at run time does not count. Expected output from
+# the rule, the same on the VM and compiled. Cells skipped here: a
+# symbol written only in another cog, and a `static` statement run from
+# it (tests/cogs.rs), a later REPL input (tests/repl.rs).
+require "json"
+require "crypto"
+
+data Pick = (kind: Symbol)
+
+# Written in a method nothing calls.
+def never_called -> Symbol = :apple
+
+# Written in a generic method never instantiated.
+def never_instantiated[T](x: T) -> Symbol = :banana
+
+class Shelf
+  @weight: Int
+  def initialize(@weight: Int); end
+
+  # Written in a `static def` (code for compile time).
+  static def self.mark -> Void
+    m = :cherry
+    nil
+  end
+end
+
+Lit = {date: 1}
+Fig = %i[fig]
+
+def decode(text: String) -> String
+  pick = JSON.decode?[Pick]("{\"kind\": #{JSON.generate(text)}}")
+  pick ? pick.kind.inspect : "refused"
+end
+
+[
+  "apple",          # a method nothing calls
+  "banana",         # a generic method never instantiated
+  "cherry",         # a `static def`
+  "date",           # a hash literal's key
+  "fig",            # `%i[...]`
+  "pkcs8",          # written only in std/crypto.qz, which the program requires
+  "never_called",   # a method's name
+  "weight",         # a field's name
+  "to_s",           # a method of the prelude
+  "zzz_written_nowhere",
+].each { |s| puts "#{s}: #{decode(s)}" }
+
+# A symbol made at run time is no symbol of the program.
+made = "made_#{1 + 1}".to_sym
+puts "#{made.inspect} made at run time: #{decode("made_2")}"
+
+begin
+  JSON.decode[Hash[Symbol, Int]]("{\"apple\": 1, \"zzz_key\": 2}")
+rescue JSON::DecodeError => e
+  puts e.message
+end
+p JSON.decode[Hash[Symbol, Int]]("{\"apple\": 1, \"banana\": 2}")
+begin
+  JSON.decode[Pick]("{\"kind\": \"zzz\"}")
+rescue JSON::DecodeError => e
+  puts e.message
+end

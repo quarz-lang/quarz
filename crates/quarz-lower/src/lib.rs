@@ -117,6 +117,14 @@ pub struct Lowerer {
     /// The number of methods the last `lower` (not a static round) saw:
     /// the next one reaches those added since whose name it reached.
     final_known: usize,
+    /// The symbols of the program so far (`rtworld::declared_symbols`),
+    /// in the order they were found, each once: extend-only, as the
+    /// world's lists are, so that a round adds only what is new.
+    pub(crate) symbols: Vec<String>,
+    pub(crate) symbol_set: rustc_hash::FxHashSet<String>,
+    /// How much of the world `declared_symbols` has taken: its symbol
+    /// literals, its methods, and each class's fields.
+    pub(crate) symbol_marks: (usize, usize, Vec<usize>),
     /// What each function refers to, for the static rounds' walks
     /// (`walk_refs`), by function id.
     walk_refs: Vec<Option<std::rc::Rc<WalkRefs>>>,
@@ -632,6 +640,7 @@ impl Lowerer {
             "internal error: the final lowering found the static rounds' world (#1057)"
         );
         let mut rt = kept.rt.clone();
+        rtworld::declared_symbols(self, world);
         rtworld::fill(&mut rt, world, self, file_names);
         Delta {
             world: std::sync::Arc::new(rt),
@@ -1140,6 +1149,7 @@ impl Lowerer {
         world: &World,
         file_names: Vec<String>,
     ) -> std::sync::Arc<RtWorld> {
+        rtworld::declared_symbols(self, world);
         let epoch = self.tables_epoch();
         let kept = self.kept.as_ref().expect("synced above");
         let changed = match &self.static_world {

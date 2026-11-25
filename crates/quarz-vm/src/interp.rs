@@ -7,7 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use crate::rc::Rc;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::{smallvec, SmallVec};
 use std::rc::Weak;
 use std::time::Duration;
@@ -938,6 +938,9 @@ pub struct Program {
     pub natives: Vec<Option<NativeFn>>,
     /// By-reference versions of some natives, by method id.
     pub fast_natives: Vec<Option<FastNativeFn>>,
+    /// The symbols of the program (`RtWorld::symbols`, #1129): what a
+    /// decoded string may become (`Interp::declared_symbol`).
+    pub declared_symbols: FxHashSet<Box<str>>,
     pub natives_owned: Vec<Option<OwnedNativeFn>>,
     /// The owned natives with an in-place fast path (`xs = xs.push(v)`).
     pub owned: OwnedIds,
@@ -1293,7 +1296,13 @@ impl Interp {
             vslots,
             nvslots,
         } = derived;
+        let declared_symbols: FxHashSet<Box<str>> = world
+            .symbols
+            .iter()
+            .map(|s| Box::from(s.as_str()))
+            .collect();
         let program = std::sync::Arc::new(Program {
+            declared_symbols,
             world,
             lazy,
             units,
@@ -1411,6 +1420,17 @@ impl Interp {
             .borrow()
             .upgrade()
             .expect("interpreter dropped")
+    }
+
+    /// The symbol `name` when it is one of the program's
+    /// (`Program::declared_symbols`), interned; nil otherwise, interning
+    /// nothing: for a string from outside (`JSON.decode`), which must not
+    /// grow the symbol table, #1129.
+    pub fn declared_symbol(&self, name: &str) -> Option<Symbol> {
+        self.program
+            .declared_symbols
+            .contains(name)
+            .then(|| self.intern(name))
     }
 
     pub fn intern(&self, name: &str) -> Symbol {

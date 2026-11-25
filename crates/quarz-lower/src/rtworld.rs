@@ -147,6 +147,45 @@ pub(crate) fn fill_rest(rt: &mut RtWorld, world: &World, lw: &Lowerer, file_name
     // The quoted blocks' trees (docs/14 §6), after the world's.
     rt.consts.extend(lw.quoted_consts.iter().cloned());
     rt.file_names = file_names;
+    // (Extend-only: a round's world, updated in place, has the earlier
+    // rounds' symbols already, a fresh fill none.)
+    let have = rt.symbols.len();
+    rt.symbols.extend_from_slice(&lw.symbols[have..]);
+}
+
+/// The symbols of the program (#1129): the symbol literals its files and
+/// the libraries it requires write (`World::symbol_literals`, recorded by
+/// the parser, so a literal counts wherever it is written: in a method
+/// nothing calls, a `static` statement, quoted code), and the names of
+/// its methods and fields (generated ones too), each once, in the order
+/// found. What `JSON.decode` accepts as a `Symbol`; the runtime reads it
+/// from `RtWorld::symbols` and never interns a decoded string otherwise.
+///
+/// Extend-only: it takes what the world added since the last call (its
+/// lists only grow), so a compile-time round costs what is new.
+pub fn declared_symbols(lw: &mut Lowerer, world: &World) {
+    let (lits, methods, fields) = std::mem::take(&mut lw.symbol_marks);
+    let mut fields = fields;
+    let add = |lw: &mut Lowerer, name: &str| {
+        if !lw.symbol_set.contains(name) {
+            lw.symbol_set.insert(name.to_string());
+            lw.symbols.push(name.to_string());
+        }
+    };
+    for name in &world.symbol_literals[lits.min(world.symbol_literals.len())..] {
+        add(lw, name);
+    }
+    for m in &world.methods[methods.min(world.methods.len())..] {
+        add(lw, &m.name);
+    }
+    fields.resize(world.classes.len(), 0);
+    for (c, seen) in world.classes.iter().zip(fields.iter_mut()) {
+        for f in &c.fields[(*seen).min(c.fields.len())..] {
+            add(lw, &f.name);
+        }
+        *seen = c.fields.len();
+    }
+    lw.symbol_marks = (world.symbol_literals.len(), world.methods.len(), fields);
 }
 
 /// The runtime's tables the declarations alone decide, with the rows over
@@ -608,6 +647,8 @@ fn declared_rest(
         builtin,
         file_names: Vec::new(),
         file_mains,
+        // (Filled by the lowering: `declared_symbols`, `fill_rest`.)
+        symbols: Vec::new(),
         // (Per round, `fill`.)
         deferred_conformance: Vec::new(),
     };
