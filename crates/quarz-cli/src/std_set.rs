@@ -126,11 +126,9 @@ fn entry(
     key: &str,
 ) -> Option<(Entry, PreludeState)> {
     let stamp = stamp();
-    // (The name the entry is kept under: the set, and this executable.)
-    let kept = stamp.as_ref().map(|s| format!("{key}@{s}"));
-    let read = kept
+    let read = stamp
         .as_deref()
-        .and_then(quarz_types::cache::load_set)
+        .and_then(|s| quarz_types::cache::load_set(key, s))
         .and_then(|bytes| Entry::decode(&bytes))
         .map(|entry| {
             let state = PreludeState::decode(&entry.state);
@@ -144,8 +142,8 @@ fn entry(
         return Some((entry, state));
     }
     let entry = make(prelude, units, files)?;
-    if let Some(kept) = &kept {
-        quarz_types::cache::store_set(kept, &entry.encode());
+    if let Some(stamp) = &stamp {
+        quarz_types::cache::store_set(key, stamp, &entry.encode());
     }
     let state = PreludeState::decode(&entry.state);
     Some((entry, state))

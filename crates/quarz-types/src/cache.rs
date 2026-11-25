@@ -501,33 +501,40 @@ pub fn store(key: u64, checks: &Checks) {
 const SET_MAGIC: u32 = 0x5153_4554; // "QSET"
 const SET_VERSION: u32 = 1;
 
-/// Where the state of the standard-library set `set` (its modules,
-/// comma-separated) made by this build is kept: under `sets/`, keyed by
-/// the build and the set.
-fn set_path(set: &str) -> Option<PathBuf> {
-    let build = build()?;
-    let key = hash(&("std-set", build, set));
-    Some(dir()?.join("sets").join(format!("{key:016x}.bin")))
+/// Where this build keeps the sets: `sets/<build id>/`, so that a store
+/// finds the entries its own build made for another executable without
+/// reading them.
+fn sets_dir() -> Option<PathBuf> {
+    Some(dir()?.join("sets").join(build()?))
 }
 
-/// The header an entry starts with: the build and the set it was made
-/// for, the body's checksum.
+/// The file name of the set `set` (its modules, comma-separated) made by
+/// the executable `stamp`: the set's hash, then the stamp's.
+fn set_file(set: &str, stamp: &str) -> String {
+    format!("{:016x}-{:016x}.bin", hash(&("std-set", set)), hash(&stamp))
+}
+
+/// The header an entry starts with: the build, the set and the
+/// executable it was made by, the body's checksum.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SetHeader {
     magic: u32,
     version: u32,
     build: String,
     set: String,
+    stamp: String,
     checksum: u64,
 }
 
-/// The body kept for the set `set` by this build, or `None`: no entry, or
-/// one that is not this build's and set's, or damaged (a truncated or
-/// changed body fails its checksum). The checksum guards against
-/// accidents, not tampering: the cache directory is trusted as the
-/// sources are (docs/05 §2).
-pub fn load_set(set: &str) -> Option<Vec<u8>> {
-    let p = set_path(set)?;
+/// The body kept for the set `set` by this build and executable
+/// (`stamp`), or `None`: no entry, or one that is not this build's, set's
+/// and executable's, or damaged (a truncated or changed body fails its
+/// checksum). The checksum guards against accidents, not tampering: the
+/// cache directory is trusted as the sources are (docs/05 §2). (An entry
+/// another process removes meanwhile is read whole or not at all: the
+/// file is read at once.)
+pub fn load_set(set: &str, stamp: &str) -> Option<Vec<u8>> {
+    let p = sets_dir()?.join(set_file(set, stamp));
     let bytes = std::fs::read(&p).ok()?;
     let ((header, body), _): ((SetHeader, Vec<u8>), usize) =
         bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).ok()?;
@@ -535,6 +542,7 @@ pub fn load_set(set: &str) -> Option<Vec<u8>> {
         && header.version == SET_VERSION
         && Some(header.build.as_str()) == build()
         && header.set == set
+        && header.stamp == stamp
         && checksum(&body) == header.checksum;
     if !ours {
         return None;
@@ -546,14 +554,20 @@ pub fn load_set(set: &str) -> Option<Vec<u8>> {
     Some(body)
 }
 
-/// Keep `body` as the state of the set `set` made by this build: written
-/// aside and renamed into place, so that a reader sees the old entry, the
-/// new one or none. Two processes making the set at once both write; the
-/// last rename wins, and both bodies are the same (making a set is a
-/// function of the build and the sources). Whether it was kept: not when
-/// the cache is off or its directory cannot be written.
-pub fn store_set(set: &str, body: &[u8]) -> bool {
-    let Some(p) = set_path(set) else {
+/// Keep `body` as the state of the set `set` made by this build and the
+/// executable `stamp`: written aside and renamed into place, so that a
+/// reader sees the old entry, the new one or none. Two processes making
+/// the set at once both write; the last rename wins, and both bodies are
+/// the same (making a set is a function of the build and the sources).
+/// Then the entries this build made for the set under another stamp (an
+/// executable linked again since) are removed: no process of this
+/// executable reads them, and a process of the other still reading one
+/// has it whole or makes the set. Every build's directory is swept
+/// (`sweep`: entries unused for 30 days), another installed version's
+/// too. Whether it was kept: not when the cache is off or its directory
+/// cannot be written.
+pub fn store_set(set: &str, stamp: &str, body: &[u8]) -> bool {
+    let Some(dir) = sets_dir() else {
         return false;
     };
     let header = SetHeader {
@@ -561,18 +575,27 @@ pub fn store_set(set: &str, body: &[u8]) -> bool {
         version: SET_VERSION,
         build: build().unwrap_or_default().to_string(),
         set: set.to_string(),
+        stamp: stamp.to_string(),
         checksum: checksum(body),
     };
     let Ok(bytes) = bincode::serde::encode_to_vec((header, body), bincode::config::standard())
     else {
         return false;
     };
-    if let Some(d) = p.parent() {
-        if std::fs::create_dir_all(d).is_err() {
-            return false;
-        }
-        sweep(d);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return false;
     }
+    if let Some(sets) = dir.parent() {
+        if let Ok(builds) = std::fs::read_dir(sets) {
+            for b in builds.flatten() {
+                if b.path().is_dir() {
+                    sweep(&b.path());
+                }
+            }
+        }
+    }
+    let name = set_file(set, stamp);
+    let p = dir.join(&name);
     let tmp = p.with_extension(format!("tmp{}", std::process::id()));
     if std::fs::write(&tmp, bytes).is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -582,10 +605,16 @@ pub fn store_set(set: &str, body: &[u8]) -> bool {
         let _ = std::fs::remove_file(&tmp);
         return false;
     }
+    // The set's entries under other stamps.
+    let prefix = &name[..name.find('-').unwrap_or(0) + 1];
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            if n.starts_with(prefix) && n.ends_with(".bin") && *n != name {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
     true
-}
-
-/// Where the set `set`'s entry is (tests damage or replace it).
-pub fn set_entry_path(set: &str) -> Option<PathBuf> {
-    set_path(set)
 }

@@ -410,10 +410,11 @@ fn a_set_made_at_first_use_checks_and_runs_as_from_source() {
         };
         let _ = std::fs::remove_dir_all(source.join("cache"));
         let made = quarz_in(&source, args, &env);
-        let entries = std::fs::read_dir(source.join("cache/sets"))
-            .map(|d| d.count())
-            .unwrap_or(0);
-        assert!(entries >= 1, "{what}: no entry kept under sets/");
+        assert_eq!(
+            set_entries(&source.join("cache")).len(),
+            1,
+            "{what}: one entry kept"
+        );
         let read_back = {
             let mut e = env.clone();
             e.push(("QUARZ_VERIFY", "std"));
@@ -456,13 +457,31 @@ fn a_set_made_at_first_use_checks_and_runs_as_from_source() {
     }
 }
 
+/// The sets' entries kept in `cache` (under `sets/<build id>/`).
+fn set_entries(cache: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for build in std::fs::read_dir(cache.join("sets"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        for e in std::fs::read_dir(build.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            if e.path().extension().is_some_and(|x| x == "bin") {
+                out.push(e.path());
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 /// The set's entry in `cache`, its only one.
 fn set_entry(cache: &Path) -> PathBuf {
-    let entries: Vec<PathBuf> = std::fs::read_dir(cache.join("sets"))
-        .unwrap()
-        .filter_map(|e| Some(e.ok()?.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "bin"))
-        .collect();
+    let entries = set_entries(cache);
     assert_eq!(entries.len(), 1, "{entries:?}");
     entries.into_iter().next().unwrap()
 }
@@ -515,9 +534,11 @@ fn a_damaged_or_foreign_set_entry_is_made_again() {
 /// An entry is kept for the executable that made it, not only its build
 /// id (which changes only with `build.rs` and its build-dependencies): a
 /// `quarz` linked again, here a copy with its own time, makes and keeps
-/// its own rather than read one another made. And none is made or kept
-/// under `QUARZ_NO_PRELUDE_CACHE=1`, which checks the prelude and every
-/// standard-library module from source.
+/// its own rather than read one another made, and its store removes the
+/// entry the same build made for the other executable (else every
+/// relink would leave its entries behind for 30 days). And none is made
+/// or kept under `QUARZ_NO_PRELUDE_CACHE=1`, which checks the prelude and
+/// every standard-library module from source.
 #[test]
 fn a_set_entry_is_kept_per_executable_and_not_without_the_prelude_cache() {
     let dir = set_dir("per-executable");
@@ -526,6 +547,7 @@ fn a_set_entry_is_kept_per_executable_and_not_without_the_prelude_cache() {
     let env = [("QUARZ_CACHE_DIR", cache.to_str().unwrap())];
     let first = quarz_in(&dir, &["test", "prog_test.qz"], &env);
     assert!(first.starts_with("status Some(0)"), "{first}");
+    let original = set_entry(&cache);
     let copy = dir.join("quarz-copy");
     std::fs::copy(env!("CARGO_BIN_EXE_quarz"), &copy).unwrap();
     let out = Command::new(&copy)
@@ -540,16 +562,9 @@ fn a_set_entry_is_kept_per_executable_and_not_without_the_prelude_cache() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let entries = |c: &Path| {
-        std::fs::read_dir(c.join("sets"))
-            .map(|d| {
-                d.filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().is_some_and(|x| x == "bin"))
-                    .count()
-            })
-            .unwrap_or(0)
-    };
-    assert_eq!(entries(&cache), 2, "one entry per executable");
+    let copies = set_entries(&cache);
+    assert_eq!(copies.len(), 1, "the copy's entry only: {copies:?}");
+    assert_ne!(copies[0], original, "the copy made its own entry");
     let off = dir.join("cache-off");
     let env = [
         ("QUARZ_CACHE_DIR", off.to_str().unwrap()),
@@ -557,7 +572,10 @@ fn a_set_entry_is_kept_per_executable_and_not_without_the_prelude_cache() {
     ];
     let again = quarz_in(&dir, &["test", "prog_test.qz"], &env);
     assert!(again.starts_with("status Some(0)"), "{again}");
-    assert_eq!(entries(&off), 0, "a set kept under QUARZ_NO_PRELUDE_CACHE");
+    assert!(
+        set_entries(&off).is_empty(),
+        "a set kept under QUARZ_NO_PRELUDE_CACHE"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -609,9 +627,7 @@ fn a_set_made_by_any_command_serves_every_command() {
         &["test", "mix_test.qz"],
         &[("QUARZ_CACHE_DIR", &mix_s)],
     );
-    let entries = std::fs::read_dir(mix_cache.join("sets"))
-        .map(|d| d.count())
-        .unwrap_or(0);
+    let entries = set_entries(&mix_cache).len();
     assert!(entries >= 1, "the mix was not kept");
     let read = quarz_in(
         &dir,
