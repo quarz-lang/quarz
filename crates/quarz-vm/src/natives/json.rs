@@ -58,6 +58,9 @@ struct Classes {
     parse_error: ClassId,
     generator_error: ClassId,
     decode_error: ClassId,
+    /// `DecodeError`'s `@path` and `@expected`.
+    decode_path: usize,
+    decode_expected: usize,
 }
 
 fn classes(interp: &Interp) -> Result<Classes, Flow> {
@@ -71,6 +74,9 @@ fn classes(interp: &Interp) -> Result<Classes, Flow> {
         None => Err(missing()),
     };
     let value = member("Value")?;
+    let field = |name: &str| {
+        member("DecodeError").and_then(|c| interp.field_index(c, name).ok_or_else(missing))
+    };
     let variant = |name: &str| {
         world
             .class(value)
@@ -90,6 +96,8 @@ fn classes(interp: &Interp) -> Result<Classes, Flow> {
         parse_error: member("ParseError")?,
         generator_error: member("GeneratorError")?,
         decode_error: member("DecodeError")?,
+        decode_path: field("path")?,
+        decode_expected: field("expected")?,
     })
 }
 
@@ -195,7 +203,13 @@ fn descriptor(text: &str, classes: usize) -> Option<Vec<Node>> {
 /// Why decoding stopped: the document's shape (`JSON::DecodeError`, or nil
 /// for `decode?`), or anything else raised (a field's default).
 enum DecodeFail {
-    Shape(String),
+    /// The error's message and its readers' values (#1169): `path`,
+    /// where decoding stopped, and `expected`, when the error names it.
+    Shape {
+        message: String,
+        path: String,
+        expected: Option<String>,
+    },
     Raised(Flow),
 }
 
@@ -261,8 +275,22 @@ fn decode(interp: &Interp, args: &crate::interp::Args, maybe: bool) -> EvalResul
     };
     match d.decode(&doc, 0) {
         Ok(v) => Ok(v),
-        Err(DecodeFail::Shape(_)) if maybe => Ok(Value::Nil),
-        Err(DecodeFail::Shape(m)) => Err(interp.raise(classes.decode_error, &m)),
+        Err(DecodeFail::Shape { .. }) if maybe => Ok(Value::Nil),
+        Err(DecodeFail::Shape {
+            message,
+            path,
+            expected,
+        }) => {
+            let e = interp.make_exception(classes.decode_error, &message);
+            if let Value::Object(o) = &e {
+                o.set_field(classes.decode_path, Value::string(path));
+                o.set_field(
+                    classes.decode_expected,
+                    expected.map_or(Value::Nil, Value::string),
+                );
+            }
+            Err(Flow::Raise(e))
+        }
         Err(DecodeFail::Raised(f)) => Err(f),
     }
 }
@@ -344,10 +372,10 @@ impl Decoder<'_> {
                 // would grow the symbol table for good (#1129).
                 match self.interp.declared_symbol(&s) {
                     Some(sym) => Ok(Value::Symbol(sym)),
-                    None => Err(DecodeFail::Shape(format!(
-                        "{}: expected a symbol of the program, found another string",
-                        self.path
-                    ))),
+                    None => {
+                        Err(self
+                            .shape_text("a symbol of the program".to_string(), "another string"))
+                    }
                 }
             }
             Node::Int if class == c.number => match inner {
@@ -368,10 +396,10 @@ impl Decoder<'_> {
                         // An integer past a Float's range (#1133): the
                         // text is JSON, the target cannot hold it, so a
                         // decode error (decided 2026-11-24).
-                        _ => Err(DecodeFail::Shape(format!(
-                            "{}: expected a number that fits a Float, found a larger integer",
-                            self.path
-                        ))),
+                        _ => Err(self.shape_text(
+                            "a number that fits a Float".to_string(),
+                            "a larger integer",
+                        )),
                     }
                 }
                 Some(f @ Value::Float(_)) => Ok(f),
@@ -424,7 +452,11 @@ impl Decoder<'_> {
                             .exception_is_a(&exc, self.interp.program.exc.argument_error) =>
                     {
                         let m = self.interp.exception_message(&exc);
-                        Err(DecodeFail::Shape(format!("{}: {m}", self.path)))
+                        Err(DecodeFail::Shape {
+                            message: format!("{}: {m}", self.path),
+                            path: self.path.clone(),
+                            expected: None,
+                        })
                     }
                     Err(other) => Err(DecodeFail::Raised(other)),
                 }
@@ -463,10 +495,10 @@ impl Decoder<'_> {
                         Node::HashSym(_) => match self.interp.declared_symbol(&k) {
                             Some(sym) => Some(sym),
                             None => {
-                                return Err(DecodeFail::Shape(format!(
-                                "{}: expected keys that are symbols of the program, found another",
-                                self.path
-                            )))
+                                return Err(self.shape_text(
+                                    "keys that are symbols of the program".to_string(),
+                                    "another",
+                                ))
                             }
                         },
                         _ => None,
@@ -511,10 +543,22 @@ impl Decoder<'_> {
                         None => match f.default {
                             Some(d) => self.interp.run_init(d, obj.clone(), rc.file)?,
                             None => {
-                                return Err(DecodeFail::Shape(format!(
+                                // The message names the object; the
+                                // readers name the field and what it
+                                // holds (decided 2026-11-25, #1169).
+                                let message = format!(
                                     "{}: missing field `{}` of {}",
                                     self.path, f.name, rc.name
-                                )))
+                                );
+                                let len = self.path.len();
+                                self.push_key(&f.name);
+                                let path = self.path.clone();
+                                self.path.truncate(len);
+                                return Err(DecodeFail::Shape {
+                                    message,
+                                    path,
+                                    expected: Some(self.expected(&self.nodes[m])),
+                                });
                             }
                         },
                     };
@@ -642,8 +686,16 @@ impl Decoder<'_> {
 
     /// The error for a value that is not what `node` decodes.
     fn shape(&self, node: &Node, found: &str) -> DecodeFail {
-        let expected = self.expected(node);
-        DecodeFail::Shape(format!("{}: expected {expected}, found {found}", self.path))
+        self.shape_text(self.expected(node), found)
+    }
+
+    /// The error for a value that is not `expected`.
+    fn shape_text(&self, expected: String, found: &str) -> DecodeFail {
+        DecodeFail::Shape {
+            message: format!("{}: expected {expected}, found {found}", self.path),
+            path: self.path.clone(),
+            expected: Some(expected),
+        }
     }
 
     /// What `node` decodes, for an error.

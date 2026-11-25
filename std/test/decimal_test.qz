@@ -241,6 +241,8 @@ class DecimalTest < Test::Case
     assert_equal("$[1]: expected a decimal (a number, or a string of one), found true", e.message)
     e = assert_raise(JSON::DecodeError) { JSON.decode[Hash[String, Decimal]]("{\"a\": 1e10000}") }
     assert_equal("$.a: a Decimal has at most 10000 digits", e.message)
+    assert_equal("$.a", e.as(JSON::DecodeError).path)
+    assert_nil(e.as(JSON::DecodeError).expected)
     t0 = Time.now
     e = assert_raise(JSON::DecodeError) { JSON.decode[Decimal]("1e1000000000") }
     assert_equal("$: a Decimal's exponent is too large: \"1e1000000000\"", e.message)

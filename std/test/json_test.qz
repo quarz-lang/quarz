@@ -211,6 +211,8 @@ class JsonErrorTest < Test::Case
     # An integer too large for a Float: valid JSON its target cannot hold.
     e = assert_raise(JSON::DecodeError) { JSON.decode[Float]("9" * 400); nil }
     assert_equal("$: expected a number that fits a Float, found a larger integer", e.message)
+    assert_equal("$", e.as(JSON::DecodeError).path)
+    assert_equal("a number that fits a Float", e.as(JSON::DecodeError).expected)
     assert_equal(1e300, JSON.decode[Float]("1" + "0" * 300))
   end
 
@@ -220,6 +222,9 @@ class JsonErrorTest < Test::Case
   def test_a_std_modules_symbol_decodes
     assert_equal("omis" + "sion", JSON.decode[Symbol]("\"omission\"").to_s)
     assert_nil(JSON.decode?[Symbol]("\"zz_written_nowhere\""))
+    e = assert_raise(JSON::DecodeError) { JSON.decode[Hash[String, Symbol]]("{\"k\": \"zz_written_nowhere\"}"); nil }
+    assert_equal("$.k", e.as(JSON::DecodeError).path)
+    assert_equal("a symbol of the program", e.as(JSON::DecodeError).expected)
   end
 
   def depth(v: JSON::Value) -> Int
@@ -324,10 +329,20 @@ class JsonDecodeTest < Test::Case
   def test_errors_name_the_path
     e = assert_raise(JSON::DecodeError) { JSON.decode[JsonTestArgs]('{"user_id": 1, "tags": ["a", 3]}'); nil }
     assert_equal("$.tags[1]: expected a string, found 3", e.message)
+    assert_equal("$.tags[1]", e.as(JSON::DecodeError).path)
+    assert_equal("a string", e.as(JSON::DecodeError).expected)
     e = assert_raise(JSON::DecodeError) { JSON.decode[JsonTestArgs]('{"tags": []}'); nil }
     assert_equal("$: missing field `user_id` of JsonTestArgs", e.message)
+    assert_equal("$.user_id", e.as(JSON::DecodeError).path)
+    assert_equal("an integer that fits an Int", e.as(JSON::DecodeError).expected)
+    e = assert_raise(JSON::DecodeError) { JSON.decode[Array[JsonTestArgs]]('[{"user_id": 1}, {"tags": []}]'); nil }
+    assert_equal("$[1]: missing field `user_id` of JsonTestArgs", e.message)
+    assert_equal("$[1].user_id", e.as(JSON::DecodeError).path)
+    assert_equal("an integer that fits an Int", e.as(JSON::DecodeError).expected)
     e = assert_raise(JSON::DecodeError) { JSON.decode[Array[JsonTestArgs]]('[{"user_id": null}]'); nil }
     assert_equal("$[0].user_id: expected an integer that fits an Int, found null", e.message)
+    assert_equal("$[0].user_id", e.as(JSON::DecodeError).path)
+    assert_equal("an integer that fits an Int", e.as(JSON::DecodeError).expected)
     e = assert_raise(JSON::DecodeError) { JSON.decode[Int]("12345678901234567890123"); nil }
     assert_equal("$: expected an integer that fits an Int, found 12345678901234567890123", e.message)
     e = assert_raise(JSON::DecodeError) { JSON.decode[Hash[String, Int]]('{"a b": {"c": 1}}'); nil }
@@ -335,6 +350,10 @@ class JsonDecodeTest < Test::Case
     e = assert_raise(JSON::DecodeError) { JSON.decode[Time]('"yesterday"'); nil }
     assert_equal("$: expected an RFC 3339 time string, found \"yesterday\"", e.message)
     assert_raise(JSON::ParseError) { JSON.decode[Int]("[1,"); nil }
+    # (One a program makes names neither.)
+    made = JSON::DecodeError.new("bad")
+    assert_nil(made.path)
+    assert_nil(made.expected)
   end
 
   def test_decode_or_nil
@@ -401,6 +420,8 @@ class JsonDecodeUnionTest < Test::Case
   def test_errors_name_the_members
     e = assert_raise(JSON::DecodeError) { JSON.decode[JsonTestOwner]('{"owner": 1}'); nil }
     assert_equal("$.owner: expected a string or an object (for JsonTestRef), found 1", e.message)
+    assert_equal("$.owner", e.as(JSON::DecodeError).path)
+    assert_equal("a string or an object (for JsonTestRef)", e.as(JSON::DecodeError).expected)
     e = assert_raise(JSON::DecodeError) { JSON.decode[JsonTestOwner]('{"owner": null}'); nil }
     assert_equal("$.owner: expected a string or an object (for JsonTestRef), found null", e.message)
     e = assert_raise(JSON::DecodeError) { JSON.decode[Array[Time | Array[Int] | Bool]]('[true, 1]'); nil }
@@ -414,6 +435,8 @@ class JsonDecodeUnionTest < Test::Case
     assert_equal("$: expected an integer that fits an Int, found 1.5", e.message)
     e = assert_raise(JSON::DecodeError) { JSON.decode[JsonTestOwner]('{"owner": {"name": "r"}}'); nil }
     assert_equal("$.owner: missing field `id` of JsonTestRef", e.message)
+    assert_equal("$.owner.id", e.as(JSON::DecodeError).path)
+    assert_equal("a string", e.as(JSON::DecodeError).expected)
   end
 
   def test_decode_or_nil_on_a_kind_no_member_takes
