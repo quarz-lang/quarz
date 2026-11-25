@@ -86,6 +86,24 @@ class Enums < CommandLine
   rest :orders, Order
 end
 
+# A text that reads the environment, which a compile-time run cannot:
+# never made, it must not keep the statements below from running
+# (#1171: the help's text of a value called `to_s` on any `Object`).
+class EnvText
+  def to_s -> String = ENV["HOME"]? || "?"
+end
+
+class Texts < CommandLine
+  flag :quiet, short: "q", help: "say less"
+  option :name, String, default: nil, help: "a name"
+  option :out, String, default: "out.txt", help: "where to write"
+  option :tries, Int, default: 3, bare: 5, help: "how often"
+  option :scale, Float, default: 1.5, help: "a factor"
+  option :strict, Bool, default: false, help: "refuse more"
+  option :unit, Unit, default: Unit::Chars, help: "what to count"
+  option :need, String, help: "required"
+end
+
 # Hands its arguments on as given.
 class Migrate < CommandLine
   about "Run the pending migrations."
@@ -437,6 +455,25 @@ Arguments:
   ORDERS  one of defined, random
 TEXT
     assert_equal(expected, Enums.help)
+  end
+
+  # Each value's text as before (#1171), a `false` default shown as none.
+  def test_help_of_each_kind_of_value
+    expected = <<-TEXT
+usage: texts [options] --need=NEED
+
+Options:
+  -q, --quiet          say less
+      --name=NAME      a name
+      --out=OUT        where to write (default: out.txt)
+      --tries[=TRIES]  how often; TRIES is 5 when omitted (default: 3)
+      --scale=SCALE    a factor (default: 1.5)
+      --strict=STRICT  refuse more
+      --unit=UNIT      what to count: bytes, chars, no-key-update (default: chars)
+      --need=NEED      required (required)
+  -h, --help           print this help and exit
+TEXT
+    assert_equal(expected, Texts.help)
   end
 
   def test_long_names
