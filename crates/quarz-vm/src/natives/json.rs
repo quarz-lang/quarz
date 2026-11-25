@@ -543,15 +543,21 @@ impl Decoder<'_> {
                         None => match f.default {
                             Some(d) => self.interp.run_init(d, obj.clone(), rc.file)?,
                             None => {
-                                // (The readers' values here wait for the
-                                // maintainer's decision, #1169.)
+                                // The message names the object; the
+                                // readers name the field and what it
+                                // holds (decided 2026-11-25, #1169).
+                                let message = format!(
+                                    "{}: missing field `{}` of {}",
+                                    self.path, f.name, rc.name
+                                );
+                                let len = self.path.len();
+                                self.push_key(&f.name);
+                                let path = self.path.clone();
+                                self.path.truncate(len);
                                 return Err(DecodeFail::Shape {
-                                    message: format!(
-                                        "{}: missing field `{}` of {}",
-                                        self.path, f.name, rc.name
-                                    ),
-                                    path: self.path.clone(),
-                                    expected: None,
+                                    message,
+                                    path,
+                                    expected: Some(self.expected(&self.nodes[m])),
                                 });
                             }
                         },

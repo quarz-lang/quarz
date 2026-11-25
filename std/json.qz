@@ -57,12 +57,16 @@ module JSON
     @expected: String?
 
     # Where in the document decoding stopped, as the message gives it
-    # (`"$.user.tags[2]"`); nil for an error a program made itself.
+    # (`"$.user.tags[2]"`), but for a missing field: the path names the
+    # field (`"$.user.id"`), the message the object it is missing from
+    # (`$.user: missing field ...`). Nil for an error a program made
+    # itself.
     def path -> String? = @path
 
     # What was expected there, as the message gives it (`"an integer
-    # that fits an Int"`); nil when the error names no expectation (a
-    # `Decimal` past its limits) or a program made it itself.
+    # that fits an Int"`), or for a missing field what the field holds;
+    # nil when the error names no expectation (a `Decimal` past its
+    # limits) or a program made it itself.
     def expected -> String? = @expected
   end
 
