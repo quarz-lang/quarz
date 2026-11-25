@@ -901,6 +901,19 @@ module HTTP
   end
 
   # :nodoc:
+  # The host and port of an absolute-form request target (`http://h:1/p?q`
+  # → `h:1`), as written, without the userinfo before the last `@`
+  # (credentials, which are no host); `""` for an empty authority; nil for
+  # another form (`/p`, `*`) (#1143).
+  def self.target_authority(target: String) -> String?
+    return nil unless target.match?(/\Ahttps?:\/\//i)
+    after = target.partition("://")[2]
+    cut = after.index(/[\/?]/)
+    authority = cut ? after[0, cut] : after
+    authority.rpartition("@")[2]
+  end
+
+  # :nodoc:
   # `text` without the spaces and tabs around it: the optional whitespace
   # around a field value or a list member (RFC 9110 §5.6.3), and no other
   # (U+00A0, U+0085, ... stay part of the value).
@@ -1252,10 +1265,16 @@ module HTTP
         build("PATCH", target, headers, body)
       end
 
-      # The Host header, as received: one in a request the server read,
-      # which refuses an HTTP/1.1 request without it (`400`); nil in an
-      # HTTP/1.0 request that has none.
-      def host -> String? = headers["host"]
+      # The request's host: the host and port of an absolute-form target
+      # (`GET http://example.com:8080/a`, as written there, port included
+      # when given, any userinfo left out; `""` for an empty authority, as
+      # for an empty Host header), which RFC 9112 §3.2.2 says an origin
+      # server uses instead of the Host header (#1143); otherwise the Host
+      # header, as
+      # received: one in a request the server read, which refuses an
+      # HTTP/1.1 request without it (`400`); nil in an HTTP/1.0 request
+      # that has none. The Host header itself stays in [#headers].
+      def host -> String? = HTTP.target_authority(target) || headers["host"]
 
       # The body's `Content-Length`; `nil` for a chunked body.
       def content_length -> Int? = body.size

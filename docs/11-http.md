@@ -65,7 +65,7 @@ class HTTP::Server   # (its requests and responses are its own types)
     trusted: Bool,                  # whether the peer is one
     tls: Bool                       # whether the connection is TLS (the server's `tls:`)
   )
-    def host -> String?                              # the Host header
+    def host -> String?                              # an absolute-form target's authority, else the Host header
     def content_length -> Int?
     def query_params -> Hash[String, Array[String]]  # decoded; a key may repeat
     def form_params -> Hash[String, Array[String]]   # application/x-www-form-urlencoded body
@@ -208,7 +208,7 @@ A server on a UNIX socket (`Server.unix`) has no peer addresses: `remote_address
 
 ### Behind a proxy
 
-With `trusted_proxies: ["127.0.0.1", "::1"]` (addresses, or networks as `"10.0.0.0/8"`), a request from one of them has its `scheme` taken from the last value of `X-Forwarded-Proto` (the one the nearest proxy wrote; a proxy that appends leaves the client's own values before it) and its `remote_ip` from `X-Forwarded-For`: the values of every such header joined in order, read from the right, skipping the trusted proxies; the first other address is the client. When there is none (no header, a malformed one, or every address trusted), `remote_ip` is the peer's address. From any other peer, the headers are ignored. `Host` is passed on as received: the proxy sets it.
+With `trusted_proxies: ["127.0.0.1", "::1"]` (addresses, or networks as `"10.0.0.0/8"`), a request from one of them has its `scheme` taken from the last value of `X-Forwarded-Proto` (the one the nearest proxy wrote; a proxy that appends leaves the client's own values before it) and its `remote_ip` from `X-Forwarded-For`: the values of every such header joined in order, read from the right, skipping the trusted proxies; the first other address is the client. When there is none (no header, a malformed one, or every address trusted), `remote_ip` is the peer's address. From any other peer, the headers are ignored. `Host` is passed on as received: the proxy sets it. A request whose target is in absolute form (`GET http://example.com/a HTTP/1.1`, as a client talking to a proxy sends) has as its `host` the target's authority, as written there (port included when given), and not its `Host` header, which `headers` still gives: RFC 9112 §3.2.2 has an origin server use the target's host information and ignore `Host`. Nothing more is refused for it: the `Host` rules above still apply.
 
 ### Shutdown and signals
 

@@ -153,6 +153,31 @@ class HttpParseTest < Test::Case
     assert_equal(expected, req.scheme)
   end
 
+  # #1143: an absolute-form target's authority is the request's host
+  # (RFC 9112 §3.2.2), the Host header staying in `headers`.
+  def data_absolute_form_host -> Hash[String, [String, String?]]
+    {
+      "absolute form over Host" => ["GET http://b.example/abs?q HTTP/1.1\r\nHost: a.example\r\n\r\n", "b.example"],
+      "with a port" => ["GET http://b.example:8080/ HTTP/1.1\r\nHost: a.example\r\n\r\n", "b.example:8080"],
+      "https, no path" => ["GET HTTPS://B.example?x HTTP/1.1\r\nHost: a.example\r\n\r\n", "B.example"],
+      "IPv6" => ["GET http://[::1]:81/p HTTP/1.1\r\nHost: a\r\n\r\n", "[::1]:81"],
+      "userinfo left out" => ["GET http://user:pw@b.example:8080/ HTTP/1.1\r\nHost: a.example\r\n\r\n", "b.example:8080"],
+      "the last @ ends the userinfo" => ["GET http://x@y@evil.example/ HTTP/1.1\r\nHost: a.example\r\n\r\n", "evil.example"],
+      "an empty authority" => ["GET http:///p HTTP/1.1\r\nHost: a.example\r\n\r\n", ""],
+      "origin form" => ["GET /p HTTP/1.1\r\nHost: a.example\r\n\r\n", "a.example"],
+      "origin form, HTTP/1.0 without Host" => ["GET /p HTTP/1.0\r\n\r\n", nil],
+    }
+  end
+
+  def test_absolute_form_host(data: [String, String?])
+    text, expected = data
+    req = HTTP.read_request(HTTP::Reader.of(text.to_bytes), 1000, 1000, nil, HTTP::Proxies.none, false)
+    raise "no request" if req.nil?
+    assert_equal(expected, req.host)
+    # The Host header itself is still there.
+    assert_equal(text.include?("Host: a.example") ? "a.example" : (text.include?("Host: a\r") ? "a" : nil), req.headers["host"])
+  end
+
   def test_forwarded_untrusted
     fwd = forwarded.with(trusted: false)
     assert_equal("127.0.0.1", fwd.remote_ip)
