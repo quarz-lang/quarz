@@ -561,6 +561,74 @@ fn a_set_entry_is_kept_per_executable_and_not_without_the_prelude_cache() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// One entry serves every command, whichever made it (decided on
+/// #1097): made by `quarz check`, it gives `quarz doc` the documentation
+/// a check from source gives (a set is always made with it), and a make
+/// again by `quarz doc` under `QUARZ_VERIFY=std` encodes the same. And a
+/// mix that holds `test` (here with `json`, as most test files load) is
+/// made at first use too, its own entry, and runs as from source.
+#[test]
+fn a_set_made_by_any_command_serves_every_command() {
+    let dir = set_dir("any-command");
+    std::fs::write(dir.join("prog_test.qz"), SET_PROGRAM).unwrap();
+    let cache = dir.join("cache");
+    let cache_s = cache.to_str().unwrap().to_string();
+    let made_by_check = quarz_in(
+        &dir,
+        &["check", "prog_test.qz"],
+        &[("QUARZ_CACHE_DIR", &cache_s)],
+    );
+    assert!(
+        made_by_check.starts_with("status Some(0)"),
+        "{made_by_check}"
+    );
+    let doc = ["doc", "prog_test.qz", "String"];
+    let read = quarz_in(
+        &dir,
+        &doc,
+        &[("QUARZ_CACHE_DIR", &cache_s), ("QUARZ_VERIFY", "std")],
+    );
+    let source = quarz_in(
+        &dir,
+        &doc,
+        &[("QUARZ_CACHE_DIR", &cache_s), ("QUARZ_NO_STD_CACHE", "1")],
+    );
+    assert!(source.contains("String"), "{source}");
+    assert_eq!(read, source, "quarz doc from an entry made by quarz check");
+    // A mix: `test` and `json`.
+    let mix = SET_PROGRAM.replacen(
+        "require \"test\"\n",
+        "require \"test\"\nrequire \"json\"\n",
+        1,
+    );
+    std::fs::write(dir.join("mix_test.qz"), mix).unwrap();
+    let mix_cache = dir.join("mix-cache");
+    let mix_s = mix_cache.to_str().unwrap().to_string();
+    let made = quarz_in(
+        &dir,
+        &["test", "mix_test.qz"],
+        &[("QUARZ_CACHE_DIR", &mix_s)],
+    );
+    let entries = std::fs::read_dir(mix_cache.join("sets"))
+        .map(|d| d.count())
+        .unwrap_or(0);
+    assert!(entries >= 1, "the mix was not kept");
+    let read = quarz_in(
+        &dir,
+        &["test", "mix_test.qz"],
+        &[("QUARZ_CACHE_DIR", &mix_s), ("QUARZ_VERIFY", "std")],
+    );
+    let source = quarz_in(
+        &dir,
+        &["test", "mix_test.qz"],
+        &[("QUARZ_CACHE_DIR", &mix_s), ("QUARZ_NO_STD_CACHE", "1")],
+    );
+    assert!(source.starts_with("status Some(0)"), "{source}");
+    assert_eq!(made, source);
+    assert_eq!(read, source);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A cache directory that cannot be written: the set is made in every
 /// process and kept in none, with the same result.
 #[cfg(unix)]

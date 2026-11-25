@@ -20,10 +20,17 @@ use quarz_types::{PreludeState, Unit};
 
 use crate::static_run::Runner;
 
-/// The sets made at first use, by key (their modules, comma-separated, in
-/// the order a program loads them): only those whose modules call what
-/// their own statements generate.
-pub const MADE_AT_FIRST_USE: &[&str] = &["command_line,test"];
+/// The modules whose code calls what their own statements generate: a
+/// program's leading set of standard-library modules that holds one is
+/// made at first use, an entry per mix (decided on #1097: `test` with
+/// `json`, as most test files load, as well as `test` alone).
+pub const MADE_AT_FIRST_USE: &[&str] = &["test"];
+
+/// Whether the leading set `key` (its modules, comma-separated) is made at
+/// first use.
+pub fn made_at_first_use(key: &str) -> bool {
+    key.split(',').any(|m| MADE_AT_FIRST_USE.contains(&m))
+}
 
 /// The key of the standard-library modules `units` starts with.
 fn leading_key(units: &[Unit]) -> String {
@@ -96,7 +103,7 @@ impl Entry {
 /// the set, if any, is checked from source.
 pub fn runner_for(prelude: &Program, units: &[Unit], files: Vec<SourceFile>) -> Runner {
     let key = leading_key(units);
-    if !MADE_AT_FIRST_USE.contains(&key.as_str()) || off() {
+    if !made_at_first_use(&key) || off() {
         return Runner::new(files);
     }
     match entry(prelude, units, &files, &key) {

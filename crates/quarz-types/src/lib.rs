@@ -1197,8 +1197,8 @@ thread_local! {
 }
 
 /// `check_movement_with` neither reading files' checks back from the
-/// cache nor keeping them, nor starting from a set made at first use: how
-/// such a set is made (#1097), so that what it makes is a function of the
+/// cache nor keeping them, nor starting from a set made at first use, and
+/// keeping the documentation comments: how such a set is made (#1097), so that what it makes is a function of the
 /// build and the sources alone (a file's checks read back give an equal
 /// check, not an equal encoding of the world). The thread's flags are not
 /// restored if the check panics: no caller catches a panic and checks
@@ -1211,7 +1211,12 @@ pub fn check_movement_uncached(
 ) -> (Option<Checked>, Vec<FileDiagnostic>) {
     let was = NO_CACHE.replace(true);
     let making = MAKING.replace(true);
+    // (With the documentation comments, whatever the command: one state
+    // for every command that reads it, decided on #1097; a reader that
+    // does not want them skips them.)
+    let docs = WANT_DOCS.swap(true, std::sync::atomic::Ordering::Relaxed);
     let r = check_with_extra(prelude, units, cogs, None, Some(runner));
+    WANT_DOCS.store(docs, std::sync::atomic::Ordering::Relaxed);
     NO_CACHE.set(was);
     MAKING.set(making);
     r
