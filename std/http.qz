@@ -901,13 +901,16 @@ module HTTP
   end
 
   # :nodoc:
-  # The authority of an absolute-form request target (`http://h:1/p?q` →
-  # `h:1`), as written; nil for another form (`/p`, `*`) (#1143).
+  # The host and port of an absolute-form request target (`http://h:1/p?q`
+  # → `h:1`), as written, without the userinfo before the last `@`
+  # (credentials, which are no host); `""` for an empty authority; nil for
+  # another form (`/p`, `*`) (#1143).
   def self.target_authority(target: String) -> String?
     return nil unless target.match?(/\Ahttps?:\/\//i)
     after = target.partition("://")[2]
     cut = after.index(/[\/?]/)
-    cut ? after[0, cut] : after
+    authority = cut ? after[0, cut] : after
+    authority.rpartition("@")[2]
   end
 
   # :nodoc:
@@ -1262,10 +1265,12 @@ module HTTP
         build("PATCH", target, headers, body)
       end
 
-      # The request's host: the authority of an absolute-form target
+      # The request's host: the host and port of an absolute-form target
       # (`GET http://example.com:8080/a`, as written there, port included
-      # when given), which RFC 9112 §3.2.2 says an origin server uses
-      # instead of the Host header (#1143); otherwise the Host header, as
+      # when given, any userinfo left out; `""` for an empty authority, as
+      # for an empty Host header), which RFC 9112 §3.2.2 says an origin
+      # server uses instead of the Host header (#1143); otherwise the Host
+      # header, as
       # received: one in a request the server read, which refuses an
       # HTTP/1.1 request without it (`400`); nil in an HTTP/1.0 request
       # that has none. The Host header itself stays in [#headers].

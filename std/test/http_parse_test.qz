@@ -161,6 +161,9 @@ class HttpParseTest < Test::Case
       "with a port" => ["GET http://b.example:8080/ HTTP/1.1\r\nHost: a.example\r\n\r\n", "b.example:8080"],
       "https, no path" => ["GET HTTPS://B.example?x HTTP/1.1\r\nHost: a.example\r\n\r\n", "B.example"],
       "IPv6" => ["GET http://[::1]:81/p HTTP/1.1\r\nHost: a\r\n\r\n", "[::1]:81"],
+      "userinfo left out" => ["GET http://user:pw@b.example:8080/ HTTP/1.1\r\nHost: a.example\r\n\r\n", "b.example:8080"],
+      "the last @ ends the userinfo" => ["GET http://x@y@evil.example/ HTTP/1.1\r\nHost: a.example\r\n\r\n", "evil.example"],
+      "an empty authority" => ["GET http:///p HTTP/1.1\r\nHost: a.example\r\n\r\n", ""],
       "origin form" => ["GET /p HTTP/1.1\r\nHost: a.example\r\n\r\n", "a.example"],
       "origin form, HTTP/1.0 without Host" => ["GET /p HTTP/1.0\r\n\r\n", nil],
     }
