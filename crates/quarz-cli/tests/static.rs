@@ -296,6 +296,71 @@ fn what_a_statement_reaches_is_checked_and_lowered_on_demand() {
     assert_eq!(out, "\"P\"\n");
 }
 
+/// An `Int` comparison reaches the `Int` native the checks resolved it
+/// to, not every method of the operator's name (docs/14 §8, #1173): a
+/// class whose `==`, `<=>` or `>` reaches the outside world, never made,
+/// keeps no statement from running. A statement that does call such an
+/// `==` is refused as before.
+#[test]
+fn an_int_comparison_reaches_the_int_native_only() {
+    let d = dir();
+    write(
+        &d.0,
+        "lib.qz",
+        "class Base\n  static def self.compare -> Void\n    x = [1, 2].size\n    k = x == 2 && x > 1 && x < 3 && (x <=> 2) == 0\n    def_class_method(:k) { k }\n  end\n  static def self.really(v: Object) -> Void\n    k = v == 1\n    def_class_method(:r) { k }\n  end\nend\n",
+    );
+    let outside = "class Shown\n  include Comparable[Shown]\n  def ==(other: Object) -> Bool = !ENV[\"HOME\"]?.nil?\n  def hash -> Int = 0\n  def <=>(other: Shown) -> Int = (ENV[\"HOME\"]? || \"\").size\nend\n";
+    let app = write(
+        &d.0,
+        "app.qz",
+        &format!("require_relative \"lib\"\n{outside}class K < Base\n  compare\nend\np K.k\n"),
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "true\n");
+    // CommandLine's `flag` and `program` compare `Int`s (the issue's
+    // reproducer).
+    let app = write(
+        &d.0,
+        "cli.qz",
+        &format!("require \"command_line\"\n{outside}class Cmd < CommandLine\n  program \"cmd\"\n  flag :v\nend\nputs Cmd.parse([\"--v\"], exit: false).v\n"),
+    );
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, "true\n");
+    // A call of the class's own `==` on a value of it still reaches it.
+    let app = write(
+        &d.0,
+        "really.qz",
+        &format!("require_relative \"lib\"\n{outside}class R < Base\n  really(Shown.new)\nend\n"),
+    );
+    let (ok, _, err) = quarz(&d.0, &["check", app.to_str().unwrap()], &[]);
+    assert!(!ok);
+    assert!(err.contains("cannot run at compile time"), "{err}");
+    // Narrowed so, the static walks drop no method a program calls by
+    // name: CommandLine's statements (`Int` comparisons) beside a class's
+    // own `==`, `<=>` and `hash`, used through `Comparable`, `include?`,
+    // `sort` and a hash's keys, interpreted and compiled.
+    let app = write(
+        &d.0,
+        "both.qz",
+        "require \"command_line\"\n\nclass Version\n  include Comparable[Version]\n\n  @n: Int\n\n  def initialize(@n: Int)\n  end\n\n  def n -> Int = @n\n\n  def <=>(other: Version) -> Int = n <=> other.n\n\n  def ==(other: Object) -> Bool\n    case other\n    in Version => v then n == v.n\n    else false\n    end\n  end\n\n  def hash -> Int = n.hash\nend\n\nclass Cmd < CommandLine\n  program \"cmd\"\n  flag :verbose, short: \"v\"\nend\n\nvs = [Version.new(3), Version.new(1), Version.new(2)]\nputs vs.sort.map { |v| v.n }.join(\",\")\nputs vs.include?(Version.new(2))\nputs vs.include?(Version.new(5))\nputs Version.new(2) > Version.new(1)\nputs Version.new(1) == Version.new(1)\nputs({Version.new(1) => \"one\"}[Version.new(1)]? || \"none\")\nx = vs.size\nputs x > 2, x == 3, x <=> 4\nputs Cmd.parse([\"-v\"], exit: false).verbose\n",
+    );
+    let want = "1,2,3\ntrue\nfalse\ntrue\ntrue\none\ntrue\ntrue\n-1\ntrue\n";
+    let (ok, out, err) = quarz(&d.0, &["run", app.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    assert_eq!(out, want);
+    let exe = d.0.join("both-bin");
+    let (ok, _, err) = quarz(
+        &d.0,
+        &["build", app.to_str().unwrap(), "-o", exe.to_str().unwrap()],
+        &[],
+    );
+    assert!(ok, "{err}");
+    let run = Command::new(&exe).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&run.stdout), want);
+}
+
 /// What a construction reaches at compile time: `C.new` runs `C`'s own
 /// `initialize` (and those it calls with `super`), not every class's,
 /// while `new` on a class method's receiver may build a subclass, whose
