@@ -493,3 +493,99 @@ pub fn store(key: u64, checks: &Checks) {
         let _ = std::fs::rename(&tmp, &p);
     }
 }
+
+// ----- standard-library sets made at first use (#1097) -----------------------
+
+/// An entry's first word, and its layout's version: a file of another
+/// kind, or one a hand copied from another layout, is a miss.
+const SET_MAGIC: u32 = 0x5153_4554; // "QSET"
+const SET_VERSION: u32 = 1;
+
+/// Where the state of the standard-library set `set` (its modules,
+/// comma-separated) made by this build is kept: under `sets/`, keyed by
+/// the build and the set.
+fn set_path(set: &str) -> Option<PathBuf> {
+    let build = build()?;
+    let key = hash(&("std-set", build, set));
+    Some(dir()?.join("sets").join(format!("{key:016x}.bin")))
+}
+
+/// The header an entry starts with: the build and the set it was made
+/// for, the body's checksum.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SetHeader {
+    magic: u32,
+    version: u32,
+    build: String,
+    set: String,
+    checksum: u64,
+}
+
+/// The body kept for the set `set` by this build, or `None`: no entry, or
+/// one that is not this build's and set's, or damaged (a truncated or
+/// changed body fails its checksum). The checksum guards against
+/// accidents, not tampering: the cache directory is trusted as the
+/// sources are (docs/05 §2).
+pub fn load_set(set: &str) -> Option<Vec<u8>> {
+    let p = set_path(set)?;
+    let bytes = std::fs::read(&p).ok()?;
+    let ((header, body), _): ((SetHeader, Vec<u8>), usize) =
+        bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).ok()?;
+    let ours = header.magic == SET_MAGIC
+        && header.version == SET_VERSION
+        && Some(header.build.as_str()) == build()
+        && header.set == set
+        && checksum(&body) == header.checksum;
+    if !ours {
+        return None;
+    }
+    // (Its time says when it was last used: `sweep`.)
+    if let Ok(f) = std::fs::File::options().append(true).open(&p) {
+        let _ = f.set_modified(std::time::SystemTime::now());
+    }
+    Some(body)
+}
+
+/// Keep `body` as the state of the set `set` made by this build: written
+/// aside and renamed into place, so that a reader sees the old entry, the
+/// new one or none. Two processes making the set at once both write; the
+/// last rename wins, and both bodies are the same (making a set is a
+/// function of the build and the sources). Whether it was kept: not when
+/// the cache is off or its directory cannot be written.
+pub fn store_set(set: &str, body: &[u8]) -> bool {
+    let Some(p) = set_path(set) else {
+        return false;
+    };
+    let header = SetHeader {
+        magic: SET_MAGIC,
+        version: SET_VERSION,
+        build: build().unwrap_or_default().to_string(),
+        set: set.to_string(),
+        checksum: checksum(body),
+    };
+    let Ok(bytes) = bincode::serde::encode_to_vec((header, body), bincode::config::standard())
+    else {
+        return false;
+    };
+    if let Some(d) = p.parent() {
+        if std::fs::create_dir_all(d).is_err() {
+            return false;
+        }
+        sweep(d);
+    }
+    let tmp = p.with_extension(format!("tmp{}", std::process::id()));
+    if std::fs::write(&tmp, bytes).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    if std::fs::rename(&tmp, &p).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    true
+}
+
+/// Where the set `set`'s entry is (tests damage or replace it).
+pub fn set_entry_path(set: &str) -> Option<PathBuf> {
+    set_path(set)
+}

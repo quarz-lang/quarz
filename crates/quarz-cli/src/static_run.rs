@@ -133,6 +133,10 @@ pub struct Runner {
     /// (`StaticRunner::later_unit`), until they are compared with those
     /// after.
     later_before: Option<Vec<quarz_lower::layout::Layout>>,
+    /// The standard-library set's compile-time functions this runner's
+    /// lowerer started from (`seeded`, #1097): what `reset` starts from
+    /// again.
+    seed: Option<Rc<quarz_lower::seed::LowererSeed>>,
     /// The reflection's rows (`reflect_rows`, `unshareable_of`), kept
     /// across statements and rebuilt for the classes the lowering's kept
     /// tables rebuilt (#717).
@@ -1512,6 +1516,7 @@ impl Runner {
             ends: Default::default(),
             cover: None,
             later_before: None,
+            seed: None,
             reflect_kept: None,
             net_kept: None,
         }
@@ -1691,6 +1696,18 @@ impl Runner {
         }
     }
 
+    /// A runner for a program that loads a standard-library set made at
+    /// first use (#1097): its lowerer starts from the set's compile-time
+    /// functions, which its generated methods are lifted from, and its
+    /// interpreter state gets them first.
+    pub fn seeded(files: Vec<SourceFile>, seed: Rc<quarz_lower::seed::LowererSeed>) -> Runner {
+        Runner {
+            lowerer: Lowerer::from_seed((*seed).clone()),
+            seed: Some(seed),
+            ..Runner::new(files)
+        }
+    }
+
     /// The source files it lowers with, by index.
     pub fn files(&self) -> &[SourceFile] {
         &self.files
@@ -1738,13 +1755,18 @@ impl Runner {
                 }
             }
             debug_assert_eq!(self.lowerer.done.len(), round.delta.base as usize);
-            self.lowerer
-                .done
-                .extend(round.delta.functions.iter().cloned());
+            // (A seeded lowerer's functions go into a new state first.)
+            let fresh = self.state.is_none();
             let state = self
                 .state
                 .get_or_insert_with(|| SharedState::with_threads(Box::new(std::io::stderr()), 1))
                 .clone();
+            if fresh && round.delta.base > 0 {
+                Interp::load_functions(&state, 0, self.lowerer.done.clone());
+            }
+            self.lowerer
+                .done
+                .extend(round.delta.functions.iter().cloned());
             // Loads the round's functions into the shared state; the
             // run's interpreter is made over it after (`interp`).
             let world = round.delta.world;
@@ -3002,7 +3024,11 @@ impl StaticRunner for Runner {
     }
 
     fn reset(&mut self) {
-        *self = Runner::new(Rc::unwrap_or_clone(std::mem::take(&mut self.files)));
+        let files = Rc::unwrap_or_clone(std::mem::take(&mut self.files));
+        *self = match self.seed.take() {
+            Some(seed) => Runner::seeded(files, seed),
+            None => Runner::new(files),
+        };
     }
 
     fn add_file(&mut self, index: u32, file: SourceFile) {

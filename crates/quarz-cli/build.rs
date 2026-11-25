@@ -5,7 +5,10 @@
 
 /// The standard library modules cached together: each module with what it
 /// requires, in `STD_MODULES` order (a program loading another mix checks
-/// them from their source).
+/// them from their source). Checked here without running their `static`
+/// statements: a set whose modules call what their own statements
+/// generate (`command_line` with `test`) is made at first use instead
+/// (`quarz_cli::std_set`, #1097).
 const STD_SETS: &[&[&str]] = &[
     &["json"],
     &["time"],

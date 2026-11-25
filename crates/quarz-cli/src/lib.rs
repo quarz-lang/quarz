@@ -6,6 +6,7 @@ pub mod complete;
 pub mod highlight;
 pub mod session;
 pub mod static_run;
+pub mod std_set;
 pub mod tree;
 
 use quarz_lower::Lowerer;

@@ -110,6 +110,11 @@ pub struct Checked {
     pub output: Output,
     /// Units in execution order (dependencies first, the main file last).
     pub units: Vec<CheckedUnit>,
+    /// The checker's record of `self.new` sites, and how many `static`
+    /// statements ran: what a standard-library set made at first use
+    /// keeps of the check beside the world (`PreludeState`, #1097).
+    pub self_news: Vec<check::SelfNew>,
+    pub statements_run: usize,
 }
 
 /// Diagnostics tagged with the index of the file they refer to (0 = prelude,
@@ -696,6 +701,8 @@ impl Session {
             world: self.checker.world.clone(),
             output: self.checker.out.clone(),
             units,
+            self_news: self.checker.self_news().to_vec(),
+            statements_run: self.checker.statements_done(),
         }
     }
 }
@@ -962,6 +969,11 @@ pub struct PreludeState {
     /// The standard library's modules checked with it (`std_state`): the
     /// first units of a program that loads exactly these.
     pub units: Vec<CheckedUnit>,
+    /// How many of the world's `static` statements ran when the state was
+    /// made: a set made at first use runs its modules' (#1097); a program
+    /// checked from it does not run them again.
+    #[serde(default)]
+    pub statements_run: usize,
 }
 
 impl PreludeState {
@@ -1023,6 +1035,7 @@ pub fn prelude_state(prelude: &Program) -> (PreludeState, Vec<FileDiagnostic>) {
             output,
             self_news,
             units: Vec::new(),
+            statements_run: 0,
         },
         diagnostics,
     )
@@ -1088,12 +1101,45 @@ pub fn std_state(prelude: &Program, modules: &[&str]) -> (PreludeState, Vec<File
             output,
             self_news,
             units,
+            statements_run: 0,
         },
         diagnostics,
     )
 }
 
 static STD_CACHE: std::sync::OnceLock<Vec<(String, &'static [u8])>> = std::sync::OnceLock::new();
+
+/// The states of the sets made at first use in this process (#1097), by
+/// key: read from the cache directory or made (`quarz-cli`'s `std_set`).
+/// Each is encoded, and decoded already for the first check that takes
+/// it (a check made again, `check_uncached`, decodes it again). Per
+/// thread: the runner is made and the program checked on one.
+type MadeStd = Vec<(String, std::sync::Arc<Vec<u8>>, Option<PreludeState>)>;
+thread_local! {
+    static MADE_STD: std::cell::RefCell<MadeStd> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Start checking a program whose first units are exactly the standard
+/// library modules `key` (comma-separated) from this state, a set made at
+/// first use (#1097), as from a precompiled one: `bytes` encode `state`.
+pub fn add_made_std_state(key: String, bytes: std::sync::Arc<Vec<u8>>, state: PreludeState) {
+    MADE_STD.with_borrow_mut(|made| {
+        made.retain(|(k, _, _)| *k != key);
+        made.push((key, bytes, Some(state)));
+    });
+}
+
+/// The state made for `key` in this process, if any.
+fn made_std_state(key: &str) -> Option<PreludeState> {
+    MADE_STD.with_borrow_mut(|made| {
+        let (_, bytes, decoded) = made.iter_mut().find(|(k, _, _)| k == key)?;
+        Some(
+            decoded
+                .take()
+                .unwrap_or_else(|| PreludeState::decode(bytes)),
+        )
+    })
+}
 
 /// Start checking a program whose first units are exactly the standard
 /// library modules named (comma-separated) from these encoded states.
@@ -1138,6 +1184,23 @@ pub type ExtraUnit<'a> = &'a mut dyn FnMut(&World) -> Result<Vec<ExtraSource>, V
 
 thread_local! {
     static NO_CACHE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `check_movement_with` neither reading files' checks back from the
+/// cache nor keeping them: how a standard-library set made at first use
+/// is checked (#1097), so that what it makes is a function of the build
+/// and the sources alone (a file's checks read back give an equal check,
+/// not an equal encoding of the world).
+pub fn check_movement_uncached(
+    prelude: &Program,
+    units: &[Unit],
+    cogs: &[CogDecl],
+    runner: &mut (dyn StaticRunner + '_),
+) -> (Option<Checked>, Vec<FileDiagnostic>) {
+    let was = NO_CACHE.replace(true);
+    let r = check_with_extra(prelude, units, cogs, None, Some(runner));
+    NO_CACHE.set(was);
+    r
 }
 
 /// `check_with_extra` reading nothing back.
@@ -1186,15 +1249,22 @@ pub fn check_with_extra(
         .then(|| STD_CACHE.get())
         .flatten()
         .and_then(|states| states.iter().find(|(k, _)| *k == key.join(",")))
-        .map(|(_, bytes)| PreludeState::decode(bytes));
+        .map(|(_, bytes)| PreludeState::decode(bytes))
+        .or_else(|| {
+            (leading > 0)
+                .then(|| made_std_state(&key.join(",")))
+                .flatten()
+        });
     let cached =
         std_cached.or_else(|| PRELUDE_CACHE.get().map(|bytes| PreludeState::decode(bytes)));
     let mut prelude_output = None;
     let mut std_units: Vec<CheckedUnit> = Vec::new();
+    let mut statements_run = 0;
     let mut declarer = match cached {
         Some(state) => {
             prelude_output = Some((state.output, state.self_news));
             std_units = state.units;
+            statements_run = state.statements_run;
             declare::Declarer::with_world(state.world)
         }
         None => {
@@ -1309,6 +1379,8 @@ pub fn check_with_extra(
     let mut checker = check::Checker::new(declarer.world, file_mains.clone());
     checker.set_output(out);
     checker.set_self_news(sites);
+    // (A set made at first use ran its modules' statements: not again.)
+    checker.set_statements_done(statements_run);
     // Cog by cog, in dependency order (a script file by file, in load
     // order): the class bodies' `static` statements run first, before any
     // body is checked (docs/14; what they call is checked on demand) and
@@ -1556,6 +1628,8 @@ pub fn check_with_extra(
             }
         }
     }
+    let self_news = checker.self_news().to_vec();
+    let statements_run = checker.statements_done();
     let (world, output, mut diags) = checker.into_output();
     diagnostics.append(&mut diags);
     dedup_diagnostics(&mut diagnostics);
@@ -1564,6 +1638,8 @@ pub fn check_with_extra(
         world,
         output,
         units: checked_units,
+        self_news,
+        statements_run,
     };
     if failed {
         (None, diagnostics)

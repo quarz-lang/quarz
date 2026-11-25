@@ -28,6 +28,7 @@ mod regshare;
 mod release;
 
 mod rtworld;
+pub mod seed;
 pub use rtworld::erase;
 mod sroa;
 pub mod verify;

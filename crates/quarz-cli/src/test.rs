@@ -361,7 +361,9 @@ fn load_and_check(
     // The class bodies' `static` statements run during the check (docs/14).
     let mut runner_files = vec![prelude_file.clone()];
     runner_files.extend(sources.iter().cloned());
-    let mut runner = quarz_cli::static_run::Runner::new(runner_files.clone());
+    // (A standard-library set made at first use: read back or made, #1097.)
+    let mut runner =
+        quarz_cli::std_set::runner_for(&prelude.program, &to_check, runner_files.clone());
     let mut extra = |world: &World| {
         let mut all_files = vec![prelude_file.clone()];
         all_files.extend(sources.iter().cloned());

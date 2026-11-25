@@ -82,17 +82,50 @@ pub fn set_snapshot(bytes: &'static [u8]) {
     let _ = BYTES.set(bytes);
 }
 
+fn snapshot() -> Option<&'static PreludeRt> {
+    SNAPSHOT
+        .get_or_init(|| BYTES.get().map(|b| PreludeRt::decode(b)))
+        .as_ref()
+}
+
+/// Whether `world` starts with this build's prelude: its classes,
+/// methods and extensions, by name and owner and by target, as the
+/// snapshot has them (the ids line up). `None` without a snapshot. Also
+/// what a standard-library set made at first use is checked by when it is
+/// read back from the cache directory (#1097).
+pub fn fits(world: &World) -> Option<bool> {
+    let snap = snapshot()?;
+    let (pc, pm, pe) = (
+        snap.class_names.len(),
+        snap.method_names.len(),
+        snap.extension_targets.len(),
+    );
+    Some(
+        world.classes.len() >= pc
+            && world.methods.len() >= pm
+            && world.extensions.len() >= pe
+            && world.classes[..pc]
+                .iter()
+                .map(|c| &c.name)
+                .eq(snap.class_names.iter())
+            && world.methods[..pm]
+                .iter()
+                .map(|m| (m.owner, &m.name))
+                .eq(snap.method_names.iter().map(|(o, n)| (*o, n)))
+            && world.extensions[..pe]
+                .iter()
+                .map(|e| e.target)
+                .eq(snap.extension_targets.iter().copied()),
+    )
+}
+
 /// The snapshot, when there is one and `world` may use it: its world
-/// starts with the prelude's classes, methods and extensions (the
-/// snapshot's, by name and owner, and by target: the ids line up), and
+/// starts with the prelude's classes, methods and extensions (`fits`), and
 /// the program changes none of the prelude's share
 /// (`World::prelude_unchanged`, over those ids). Otherwise why not
 /// (`log`'s words).
 pub(crate) fn usable(world: &World) -> Result<&'static PreludeRt, &'static str> {
-    let Some(snap) = SNAPSHOT
-        .get_or_init(|| BYTES.get().map(|b| PreludeRt::decode(b)))
-        .as_ref()
-    else {
+    let Some(snap) = snapshot() else {
         return Err("none");
     };
     let (pc, pm, pe) = (
@@ -100,22 +133,7 @@ pub(crate) fn usable(world: &World) -> Result<&'static PreludeRt, &'static str> 
         snap.method_names.len(),
         snap.extension_targets.len(),
     );
-    let fits = world.classes.len() >= pc
-        && world.methods.len() >= pm
-        && world.extensions.len() >= pe
-        && world.classes[..pc]
-            .iter()
-            .map(|c| &c.name)
-            .eq(snap.class_names.iter())
-        && world.methods[..pm]
-            .iter()
-            .map(|m| (m.owner, &m.name))
-            .eq(snap.method_names.iter().map(|(o, n)| (*o, n)))
-        && world.extensions[..pe]
-            .iter()
-            .map(|e| e.target)
-            .eq(snap.extension_targets.iter().copied());
-    if !fits {
+    if fits(world) != Some(true) {
         return Err("refused: the ids do not line up");
     }
     if !world.prelude_unchanged(pc, pm, pe) {
