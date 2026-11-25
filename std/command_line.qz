@@ -653,7 +653,20 @@ class CommandLine
     def self.variant_name(value: Object) -> String = kebab(value.class.name)
 
     # A value as the help writes it: an enum's variant in kebab case.
-    def self.text_of(kind: Symbol, value: Object) -> String = kind == :enum ? variant_name(value) : value.to_s
+    # (Each `to_s` is called on a receiver of its class, not on an
+    # `Object`: a statement's compile-time reach is then that class's
+    # `to_s`, not every `to_s` of the program, one of which may do what
+    # a compile-time run cannot, #1171.)
+    def self.text_of(kind: Symbol, value: Object) -> String
+      return variant_name(value) if kind == :enum
+      case value
+      in String => s then s
+      in Int => i then i.to_s
+      in Float => f then f.to_s
+      in Bool => b then b.to_s
+      else raise ArgumentError, "CommandLine: internal error: a value of a type `value_kind` refuses"
+      end
+    end
 
     def self.long_name(name: Symbol) -> String = name.to_s.tr("_", "-")
 
@@ -661,8 +674,12 @@ class CommandLine
 
     # What the help shows as a default: nothing for nil, false and "".
     def self.default_text(kind: Symbol, value: Object?) -> String
-      return "" if value.nil? || value == false
-      text_of(kind, value)
+      # (Not `value == false`, which would reach every `==`, #1171.)
+      case value
+      in nil then ""
+      in Bool => b then b ? "true" : ""
+      else text_of(kind, value)
+      end
     end
 
     # `WordCount` → `word-count`, `HTTPServer` → `http-server`, from a
