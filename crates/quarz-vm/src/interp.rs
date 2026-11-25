@@ -1930,15 +1930,10 @@ impl Interp {
             .name(format!("quarz-worker-{w}"))
             .spawn(move || {
                 // A panic here would leave the worker's tasks unfinished
-                // and the others waiting for them: it ends the program,
-                // as one on the main thread does (the hook has printed
-                // it).
-                let run = std::panic::AssertUnwindSafe(move || {
+                // and the others waiting for them: it ends the program.
+                sched::exit_on_panic(move || {
                     Interp::worker_main(global, w, poller, image, argv, native_bt)
-                });
-                if std::panic::catch_unwind(run).is_err() {
-                    std::process::exit(101);
-                }
+                })
             })
             .map(|_| ())
     }

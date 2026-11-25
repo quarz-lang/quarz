@@ -346,6 +346,26 @@ fn a_helper_thread_that_cannot_start_is_an_error_not_a_panic() {
     );
 }
 
+/// A job that panics on its helper thread ends the program with status
+/// 101, as a panic on a worker does: left alone, the thread ended and
+/// the task waiting for the job's result stayed parked for good (#1156).
+/// (What the program wrote to standard output is not flushed: the
+/// process ends at once, as on a worker's panic.)
+#[cfg(debug_assertions)]
+#[test]
+fn a_helper_job_that_panics_ends_the_program() {
+    let (code, out, err) = run_with_env(
+        "helper-panic",
+        "puts \"before\"\nFile.write(\"a.txt\", \"x\")\nputs \"after\"\n",
+        &[("QUARZ_TEST_PANIC_JOB", "1")],
+    );
+    assert_eq!(code, 101, "{out}{err}");
+    assert!(
+        err.contains("a helper thread's job panicked (QUARZ_TEST_PANIC_JOB)"),
+        "{err}"
+    );
+}
+
 /// A job submitted while another worker's thread is still starting gets
 /// a thread of its own: it is not queued behind the starting one's job.
 /// Here the first job reads a FIFO and ends only when the second writes
