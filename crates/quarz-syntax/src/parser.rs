@@ -87,12 +87,16 @@ impl Parser<'_> {
         let comments = self.lexer.comments().to_vec();
         let docs = crate::doc::extract(src, span_base, &comments);
         let it_hints = std::mem::take(&mut self.it_hints);
+        let mut symbols = std::mem::take(&mut self.symbols);
+        symbols.sort_unstable();
+        symbols.dedup();
         Parsed {
             program: Program {
                 body,
                 span,
                 docs,
                 it_hints,
+                symbols,
             },
             diagnostics,
             comments,
@@ -162,6 +166,8 @@ pub struct Parser<'src> {
     scope_hard: Vec<bool>,
     /// `Program::it_hints`.
     it_hints: Vec<(Span, String)>,
+    /// The symbol literals written (`Program::symbols`).
+    symbols: Vec<String>,
 }
 
 /// The operator `it`'s one argument may begin with when `it OP x` was
@@ -249,6 +255,7 @@ impl<'src> Parser<'src> {
             it_scopes: Vec::new(),
             scope_hard: Vec::new(),
             it_hints: Vec::new(),
+            symbols: Vec::new(),
         }
     }
 
@@ -385,6 +392,14 @@ impl<'src> Parser<'src> {
     }
 
     fn node(&mut self, span: Span, kind: ExprKind) -> Expr {
+        // Every symbol literal the source writes (`:a`, `:"a"`, `%i[a]`,
+        // `&:a`, a hash literal's `a:` key) is built here (#1129); the
+        // other names that are symbols at run time (a hash pattern's key,
+        // a call's keyword label, a keyword parameter's name) are recorded
+        // where they are parsed.
+        if let ExprKind::Symbol(name) = &kind {
+            self.symbols.push(name.clone());
+        }
         let id = self.next_id;
         self.next_id += 1;
         Expr { id, span, kind }
@@ -1898,6 +1913,8 @@ impl<'src> Parser<'src> {
                 self.parse_expr_no_label()?
             };
             let span = self.span_from(start);
+            // A call's keyword label is a symbol at run time (#1129).
+            self.symbols.push(name.clone());
             return Ok(Arg::Keyword { name, value, span });
         }
         // A string label: `"key": value` inside argument lists is not
@@ -3776,6 +3793,8 @@ impl<'src> Parser<'src> {
                     Some(self.parse_pattern()?)
                 };
                 let span = self.span_from(start);
+                // A hash pattern's key is a symbol at run time (#1129).
+                self.symbols.push(key.clone());
                 pairs.push(HashPatternPair { key, pattern, span });
             } else {
                 return Err(self.error_expected("a `key:` pattern"));
@@ -4806,6 +4825,10 @@ impl<'src> Parser<'src> {
             }
             _ => return Err(self.error_expected("a parameter")),
         };
+        // A keyword parameter's name is a symbol at run time (#1129).
+        if kind == ParamKind::KeywordOnly {
+            self.symbols.push(name.clone());
+        }
         self.declare(&name);
         let ty = if self.at(&T::Colon) {
             self.bump();

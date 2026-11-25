@@ -68,6 +68,20 @@ fn require_loads_libraries_once() {
 /// A standard module's `Kernel` functions in the REPL (#936): an input
 /// naming the module's constant loads it and has them, as a `require`
 /// does.
+/// #1129: a symbol literal a later input writes makes that symbol one of
+/// the program's from then on (the inputs extend the list), and not
+/// before.
+#[test]
+fn a_later_input_declares_a_symbol_for_json_decode() {
+    let (out, _) = values(&[
+        "require \"json\"",
+        "JSON.decode?[Hash[Symbol, Int]](\"{\\\"zz_plum\\\": 1}\")",
+        "x = :zz_plum",
+        "JSON.decode?[Hash[Symbol, Int]](\"{\\\"zz_plum\\\": 1}\")",
+    ]);
+    assert_eq!(out, vec!["", "=> nil", "=> :zz_plum", "=> {zz_plum: 1}"]);
+}
+
 #[test]
 fn a_standard_modules_kernel_functions_follow_what_an_input_names() {
     let (out, _) = values(&[

@@ -607,6 +607,40 @@ fn an_inherited_new_from_a_cog_gives_no_required_block() {
     );
 }
 
+/// #1129: a symbol literal written only in a library cog (in a method
+/// nothing calls, and in a `static def` the application's class body runs)
+/// is a symbol of the program for `JSON.decode`; a string written nowhere
+/// is not, nor a symbol a `static def` computes (`to_sym`) and bakes into
+/// the method it generates, though the program holds it (decided on
+/// #1129). The VM and the compiled program answer the same.
+#[test]
+fn json_decode_takes_a_symbol_written_only_in_a_cog() {
+    let w = World::new();
+    w.write(
+        "syms/Cog.toml",
+        "[cog]\nname = \"syms\"\nversion = \"0.1.0\"\n",
+    );
+    w.write(
+        "syms/src/syms.qz",
+        "def unused -> Symbol = :quince\nclass Holder\n  static def self.tag -> Void\n    t = :rhubarb\n    nil\n  end\n  static def self.bake -> Void\n    s = (\"baked_\" + \"sym\").to_sym\n    def_method(:baked) { s }\n    nil\n  end\nend\n",
+    );
+    w.commit("syms", Some("v0.1.0"));
+    w.app(
+        &format!("Syms = {{ git = \"{}\", tag = \"v0.1.0\" }}\n", w.url("syms")),
+        "require \"json\"\nclass Tagged < Syms::Holder\n  tag\n  bake\nend\nputs Tagged.new.baked.inspect\ndata Pick = (kind: Symbol)\n[\"quince\", \"rhubarb\", \"baked_sym\", \"zzz_nowhere\"].each do |s|\n  pick = JSON.decode?[Pick](\"{\\\"kind\\\": \\\"#{s}\\\"}\")\n  puts \"#{s}: #{pick ? pick.kind.inspect : \"refused\"}\"\nend\n",
+    );
+    let expected =
+        ":baked_sym\nquince: :quince\nrhubarb: :rhubarb\nbaked_sym: refused\nzzz_nowhere: refused\n";
+    assert_eq!(w.ok("app", &["run"]), expected);
+    let exe = w.path("app/app-bin");
+    w.ok("app", &["build", "-o", exe.to_str().unwrap()]);
+    let out = Command::new(&exe)
+        .env("QUARZ_THREADS", "1")
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
+}
+
 #[test]
 fn a_generation_into_another_cogs_held_type_is_refused() {
     // #796 (C): a field of a library cog holds its `data` type `D` in

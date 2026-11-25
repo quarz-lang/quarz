@@ -360,6 +360,7 @@ impl<'ast> Declarer<'ast> {
             return;
         };
         self.world.add_docs(&program.docs);
+        self.world.add_symbol_literals(&program.symbols);
         self.world.it_hints.extend(
             program
                 .it_hints
@@ -425,6 +426,7 @@ impl<'ast> Declarer<'ast> {
     pub fn collect_prelude(&mut self, program: &'ast Program) {
         self.file = 0;
         self.world.add_docs(&program.docs);
+        self.world.add_symbol_literals(&program.symbols);
         self.world.it_hints.extend(
             program
                 .it_hints
@@ -475,6 +477,7 @@ impl<'ast> Declarer<'ast> {
     pub fn collect_unit(&mut self, program: &'ast Program, file: u32) {
         self.file = file;
         self.world.add_docs(&program.docs);
+        self.world.add_symbol_literals(&program.symbols);
         self.world.it_hints.extend(
             program
                 .it_hints
@@ -514,6 +517,7 @@ impl<'ast> Declarer<'ast> {
     pub fn collect_into_unit(&mut self, program: &'ast Program, file: u32, main: ClassId) {
         self.file = file;
         self.world.add_docs(&program.docs);
+        self.world.add_symbol_literals(&program.symbols);
         self.world.it_hints.extend(
             program
                 .it_hints

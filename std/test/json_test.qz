@@ -214,6 +214,14 @@ class JsonErrorTest < Test::Case
     assert_equal(1e300, JSON.decode[Float]("1" + "0" * 300))
   end
 
+  # #1129: a symbol literal written only in a standard-library module the
+  # program loads (`std/test.qz`'s, in the set made at first use, #1097)
+  # is a symbol of the program; the name is not written here.
+  def test_a_std_modules_symbol_decodes
+    assert_equal("omis" + "sion", JSON.decode[Symbol]("\"omission\"").to_s)
+    assert_nil(JSON.decode?[Symbol]("\"zz_written_nowhere\""))
+  end
+
   def depth(v: JSON::Value) -> Int
     case v
     in JSON::Value::Array(items) then 1 + (items.map { |x| depth(x) }.max || 0)

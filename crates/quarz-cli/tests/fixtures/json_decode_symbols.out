@@ -1,0 +1,17 @@
+apple: :apple
+banana: :banana
+cherry: :cherry
+date: :date
+fig: :fig
+hickory: :hickory
+kiwi: :kiwi
+lime: :lime
+pkcs8: :pkcs8
+never_called: :never_called
+weight: :weight
+to_s: :to_s
+zzz_written_nowhere: refused
+:made_2 made at run time: refused
+$: expected keys that are symbols of the program, found another
+{apple: 1, banana: 2}
+$.kind: expected a symbol of the program, found another string

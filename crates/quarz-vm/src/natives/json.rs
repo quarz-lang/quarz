@@ -340,7 +340,15 @@ impl Decoder<'_> {
             Node::Str if class == c.string => Ok(inner.unwrap_or(Value::Nil)),
             Node::Sym if class == c.string => {
                 let s = string(self.interp, &inner.unwrap_or(Value::Nil), "string")?.to_string();
-                Ok(Value::Symbol(self.interp.intern(&s)))
+                // Only a symbol of the program: interning a peer's strings
+                // would grow the symbol table for good (#1129).
+                match self.interp.declared_symbol(&s) {
+                    Some(sym) => Ok(Value::Symbol(sym)),
+                    None => Err(DecodeFail::Shape(format!(
+                        "{}: expected a symbol of the program, found another string",
+                        self.path
+                    ))),
+                }
             }
             Node::Int if class == c.number => match inner {
                 Some(Value::Int(i)) => Ok(Value::Int(i)),
@@ -450,13 +458,26 @@ impl Decoder<'_> {
                 let members = self.members(inner);
                 let mut map = ValueMap::default();
                 for (k, item) in members {
+                    // A `Symbol` key: only a symbol of the program (#1129).
+                    let sym = match node {
+                        Node::HashSym(_) => match self.interp.declared_symbol(&k) {
+                            Some(sym) => Some(sym),
+                            None => {
+                                return Err(DecodeFail::Shape(format!(
+                                "{}: expected keys that are symbols of the program, found another",
+                                self.path
+                            )))
+                            }
+                        },
+                        _ => None,
+                    };
                     let len = self.path.len();
                     self.push_key(&k);
                     let value = self.decode(&item, m)?;
                     self.path.truncate(len);
-                    let key = match node {
-                        Node::HashSym(_) => Value::Symbol(self.interp.intern(&k)),
-                        _ => Value::string(k),
+                    let key = match sym {
+                        Some(sym) => Value::Symbol(sym),
+                        None => Value::string(k),
                     };
                     map.insert(key, value);
                 }

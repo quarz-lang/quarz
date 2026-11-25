@@ -1877,6 +1877,51 @@ pub struct RtWorld {
     /// file index.
     #[serde(default)]
     pub file_mains: Vec<Option<ClassId>>,
+    /// The symbols of the program (`quarz_lower::rtworld::declared_symbols`,
+    /// #1129): the symbol literals its files and the libraries they require
+    /// write, and its methods' and fields' names. What `JSON.decode` turns
+    /// a string into a `Symbol` for; another string is a decode error, so
+    /// a peer's text never grows the symbol table. Never filtered by
+    /// `shake`: the VM and a compiled program read the same list. Packed
+    /// (`RtSymbols`): a compiled program decodes it at start-up, as one
+    /// text rather than a string per name.
+    #[serde(default)]
+    pub symbols: RtSymbols,
+}
+
+/// A list of names packed as one text and where each ends
+/// (`RtWorld::symbols`), extend-only.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RtSymbols {
+    text: String,
+    ends: Vec<u32>,
+}
+
+impl RtSymbols {
+    /// The number of names.
+    pub fn len(&self) -> usize {
+        self.ends.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ends.is_empty()
+    }
+
+    /// Adds `name` at the end.
+    pub fn push(&mut self, name: &str) {
+        self.text.push_str(name);
+        self.ends.push(self.text.len() as u32);
+    }
+
+    /// The names, in order.
+    pub fn iter(&self) -> impl Iterator<Item = &str> + '_ {
+        let mut start = 0usize;
+        self.ends.iter().map(move |&end| {
+            let s = &self.text[start..end as usize];
+            start = end as usize;
+            s
+        })
+    }
 }
 
 /// What `may_dispatch_to` reads of a program's classes and methods, so

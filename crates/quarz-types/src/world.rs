@@ -762,6 +762,13 @@ pub struct World {
     /// `Program::it_hints` of every file, by the call's span.
     #[serde(skip)]
     pub it_hints: HashMap<(u32, u32), String>,
+    /// `Program::symbols` of every file declared, in the order they were
+    /// (a symbol may appear more than once): with the methods' and
+    /// fields' names, the symbols of the program (#1129,
+    /// `quarz_lower::rtworld::declared_symbols`). Kept in the prelude's and
+    /// the standard library's ahead-of-time states, which parse nothing.
+    #[serde(default)]
+    pub symbol_literals: Vec<String>,
     pub classes: Vec<ClassInfo>,
     pub methods: Vec<MethodInfo>,
     pub consts: Vec<ConstInfo>,
@@ -1180,6 +1187,11 @@ impl World {
     }
 
     /// Take a file's documentation comments (docs/13-doc-comments.md).
+    /// Adds a file's symbol literals (`Program::symbols`).
+    pub fn add_symbol_literals(&mut self, symbols: &[String]) {
+        self.symbol_literals.extend(symbols.iter().cloned());
+    }
+
     pub fn add_docs(&mut self, docs: &[quarz_syntax::doc::Doc]) {
         if docs.is_empty() {
             return;
