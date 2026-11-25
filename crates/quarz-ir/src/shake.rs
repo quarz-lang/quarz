@@ -768,6 +768,20 @@ fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
                 Inst::OwnedCall { method, .. } => visit(Ref::Method(*method)),
                 // (The native it calls for what it does not read in place.)
                 Inst::BytesIndex { method, .. } => visit(Ref::Method(*method)),
+                // An operator the checks resolved to an `Int` or `Float`
+                // native: what a run may call is that method alone, which
+                // the fallback for operands that are not numbers
+                // dispatches on (`Interp::op_binop`) with a receiver of
+                // that class, and `Int` and `Float` have no subclasses;
+                // not every method of the operator's name, nor the
+                // implementations of `Comparable`'s it overrides (docs/14
+                // §8, #1173). Shake keeps the name all the same.
+                Inst::BinOp {
+                    method: Some(m), ..
+                } if exact => visit(Ref::Exact {
+                    method: *m,
+                    on_self: false,
+                }),
                 Inst::BinOp { method, op, .. } => {
                     visit(Ref::Name(op.name()));
                     if let Some(m) = method {
