@@ -341,9 +341,36 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let content = content_bytes(i, a.arg(1))?;
         let len = content.len();
         let path = p.to_string();
-        i.block_on(move || std::fs::write(&path, &content))?
+        // `perm:` for a file it creates (#1159); an existing file keeps
+        // its mode, as `std::fs::write` (O_CREAT|O_TRUNC) leaves it.
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        if let Some(bits) = file_perm(i, &a, "perm")? {
+            set_create_mode(i, &mut options, bits)?;
+        }
+        i.block_on(move || options.open(&path)?.write_all(&content))?
             .map(|_| Value::Int(len as i64))
             .map_err(|e| os_error(i, e, p))
+    });
+    native!(m, "File.chmod", |i, _, a| {
+        let p = string(i, a.arg(0), "path")?;
+        let bits = perm_bits(i, a.arg(1), "mode")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(bits);
+            on_disk(i, p, move |p| std::fs::set_permissions(p, perms))?
+                .map_err(|e| os_error(i, e, p))?;
+            Ok(Value::Int(0))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (p, bits);
+            Err(i.raise(
+                i.program.exc.not_implemented,
+                "File.chmod is not supported on this platform",
+            ))
+        }
     });
     native!(m, "File.append", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
@@ -565,12 +592,15 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "Dir.mkdir", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        on_disk(i, p, |p| std::fs::create_dir(p))?.map_err(|e| os_error(i, e, p))?;
+        let builder = dir_builder(i, &a, false)?;
+        on_disk(i, p, move |p| builder.create(p))?.map_err(|e| os_error(i, e, p))?;
         Ok(Value::Int(0))
     });
     native!(m, "Dir.mkdir_p", |i, _, a| {
         let p = string(i, a.arg(0), "path")?;
-        on_disk(i, p, |p| std::fs::create_dir_all(p))?.map_err(|e| os_error(i, e, p))?;
+        // (`perm:` goes to every directory it creates, #1159.)
+        let builder = dir_builder(i, &a, true)?;
+        on_disk(i, p, move |p| builder.create(p))?.map_err(|e| os_error(i, e, p))?;
         Ok(Value::Int(0))
     });
     native!(m, "Dir.rmdir", |i, _, a| {
@@ -661,6 +691,69 @@ pub(super) fn os_error(interp: &Interp, e: std::io::Error, what: &str) -> Flow {
         interp.program.exc.system_call_error,
         &format!("{what}: {e}"),
     )
+}
+
+/// A file mode (`perm:`, `File.chmod`'s `mode`): 0 to 0o7777 (#1159).
+fn perm_bits(interp: &Interp, v: &Value, what: &str) -> Result<u32, Flow> {
+    let n = super::int(interp, v, what)?;
+    u32::try_from(n)
+        .ok()
+        .filter(|b| *b <= 0o7777)
+        .ok_or_else(|| interp.err_arg(&format!("{what}: not a file mode (0 to 0o7777): {n}")))
+}
+
+/// The `perm:` keyword of a call, when given (and not nil).
+fn file_perm(interp: &Interp, args: &Args, name: &str) -> Result<Option<u32>, Flow> {
+    match args.kw(interp, name) {
+        None | Some(Value::Nil) => Ok(None),
+        Some(v) => perm_bits(interp, v, name).map(Some),
+    }
+}
+
+/// The mode a file `options` creates gets (the umask applies, as for
+/// `open(2)`); off Unix, `NotImplementedError`.
+fn set_create_mode(
+    interp: &Interp,
+    options: &mut std::fs::OpenOptions,
+    bits: u32,
+) -> Result<(), Flow> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(bits);
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (options, bits);
+        Err(interp.raise(
+            interp.program.exc.not_implemented,
+            "perm: is not supported on this platform",
+        ))
+    }
+}
+
+/// `Dir.mkdir`'s (or with `recursive`, `mkdir_p`'s) builder, with `perm:`
+/// when given (the umask applies).
+fn dir_builder(interp: &Interp, args: &Args, recursive: bool) -> Result<std::fs::DirBuilder, Flow> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(recursive);
+    if let Some(bits) = file_perm(interp, args, "perm")? {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(bits);
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = bits;
+            return Err(interp.raise(
+                interp.program.exc.not_implemented,
+                "perm: is not supported on this platform",
+            ));
+        }
+    }
+    Ok(builder)
 }
 
 fn content_bytes(interp: &Interp, v: &Value) -> Result<Vec<u8>, Flow> {
@@ -1240,6 +1333,7 @@ fn file_open(interp: &Interp, _: &Value, args: Args) -> EvalResult {
         None => "r".to_string(),
     };
     let mut options = std::fs::OpenOptions::new();
+    let perm = file_perm(interp, &args, "perm")?;
     let (read, write) = match mode.trim_end_matches('b') {
         "r" => {
             options.read(true);
@@ -1257,6 +1351,15 @@ fn file_open(interp: &Interp, _: &Value, args: Args) -> EvalResult {
             options.read(true).write(true).create(true).truncate(true);
             (true, true)
         }
+        // Created, or refused when the file exists (O_EXCL, #1159).
+        "wx" => {
+            options.write(true).create_new(true);
+            (false, true)
+        }
+        "w+x" => {
+            options.read(true).write(true).create_new(true);
+            (true, true)
+        }
         "a" => {
             options.append(true).create(true);
             (false, true)
@@ -1267,6 +1370,16 @@ fn file_open(interp: &Interp, _: &Value, args: Args) -> EvalResult {
         }
         other => return Err(interp.err_arg(&format!("invalid access mode {other}"))),
     };
+    if let Some(bits) = perm {
+        // ("r" and "r+" never create the file.)
+        let base = mode.trim_end_matches('b');
+        if base.starts_with('r') {
+            return Err(interp.err_arg(&format!(
+                "perm: given with mode {base}, which creates no file"
+            )));
+        }
+        set_create_mode(interp, &mut options, bits)?;
+    }
     let p = path.to_string();
     let opened = interp
         .block_on(move || -> std::io::Result<FileIo> {
