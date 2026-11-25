@@ -301,3 +301,107 @@ class DirGlobTest < Test::Case
     end
   end
 end
+
+# #1159: exclusive creation ("wx", "w+x"), `perm:` at creation, File.chmod,
+# and `perm:` on Dir.mkdir and Dir.mkdir_p. Modes are read with GNU
+# `stat -c %a` (as on CI's Linux); a test is skipped where it is missing.
+# The expected modes assume a umask that leaves them whole (022 or 027).
+class FilePermTest < Test::Case
+  def path(name: String) -> String = "#{Dir.tmpdir}/quarz-perm-test-#{Process.pid}-#{name}"
+
+  # The mode bits of `p` in octal (`"600"`).
+  def mode_of(p: String) -> String
+    out = Process.run("stat", "-c", "%a", p)
+    omit("no GNU stat here") unless out.success?
+    out.stdout.strip
+  rescue SystemCallError
+    omit("no stat here")
+  end
+
+  def test_wx_creates_or_fails
+    p = path("wx")
+    File.delete(p) if File.exist?(p)
+    begin
+      File.open(p, "wx") { |f| f.write("first") }
+      e = assert_raise(SystemCallError) { File.open(p, "wx") { |f| f.write("second") }; nil }
+      assert_match(/\A#{Regexp.escape(p)}: /, e.message)
+      assert_equal("first", File.read(p))
+      File.delete(p)
+      got = File.open(p, "w+x") do |f|
+        f.write("both")
+        f.rewind
+        f.read
+      end
+      assert_equal("both", got)
+      ["rx", "ax", "r+x", "a+x"].each do |m|
+        e = assert_raise(ArgumentError) { File.open(p, m); nil }
+        assert_equal("invalid access mode #{m}", e.message)
+      end
+    ensure
+      File.delete(p) if File.exist?(p)
+    end
+  end
+
+  def test_perm_at_creation_only
+    p = path("perm")
+    File.delete(p) if File.exist?(p)
+    begin
+      File.open(p, "wx", perm: 0o600) { |f| f.write("s") }
+      assert_equal("600", mode_of(p))
+      File.delete(p)
+      File.write(p, "s", perm: 0o600)
+      assert_equal("600", mode_of(p))
+      # An existing file keeps its mode, whatever perm: says.
+      File.write(p, "t", perm: 0o644)
+      assert_equal("600", mode_of(p))
+      assert_equal("t", File.read(p))
+      File.open(p, "a", perm: 0o644) { |f| f.write("u") }
+      assert_equal("600", mode_of(p))
+      File.chmod(p, 0o640)
+      assert_equal("640", mode_of(p))
+      assert_equal(0, File.chmod(p, 0o600))
+      assert_equal("600", mode_of(p))
+    ensure
+      File.delete(p) if File.exist?(p)
+    end
+  end
+
+  def test_perm_errors
+    p = path("perm-errors")
+    File.write(p, "x")
+    begin
+      e = assert_raise(ArgumentError) { File.open(p, "r", perm: 0o600); nil }
+      assert_equal("perm: given with mode r, which creates no file", e.message)
+      e = assert_raise(ArgumentError) { File.open(p, "r+", perm: 0o600); nil }
+      assert_equal("perm: given with mode r+, which creates no file", e.message)
+      e = assert_raise(ArgumentError) { File.write(p, "y", perm: 0o10000); nil }
+      assert_equal("perm: not a file mode (0 to 0o7777): 4096", e.message)
+      e = assert_raise(ArgumentError) { File.write(p, "y", perm: -1); nil }
+      assert_equal("perm: not a file mode (0 to 0o7777): -1", e.message)
+      e = assert_raise(ArgumentError) { File.chmod(p, 0o10000); nil }
+      assert_equal("mode: not a file mode (0 to 0o7777): 4096", e.message)
+      assert_equal("x", File.read(p))
+    ensure
+      File.delete(p)
+    end
+  end
+
+  def test_mkdir_perm
+    root = path("dirs")
+    Dir.rm_rf(root)
+    begin
+      Dir.mkdir(root, perm: 0o700)
+      assert_equal("700", mode_of(root))
+      Dir.mkdir_p("#{root}/a/b", perm: 0o750)
+      assert_equal("750", mode_of("#{root}/a"))
+      assert_equal("750", mode_of("#{root}/a/b"))
+      # An existing directory is left as it is.
+      Dir.mkdir_p(root, perm: 0o755)
+      assert_equal("700", mode_of(root))
+      e = assert_raise(ArgumentError) { Dir.mkdir("#{root}/c", perm: 0o10000); nil }
+      assert_equal("perm: not a file mode (0 to 0o7777): 4096", e.message)
+    ensure
+      Dir.rm_rf(root)
+    end
+  end
+end

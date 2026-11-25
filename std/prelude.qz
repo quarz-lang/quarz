@@ -7349,35 +7349,46 @@ class File
   #
   # `mode` is `"r"` (read, the default), `"w"` (write, created or
   # truncated), `"a"` (append, created), or one of them with `+` to read and
-  # write too (`"r+"`, `"w+"`, `"a+"`); a trailing `b` is accepted and
-  # ignored. Reads and writes on such a stream share one position: a
-  # write after a read goes where the read stopped, and a read after a
-  # write starts after it (`"a+"` writes at the end whatever the
-  # position).
+  # write too (`"r+"`, `"w+"`, `"a+"`); `"wx"` and `"w+x"` are `"w"` and
+  # `"w+"` that create the file or fail when it exists (`O_EXCL`); a
+  # trailing `b` is accepted and ignored. Reads and writes on such a stream
+  # share one position: a write after a read goes where the read stopped,
+  # and a read after a write starts after it (`"a+"` writes at the end
+  # whatever the position).
+  #
+  # `perm:` gives a file the call creates those mode bits (`0o600`), the
+  # process's umask applied as for `open(2)`; a file that exists keeps its
+  # mode ([.chmod] changes it). It is refused with `"r"` and `"r+"`, which
+  # create no file.
   #
   # ## Raises
   #
-  # [SystemCallError] when the file cannot be opened, [ArgumentError] for
-  # another mode.
+  # [SystemCallError] when the file cannot be opened (with `"wx"`, when
+  # it exists), [ArgumentError] for another mode, for `perm:` with `"r"` or
+  # `"r+"`, or for a `perm:` outside 0 to 0o7777; [NotImplementedError] for
+  # `perm:` off Unix.
   #
   # ```quarz no_run
   # File.write("letters.txt", "abc")
   # File.open("letters.txt", "r+") { |f| f.read(1); f.write("Z") }
   # File.read("letters.txt")   # => "aZc"
+  # File.open("token", "wx", perm: 0o600) { |f| f.write("s3cret") }   # only this process's user reads it
   # ```
-  native def self.open(path: String, mode: String = "r") -> IO
+  native def self.open(path: String, mode: String = "r", *, perm: Int? = nil) -> IO
   # Opens the file as [.open] does, yields the stream, closes it when the
   # block ends (also when it raises) and returns the block's value.
-  native def self.open[R](path: String, mode: String = "r", &: (IO) -> R) -> R
+  native def self.open[R](path: String, mode: String = "r", *, perm: Int? = nil, &: (IO) -> R) -> R
   # The whole content of the file at `path`.
   native def self.read(path: String) -> String
   # The whole content of the file at `path`, as bytes.
   native def self.read_bytes(path: String) -> Bytes
   # Replaces the content of the file at `path` (creating it) with
-  # `content`, and returns the number of bytes written.
-  native def self.write(path: String, content: String) -> Int
+  # `content`, and returns the number of bytes written. `perm:` gives a
+  # file it creates those mode bits, the umask applied, as [.open] does;
+  # an existing file keeps its mode ([.chmod] changes it).
+  native def self.write(path: String, content: String, *, perm: Int? = nil) -> Int
   # :ditto:
-  native def self.write(path: String, content: Bytes) -> Int
+  native def self.write(path: String, content: Bytes, *, perm: Int? = nil) -> Int
   # Adds `content` at the end of the file at `path` (creating it), and
   # returns the number of bytes written.
   native def self.append(path: String, content: String) -> Int
@@ -7403,6 +7414,15 @@ class File
   native def self.size(path: String) -> Int
   # When the file at `path` was last modified, in the local time zone.
   native def self.mtime(path: String) -> Time
+  # Sets the mode bits of the file at `path` (`0o640`), as `chmod(2)`: the
+  # umask does not apply, and a symbolic link's target is changed.
+  # Returns 0.
+  #
+  # ## Raises
+  #
+  # [SystemCallError] when it cannot be changed, [ArgumentError] for a
+  # `mode` outside 0 to 0o7777, [NotImplementedError] off Unix.
+  native def self.chmod(path: String, mode: Int) -> Int
   # Deletes the files at `paths` and returns how many it deleted.
   #
   # ## Raises
@@ -7510,15 +7530,19 @@ module Dir
   # directory or cannot be read.
   native def self.empty?(path: String) -> Bool
   # Creates the directory `path` (its parent must exist); returns 0.
+  # `perm:` gives it those mode bits, the umask applied as for `mkdir(2)`.
   #
   # ## Raises
   #
-  # [SystemCallError] when it exists or cannot be made.
-  native def self.mkdir(path: String) -> Int
-  # Creates the missing parents too (`mkdir -p`).
+  # [SystemCallError] when it exists or cannot be made, [ArgumentError]
+  # for a `perm:` outside 0 to 0o7777, [NotImplementedError] for `perm:`
+  # off Unix.
+  native def self.mkdir(path: String, *, perm: Int? = nil) -> Int
+  # Creates the missing parents too (`mkdir -p`), each it creates with
+  # `perm:` when given; those that exist are left as they are.
   #
   # Returns 0, also when the directory already exists.
-  native def self.mkdir_p(path: String) -> Int
+  native def self.mkdir_p(path: String, *, perm: Int? = nil) -> Int
   # Removes the empty directory `path`; returns 0.
   #
   # ## Raises
