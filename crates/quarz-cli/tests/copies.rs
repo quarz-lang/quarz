@@ -129,6 +129,13 @@ fn query_values_of_one_name_copy_nothing() {
     check("query_values.qz", 0);
 }
 
+/// #1138: a `CommandLine` list option given many times gathers its values
+/// without copying those before.
+#[test]
+fn list_option_values_copy_nothing() {
+    check("list_option_values.qz", 0);
+}
+
 /// #993: `Hash#each` and `Hash::Builder#each` hand a destructuring block the
 /// key and the value apart: a value the hash holds still copies once when
 /// the block updates it, and a `|pair|` block's fresh pair once, as on

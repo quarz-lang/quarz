@@ -1,0 +1,11 @@
+# #1138: a list option's values gather without copying the ones before.
+require "command_line"
+
+class Grep < CommandLine
+  list :exclude, String, short: "x"
+  list :level, Int
+end
+
+argv = (["-x", "a.log", "--level=3"] * 200)
+g = Grep.parse(argv, exit: false)
+puts g.exclude.size, g.level.size, g.exclude.first, g.level.last
