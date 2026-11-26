@@ -224,8 +224,16 @@ impl Mirror {
         Ok(file)
     }
 
+    /// A git command on the mirror. Git's automatic maintenance is off:
+    /// a `fetch` would otherwise end by starting `git maintenance run
+    /// --auto --detach`, a background process on the mirror that outlives
+    /// the command and so the lock, and that may rewrite the mirror's
+    /// files (`shallow`, packs) while another fetch reads them: "shallow
+    /// file has changed since we read it" (#1183). Nothing repacks a
+    /// mirror in the background, then: it grows with each fetch.
     fn cmd(&self) -> Command {
         let mut c = git();
+        c.args(["-c", "maintenance.auto=false", "-c", "gc.auto=0"]);
         c.arg("--git-dir").arg(&self.dir);
         c
     }
@@ -421,6 +429,63 @@ mod tests {
         );
         assert_eq!(real, mirror_path(c, "https://github.com/foo/httpx"));
         assert!(mirror_path(c, "file:///tmp/x/../repo").starts_with("/c/git/local"));
+    }
+
+    /// A fetch into a mirror starts no background git process on it
+    /// (#1183): git's trace of the fetch shows no `maintenance` run.
+    /// Skipped, saying so, where this git does not trace one for an
+    /// ordinary fetch.
+    #[test]
+    fn a_mirror_fetch_starts_no_maintenance() {
+        let dir = std::env::temp_dir().join(format!("quarz-cog-git-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git_in = |args: &[&str]| {
+            let mut c = git();
+            c.current_dir(&dir).args(args);
+            for (k, v) in [
+                ("GIT_AUTHOR_NAME", "t"),
+                ("GIT_AUTHOR_EMAIL", "t@example.com"),
+                ("GIT_COMMITTER_NAME", "t"),
+                ("GIT_COMMITTER_EMAIL", "t@example.com"),
+            ] {
+                c.env(k, v);
+            }
+            run(c, "a test repository").unwrap()
+        };
+        git_in(&["init", "-q", "src"]);
+        std::fs::write(dir.join("src/f"), "1\n").unwrap();
+        git_in(&["-C", "src", "add", "f"]);
+        git_in(&["-C", "src", "commit", "-qm", "c"]);
+        let rev = git_in(&["-C", "src", "rev-parse", "HEAD"])
+            .trim()
+            .to_string();
+        let url = format!("file://{}", dir.join("src").display());
+        let traced = |mut c: Command, name: &str| -> String {
+            let trace = dir.join(name);
+            c.env("GIT_TRACE", &trace);
+            run(c, "a traced fetch").unwrap();
+            std::fs::read_to_string(&trace).unwrap_or_default()
+        };
+        // Whether this git starts maintenance after an ordinary fetch.
+        git_in(&["init", "-q", "--bare", "plain.git"]);
+        let mut plain = git();
+        plain
+            .arg("--git-dir")
+            .arg(dir.join("plain.git"))
+            .args(["fetch", "-q", "--", &url, &rev]);
+        if !traced(plain, "plain.trace").contains("maintenance run") {
+            eprintln!("skipped: this git starts no maintenance after a fetch");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        let mirror = Mirror::open(&dir.join("cache"), &url).unwrap();
+        let mut c = mirror.fetch();
+        c.args(["--depth", "1", "--", &url, &rev]);
+        let trace = traced(c, "mirror.trace");
+        assert!(trace.contains("fetch"), "{trace}");
+        assert!(!trace.contains("maintenance run"), "{trace}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
