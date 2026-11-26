@@ -2697,19 +2697,16 @@ fn may_receive(world: &RtWorld, o: MethodId, classes: &[ClassId]) -> bool {
 /// subclass of one, or of a class including one (a module), may run
 /// instead of `m`: the targets of `RtWorld::class_override_rows` for
 /// those class objects (`m` itself where nothing replaces it, without a
-/// row). `Object`'s class object stands for every class object.
+/// row). The cone is `RtWorld::class_is_a`, over the shipped ancestors
+/// (`World::runtime_ancestors`: every extension's include, scoped and
+/// conditional ones too, a superset of what the checker's subtyping lets
+/// a `Type[C]` hold), and any class object for `Object`'s, a module's
+/// too.
 fn class_side_targets(world: &RtWorld, m: MethodId, classes: &[ClassId]) -> Vec<MethodId> {
-    let object = world.builtin.object;
     let mut out: Vec<MethodId> = world
         .class_override_rows
         .iter()
-        .filter(|&&(k, b, t)| {
-            b == m
-                && t != m
-                && classes
-                    .iter()
-                    .any(|&c| c == object || k == c || world.class_is_a(k, c))
-        })
+        .filter(|&&(k, b, t)| b == m && t != m && classes.iter().any(|&c| world.class_is_a(k, c)))
         .map(|&(_, _, t)| t)
         .collect();
     out.sort_unstable();

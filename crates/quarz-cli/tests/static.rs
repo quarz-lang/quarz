@@ -381,7 +381,7 @@ fn an_int_comparison_reaches_the_int_native_only() {
 #[test]
 fn a_call_on_a_class_value_reaches_its_class_side() {
     let impure_eq = "  def self.==(other: Object) -> Bool = !ENV[\"HOME\"]?.nil?\n";
-    let lib = "class Base\n  def self.tag -> String = \"base\"\n  static def self.eq_base -> Void\n    t: Type[Base] = Base\n    k = t == Base\n    def_class_method(:k) { k }\n  end\n  static def self.eq_param(t: Type[Base]) -> Void\n    k = t == Base\n    def_class_method(:k) { k }\n  end\n  static def self.eq_int -> Void\n    t = Int\n    k = t == String\n    def_class_method(:k) { k }\n  end\n  static def self.eq_object(t: Type[Object]) -> Void\n    k = t == String\n    def_class_method(:k) { k }\n  end\n  static def self.eq_union(v: Type[Base] | Int) -> Void\n    k = v == 1\n    def_class_method(:k) { k }\n  end\n  static def self.name_base -> Void\n    t: Type[Base] = Base\n    k = t.name\n    def_class_method(:k) { k }\n  end\n  static def self.tag_base -> Void\n    t: Type[Base] = Base\n    k = t.tag\n    def_class_method(:k) { k }\n  end\n  static def self.make_tag -> Void\n    def_class_method(:tag, override: true) { ENV[\"HOME\"]? || \"?\" }\n  end\nend\nclass Box[T]\n  static def self.eq_box(t: Type[Box[Int]]) -> Void\n    k = t == Box\n    def_class_method(:k) { k }\n  end\nend\nabstract class Abs\n  static def self.eq_abs(t: Type[Abs]) -> Void\n    k = t == Abs\n    def_class_method(:k) { k }\n  end\nend\nmodule Mod\nend\nclass ModUser\n  static def self.eq_mod(t: Type[Mod]) -> Void\n    k = t == Mod\n    def_class_method(:k) { k }\n  end\nend\n";
+    let lib = "class Base\n  def self.tag -> String = \"base\"\n  static def self.eq_base -> Void\n    t: Type[Base] = Base\n    k = t == Base\n    def_class_method(:k) { k }\n  end\n  static def self.eq_param(t: Type[Base]) -> Void\n    k = t == Base\n    def_class_method(:k) { k }\n  end\n  static def self.eq_int -> Void\n    t = Int\n    k = t == String\n    def_class_method(:k) { k }\n  end\n  static def self.eq_object(t: Type[Object]) -> Void\n    k = t == String\n    def_class_method(:k) { k }\n  end\n  static def self.eq_union(v: Type[Base] | Int) -> Void\n    k = v == 1\n    def_class_method(:k) { k }\n  end\n  static def self.name_base -> Void\n    t: Type[Base] = Base\n    k = t.name\n    def_class_method(:k) { k }\n  end\n  static def self.tag_base -> Void\n    t: Type[Base] = Base\n    k = t.tag\n    def_class_method(:k) { k }\n  end\n  static def self.make_tag -> Void\n    def_class_method(:tag, override: true) { ENV[\"HOME\"]? || \"?\" }\n  end\nend\nclass Box[T]\n  static def self.eq_box(t: Type[Box[Int]]) -> Void\n    k = t == Box\n    def_class_method(:k) { k }\n  end\nend\nabstract class Abs\n  static def self.eq_abs(t: Type[Abs]) -> Void\n    k = t == Abs\n    def_class_method(:k) { k }\n  end\nend\nmodule Mod\nend\nmodule Gm[T]\nend\nclass ModUser\n  static def self.eq_mod(t: Type[Mod]) -> Void\n    k = t == Mod\n    def_class_method(:k) { k }\n  end\n  static def self.eq_gm(t: Type[Gm[Int]]) -> Void\n    k = t == Gm\n    def_class_method(:k) { k }\n  end\nend\n";
     // The class's own and its superclass's, in a file of their own.
     let lib2 = format!("class Top\n{impure_eq}end\nclass Mid < Top\n  static def self.eq_mid -> Void\n    t: Type[Mid] = Mid\n    k = t == Mid\n    def_class_method(:k) {{ k }}\n  end\nend\nclass Own\n{impure_eq}  static def self.eq_own -> Void\n    t: Type[Own] = Own\n    k = t == Own\n    def_class_method(:k) {{ k }}\n  end\nend\n");
     let sub = |name: &str, sup: &str| format!("class {name} < {sup}\n{impure_eq}end\n");
@@ -559,6 +559,34 @@ fn a_call_on_a_class_value_reaches_its_class_side() {
             "class K < ModUser\n  eq_mod(Incl)\nend\n",
             String::new(),
             None,
+        ),
+        // What a `Type[Mod]` may hold through an extension's include
+        // (unconditional, conditional with its bound met, scoped in a
+        // module) or a generic module's: in the cone (the ancestors the
+        // runtime ships hold every extension's include).
+        (
+            format!("class Ext\n{impure_eq}end\nextension Ext\n  include Mod\nend\n"),
+            "class K < ModUser\n  eq_mod(Ext)\nend\n",
+            String::new(),
+            Some("Ext.=="),
+        ),
+        (
+            format!("class CExt[T]\n{impure_eq}end\nextension CExt[T <: Int]\n  include Mod\nend\n"),
+            "class K < ModUser\n  eq_mod(CExt[Int])\nend\n",
+            String::new(),
+            Some("CExt.=="),
+        ),
+        (
+            format!("class SExt\n{impure_eq}end\nmodule Sc\n  extension SExt\n    include Mod\n  end\n  def self.go -> Type[Mod] = SExt\nend\n"),
+            "class K < ModUser\n  eq_mod(Sc.go)\nend\n",
+            String::new(),
+            Some("SExt.=="),
+        ),
+        (
+            format!("class GInc\n  include Gm[Int]\n{impure_eq}end\n"),
+            "class K < ModUser\n  eq_gm(GInc)\nend\n",
+            String::new(),
+            Some("GInc.=="),
         ),
         // The class's own, its superclass's.
         (
