@@ -281,7 +281,10 @@ op_entry!(
                 kw: &kw,
                 kw_splat: opt(head[6]),
                 block: opt(head[7]),
+                // (The moved bits' word: the arguments' and receiver's
+                // below, the keywords' above, #1180.)
                 moved: head[8] as u16,
+                kw_moved: (head[8] >> 16) as u16,
             },
         )
     }
@@ -291,8 +294,8 @@ op_entry!(
     /// An in-place call compiled code does not make itself. `desc`:
     /// destination, method, location kind (register, frame, field) and
     /// its two operands, whether the result is unused, argument count,
-    /// keyword count, the moved arguments' bits, the arguments, the
-    /// keywords.
+    /// keyword count, the moved arguments' bits (the keywords' in the
+    /// upper half), the arguments, the keywords.
     qz_op_owned_call(desc: *const u32) |rt, act, f, pool, regs| {
         let head = unsafe { words(desc, 9) };
         let (nargs, nkw) = (head[6], head[7]);
@@ -319,6 +322,7 @@ op_entry!(
                 kw: &kw,
                 unused: head[5] != 0,
                 moved: head[8] as u16,
+                kw_moved: (head[8] >> 16) as u16,
             },
         )
     }

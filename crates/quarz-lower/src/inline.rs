@@ -518,6 +518,7 @@ pub(crate) fn rewrite_with(
             kw_splat,
             block,
             moved,
+            kw_moved,
             recv_classes,
             recv_class_objects,
             on_self,
@@ -531,6 +532,7 @@ pub(crate) fn rewrite_with(
             kw_splat: kw_splat.as_ref().map(r),
             block: block.as_ref().map(r),
             moved: *moved,
+            kw_moved: *kw_moved,
             recv_classes: recv_classes.clone(),
             recv_class_objects: recv_class_objects.clone(),
             on_self: *on_self,
@@ -543,9 +545,11 @@ pub(crate) fn rewrite_with(
             kw: kws,
             unused,
             moved,
+            kw_moved,
         } => Inst::OwnedCall {
             unused: *unused,
             moved: *moved,
+            kw_moved: *kw_moved,
             dst: r(dst),
             method: *method,
             recv: match recv {

@@ -386,6 +386,7 @@ pub fn own_dying_receivers(f: &mut Function, in_place: &[bool]) {
                 kw_splat: None,
                 block: None,
                 moved,
+                kw_moved,
                 recv_classes: _,
                 recv_class_objects: _,
                 on_self: _,
@@ -405,9 +406,25 @@ pub fn own_dying_receivers(f: &mut Function, in_place: &[bool]) {
                 unused: false,
                 // The call's own decision, its arguments' bits.
                 moved: *moved & 0x7fff,
+                kw_moved: *kw_moved,
             };
         }
     }
+}
+
+/// The keyword arguments a call reads for the last time (`dying`), bit
+/// `i` for `kw[i]`, the first 16 (`Inst::Call::kw_moved`, #1180): the
+/// same test as its positional arguments'. A compiled direct call asks
+/// the same of each register itself (`last_reads_from`, the AOT's
+/// `movable`), for every keyword it lays out.
+fn kw_bits(kw: &[(u32, Reg)], dying: &dyn Fn(Reg) -> bool) -> u16 {
+    let mut bits = 0u16;
+    for (i, (_, r)) in kw.iter().enumerate().take(16) {
+        if dying(*r) {
+            bits |= 1 << i;
+        }
+    }
+    bits
 }
 
 /// Write the moves into the function, for the interpreter and the
@@ -532,8 +549,10 @@ pub fn mark_moves(f: &mut Function, heap: &[bool]) {
                 Inst::OwnedCall {
                     dst,
                     args,
+                    kw,
                     unused,
                     moved,
+                    kw_moved,
                     ..
                 } => {
                     *unused = !has(&live, *dst);
@@ -544,14 +563,18 @@ pub fn mark_moves(f: &mut Function, heap: &[bool]) {
                         }
                     }
                     *moved = bits;
+                    *kw_moved = kw_bits(kw, &dying);
                 }
                 Inst::Call {
                     recv,
                     args,
                     splat: false,
+                    kw,
                     moved,
+                    kw_moved,
                     ..
                 } => {
+                    *kw_moved = kw_bits(kw, &dying);
                     let mut bits = 0u16;
                     for (i, a) in args.iter().enumerate().take(15) {
                         if dying(*a) {

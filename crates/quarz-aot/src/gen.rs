@@ -1561,6 +1561,13 @@ impl<B: Builder> Gen<'_, B> {
     /// moved out instead of copied: it may hold a heap value (a boxed
     /// register; the rest is this backend's business), and this is its
     /// last read (QIR's answer, shared with the interpreter).
+    /// `live::last_reads_from` asks what `live::mark_moves`' `dying` asks
+    /// (read once by the instruction, dead after it, its handler's reads
+    /// counted), so for a direct call's arguments and keywords (#941)
+    /// this is the set `Call::moved` and `Call::kw_moved` hold, narrowed
+    /// to boxed registers; it is asked per register rather than read from
+    /// those bits because the direct call lays arguments and keywords out
+    /// by parameter, past the bits' 15 and 16 (#1180).
     fn movable(&self, _inst: &Inst, src: Reg, block: u32, index: u32) -> bool {
         !self.borrowed[src as usize]
             && self.states[src as usize].boxed()
@@ -3585,6 +3592,7 @@ impl<B: Builder> Gen<'_, B> {
                 kw_splat,
                 block: blk,
                 moved,
+                kw_moved,
                 recv_classes: _,
                 recv_class_objects: _,
                 on_self: _,
@@ -3616,7 +3624,9 @@ impl<B: Builder> Gen<'_, B> {
                     u32::from(*splat),
                     opt(*kw_splat),
                     opt(*blk),
-                    u32::from(*moved),
+                    // (The keywords' bits in the word's upper half: the
+                    // descriptor's words are as before #1180.)
+                    u32::from(*moved) | (u32::from(*kw_moved) << 16),
                     args.len() as u32,
                     kw.len() as u32,
                 ];
@@ -3637,6 +3647,7 @@ impl<B: Builder> Gen<'_, B> {
                 kw,
                 unused,
                 moved,
+                kw_moved,
             } => {
                 let (kind, a, b2) = match recv {
                     VarLoc::Reg(r) => (0, *r, 0),
@@ -3652,7 +3663,7 @@ impl<B: Builder> Gen<'_, B> {
                     u32::from(*unused),
                     args.len() as u32,
                     kw.len() as u32,
-                    u32::from(*moved),
+                    u32::from(*moved) | (u32::from(*kw_moved) << 16),
                 ];
                 desc.extend(args.iter().copied());
                 for (k, r) in kw {
@@ -5457,6 +5468,7 @@ impl<B: Builder> Gen<'_, B> {
                 kw,
                 unused,
                 moved,
+                kw_moved: _,
             } if kw.is_empty() => {
                 // A result nobody reads (`xs = xs.push(v)` as a statement)
                 // is not stored: one clone and one release fewer (and the

@@ -88,6 +88,25 @@ fn updates_of_unshared_collections_copy_nothing() {
     check("in_place.qz", 0);
 }
 
+/// #1180: a keyword argument the caller does not read again moves into
+/// the call, as a positional one does: through a direct call, a call by
+/// name and `with` on a data type with its own `initialize` (#1181), on
+/// the VM and through the runtime's call in compiled code.
+#[test]
+fn keyword_arguments_move_into_the_call() {
+    check("keyword_args.qz", 0);
+}
+
+/// #1180: past the 16th keyword the interpreter's call copies the
+/// argument (`kw_moved` has 16 bits), once per call; a compiled direct
+/// call lays every keyword out itself and moves it.
+#[test]
+fn keyword_arguments_past_the_16th_copy_on_the_vm() {
+    let path = program("keyword_args_past_16.qz");
+    assert_eq!(on_vm(&path, COPIES), 100, "on the VM");
+    assert_eq!(compiled(&path, COPIES), 0, "compiled");
+}
+
 /// The count itself: each update of a collection still referred to
 /// elsewhere copies it once.
 #[test]
@@ -187,16 +206,13 @@ fn an_inlined_default_copies_no_more_than_the_call() {
 }
 
 /// #941: a direct call binding keywords in compiled code copies no more
-/// than the runtime's binding (main: 400 on both): the same on the VM,
-/// which binds them as before, and fewer compiled, where an argument
-/// passed by keyword and not read again is moved into the call.
+/// than the runtime's binding (main before #1180: 400 on the VM): an
+/// argument kept by keyword in a field copies once when the caller's
+/// variable is updated after (200), and one passed by keyword and not
+/// read again moves into the call, compiled (#941) and on the VM (#1180).
 #[test]
 fn keyword_calls_copy_no_more_than_before() {
-    let path = program("keyword_calls.qz");
-    assert_eq!(on_vm(&path, COPIES), 400, "on the VM");
-    let n = compiled(&path, COPIES);
-    assert!(n <= 400, "compiled: {n} copies, main's 400");
-    assert_eq!(n, 200, "compiled");
+    check("keyword_calls.qz", 200);
 }
 
 #[test]
