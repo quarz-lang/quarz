@@ -2991,8 +2991,9 @@ pub struct ListenerState {
 #[derive(Debug)]
 pub struct UdpState {
     pub socket: Option<std::net::UdpSocket>,
-    /// The address it is bound to, taken when it is made and at each
-    /// `bind`: kept after `close` (#1184).
+    /// The address it is bound to, taken when it is made, at each `bind`
+    /// and at each `local_address` while open (`connect` may change it):
+    /// the last one is kept after `close` (#1184).
     pub local: Option<std::net::SocketAddr>,
     pub closed: bool,
     pub watch: IoWatch,

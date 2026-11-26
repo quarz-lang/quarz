@@ -38,4 +38,17 @@ class SocketAddressAfterCloseTest < Test::Case
     socket.close
     assert_equal(address, socket.local_address)
   end
+
+  # `connect` on a socket bound to every address picks the address it
+  # sends from: the one the reader gives, then after `close`.
+  def test_udp_after_connect
+    peer = UDPSocket.new
+    peer.bind("127.0.0.1", 0)
+    socket = UDPSocket.new
+    socket.connect("127.0.0.1", peer.local_address.port)
+    assert_equal("127.0.0.1", socket.local_address.host)
+    socket.close
+    assert_equal("127.0.0.1", socket.local_address.host)
+    peer.close
+  end
 end

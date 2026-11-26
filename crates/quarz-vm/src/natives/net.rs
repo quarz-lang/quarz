@@ -181,14 +181,30 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             "TCPServer#local_address",
             "UDPSocket#local_address"
         ],
-        // The address as of the connection or the bind, kept after
-        // `close` (#1184); an `IOError` when the system gave none then,
-        // never nil (the result is a `Socket::Address`).
+        // While open, what the descriptor answers (a UDP socket's changes
+        // with `connect`, which picks the source address of one bound to
+        // the wildcard), remembered; once closed, the last one remembered
+        // (#1184). An `IOError` when the system gave none, never nil (the
+        // result is a `Socket::Address`).
         |i, r, _| {
             let addr = match &io_of(i, r)?.kind {
                 IoKind::Socket(st) => st.borrow().local,
-                IoKind::Listener(st) => st.borrow().local,
-                IoKind::Udp(st) => st.borrow().local,
+                IoKind::Listener(st) => {
+                    let mut s = st.borrow_mut();
+                    if let Some(Listener::Tcp(l)) = &s.listener {
+                        if let Ok(a) = l.local_addr() {
+                            s.local = Some(a);
+                        }
+                    }
+                    s.local
+                }
+                IoKind::Udp(st) => {
+                    let mut s = st.borrow_mut();
+                    if let Some(a) = s.socket.as_ref().and_then(|u| u.local_addr().ok()) {
+                        s.local = Some(a);
+                    }
+                    s.local
+                }
                 _ => return Err(i.err_type("not a socket")),
             };
             match addr {
