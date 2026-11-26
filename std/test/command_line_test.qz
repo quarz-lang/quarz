@@ -93,6 +93,13 @@ class EnvText
   def to_s -> String = ENV["HOME"]? || "?"
 end
 
+# The same for an `==` (and `hash`): the statements compare classes by
+# identity and `Int`s as `Int`s (#1171, #1173).
+class EnvEq
+  def ==(other: Object) -> Bool = !ENV["HOME"]?.nil?
+  def hash -> Int = (ENV["HOME"]? || "").size
+end
+
 class Texts < CommandLine
   flag :quiet, short: "q", help: "say less"
   option :name, String, default: nil, help: "a name"
