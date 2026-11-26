@@ -43,33 +43,22 @@ pub const SECTION: &str = ".quarz_bt";
 fn load() -> Option<Info> {
     let data: &'static [u8] = Box::leak(std::fs::read("/proc/self/exe").ok()?.into_boxed_slice());
     let file = object::File::parse(data).ok()?;
-    match file.section_by_name(SECTION) {
-        Some(s) => decode(s.data().ok()?),
-        None => {
-            // The load base: where `qz_main` is now, against where the
-            // file says it is.
-            let link_main = file
-                .symbols()
-                .find(|s| s.name() == Ok("qz_main"))
-                .map(|s| s.address() as usize)?;
-            let base = (crate::ffi::qz_main as *const () as usize).wrapping_sub(link_main);
-            from_dwarf(&file, base)
-        }
-    }
+    // (Without the section, which `quarz build` adds, the symbols' names do
+    // not say which function each is, #1182: no compiled frame is shown.)
+    decode(file.section_by_name(SECTION)?.data().ok()?)
 }
 
-/// The typed entries and the line rows of `file`, at `base`.
-fn from_dwarf<'a>(file: &object::File<'a>, base: usize) -> Option<Info> {
+/// The typed entries (the symbols `function` names a function of) and the
+/// line rows of `file`, at their link addresses.
+fn from_dwarf<'a>(
+    file: &object::File<'a>,
+    function: &dyn Fn(&str) -> Option<FuncId>,
+) -> Option<Info> {
     let mut typed: Vec<(usize, usize, FuncId)> = file
         .symbols()
         .filter_map(|s| {
-            let name = s.name().ok()?;
-            let fid: FuncId = name
-                .strip_prefix("qz_fn_")?
-                .strip_suffix("_t")?
-                .parse()
-                .ok()?;
-            let start = base.wrapping_add(s.address() as usize);
+            let fid = function(s.name().ok()?)?;
+            let start = s.address() as usize;
             Some((start, start + s.size() as usize, fid))
         })
         .collect();
@@ -101,7 +90,7 @@ fn from_dwarf<'a>(file: &object::File<'a>, base: usize) -> Option<Info> {
                 continue;
             }
             let line = row.line().map(|l| l.get() as u32).unwrap_or(0);
-            lines.push((base.wrapping_add(row.address() as usize), line));
+            lines.push((row.address() as usize, line));
         }
     }
     lines.sort();
@@ -113,14 +102,14 @@ fn from_dwarf<'a>(file: &object::File<'a>, base: usize) -> Option<Info> {
 /// `qz_main`, the count of typed entries and each one's start, end and
 /// function, then the count of line rows and each one's address and
 /// line. Only the rows inside typed entries are kept.
-pub fn table(exe: &[u8]) -> Result<Vec<u8>, String> {
+pub fn table(exe: &[u8], function: &dyn Fn(&str) -> Option<FuncId>) -> Result<Vec<u8>, String> {
     let file = object::File::parse(exe).map_err(|e| e.to_string())?;
     let link_main = file
         .symbols()
         .find(|s| s.name() == Ok("qz_main"))
         .map(|s| s.address())
         .ok_or("no qz_main in the executable")?;
-    let info = from_dwarf(&file, 0).ok_or("no line table in the executable")?;
+    let info = from_dwarf(&file, function).ok_or("no line table in the executable")?;
     let inside = |a: usize| {
         let k = info.typed.partition_point(|&(start, _, _)| start <= a);
         k.checked_sub(1)

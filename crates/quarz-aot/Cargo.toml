@@ -11,3 +11,4 @@ repository.workspace = true
 quarz-ir = { workspace = true }
 quarz-vm = { workspace = true }
 libc = "0.2"
+sha2 = "0.11"

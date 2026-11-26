@@ -639,6 +639,226 @@ fn a_failing_partition_fails_the_build_and_leaves_nothing() {
     assert!(!kept.iter().any(|f| f.ends_with(".o")), "{kept:?}");
 }
 
+/// #1182: the partitions of `source` (split at every method, IR kept),
+/// built in `dir` as `name`: each partition's text, in partition order,
+/// and what the executable prints.
+fn partition_texts(dir: &Path, name: &str, source: &str) -> (Vec<String>, String) {
+    // (One file name for every program: backtraces name it.)
+    let dir = dir.join(name);
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("prog.qz");
+    fs::write(&path, source).unwrap();
+    let exe = dir.join("prog");
+    let built = quarz_build(
+        &path,
+        &exe,
+        &[],
+        &[("QUARZ_BUILD_PARTITION_BYTES", "1"), ("QUARZ_KEEP_IR", "1")],
+    );
+    assert!(
+        built.status.success(),
+        "{name}: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let mut build_dir = exe.as_os_str().to_owned();
+    build_dir.push(".quarz-build");
+    let mut files: Vec<PathBuf> = fs::read_dir(&build_dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "ll"))
+        .collect();
+    files.sort();
+    let texts = files
+        .iter()
+        .map(|f| fs::read_to_string(f).unwrap())
+        .collect();
+    let out = Command::new(&exe).output().unwrap();
+    let printed =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    // (Backtraces name the file by its path, the program's directory
+    // left out.)
+    (texts, printed.replace(&format!("{}/", dir.display()), ""))
+}
+
+/// #1182: the program the stability tests build: classes constructed and
+/// tested (class ids), methods called directly and by name (method and
+/// function ids, typed entries), a block (its function's id), a
+/// constant read (its id), and a raise through two partitions. Its first
+/// line is empty, for what a test puts before it without moving a line.
+const STABLE: &str = "
+LIMIT = 3
+
+class Shape
+  @n: Int
+
+  def initialize(n: Int)
+    @n = n
+  end
+
+  def area -> Int = @n * @n
+end
+
+class Square < Shape
+  def grow(by: Int) -> Square = Square.new(by + 1)
+end
+
+class Box
+  def check(x: Int) -> Int
+    raise ArgumentError.new(\"too big: #{x}\") if x > LIMIT
+    x * 2
+  end
+
+  def run(xs: Array[Int]) -> Int = xs.map { |x| check(x) }.sum
+end
+
+s = Square.new(2).grow(1)
+p s.area, s.is_a?(Shape), s.is_a?(Box)
+p Box.new.run([1, 2])
+p Box.new.run([1, 5])
+";
+
+/// #1182: a program grown by what renumbers the rest (a function, which
+/// moves the methods' and functions' numbers after it; a constant, the
+/// constants'), on its first line (no line moves: lines are in the code,
+/// for backtraces) and used by nothing, keeps every partition's text but
+/// the tables' and, for the constant, the one its initializer joins (a
+/// function that is no method starts no partition). Before #1182 none
+/// kept it. (A class renumbers the classes after it, which inline class
+/// tests hold as constants: `cogs.rs` tests that one, across cogs.)
+#[test]
+fn partitions_keep_their_text_when_the_program_grows() {
+    let dir = std::env::temp_dir().join(format!("quarz-stable-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let (base, base_out) = partition_texts(&dir, "base", STABLE);
+    assert!(base.len() > 4, "{} partitions", base.len());
+    for (name, top, joined) in [
+        ("function", "def extra(x: Int) -> Int = x + 41", 0),
+        ("constant", "EXTRA = 41", 1),
+    ] {
+        let (grown, out) = partition_texts(&dir, name, &format!("{top}{STABLE}"));
+        assert_eq!(out, base_out, "{name}: the output");
+        let kept: std::collections::HashSet<&String> = grown.iter().collect();
+        // (The tables, last, number everything: they change.)
+        let lost: Vec<usize> = (0..base.len() - 1)
+            .filter(|&p| !kept.contains(&base[p]))
+            .collect();
+        assert!(
+            lost.len() <= joined,
+            "{name}: partitions {lost:?} of {} changed",
+            base.len()
+        );
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// #1182: a backtrace through functions of two partitions names them as
+/// the VM does, before and after a class and a function added at the
+/// top renumber them (the names of compiled functions no longer carry their numbers:
+/// the build maps them, `native_bt::table`), stripped or not.
+#[test]
+fn backtraces_across_partitions_survive_renumbering() {
+    let dir = std::env::temp_dir().join(format!("quarz-stable-bt-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    for (name, source) in [
+        ("plain", STABLE.to_string()),
+        (
+            "grown",
+            format!(
+                "class Extra; def f(x: Int) -> Int = x + 41; end; def extra -> Int = 1{STABLE}"
+            ),
+        ),
+    ] {
+        let path = dir.join(format!("{name}.qz"));
+        fs::write(&path, &source).unwrap();
+        // (What a program prints, its backtrace included, and its status.)
+        let printed = |cmd: &mut Command| -> (Option<i32>, String) {
+            let out = cmd.output().unwrap();
+            (
+                out.status.code(),
+                String::from_utf8_lossy(&out.stdout).into_owned()
+                    + &String::from_utf8_lossy(&out.stderr),
+            )
+        };
+        let (vm_code, vm_out) = printed(
+            Command::new(env!("CARGO_BIN_EXE_quarz"))
+                .arg("run")
+                .arg(&path),
+        );
+        assert!(vm_out.contains("in Box#check"), "{vm_out}");
+        for strip in [true, false] {
+            let exe = dir.join(format!("{name}-{strip}"));
+            let mut envs = vec![("QUARZ_BUILD_PARTITION_BYTES", "1")];
+            if !strip {
+                envs.push(("QUARZ_NO_STRIP", "1"));
+            }
+            let built = quarz_build(&path, &exe, &[], &envs);
+            assert!(
+                built.status.success(),
+                "{}",
+                String::from_utf8_lossy(&built.stderr)
+            );
+            let (code, out) = printed(&mut Command::new(&exe));
+            assert_eq!(
+                (code, out.as_str()),
+                (vm_code, vm_out.as_str()),
+                "{name}, stripped: {strip}"
+            );
+        }
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// #1182: partitions with the same text (methods split one to a
+/// partition: many are alike, their numbers being the partition's own)
+/// get distinct names, each copy told apart by a comment and otherwise
+/// the text of another partition, and the program runs.
+#[test]
+fn partitions_with_the_same_text_get_distinct_names() {
+    let dir = std::env::temp_dir().join(format!("quarz-stable-dup-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let (texts, out) = partition_texts(&dir, "dup", STABLE);
+    let _ = fs::remove_dir_all(&dir);
+    assert!(out.contains("too big: 5"), "{out}");
+    // (A text with its key, which names its symbols, left out.)
+    let unkeyed = |t: &str| -> String {
+        let mut out = String::new();
+        let mut rest = t;
+        while let Some(at) = rest.find("qz_") {
+            out.push_str(&rest[..at]);
+            let tail = &rest[at..];
+            let end = tail
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(tail.len());
+            let parts: Vec<&str> = tail[..end].split('_').collect();
+            if parts.len() >= 3 && parts[2].len() == 16 {
+                out.push_str(&format!("{}_{}_KEY", parts[0], parts[1]));
+                for p in &parts[3..] {
+                    out.push('_');
+                    out.push_str(p);
+                }
+            } else {
+                out.push_str(&tail[..end]);
+            }
+            rest = &tail[end..];
+        }
+        out.push_str(rest);
+        out
+    };
+    let originals: std::collections::HashSet<String> = texts
+        .iter()
+        .filter(|t| !t.contains("\n; copy "))
+        .map(|t| unkeyed(t))
+        .collect();
+    let copies: Vec<&String> = texts.iter().filter(|t| t.contains("\n; copy ")).collect();
+    assert!(!copies.is_empty(), "no two partitions alike");
+    for c in copies {
+        let at = c.find("\n; copy ").unwrap();
+        let text = unkeyed(&c[..at + 1]);
+        assert!(originals.contains(&text), "a copy of no partition");
+    }
+}
+
 /// `QUARZ_AOT_OPT` picks clang's level (0 and 2 both build a program
 /// that runs as the VM does); anything but 0 to 3 is an error naming it.
 #[test]

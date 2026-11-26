@@ -239,6 +239,132 @@ fn an_application_uses_its_cogs_without_require() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), expected);
 }
 
+/// #1182: classes are numbered in load order (the standard library, the
+/// cogs dependencies first, the application last), and inline class
+/// tests hold a class's number as a constant in a partition's text. So a
+/// class the application adds leaves every partition of a library cog's
+/// code as it was (this fails if the application's classes came first),
+/// and a class a cog adds before others renumbers them: the partitions
+/// testing them change, and are built again rather than reused (their
+/// key is their text's hash).
+#[test]
+fn a_class_renumbers_only_the_partitions_that_test_later_classes() {
+    let w = World::new();
+    // (Its first line is empty, for a class put before the others without
+    // moving a line or adding a file.)
+    let shapes = "
+abstract class Shape
+  abstract def area -> Int
+end
+
+class Sq < Shape
+  @s: Int
+  def initialize(@s: Int)
+  end
+  def area -> Int = @s * @s
+end
+
+class Rect < Shape
+  @w: Int
+  @h: Int
+  def initialize(@w: Int, @h: Int)
+  end
+  def area -> Int = @w * @h
+end
+
+public def total(xs: Array[Shape]) -> Int = xs.sum { |s| s.area }
+";
+    w.write(
+        "shapes/Cog.toml",
+        "[cog]\nname = \"shapes\"\nversion = \"1.0.0\"\n",
+    );
+    w.write("shapes/src/shapes.qz", shapes);
+    w.commit("shapes", Some("v1.0.0"));
+    // (Built from a local copy, which the test edits.)
+    w.write(
+        "shapes-dev/Cog.toml",
+        "[cog]\nname = \"shapes\"\nversion = \"1.0.0\"\n",
+    );
+    w.write("shapes-dev/src/shapes.qz", shapes);
+    w.app(
+        &format!(
+            "Shapes = {{ git = \"{}\", tag = \"v1.0.0\" }}\n",
+            w.url("shapes")
+        ),
+        "p Shapes.total([Shapes::Sq.new(2), Shapes::Rect.new(2, 3)])\n",
+    );
+    w.write(
+        "app/Cog.local.toml",
+        "[patch]\nShapes = { path = \"../shapes-dev\" }\n",
+    );
+    // Each partition's text, and the output.
+    let build = |name: &str| -> (Vec<String>, String) {
+        let exe = w.path(&format!("app/{name}"));
+        let out = w.quarz_env(
+            "app",
+            &["build", "-o", exe.to_str().unwrap()],
+            &[("QUARZ_BUILD_PARTITION_BYTES", "1"), ("QUARZ_KEEP_IR", "1")],
+        );
+        assert!(out.ok, "{name}: {}", out.stderr);
+        let mut dir = exe.as_os_str().to_owned();
+        dir.push(".quarz-build");
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "ll"))
+            .collect();
+        files.sort();
+        let texts: Vec<String> = files
+            .iter()
+            .map(|f| std::fs::read_to_string(f).unwrap())
+            .collect();
+        let run = Command::new(&exe).output().unwrap();
+        (texts, String::from_utf8_lossy(&run.stdout).into_owned())
+    };
+    let (base, base_out) = build("base");
+    assert_eq!(base_out, "10\n");
+    // (The tables, last, number everything.)
+    let lost = |grown: &[String]| -> Vec<usize> {
+        let kept: std::collections::HashSet<&String> = grown.iter().collect();
+        (0..base.len() - 1)
+            .filter(|&p| !kept.contains(&base[p]))
+            .collect()
+    };
+    // A class the application adds, in a file of its own: nothing else
+    // changes.
+    w.write(
+        "app/src/extra.qz",
+        "class Extra\n  def f(x: Int) -> Int = x + 41\nend\n",
+    );
+    let (grown, out) = build("app_class");
+    assert_eq!(out, "10\n");
+    // (Partition 0 is the application's, its group first: the new file's
+    // top-level code joins it.)
+    let changed = lost(&grown);
+    assert!(
+        changed.iter().all(|&p| p == 0),
+        "an application's class: {changed:?}"
+    );
+    std::fs::remove_file(w.path("app/src/extra.qz")).unwrap();
+    // A class the cog adds before its others, on the empty first line (no
+    // line moves, no file or top-level code is added): the partition
+    // testing `Sq` and `Rect` holds their old numbers, and changes. (The
+    // other numbers are each partition's own: only a class test's
+    // constant can change a partition here.)
+    w.write(
+        "shapes-dev/src/shapes.qz",
+        &format!("class Aaa; def f(x: Int) -> Int = x + 41; end{shapes}"),
+    );
+    let (grown, out) = build("cog_class");
+    assert_eq!(out, "10\n");
+    let changed = lost(&grown);
+    assert!(
+        changed.iter().any(|&p| p != 0),
+        "a cog's class: {changed:?}"
+    );
+}
+
 #[test]
 fn check_takes_a_library_as_its_users_load_it() {
     // A cog without src/main.qz: `quarz check` checks its files, under its
