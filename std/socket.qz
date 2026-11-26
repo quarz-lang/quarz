@@ -9,9 +9,13 @@ class TCPSocket < IO
   def self.open[R](host: String, port: Int, &: (TCPSocket) -> R) -> R = Socket.tcp(host, port, &)
   # A connection to one address, with no lookup.
   native def self.connect(address: Socket::Address) -> TCPSocket
-  # The address and port of this end of the connection.
+  # The address and port of this end of the connection, as of the
+  # connection (after [#close] too). Raises [IOError] when the system
+  # gave none.
   native def local_address -> Socket::Address
-  # The address and port of the peer.
+  # The address and port of the peer, as of the connection (after
+  # [#close], or once the peer hung up, too). Raises [IOError] when the
+  # system gave none.
   native def remote_address -> Socket::Address
 end
 
@@ -35,7 +39,8 @@ class TCPServer < IO
   # The next connection, waiting for one (only the calling task waits).
   # Raises [IOError] once the server is closed.
   native def accept -> TCPSocket
-  # The address and port the server listens on.
+  # The address and port the server listens on, as bound (after [#close]
+  # too). Raises [IOError] when the system gave none.
   native def local_address -> Socket::Address
 end
 
@@ -78,7 +83,8 @@ class UDPSocket < IO
   native def recvfrom(length: Int) -> [String, Socket::Address]
   # The next datagram as [Bytes] and the sender's address.
   native def recvfrom_bytes(length: Int) -> [Bytes, Socket::Address]
-  # The address and port the socket is bound to.
+  # The address and port the socket is bound to, as of its last bind
+  # (after [#close] too). Raises [IOError] when the system gave none.
   native def local_address -> Socket::Address
 end
 

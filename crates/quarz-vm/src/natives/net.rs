@@ -90,8 +90,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     // UDPSocket
     native!(m, "UDPSocket.new", |i, _, _| {
         let socket = udp_bind(i, "0.0.0.0:0")?;
+        let local = socket.local_addr().ok();
         Ok(io(IoKind::Udp(IoCell::new(UdpState {
             socket: Some(socket),
+            local,
             closed: false,
             watch: IoWatch::new(),
         }))))
@@ -106,6 +108,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let waiters = {
             let mut s = st.borrow_mut();
             i.sched.borrow_mut().deregister(old_fd);
+            s.local = socket.local_addr().ok();
             s.socket = Some(socket);
             // A new descriptor: it is registered anew where waited on.
             std::mem::take(&mut s.watch).waiters
@@ -178,33 +181,30 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             "TCPServer#local_address",
             "UDPSocket#local_address"
         ],
+        // The address as of the connection or the bind, kept after
+        // `close` (#1184); an `IOError` when the system gave none then,
+        // never nil (the result is a `Socket::Address`).
         |i, r, _| {
             let addr = match &io_of(i, r)?.kind {
                 IoKind::Socket(st) => st.borrow().local,
-                IoKind::Listener(st) => match &st.borrow().listener {
-                    Some(Listener::Tcp(l)) => l.local_addr().ok(),
-                    _ => None,
-                },
-                IoKind::Udp(st) => st
-                    .borrow()
-                    .socket
-                    .as_ref()
-                    .and_then(|s| s.local_addr().ok()),
+                IoKind::Listener(st) => st.borrow().local,
+                IoKind::Udp(st) => st.borrow().local,
                 _ => return Err(i.err_type("not a socket")),
             };
             match addr {
                 Some(a) => address_value(i, a),
-                None => Ok(Value::Nil),
+                None => Err(i.raise(i.program.exc.io_error, "the socket has no local address")),
             }
         }
     );
     native!(m, "TCPSocket#remote_address", |i, r, _| {
         match &io_of(i, r)?.kind {
             IoKind::Socket(st) => {
+                // As of the connection, kept after `close` (#1184).
                 let peer = st.borrow().peer;
                 match peer {
                     Some(a) => address_value(i, a),
-                    None => Ok(Value::Nil),
+                    None => Err(i.raise(i.program.exc.io_error, "the socket has no peer address")),
                 }
             }
             _ => Err(i.err_type("not a socket")),
@@ -563,8 +563,13 @@ fn make_socket_from(
 
 fn make_listener(_: &Interp, listener: Listener, path: Option<String>) -> Value {
     let unix = matches!(listener, Listener::Unix(_));
+    let local = match &listener {
+        Listener::Tcp(l) => l.local_addr().ok(),
+        Listener::Unix(_) => None,
+    };
     io(IoKind::Listener(IoCell::new(ListenerState {
         listener: Some(listener),
+        local,
         unix,
         closed: false,
         path,

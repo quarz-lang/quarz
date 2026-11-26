@@ -93,6 +93,17 @@ class HttpShutdownTest < Test::Case
     end
   end
 
+  # The address after a shutdown and a finished `serve` is the one bound
+  # (#1184): the listener keeps it once closed.
+  def test_local_address_after_shutdown
+    handler = HTTP.handler { |_| HTTP::Server::Response.text("x") }
+    srv = HTTP::Server.new(handler, host: "127.0.0.1", port: 0)
+    address = srv.local_address
+    srv.shutdown(timeout: 1.second)
+    srv.serve
+    assert_equal(address, srv.local_address)
+  end
+
   def test_serve_task_cancelled_after_shutdown
     # The task running `serve` cancelled while it waits for the accept
     # loop to end: `serve` ends with `Task::Cancelled` (#691's fix lets

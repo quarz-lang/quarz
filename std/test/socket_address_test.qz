@@ -1,0 +1,41 @@
+# The address readers after `close` (#1184): each socket keeps the
+# address it had (a server's and a UDP socket's as bound, a connection's
+# as connected) and answers with it, instead of a nil its declared type
+# does not allow.
+require "socket"
+require "test"
+
+class SocketAddressAfterCloseTest < Test::Case
+  def test_tcp_server
+    server = TCPServer.new("127.0.0.1", 0)
+    address = server.local_address
+    assert(address.port > 0)
+    server.close
+    assert_equal(address, server.local_address)
+  end
+
+  def test_tcp_connection
+    server = TCPServer.new("127.0.0.1", 0)
+    client = TCPSocket.new("127.0.0.1", server.local_address.port)
+    conn = server.accept
+    local = client.local_address
+    remote = client.remote_address
+    assert_equal(server.local_address.port, remote.port)
+    assert_equal(local.port, conn.remote_address.port)
+    client.close
+    conn.close
+    server.close
+    assert_equal(local, client.local_address)
+    assert_equal(remote, client.remote_address)
+    assert_equal(local, conn.remote_address)
+  end
+
+  def test_udp_as_last_bound
+    socket = UDPSocket.new
+    socket.bind("127.0.0.1", 0)
+    address = socket.local_address
+    assert_equal("127.0.0.1", address.host)
+    socket.close
+    assert_equal(address, socket.local_address)
+  end
+end
