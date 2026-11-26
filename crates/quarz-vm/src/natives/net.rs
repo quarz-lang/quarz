@@ -1243,6 +1243,13 @@ pub fn close(interp: &Interp, recv: &Value) -> Result<(), Flow> {
         IoKind::Listener(st) => {
             let mut s = st.borrow_mut();
             if let Some(listener) = s.listener.take() {
+                // (Its address as of now, for `local_address` after it,
+                // whatever was asked before, #1184.)
+                if let Listener::Tcp(l) = &listener {
+                    if let Ok(a) = l.local_addr() {
+                        s.local = Some(a);
+                    }
+                }
                 interp.sched.borrow_mut().deregister(listener.fd());
                 if let (Listener::Unix(_), Some(path)) = (&listener, &s.path) {
                     let _ = std::fs::remove_file(path);
@@ -1254,6 +1261,10 @@ pub fn close(interp: &Interp, recv: &Value) -> Result<(), Flow> {
         IoKind::Udp(st) => {
             let mut s = st.borrow_mut();
             if let Some(socket) = s.socket.take() {
+                // (Its address as of now: a `connect` may have changed it.)
+                if let Ok(a) = socket.local_addr() {
+                    s.local = Some(a);
+                }
                 interp.sched.borrow_mut().deregister(socket.as_raw_fd());
             }
             s.closed = true;

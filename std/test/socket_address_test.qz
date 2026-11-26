@@ -49,6 +49,11 @@ class SocketAddressAfterCloseTest < Test::Case
     assert_equal("127.0.0.1", socket.local_address.host)
     socket.close
     assert_equal("127.0.0.1", socket.local_address.host)
+    # Closed without being asked before: the address as of the close.
+    unasked = UDPSocket.new
+    unasked.connect("127.0.0.1", peer.local_address.port)
+    unasked.close
+    assert_equal("127.0.0.1", unasked.local_address.host)
     peer.close
   end
 end
