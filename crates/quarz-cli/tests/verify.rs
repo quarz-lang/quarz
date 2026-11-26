@@ -264,6 +264,51 @@ fn a_native_result_inside_its_union_runs() {
     assert!(!err.contains("QIR fact violated"), "{err}");
 }
 
+/// #1190: a native declared `-> Self` is checked against the receiver's
+/// class, not its owner: `String#size` shipped as returning `Self` (its
+/// owner-based test admitting anything) stops the program on its `Int`.
+#[test]
+fn a_native_result_of_self_is_tested_as_the_receivers_class() {
+    let name = "a_native_result_of_self_is_tested_as_the_receivers_class";
+    let (code, err) = in_child(name, || {
+        let module = common::lower(NATIVES);
+        let mut module = with_native_result(module, "String#size", quarz_ir::RtType::Any, "Self");
+        let m = module
+            .world
+            .methods
+            .iter_mut()
+            .find(|m| m.native_key.as_deref() == Some("String#size"))
+            .unwrap();
+        m.result_self = Some(quarz_ir::RtType::Nothing);
+        module
+    });
+    assert_eq!(code, Some(101), "{err}");
+    assert!(
+        err.contains("QIR fact violated: native `String#size` returned a value of class Int, but its declared result is Self, with `Self` the receiver's class String"),
+        "{err}"
+    );
+}
+
+/// #1190: `Object#dup` (`-> Self`) on an object of a subclass returns
+/// one of the receiver's class, which the check, exact now, admits.
+#[test]
+fn a_native_result_of_self_of_the_receivers_class_runs() {
+    let name = "a_native_result_of_self_of_the_receivers_class_runs";
+    let (code, err) = in_child(name, || {
+        let module = common::lower("class A\nend\nclass B < A\nend\np B.new.dup.class\n");
+        let m = module
+            .world
+            .methods
+            .iter()
+            .find(|m| m.native_key.as_deref() == Some("Object#dup"))
+            .expect("Object#dup");
+        assert_eq!(m.result_self, Some(quarz_ir::RtType::Nothing));
+        module
+    });
+    assert_eq!(code, Some(0), "{err}");
+    assert!(!err.contains("QIR fact violated"), "{err}");
+}
+
 #[test]
 fn a_field_read_on_another_class_stops_the_program() {
     let (code, err) = in_child("a_field_read_on_another_class_stops_the_program", || {

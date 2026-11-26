@@ -3480,22 +3480,73 @@ impl Interp {
     /// several overloads of its name finds the one it serves from its
     /// arguments, which no entry knows: it is checked against the union
     /// of their results (`RtMethod::result_union`), which accepts more.
+    /// A declared `Self` is tested as the class of `recv`, the receiver
+    /// (#1190): every entry that checks has it.
     #[inline(always)]
-    pub(crate) fn check_native_result(&self, mid: MethodId, v: &Value) {
+    pub(crate) fn check_native_result(&self, mid: MethodId, v: &Value, recv: &Value) {
         // (`verify` is `verify::enabled()`, read once: a field load in a
         // release build, where the check is off.)
         if self.verify && self.program.world.native_results {
-            self.check_native_result_now(mid, v);
+            let self_class = self.self_class(mid, recv);
+            self.check_native_result_now(mid, v, self_class);
+        }
+    }
+
+    /// `check_native_result` where the receiver was moved into the native
+    /// (an owned call): `self_class`, taken from it before
+    /// (`self_class`).
+    #[inline(always)]
+    pub(crate) fn check_native_result_moved(
+        &self,
+        mid: MethodId,
+        v: &Value,
+        self_class: Option<ClassId>,
+    ) {
+        if self.verify && self.program.world.native_results {
+            self.check_native_result_now(mid, v, self_class);
+        }
+    }
+
+    /// The class a native's declared `Self` is for the receiver `recv`
+    /// (#1190), when its result has one (`RtMethod::result_self`): the
+    /// receiver's class, or for a class-side native the class the
+    /// receiver is. `None` otherwise, and when the check is off.
+    #[inline]
+    pub(crate) fn self_class(&self, mid: MethodId, recv: &Value) -> Option<ClassId> {
+        if !(self.verify && self.program.world.native_results) {
+            return None;
+        }
+        let m = self.program.method(mid);
+        m.result_self.as_ref()?;
+        if m.singleton {
+            match recv {
+                Value::Class(c) => Some(*c),
+                _ => None,
+            }
+        } else {
+            Some(self.class_of(recv))
         }
     }
 
     #[cold]
     #[inline(never)]
-    fn check_native_result_now(&self, mid: MethodId, v: &Value) {
+    fn check_native_result_now(&self, mid: MethodId, v: &Value, self_class: Option<ClassId>) {
         let m = self.program.method(mid);
         let Some(key) = m.native_key.as_deref() else {
             return;
         };
+        // `Self` as the receiver's class, the other members as declared.
+        if let (Some(besides), Some(c)) = (&m.result_self, self_class) {
+            if !self.is_a(v, besides) && !self.is_a(v, &RtType::Class(c)) {
+                self.violated(format!(
+                    "native `{key}` returned a value of class {}, but its declared result is {}, with `Self` the receiver's class {}",
+                    self.class_name(v),
+                    m.ret.as_deref().unwrap_or("its declared type"),
+                    self.program.world.classes[c as usize].name
+                ));
+            }
+            return;
+        }
         let test = m.result_union.as_ref().or(m.result_test.as_ref());
         let Some(test) = test else {
             self.violated(format!("native `{key}` has no test of its declared result"));
@@ -3543,7 +3594,7 @@ impl Interp {
             },
         );
         if let Ok(v) = &r {
-            self.check_native_result(mid, v);
+            self.check_native_result(mid, v, recv);
         }
         r
     }
@@ -3592,7 +3643,7 @@ impl Interp {
                 },
             );
             if let Ok(v) = &r {
-                self.check_native_result(mid, v);
+                self.check_native_result(mid, v, &recv);
             }
             return r;
         }
@@ -3818,6 +3869,8 @@ impl Interp {
                     Err(e) => return Err((e, recv)),
                 }
             };
+            // (The receiver moves into the native: its class first.)
+            let self_class = self.self_class(mid, &recv);
             let r = native(
                 self,
                 recv,
@@ -3828,7 +3881,7 @@ impl Interp {
                 },
             );
             if let Ok(v) = &r {
-                self.check_native_result(mid, v);
+                self.check_native_result_moved(mid, v, self_class);
             }
             return r;
         }

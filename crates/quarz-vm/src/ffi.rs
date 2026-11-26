@@ -744,7 +744,7 @@ pub unsafe extern "C" fn qz_call_static(
                 *slot = &*regs.add(*arg_regs.add(i) as usize);
             }
             if let Some(v) = fast(rt, recv_ref, &refs[..nargs as usize]) {
-                rt.check_native_result(mid, &v);
+                rt.check_native_result(mid, &v, recv_ref);
                 *regs.add(dst as usize) = v;
                 return STATUS_OK;
             }

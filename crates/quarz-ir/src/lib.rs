@@ -1703,6 +1703,14 @@ pub struct RtMethod {
     /// checked against: an approximation that accepts more.
     #[serde(default)]
     pub result_union: Option<RtType>,
+    /// For a native of one overload whose declared result is `Self` or a
+    /// union with `Self` (#1190): the test of the result's other members
+    /// (`Nothing` when there are none). An entry that has the receiver
+    /// checks the result against it, and `Self` as the receiver's class
+    /// (the class a class-side native's receiver is), exactly; the
+    /// owner-based `result_test` stays for what has no receiver.
+    #[serde(default)]
+    pub result_self: Option<RtType>,
 }
 
 /// The shape of a method with a parameter other than a positional one.
@@ -2629,6 +2637,7 @@ impl Droppable for RtMethod {
             keyword_hash: false,
             result_test: None,
             result_union: None,
+            result_self: None,
         }
     }
 }
