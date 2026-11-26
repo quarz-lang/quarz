@@ -622,11 +622,15 @@ class CommandLine
     end
 
     # The kind of value [type] is, or the error for a type that is not one.
+    # (The classes by identity, `equal?`, which no class may define:
+    # `==` on a `Type[Object]` would reach every `==` of the program at
+    # compile time, one of which may do what a compile-time run cannot,
+    # #1171.)
     static def self.value_kind(type: Type[Object]) -> Symbol
-      return :string if type == String
-      return :int if type == Int
-      return :float if type == Float
-      return :bool if type == Bool
+      return :string if type.equal?(String)
+      return :int if type.equal?(Int)
+      return :float if type.equal?(Float)
+      return :bool if type.equal?(Bool)
       begin
         type.variants
       rescue ArgumentError
@@ -638,7 +642,7 @@ class CommandLine
     # An enum's variants as the command line writes them, in kebab case
     # (`NoKeyUpdate` is `no-key-update`); empty for another type.
     static def self.choices(type: Type[Object]) -> Array[String]
-      return [] if type == String || type == Int || type == Float || type == Bool
+      return [] if type.equal?(String) || type.equal?(Int) || type.equal?(Float) || type.equal?(Bool)
       names = type.variants.map { |v| variant_name(v) }
       names.each_with_index do |n, i|
         j = names.index(n) || i
