@@ -2,6 +2,7 @@
 
 use quarz_ir::*;
 use quarz_syntax::ast::ParamKind;
+use quarz_types::testable::rt_type;
 use quarz_types::{self as types, ClassKind, Member, Synth, Type, World};
 
 use crate::Lowerer;
@@ -425,6 +426,7 @@ pub fn erase(world: &World, t: &Type) -> ClassId {
 /// and the lowering's `overridden` are left for `fill`.
 pub fn method_row(world: &World, id: MethodId, overrides: &[MethodId]) -> RtMethod {
     let m = world.method(id);
+    let results = native_result_tests(world, m);
     let owner = world.class(m.owner);
     let overloaded = owner.methods.get(&m.name).is_some_and(|ids| ids.len() > 1);
     // An abstract method is always dispatched dynamically: its
@@ -522,6 +524,8 @@ pub fn method_row(world: &World, id: MethodId, overrides: &[MethodId]) -> RtMeth
                     Vec::new()
                 },
                 keyword_hash: m.generated.as_ref().is_some_and(|g| g.keywords),
+                result_test: results.0,
+                result_union: results.1,
             };
     row.shape = RtMethod::shape_of(&row.params, row.has_block);
     row
@@ -628,6 +632,7 @@ fn declared_rest(
         }
     }
     let mut rt = RtWorld {
+        native_results: true,
         classes,
         methods,
         consts: Vec::new(),
@@ -755,6 +760,56 @@ pub fn class_override_rows_of(
     }
     rows.sort_unstable();
     rows
+}
+
+/// For a native, the run-time test of its declared result
+/// (`testable::rt_type`, the class alone: `RtMethod::result_test`), and,
+/// when overloads share its native, the union of theirs
+/// (`RtMethod::result_union`). `Self` is tested as the owner (#1187: an
+/// approximation that accepts more, and for a module's or `Object`'s
+/// native anything the owner admits).
+fn native_result_tests(world: &World, m: &types::MethodInfo) -> (Option<RtType>, Option<RtType>) {
+    if !m.is_native || m.synth != Synth::None {
+        return (None, None);
+    }
+    let test = |m: &types::MethodInfo| self_as_owner(rt_type(&m.ret), &m.ret, m.owner);
+    let own = test(m);
+    let key = m.native_key(world);
+    let mut shared: Vec<RtType> = Vec::new();
+    if let Some(ids) = world.class(m.owner).methods.get(&m.name) {
+        for &id in ids {
+            let o = world.method(id);
+            if o.is_native && o.synth == Synth::None && o.native_key(world) == key {
+                let t = test(o);
+                if !shared.contains(&t) {
+                    shared.push(t);
+                }
+            }
+        }
+    }
+    let union = (shared.len() > 1).then_some(RtType::Union(shared));
+    (Some(own), union)
+}
+
+/// `test` (the run-time test of `ret`) with `Self`, which it tests as
+/// anything, as the class `owner` (at the top or a union's member).
+fn self_as_owner(test: RtType, ret: &Type, owner: ClassId) -> RtType {
+    let is_self = |t: &Type| matches!(t, Type::Param(p) if *p == types::declare::SELF_PARAM);
+    match ret {
+        t if is_self(t) => RtType::Class(owner),
+        Type::Union(ms) if ms.iter().any(is_self) => RtType::Union(
+            ms.iter()
+                .map(|t| {
+                    if is_self(t) {
+                        RtType::Class(owner)
+                    } else {
+                        rt_type(t)
+                    }
+                })
+                .collect(),
+        ),
+        _ => test,
+    }
 }
 
 /// Whether a positional parameter of `m` follows the one named `name`.

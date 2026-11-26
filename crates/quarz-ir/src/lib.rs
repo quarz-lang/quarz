@@ -1686,6 +1686,23 @@ pub struct RtMethod {
     /// passed (`Interp::bind_params`), not its parameters one by one.
     #[serde(default)]
     pub keyword_hash: bool,
+    /// For a native, the run-time test of its declared result
+    /// (`testable::rt_type`: the class alone), which the interpreter
+    /// checks what the native returns against under `QUARZ_VERIFY`
+    /// (`Interp::check_native_result`, #1187). Approximations, each
+    /// accepting more than the declared type: a generic class's
+    /// elements are not tested, a type parameter admits anything,
+    /// `Self` is the owner (anything, for a module's or `Object`'s), a
+    /// class value any class value, a tuple its arity, a procedure any.
+    /// `None` for a method that is not a native.
+    #[serde(default)]
+    pub result_test: Option<RtType>,
+    /// For a native whose function serves other overloads of its name
+    /// too (it finds its overload from the arguments, which no entry
+    /// knows): the union of their `result_test`s, which its results are
+    /// checked against: an approximation that accepts more.
+    #[serde(default)]
+    pub result_union: Option<RtType>,
 }
 
 /// The shape of a method with a parameter other than a positional one.
@@ -1841,6 +1858,12 @@ pub struct RtBuiltin {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RtWorld {
+    /// Whether the natives' `RtMethod::result_test`s are shipped (#1187):
+    /// always by the lowering; a compiled program keeps them only when
+    /// built by a `quarz` that checks the facts (`quarz_vm::verify`), as
+    /// its other checks, and is not checked otherwise.
+    #[serde(default)]
+    pub native_results: bool,
     pub classes: Vec<RtClass>,
     #[serde(with = "dropped")]
     pub methods: Vec<RtMethod>,
@@ -2604,6 +2627,8 @@ impl Droppable for RtMethod {
             overrides: Vec::new(),
             makes: Vec::new(),
             keyword_hash: false,
+            result_test: None,
+            result_union: None,
         }
     }
 }

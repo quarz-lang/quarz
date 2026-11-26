@@ -173,21 +173,35 @@ pub fn build_with_jobs(
 ) -> Result<(), String> {
     // What the program cannot run is neither compiled nor decoded at
     // start-up (`QUARZ_NO_SHAKE` keeps everything, for comparison).
-    let mut shaken;
     let start = std::time::Instant::now();
-    let module = if std::env::var_os("QUARZ_NO_SHAKE").is_some() {
+    let no_shake = std::env::var_os("QUARZ_NO_SHAKE").is_some();
+    // (The natives' result tests, #1187, only where the program is
+    // checked: built by a `quarz` that checks the facts, as the field
+    // checks, `verify_field_class`.)
+    let strip = !quarz_vm::verify::enabled();
+    let mut owned;
+    let module = if no_shake && !strip {
         module
     } else {
-        shaken = module.clone();
-        quarz_ir::shake::shake(&mut shaken);
-        // (The rows a compiled program keeps, to compare with the
-        // lowered ones, `QUARZ_WITNESS_NET=rows`.)
-        if std::env::var("QUARZ_WITNESS_NET").as_deref() == Ok("rows") {
-            for line in shaken.world.witness_row_lines("shaken") {
-                eprintln!("{line}");
+        owned = module.clone();
+        if !no_shake {
+            quarz_ir::shake::shake(&mut owned);
+            // (The rows a compiled program keeps, to compare with the
+            // lowered ones, `QUARZ_WITNESS_NET=rows`.)
+            if std::env::var("QUARZ_WITNESS_NET").as_deref() == Ok("rows") {
+                for line in owned.world.witness_row_lines("shaken") {
+                    eprintln!("{line}");
+                }
             }
         }
-        &shaken
+        if strip {
+            owned.world.native_results = false;
+            for m in owned.world.methods.iter_mut() {
+                m.result_test = None;
+                m.result_union = None;
+            }
+        }
+        &owned
     };
     report("shake", start, &[]);
     let mut dir = output.as_os_str().to_owned();
