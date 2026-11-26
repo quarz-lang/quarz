@@ -526,6 +526,7 @@ pub fn method_row(world: &World, id: MethodId, overrides: &[MethodId]) -> RtMeth
                 keyword_hash: m.generated.as_ref().is_some_and(|g| g.keywords),
                 result_test: results.0,
                 result_union: results.1,
+                result_self: results.2,
             };
     row.shape = RtMethod::shape_of(&row.params, row.has_block);
     row
@@ -767,10 +768,16 @@ pub fn class_override_rows_of(
 /// when overloads share its native, the union of theirs
 /// (`RtMethod::result_union`). `Self` is tested as the owner (#1187: an
 /// approximation that accepts more, and for a module's or `Object`'s
-/// native anything the owner admits).
-fn native_result_tests(world: &World, m: &types::MethodInfo) -> (Option<RtType>, Option<RtType>) {
+/// native anything the owner admits); for a native of one overload, the
+/// result's members besides `Self` are also given apart
+/// (`RtMethod::result_self`, #1190), for the entries that test `Self` as
+/// the receiver's class.
+fn native_result_tests(
+    world: &World,
+    m: &types::MethodInfo,
+) -> (Option<RtType>, Option<RtType>, Option<RtType>) {
     if !m.is_native || m.synth != Synth::None {
-        return (None, None);
+        return (None, None, None);
     }
     let test = |m: &types::MethodInfo| self_as_owner(rt_type(&m.ret), &m.ret, m.owner);
     let own = test(m);
@@ -788,7 +795,25 @@ fn native_result_tests(world: &World, m: &types::MethodInfo) -> (Option<RtType>,
         }
     }
     let union = (shared.len() > 1).then_some(RtType::Union(shared));
-    (Some(own), union)
+    let besides_self = if union.is_none() {
+        besides_self(&m.ret)
+    } else {
+        None
+    };
+    (Some(own), union, besides_self)
+}
+
+/// The test of `ret`'s members other than `Self` when `Self` is `ret` or
+/// one of its union's members (`Nothing` for `Self` alone), else `None`.
+fn besides_self(ret: &Type) -> Option<RtType> {
+    let is_self = |t: &Type| matches!(t, Type::Param(p) if *p == types::declare::SELF_PARAM);
+    match ret {
+        t if is_self(t) => Some(RtType::Nothing),
+        Type::Union(ms) if ms.iter().any(is_self) => Some(RtType::Union(
+            ms.iter().filter(|t| !is_self(t)).map(rt_type).collect(),
+        )),
+        _ => None,
+    }
 }
 
 /// `test` (the run-time test of `ret`) with `Self`, which it tests as

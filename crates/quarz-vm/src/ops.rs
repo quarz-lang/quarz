@@ -215,7 +215,7 @@ impl Interp {
                             fast(self, recv_ref, &refs)
                         };
                         if let Some(v) = result {
-                            self.check_native_result(mid, &v);
+                            self.check_native_result(mid, &v, recv_ref);
                             regs[c.dst as usize] = v;
                             if c.moved != 0 && crate::deinit::enabled() {
                                 self.release_moved(regs, &c);

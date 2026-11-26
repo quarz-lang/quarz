@@ -199,6 +199,7 @@ pub fn build_with_jobs(
             for m in owned.world.methods.iter_mut() {
                 m.result_test = None;
                 m.result_union = None;
+                m.result_self = None;
             }
         }
         &owned
