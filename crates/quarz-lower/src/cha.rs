@@ -119,6 +119,7 @@ fn rewrite_in(f: &mut Function, world: &RtWorld, has_subclass: &[bool]) {
                                 block: None,
                                 moved: 0,
                                 recv_classes: None,
+                                recv_class_objects: None,
                                 on_self: false,
                             });
                             lines.push(line);
@@ -136,6 +137,7 @@ fn rewrite_in(f: &mut Function, world: &RtWorld, has_subclass: &[bool]) {
                     block,
                     moved,
                     recv_classes: _,
+                    recv_class_objects: _,
                     on_self: _,
                     // (An abstract class's stays: the runtime refuses to
                     // build it, #423; a module's too, whose class methods
@@ -155,6 +157,7 @@ fn rewrite_in(f: &mut Function, world: &RtWorld, has_subclass: &[bool]) {
                         block,
                         moved,
                         recv_classes: None,
+                        recv_class_objects: None,
                         on_self: false,
                     });
                     lines.push(line);

@@ -1097,6 +1097,7 @@ impl<'a> FnBuilder<'a> {
             block: None,
             moved: 0,
             recv_classes: None,
+            recv_class_objects: None,
             on_self: false,
         });
         dst
@@ -1938,6 +1939,7 @@ impl<'a> FnBuilder<'a> {
                     block: a.block,
                     moved: 0,
                     recv_classes: None,
+                    recv_class_objects: None,
                     on_self: false,
                 });
                 dst
@@ -2086,6 +2088,7 @@ impl<'a> FnBuilder<'a> {
                             block: None,
                             moved: 0,
                             recv_classes: None,
+                            recv_class_objects: None,
                             on_self: false,
                         });
                         self.emit(Inst::Move { dst: res, src: d });
@@ -2121,6 +2124,7 @@ impl<'a> FnBuilder<'a> {
                             block: None,
                             moved: 0,
                             recv_classes: None,
+                            recv_class_objects: None,
                             on_self: false,
                         },
                     );
@@ -2526,6 +2530,7 @@ impl<'a> FnBuilder<'a> {
                 block: None,
                 moved: 0,
                 recv_classes: None,
+                recv_class_objects: None,
                 on_self: false,
             });
             self.term(Term::Jump(join));
@@ -2631,6 +2636,7 @@ impl<'a> FnBuilder<'a> {
             block: None,
             moved: 0,
             recv_classes: None,
+            recv_class_objects: None,
             on_self: false,
         });
         dst
@@ -3308,6 +3314,7 @@ impl<'a> FnBuilder<'a> {
                         block: a.block,
                         moved: 0,
                         recv_classes: None,
+                        recv_class_objects: None,
                         on_self: false,
                     },
                 );
@@ -3354,6 +3361,7 @@ impl<'a> FnBuilder<'a> {
                         block: a.block,
                         moved: 0,
                         recv_classes: None,
+                        recv_class_objects: None,
                         on_self: false,
                     },
                 );
@@ -3533,6 +3541,7 @@ impl<'a> FnBuilder<'a> {
             block: None,
             moved: 0,
             recv_classes: None,
+            recv_class_objects: None,
             on_self: false,
         });
     }
@@ -3847,6 +3856,7 @@ impl<'a> FnBuilder<'a> {
                 block: None,
                 moved: 0,
                 recv_classes: None,
+                recv_class_objects: None,
                 on_self: false,
             });
             hi = Some(len);
@@ -4083,6 +4093,7 @@ impl<'a> FnBuilder<'a> {
                     block: None,
                     moved: 0,
                     recv_classes: None,
+                    recv_class_objects: None,
                     on_self: false,
                 });
                 d
@@ -4338,6 +4349,7 @@ impl<'a> FnBuilder<'a> {
                         block: None,
                         moved: 0,
                         recv_classes: None,
+                        recv_class_objects: None,
                         on_self: false,
                     },
                 );
@@ -4355,6 +4367,7 @@ impl<'a> FnBuilder<'a> {
                         block: None,
                         moved: 0,
                         recv_classes: None,
+                        recv_class_objects: None,
                         on_self: false,
                     },
                 );
@@ -4627,6 +4640,7 @@ impl<'a> FnBuilder<'a> {
                         block: a.block,
                         moved: 0,
                         recv_classes: None,
+                        recv_class_objects: None,
                         on_self: false,
                     });
                     return dst;
@@ -4647,6 +4661,10 @@ impl<'a> FnBuilder<'a> {
         };
         let recv_classes = match (&kind, &call.recv) {
             (CallKind::Method(_), Some(r)) if recv.is_some() => self.recv_classes(r.id),
+            _ => None,
+        };
+        let recv_class_objects = match (&kind, &call.recv) {
+            (CallKind::Method(_), Some(r)) if recv.is_some() => self.recv_class_objects(r.id),
             _ => None,
         };
         // A call on the method's `self`: implicit (not one going to an
@@ -4671,6 +4689,7 @@ impl<'a> FnBuilder<'a> {
                 block: a.block,
                 moved: 0,
                 recv_classes,
+                recv_class_objects,
                 on_self,
             },
         );
@@ -4723,6 +4742,25 @@ impl<'a> FnBuilder<'a> {
         }
     }
 
+    /// The classes receiver `id`'s static type says it is the class
+    /// object of (`Inst::Call::recv_class_objects`): `Type[C]`, its type
+    /// arguments erased (a class value carries none), or a union of such;
+    /// `None` when any member is something else (an instance type, which
+    /// a union with it keeps unbounded, as by name; a type parameter's
+    /// class object, `Type::TypeOf`, which stays unbounded for now and so
+    /// refuses more than docs/14 §8's rule, #1178), or the checks gave
+    /// the node different types.
+    fn recv_class_objects(&self, id: u32) -> Option<Box<[ClassId]>> {
+        let class = |t: &quarz_types::Type| match t {
+            quarz_types::Type::ClassObject(c, _) => Some(*c),
+            _ => None,
+        };
+        match self.node_type(id)? {
+            quarz_types::Type::Union(ts) => ts.iter().map(class).collect(),
+            t => class(t).map(|c| Box::from([c])),
+        }
+    }
+
     /// `pattern === value` for the pattern of node `id` (a `when` value or
     /// a value pattern of `case/in`, docs/01 §11): the call of a pattern
     /// the checker typed as a procedure (`Output::proc_patterns`, #1085),
@@ -4741,6 +4779,7 @@ impl<'a> FnBuilder<'a> {
                 block: None,
                 moved: 0,
                 recv_classes: None,
+                recv_class_objects: None,
                 on_self: false,
             });
         } else {
@@ -4810,6 +4849,7 @@ impl<'a> FnBuilder<'a> {
             block: a.block,
             moved: 0,
             recv_classes: None,
+            recv_class_objects: None,
             on_self,
         });
         dst
@@ -4881,6 +4921,7 @@ impl<'a> FnBuilder<'a> {
                                     block: a.block,
                                     moved: 0,
                                     recv_classes: None,
+                                    recv_class_objects: None,
                                     on_self: false,
                                 });
                                 self.store_var(r, dst);
@@ -4950,6 +4991,7 @@ impl<'a> FnBuilder<'a> {
                                     block: a.block,
                                     moved: 0,
                                     recv_classes: None,
+                                    recv_class_objects: None,
                                     on_self: false,
                                 });
                                 let obj = self.self_reg();
@@ -5042,6 +5084,7 @@ impl<'a> FnBuilder<'a> {
                 block: None,
                 moved: 0,
                 recv_classes: None,
+                recv_class_objects: None,
                 on_self: false,
             },
         );
@@ -5062,6 +5105,7 @@ impl<'a> FnBuilder<'a> {
             block: None,
             moved: 0,
             recv_classes: None,
+            recv_class_objects: None,
             on_self: false,
         });
         dst
@@ -5104,6 +5148,7 @@ impl<'a> FnBuilder<'a> {
                 block: None,
                 moved: 0,
                 recv_classes: None,
+                recv_class_objects: None,
                 on_self: false,
             },
         );
@@ -5139,6 +5184,7 @@ impl<'a> FnBuilder<'a> {
                     block: None,
                     moved: 0,
                     recv_classes: None,
+                    recv_class_objects: None,
                     on_self: false,
                 },
             );
@@ -5155,6 +5201,7 @@ impl<'a> FnBuilder<'a> {
             block: None,
             moved: 0,
             recv_classes: None,
+            recv_class_objects: None,
             on_self: false,
         });
         dst
@@ -5287,6 +5334,7 @@ impl<'a> FnBuilder<'a> {
                                 block: None,
                                 moved: 0,
                                 recv_classes: None,
+                                recv_class_objects: None,
                                 on_self: false,
                             },
                         );
@@ -5317,6 +5365,7 @@ impl<'a> FnBuilder<'a> {
                                 block: None,
                                 moved: 0,
                                 recv_classes: None,
+                                recv_class_objects: None,
                                 on_self: false,
                             });
                             dst
@@ -5884,6 +5933,7 @@ impl<'a> FnBuilder<'a> {
                             block: None,
                             moved: 0,
                             recv_classes: None,
+                            recv_class_objects: None,
                             on_self: false,
                         });
                         let n = self.load_const(Constant::Int(hp.pairs.len() as i64));

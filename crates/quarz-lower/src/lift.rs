@@ -345,6 +345,7 @@ impl Lowerer {
                             block: None,
                             moved: 0,
                             recv_classes: None,
+                            recv_class_objects: None,
                             on_self: true,
                         });
                         baker.field_set(&mut b.insts, obj, owner, index, value);
@@ -538,6 +539,7 @@ impl<'a> Baker<'a> {
             block: None,
             moved: 0,
             recv_classes: None,
+            recv_class_objects: None,
             on_self: false,
         });
     }
@@ -673,6 +675,7 @@ impl<'a> Baker<'a> {
                     block: None,
                     moved: 0,
                     recv_classes: None,
+                    recv_class_objects: None,
                     on_self: false,
                 });
                 for (index, src) in stores.into_iter().enumerate() {

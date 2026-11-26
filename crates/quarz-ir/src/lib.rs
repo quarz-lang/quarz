@@ -607,6 +607,18 @@ pub enum Inst {
         /// type parameter, `self` or a call made by a pass): any.
         #[serde(default)]
         recv_classes: Option<Box<[ClassId]>>,
+        /// For a `CallKind::Method` on a class value, the classes the
+        /// receiver's static type says it is the class object of
+        /// (`Type[C]`, or a union of such): the receiver is then `C`
+        /// or a subclass of it (for a module, a class including it), which
+        /// bounds what a compile-time run may reach to the class methods
+        /// such a class object runs (`RtWorld::class_override_rows`,
+        /// `shake::Ref::ClassSide`, docs/14 §8, #1173). Kept apart from
+        /// `recv_classes`, which says "an instance of". `None` (an
+        /// instance type, a type parameter's class object, a union with
+        /// other members, a call made by a pass): unbounded, as by name.
+        #[serde(default)]
+        recv_class_objects: Option<Box<[ClassId]>>,
         /// A `CallKind::Method` (or a `Super`) on the function's `self` as
         /// its method has it (an implicit or `self.` call in the method's
         /// body, or in a block whose `self` is the method's): a run of the method

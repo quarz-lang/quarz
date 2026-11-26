@@ -2346,6 +2346,21 @@ fn reached<'a>(
         shake::Ref::Exact { method, on_self } => {
             methods.push((method, if on_self { self_bound.clone() } else { None }))
         }
+        // A call on a class value bounded by `classes`: the method, and
+        // what a class object of one of them (or of a subclass, or of a
+        // class including a module among them) runs in its place, as the
+        // runtime finds it (`RtWorld::class_override_rows`, built from
+        // `World::class_method_target`); never an instance method of a
+        // program class (docs/14 §8, #1173). Each runs with `self`
+        // unbounded (an approximation that reaches more).
+        shake::Ref::ClassSide { method, classes } => {
+            methods.push((method, None));
+            methods.extend(
+                class_side_targets(world, method, classes)
+                    .into_iter()
+                    .map(|o| (o, None)),
+            );
+        }
         shake::Ref::Runtime(n) => {
             if by_runtime {
                 runtime.push(n);
@@ -2676,6 +2691,30 @@ fn may_receive(world: &RtWorld, o: MethodId, classes: &[ClassId]) -> bool {
         world.class_is_a(c, owner)
             || (0..n).any(|d| world.class_is_a(d, c) && world.class_is_a(d, owner))
     })
+}
+
+/// What a call of `m` on a class object of one of `classes`, of a
+/// subclass of one, or of a class including one (a module), may run
+/// instead of `m`: the targets of `RtWorld::class_override_rows` for
+/// those class objects (`m` itself where nothing replaces it, without a
+/// row). `Object`'s class object stands for every class object.
+fn class_side_targets(world: &RtWorld, m: MethodId, classes: &[ClassId]) -> Vec<MethodId> {
+    let object = world.builtin.object;
+    let mut out: Vec<MethodId> = world
+        .class_override_rows
+        .iter()
+        .filter(|&&(k, b, t)| {
+            b == m
+                && t != m
+                && classes
+                    .iter()
+                    .any(|&c| c == object || k == c || world.class_is_a(k, c))
+        })
+        .map(|&(_, _, t)| t)
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// Whether `m` belongs to a class denied at compile time: a receiver of

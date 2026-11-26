@@ -154,6 +154,7 @@ impl<'a> FnBuilder<'a> {
             block: None,
             moved: 0,
             recv_classes: None,
+            recv_class_objects: None,
             on_self: false,
         });
         dst
@@ -785,6 +786,7 @@ impl<'a> FnBuilder<'a> {
             block: None,
             moved: 0,
             recv_classes: None,
+            recv_class_objects: None,
             on_self: false,
         });
         dst

@@ -929,6 +929,11 @@ impl Lowerer {
             quarz_ir::shake::Ref::Bounded {
                 method, classes, ..
             } => r.targets.push((method, classes.map(Into::into))),
+            // (A call on a class value: lowered as an unbounded call, every
+            // override of the method, wider than the runner's reach, which
+            // reads the class side's rows, `static_run::reached`; the
+            // runner's must be within what is lowered.)
+            quarz_ir::shake::Ref::ClassSide { method, .. } => r.targets.push((method, None)),
             quarz_ir::shake::Ref::Exact { method, .. } => r.methods.push(method),
             quarz_ir::shake::Ref::Name(n) => r.names.push(n.to_string()),
             quarz_ir::shake::Ref::Runtime(n) => r.runtime.push(n),
