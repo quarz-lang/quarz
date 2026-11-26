@@ -519,6 +519,7 @@ pub(crate) fn rewrite_with(
             block,
             moved,
             recv_classes,
+            recv_class_objects,
             on_self,
         } => Inst::Call {
             dst: r(dst),
@@ -531,6 +532,7 @@ pub(crate) fn rewrite_with(
             block: block.as_ref().map(r),
             moved: *moved,
             recv_classes: recv_classes.clone(),
+            recv_class_objects: recv_class_objects.clone(),
             on_self: *on_self,
         },
         Inst::OwnedCall {

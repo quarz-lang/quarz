@@ -3586,6 +3586,7 @@ impl<B: Builder> Gen<'_, B> {
                 block: blk,
                 moved,
                 recv_classes: _,
+                recv_class_objects: _,
                 on_self: _,
             } => {
                 let (tag, a, b2, name): (u32, u32, u32, &str) = match kind {

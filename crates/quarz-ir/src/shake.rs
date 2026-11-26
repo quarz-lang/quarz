@@ -583,7 +583,9 @@ impl Shake<'_> {
             Ref::Bytes => self.class(self.module.world.builtin.bytes),
             // (Only `reach_refs` gives these.)
             Ref::Runtime(n) => self.name(n),
-            Ref::Exact { method: m, .. } | Ref::Bounded { method: m, .. } => self.method(m),
+            Ref::Exact { method: m, .. }
+            | Ref::Bounded { method: m, .. }
+            | Ref::ClassSide { method: m, .. } => self.method(m),
             Ref::Construct { class, init, .. } => {
                 self.class(class);
                 self.name("initialize");
@@ -635,6 +637,18 @@ pub enum Ref<'a> {
         method: MethodId,
         classes: Option<&'a [ClassId]>,
         on_self: bool,
+    },
+    /// A method called as resolved on a class value whose static type
+    /// says it is the class object of one of `classes` or of a subclass
+    /// (of a class including it, for a module): `Type[C]`,
+    /// `Inst::Call::recv_class_objects`. A run calls the method, or what
+    /// such a class object runs in its place (a class method of its class
+    /// side, `RtWorld::class_override_rows`), never an instance method
+    /// of a program class (docs/14 §8, #1173). From `reach_refs` only;
+    /// `refs` gives `Method`.
+    ClassSide {
+        method: MethodId,
+        classes: &'a [ClassId],
     },
     /// `Class.new(...)` (`recv` false: an instance of `class` itself) or
     /// `new` on the receiver of a class method (`recv`: of `class` or a
@@ -718,6 +732,7 @@ fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
                 Inst::Call {
                     kind,
                     recv_classes,
+                    recv_class_objects,
                     on_self,
                     ..
                 } => match kind {
@@ -739,6 +754,12 @@ fn refs_in<'a>(f: &'a Function, exact: bool, visit: &mut dyn FnMut(Ref<'a>)) {
                         init: *init,
                         recv: true,
                     }),
+                    CallKind::Method(m) if exact && recv_class_objects.is_some() => {
+                        visit(Ref::ClassSide {
+                            method: *m,
+                            classes: recv_class_objects.as_deref().unwrap_or_default(),
+                        })
+                    }
                     CallKind::Method(m) if exact && (recv_classes.is_some() || *on_self) => {
                         visit(Ref::Bounded {
                             method: *m,

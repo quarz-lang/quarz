@@ -1338,6 +1338,7 @@ impl Interp {
                 block,
                 moved,
                 recv_classes: _,
+                recv_class_objects: _,
                 on_self: _,
             } => self.op_call(
                 f,

@@ -387,6 +387,7 @@ pub fn own_dying_receivers(f: &mut Function, in_place: &[bool]) {
                 block: None,
                 moved,
                 recv_classes: _,
+                recv_class_objects: _,
                 on_self: _,
             } = inst
             else {
