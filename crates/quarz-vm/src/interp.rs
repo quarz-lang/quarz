@@ -2697,6 +2697,51 @@ impl Interp {
             }
         }
     }
+    /// `with` on data value `o` whose type's body has its own
+    /// `initialize` taking the fields (`init`, `RtClass::with_init`): that
+    /// `initialize` given the keywords' values, moved, and the receiver's
+    /// other fields, in declaration order. No copy of the receiver is made
+    /// for it to read them back from (#1024).
+    #[inline(never)]
+    fn data_with_init(
+        &self,
+        m: &RtMethod,
+        o: &Rc<Object>,
+        init: MethodId,
+        kw: Vec<(Symbol, Value)>,
+    ) -> EvalResult {
+        let n = self.program.world.class(o.class).ivars.len();
+        let mut args: ArgVec = smallvec![Value::Nil; n];
+        // (The fields given, a bit each for the first 64, the rest
+        // listed: a keyword naming none is ignored, as the copy's
+        // `logical_set` ignores it; the checker refuses one given twice.)
+        let mut given: u64 = 0;
+        let mut far: SmallVec<[usize; 2]> = SmallVec::new();
+        for (sym, v) in kw {
+            let name = self.symbol_name(sym);
+            if let Some(i) = m.params.iter().position(|p| *p.name == *name) {
+                if let Some(a) = args.get_mut(i) {
+                    *a = v;
+                    if i < 64 {
+                        given |= 1 << i;
+                    } else {
+                        far.push(i);
+                    }
+                }
+            }
+        }
+        for (i, a) in args.iter_mut().enumerate() {
+            let is_given = if i < 64 {
+                given & (1 << i) != 0
+            } else {
+                far.contains(&i)
+            };
+            if !is_given {
+                *a = self.logical_get(o, i);
+            }
+        }
+        self.construct(o.class, Some(init), args, Vec::new(), None)
+    }
 
     /// Store `v` into declared field `i` of `o` (a data value held in
     /// place is copied field by field).
@@ -3523,22 +3568,18 @@ impl Interp {
                 let Value::Object(o) = &recv else {
                     return Err(self.err_type("`with` on a non-object"));
                 };
+                // The body's `initialize` taking the fields builds the
+                // value, as `new` would (docs/01 §4): the one the checker
+                // found (`RtClass::with_init`, #536 step 6).
+                if let Some(init) = self.program.world.class(o.class).with_init {
+                    return self.data_with_init(m, o, init, kw);
+                }
                 let copy = Object::new(o.class, o.fields());
                 for (sym, v) in kw {
                     let name = self.symbol_name(sym);
                     if let Some(i) = m.params.iter().position(|p| *p.name == *name) {
                         self.logical_set(&copy, i, v);
                     }
-                }
-                // The body's `initialize` taking the fields builds the
-                // value, as `new` would (docs/01 §4): the one the checker
-                // found (`RtClass::with_init`, #536 step 6).
-                let class = self.program.world.class(o.class);
-                if let Some(init) = class.with_init {
-                    let args: ArgVec = (0..class.ivars.len())
-                        .map(|i| self.logical_get(&copy, i))
-                        .collect();
-                    return self.construct(o.class, Some(init), args, Vec::new(), None);
                 }
                 return Ok(Value::Object(copy));
             }

@@ -1,0 +1,20 @@
+Body(name: "b", pos: Vec2(x: 1, y: 2), tags: ["x"], mass: 1.5)
+Body(name: "a", pos: Vec2(x: 3, y: 4), tags: ["x"], mass: 1.5)
+Body(name: "a", pos: Vec2(x: 1, y: 2), tags: ["x", "y"], mass: 2.0)
+Body(name: "c", pos: Vec2(x: 5, y: 6), tags: [], mass: 0.0)
+Body(name: "a", pos: Vec2(x: 1, y: 2), tags: ["x"], mass: 1.5)
+Clamped(lo: 1, hi: 1)
+Clamped(lo: 2, hi: 5)
+Clamped(lo: 7, hi: 9)
+Clamped(lo: 1, hi: 5)
+Rec(n: 1, label: "r")
+Rec(n: 0, label: "r")
+0
+63
+64
+z
+8
+[1, 2]
+65
+7
+[1]
