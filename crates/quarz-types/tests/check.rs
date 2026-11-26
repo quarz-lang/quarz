@@ -24,6 +24,13 @@ fn diagnostics(src: &str) -> Vec<String> {
         .collect()
 }
 
+/// `src` passes the declarer and the checker (`quarz_types::check`) with
+/// no error: the checker's verdict, not the command's. `quarz check`,
+/// `run` and `build` also run the witness net over the rows the lowering
+/// builds (`quarz_lower::net_errors`), which quarz-types cannot call, so a
+/// program `ok` passes may still be refused (#774: one was, #759). A test
+/// that pins whether a program is accepted goes in quarz-cli
+/// (`tests/diagnostics.rs` or a fixture), where the whole pipeline runs.
 fn ok(src: &str) {
     let errs = diagnostics(src);
     assert!(
