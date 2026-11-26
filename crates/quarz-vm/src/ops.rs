@@ -70,6 +70,8 @@ pub struct CallOps<'a> {
     pub kw_splat: Option<Reg>,
     pub block: Option<Reg>,
     pub moved: u16,
+    /// `Inst::Call::kw_moved`: the keyword arguments that move in.
+    pub kw_moved: u16,
 }
 
 /// An in-place call's operands (`Inst::OwnedCall`).
@@ -83,6 +85,8 @@ pub struct OwnedOps<'a> {
     pub unused: bool,
     /// `Inst::OwnedCall::moved`: the arguments that move in.
     pub moved: u16,
+    /// `Inst::OwnedCall::kw_moved`: the keyword arguments that move in.
+    pub kw_moved: u16,
 }
 
 impl Interp {
@@ -318,7 +322,7 @@ impl Interp {
         } else {
             self.call_args(regs, c.args, c.splat)
         };
-        let kw = self.call_kwargs(f, pool, regs, c.kw, c.kw_splat);
+        let kw = self.call_kwargs(f, pool, regs, c.kw, c.kw_splat, c.kw_moved);
         let block = c.block.map(|b| regs[b as usize].clone());
         let r = match c.kind {
             CallOp::Method(mid) => {
@@ -467,7 +471,7 @@ impl Interp {
                 VarLoc::Frame { .. } => {}
             }
         }
-        let kw = self.call_kwargs(f, pool, regs, c.kw, None);
+        let kw = self.call_kwargs(f, pool, regs, c.kw, None, c.kw_moved);
         let take_field = |obj: Reg, index: u32| -> Value {
             match &regs[obj as usize] {
                 Value::Object(o) => o.take_field(index as usize),

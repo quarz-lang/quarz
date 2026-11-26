@@ -1,0 +1,48 @@
+# A keyword argument moved into a call that raises is dropped once, and
+# a variable a `rescue` (or the code after it) reads is not moved: it
+# keeps its value (#1180).
+def boom(*, xs: Array[Int]) -> Int
+  raise ArgumentError.new("boom #{xs.size}")
+end
+
+def rest(**kw: Array[Int]) -> Int
+  raise ArgumentError.new("rest #{kw.size}")
+end
+
+def take(*, xs: Array[Int]) -> Int = xs.size
+
+a = [1, 2]
+begin
+  boom(xs: a)
+rescue ArgumentError => e
+  puts e.message
+end
+puts a.inspect
+
+b = [3]
+m = begin
+  boom(xs: b)
+rescue ArgumentError => e
+  "#{e.message} / #{b.inspect}"
+end
+puts m
+
+i = 0
+while i < 3
+  c = [i, i]
+  r = begin
+    rest(xs: c, ys: [i])
+  rescue ArgumentError => e
+    e.message
+  end
+  puts r
+  i += 1
+end
+
+d = [4, 5, 6]
+n = begin
+  take(xs: d)
+ensure
+  puts "ensure #{d.size}"
+end
+puts n

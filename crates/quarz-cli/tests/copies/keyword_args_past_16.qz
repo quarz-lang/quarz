@@ -1,0 +1,14 @@
+# Past the 16th keyword, the interpreter's call copies an argument
+# (`Inst::Call::kw_moved` has 16 bits, #1180): once per call here. A
+# compiled direct call lays every keyword out itself and moves this one
+# too.
+
+def many(*, k0: Int = 0, k1: Int = 0, k2: Int = 0, k3: Int = 0, k4: Int = 0, k5: Int = 0, k6: Int = 0, k7: Int = 0, k8: Int = 0, k9: Int = 0, k10: Int = 0, k11: Int = 0, k12: Int = 0, k13: Int = 0, k14: Int = 0, k15: Int = 0, xs: Array[Int]) -> Array[Int] = xs.push(k0)
+
+total = 0
+i = 0
+while i < 100
+  total += many(k0: 0, k1: 0, k2: 0, k3: 0, k4: 0, k5: 0, k6: 0, k7: 0, k8: 0, k9: 0, k10: 0, k11: 0, k12: 0, k13: 0, k14: 0, k15: 0, xs: [i]).size
+  i += 1
+end
+puts total

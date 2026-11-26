@@ -48,8 +48,13 @@ fn moved_out(inst: &Inst, shadow: &mut [bool]) {
     match inst {
         Inst::Take { src, .. } => shadow[*src as usize] = true,
         Inst::Call {
-            recv, args, moved, ..
-        } if *moved != 0 => {
+            recv,
+            args,
+            kw,
+            moved,
+            kw_moved,
+            ..
+        } if *moved != 0 || *kw_moved != 0 => {
             for (i, a) in args.iter().enumerate().take(15) {
                 if moved & (1 << i) != 0 {
                     shadow[*a as usize] = true;
@@ -58,15 +63,32 @@ fn moved_out(inst: &Inst, shadow: &mut [bool]) {
             if let Some(r) = recv.filter(|_| moved & (1 << 15) != 0) {
                 shadow[r as usize] = true;
             }
+            kw_moved_out(kw, *kw_moved, shadow);
         }
-        Inst::OwnedCall { args, moved, .. } if *moved != 0 => {
+        Inst::OwnedCall {
+            args,
+            kw,
+            moved,
+            kw_moved,
+            ..
+        } if *moved != 0 || *kw_moved != 0 => {
             for (i, a) in args.iter().enumerate().take(15) {
                 if moved & (1 << i) != 0 {
                     shadow[*a as usize] = true;
                 }
             }
+            kw_moved_out(kw, *kw_moved, shadow);
         }
         _ => {}
+    }
+}
+
+/// The keyword arguments a call moved in (`Inst::Call::kw_moved`).
+fn kw_moved_out(kw: &[(u32, quarz_ir::Reg)], kw_moved: u16, shadow: &mut [bool]) {
+    for (i, (_, r)) in kw.iter().enumerate().take(16) {
+        if kw_moved & (1 << i) != 0 {
+            shadow[*r as usize] = true;
+        }
     }
 }
 

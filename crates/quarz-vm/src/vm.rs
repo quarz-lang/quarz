@@ -1222,17 +1222,35 @@ impl Interp {
         &self,
         f: &FuncInfo,
         pool: &RefCell<Vec<Value>>,
-        regs: &[Value],
+        regs: &mut [Value],
         kw: &[(u32, Reg)],
         kw_splat: Option<Reg>,
+        kw_moved: u16,
     ) -> Vec<(Symbol, Value)> {
         if kw.is_empty() && kw_splat.is_none() {
             return Vec::new();
         }
-        let mut out: Vec<(Symbol, Value)> = kw
-            .iter()
-            .map(|(k, r)| (self.symbol_const(f, pool, *k), regs[*r as usize].clone()))
-            .collect();
+        // A keyword argument the call reads for the last time moves into
+        // it (`Inst::Call::kw_moved`, #1180), as a positional one does:
+        // the callee's parameter holds the only reference.
+        let mut out: Vec<(Symbol, Value)> = if kw_moved == 0 {
+            kw.iter()
+                .map(|(k, r)| (self.symbol_const(f, pool, *k), regs[*r as usize].clone()))
+                .collect()
+        } else {
+            kw.iter()
+                .enumerate()
+                .map(|(i, (k, r))| {
+                    let slot = &mut regs[*r as usize];
+                    let v = if i < 16 && kw_moved & (1 << i) != 0 {
+                        std::mem::replace(slot, Value::Nil)
+                    } else {
+                        slot.clone()
+                    };
+                    (self.symbol_const(f, pool, *k), v)
+                })
+                .collect()
+        };
         // A `**hash` supplies only the callee's `**kw` (docs/01 §9): passed
         // whole, under a name no parameter has, for `bind_params`.
         if let Some(h) = kw_splat {
@@ -1337,6 +1355,7 @@ impl Interp {
                 kw_splat,
                 block,
                 moved,
+                kw_moved,
                 recv_classes: _,
                 recv_class_objects: _,
                 on_self: _,
@@ -1355,6 +1374,7 @@ impl Interp {
                     kw_splat: *kw_splat,
                     block: *block,
                     moved: *moved,
+                    kw_moved: *kw_moved,
                 },
             )?,
             Inst::OwnedCall {
@@ -1365,6 +1385,7 @@ impl Interp {
                 kw,
                 unused,
                 moved,
+                kw_moved,
             } => self.op_owned_call(
                 f,
                 pool,
@@ -1378,6 +1399,7 @@ impl Interp {
                     kw,
                     unused: *unused,
                     moved: *moved,
+                    kw_moved: *kw_moved,
                 },
             )?,
             Inst::IsNil { dst, src } => {

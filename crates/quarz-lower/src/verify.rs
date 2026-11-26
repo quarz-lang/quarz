@@ -384,13 +384,17 @@ impl Checker<'_> {
                     Inst::FieldTake { .. } if stage < Stage::Moves => {
                         self.report_early(bi, ii, "FieldTake before mark_moves".into())
                     }
-                    Inst::Call { moved, .. } if *moved != 0 && stage < Stage::Moves => {
+                    Inst::Call {
+                        moved, kw_moved, ..
+                    } if (*moved != 0 || *kw_moved != 0) && stage < Stage::Moves => {
                         self.report_early(bi, ii, "moved operands before mark_moves".into())
                     }
                     Inst::OwnedCall { unused: true, .. } if stage < Stage::Moves => {
                         self.report_early(bi, ii, "an unused OwnedCall before mark_moves".into())
                     }
-                    Inst::OwnedCall { moved, .. } if *moved != 0 && stage < Stage::Moves => {
+                    Inst::OwnedCall {
+                        moved, kw_moved, ..
+                    } if (*moved != 0 || *kw_moved != 0) && stage < Stage::Moves => {
                         self.report_early(bi, ii, "moved arguments before mark_moves".into())
                     }
                     Inst::ArrayGetReg { borrow: true, .. } if stage < Stage::Borrow => {
@@ -715,7 +719,14 @@ impl Checker<'_> {
         let moves = stage >= Stage::Moves;
         let releases = f.blocks.iter().flat_map(|b| &b.insts).any(|i| {
             matches!(i, Inst::Release { .. })
-                || (moves && matches!(i, Inst::Take { .. } | Inst::Call { moved: 1.., .. }))
+                || (moves
+                    && matches!(
+                        i,
+                        Inst::Take { .. }
+                            | Inst::Call { moved: 1.., .. }
+                            | Inst::Call { kw_moved: 1.., .. }
+                            | Inst::OwnedCall { kw_moved: 1.., .. }
+                    ))
         });
         if !releases {
             return;
@@ -727,8 +738,13 @@ impl Checker<'_> {
         let moved_out = |inst: &Inst, state: &mut [bool]| match inst {
             Inst::Take { src, .. } if moves => state[*src as usize] = true,
             Inst::Call {
-                recv, args, moved, ..
-            } if moves && *moved != 0 => {
+                recv,
+                args,
+                kw,
+                moved,
+                kw_moved,
+                ..
+            } if moves && (*moved != 0 || *kw_moved != 0) => {
                 for (i, a) in args.iter().enumerate().take(15) {
                     if moved & (1 << i) != 0 {
                         state[*a as usize] = true;
@@ -736,6 +752,20 @@ impl Checker<'_> {
                 }
                 if let Some(r) = recv.filter(|_| moved & (1 << 15) != 0) {
                     state[r as usize] = true;
+                }
+                for (i, (_, r)) in kw.iter().enumerate().take(16) {
+                    if kw_moved & (1 << i) != 0 {
+                        state[*r as usize] = true;
+                    }
+                }
+            }
+            // (Its keyword arguments; its positional ones are left to the
+            // interpreter's shadow, as before #1180.)
+            Inst::OwnedCall { kw, kw_moved, .. } if moves && *kw_moved != 0 => {
+                for (i, (_, r)) in kw.iter().enumerate().take(16) {
+                    if kw_moved & (1 << i) != 0 {
+                        state[*r as usize] = true;
+                    }
                 }
             }
             _ => {}

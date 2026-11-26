@@ -599,6 +599,13 @@ pub enum Inst {
         /// `args[i]` (`i` < 15), bit 15 for `recv`.
         #[serde(default)]
         moved: u16,
+        /// The keyword arguments it reads for the last time, moved into
+        /// it rather than copied (`live::mark_moves`): bit `i` for
+        /// `kw[i]` (`i` < 16; the rest are copied, as a `kw_splat` hash
+        /// is). The callee's parameters then hold the only reference
+        /// (#1180).
+        #[serde(default)]
+        kw_moved: u16,
         /// For a `CallKind::Method`, the classes the receiver's static
         /// type says it is an instance of (one, or a union's members),
         /// when each is a class: the receiver is then of one of them or a
@@ -650,6 +657,10 @@ pub enum Inst {
         /// `own_dying_receivers`, from the call it replaces) writes it.
         #[serde(default)]
         moved: u16,
+        /// Its keyword arguments read for the last time, as
+        /// `Call::kw_moved` (#1180).
+        #[serde(default)]
+        kw_moved: u16,
     },
     IsNil {
         dst: Reg,

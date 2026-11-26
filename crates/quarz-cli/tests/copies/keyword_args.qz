@@ -1,0 +1,35 @@
+# A keyword argument the caller does not read again moves into the call
+# (#1180), as a positional one does: the callee's update of it is in
+# place. Through a direct call (compiled code already moved it), a call
+# by name (a union receiver), and `with` on a data type with its own
+# `initialize` (#1181).
+
+def add(*, xs: Array[Int], n: Int) -> Array[Int] = xs.push(n)
+
+class Left
+  def add(*, xs: Array[Int], n: Int) -> Array[Int] = xs.push(n)
+end
+
+class Right
+  def add(*, xs: Array[Int], n: Int) -> Array[Int] = xs.push(n + 1)
+end
+
+data Q(xs: Array[Int], n: Int)
+  def initialize(xs: Array[Int], n: Int)
+    @xs = xs.push(n)
+    @n = n
+  end
+end
+
+total = 0
+i = 0
+while i < 100
+  total += add(xs: [i], n: i).size
+  side: Left | Right = i.even? ? Left.new : Right.new
+  total += side.add(xs: [i], n: i).size
+  q = Q.new([], 0)
+  q = q.with(xs: [i], n: i)
+  total += q.xs.size
+  i += 1
+end
+puts total
