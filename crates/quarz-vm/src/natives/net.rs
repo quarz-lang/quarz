@@ -90,8 +90,10 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     // UDPSocket
     native!(m, "UDPSocket.new", |i, _, _| {
         let socket = udp_bind(i, "0.0.0.0:0")?;
+        let local = socket.local_addr().ok();
         Ok(io(IoKind::Udp(IoCell::new(UdpState {
             socket: Some(socket),
+            local,
             closed: false,
             watch: IoWatch::new(),
         }))))
@@ -106,6 +108,7 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let waiters = {
             let mut s = st.borrow_mut();
             i.sched.borrow_mut().deregister(old_fd);
+            s.local = socket.local_addr().ok();
             s.socket = Some(socket);
             // A new descriptor: it is registered anew where waited on.
             std::mem::take(&mut s.watch).waiters
@@ -178,33 +181,46 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             "TCPServer#local_address",
             "UDPSocket#local_address"
         ],
+        // While open, what the descriptor answers (a UDP socket's changes
+        // with `connect`, which picks the source address of one bound to
+        // the wildcard), remembered; once closed, the last one remembered
+        // (#1184). An `IOError` when the system gave none, never nil (the
+        // result is a `Socket::Address`).
         |i, r, _| {
             let addr = match &io_of(i, r)?.kind {
                 IoKind::Socket(st) => st.borrow().local,
-                IoKind::Listener(st) => match &st.borrow().listener {
-                    Some(Listener::Tcp(l)) => l.local_addr().ok(),
-                    _ => None,
-                },
-                IoKind::Udp(st) => st
-                    .borrow()
-                    .socket
-                    .as_ref()
-                    .and_then(|s| s.local_addr().ok()),
+                IoKind::Listener(st) => {
+                    let mut s = st.borrow_mut();
+                    if let Some(Listener::Tcp(l)) = &s.listener {
+                        if let Ok(a) = l.local_addr() {
+                            s.local = Some(a);
+                        }
+                    }
+                    s.local
+                }
+                IoKind::Udp(st) => {
+                    let mut s = st.borrow_mut();
+                    if let Some(a) = s.socket.as_ref().and_then(|u| u.local_addr().ok()) {
+                        s.local = Some(a);
+                    }
+                    s.local
+                }
                 _ => return Err(i.err_type("not a socket")),
             };
             match addr {
                 Some(a) => address_value(i, a),
-                None => Ok(Value::Nil),
+                None => Err(i.raise(i.program.exc.io_error, "the socket has no local address")),
             }
         }
     );
     native!(m, "TCPSocket#remote_address", |i, r, _| {
         match &io_of(i, r)?.kind {
             IoKind::Socket(st) => {
+                // As of the connection, kept after `close` (#1184).
                 let peer = st.borrow().peer;
                 match peer {
                     Some(a) => address_value(i, a),
-                    None => Ok(Value::Nil),
+                    None => Err(i.raise(i.program.exc.io_error, "the socket has no peer address")),
                 }
             }
             _ => Err(i.err_type("not a socket")),
@@ -563,8 +579,13 @@ fn make_socket_from(
 
 fn make_listener(_: &Interp, listener: Listener, path: Option<String>) -> Value {
     let unix = matches!(listener, Listener::Unix(_));
+    let local = match &listener {
+        Listener::Tcp(l) => l.local_addr().ok(),
+        Listener::Unix(_) => None,
+    };
     io(IoKind::Listener(IoCell::new(ListenerState {
         listener: Some(listener),
+        local,
         unix,
         closed: false,
         path,
@@ -1222,6 +1243,13 @@ pub fn close(interp: &Interp, recv: &Value) -> Result<(), Flow> {
         IoKind::Listener(st) => {
             let mut s = st.borrow_mut();
             if let Some(listener) = s.listener.take() {
+                // (Its address as of now, for `local_address` after it,
+                // whatever was asked before, #1184.)
+                if let Listener::Tcp(l) = &listener {
+                    if let Ok(a) = l.local_addr() {
+                        s.local = Some(a);
+                    }
+                }
                 interp.sched.borrow_mut().deregister(listener.fd());
                 if let (Listener::Unix(_), Some(path)) = (&listener, &s.path) {
                     let _ = std::fs::remove_file(path);
@@ -1233,6 +1261,10 @@ pub fn close(interp: &Interp, recv: &Value) -> Result<(), Flow> {
         IoKind::Udp(st) => {
             let mut s = st.borrow_mut();
             if let Some(socket) = s.socket.take() {
+                // (Its address as of now: a `connect` may have changed it.)
+                if let Ok(a) = socket.local_addr() {
+                    s.local = Some(a);
+                }
                 interp.sched.borrow_mut().deregister(socket.as_raw_fd());
             }
             s.closed = true;

@@ -2979,6 +2979,9 @@ impl Listener {
 #[derive(Debug)]
 pub struct ListenerState {
     pub listener: Option<Listener>,
+    /// The address a TCP listener is bound to, taken when it is made:
+    /// kept after `close`, which drops the descriptor (#1184).
+    pub local: Option<std::net::SocketAddr>,
     pub unix: bool,
     pub closed: bool,
     pub path: Option<String>,
@@ -2988,6 +2991,10 @@ pub struct ListenerState {
 #[derive(Debug)]
 pub struct UdpState {
     pub socket: Option<std::net::UdpSocket>,
+    /// The address it is bound to, taken when it is made, at each `bind`,
+    /// at each `local_address` while open and at `close` (`connect` may
+    /// change it): the last one is kept after `close` (#1184).
+    pub local: Option<std::net::SocketAddr>,
     pub closed: bool,
     pub watch: IoWatch,
 }

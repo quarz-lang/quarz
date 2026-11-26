@@ -1530,7 +1530,8 @@ module HTTP
                  max_connections: max_connections, on_error: on_error)
     end
 
-    # The address the server listens on (its port, when started on 0).
+    # The address the server listens on (its port, when started on 0),
+    # after [#shutdown] too.
     def local_address -> Socket::Address
       tcp = @tcp
       raise ArgumentError, "a UNIX socket server has no address" if tcp.nil?
