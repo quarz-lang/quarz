@@ -370,6 +370,7 @@ impl Interp {
             if let Some(fast) = self.program.fast_natives[mid as usize] {
                 let refs: SmallVec<[&Value; 3]> = args.iter().collect();
                 if let Some(v) = fast(self, recv, &refs) {
+                    self.check_native_result(mid, &v);
                     return Ok(v);
                 }
             }

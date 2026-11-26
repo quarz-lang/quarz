@@ -2631,29 +2631,39 @@ impl Interp {
             Value::Selector(_) => self.program.rt.selector,
             Value::Duration(_) => b.duration,
             Value::Enumerator(_) => self.program.rt.enumerator,
-            Value::Io(io) => match &io.kind {
-                IoKind::Socket(st) => {
-                    let s = st.borrow();
-                    if s.pipe.is_some() {
-                        self.program.rt.io
-                    } else if s.unix {
-                        self.program.rt.unix_socket
-                    } else {
-                        self.program.rt.tcp_socket
+            // (A socket's class is the library's, `std/socket.qz`, `tls.qz`;
+            // a program that did not load it, which a native may still
+            // hand a socket, `Signal.reader`'s, sees an `IO`, #1187.)
+            Value::Io(io) => {
+                let c = match &io.kind {
+                    IoKind::Socket(st) => {
+                        let s = st.borrow();
+                        if s.pipe.is_some() {
+                            self.program.rt.io
+                        } else if s.unix {
+                            self.program.rt.unix_socket
+                        } else {
+                            self.program.rt.tcp_socket
+                        }
                     }
-                }
-                IoKind::Listener(st) => {
-                    if st.borrow().unix {
-                        self.program.rt.unix_server
-                    } else {
-                        self.program.rt.tcp_server
+                    IoKind::Listener(st) => {
+                        if st.borrow().unix {
+                            self.program.rt.unix_server
+                        } else {
+                            self.program.rt.tcp_server
+                        }
                     }
+                    IoKind::Udp(_) => self.program.rt.udp_socket,
+                    IoKind::Tls(_) => self.program.rt.tls_socket,
+                    IoKind::Child(_) => self.program.rt.process_child,
+                    _ => self.program.rt.io,
+                };
+                if c == u32::MAX {
+                    self.program.rt.io
+                } else {
+                    c
                 }
-                IoKind::Udp(_) => self.program.rt.udp_socket,
-                IoKind::Tls(_) => self.program.rt.tls_socket,
-                IoKind::Child(_) => self.program.rt.process_child,
-                _ => self.program.rt.io,
-            },
+            }
             Value::Bytes(_) => b.bytes,
             Value::BytesBuilder(_) => b.bytes_builder,
             Value::Time(_) => b.time,
@@ -3463,6 +3473,43 @@ impl Interp {
 
     // ----- invocation --------------------------------------------------------------------
 
+    /// Under `QUARZ_VERIFY` (the facts check, `verify::enabled`): what
+    /// native `mid` returned is of its declared result
+    /// (`RtMethod::result_test`, #1187), else a violation naming the
+    /// native, the declared type and the value's class. A native serving
+    /// several overloads of its name finds the one it serves from its
+    /// arguments, which no entry knows: it is checked against the union
+    /// of their results (`RtMethod::result_union`), which accepts more.
+    #[inline(always)]
+    pub(crate) fn check_native_result(&self, mid: MethodId, v: &Value) {
+        // (`verify` is `verify::enabled()`, read once: a field load in a
+        // release build, where the check is off.)
+        if self.verify && self.program.world.native_results {
+            self.check_native_result_now(mid, v);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn check_native_result_now(&self, mid: MethodId, v: &Value) {
+        let m = self.program.method(mid);
+        let Some(key) = m.native_key.as_deref() else {
+            return;
+        };
+        let test = m.result_union.as_ref().or(m.result_test.as_ref());
+        let Some(test) = test else {
+            self.violated(format!("native `{key}` has no test of its declared result"));
+            return;
+        };
+        if !self.is_a(v, test) {
+            self.violated(format!(
+                "native `{key}` returned a value of class {}, but its declared result is {}",
+                self.class_name(v),
+                m.ret.as_deref().unwrap_or("its declared type")
+            ));
+        }
+    }
+
     /// A native `mid` called with its receiver and positional arguments
     /// borrowed (`ArgList::Borrowed`, #988): what `invoke` does for a
     /// native, without an argument list. The caller keeps the values for
@@ -3486,7 +3533,7 @@ impl Interp {
                 }
             }
         }
-        native(
+        let r = native(
             self,
             recv,
             Args {
@@ -3494,7 +3541,11 @@ impl Interp {
                 kw: Vec::new(),
                 block: None,
             },
-        )
+        );
+        if let Ok(v) = &r {
+            self.check_native_result(mid, v);
+        }
+        r
     }
 
     pub fn invoke(
@@ -3531,7 +3582,7 @@ impl Interp {
             } else {
                 self.native_positions(m, args, kw)?
             };
-            return native(
+            let r = native(
                 self,
                 &recv,
                 Args {
@@ -3540,6 +3591,10 @@ impl Interp {
                     block,
                 },
             );
+            if let Ok(v) = &r {
+                self.check_native_result(mid, v);
+            }
+            return r;
         }
         match &m.synth {
             RtSynth::FieldGet(idx) => {
@@ -3763,7 +3818,7 @@ impl Interp {
                     Err(e) => return Err((e, recv)),
                 }
             };
-            return native(
+            let r = native(
                 self,
                 recv,
                 Args {
@@ -3772,6 +3827,10 @@ impl Interp {
                     block: None,
                 },
             );
+            if let Ok(v) = &r {
+                self.check_native_result(mid, v);
+            }
+            return r;
         }
         match self.invoke(mid, recv.clone(), args, kw, None) {
             Ok(v) => Ok(v),

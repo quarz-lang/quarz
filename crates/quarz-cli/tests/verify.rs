@@ -168,6 +168,102 @@ fn a_counted_value_in_a_register_heap_possible_leaves_out_stops_the_program() {
     );
 }
 
+/// `module` with native `key`'s declared result changed to `ty`, shown
+/// as `shown`: the native, honest, now returns what its declaration (as
+/// shipped) does not admit (#1187).
+fn with_native_result(mut module: Module, key: &str, ty: quarz_ir::RtType, shown: &str) -> Module {
+    let m = module
+        .world
+        .methods
+        .iter_mut()
+        .find(|m| m.native_key.as_deref() == Some(key))
+        .unwrap_or_else(|| panic!("no native {key}"));
+    m.result_test = Some(ty);
+    m.result_union = None;
+    m.ret = Some(shown.to_string());
+    module
+}
+
+/// The program of the native result tests: `String#size` (an `Int`) and
+/// `Hash#[]?` (nil for a missing key).
+const NATIVES: &str = "h = {\"a\" => 1}\np \"ab\".size, h[\"b\"]?\n";
+
+/// #1187: what a native returns is checked against its declared result
+/// (`RtMethod::result_test`) under `QUARZ_VERIFY`: a value of another
+/// class stops the program, naming the native.
+#[test]
+fn a_native_returning_another_class_stops_the_program() {
+    let name = "a_native_returning_another_class_stops_the_program";
+    let (code, err) = in_child(name, || {
+        let module = common::lower(NATIVES);
+        let s = class_id(&module, "String");
+        with_native_result(module, "String#size", quarz_ir::RtType::Class(s), "String")
+    });
+    assert_eq!(code, Some(101), "{err}");
+    assert!(
+        err.contains("QIR fact violated: native `String#size` returned a value of class Int, but its declared result is String"),
+        "{err}"
+    );
+}
+
+/// #1187: nil from a native whose declared result does not admit it.
+#[test]
+fn a_native_returning_nil_for_a_class_stops_the_program() {
+    let name = "a_native_returning_nil_for_a_class_stops_the_program";
+    let (code, err) = in_child(name, || {
+        let module = common::lower(NATIVES);
+        let s = class_id(&module, "String");
+        with_native_result(module, "Hash#[]?", quarz_ir::RtType::Class(s), "String")
+    });
+    assert_eq!(code, Some(101), "{err}");
+    assert!(
+        err.contains("QIR fact violated: native `Hash#[]?` returned a value of class Nil, but its declared result is String"),
+        "{err}"
+    );
+}
+
+/// #1187: a value outside a declared union stops the program; one inside
+/// it does not.
+#[test]
+fn a_native_result_outside_its_union_stops_the_program() {
+    let name = "a_native_result_outside_its_union_stops_the_program";
+    let (code, err) = in_child(name, || {
+        let module = common::lower(NATIVES);
+        let (s, f) = (class_id(&module, "String"), class_id(&module, "Float"));
+        use quarz_ir::RtType::{Class, Union};
+        with_native_result(
+            module,
+            "String#size",
+            Union(vec![Class(s), Class(f)]),
+            "String | Float",
+        )
+    });
+    assert_eq!(code, Some(101), "{err}");
+    assert!(
+        err.contains("QIR fact violated: native `String#size` returned a value of class Int, but its declared result is String | Float"),
+        "{err}"
+    );
+}
+
+/// #1187: a value inside the declared union passes.
+#[test]
+fn a_native_result_inside_its_union_runs() {
+    let name = "a_native_result_inside_its_union_runs";
+    let (code, err) = in_child(name, || {
+        let module = common::lower(NATIVES);
+        let (s, i) = (class_id(&module, "String"), class_id(&module, "Int"));
+        use quarz_ir::RtType::{Class, Union};
+        with_native_result(
+            module,
+            "String#size",
+            Union(vec![Class(s), Class(i)]),
+            "String | Int",
+        )
+    });
+    assert_eq!(code, Some(0), "{err}");
+    assert!(!err.contains("QIR fact violated"), "{err}");
+}
+
 #[test]
 fn a_field_read_on_another_class_stops_the_program() {
     let (code, err) = in_child("a_field_read_on_another_class_stops_the_program", || {
