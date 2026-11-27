@@ -7010,13 +7010,21 @@ impl World {
     }
 
     /// Whether a cog's native code may raise class `id` with a message
-    /// alone (#677, docs/15): an exception class whose classes up to the
-    /// nearest built-in one (the prelude's or the standard library's)
-    /// declare no `initialize` and add no field, so that the runtime's
-    /// construction (`Interp::make_exception`) runs no Quarz code and
-    /// leaves no field unset (`RtClass::raisable_by_native`).
+    /// alone (#677, docs/15): a concrete, non-generic exception class
+    /// whose classes up to the nearest built-in one (the prelude's or the
+    /// standard library's) declare no `initialize` and add no field, so
+    /// that the runtime's construction (`Interp::make_exception`) runs no
+    /// Quarz code, leaves no field unset, and makes no instance its class
+    /// could not have (an abstract class has none; a generic one's would
+    /// carry no type arguments). Only a class body declares either: a
+    /// module and an extension can declare neither an `initialize` nor a
+    /// field, so the superclass chain is all there is to walk
+    /// (`RtClass::raisable_by_native`).
     pub fn raisable_by_native(&self, id: ClassId) -> bool {
-        if !self.is_exception_class(id) {
+        if !self.is_exception_class(id)
+            || self.class(id).is_abstract
+            || self.class_takes_type_args(id)
+        {
             return false;
         }
         let builtin = |c: ClassId| {

@@ -19,6 +19,7 @@ fn describe<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c
         Kind::Array => "array",
         Kind::Hash => "hash",
         Kind::Other => "other",
+        _ => "invalid",
     };
     cx.string(name)
 }
@@ -125,6 +126,72 @@ fn use_kept<'c>(cx: &Call<'c>, _: Value<'c>, _: &[Value<'c>]) -> Result<Value<'c
     Ok(cx.int(cx.get_int(old)?))
 }
 
+/// Reads each element, releases it, then reads the text again: the bytes
+/// lent stay valid to the end of the call (docs/15, handle rules 2 and 5),
+/// for a short string (inside its handle's value) as for a long one.
+fn released<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c>> {
+    let mut texts = Vec::new();
+    for i in 0..cx.array_len(a[0])? {
+        let v = cx.array_get(a[0], i)?;
+        let s = cx.get_str(v)?;
+        cx.release(v);
+        // (Kept: its bytes were lent.)
+        if cx.kind(v) == Kind::Invalid {
+            return Err(cx.raise("RuntimeError", "released while its text was lent"));
+        }
+        texts.push(s);
+    }
+    cx.string(&texts.join("|"))
+}
+
+fn released_bytes<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c>> {
+    let mut all = Vec::new();
+    for i in 0..cx.array_len(a[0])? {
+        let v = cx.array_get(a[0], i)?;
+        let b = cx.get_bytes(v)?;
+        cx.release(v);
+        all.push(b);
+    }
+    Ok(cx.int(all.iter().map(|b| b.iter().map(|x| i64::from(*x)).sum::<i64>()).sum()))
+}
+
+/// A string the call made, the only holder of its text, released after
+/// its text was lent; and made bytes released, then returned.
+fn released_made<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c>> {
+    let n = cx.get_int(a[0])? as usize;
+    let v = cx.string(&"x".repeat(n))?;
+    let s = cx.get_str(v)?;
+    cx.release(v);
+    let b = cx.bytes_with(2, |buf| buf.copy_from_slice(b"ok"));
+    cx.release(b);
+    let tail = cx.get_bytes(b)?;
+    cx.string(&format!("{} {}", s.len(), std::str::from_utf8(tail).unwrap_or("?")))
+}
+
+fn int_map<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c>> {
+    let h = cx.hash();
+    for i in 0..cx.get_int(a[0])? {
+        cx.put(h, cx.int(i), cx.int(i * 10))?;
+    }
+    Ok(h)
+}
+
+fn floats<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c>> {
+    let xs = cx.array(0);
+    for i in 0..cx.get_int(a[0])? {
+        cx.push(xs, cx.float(i as f64 / 2.0))?;
+    }
+    Ok(xs)
+}
+
+fn byte_list<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c>> {
+    let xs = cx.array(0);
+    for i in 0..cx.get_int(a[0])? {
+        cx.push(xs, cx.bytes(&[i as u8, 1]))?;
+    }
+    Ok(xs)
+}
+
 quarz_ext::module! {
     cog: "demo",
     "Demo.add" => add,
@@ -145,5 +212,11 @@ quarz_ext::module! {
     "Demo.nothing" => nothing,
     "Demo.keep" => keep,
     "Demo.use_kept" => use_kept,
+    "Demo.released" => released,
+    "Demo.released_bytes" => released_bytes,
+    "Demo.released_made" => released_made,
+    "Demo.int_map" => int_map,
+    "Demo.floats" => floats,
+    "Demo.byte_list" => byte_list,
     "String#shout" => shout,
 }

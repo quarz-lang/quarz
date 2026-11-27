@@ -99,13 +99,17 @@ pub fn load(cog: &str, path: &Path) -> Result<(), String> {
     if module.method_size < std::mem::size_of::<QzMethod>() {
         return Err(format!("{}: its methods' size is too small", where_()));
     }
+    if module.n_methods > 0 && module.methods.is_null() {
+        return Err(format!("{}: its methods are a null pointer", where_()));
+    }
     let mut entries = HashMap::new();
     for i in 0..module.n_methods {
         // SAFETY: `n_methods` methods `method_size` apart.
         let m = unsafe {
             &*((module.methods as *const u8).add(i * module.method_size) as *const QzMethod)
         };
-        let key = unsafe { std::slice::from_raw_parts(m.key, m.key_len) };
+        // SAFETY: `key_len` bytes at `key` (none read when null or empty).
+        let key = unsafe { bytes_at(m.key, m.key_len) };
         let Ok(key) = std::str::from_utf8(key) else {
             return Err(format!("{}: a method's key is not UTF-8", where_()));
         };
@@ -182,13 +186,16 @@ pub fn bind(world: &RtWorld) -> Vec<Option<Entry>> {
 
 /// One call's values: lent (`lent`: the receiver, the arguments, the
 /// block) and made (`made`, boxed so that a lent pointer into one stays
-/// put), the symbol names lent (`names`), and the pending exception.
+/// put; `pinned` once bytes of it were lent, so that `release` keeps it
+/// to the end of the call), the symbol names lent (`names`, one per
+/// symbol), and the pending exception.
 struct Frame<'a> {
     interp: &'a Interp,
     serial: u32,
     lent: Vec<Value>,
     made: Vec<Option<Box<Value>>>,
-    names: Vec<Rc<str>>,
+    pinned: Vec<bool>,
+    names: Vec<(Symbol, Rc<str>)>,
     pending: Option<Value>,
 }
 
@@ -223,7 +230,25 @@ impl Frame<'_> {
 
     fn make(&mut self, v: Value) -> QzValue {
         self.made.push(Some(Box::new(v)));
+        self.pinned.push(false);
         self.handle(self.lent.len() + self.made.len() - 1)
+    }
+
+    /// Keep `h`'s value to the end of the call, whatever `release` is
+    /// asked: bytes of it were lent (`string_get`, `bytes_get`,
+    /// `bytes_new_uninit`), and a short string's live in its box. (A lent
+    /// value is kept to the end anyway.)
+    fn pin(&mut self, h: QzValue) {
+        if (h >> 32) as u32 != self.serial || h & 0xFFFF_FFFF == 0 {
+            return;
+        }
+        let i = (h & 0xFFFF_FFFF) as usize - 1;
+        if let Some(p) = i
+            .checked_sub(self.lent.len())
+            .and_then(|i| self.pinned.get_mut(i))
+        {
+            *p = true;
+        }
     }
 
     /// A made value of this call's, to change in place.
@@ -284,6 +309,7 @@ pub fn call(
         serial: next_serial(),
         lent,
         made: Vec::new(),
+        pinned: Vec::new(),
         names: Vec::new(),
         pending: None,
     };
@@ -567,7 +593,9 @@ unsafe extern "C" fn string_get(
     // place: lent or boxed.)
     match f.value(v) {
         Some(s @ (Value::Str(_) | Value::Short(_))) => {
-            lend(s.as_str().unwrap_or("").as_bytes(), p, n)
+            let status = lend(s.as_str().unwrap_or("").as_bytes(), p, n);
+            f.pin(v);
+            status
         }
         Some(other) => {
             let m = expected(f, "a String", other);
@@ -590,6 +618,7 @@ unsafe extern "C" fn bytes_new_uninit(cx: *mut QzCall, n: usize, p: *mut *mut u8
         return 0;
     }
     let h = f.make(Value::bytes(vec![0; n]));
+    f.pin(h);
     // The bytes, the frame's alone until the call returns.
     *p = match f.made_mut(h) {
         Some(Value::Bytes(b)) => Rc::get_mut(b).map_or(std::ptr::null_mut(), |b| b.as_mut_ptr()),
@@ -609,7 +638,9 @@ unsafe extern "C" fn bytes_get(
     match f.value(v) {
         Some(Value::Bytes(b)) => {
             let b: &[u8] = b;
-            lend(b, p, n)
+            let status = lend(b, p, n);
+            f.pin(v);
+            status
         }
         // (A secret's bytes are never lent: ABI 1.0.)
         Some(other) => {
@@ -653,10 +684,18 @@ unsafe extern "C" fn symbol_get(
     pending_status!(f);
     match f.value(v) {
         Some(Value::Symbol(s)) => {
-            let name = f.interp.symbol_name(*s);
-            f.names.push(name);
-            let name = f.names.last().expect("the name");
-            lend(name.as_bytes(), p, n)
+            // (One name per symbol: a loop asking the same ones keeps one
+            // each.)
+            let sym = *s;
+            let at = match f.names.iter().position(|(x, _)| *x == sym) {
+                Some(at) => at,
+                None => {
+                    let name = f.interp.symbol_name(sym);
+                    f.names.push((sym, name));
+                    f.names.len() - 1
+                }
+            };
+            lend(f.names[at].1.as_bytes(), p, n)
         }
         Some(other) => {
             let m = expected(f, "a Symbol", other);
@@ -933,7 +972,7 @@ unsafe extern "C" fn exception_class(
     };
     if !world.class(c).raisable_by_native {
         let e = f.interp.err_arg(&format!(
-            "a native method cannot raise `{name}`: not an exception class made from a message alone (one of its classes up to the built-in ones declares an `initialize` or a field, docs/15)"
+            "a native method cannot raise `{name}`: not an exception class made from a message alone (it is abstract or generic, or one of its classes up to the built-in ones declares an `initialize` or a field, docs/15)"
         ));
         return f.raise(e);
     }
@@ -962,7 +1001,14 @@ unsafe extern "C" fn release(cx: *mut QzCall, v: QzValue) {
         return;
     }
     let i = (v & 0xFFFF_FFFF) as usize - 1;
-    if let Some(slot) = i.checked_sub(f.lent.len()).and_then(|i| f.made.get_mut(i)) {
+    let Some(i) = i.checked_sub(f.lent.len()) else {
+        return;
+    };
+    // (Bytes of it lent: kept to the end of the call.)
+    if f.pinned.get(i).copied().unwrap_or(true) {
+        return;
+    }
+    if let Some(slot) = f.made.get_mut(i) {
         *slot = None;
     }
 }

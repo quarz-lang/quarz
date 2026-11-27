@@ -134,13 +134,30 @@ ArgumentError
 \"bad input\"
 DemoError
 \"from native code\"
-\"a native method cannot raise `FancyError`: not an exception class made from a message alone (one of its classes up to the built-in ones declares an `initialize` or a field, docs/15)\"
+\"a native method cannot raise `FancyError`: not an exception class made from a message alone (it is abstract or generic, or one of its classes up to the built-in ones declares an `initialize` or a field, docs/15)\"
+\"a native method cannot raise `AbstractError`: not an exception class made from a message alone (it is abstract or generic, or one of its classes up to the built-in ones declares an `initialize` or a field, docs/15)\"
+\"a native method cannot raise `GenericError`: not an exception class made from a message alone (it is abstract or generic, or one of its classes up to the built-in ones declares an `initialize` or a field, docs/15)\"
 NativePanic
 \"the demo panics\"
 \"a native method pushed to an array it did not make: values are immutable (docs/15)\"
 \"QUIET\"
 5
 \"a native method used a handle that is not one of its call's (docs/15)\"
+\"hi|a long string, longer than any kept inline in its value\"
+5320
+\"40 ok\"
+{0 => 0, 1 => 10, 2 => 20}
+10
+true
+{0 => 0, 1 => 10, 2 => 20, 5 => 50}
+33
+[0.0, 0.5, 1.0]
+1.0
+true
+[0.0, 1.0, 2.0]
+2
+true
+[2, 2]
 :done
 ";
     assert_eq!(out, want);
@@ -274,6 +291,31 @@ fn a_cogs_native_is_refused_at_compile_time() {
     }
 }
 
+/// A method of another cog (here the application, native itself: a
+/// native and one with a body) named as a cog's natives on the same class
+/// is no overload of them: each is
+/// bound on its own (`RtMethod::ext`, the cog's index, and its key in
+/// that cog's module; a method with a body runs its body), so the two
+/// share no entry.
+#[test]
+fn another_cogs_method_of_a_natives_name_is_its_own() {
+    let lib = "class Calc\n  native def self.add(a: Int, b: Int) -> Int\nend\n\nextension String\n  native def shout -> String\n  native def whisper -> String\nend\n";
+    let main = "extension String\n  native def shout(times: Int) -> String\n  def whisper(times: Int) -> String = self\nend\n\np \"a\".whisper(2)\n";
+    let dir = std::env::temp_dir().join(format!("quarz-native-other-{}", std::process::id()));
+    library_and_app(&dir, lib, main);
+    let manifest = dir.join("app/Cog.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(&manifest, text + "\n[native]\ncrate = \"native\"\n").unwrap();
+    let cache = dir.join("cache");
+    let (ok, _, err) = quarz(
+        &dir.join("app"),
+        &["check"],
+        &[("QUARZ_CACHE", cache.to_str().unwrap())],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ok, "{err}");
+}
+
 /// What a cog's `native def` may not declare in ABI 1.0, refused by
 /// `quarz check` (which needs no library): a `*rest`, a `**rest`, a
 /// default that is not a literal, an overload; and `native def` in a cog
@@ -303,6 +345,41 @@ fn a_cogs_native_def_is_checked() {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(!ok, "{decl}");
         assert!(err.contains(want), "{decl}: {err}");
+    }
+    // Overloads through extensions (#677): one entry per key, whatever
+    // the blocks or files of the cog's extensions declare it in; a
+    // standard method of the class counts too.
+    let twice = "a cog's native method has no overloads: `String#twice` is declared twice";
+    for (files, want) in [
+        (
+            &[("bad.qz", "extension String\n  native def twice(x: Int) -> String\n  native def twice(x: String) -> String\nend\n")][..],
+            twice,
+        ),
+        (
+            &[("bad.qz", "extension String\n  native def twice(x: Int) -> String\nend\nextension String\n  native def twice(x: String) -> String\nend\n")],
+            twice,
+        ),
+        (
+            &[
+                ("bad.qz", "extension String\n  native def twice(x: Int) -> String\nend\n"),
+                ("bad2.qz", "extension String\n  native def twice(x: String) -> String\nend\n"),
+            ],
+            twice,
+        ),
+        (
+            &[("bad.qz", "extension String\n  def twice(x: Int) -> String = self\nend\nextension String\n  native def twice(x: String) -> String\nend\n")],
+            twice,
+        ),
+        (
+            &[("bad.qz", "extension String\n  native def upcase(x: Int) -> Int\nend\n")],
+            "a cog's native method has no overloads: `String#upcase` is declared twice",
+        ),
+    ] {
+        let dir = fixture("ext", files);
+        let (ok, _, err) = quarz(&dir, &["check"], &[]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!ok, "{files:?}");
+        assert!(err.contains(want), "{files:?}: {err}");
     }
     let dir = fixture("not-native", &[]);
     std::fs::write(

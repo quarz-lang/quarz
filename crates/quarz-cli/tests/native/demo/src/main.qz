@@ -25,6 +25,16 @@ rescue ArgumentError => e
   p e.message
 end
 begin
+  Demo.fail_with("AbstractError")
+rescue ArgumentError => e
+  p e.message
+end
+begin
+  Demo.fail_with("GenericError")
+rescue ArgumentError => e
+  p e.message
+end
+begin
   Demo.panic
 rescue NativePanic => e
   p e.class, e.message
@@ -41,4 +51,20 @@ begin
 rescue TypeError => e
   p e.message
 end
+p Demo.released(["hi", "a long string, longer than any kept inline in its value"])
+p Demo.released_bytes(["ab".to_bytes, "a long string, longer than any kept inline in its value".to_bytes])
+p Demo.released_made(40)
+m = Demo.int_map(3)
+p m, m[1], m == {0 => 0, 1 => 10, 2 => 20}, m.merge({5 => 50})
+total = 0
+m.each do |k, v|
+  total += k + v
+end
+p total
+f = Demo.floats(3)
+doubled = f.map { |x| x * 2.0 }
+p f, f[2], f == [0.0, 0.5, 1.0], doubled
+bl = Demo.byte_list(2)
+sizes = bl.map { |b| b.size }
+p bl.size, bl[1] == bl[1], sizes
 p :done

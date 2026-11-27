@@ -6941,19 +6941,38 @@ impl<'ast> Declarer<'ast> {
             self.check_cog_native(def);
         }
         // A cog's native has no overload (#677): its entry is found by its
-        // key, which overloads share.
-        let class = self.world.class(owner);
+        // key (`Owner#name`), which overloads share. Refused: a method of
+        // that name and side beside a cog's native, in the class's own
+        // methods (a standard one too: `extension String; native def
+        // upcase(x: Int)` would overload `String#upcase`), or in the same
+        // cog's extensions of the class (one block or several, one file or
+        // several). Another cog's or the application's method of the name
+        // stays allowed: it is bound on its own (its own module's entry,
+        // or its body), so it shares no entry.
+        let world = &self.world;
+        let mine = world.native_cog(self.file);
+        let cog_native_of = |m: &MethodInfo| m.is_native && world.native_cog(m.file).is_some();
+        let class = world.class(owner);
         let same_side = if def.singleton {
             &class.singleton_methods
         } else {
             &class.methods
         };
-        let overloaded = same_side.get(&def.name).is_some_and(|ms| {
-            ms.iter().any(|m| {
-                let m = self.world.method(*m);
-                cog_native || (m.is_native && self.world.native_cog(m.file).is_some())
-            })
+        let in_class = same_side.get(&def.name).is_some_and(|ms| {
+            ms.iter()
+                .any(|m| cog_native || cog_native_of(world.method(*m)))
         });
+        let in_extensions = mine.is_some()
+            && world
+                .extensions
+                .iter()
+                .filter(|e| e.target == owner)
+                .filter_map(|e| e.methods.get(&def.name))
+                .flatten()
+                .map(|m| world.method(*m))
+                .filter(|m| m.singleton == def.singleton && world.native_cog(m.file) == mine)
+                .any(|m| cog_native || m.is_native);
+        let overloaded = in_class || in_extensions;
         if overloaded {
             let sep = if def.singleton { "." } else { "#" };
             self.error(

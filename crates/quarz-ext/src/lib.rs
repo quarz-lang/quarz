@@ -77,8 +77,10 @@ impl<'c> Value<'c> {
     }
 }
 
-/// What a value is (`Call::kind`).
+/// What a value is (`Call::kind`). Later minor versions may add kinds;
+/// until the wrapper knows one, it is `Other`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Kind {
     Nil,
     Bool,
@@ -91,6 +93,9 @@ pub enum Kind {
     Hash,
     /// Anything else (a class value, an object, `Bytes::Secret`, ...).
     Other,
+    /// Not a value of this call's (`QZ_INVALID`): from another call, or
+    /// released.
+    Invalid,
 }
 
 /// One call of a native method: what makes and reads its values. Not
@@ -123,6 +128,7 @@ impl<'c> Call<'c> {
             QZ_SYMBOL => Kind::Symbol,
             QZ_ARRAY => Kind::Array,
             QZ_HASH => Kind::Hash,
+            QZ_INVALID => Kind::Invalid,
             _ => Kind::Other,
         }
     }
@@ -299,7 +305,10 @@ impl<'c> Call<'c> {
         Raised(())
     }
 
-    /// Let go of `v` before the call returns.
+    /// Let go of `v` before the call returns (a long loop of `array_get`s).
+    /// Nothing happens to a value whose bytes were lent (`get_str`,
+    /// `get_bytes`, `bytes_with`): the slices stay valid to the end of the
+    /// call, whatever is released.
     pub fn release(&self, v: Value<'c>) {
         unsafe { (self.api.release)(self.cx, v.handle) }
     }

@@ -18,6 +18,14 @@ module Demo
   native def self.nothing -> Void
   native def self.keep(x: Int) -> Int
   native def self.use_kept -> Int
+  # Releases each string or bytes after reading it, then reads it again.
+  native def self.released(xs: Array[String]) -> String
+  native def self.released_bytes(bs: Array[Bytes]) -> Int
+  native def self.released_made(n: Int) -> String
+  # Collections whose representation follows their elements.
+  native def self.int_map(n: Int) -> Hash[Int, Int]
+  native def self.floats(n: Int) -> Array[Float]
+  native def self.byte_list(n: Int) -> Array[Bytes]
 end
 
 extension String
@@ -31,4 +39,10 @@ class FancyError < StandardError
   def initialize(message: String)
     super("fancy " + message)
   end
+end
+
+abstract class AbstractError < StandardError
+end
+
+class GenericError[T] < StandardError
 end
