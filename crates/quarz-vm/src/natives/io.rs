@@ -341,7 +341,8 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         // READ_SECRET_MAX), every buffer replaced on the way cleared.
         let p = string(i, a.arg(0), "path")?;
         let path = p.to_string();
-        match i.block_on(move || read_secret_file(&path, &mut |_| {}))? {
+        let chomp = matches!(a.kw(i, "chomp"), Some(Value::Bool(true)));
+        match i.block_on(move || read_secret_file(&path, chomp, &mut |_| {}))? {
             Ok(Some(buf)) => Ok(super::bytes::secret(buf)),
             Ok(None) => Err(i.raise(
                 i.program.exc.io_error,
@@ -707,23 +708,27 @@ const READ_SECRET_MAX: usize = 1 << 20;
 /// `fstat` gives it, then, for a file that grows or is not regular (a
 /// FIFO), into larger ones up to [READ_SECRET_MAX], each one replaced
 /// cleared first and handed to `replaced` (the tests' view); a file that
-/// shrank is copied into one of its final size, the larger cleared.
+/// shrank is copied into one of its final size, the larger cleared;
+/// with `chomp`, without one trailing line ending (`\n` or `\r\n`),
+/// the same way (a buffer of the shorter size, the longer one cleared).
 /// `Ok(None)` for one past the bound (every buffer cleared).
 fn read_secret_file(
     path: &str,
+    chomp: bool,
     replaced: &mut dyn FnMut(&[u8]),
 ) -> std::io::Result<Option<Vec<u8>>> {
     let mut f = std::fs::File::open(path)?;
     let hint = f.metadata()?.len().min(READ_SECRET_MAX as u64) as usize;
-    read_secret_from(&mut f, hint, READ_SECRET_MAX, replaced)
+    read_secret_from(&mut f, hint, READ_SECRET_MAX, chomp, replaced)
 }
 
 /// [read_secret_file]'s reading, over any reader (`hint` the size
-/// expected, `max` the bound).
+/// expected, `max` the bound, `chomp` as there).
 fn read_secret_from(
     r: &mut dyn Read,
     hint: usize,
     max: usize,
+    chomp: bool,
     replaced: &mut dyn FnMut(&[u8]),
 ) -> std::io::Result<Option<Vec<u8>>> {
     // One byte more than expected, so that the end is seen in the buffer
@@ -758,6 +763,10 @@ fn read_secret_from(
         clear_bytes(&mut buf);
         replaced(&buf);
         return Ok(None);
+    }
+    // One trailing line ending left out with `chomp`.
+    if chomp && n > 0 && buf[n - 1] == b'\n' {
+        n -= if n > 1 && buf[n - 2] == b'\r' { 2 } else { 1 };
     }
     if n < buf.len() {
         let exact = buf[..n].to_vec();
@@ -2004,9 +2013,13 @@ mod read_secret_tests {
 
     /// The buffers replaced, each checked cleared when handed over.
     fn read(data: &[u8], hint: usize, max: usize) -> (Option<Vec<u8>>, usize) {
+        read_chomped(data, hint, max, false)
+    }
+
+    fn read_chomped(data: &[u8], hint: usize, max: usize, chomp: bool) -> (Option<Vec<u8>>, usize) {
         let mut seen = 0;
         let mut r = Chunks { data, chunk: 7 };
-        let out = read_secret_from(&mut r, hint, max, &mut |b| {
+        let out = read_secret_from(&mut r, hint, max, chomp, &mut |b| {
             assert!(
                 b.iter().all(|x| *x == 0),
                 "a replaced buffer was not cleared"
@@ -2039,6 +2052,29 @@ mod read_secret_tests {
         let (out, replaced) = read(b"abc", 100, 1 << 20);
         assert_eq!(out.as_deref(), Some(&b"abc"[..]));
         assert_eq!(replaced, 1);
+    }
+
+    /// `chomp`: one `\n` or `\r\n` left out, into a buffer of the
+    /// shorter size, the longer one cleared (and seen replaced).
+    #[test]
+    fn chomp_leaves_one_line_ending_out() {
+        for (data, want) in [
+            (&b"pw\n"[..], &b"pw"[..]),
+            (b"pw\r\n", b"pw"),
+            (b"pw", b"pw"),
+            (b"\n", b""),
+            (b"pw\n\n", b"pw\n"),
+            (b"pw\r", b"pw\r"),
+            (b"", b""),
+        ] {
+            let (out, replaced) = read_chomped(data, data.len(), 1 << 20, true);
+            assert_eq!(out.as_deref(), Some(want), "{data:?}");
+            assert_eq!(replaced, 1, "{data:?}");
+        }
+        assert_eq!(
+            read_chomped(b"pw\n", 3, 1 << 20, false).0.as_deref(),
+            Some(&b"pw\n"[..])
+        );
     }
 
     #[test]

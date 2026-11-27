@@ -45,7 +45,7 @@ module Crypto
 
   # Whether `a` and `b` hold the same bytes, a [String] compared as its
   # UTF-8 bytes (so `"ab"` equals `b"ab"`) and a [Bytes::Secret] as its
-  # bytes (read without a copy that stays; a wiped one raises
+  # bytes (read through a copy that is cleared; a wiped one raises
   # [Bytes::Secret::WipedError]). For a token, a MAC or a digest
   # received, compared with the one expected.
   #

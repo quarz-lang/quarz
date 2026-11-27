@@ -2169,7 +2169,7 @@ class Bytes
   #
   # The digests (`Digest::SHA256`, `Digest::MD5`, `Digest::HMAC`'s data),
   # `Base64.encode` and `Crypto.secure_compare` take a secret as they take
-  # bytes, reading it without a copy that stays.
+  # bytes, reading it through a copy that is cleared.
   #
   # Immutable but for [wipe], and [Shareable]: tasks, on any worker, and
   # [Task.blocking]'s helper thread hold the same buffer, never a copy;
@@ -7410,16 +7410,23 @@ class File
   native def self.read_bytes(path: String) -> Bytes
   # The whole content of the file at `path` as a [Bytes::Secret], read
   # straight into it: no [Bytes] of it is made (a key or password file).
-  # Its bytes exactly, a trailing newline included (a password file
-  # usually ends with one: give the secret without it to whoever needs
-  # it, or write the file without one). Read into a buffer of the file's
+  # Its bytes exactly, a trailing newline included; with `chomp: true`,
+  # without one trailing line ending (`\n` or `\r\n`), for a password
+  # file, which usually ends with one (the secret is then made at the
+  # shorter size, the longer buffer cleared). Read into a buffer of the file's
   # size; a file that grows while read, or one that is not regular (a
   # FIFO), into larger ones, each one replaced cleared first. Raises
   # what [read_bytes] raises ([SystemCallError] for a missing or
   # unreadable path, a directory), and [IOError] for a file of more than
   # 1 MiB (whatever is read of it cleared). What it cannot clear: the
   # file itself and the operating system's cache of it.
-  native def self.read_secret(path: String) -> Bytes::Secret
+  #
+  # ```quarz no_run
+  # File.write("password", "hunter2\n")
+  # File.read_secret("password").size                # => 8
+  # File.read_secret("password", chomp: true).size   # => 7
+  # ```
+  native def self.read_secret(path: String, *, chomp: Bool = false) -> Bytes::Secret
   # Replaces the content of the file at `path` (creating it) with
   # `content`, and returns the number of bytes written. `perm:` gives a
   # file it creates those mode bits, the umask applied, as [.open] does;
