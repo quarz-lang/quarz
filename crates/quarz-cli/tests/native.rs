@@ -146,6 +146,8 @@ NativePanic
 \"hi|a long string, longer than any kept inline in its value\"
 5320
 \"40 ok\"
+\"80 texts, the last v79\"
+3.0
 {0 => 0, 1 => 10, 2 => 20}
 10
 true
@@ -202,18 +204,23 @@ fn quarz_build_refuses_a_native_cog_for_now() {
     );
 }
 
-/// What a cog's native returns is checked against its declaration under
-/// `QUARZ_VERIFY` (`check_native_result`, as for the standard natives).
+/// What a cog's native returns is tested against its declared result's
+/// class on every call, `QUARZ_VERIFY` or not (decided on #677), by the
+/// test `QUARZ_VERIFY` runs for the standard natives: a mismatch is a
+/// `TypeError` the program can rescue. A singleton method's declared
+/// `Self` is tested as its class.
 #[test]
 fn a_cogs_native_result_is_checked() {
     built().as_ref().unwrap();
-    let dir = fixture("verify", &[("main.qz", "p Demo.wrong\n")]);
-    let (ok, _, err) = quarz(&dir, &["run"], &[("QUARZ_VERIFY", "1")]);
+    let main = "begin\n  Demo.wrong\nrescue TypeError => e\n  p e.message\nend\nbegin\n  Crate.make\nrescue TypeError => e\n  p e.message\nend\n";
+    let dir = fixture("verify", &[("main.qz", main)]);
+    let (ok, out, err) = quarz(&dir, &["run"], &[("QUARZ_VERIFY", "0")]);
     let _ = std::fs::remove_dir_all(&dir);
-    assert!(!ok);
-    assert!(
-        err.contains("QIR fact violated: native `Demo.wrong` returned a value of class String, but its declared result is Int"),
-        "{err}"
+    assert!(ok, "{err}");
+    assert_eq!(
+        out,
+        "\"native `Demo.wrong` returned a value of class String, but its declared result is Int\"\n\
+         \"native `Crate.make` returned a value of class String, but its declared result is Crate\"\n"
     );
 }
 

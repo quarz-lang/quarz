@@ -3550,34 +3550,71 @@ impl Interp {
     #[cold]
     #[inline(never)]
     fn check_native_result_now(&self, mid: MethodId, v: &Value, self_class: Option<ClassId>) {
-        let m = self.program.method(mid);
-        let Some(key) = m.native_key.as_deref() else {
+        if self.program.method(mid).native_key.is_none() {
             return;
+        }
+        match self.native_result_test(mid, v, self_class) {
+            Ok(()) => {}
+            Err(NativeResult::Mismatch(what) | NativeResult::NoTest(what)) => self.violated(what),
+        }
+    }
+
+    /// Whether what native `mid` returned, `v`, is of its declared result
+    /// (`RtMethod::result_test`, #1187), else the message saying it is
+    /// not. A native serving several overloads of its name (a standard
+    /// one: a cog's has no overloads) is tested against the union of their
+    /// results (`RtMethod::result_union`), which accepts more. A declared
+    /// `Self` (`RtMethod::result_self`, beside the other members) is
+    /// tested as `self_class`, the receiver's class (#1190). The one test
+    /// of a native's result: `QUARZ_VERIFY` reports its failure for a
+    /// standard native (`check_native_result`), and a cog's native call
+    /// raises it as a `TypeError` on every call (`native_ext::call`,
+    /// #677).
+    pub(crate) fn native_result_test(
+        &self,
+        mid: MethodId,
+        v: &Value,
+        self_class: Option<ClassId>,
+    ) -> Result<(), NativeResult> {
+        let m = self.program.method(mid);
+        let key = || m.native_key.as_deref().unwrap_or(&m.name);
+        // (A declared result the lowering did not name (`Self` or a type
+        // parameter, `RtMethod::ret`) is named by its test when that is
+        // one class: a singleton method's `Self`, tested as its owner.)
+        let declared = || match (m.ret.as_deref(), &m.result_test) {
+            (Some(r), _) => r.to_string(),
+            (None, Some(RtType::Class(c))) => self.program.world.classes[*c as usize].name.clone(),
+            (None, _) => "its declared type".to_string(),
         };
         // `Self` as the receiver's class, the other members as declared.
         if let (Some(besides), Some(c)) = (&m.result_self, self_class) {
             if !self.is_a(v, besides) && !self.is_a(v, &RtType::Class(c)) {
-                self.violated(format!(
-                    "native `{key}` returned a value of class {}, but its declared result is {}, with `Self` the receiver's class {}",
+                return Err(NativeResult::Mismatch(format!(
+                    "native `{}` returned a value of class {}, but its declared result is {}, with `Self` the receiver's class {}",
+                    key(),
                     self.class_name(v),
-                    m.ret.as_deref().unwrap_or("its declared type"),
+                    declared(),
                     self.program.world.classes[c as usize].name
-                ));
+                )));
             }
-            return;
+            return Ok(());
         }
         let test = m.result_union.as_ref().or(m.result_test.as_ref());
         let Some(test) = test else {
-            self.violated(format!("native `{key}` has no test of its declared result"));
-            return;
+            return Err(NativeResult::NoTest(format!(
+                "native `{}` has no test of its declared result",
+                key()
+            )));
         };
         if !self.is_a(v, test) {
-            self.violated(format!(
-                "native `{key}` returned a value of class {}, but its declared result is {}",
+            return Err(NativeResult::Mismatch(format!(
+                "native `{}` returned a value of class {}, but its declared result is {}",
+                key(),
                 self.class_name(v),
-                m.ret.as_deref().unwrap_or("its declared type")
-            ));
+                declared()
+            )));
         }
+        Ok(())
     }
 
     /// A native `mid` called with its receiver and positional arguments
@@ -5224,4 +5261,12 @@ enum CaseEq {
     Eq(MethodId),
     /// Neither: the default comparison (`Value`'s `==`).
     Default,
+}
+
+/// Why a native's result fails its test (`Interp::native_result_test`).
+pub(crate) enum NativeResult {
+    /// The value is not of the declared result.
+    Mismatch(String),
+    /// The lowering shipped no test for the native: an internal error.
+    NoTest(String),
 }

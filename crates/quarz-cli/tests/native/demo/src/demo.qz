@@ -22,6 +22,8 @@ module Demo
   native def self.released(xs: Array[String]) -> String
   native def self.released_bytes(bs: Array[Bytes]) -> Int
   native def self.released_made(n: Int) -> String
+  # Past the values a frame keeps inline: in its chunks.
+  native def self.released_many(n: Int) -> String
   # Collections whose representation follows their elements.
   native def self.int_map(n: Int) -> Hash[Int, Int]
   native def self.floats(n: Int) -> Array[Float]
@@ -45,4 +47,9 @@ abstract class AbstractError < StandardError
 end
 
 class GenericError[T] < StandardError
+end
+
+class Crate
+  # Returns a String: refused against its declared `Self`.
+  native def self.make -> Self
 end

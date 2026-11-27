@@ -17,9 +17,10 @@ use std::sync::Mutex;
 use quarz_ext::sys::*;
 use quarz_ir::{MethodId, RtParamKind, RtWorld};
 
-use crate::interp::{ArgVec, EvalResult, Flow, Interp};
+use crate::interp::{ArgVec, EvalResult, Flow, Interp, NativeResult};
 use crate::rc::Rc;
 use crate::value::{ArrayData, HashData, Symbol, Value};
+use smallvec::SmallVec;
 
 /// A cog's native entry.
 pub type Entry = QzEntry;
@@ -184,19 +185,139 @@ pub fn bind(world: &RtWorld) -> Vec<Option<Entry>> {
 
 // ----- a call ------------------------------------------------------------------------
 
+/// The values a call makes that live inline in its frame
+/// (`Made::inline`), before the first chunk.
+const INLINE: usize = 8;
+/// The values of one chunk past them (`Made::chunks`).
+const CHUNK: usize = 32;
+
 /// One call's values: lent (`lent`: the receiver, the arguments, the
-/// block) and made (`made`, boxed so that a lent pointer into one stays
-/// put; `pinned` once bytes of it were lent, so that `release` keeps it
-/// to the end of the call), the symbol names lent (`names`, one per
+/// block), made (`made`), the symbol names lent (`names`, one per
 /// symbol), and the pending exception.
+///
+/// **Addresses** (docs/15, handle rule 5): a pointer `string_get`,
+/// `bytes_get` or `bytes_new_uninit` lends may point inside a `Value`
+/// itself (a `Short` string's bytes), so every value a handle names
+/// stays at one address until the entry returns:
+/// - the frame is a local of `call`, never moved between the entry's
+///   call and its return (the cog holds `&mut frame` as its `QzCall`);
+/// - `lent` is filled before the entry is called and never pushed to
+///   after, so its values stay put, inline or spilled;
+/// - a made value's slot is inline in the frame (`Made::inline`), or in a
+///   chunk, which never moves once boxed (`Made::chunks` may reallocate
+///   its vector of boxes, never a box);
+/// - `release` leaves a value whose bytes were lent (`Made::pin`).
 struct Frame<'a> {
     interp: &'a Interp,
     serial: u32,
-    lent: Vec<Value>,
-    made: Vec<Option<Box<Value>>>,
-    pinned: Vec<bool>,
+    lent: SmallVec<[Value; INLINE]>,
+    made: Made,
     names: Vec<(Symbol, Rc<str>)>,
     pending: Option<Value>,
+}
+
+/// The values a call made, by index (`Frame::make`): the first `INLINE`
+/// inline, the rest in boxed chunks of `CHUNK` (their addresses: see
+/// `Frame`), with a bit per value set once bytes of it were lent.
+struct Made {
+    len: usize,
+    /// (Dropped by `Made`'s `Drop`, the slots in use only.)
+    inline: std::mem::ManuallyDrop<[Option<Value>; INLINE]>,
+    // (Boxed: a chunk keeps its address when the vector grows.)
+    #[allow(clippy::vec_box)]
+    chunks: Vec<Box<[Option<Value>; CHUNK]>>,
+    pinned: SmallVec<[u64; 1]>,
+}
+
+impl Drop for Made {
+    fn drop(&mut self) {
+        // (Slots past `len` were never filled: `None`, nothing to drop.)
+        for slot in &mut self.inline[..self.len.min(INLINE)] {
+            *slot = None;
+        }
+    }
+}
+
+impl Made {
+    fn new() -> Made {
+        Made {
+            len: 0,
+            inline: std::mem::ManuallyDrop::new([const { None }; INLINE]),
+            chunks: Vec::new(),
+            pinned: SmallVec::new(),
+        }
+    }
+
+    /// Keep `v`: its index.
+    fn push(&mut self, v: Value) -> usize {
+        let i = self.len;
+        if i < INLINE {
+            self.inline[i] = Some(v);
+        } else {
+            let j = i - INLINE;
+            if j.is_multiple_of(CHUNK) {
+                self.chunks.push(Box::new([const { None }; CHUNK]));
+            }
+            self.chunks[j / CHUNK][j % CHUNK] = Some(v);
+        }
+        if i / 64 >= self.pinned.len() {
+            self.pinned.push(0);
+        }
+        self.len += 1;
+        i
+    }
+
+    fn slot(&self, i: usize) -> Option<&Option<Value>> {
+        if i >= self.len {
+            None
+        } else if i < INLINE {
+            Some(&self.inline[i])
+        } else {
+            let j = i - INLINE;
+            Some(&self.chunks[j / CHUNK][j % CHUNK])
+        }
+    }
+
+    fn slot_mut(&mut self, i: usize) -> Option<&mut Option<Value>> {
+        if i >= self.len {
+            None
+        } else if i < INLINE {
+            Some(&mut self.inline[i])
+        } else {
+            let j = i - INLINE;
+            Some(&mut self.chunks[j / CHUNK][j % CHUNK])
+        }
+    }
+
+    fn get(&self, i: usize) -> Option<&Value> {
+        self.slot(i)?.as_ref()
+    }
+
+    fn get_mut(&mut self, i: usize) -> Option<&mut Value> {
+        self.slot_mut(i)?.as_mut()
+    }
+
+    /// Bytes of value `i` were lent: kept to the end of the call.
+    fn pin(&mut self, i: usize) {
+        if i < self.len {
+            self.pinned[i / 64] |= 1 << (i % 64);
+        }
+    }
+
+    /// Let go of value `i`, unless bytes of it were lent.
+    fn release(&mut self, i: usize) {
+        if i >= self.len || self.pinned[i / 64] >> (i % 64) & 1 == 1 {
+            return;
+        }
+        if let Some(slot) = self.slot_mut(i) {
+            *slot = None;
+        }
+    }
+
+    /// Value `i`, taken out (the result, once the entry has returned).
+    fn take(&mut self, i: usize) -> Option<Value> {
+        self.slot_mut(i)?.take()
+    }
 }
 
 thread_local! {
@@ -225,13 +346,25 @@ impl Frame<'_> {
         if i < self.lent.len() {
             return self.lent.get(i);
         }
-        self.made.get(i - self.lent.len())?.as_deref()
+        self.made.get(i - self.lent.len())
     }
 
     fn make(&mut self, v: Value) -> QzValue {
-        self.made.push(Some(Box::new(v)));
-        self.pinned.push(false);
-        self.handle(self.lent.len() + self.made.len() - 1)
+        let i = self.made.push(v);
+        self.handle(self.lent.len() + i)
+    }
+
+    /// The result `h`, once the entry has returned: a made value taken
+    /// out, a lent one copied.
+    fn take(&mut self, h: QzValue) -> Option<Value> {
+        if (h >> 32) as u32 != self.serial || h & 0xFFFF_FFFF == 0 {
+            return None;
+        }
+        let i = (h & 0xFFFF_FFFF) as usize - 1;
+        match i.checked_sub(self.lent.len()) {
+            None => self.lent.get(i).cloned(),
+            Some(i) => self.made.take(i),
+        }
     }
 
     /// Keep `h`'s value to the end of the call, whatever `release` is
@@ -243,11 +376,8 @@ impl Frame<'_> {
             return;
         }
         let i = (h & 0xFFFF_FFFF) as usize - 1;
-        if let Some(p) = i
-            .checked_sub(self.lent.len())
-            .and_then(|i| self.pinned.get_mut(i))
-        {
-            *p = true;
+        if let Some(i) = i.checked_sub(self.lent.len()) {
+            self.made.pin(i);
         }
     }
 
@@ -257,7 +387,7 @@ impl Frame<'_> {
             return None;
         }
         let i = ((h & 0xFFFF_FFFF) as usize - 1).checked_sub(self.lent.len())?;
-        self.made.get_mut(i)?.as_deref_mut()
+        self.made.get_mut(i)
     }
 
     /// Raise `flow`'s exception: pending, `QZ_RAISED`.
@@ -282,8 +412,9 @@ impl Frame<'_> {
 
 /// Call the cog's native `mid` (its `entry`) on `recv` and the arguments,
 /// bound to the declared parameters' positions (the defaults of those
-/// left out filled in): its result, or what it raised. Its result is
-/// checked against its declaration under `QUARZ_VERIFY`.
+/// left out filled in): its result, or what it raised. Its result's
+/// class is tested against its declaration on every call
+/// (`Interp::native_result_test`), a mismatch raising `TypeError`.
 pub fn call(
     interp: &Interp,
     mid: MethodId,
@@ -294,27 +425,37 @@ pub fn call(
     block: Option<Value>,
 ) -> EvalResult {
     let m = interp.program.method(mid);
-    let key = m.native_key.as_deref().unwrap_or(&m.name).to_string();
-    let values = bind_params(interp, mid, args, kw)?;
-    let nargs = values.len();
-    let mut lent = Vec::with_capacity(nargs + 2);
-    lent.push(recv);
-    lent.extend(values);
-    let has_block = block.is_some();
-    if let Some(b) = block {
-        lent.push(b);
-    }
+    // (Named on the error paths only.)
+    let key = || m.native_key.as_deref().unwrap_or(&m.name);
+    // (`lent` is filled in place, and complete before the entry is
+    // called: never pushed to after.)
     let mut frame = Frame {
         interp,
         serial: next_serial(),
-        lent,
-        made: Vec::new(),
-        pinned: Vec::new(),
+        lent: SmallVec::new(),
+        made: Made::new(),
         names: Vec::new(),
         pending: None,
     };
+    frame.lent.push(recv);
+    bind_params(interp, mid, args, kw, &mut frame.lent)?;
+    let nargs = frame.lent.len() - 1;
+    let has_block = block.is_some();
+    if let Some(b) = block {
+        frame.lent.push(b);
+    }
     let recv_h = frame.handle(0);
-    let arg_hs: Vec<QzValue> = (1..=nargs).map(|i| frame.handle(i)).collect();
+    let mut arg_buf = [0; INLINE];
+    let spilled: Vec<QzValue>;
+    let arg_hs: &[QzValue] = if nargs <= INLINE {
+        for (i, h) in arg_buf[..nargs].iter_mut().enumerate() {
+            *h = frame.handle(i + 1);
+        }
+        &arg_buf[..nargs]
+    } else {
+        spilled = (1..=nargs).map(|i| frame.handle(i)).collect();
+        &spilled
+    };
     let blk_h = if has_block {
         frame.handle(nargs + 1)
     } else {
@@ -340,29 +481,43 @@ pub fn call(
                 Ok(Value::Nil)
             } else {
                 Err(interp.err_runtime(&format!(
-                    "native `{key}` returned no result, but its declared result is {}",
+                    "native `{}` returned no result, but its declared result is {}",
+                    key(),
                     m.ret.as_deref().unwrap_or("not Void")
                 )))
             }
         }
-        QZ_OK => match frame.value(out) {
-            Some(v) => Ok(v.clone()),
+        QZ_OK => match frame.take(out) {
+            Some(v) => Ok(v),
             None => Err(interp.err_runtime(&format!(
-                "native `{key}` returned a handle that is not one of its call's"
+                "native `{}` returned a handle that is not one of its call's",
+                key()
             ))),
         },
         QZ_RAISED => match frame.pending.take() {
             Some(e) => Err(Flow::Raise(e)),
             None => Err(interp.err_runtime(&format!(
-                "native `{key}` returned QZ_RAISED with no exception pending"
+                "native `{}` returned QZ_RAISED with no exception pending",
+                key()
             ))),
         },
         s => Err(interp.err_runtime(&format!(
-            "native `{key}` returned the status {s}, neither QZ_OK nor QZ_RAISED"
+            "native `{}` returned the status {s}, neither QZ_OK nor QZ_RAISED",
+            key()
         ))),
     };
+    // A cog's native is trusted for nothing: its result's class is tested
+    // on every call (decided on #677), by the test `QUARZ_VERIFY` runs for
+    // the standard natives, and a mismatch is the program's `TypeError`.
     if let Ok(v) = &result {
-        interp.check_native_result(mid, v, &frame.lent[0]);
+        let self_class = interp.self_class(mid, &frame.lent[0]);
+        match interp.native_result_test(mid, v, self_class) {
+            Ok(()) => {}
+            Err(NativeResult::Mismatch(what)) => return Err(interp.err_type(&what)),
+            Err(NativeResult::NoTest(what)) => {
+                return Err(interp.err_runtime(&format!("internal error: {what}")))
+            }
+        }
     }
     result
 }
@@ -376,10 +531,20 @@ fn bind_params(
     mid: MethodId,
     args: ArgVec,
     mut kw: Vec<(Symbol, Value)>,
-) -> Result<Vec<Value>, Flow> {
+    out: &mut SmallVec<[Value; INLINE]>,
+) -> Result<(), Flow> {
     let m = interp.program.method(mid);
+    // Positional parameters only, each given positionally: the arguments
+    // as they are. (Every other call takes the loop below, which also
+    // has every error: none can happen here.)
+    if kw.is_empty()
+        && args.len() == m.params.len()
+        && m.params.iter().all(|p| p.kind == RtParamKind::Positional)
+    {
+        out.extend(args);
+        return Ok(());
+    }
     let mut args = args.into_iter();
-    let mut out = Vec::with_capacity(m.params.len());
     for p in &m.params {
         let positional = match p.kind {
             RtParamKind::Positional => true,
@@ -407,7 +572,22 @@ fn bind_params(
         };
         out.push(value);
     }
-    Ok(out)
+    // (The checker lets no such call through, a procedure's included:
+    // refused here all the same, never dropped.)
+    if args.next().is_some() {
+        return Err(interp.err_arg(&format!(
+            "`{}` was given more arguments than it takes",
+            m.name
+        )));
+    }
+    if let Some((k, _)) = kw.first() {
+        return Err(interp.err_arg(&format!(
+            "`{}` was given the keyword `{}`, which it does not take",
+            m.name,
+            interp.symbol_name(*k)
+        )));
+    }
+    Ok(())
 }
 
 // ----- the API -----------------------------------------------------------------------
@@ -1005,12 +1185,7 @@ unsafe extern "C" fn release(cx: *mut QzCall, v: QzValue) {
         return;
     };
     // (Bytes of it lent: kept to the end of the call.)
-    if f.pinned.get(i).copied().unwrap_or(true) {
-        return;
-    }
-    if let Some(slot) = f.made.get_mut(i) {
-        *slot = None;
-    }
+    f.made.release(i);
 }
 
 /// The API quarz gives every cog, ABI 1.0.
