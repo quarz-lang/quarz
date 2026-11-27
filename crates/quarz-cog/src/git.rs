@@ -343,6 +343,26 @@ impl Mirror {
             .collect())
     }
 
+    /// The native package `tree`'s manifest declares (`[native] crate`),
+    /// relative to it; `None` when it declares none or has no manifest
+    /// (which the caller refuses).
+    fn native_subdir(&self, tree: &str) -> Result<Option<String>, Error> {
+        let mut c = self.cmd();
+        c.args(["show", &format!("{tree}:Cog.toml")]);
+        let Ok(out) = c.output() else {
+            return Ok(None);
+        };
+        if !out.status.success() {
+            return Ok(None);
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let Ok(manifest) = crate::manifest::Manifest::parse(&text) else {
+            // (Refused with its own error once installed.)
+            return Ok(None);
+        };
+        manifest.native_subdir()
+    }
+
     /// Write the tree of `rev` (or of its directory `subdir`) into `dest`.
     pub fn export(&self, rev: &str, subdir: Option<&str>, dest: &Path) -> Result<(), Error> {
         check_rev(rev)?;
@@ -352,9 +372,24 @@ impl Mirror {
             Some(d) => format!("{rev}:{d}"),
             None => rev.to_string(),
         };
+        // Only what is compiled and hashed: the manifest, `src/`, and the
+        // native package its manifest declares (`[native] crate`, #677).
+        let mut paths = vec!["Cog.toml".to_string(), "src".to_string()];
+        if let Some(d) = self.native_subdir(&tree)? {
+            let mut c = self.cmd();
+            c.args(["cat-file", "-e", &format!("{tree}:{d}")]);
+            let present = c.output().is_ok_and(|o| o.status.success());
+            if !present {
+                return Err(Error::new(format!(
+                    "{} declares `[native] crate = \"{d}\"`, but its repository has no `{d}/` at {rev}",
+                    self.url
+                )));
+            }
+            paths.push(d);
+        }
         let mut archive = self.cmd();
-        // Only what is compiled and hashed: the manifest and `src/`.
-        archive.args(["archive", "--format=tar", &tree, "--", "Cog.toml", "src"]);
+        archive.args(["archive", "--format=tar", &tree, "--"]);
+        archive.args(&paths);
         archive.stdout(Stdio::piped());
         archive.stderr(Stdio::piped());
         let mut child = archive

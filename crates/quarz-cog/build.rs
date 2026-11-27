@@ -22,8 +22,34 @@ fn git(args: &[&str]) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
+/// Record the rustc `quarz` is built by (`QUARZ_RUSTC_RELEASE`,
+/// `QUARZ_RUSTC_COMMIT`, `QUARZ_RUSTC_LINE`, read by
+/// `quarz_cog::native::QUARZ_RUSTC`): a cog's native package is built by
+/// the same one (#677). Cargo runs this script again when its rustc
+/// changes.
+fn rustc() {
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    let Ok(out) = Command::new(rustc).arg("-vV").output() else {
+        return;
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let field = |k: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(k))
+            .map(|v| v.trim().to_string())
+    };
+    if let (Some(release), Some(commit)) = (field("release:"), field("commit-hash:")) {
+        println!("cargo:rustc-env=QUARZ_RUSTC_RELEASE={release}");
+        println!("cargo:rustc-env=QUARZ_RUSTC_COMMIT={commit}");
+    }
+    if let Some(line) = text.lines().next() {
+        println!("cargo:rustc-env=QUARZ_RUSTC_LINE={}", line.trim());
+    }
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    rustc();
     // Only in quarz's own repository (not a copy unpacked inside another).
     let dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
     let workspace = std::fs::canonicalize(dir.join("../..")).ok();

@@ -33,7 +33,7 @@ use sha2::{Digest, Sha256};
 const KEY_VERSION: &str = "quarz-obj-1";
 
 /// Entries unused for this long are removed.
-const UNUSED: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+pub const UNUSED: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// The objects' bound, in bytes: past it, the least recently used go.
 const BOUND: u64 = 2 * 1024 * 1024 * 1024;
@@ -94,17 +94,35 @@ pub fn clang_identity(clang: &str, version: &str) -> String {
 /// The objects' cache in `dir`.
 pub struct Cache {
     dir: PathBuf,
+    /// The entries' extension: `o`, or `so` for the libraries built from
+    /// cogs' native packages (`quarz_cli::native`, #677), kept by the same
+    /// rules in a directory of their own.
+    ext: &'static str,
 }
 
 impl Cache {
     pub fn new(dir: &Path) -> Cache {
+        Cache::with_extension(dir, "o")
+    }
+
+    /// A cache in `dir` whose entries are `<key>.<ext>`.
+    pub fn with_extension(dir: &Path, ext: &'static str) -> Cache {
         Cache {
             dir: dir.to_path_buf(),
+            ext,
         }
     }
 
     fn entry(&self, key: &str) -> PathBuf {
-        self.dir.join(&key[..2]).join(format!("{key}.o"))
+        self.dir.join(&key[..2]).join(format!("{key}.{}", self.ext))
+    }
+
+    /// The file of `key`'s entry, when the cache holds it whole (as
+    /// `fetch`); its time is set to now. For a library to load in place:
+    /// an entry is only ever replaced by a rename, never written over.
+    pub fn fetch_path(&self, key: &str) -> Option<PathBuf> {
+        self.fetch(key)?;
+        Some(self.entry(key))
     }
 
     /// The object of `key`, when the cache holds it whole (its sum is
@@ -202,7 +220,7 @@ impl Cache {
                     }
                     continue;
                 }
-                if ext != "o" {
+                if ext != self.ext {
                     continue;
                 }
                 if age(&m) > UNUSED {

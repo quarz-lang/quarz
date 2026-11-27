@@ -271,6 +271,7 @@ mod tests {
             locked_version: None,
             rev: Some("0123abc".into()),
             native: None,
+            hash: None,
         };
         let files = [
             SourceFile::new("<prelude>", ""),

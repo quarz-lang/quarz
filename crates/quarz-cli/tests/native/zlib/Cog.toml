@@ -1,0 +1,10 @@
+# The proof cog of tests/native.rs (#677): compression on pure-Rust
+# crates. The test writes native/Cargo.toml (with quarz-ext's absolute
+# path) in a copy of this directory, commits it to a git repository and
+# depends on it from an application.
+[cog]
+name = "zlib"
+version = "0.1.0"
+
+[native]
+crate = "native"

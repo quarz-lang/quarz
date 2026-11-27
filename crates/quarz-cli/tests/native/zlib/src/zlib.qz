@@ -1,0 +1,13 @@
+# Compression in the zlib format, on `miniz_oxide` and `crc32fast`.
+class Codec
+  # `data` compressed at `level` (0 to 10).
+  native def self.deflate(data: Bytes, *, level: Int = 6) -> Bytes
+  # `data` decompressed; `DataError` when it is not in the zlib format.
+  native def self.inflate(data: Bytes) -> Bytes
+  # The CRC-32 of `data`.
+  native def self.crc32(data: Bytes) -> Int
+end
+
+# Raised by `Codec.inflate` for data not in the zlib format.
+class DataError < StandardError
+end

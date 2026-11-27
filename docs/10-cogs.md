@@ -59,6 +59,7 @@ Httpx = { path = "../httpx" }
 - **`Cog.local.toml`**, beside `Cog.toml`, holds a `[patch]` table and nothing else (another table is an error naming the file): this machine's replacements, kept out of version control (`quarz cog init` lists it in `.gitignore`), so that a cog developed against a local copy of a dependency commits no path. Its entries are merged over `Cog.toml`'s `[patch]`, the local file's entry taking a key both name, and apply where a `[patch]` does: at the root of the movement (the application, or the cog itself under `quarz test`). A cog that depends on another under development writes `[patch] PG = { path = "../pg" }` there. The lock is resolved, checked and written as if the file were not there (as Go's `go.work` leaves `go.mod` alone): the build uses the local directories, `Cog.lock` keeps the git sources' commits, and `quarz cog vendor` copies those; switching a local patch on or off changes no committed file. A local copy that needs what the lock does not hold (a cog it lacks, a later version, another commit) is resolved afresh for the build, without writing the lock (each build, then: the lock's warnings are not repeated, and `quarz cog outdated` knows only the lock's cogs), and refused with `--locked` (or `--offline`), which names the file; `quarz cog tree` shows a locally patched cog's directory and the version the lock holds for its source.
 - `quarz` is the minimum language version the cog needs (as `go 1.21` in a `go.mod` and `minimum_zig_version` in Zig); a program refuses to build with an older `quarz`.
 - `documentation` and `repository`, optional, are http(s) URLs: where the cog's API is published (`quarz doc --html`) and its repository's web page; §8 says what reads them.
+- `[native] crate = "native"` says the cog implements some of its methods in Rust, in the cargo package in that directory of the cog (§11).
 - A cog with `extern "C"` declarations will need to name the C libraries to link; `[cog] link = ["ssl"]` is reserved for that and not designed further here.
 
 ## 3. The Lock File: `Cog.lock`
@@ -86,11 +87,13 @@ version = "0.8.1-0.20261023141500.3f2a9c1e0b4d"       # a pseudo-version: no tag
 rev     = "3f2a9c1e0b4d7c6e8a1f2b3c4d5e6f7a8b9c0d1e"
 hash    = "h1:Q8ua…"
 dependencies = []
+native  = true                                       # it brings native code (§11)
 ```
 
 - A cog is identified by its `source` (the URL, with the `subdir` when there is one); the keys the manifests use for it are not recorded, since each manifest has its own. Two spellings of one source are one cog: a `subdir` of `a`, `a/` or `./a`, and URLs that differ only in the case of the scheme and host or in a trailing `/` or `.git`.
 - `inputs` is a digest of the dependency tables of the manifests that can change: the application's and the patched cogs' (every other manifest is pinned by its commit). The lock is the resolution of those inputs: while the digest matches, it is used as it is; when the manifests list other dependencies, it is resolved again.
-- `rev` is the key for fetching, `hash` the key for verification: a hash of the cog's files at that commit (`Cog.toml` and everything under `src/`): one line per file in path order, its SHA-256 in hex, two spaces and its path, and the base64 of the SHA-256 of those lines (as Go's module hashes). The two are kept apart because a git commit id is a SHA-1 of the repository's history, not of the files Quarz compiles: after fetching, a tree whose hash differs from the lock (a rewritten history, a force-pushed tag, a tampered mirror) is refused. The `h1:` prefix names the algorithm so it can change.
+- `rev` is the key for fetching, `hash` the key for verification: a hash of the cog's files at that commit (`Cog.toml`, everything under `src/`, and its native package when it declares one, §11): one line per file in path order, its SHA-256 in hex, two spaces and its path, and the base64 of the SHA-256 of those lines (as Go's module hashes). The two are kept apart because a git commit id is a SHA-1 of the repository's history, not of the files Quarz compiles: after fetching, a tree whose hash differs from the lock (a rewritten history, a force-pushed tag, a tampered mirror) is refused. The `h1:` prefix names the algorithm so it can change.
+- `native = true` marks a cog that brings native code (§11), so that an update adding one shows in the lock's diff. It is written only then, and derived from the cog's manifest, which `hash` pins: a lock that disagrees with the manifest is refused ("run `quarz cog update`"). A quarz that predates native cogs refuses such a lock ("unknown field `native`").
 - The lock lists only what the resolution chose: one entry per cog, whatever the manifests asked for. `[patch]` entries are not recorded. `Cog.local.toml` takes no part in the lock at all (§2): `inputs` and the entries are what `Cog.toml` alone resolves to.
 
 ## 4. Version Resolution
@@ -107,7 +110,7 @@ Resolution follows Go's *minimal version selection*: every manifest in the graph
 ## 5. Fetching, Cache and Vendoring
 
 - The cache is `$QUARZ_CACHE`, else `$XDG_CACHE_HOME/quarz`, else `~/.cache/quarz`. Repositories are mirrored under `~/.cache/quarz/git/<host>/<name>-<digest of the URL>.git` (a bare clone, one per URL: the host is read from the URL's authority only), and only the commit the lock names is fetched (`git fetch --depth 1 origin <rev>`), so a large history costs nothing. Resolving a branch or a `rev` that no tag names fetches the commit's history and tags once, to find the tags for its pseudo-version; the mirror's tags are made the remote's, deleted ones included. Creating a mirror and fetching into it hold a lock file, so several `quarz` processes can share the cache. Git's automatic maintenance is off for the mirrors (`maintenance.auto=false`, `gc.auto=0`): a fetch would otherwise end by starting a background `git maintenance` on the mirror, outside the lock, which may rewrite its files while another fetch reads them (#1183). So nothing repacks or prunes a mirror: it gains a pack per fetch, and removing the cache's `git/` directory is the way to shrink it (a developer's mirrors of five cogs, after weeks of updates, held 15 MB in at most 13 packs).
-- The cog's `Cog.toml` and `src/` are checked out, read-only, into `~/.cache/quarz/src/<name>-<first 12 hex digits of rev>/` (with a digest of the `subdir` after it for a cog in a subdirectory) and verified against the lock's `hash` before anything is compiled. A tree holding a symbolic link (its target would be outside what the hash covers), anything but files and directories, or a file name that is not UTF-8 or holds a control character, is refused. Each process writes into a directory of its own and renames it into place. The directory never changes once written. A cog's files are checked like the application's, and their check results are kept between runs by the same cache ([05-execution.md](05-execution.md) §2): a pinned commit's files do not change, so they are checked again only when the program's interfaces, its constants' types or the order of its files change, or quarz is another build. Loading a whole cog rather than the files a program names costs checking it on the first run, not on every run; `quarz build` drops what the program does not reach.
+- The cog's `Cog.toml`, `src/` and native package (§11) are checked out, read-only, into `~/.cache/quarz/src/<name>-<first 12 hex digits of rev>/` (with a digest of the `subdir` after it for a cog in a subdirectory) and verified against the lock's `hash` before anything is compiled. A tree holding a symbolic link (its target would be outside what the hash covers), anything but files and directories, or a file name that is not UTF-8 or holds a control character, is refused. Each process writes into a directory of its own and renames it into place. The directory never changes once written. A cog's files are checked like the application's, and their check results are kept between runs by the same cache ([05-execution.md](05-execution.md) §2): a pinned commit's files do not change, so they are checked again only when the program's interfaces, its constants' types or the order of its files change, or quarz is another build. Loading a whole cog rather than the files a program names costs checking it on the first run, not on every run; `quarz build` drops what the program does not reach.
 - `quarz cog vendor` copies every locked cog into `vendor/<name>/` next to the manifest (into a new directory that replaces `vendor/` only once it is complete); when that directory exists, nothing is fetched. `--offline` resolves from the cache and `vendor/` only.
 - Private repositories use git's own authentication (SSH keys, credential helpers); Quarz adds no credential handling of its own.
 
@@ -239,3 +242,49 @@ The repository's Pages source is "GitHub Actions", and its custom domain (`pg.ap
 - Whether an application's files other than `src/main.qz` may hold statements (a `require_relative`d helper that prints at load would stop working).
 - What `[cog] link` looks like once FFI exists.
 - Repositories that use SHA-256 object ids (64 hexadecimal digits) are not supported yet: commit ids are SHA-1's 40 digits, and a longer one is refused as not a commit id (*not yet*).
+
+## 11. Native Code
+
+A cog can implement some of its methods in Rust (#677). Quarz declares them, without a body:
+
+```quarz
+# zlib/src/zlib.qz
+class Codec
+  native def self.deflate(data: Bytes, *, level: Int = 6) -> Bytes
+  native def self.inflate(data: Bytes) -> Bytes
+end
+```
+
+A cargo package, named in the manifest, implements them against the C ABI of [15-native.md](15-native.md), through the wrapper crate `quarz-ext`:
+
+```toml
+# zlib/Cog.toml
+[native]
+crate = "native"            # a directory inside the cog
+```
+
+- **The package.**
+  - Its `Cargo.toml` is a workspace of its own: an empty `[workspace]` table. Otherwise cargo would look for one above it.
+  - `[lib] crate-type` includes `"cdylib"` and `"staticlib"`.
+  - Its `Cargo.lock` is committed: it is built with `--locked`.
+  - It holds no `rust-toolchain` or `rust-toolchain.toml`: the toolchain is quarz's.
+  - Its directory is outside `src/`.
+  - Until `quarz-ext`'s distribution is decided, it depends on that crate by path.
+- **What `native def` may declare** (docs/15): positional and keyword-only parameters with literal defaults, and a block. It is never overloaded, and never run at compile time. Elsewhere than in such a cog, `native def` is an error.
+- **When it is built.** `quarz run` and `quarz test` build every native cog of the movement before running, with `cargo build --release --locked --lib`; `quarz check` builds nothing. `quarz build` refuses a program with a native cog for now (#677). A build says so on stderr: `quarz: building the native code of cog zlib (app → zlib) with cargo`. cargo's own output is shown only when it fails.
+- **The toolchain.** The package is built by the rustc that built `quarz`, for every command. quarz uses the first of these whose rustc has that commit:
+  1. the `cargo` found (`$CARGO`, else on `PATH`), given as its `RUSTC` the rustc compared (`$RUSTC`, else `rustc`);
+  2. rustup's toolchain of that release.
+
+  Otherwise it stops with an error that names the cog, the dependency path that brought it, and what to install ("run `rustup toolchain install 1.100.0`").
+- **The environment.**
+  - Flags that would reach rustc are cleared, and a configuration file's `rustflags` are overridden.
+  - The panic strategy is `unwind`, so that a panic becomes `NativePanic`.
+  - A profile or a target setting of the user's (`CARGO_PROFILE_*`, `CARGO_BUILD_*`, `CARGO_TARGET_*`, cargo's configuration files) is kept, and is part of the key below.
+- **Where builds are kept:** `native/` in the cache directory of [05-execution.md](05-execution.md) §2 (`QUARZ_CACHE_DIR`), with the rules of `quarz build`'s object cache (checked by a sum, swept by age and size). A library is loaded only from there, never from a target directory.
+  - **A cog the lock pins** (fetched, or in `vendor/`), whose package has no path dependency, is keyed by the lock's hash of its tree, the rustc, the ABI's major version and that environment. Once built, it needs no cargo: offline, or on a machine without Rust.
+  - **Any other cog** is built by cargo on every run, which skips what did not change. That covers the application's own package, a `[patch]`, and a package with a path dependency (which no hash covers).
+  - `QUARZ_NO_CACHE=1` builds every time.
+  - The key does not cover what a build script reads on its own (`CC`, `CFLAGS`, `PKG_CONFIG_PATH`, files outside the package): after changing those, `QUARZ_NO_CACHE=1` rebuilds.
+- **Offline** (`--offline`): cargo runs offline too. A build then needs its crates in cargo's own cache. `quarz cog vendor` copies the package, not its crates.io dependencies (#1205).
+- **Trust.** A native cog runs code outside the checker's guarantees, and its build scripts run at build time. There is no opt-in list. Instead, the lock's `native = true` shows a dependency that brings native code, and every error about the build names the dependency path that brought the cog.

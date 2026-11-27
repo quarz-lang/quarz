@@ -8,7 +8,8 @@ use sha2::{Digest, Sha256};
 use crate::manifest::MANIFEST;
 
 /// `h1:` and the base64 of a SHA-256 over one line per file of the cog
-/// (`Cog.toml` and everything under `src/`), in path order: the file's
+/// (`Cog.toml`, everything under `src/`, and everything in the native
+/// package its manifest declares, #677), in path order: the file's
 /// SHA-256 in hex, two spaces and its path (as Go's module hashes). The
 /// tree must pass `check_tree`, so that no two trees share their lines.
 pub fn tree_hash(dir: &Path) -> std::io::Result<String> {
@@ -24,6 +25,22 @@ pub fn tree_hash(dir: &Path) -> std::io::Result<String> {
         Ok(m) if m.file_type().is_dir() => collect(dir, &src, &mut files)?,
         Ok(_) => return Err(bad(format!("{} is not a directory", src.display()))),
         Err(_) => {}
+    }
+    // The native package its manifest declares (`[native] crate`, #677):
+    // installed with the tree (`Mirror::export`), so hashed with it. (A
+    // manifest that does not parse adds nothing: it is refused on its
+    // own.)
+    let native = std::fs::read_to_string(&manifest)
+        .ok()
+        .and_then(|t| crate::manifest::Manifest::parse(&t).ok())
+        .and_then(|m| m.native_subdir().ok().flatten());
+    if let Some(d) = native {
+        let path = dir.join(&d);
+        match std::fs::symlink_metadata(&path) {
+            Ok(m) if m.file_type().is_dir() => collect(dir, &path, &mut files)?,
+            Ok(_) => return Err(bad(format!("{} is not a directory", path.display()))),
+            Err(_) => {}
+        }
     }
     files.sort();
     let mut summary = String::new();

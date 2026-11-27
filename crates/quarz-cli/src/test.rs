@@ -134,7 +134,7 @@ pub fn command(args: &[String]) -> ExitCode {
     if docs != Docs::None {
         quarz_types::want_docs();
     }
-    let Some((checked, sources, lowerer)) = load_and_check(
+    let Some((checked, sources, lowerer, natives)) = load_and_check(
         &files,
         cog.as_deref(),
         &opts,
@@ -169,7 +169,7 @@ pub fn command(args: &[String]) -> ExitCode {
         let _ = std::fs::remove_dir_all(&dir);
         return code;
     }
-    let code = quarz_cli::run_with(checked, &sources, lowerer, argv);
+    let code = quarz_cli::run_with(checked, &sources, lowerer, argv, &natives);
     ExitCode::from(code.clamp(0, 255) as u8)
 }
 
@@ -222,10 +222,10 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 pub(crate) fn test_specs(
     root: &Path,
     opts: &quarz_cog::Options,
-) -> Result<Vec<quarz_types::CogSpec>, String> {
+) -> Result<(Vec<quarz_types::CogSpec>, quarz_cli::Natives), String> {
     let movement = quarz_cog::open(root, opts).map_err(|e| e.to_string())?;
-    quarz_cli::set_native_cogs(&movement.cogs);
-    Ok(specs_of(&movement))
+    let natives = quarz_cli::Natives::of(&movement.cogs, opts);
+    Ok((specs_of(&movement), natives))
 }
 
 /// The specs `test_specs` gives, of an opened movement: an application's
@@ -293,7 +293,12 @@ fn load_and_check(
     std_docs: bool,
     std_module: Option<&str>,
     test_classes: bool,
-) -> Option<(quarz_types::Checked, Vec<SourceFile>, quarz_lower::Lowerer)> {
+) -> Option<(
+    quarz_types::Checked,
+    Vec<SourceFile>,
+    quarz_lower::Lowerer,
+    quarz_cli::Natives,
+)> {
     let prelude_file = SourceFile::new("<prelude>", quarz_types::PRELUDE_SOURCE);
     let prelude = quarz_types::parse_prelude();
     let all_std: Vec<&str> = quarz_types::STD_MODULES.iter().map(|(n, _)| *n).collect();
@@ -309,9 +314,13 @@ fn load_and_check(
     if let Some(warning) = cog.and_then(quarz_cog::author_version_warning) {
         eprintln!("quarz: {warning}");
     }
+    let mut natives = quarz_cli::Natives::default();
     let (units, decls, diagnostics) = match cog {
         Some(root) => match test_specs(root, opts) {
-            Ok(specs) => quarz_types::load_movement_tests(&specs, files),
+            Ok((specs, n)) => {
+                natives = n;
+                quarz_types::load_movement_tests(&specs, files)
+            }
             Err(e) => {
                 eprintln!("quarz: {e}");
                 return None;
@@ -509,7 +518,7 @@ fn load_and_check(
     let mut files = vec![prelude_file];
     files.append(&mut sources);
     files.extend(extras.into_iter().map(|e| e.source));
-    checked.map(|c| (c, files, lowerer))
+    checked.map(|c| (c, files, lowerer, natives))
 }
 
 /// A unit `quarz test` adds: an example's (with the comment's line of each
