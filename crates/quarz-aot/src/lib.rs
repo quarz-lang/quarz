@@ -136,9 +136,10 @@ fn link(compiled: &llvm::Compiled, dir: &Path, output: &Path) -> Result<(), Stri
 /// own (`quarz_vm::native_bt::table`: the typed entries, by their names in
 /// `typed_names`, and the line table), and with `strip` strip it of its
 /// symbols and debug information (most of its size: the standard
-/// library's). Without `objcopy` the executable stays as it is: its
-/// backtraces show no compiled function, as the symbols' names do not
-/// say which function they are (#1182).
+/// library's), by `objcopy`, else `llvm-objcopy` (which takes the same
+/// arguments). With neither, the executable stays as it is and a warning
+/// says so: its backtraces show no compiled function, as the symbols'
+/// names do not say which function they are (#1182).
 fn strip(
     output: &Path,
     typed_names: &[(String, quarz_ir::FuncId)],
@@ -150,27 +151,42 @@ fn strip(
     let table = quarz_vm::native_bt::table(&exe, &|name| names.get(name).copied())?;
     let table_path = output.with_extension("quarz_bt");
     std::fs::write(&table_path, &table).map_err(|e| format!("{}: {e}", table_path.display()))?;
-    let mut objcopy = Command::new("objcopy");
-    if strip {
-        objcopy.arg("--strip-all");
+    let mut result = None;
+    for tool in OBJCOPY {
+        let mut objcopy = Command::new(tool);
+        if strip {
+            objcopy.arg("--strip-all");
+        }
+        let status = objcopy
+            .arg("--add-section")
+            .arg(format!(
+                "{}={}",
+                quarz_vm::native_bt::SECTION,
+                table_path.display()
+            ))
+            .arg(output)
+            .status();
+        match status {
+            Ok(s) if s.success() => result = Some(Ok(())),
+            Ok(s) => result = Some(Err(format!("{tool} failed on {} ({s})", output.display()))),
+            // Not there: the next.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => result = Some(Err(format!("cannot run {tool}: {e}"))),
+        }
+        break;
     }
-    let status = objcopy
-        .arg("--add-section")
-        .arg(format!(
-            "{}={}",
-            quarz_vm::native_bt::SECTION,
-            table_path.display()
-        ))
-        .arg(output)
-        .status();
     let _ = std::fs::remove_file(&table_path);
-    match status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(format!("stripping failed ({s})")),
-        // No objcopy: left unstripped.
-        Err(_) => Ok(()),
-    }
+    result.unwrap_or_else(|| {
+        eprintln!(
+            "quarz: warning: neither objcopy nor llvm-objcopy runs here: {} is left unstripped, and its backtraces will show no compiled function; install binutils or LLVM's llvm-objcopy",
+            output.display()
+        );
+        Ok(())
+    })
 }
+
+/// The tools `strip` tries, in order.
+const OBJCOPY: [&str; 2] = ["objcopy", "llvm-objcopy"];
 
 /// The clang processes `quarz build` runs at once (#786): `jobs` when
 /// given (`quarz build -j N`), else `QUARZ_BUILD_JOBS`, else the

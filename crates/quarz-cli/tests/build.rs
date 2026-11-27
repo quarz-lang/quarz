@@ -859,6 +859,123 @@ fn partitions_with_the_same_text_get_distinct_names() {
     }
 }
 
+/// #1182: a directory to put first on `PATH` holding only `tools`, each a
+/// link to the one found on the test's `PATH` (`None` when one is not).
+fn tools_only(dir: &Path, tools: &[&str]) -> Option<PathBuf> {
+    let bin = dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    for tool in tools {
+        let found = Command::new("sh")
+            .args(["-c", &format!("command -v {tool}")])
+            .output()
+            .unwrap();
+        let path = String::from_utf8_lossy(&found.stdout).trim().to_string();
+        if path.is_empty() {
+            return None;
+        }
+        let _ = fs::remove_file(bin.join(tool));
+        std::os::unix::fs::symlink(&path, bin.join(tool)).unwrap();
+    }
+    Some(bin)
+}
+
+/// #1182: with neither `objcopy` nor `llvm-objcopy`, the build says the
+/// executable is left unstripped and its backtraces will show no
+/// compiled function, and the program runs.
+#[test]
+fn a_build_without_objcopy_warns() {
+    let dir = std::env::temp_dir().join(format!("quarz-no-objcopy-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let clang = std::env::var("QUARZ_CLANG").unwrap_or_else(|_| "clang".to_string());
+    let Some(bin) = tools_only(&dir, &["cc", "ld", &clang]) else {
+        eprintln!("skipped: no cc, ld or {clang} to link to");
+        let _ = fs::remove_dir_all(&dir);
+        return;
+    };
+    let path = dir.join("hello.qz");
+    fs::write(&path, "p 1\n").unwrap();
+    let exe = dir.join("hello");
+    let built = Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .arg("build")
+        .arg(&path)
+        .arg("-o")
+        .arg(&exe)
+        .env("PATH", &bin)
+        .env_remove("QUARZ_NO_STRIP")
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&built.stderr).into_owned();
+    let run = Command::new(&exe).output();
+    let _ = fs::remove_dir_all(&dir);
+    assert!(built.status.success(), "{err}");
+    assert!(
+        err.contains("quarz: warning: neither objcopy nor llvm-objcopy runs here:")
+            && err
+                .contains("is left unstripped, and its backtraces will show no compiled function"),
+        "{err}"
+    );
+    assert_eq!(String::from_utf8_lossy(&run.unwrap().stdout), "1\n");
+}
+
+/// #1182: `llvm-objcopy`, used when `objcopy` is not there, gives the
+/// executable the same backtrace section (skipped where it is not on
+/// `PATH`).
+#[test]
+fn llvm_objcopy_gives_the_same_section() {
+    let dir = std::env::temp_dir().join(format!("quarz-llvm-objcopy-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let clang = std::env::var("QUARZ_CLANG").unwrap_or_else(|_| "clang".to_string());
+    let (Some(bin), Some(_)) = (
+        tools_only(&dir, &["cc", "ld", &clang, "llvm-objcopy"]),
+        tools_only(&dir.join("gnu"), &["objcopy"]),
+    ) else {
+        eprintln!("skipped: no llvm-objcopy (or objcopy) on PATH");
+        let _ = fs::remove_dir_all(&dir);
+        return;
+    };
+    let path = fixture("builtins/typed_backtrace.qz");
+    let section = |exe: &Path| -> Vec<u8> {
+        let out = dir.join("section.bin");
+        let dumped = Command::new("objcopy")
+            .arg(format!("--dump-section=.quarz_bt={}", out.display()))
+            .arg(exe)
+            .arg(dir.join("scratch"))
+            .status()
+            .unwrap();
+        assert!(dumped.success(), "no section in {}", exe.display());
+        fs::read(out).unwrap()
+    };
+    let gnu = dir.join("gnu-exe");
+    let built = quarz_build(&path, &gnu, &[], &[]);
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let llvm = dir.join("llvm-exe");
+    let built = Command::new(env!("CARGO_BIN_EXE_quarz"))
+        .arg("build")
+        .arg(&path)
+        .arg("-o")
+        .arg(&llvm)
+        .env("PATH", &bin)
+        .env_remove("QUARZ_BUILD_PARTITION_BYTES")
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&built.stderr).into_owned();
+    assert!(built.status.success(), "{err}");
+    assert!(!err.contains("warning"), "{err}");
+    let (a, b) = (section(&gnu), section(&llvm));
+    let (ra, rb) = (
+        Command::new(&gnu).output().unwrap(),
+        Command::new(&llvm).output().unwrap(),
+    );
+    let _ = fs::remove_dir_all(&dir);
+    assert!(!a.is_empty());
+    assert_eq!(a, b, "the sections differ");
+    assert_eq!(ra.stderr, rb.stderr, "the backtraces differ");
+}
+
 /// `QUARZ_AOT_OPT` picks clang's level (0 and 2 both build a program
 /// that runs as the VM does); anything but 0 to 3 is an error naming it.
 #[test]
