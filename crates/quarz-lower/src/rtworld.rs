@@ -533,6 +533,7 @@ pub fn method_row(world: &World, id: MethodId, overrides: &[MethodId]) -> RtMeth
                     .then(|| world.native_cog(m.file))
                     .flatten()
                     .map(|cog| native_cog_index(world, cog)),
+                positional_only: m.params.iter().all(|p| p.kind == ParamKind::Positional),
             };
     row.shape = RtMethod::shape_of(&row.params, row.has_block);
     row
@@ -644,7 +645,10 @@ fn declared_rest(
             .cogs
             .iter()
             .filter(|c| c.native)
-            .map(|c| c.name.clone())
+            .map(|c| quarz_ir::RtNativeCog {
+                name: c.name.clone(),
+                methods: Vec::new(),
+            })
             .collect(),
         classes,
         methods,
@@ -673,6 +677,14 @@ fn declared_rest(
         // (Per round, `fill`.)
         deferred_conformance: Vec::new(),
     };
+    // Each native cog's declarations (before any shake: ids stay).
+    for (id, m) in rt.methods.iter().enumerate() {
+        if let (Some(cog), Some(key)) = (m.ext, &m.native_key) {
+            rt.native_cogs[cog as usize]
+                .methods
+                .push((id as quarz_ir::MethodId, key.clone()));
+        }
+    }
     rt.class_override_rows = class_override_rows(world, &rt, table, first, snap);
     match snap {
         Some(p) => {

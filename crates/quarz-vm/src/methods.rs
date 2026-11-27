@@ -51,7 +51,7 @@ pub fn encode(methods: &[RtMethod], positions: &[quarz_ir::HashMap<&str, u32>; 3
     for key in OWNED_KEYS {
         let id = methods
             .iter()
-            .position(|m| m.native_key.as_deref() == Some(key));
+            .position(|m| m.ext.is_none() && m.native_key.as_deref() == Some(key));
         words.push(id.map_or(NONE, |i| i as u32));
     }
     let mut data: Vec<u8> = Vec::new();
@@ -64,7 +64,9 @@ pub fn encode(methods: &[RtMethod], positions: &[quarz_ir::HashMap<&str, u32>; 3
             data.extend_from_slice(&bytes);
             (at as u32, bytes.len() as u32)
         };
-        let natives = match m.native_key.as_deref() {
+        // (A cog's native is bound to its module's entry, never to a
+        // standard native of its key: `native_ext::bind`.)
+        let natives = match m.native_key.as_deref().filter(|_| m.ext.is_none()) {
             Some(key) => positions
                 .each_ref()
                 .map(|p| p.get(key).copied().unwrap_or(NONE)),
@@ -168,5 +170,35 @@ impl Lazy {
             quarz_ir::decode_method(&self.bytes[start..start + len])
                 .unwrap_or_else(|e| panic!("corrupt method {id}: {e}"))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quarz_ir::Droppable;
+
+    fn native(key: &str, ext: Option<u32>) -> RtMethod {
+        let mut m = RtMethod::dropped();
+        m.name = "size".into();
+        m.native_key = Some(key.into());
+        m.ext = ext;
+        m
+    }
+
+    /// A cog's native whose key a standard native also has (#677): the
+    /// standard one gets its position in the natives' table, the cog's
+    /// none (it is bound to its module's entry, `native_ext::bind`). (The
+    /// checker refuses such a declaration; this is the tables' own guard.)
+    #[test]
+    fn a_cogs_native_never_takes_a_standard_natives_position() {
+        let methods = vec![native("Range#size", None), native("Range#size", Some(0))];
+        let mut positions: [quarz_ir::HashMap<&str, u32>; 3] = Default::default();
+        positions[0].insert("Range#size", 0);
+        let bytes: &'static [u8] = Box::leak(encode(&methods, &positions).into_boxed_slice());
+        let table: &'static [usize] = Box::leak(vec![0x1234usize].into_boxed_slice());
+        let lazy = Lazy::new(bytes, [table, &[], &[]]).unwrap();
+        assert_eq!(lazy.native(0, crate::natives::PLAIN), Some(0x1234));
+        assert_eq!(lazy.native(1, crate::natives::PLAIN), None);
     }
 }

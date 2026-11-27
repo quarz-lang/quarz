@@ -1248,9 +1248,19 @@ pub unsafe extern "C" fn qz_take_reg(regs: *mut Value, r: u32, out: *mut Value) 
     *out = v;
 }
 
+/// A cog's native code linked into a program: its name and its init
+/// (`qz_cog_init_<cog>`), as `@qz_cogs` lists them (#677).
+#[repr(C)]
+pub struct CogInit {
+    name: *const u8,
+    len: usize,
+    init: quarz_ext::sys::QzInit,
+}
+
 /// Run a compiled program: `blob` is the serialized module (but its
 /// methods), `methods` its methods (see `crate::methods`), `table` the
-/// machine-code bodies by function id. Returns the exit code.
+/// machine-code bodies by function id, `cogs` the inits of the cogs'
+/// native code it was linked with. Returns the exit code.
 ///
 /// # Safety
 /// The pointers must describe valid data produced by `quarz build`,
@@ -1265,6 +1275,8 @@ pub unsafe extern "C" fn qz_main(
     n: usize,
     natives: *const usize,
     natives_len: *const usize,
+    cogs: *const CogInit,
+    n_cogs: usize,
     argc: i32,
     argv: *const *const c_char,
     layout_sig: u64,
@@ -1302,6 +1314,26 @@ pub unsafe extern "C" fn qz_main(
     } = image;
     crate::value::check_rc_layout();
     crate::layout::check(layout_sig, vec_layout);
+    // The cogs' native code: each module registered from its init, then
+    // checked against the program's declarations (`RtWorld::native_cogs`),
+    // as the interpreter does after loading the libraries.
+    let cogs = if n_cogs == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(cogs, n_cogs)
+    };
+    for c in cogs {
+        let name = String::from_utf8_lossy(std::slice::from_raw_parts(c.name, c.len));
+        let where_ = format!("the native code of cog `{name}`");
+        if let Err(e) = crate::native_ext::register(&name, c.init, &where_) {
+            eprintln!("quarz: {e}");
+            return 1;
+        }
+    }
+    if let Err(e) = crate::native_ext::check(&world) {
+        eprintln!("quarz: {e}");
+        return 1;
+    }
     // The program's methods, decoded when first needed.
     // The program's tables of natives, one after another (their lengths
     // at `natives_len`).

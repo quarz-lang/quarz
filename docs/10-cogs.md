@@ -271,7 +271,7 @@ crate = "native"            # a directory inside the cog
   - Its directory is outside `src/`.
   - Until `quarz-ext`'s distribution is decided, it depends on that crate by path.
 - **What `native def` may declare** (docs/15): positional and keyword-only parameters with literal defaults, and a block. It is never overloaded, and never run at compile time. Elsewhere than in such a cog, `native def` is an error.
-- **When it is built.** `quarz run` and `quarz test` build every native cog of the movement before running, with `cargo build --release --locked --lib`; `quarz check` builds nothing. `quarz build` refuses a program with a native cog for now (#677). A build says so on stderr: `quarz: building the native code of cog zlib (app → zlib) with cargo`. cargo's own output is shown only when it fails.
+- **When it is built.** `quarz run`, `quarz test` and `quarz build` build every native cog of the movement first, with `cargo build --release --locked --lib`; `quarz check` builds nothing. `quarz run` and `quarz test` load the package's dynamic library; `quarz build` links its static library into the executable, after quarz's runtime, and the executable registers and checks the cog's natives when it starts (a missing one is an error then, as for `quarz run`). For now `quarz build` links one native cog at most (#677). A build says so on stderr: `quarz: building the native code of cog zlib (app → zlib) with cargo`. cargo's own output is shown only when it fails.
 - **The toolchain.** The package is built by the rustc that built `quarz`, for every command. quarz uses the first of these whose rustc has that commit:
   1. the `cargo` found (`$CARGO`, else on `PATH`), given as its `RUSTC` the rustc compared (`$RUSTC`, else `rustc`);
   2. rustup's toolchain of that release.
@@ -281,7 +281,7 @@ crate = "native"            # a directory inside the cog
   - Flags that would reach rustc are cleared, and a configuration file's `rustflags` are overridden.
   - The panic strategy is `unwind`, so that a panic becomes `NativePanic`.
   - A profile or a target setting of the user's (`CARGO_PROFILE_*`, `CARGO_BUILD_*`, `CARGO_TARGET_*`, cargo's configuration files) is kept, and is part of the key below.
-- **Where builds are kept:** `native/` in the cache directory of [05-execution.md](05-execution.md) §2 (`QUARZ_CACHE_DIR`), with the rules of `quarz build`'s object cache (checked by a sum, swept by age and size). A library is loaded only from there, never from a target directory.
+- **Where builds are kept:** `native/` in the cache directory of [05-execution.md](05-execution.md) §2 (`QUARZ_CACHE_DIR`), with the rules of `quarz build`'s object cache (checked by a sum, swept by age and size): the dynamic libraries in `lib/`, the static ones in `archive/`. A library is loaded or linked only from there, never from a target directory. A build kept by its key is a pair: a command finds the file it uses (the dynamic library to run, the static one to build), else builds both again.
   - **A cog the lock pins** (fetched, or in `vendor/`), whose package has no path dependency, is keyed by the lock's hash of its tree, the rustc, the ABI's major version and that environment. Once built, it needs no cargo: offline, or on a machine without Rust.
   - **Any other cog** is built by cargo on every run, which skips what did not change. That covers the application's own package, a `[patch]`, and a package with a path dependency (which no hash covers).
   - `QUARZ_NO_CACHE=1` builds every time.

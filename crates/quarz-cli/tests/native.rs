@@ -110,13 +110,23 @@ fn commit_tagged(dir: &Path) {
 /// An application `app` in `dir/app` depending on the cog repository
 /// `repo` as `Dep` (tag `v0.1.0`), its main file `main`.
 fn app_on(dir: &Path, key: &str, repo: &Path, main: &str) -> PathBuf {
+    app_on_all(dir, &[(key, repo)], main)
+}
+
+/// `app_on` with several dependencies (key, repository).
+fn app_on_all(dir: &Path, deps: &[(&str, &Path)], main: &str) -> PathBuf {
     let app = dir.join("app");
     std::fs::create_dir_all(app.join("src")).unwrap();
     std::fs::write(
         app.join("Cog.toml"),
         format!(
-            "[cog]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n{key} = {{ git = \"file://{}\", tag = \"v0.1.0\" }}\n",
-            repo.display()
+            "[cog]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n{}",
+            deps.iter()
+                .map(|(key, repo)| format!(
+                    "{key} = {{ git = \"file://{}\", tag = \"v0.1.0\" }}\n",
+                    repo.display()
+                ))
+                .collect::<String>()
         ),
     )
     .unwrap();
@@ -142,22 +152,35 @@ fn as_refs<'a>(envs: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a str
 /// returns `value` (a Rust expression). Its `Cargo.lock` is made here
 /// (offline: a path dependency at most), and the repository tagged.
 fn raw_cog(repo: &Path, value: &str, deps: &str) {
+    raw_cog_named(repo, "raw", value, deps, "");
+}
+
+/// `raw_cog`, named `name` (its module `name` capitalized), declaring
+/// `extra` besides `answer` in its class (natives its package does not
+/// define, to test the check).
+fn raw_cog_named(repo: &Path, name: &str, value: &str, deps: &str, extra: &str) {
+    let module = {
+        let mut c = name.chars();
+        c.next().unwrap().to_uppercase().collect::<String>() + c.as_str()
+    };
+    let key = format!("{module}::Calc.answer");
+    let init = format!("qz_cog_init_{}", name.replace('_', "__").replace('-', "_h"));
     let _ = std::fs::remove_dir_all(repo);
     std::fs::create_dir_all(repo.join("src")).unwrap();
     std::fs::create_dir_all(repo.join("native/src")).unwrap();
     std::fs::write(
         repo.join("Cog.toml"),
-        "[cog]\nname = \"raw\"\nversion = \"0.1.0\"\n\n[native]\ncrate = \"native\"\n",
+        format!("[cog]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[native]\ncrate = \"native\"\n"),
     )
     .unwrap();
     std::fs::write(
-        repo.join("src/raw.qz"),
-        "class Calc\n  native def self.answer -> Int\nend\n",
+        repo.join(format!("src/{name}.qz")),
+        format!("class Calc\n  native def self.answer -> Int\n{extra}end\n"),
     )
     .unwrap();
     std::fs::write(
         repo.join("native/Cargo.toml"),
-        format!("[package]\nname = \"raw-native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\", \"staticlib\"]\n\n[dependencies]\n{deps}\n[workspace]\n"),
+        format!("[package]\nname = \"{name}-native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\", \"staticlib\"]\n\n[dependencies]\n{deps}\n[workspace]\n"),
     )
     .unwrap();
     std::fs::write(
@@ -208,8 +231,8 @@ unsafe extern "C" fn answer(cx: *mut u8, _: u64, _: *const u64, _: usize, _: u64
     0
 }}
 
-static KEY: &[u8] = b"Raw::Calc.answer";
-static METHODS: Shared<[Method; 1]> = Shared([Method {{ key: b"Raw::Calc.answer".as_ptr(), key_len: 16, entry: answer }}]);
+static KEY: &[u8] = b"{key}";
+static METHODS: Shared<[Method; 1]> = Shared([Method {{ key: b"{key}".as_ptr(), key_len: {key_len}, entry: answer }}]);
 static MODULE: Shared<Module> = Shared(Module {{
     abi_major: 1,
     abi_minor: 0,
@@ -221,12 +244,14 @@ static MODULE: Shared<Module> = Shared(Module {{
 /// # Safety
 /// Called by quarz with its API.
 #[no_mangle]
-pub unsafe extern "C" fn qz_cog_init_raw(api: *const Api) -> *const Module {{
+pub unsafe extern "C" fn {init}(api: *const Api) -> *const Module {{
     let _ = KEY;
     API.store(api as *mut Api, Ordering::Release);
     &MODULE.0
 }}
-"#
+"#,
+            key_len = key.len(),
+            init = init,
         ),
     )
     .unwrap();
@@ -581,28 +606,211 @@ fn the_zlib_cog_round_trips() {
     let main = "data = \"hello hello hello hello hello hello\".to_bytes\nz = Zlib::Codec.deflate(data)\np z.size < data.size\np Zlib::Codec.inflate(z) == data\np Zlib::Codec.inflate(Zlib::Codec.deflate(data, level: 0)) == data\np Zlib::Codec.crc32(\"hello\".to_bytes)\nbegin\n  Zlib::Codec.inflate(\"not zlib\".to_bytes)\nrescue Zlib::DataError => e\n  p e.message\nend\n";
     let app = app_on(&dir, "Zlib", &repo, main);
     let envs = own_caches(&dir);
+    let want = "true\ntrue\ntrue\n907060870\n\"not in the zlib format\"\n";
     let (ok, out, err) = quarz(&app, &["run"], &as_refs(&envs));
+    assert!(ok, "{err}");
+    assert_eq!(out, want);
+    // Built: the same.
+    let exe = dir.join("zlib-bin");
+    let (ok, _, err) = quarz(
+        &app,
+        &["build", "-o", exe.to_str().unwrap()],
+        &as_refs(&envs),
+    );
+    assert!(ok, "{err}");
+    let (ok, out, err) = run_exe(&exe);
     let _ = std::fs::remove_dir_all(&dir);
     assert!(ok, "{err}");
-    assert_eq!(
-        out,
-        "true\ntrue\ntrue\n907060870\n\"not in the zlib format\"\n"
+    assert_eq!(out, want);
+}
+
+/// `exe` run: (status, stdout, stderr).
+fn run_exe(exe: &Path) -> (bool, String, String) {
+    let out = Command::new(exe)
+        .env("QUARZ_THREADS", "1")
+        .output()
+        .unwrap();
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// `quarz build` links a cog's native code (its archive, built by cargo
+/// with the package's dynamic library): the program built prints what
+/// `quarz run` prints, every API function, the result test, a panic and
+/// a stale handle included. A program calling one native of the cog
+/// (the others dropped by `shake`) is checked at start against every
+/// declaration, and runs.
+#[test]
+fn a_built_program_runs_its_cogs_native_code() {
+    let dir = fixture("built", &[]);
+    let exe = dir.join("demo-bin");
+    let (ok, _, err) = quarz(&dir, &["build", "-o", exe.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    let (ok, want, err) = quarz(&dir, &["run"], &[]);
+    assert!(ok, "{err}");
+    let (ok, out, err) = run_exe(&exe);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ok, "{err}");
+    assert_eq!(out, want);
+    let dir = fixture("built-one", &[("main.qz", "p Demo.add(1, 2)\n")]);
+    let exe = dir.join("demo-bin");
+    let (ok, _, err) = quarz(&dir, &["build", "-o", exe.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    let (ok, out, err) = run_exe(&exe);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ok, "{err}");
+    assert_eq!(out, "3\n");
+}
+
+/// A built program checks its cogs' native code before it runs, as
+/// `quarz run` does: a `native def` the cog's package does not define is
+/// an error at start.
+#[test]
+fn a_built_program_checks_its_cogs_native_code_at_start() {
+    let dir = std::env::temp_dir().join(format!("quarz-native-start-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    raw_cog_named(
+        &dir.join("raw"),
+        "raw",
+        "42",
+        "",
+        "  native def self.other -> Int\n",
+    );
+    let app = app_on(&dir, "Raw", &dir.join("raw"), "p Raw::Calc.answer\n");
+    let envs = own_caches(&dir);
+    let exe = dir.join("app-bin");
+    let (ok, _, err) = quarz(
+        &app,
+        &["build", "-o", exe.to_str().unwrap()],
+        &as_refs(&envs),
+    );
+    assert!(ok, "{err}");
+    let (ok, out, err) = run_exe(&exe);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!ok);
+    assert_eq!(out, "");
+    assert!(
+        err.contains("quarz: cog `raw` declares `native def` `Raw::Calc.other`, which its native library does not define"),
+        "{err}"
     );
 }
 
-/// `quarz build` of a program with a native cog: refused, until #677
-/// links one.
+/// A key's build is a pair, the dynamic library and the archive: a
+/// command needs the one it uses. With the archive gone (removed, or
+/// kept by an older quarz), `quarz build` builds again, never fails.
 #[test]
-fn quarz_build_refuses_a_native_cog_for_now() {
-    let dir = fixture("build-refused", &[]);
-    let exe = dir.join("demo-bin");
-    let (ok, _, err) = quarz(&dir, &["build", "-o", exe.to_str().unwrap()], &[]);
-    let exists = exe.exists();
+fn a_kept_build_without_its_archive_is_built_again() {
+    let dir = std::env::temp_dir().join(format!("quarz-native-pair-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    raw_cog(&dir.join("raw"), "42", "");
+    let app = app_on(&dir, "Raw", &dir.join("raw"), "p Raw::Calc.answer\n");
+    let envs = own_caches(&dir);
+    let building = "quarz: building the native code of cog raw (app → raw) with cargo";
+    let (ok, _, err) = quarz(&app, &["run"], &as_refs(&envs));
+    assert!(ok, "{err}");
+    assert!(err.contains(building), "{err}");
+    let mut removed = 0;
+    for shard in std::fs::read_dir(dir.join("cache/native/archive"))
+        .unwrap()
+        .flatten()
+    {
+        if let Ok(files) = std::fs::read_dir(shard.path()) {
+            for f in files.flatten() {
+                if f.path().extension().is_some_and(|e| e == "a") {
+                    std::fs::remove_file(f.path()).unwrap();
+                    removed += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(removed, 1);
+    let exe = dir.join("app-bin");
+    let (ok, _, err) = quarz(
+        &app,
+        &["build", "-o", exe.to_str().unwrap()],
+        &as_refs(&envs),
+    );
+    assert!(ok, "{err}");
+    assert!(err.contains(building), "{err}");
+    let (ok, out, err) = run_exe(&exe);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ok, "{err}");
+    assert_eq!(out, "42\n");
+}
+
+/// Two cogs whose packages each compile C code defining the same symbol
+/// with different code (a library each brings at its own version):
+/// `quarz run` loads each library on its own (`dlopen`, local), so each
+/// cog runs its own code, in either order. `quarz build`, which would
+/// link them into one executable (where the first definition is taken
+/// silently), refuses more than one native cog until it checks for that
+/// (#677).
+#[test]
+fn two_cogs_with_the_same_c_symbol_each_run_their_own() {
+    let dir = std::env::temp_dir().join(format!("quarz-native-csym-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (k, factor) in [("a", 10), ("b", 20)] {
+        let csys = dir.join(format!("csys-{k}"));
+        std::fs::create_dir_all(csys.join("src")).unwrap();
+        std::fs::create_dir_all(csys.join("c")).unwrap();
+        std::fs::write(
+            csys.join("Cargo.toml"),
+            format!("[package]\nname = \"csys-{k}\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = \"build.rs\"\n\n[build-dependencies]\ncc = \"=1.2.30\"\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            csys.join("build.rs"),
+            "fn main() { cc::Build::new().file(\"c/shared.c\").compile(\"shared\"); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            csys.join("c/shared.c"),
+            format!("int shared_c(int x) {{ return x * {factor}; }}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            csys.join("src/lib.rs"),
+            "extern \"C\" { fn shared_c(x: i32) -> i32; }\npub fn call(x: i32) -> i64 { i64::from(unsafe { shared_c(x) }) }\n",
+        )
+        .unwrap();
+        raw_cog_named(
+            &dir.join(format!("raw{k}")),
+            &format!("raw{k}"),
+            &format!("csys_{k}::call(1)"),
+            &format!("csys-{k} = {{ path = {csys:?} }}\n"),
+            "",
+        );
+    }
+    let envs = own_caches(&dir);
+    for (first, second) in [("a", "b"), ("b", "a")] {
+        let r1 = dir.join(format!("raw{first}"));
+        let r2 = dir.join(format!("raw{second}"));
+        let _ = std::fs::remove_dir_all(dir.join("app"));
+        let k1 = format!("Raw{first}");
+        let k2 = format!("Raw{second}");
+        let app = app_on_all(
+            &dir,
+            &[(k1.as_str(), r1.as_path()), (k2.as_str(), r2.as_path())],
+            &format!("p {k1}::Calc.answer\np {k2}::Calc.answer\n"),
+        );
+        let (ok, out, err) = quarz(&app, &["run"], &as_refs(&envs));
+        assert!(ok, "{err}");
+        let want = |k: &str| if k == "a" { "10\n" } else { "20\n" };
+        assert_eq!(out, format!("{}{}", want(first), want(second)));
+    }
+    let exe = dir.join("app-bin");
+    let (ok, _, err) = quarz(
+        &dir.join("app"),
+        &["build", "-o", exe.to_str().unwrap()],
+        &as_refs(&envs),
+    );
     let _ = std::fs::remove_dir_all(&dir);
     assert!(!ok);
-    assert!(!exists, "an executable was left");
     assert!(
-        err.contains("cog `demo` brings native code, which `quarz build` cannot build into an executable yet (#677)"),
+        err.contains("bring native code: `quarz build` cannot link more than one yet (#677)"),
         "{err}"
     );
 }

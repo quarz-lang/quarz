@@ -1720,6 +1720,11 @@ pub struct RtMethod {
     /// runs. Never bound to a standard native.
     #[serde(default)]
     pub ext: Option<u32>,
+    /// Whether every parameter is positional (no keyword-only one, no
+    /// splat): a call passing exactly its parameters positionally binds
+    /// them as they are (`native_ext`'s binder, #1203).
+    #[serde(default)]
+    pub positional_only: bool,
 }
 
 /// The shape of a method with a parameter other than a positional one.
@@ -1873,6 +1878,14 @@ pub struct RtBuiltin {
     pub enumerable: ClassId,
 }
 
+/// A cog that brings native code (`RtWorld::native_cogs`, #677).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RtNativeCog {
+    pub name: String,
+    /// Its `native def`s: the method and its key (`Owner#name`).
+    pub methods: Vec<(MethodId, String)>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RtWorld {
     /// Whether the natives' `RtMethod::result_test`s are shipped (#1187):
@@ -1881,11 +1894,14 @@ pub struct RtWorld {
     /// its other checks, and is not checked otherwise.
     #[serde(default)]
     pub native_results: bool,
-    /// The cogs that bring native code (#677), by name: what
-    /// `RtMethod::ext` indexes. The runtime loads each one's module and
-    /// binds their natives to its entries, an error when one is missing.
+    /// The cogs that bring native code (#677): what `RtMethod::ext`
+    /// indexes. Each has its name and its declared natives (method and
+    /// key), shipped by the lowering before `shake` (which keeps method
+    /// ids), so that the runtime checks the cog's module against every
+    /// declaration and binds each method to its entry without scanning
+    /// `methods` (which a built program decodes lazily).
     #[serde(default)]
-    pub native_cogs: Vec<String>,
+    pub native_cogs: Vec<RtNativeCog>,
     pub classes: Vec<RtClass>,
     #[serde(with = "dropped")]
     pub methods: Vec<RtMethod>,
@@ -2653,6 +2669,7 @@ impl Droppable for RtMethod {
             result_union: None,
             result_self: None,
             ext: None,
+            positional_only: false,
         }
     }
 }

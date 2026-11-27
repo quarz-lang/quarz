@@ -814,9 +814,9 @@ impl Derived {
             // SAFETY: the tables hold functions of their kinds, which the
             // program's build listed by the natives' symbols.
             return Derived {
-                // (A compiled program brings no cog's native code: `quarz
-                // build` refuses one, #677.)
-                ext_natives: vec![None; n as usize],
+                // (A built program's cogs' modules are registered from the
+                // inits it was linked with before it runs: `qz_main`.)
+                ext_natives: crate::native_ext::bind(world, n as usize),
                 natives: (0..n)
                     .map(|id| {
                         at(natives::PLAIN)(id)
@@ -880,7 +880,7 @@ impl Derived {
             .iter()
             .map(|m| owned_map.get(std_key(m)?).copied())
             .collect();
-        let ext_natives = crate::native_ext::bind(world);
+        let ext_natives = crate::native_ext::bind(world, world.methods.len());
         let owned_id = |key: &str| -> Option<MethodId> {
             world
                 .methods
@@ -3600,6 +3600,13 @@ impl Interp {
             return Ok(());
         }
         let test = m.result_union.as_ref().or(m.result_test.as_ref());
+        // (A value of the very class tested: what `is_a` answers, without
+        // walking the ancestors. A cog's native is tested on every call.)
+        if let Some(RtType::Class(c)) = test {
+            if self.class_of(v) == *c {
+                return Ok(());
+            }
+        }
         let Some(test) = test else {
             return Err(NativeResult::NoTest(format!(
                 "native `{}` has no test of its declared result",

@@ -2069,7 +2069,13 @@ fn tables(
     let symbols = quarz_vm::natives::symbols();
     let mut positions: [quarz_ir::HashMap<&str, u32>; 3] = Default::default();
     let mut tables: [Vec<&'static str>; 3] = Default::default();
-    for key in methods.iter().filter_map(|m| m.native_key.as_deref()) {
+    // (A cog's native is bound to its module's entry, never to a
+    // standard native of its key: `native_ext::bind`, #677.)
+    for key in methods
+        .iter()
+        .filter(|m| m.ext.is_none())
+        .filter_map(|m| m.native_key.as_deref())
+    {
         for k in 0..3 {
             let Some(&sym) = symbols[k].get(key) else {
                 continue;
@@ -2128,6 +2134,56 @@ fn tables(
         tables[1].len(),
         tables[2].len()
     );
+    // The cogs that bring native code: each one's name and init
+    // (`qz_cog_init_<cog>`, in its archive), which `qz_main` registers
+    // (`native_ext::register`) before the program runs.
+    let mut cog_entries = Vec::new();
+    for (i, cog) in kept.world.native_cogs.iter().enumerate() {
+        let init = quarz_ext::sys::init_symbol(&cog.name);
+        let _ = writeln!(out, "declare {ptr} @{init}({ptr})");
+        let name = cog.name.as_bytes();
+        let mut lit = String::new();
+        for b in name {
+            let _ = write!(lit, "\\{b:02X}");
+        }
+        let _ = writeln!(
+            out,
+            "@qz_cog_name_{i} = private constant [{} x i8] c\"{lit}\", align 1",
+            name.len()
+        );
+        let name_ptr = if opaque {
+            format!("ptr @qz_cog_name_{i}")
+        } else {
+            format!(
+                "i8* getelementptr ([{n} x i8], [{n} x i8]* @qz_cog_name_{i}, i64 0, i64 0)",
+                n = name.len()
+            )
+        };
+        let init_ptr = if opaque {
+            format!("ptr @{init}")
+        } else {
+            format!("i8* bitcast (i8* (i8*)* @{init} to i8*)")
+        };
+        cog_entries.push(format!(
+            "{{ {ptr}, i64, {ptr} }} {{ {name_ptr}, i64 {}, {init_ptr} }}",
+            name.len()
+        ));
+    }
+    let _ = writeln!(
+        out,
+        "@qz_cogs = internal constant [{} x {{ {ptr}, i64, {ptr} }}] [{}], align 8",
+        cog_entries.len(),
+        cog_entries.join(", ")
+    );
+    let cogs_ptr = if opaque {
+        "ptr @qz_cogs".to_string()
+    } else {
+        format!(
+            "i8* bitcast ([{} x {{ i8*, i64, i8* }}]* @qz_cogs to i8*)",
+            cog_entries.len()
+        )
+    };
+    let n_cogs = cog_entries.len();
     let bytes = quarz_ir::encode_image(&kept);
     let mut blob = String::with_capacity(bytes.len() * 4);
     for byte in &bytes {
@@ -2205,7 +2261,7 @@ fn tables(
     };
     let _ = writeln!(
         out,
-        "define i32 @main(i32 %argc, {ptr} %argv) {{\n  %code = call i32 @qz_main({blob_ptr}, i64 {}, {methods_ptr}, i64 {}, {table_ptr}, i64 {n}, {natives_ptr}, {natives_len_ptr}, i32 %argc, {ptr} %argv, i64 {}, i64 {}, i64 1)\n  ret i32 %code\n}}",
+        "define i32 @main(i32 %argc, {ptr} %argv) {{\n  %code = call i32 @qz_main({blob_ptr}, i64 {}, {methods_ptr}, i64 {}, {table_ptr}, i64 {n}, {natives_ptr}, {natives_len_ptr}, {cogs_ptr}, i64 {n_cogs}, i32 %argc, {ptr} %argv, i64 {}, i64 {}, i64 1)\n  ret i32 %code\n}}",
         bytes.len(),
         method_bytes.len(),
         L::SIGNATURE as i64,

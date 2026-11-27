@@ -85,7 +85,7 @@ pub fn load_natives(world: &quarz_ir::RtWorld, natives: &Natives) -> Result<(), 
         return Ok(());
     }
     let mut cogs = Vec::new();
-    for name in &world.native_cogs {
+    for name in world.native_cogs.iter().map(|c| &c.name) {
         let Some(c) = natives.cogs.iter().find(|c| &c.name == name) else {
             return Err(format!(
                 "internal error: cog `{name}` brings native code, but its package is not known"
@@ -93,16 +93,67 @@ pub fn load_natives(world: &quarz_ir::RtWorld, natives: &Natives) -> Result<(), 
         };
         cogs.push(c.clone());
     }
-    for (name, built) in native::build_all(&cogs, natives.offline)? {
-        let loaded = quarz_vm::native_ext::load(&name, &built.library);
+    for (name, built) in native::build_all(&cogs, natives.offline, native::Use::Load)? {
+        let loaded = quarz_vm::native_ext::load(&name, &built.file);
         if built.remove_after {
-            if let Some(dir) = built.library.parent() {
+            if let Some(dir) = built.file.parent() {
                 let _ = std::fs::remove_dir_all(dir);
             }
         }
         loaded?;
     }
     quarz_vm::native_ext::check(world)
+}
+
+/// The archives to link, by cog, and the directories to remove after.
+type Archives = (Vec<(String, std::path::PathBuf)>, Vec<std::path::PathBuf>);
+
+/// The archives `quarz build` links of `world`'s native cogs, by cog
+/// (built, or found kept: `native::build_all`), and the directories to
+/// remove once linked (copies, with the cache off).
+fn archives(world: &quarz_ir::RtWorld, natives: &Natives) -> Result<Archives, String> {
+    let mut cogs = Vec::new();
+    for name in world.native_cogs.iter().map(|c| &c.name) {
+        let Some(c) = natives.cogs.iter().find(|c| &c.name == name) else {
+            return Err(format!(
+                "internal error: cog `{name}` brings native code, but its package is not known"
+            ));
+        };
+        cogs.push(c.clone());
+    }
+    let mut out = Vec::new();
+    let mut remove = Vec::new();
+    for (name, built) in native::build_all(&cogs, natives.offline, native::Use::Link)? {
+        if built.remove_after {
+            remove.extend(built.file.parent().map(|p| p.to_path_buf()));
+        }
+        out.push((name, built.file));
+    }
+    Ok((out, remove))
+}
+
+/// `quarz_aot::build_with_jobs` with the archives of the module's native
+/// cogs (`archives`).
+fn build_linked(
+    module: &quarz_ir::Module,
+    checked: &Checked,
+    output: &std::path::Path,
+    jobs: usize,
+    natives: &Natives,
+) -> Result<(), String> {
+    let (archives, remove) = archives(&module.world, natives)?;
+    let built = quarz_aot::build_with_jobs(
+        module,
+        &file_groups(checked),
+        output,
+        jobs,
+        object_cache().as_deref(),
+        &archives,
+    );
+    for dir in remove {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    built
 }
 
 /// Run a lowered program (for tests that change its QIR first).
@@ -118,13 +169,7 @@ pub fn build(
 ) -> Result<(), String> {
     let module = quarz_lower::lower_checked(&checked, files);
     let jobs = quarz_aot::build_jobs(None)?;
-    quarz_aot::build_with_jobs(
-        &module,
-        &file_groups(&checked),
-        output,
-        jobs,
-        object_cache().as_deref(),
-    )
+    build_linked(&module, &checked, output, jobs, &Natives::default())
 }
 
 /// The objects' cache of `quarz build` (#1182): `objects/` in the
@@ -161,17 +206,12 @@ pub fn build_with_jobs(
     lowerer: Lowerer,
     output: &std::path::Path,
     jobs: usize,
+    natives: &Natives,
 ) -> Result<(), String> {
     let start = std::time::Instant::now();
     let module = quarz_lower::lower_checked_with(lowerer, &checked, files);
     quarz_aot::report("lower", start, &[]);
-    quarz_aot::build_with_jobs(
-        &module,
-        &file_groups(&checked),
-        output,
-        jobs,
-        object_cache().as_deref(),
-    )
+    build_linked(&module, &checked, output, jobs, natives)
 }
 
 /// `build` continuing `lowerer` (see `run_with`).
@@ -180,18 +220,13 @@ pub fn build_with(
     files: &[SourceFile],
     lowerer: Lowerer,
     output: &std::path::Path,
+    natives: &Natives,
 ) -> Result<(), String> {
     let start = std::time::Instant::now();
     let module = quarz_lower::lower_checked_with(lowerer, &checked, files);
     quarz_aot::report("lower", start, &[]);
     let jobs = quarz_aot::build_jobs(None)?;
-    quarz_aot::build_with_jobs(
-        &module,
-        &file_groups(&checked),
-        output,
-        jobs,
-        object_cache().as_deref(),
-    )
+    build_linked(&module, &checked, output, jobs, natives)
 }
 
 /// Lower and run a checked program capturing its standard output.

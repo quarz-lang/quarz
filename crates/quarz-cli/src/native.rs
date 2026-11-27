@@ -4,7 +4,8 @@
 //!
 //! Where builds are kept, under the cache directory the checker uses
 //! (`quarz_types::cache::dir`), in `native/`:
-//! - `lib/`: the libraries, by key, with the object cache's rules
+//! - `lib/` and `archive/`: the dynamic libraries and the archives, by
+//!   key, with the object cache's rules
 //!   (`quarz_aot::objcache`: written aside and renamed, checked by their
 //!   sum, touched on use, swept by age and size). A library is only ever
 //!   loaded from there, never from a target directory, which a concurrent
@@ -127,24 +128,42 @@ fn key(parts: &[&[u8]]) -> String {
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Changed when what a kept library depends on beyond its key's inputs
-/// changes: a new value makes every older one a miss.
-const KEY_VERSION: &str = "quarz-native-1";
+/// Changed when what a kept build depends on beyond its key's inputs
+/// changes: a new value makes every older one a miss. (2: a key holds
+/// the archive beside the dynamic library, #677's fourth step.)
+const KEY_VERSION: &str = "quarz-native-2";
 
-/// A library to load: where, and whether that file is a copy to remove
-/// once loaded (the cache off).
+/// What a command does with a cog's build: load its dynamic library
+/// (`quarz run`, `quarz test`), or link its archive (`quarz build`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Use {
+    Load,
+    Link,
+}
+
+/// The file a command uses: where, and whether it is a copy to remove
+/// once used (the cache off).
 pub struct Built {
-    pub library: PathBuf,
+    pub file: PathBuf,
     pub remove_after: bool,
 }
 
-/// Build (or find kept) the library of each of `cogs`, `offline` passed
-/// to cargo: in the order given, the first failure an error naming the
-/// cog.
-pub fn build_all(cogs: &[NativeCog], offline: bool) -> Result<Vec<(String, Built)>, String> {
+/// Build (or find kept) the file `used` needs of each of `cogs`, `offline`
+/// passed to cargo: in the order given, the first failure an error naming
+/// the cog.
+pub fn build_all(
+    cogs: &[NativeCog],
+    offline: bool,
+    used: Use,
+) -> Result<Vec<(String, Built)>, String> {
     let root = quarz_types::cache::dir().map(|d| d.join("native"));
     cogs.iter()
-        .map(|c| Ok((c.name.clone(), build_one(c, root.as_deref(), offline)?)))
+        .map(|c| {
+            Ok((
+                c.name.clone(),
+                build_one(c, root.as_deref(), offline, used)?,
+            ))
+        })
         .collect()
 }
 
@@ -209,7 +228,12 @@ fn sweep_builds(builds: &Path) {
     }
 }
 
-fn build_one(cog: &NativeCog, root: Option<&Path>, offline: bool) -> Result<Built, String> {
+fn build_one(
+    cog: &NativeCog,
+    root: Option<&Path>,
+    offline: bool,
+    used: Use,
+) -> Result<Built, String> {
     let who = cog.who();
     let package =
         cog_native::check_package(&who, &cog.declared, &cog.dir).map_err(|e| e.to_string())?;
@@ -219,8 +243,13 @@ fn build_one(cog: &NativeCog, root: Option<&Path>, offline: bool) -> Result<Buil
             cog.plain()
         )
     };
+    // The file of a build `used` needs, in cargo's target directory.
+    let wanted = |library: &Path| match used {
+        Use::Load => library.to_path_buf(),
+        Use::Link => library.with_file_name(&package.archive),
+    };
     let Some(root) = root else {
-        // The cache off: a temporary build, loaded from a copy, in a
+        // The cache off: a temporary build, used from a copy, in a
         // directory of this process's own (`private_dir`).
         let tmp = private_dir(&std::env::temp_dir(), "quarz-native")
             .map_err(|e| format!("{who}: a directory to build in: {e}"))?;
@@ -239,31 +268,51 @@ fn build_one(cog: &NativeCog, root: Option<&Path>, offline: bool) -> Result<Buil
                 }
             },
         );
-        let copy = tmp.join(&package.library);
-        let result = built
-            .map_err(|e| e.to_string())
-            .and_then(|lib| std::fs::copy(&lib, &copy).map_err(|e| format!("{who}: {e}")));
+        let result = built.map_err(|e| e.to_string()).and_then(|lib| {
+            let from = wanted(&lib);
+            let copy = tmp.join(from.file_name().unwrap_or_default());
+            std::fs::copy(&from, &copy).map_err(|e| format!("{who}: {e}"))?;
+            Ok(copy)
+        });
         let _ = std::fs::remove_dir_all(tmp.join("target"));
-        result?;
         return Ok(Built {
-            library: copy,
+            file: result?,
             remove_after: true,
         });
     };
-    let store = Cache::with_extension(&root.join("lib"), "so");
-    let keep = |bytes: &[u8], k: &str| -> Result<Built, String> {
-        store.store(k, bytes);
-        store.sweep(objcache::bound());
-        let library = store
+    // The kept builds: libraries and archives, by key, the same rules,
+    // each in a directory of its own (an entry's sum is `<key>.sum`).
+    let stores = [
+        Cache::with_extension(&root.join("lib"), "so"),
+        Cache::with_extension(&root.join("archive"), "a"),
+    ];
+    let store_of = |u: Use| &stores[usize::from(u == Use::Link)];
+    // Keep both files of a build under `k`, the archive first, and give
+    // the one `used` needs.
+    let keep = |library: &[u8], archive: &[u8], k: &str| -> Result<Built, String> {
+        stores[1].store(k, archive);
+        stores[0].store(k, library);
+        for s in &stores {
+            s.sweep(objcache::bound());
+        }
+        let file = store_of(used)
             .fetch_path(k)
-            .ok_or_else(|| format!("{who}: its library could not be kept in {}", root.display()))?;
+            .ok_or_else(|| format!("{who}: its build could not be kept in {}", root.display()))?;
         Ok(Built {
-            library,
+            file,
             remove_after: false,
         })
     };
+    let read_both = |lib: &Path| -> Result<(Vec<u8>, Vec<u8>), String> {
+        let library = std::fs::read(lib).map_err(|e| format!("{who}: {e}"))?;
+        let archive_path = lib.with_file_name(&package.archive);
+        let archive = std::fs::read(&archive_path)
+            .map_err(|e| format!("{who}: {}: {e}", archive_path.display()))?;
+        Ok((library, archive))
+    };
     if let (Some(hash), false) = (&cog.hash, package.path_dependencies) {
-        // A tree the lock pins: kept by its key; a hit runs no cargo.
+        // A tree the lock pins: kept by its key. A hit (the file the
+        // command uses kept whole) runs no cargo; a miss builds both.
         let abi = quarz_ext::sys::QZ_ABI_MAJOR.to_string();
         let env = cog_native::environment(&package.dir);
         let k = key(&[
@@ -274,9 +323,9 @@ fn build_one(cog: &NativeCog, root: Option<&Path>, offline: bool) -> Result<Buil
             package.library.as_bytes(),
             env.as_bytes(),
         ]);
-        if let Some(library) = store.fetch_path(&k) {
+        if let Some(file) = store_of(used).fetch_path(&k) {
             return Ok(Built {
-                library,
+                file,
                 remove_after: false,
             });
         }
@@ -287,13 +336,15 @@ fn build_one(cog: &NativeCog, root: Option<&Path>, offline: bool) -> Result<Buil
         let target = private_dir(&builds, &cog.name)
             .map_err(|e| format!("{who}: a directory to build in: {e}"))?;
         let built = cog_native::build(&who, &package, &cargo, &target, offline, &mut || {});
-        let bytes = built
+        let files = built
             .map_err(|e| e.to_string())
-            .and_then(|lib| std::fs::read(&lib).map_err(|e| format!("{who}: {e}")));
+            .and_then(|lib| read_both(&lib));
         let _ = std::fs::remove_dir_all(&target);
-        return keep(&bytes?, &k);
+        let (library, archive) = files?;
+        return keep(&library, &archive, &k);
     }
-    // Any other: cargo on every run, in the cog's own target directory.
+    // Any other: cargo on every run, in the cog's own target directory;
+    // the file the command uses kept by the SHA-256 of its bytes.
     let cargo = cog_native::toolchain(&who, &package.dir).map_err(|e| e.to_string())?;
     let targets = root.join("target");
     let _ = std::fs::create_dir_all(&targets);
@@ -315,9 +366,19 @@ fn build_one(cog: &NativeCog, root: Option<&Path>, offline: bool) -> Result<Buil
         },
     )
     .map_err(|e| e.to_string())?;
-    let bytes = std::fs::read(&lib).map_err(|e| format!("{who}: {e}"))?;
-    let k = key(&[b"quarz-native-local-1", &bytes]);
-    keep(&bytes, &k)
+    let from = wanted(&lib);
+    let bytes = std::fs::read(&from).map_err(|e| format!("{who}: {}: {e}", from.display()))?;
+    let k = key(&[b"quarz-native-local-2", &bytes]);
+    let store = store_of(used);
+    store.store(&k, &bytes);
+    store.sweep(objcache::bound());
+    let file = store
+        .fetch_path(&k)
+        .ok_or_else(|| format!("{who}: its build could not be kept in {}", root.display()))?;
+    Ok(Built {
+        file,
+        remove_after: false,
+    })
 }
 
 /// Remove the target directories of local cogs not built for the object

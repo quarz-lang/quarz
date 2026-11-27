@@ -9,7 +9,7 @@
 //! refused (`TypeError`), never followed. Nothing an API function does
 //! runs Quarz code.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{c_void, CString};
 use std::path::Path;
 use std::sync::Mutex;
@@ -20,7 +20,6 @@ use quarz_ir::{MethodId, RtParamKind, RtWorld};
 use crate::interp::{ArgVec, EvalResult, Flow, Interp, NativeResult};
 use crate::rc::Rc;
 use crate::value::{ArrayData, HashData, Symbol, Value};
-use smallvec::SmallVec;
 
 /// A cog's native entry.
 pub type Entry = QzEntry;
@@ -53,55 +52,71 @@ fn dl_error() -> String {
         .into_owned()
 }
 
-/// Load cog `cog`'s native library at `path` and keep its module (once
-/// per process: a second load of the cog does nothing).
+/// Load cog `cog`'s native library at `path` (`dlopen`, local: each
+/// library binds its own symbols) and keep its module (`register`): what
+/// the interpreter does. Once per process: a second load of the cog does
+/// nothing.
 pub fn load(cog: &str, path: &Path) -> Result<(), String> {
-    let mut modules = MODULES.lock().expect("the modules");
-    if modules.iter().any(|m| m.cog == cog) {
+    if MODULES
+        .lock()
+        .expect("the modules")
+        .iter()
+        .any(|m| m.cog == cog)
+    {
         return Ok(());
     }
-    let where_ = || format!("the native library of cog `{cog}` ({})", path.display());
+    let where_ = format!("the native library of cog `{cog}` ({})", path.display());
     let file = CString::new(path.as_os_str().as_encoded_bytes())
-        .map_err(|_| format!("{}: a path with a NUL", where_()))?;
+        .map_err(|_| format!("{where_}: a path with a NUL"))?;
     // SAFETY: a library's initializers run here, as any loaded library's.
     let handle = unsafe { dlopen(file.as_ptr(), RTLD_NOW) };
     if handle.is_null() {
-        return Err(format!("cannot load {}: {}", where_(), dl_error()));
+        return Err(format!("cannot load {where_}: {}", dl_error()));
     }
     let symbol = init_symbol(cog);
     let name = CString::new(symbol.clone()).expect("a symbol");
     let init = unsafe { dlsym(handle, name.as_ptr()) };
     if init.is_null() {
         return Err(format!(
-            "{} has no `{symbol}`, the init `quarz_ext::module!` makes for cog `{cog}`",
-            where_()
+            "{where_} has no `{symbol}`, the init `quarz_ext::module!` makes for cog `{cog}`"
         ));
     }
     // SAFETY: the symbol is the cog's `QzInit` (the ABI's contract).
     let init: QzInit = unsafe { std::mem::transmute::<*mut c_void, QzInit>(init) };
+    register(cog, init, &where_)
+}
+
+/// Keep cog `cog`'s module, which its `init` gives (`where_` names it in
+/// errors): the module's versions checked, its entries by key. What a
+/// built program does with the inits it was linked with (`qz_main`'s
+/// table), and the interpreter after `dlopen` (`load`): one way to bind
+/// a cog's natives. Once per process per cog.
+pub fn register(cog: &str, init: QzInit, where_: &str) -> Result<(), String> {
+    let mut modules = MODULES.lock().expect("the modules");
+    if modules.iter().any(|m| m.cog == cog) {
+        return Ok(());
+    }
+    // SAFETY: the cog's init, given the API (the ABI's contract).
     let module = unsafe { init(&API) };
     if module.is_null() {
         return Err(format!(
-            "{} refused this quarz's native ABI {QZ_ABI_MAJOR}.{QZ_ABI_MINOR}: it was built for another",
-            where_()
+            "{where_} refused this quarz's native ABI {QZ_ABI_MAJOR}.{QZ_ABI_MINOR} (its init returned no module): it was built for another"
         ));
     }
-    // SAFETY: init gave a module that lives as long as the library.
+    // SAFETY: init gave a module that lives as long as the process.
     let module = unsafe { &*module };
     // (Read first, whatever the major: the prefix that never changes.)
     if module.abi_major != QZ_ABI_MAJOR || module.abi_minor > QZ_ABI_MINOR {
         return Err(format!(
-            "{} was built for the native ABI {}.{}; this quarz has {QZ_ABI_MAJOR}.{QZ_ABI_MINOR}",
-            where_(),
-            module.abi_major,
-            module.abi_minor
+            "{where_} was built for the native ABI {}.{}; this quarz has {QZ_ABI_MAJOR}.{QZ_ABI_MINOR}",
+            module.abi_major, module.abi_minor
         ));
     }
     if module.method_size < std::mem::size_of::<QzMethod>() {
-        return Err(format!("{}: its methods' size is too small", where_()));
+        return Err(format!("{where_}: its methods' size is too small"));
     }
     if module.n_methods > 0 && module.methods.is_null() {
-        return Err(format!("{}: its methods are a null pointer", where_()));
+        return Err(format!("{where_}: its methods are a null pointer"));
     }
     let mut entries = HashMap::new();
     for i in 0..module.n_methods {
@@ -112,10 +127,10 @@ pub fn load(cog: &str, path: &Path) -> Result<(), String> {
         // SAFETY: `key_len` bytes at `key` (none read when null or empty).
         let key = unsafe { bytes_at(m.key, m.key_len) };
         let Ok(key) = std::str::from_utf8(key) else {
-            return Err(format!("{}: a method's key is not UTF-8", where_()));
+            return Err(format!("{where_}: a method's key is not UTF-8"));
         };
         if entries.insert(key.to_string(), m.entry).is_some() {
-            return Err(format!("{} defines `{key}` twice", where_()));
+            return Err(format!("{where_} defines `{key}` twice"));
         }
     }
     modules.push(Module {
@@ -126,61 +141,69 @@ pub fn load(cog: &str, path: &Path) -> Result<(), String> {
 }
 
 /// Whether every cog's native of `world` has its entry, and every entry
-/// a `native def`: an error naming the cog and the key otherwise. The
-/// command checks it after loading the libraries, before running.
+/// a `native def`: an error naming the cog and the key otherwise. Read
+/// from `RtWorld::native_cogs` (every declaration, whatever `shake`
+/// kept). Checked after the modules are registered, before running.
 pub fn check(world: &RtWorld) -> Result<(), String> {
+    // (A program without native cogs does nothing here.)
+    if world.native_cogs.is_empty() {
+        return Ok(());
+    }
     let modules = MODULES.lock().expect("the modules");
-    for (i, cog) in world.native_cogs.iter().enumerate() {
-        let Some(module) = modules.iter().find(|m| &m.cog == cog) else {
+    for cog in &world.native_cogs {
+        let name = &cog.name;
+        let Some(module) = modules.iter().find(|m| &m.cog == name) else {
             return Err(format!(
-                "cog `{cog}` brings native code (`[native]` in its Cog.toml), but its library is not loaded"
+                "cog `{name}` brings native code (`[native]` in its Cog.toml), but its library is not loaded"
             ));
         };
-        let declared: Vec<&str> = world
-            .methods
+        let declared: HashSet<&str> = cog.methods.iter().map(|(_, k)| k.as_str()).collect();
+        let mut missing: Vec<&&str> = declared
             .iter()
-            .filter(|m| m.ext == Some(i as u32))
-            .filter_map(|m| m.native_key.as_deref())
+            .filter(|k| !module.entries.contains_key(**k))
             .collect();
-        for key in &declared {
-            if !module.entries.contains_key(*key) {
-                return Err(format!(
-                    "cog `{cog}` declares `native def` `{key}`, which its native library does not define"
-                ));
-            }
+        missing.sort();
+        if let Some(key) = missing.first() {
+            return Err(format!(
+                "cog `{name}` declares `native def` `{key}`, which its native library does not define"
+            ));
         }
         let mut extra: Vec<&String> = module
             .entries
             .keys()
-            .filter(|k| !declared.contains(&k.as_str()))
+            .filter(|k| !declared.contains(k.as_str()))
             .collect();
         extra.sort();
         if let Some(key) = extra.first() {
             return Err(format!(
-                "cog `{cog}`'s native library defines `{key}`, which the cog does not declare `native def`"
+                "cog `{name}`'s native library defines `{key}`, which the cog does not declare `native def`"
             ));
         }
     }
     Ok(())
 }
 
-/// Each method's entry (`RtMethod::ext` and its key), by method id:
-/// `None` for every other method, and for one whose module is not loaded
-/// (the call then says so, `call_unbound`).
-pub fn bind(world: &RtWorld) -> Vec<Option<Entry>> {
+/// Each method's entry, by method id, for a program of `n` methods:
+/// from `RtWorld::native_cogs`' declarations and the cogs' modules;
+/// `None` for every other method, and for one whose module is not
+/// registered (a call then says so).
+pub fn bind(world: &RtWorld, n: usize) -> Vec<Option<Entry>> {
+    let mut out = vec![None; n];
     if world.native_cogs.is_empty() {
-        return vec![None; world.methods.len()];
+        return out;
     }
     let modules = MODULES.lock().expect("the modules");
-    world
-        .methods
-        .iter()
-        .map(|m| {
-            let cog = world.native_cogs.get(m.ext? as usize)?;
-            let module = modules.iter().find(|x| &x.cog == cog)?;
-            module.entries.get(m.native_key.as_deref()?).copied()
-        })
-        .collect()
+    for cog in &world.native_cogs {
+        let Some(module) = modules.iter().find(|m| m.cog == cog.name) else {
+            continue;
+        };
+        for (id, key) in &cog.methods {
+            if let Some(slot) = out.get_mut(*id as usize) {
+                *slot = module.entries.get(key).copied();
+            }
+        }
+    }
+    out
 }
 
 // ----- a call ------------------------------------------------------------------------
@@ -201,8 +224,9 @@ const CHUNK: usize = 32;
 /// stays at one address until the entry returns:
 /// - the frame is a local of `call`, never moved between the entry's
 ///   call and its return (the cog holds `&mut frame` as its `QzCall`);
-/// - `lent` is filled before the entry is called and never pushed to
-///   after, so its values stay put, inline or spilled;
+/// - `lent` is complete before the entry is called (the receiver, the
+///   call's argument list as bound, the block) and never changed after,
+///   so its values stay put, inline or spilled;
 /// - a made value's slot is inline in the frame (`Made::inline`), or in a
 ///   chunk, which never moves once boxed (`Made::chunks` may reallocate
 ///   its vector of boxes, never a box);
@@ -210,10 +234,39 @@ const CHUNK: usize = 32;
 struct Frame<'a> {
     interp: &'a Interp,
     serial: u32,
-    lent: SmallVec<[Value; INLINE]>,
+    lent: Lent,
     made: Made,
-    names: Vec<(Symbol, Rc<str>)>,
+    /// (Allocated by the first `symbol_get`, #1203.)
+    names: Option<Box<Names>>,
     pending: Option<Value>,
+}
+
+/// The symbols' names a call lent, one per symbol (`symbol_get`).
+type Names = Vec<(Symbol, Rc<str>)>;
+
+/// The values a call lends its entry, by index: the receiver (0), the
+/// arguments bound to the declared parameters (1 to `args.len()`), and the
+/// block after them. The argument list is the call's own, kept as it came
+/// when it needed no binding (#1203).
+struct Lent {
+    recv: Value,
+    args: ArgVec,
+    block: Option<Value>,
+}
+
+impl Lent {
+    fn len(&self) -> usize {
+        1 + self.args.len() + usize::from(self.block.is_some())
+    }
+
+    fn get(&self, i: usize) -> Option<&Value> {
+        match i {
+            0 => Some(&self.recv),
+            i if i <= self.args.len() => self.args.get(i - 1),
+            i if i == self.args.len() + 1 => self.block.as_ref(),
+            _ => None,
+        }
+    }
 }
 
 /// The values a call made, by index (`Frame::make`): the first `INLINE`
@@ -223,10 +276,21 @@ struct Made {
     len: usize,
     /// (Dropped by `Made`'s `Drop`, the slots in use only.)
     inline: std::mem::ManuallyDrop<[Option<Value>; INLINE]>,
+    /// Bit `i`: bytes of value `i` were lent (the first 64).
+    pinned: u64,
+    /// Past the first values: allocated only when a call makes that many,
+    /// so that dropping a frame that did not is a null check (#1203).
+    spill: Option<Box<Spill>>,
+}
+
+/// `Made`'s values past `INLINE`, and pins past 64.
+#[derive(Default)]
+struct Spill {
     // (Boxed: a chunk keeps its address when the vector grows.)
     #[allow(clippy::vec_box)]
     chunks: Vec<Box<[Option<Value>; CHUNK]>>,
-    pinned: SmallVec<[u64; 1]>,
+    /// Word `w`: bits of values `64 * (w + 1)` on.
+    pinned: Vec<u64>,
 }
 
 impl Drop for Made {
@@ -243,8 +307,8 @@ impl Made {
         Made {
             len: 0,
             inline: std::mem::ManuallyDrop::new([const { None }; INLINE]),
-            chunks: Vec::new(),
-            pinned: SmallVec::new(),
+            pinned: 0,
+            spill: None,
         }
     }
 
@@ -254,14 +318,15 @@ impl Made {
         if i < INLINE {
             self.inline[i] = Some(v);
         } else {
+            let spill = self.spill.get_or_insert_with(Box::default);
             let j = i - INLINE;
             if j.is_multiple_of(CHUNK) {
-                self.chunks.push(Box::new([const { None }; CHUNK]));
+                spill.chunks.push(Box::new([const { None }; CHUNK]));
             }
-            self.chunks[j / CHUNK][j % CHUNK] = Some(v);
-        }
-        if i / 64 >= self.pinned.len() {
-            self.pinned.push(0);
+            spill.chunks[j / CHUNK][j % CHUNK] = Some(v);
+            if i >= 64 && (i - 64) / 64 >= spill.pinned.len() {
+                spill.pinned.push(0);
+            }
         }
         self.len += 1;
         i
@@ -274,7 +339,7 @@ impl Made {
             Some(&self.inline[i])
         } else {
             let j = i - INLINE;
-            Some(&self.chunks[j / CHUNK][j % CHUNK])
+            Some(&self.spill.as_ref()?.chunks[j / CHUNK][j % CHUNK])
         }
     }
 
@@ -285,7 +350,7 @@ impl Made {
             Some(&mut self.inline[i])
         } else {
             let j = i - INLINE;
-            Some(&mut self.chunks[j / CHUNK][j % CHUNK])
+            Some(&mut self.spill.as_mut()?.chunks[j / CHUNK][j % CHUNK])
         }
     }
 
@@ -299,14 +364,34 @@ impl Made {
 
     /// Bytes of value `i` were lent: kept to the end of the call.
     fn pin(&mut self, i: usize) {
-        if i < self.len {
-            self.pinned[i / 64] |= 1 << (i % 64);
+        if i >= self.len {
+            return;
+        }
+        if i < 64 {
+            self.pinned |= 1 << i;
+        } else if let Some(w) = self
+            .spill
+            .as_mut()
+            .and_then(|s| s.pinned.get_mut((i - 64) / 64))
+        {
+            *w |= 1 << (i % 64);
+        }
+    }
+
+    fn is_pinned(&self, i: usize) -> bool {
+        if i < 64 {
+            self.pinned >> i & 1 == 1
+        } else {
+            self.spill
+                .as_ref()
+                .and_then(|s| s.pinned.get((i - 64) / 64))
+                .is_some_and(|w| w >> (i % 64) & 1 == 1)
         }
     }
 
     /// Let go of value `i`, unless bytes of it were lent.
     fn release(&mut self, i: usize) {
-        if i >= self.len || self.pinned[i / 64] >> (i % 64) & 1 == 1 {
+        if i >= self.len || self.is_pinned(i) {
             return;
         }
         if let Some(slot) = self.slot_mut(i) {
@@ -432,18 +517,17 @@ pub fn call(
     let mut frame = Frame {
         interp,
         serial: next_serial(),
-        lent: SmallVec::new(),
+        lent: Lent {
+            recv,
+            args: bind_params(interp, mid, args, kw)?,
+            block,
+        },
         made: Made::new(),
-        names: Vec::new(),
+        names: None,
         pending: None,
     };
-    frame.lent.push(recv);
-    bind_params(interp, mid, args, kw, &mut frame.lent)?;
-    let nargs = frame.lent.len() - 1;
-    let has_block = block.is_some();
-    if let Some(b) = block {
-        frame.lent.push(b);
-    }
+    let nargs = frame.lent.args.len();
+    let has_block = frame.lent.block.is_some();
     let recv_h = frame.handle(0);
     let mut arg_buf = [0; INLINE];
     let spilled: Vec<QzValue>;
@@ -510,7 +594,7 @@ pub fn call(
     // on every call (decided on #677), by the test `QUARZ_VERIFY` runs for
     // the standard natives, and a mismatch is the program's `TypeError`.
     if let Ok(v) = &result {
-        let self_class = interp.self_class(mid, &frame.lent[0]);
+        let self_class = interp.self_class(mid, &frame.lent.recv);
         match interp.native_result_test(mid, v, self_class) {
             Ok(()) => {}
             Err(NativeResult::Mismatch(what)) => return Err(interp.err_type(&what)),
@@ -531,19 +615,16 @@ fn bind_params(
     mid: MethodId,
     args: ArgVec,
     mut kw: Vec<(Symbol, Value)>,
-    out: &mut SmallVec<[Value; INLINE]>,
-) -> Result<(), Flow> {
+) -> Result<ArgVec, Flow> {
     let m = interp.program.method(mid);
-    // Positional parameters only, each given positionally: the arguments
-    // as they are. (Every other call takes the loop below, which also
-    // has every error: none can happen here.)
-    if kw.is_empty()
-        && args.len() == m.params.len()
-        && m.params.iter().all(|p| p.kind == RtParamKind::Positional)
-    {
-        out.extend(args);
-        return Ok(());
+    // Positional parameters only (`RtMethod::positional_only`), each
+    // given positionally: the call's own argument list, as it is.
+    // (Every other call takes the loop below, which also has every
+    // error: none can happen here.)
+    if m.positional_only && kw.is_empty() && args.len() == m.params.len() {
+        return Ok(args);
     }
+    let mut out = ArgVec::with_capacity(m.params.len());
     let mut args = args.into_iter();
     for p in &m.params {
         let positional = match p.kind {
@@ -587,7 +668,7 @@ fn bind_params(
             interp.symbol_name(*k)
         )));
     }
-    Ok(())
+    Ok(out)
 }
 
 // ----- the API -----------------------------------------------------------------------
@@ -867,15 +948,16 @@ unsafe extern "C" fn symbol_get(
             // (One name per symbol: a loop asking the same ones keeps one
             // each.)
             let sym = *s;
-            let at = match f.names.iter().position(|(x, _)| *x == sym) {
+            let interp = f.interp;
+            let names = f.names.get_or_insert_with(Box::default);
+            let at = match names.iter().position(|(x, _)| *x == sym) {
                 Some(at) => at,
                 None => {
-                    let name = f.interp.symbol_name(sym);
-                    f.names.push((sym, name));
-                    f.names.len() - 1
+                    names.push((sym, interp.symbol_name(sym)));
+                    names.len() - 1
                 }
             };
-            lend(f.names[at].1.as_bytes(), p, n)
+            lend(names[at].1.as_bytes(), p, n)
         }
         Some(other) => {
             let m = expected(f, "a Symbol", other);

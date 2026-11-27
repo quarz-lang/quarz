@@ -38,6 +38,9 @@ pub struct Package {
     pub dir: PathBuf,
     /// The file cargo makes of its dynamic library (`libzlib_native.so`).
     pub library: String,
+    /// The file cargo makes of its static library (`libzlib_native.a`),
+    /// beside the dynamic one.
+    pub archive: String,
     /// Whether its `Cargo.lock` holds a path package besides itself: one
     /// whose files no hash of the cog's covers, so that a build of it is
     /// never kept by the cog's key (`quarz_cli::native`). (A path package
@@ -141,6 +144,7 @@ pub fn check_package(who: &str, declared: &str, dir: &Path) -> Result<Package, E
     Ok(Package {
         dir: dir.to_path_buf(),
         library,
+        archive: format!("lib{name}.a"),
         path_dependencies,
     })
 }
