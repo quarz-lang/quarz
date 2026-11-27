@@ -197,8 +197,9 @@ pub fn interface(world: &World, file: u32) -> u64 {
     h.finish()
 }
 
-/// The movement's cogs as declared: names, root modules and the
-/// dependencies in their scopes (the application's are top-level names).
+/// The movement's cogs as declared: names, root modules, the
+/// dependencies in their scopes (the application's are top-level names)
+/// and whether each brings native code (`CogInfo::native`, #677).
 pub fn cogs(world: &World) -> u64 {
     let all: Vec<_> = world
         .cogs
@@ -207,7 +208,7 @@ pub fn cogs(world: &World) -> u64 {
             let mut imports: Vec<_> = c.imports.iter().collect();
             imports.sort();
             let root = c.root.map(|r| (r, world.class(r).name.as_str()));
-            (c.name.as_str(), root, imports)
+            (c.name.as_str(), root, imports, c.native)
         })
         .collect();
     let roots: Vec<ClassId> = world.cogs.iter().filter_map(|c| c.root).collect();

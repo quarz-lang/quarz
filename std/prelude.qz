@@ -6396,6 +6396,12 @@ end
 class NotImplementedError < StandardError
 end
 
+# A panic in a cog's native code (docs/15): caught where the call
+# returns to Quarz, and raised with the panic's message. The program goes
+# on, as after any `StandardError`.
+class NativePanic < StandardError
+end
+
 # The end of an external iteration: [Enumerator#next] past the last
 # element. `loop` rescues it and ends the loop.
 #

@@ -968,6 +968,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "quarz-ext"
+version = "1.0.0"
+dependencies = [
+ "quarz-ext-macros",
+]
+
+[[package]]
+name = "quarz-ext-macros"
+version = "1.0.0"
+
+[[package]]
 name = "quarz-ir"
 version = "0.0.1"
 dependencies = [
@@ -1034,6 +1045,7 @@ dependencies = [
  "pbkdf2",
  "pem-rfc7468",
  "polling",
+ "quarz-ext",
  "quarz-ir",
  "rand",
  "rcgen",

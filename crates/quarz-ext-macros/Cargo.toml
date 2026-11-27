@@ -1,0 +1,11 @@
+[package]
+name = "quarz-ext-macros"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The macros of quarz-ext"
+
+[lib]
+proc-macro = true

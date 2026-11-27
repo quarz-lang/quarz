@@ -12,6 +12,7 @@ crate-type = ["rlib", "staticlib"]
 
 [dependencies]
 quarz-ir = { workspace = true }
+quarz-ext = { workspace = true }
 gimli = { version = "0.34", default-features = false, features = ["read"] }
 object = { version = "0.41", default-features = false, features = ["read_core", "elf", "std"] }
 corosensei = "0.3"

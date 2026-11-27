@@ -270,6 +270,7 @@ mod tests {
             local_patch: false,
             locked_version: None,
             rev: Some("0123abc".into()),
+            native: None,
         };
         let files = [
             SourceFile::new("<prelude>", ""),

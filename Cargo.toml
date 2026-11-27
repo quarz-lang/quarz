@@ -9,6 +9,8 @@ members = [
     "crates/quarz-aot",
     "crates/quarz-cog",
     "crates/quarz-cli",
+    "crates/quarz-ext",
+    "crates/quarz-ext-macros",
 ]
 
 [workspace.package]
@@ -28,6 +30,7 @@ quarz-lower = { path = "crates/quarz-lower" }
 quarz-vm = { path = "crates/quarz-vm", default-features = false }
 quarz-aot = { path = "crates/quarz-aot" }
 quarz-cog = { path = "crates/quarz-cog" }
+quarz-ext = { path = "crates/quarz-ext" }
 
 # The runtime (the interpreter, and the library compiled programs link)
 # as one codegen unit: faster, and its inlining no longer shifts with

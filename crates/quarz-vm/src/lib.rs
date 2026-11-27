@@ -15,6 +15,7 @@ pub mod keys;
 pub mod layout;
 pub mod methods;
 pub mod native_bt;
+pub mod native_ext;
 pub mod natives;
 pub mod ops;
 pub mod rc;

@@ -36,7 +36,9 @@ pub fn run(checked: Checked, files: &[SourceFile], argv: Vec<String>) -> i32 {
 }
 
 /// `run` continuing `lowerer`, the one the program's `static` statements
-/// ran with (docs/14 §5): what the `quarz` command does.
+/// ran with (docs/14 §5): what the `quarz` command does. A program whose
+/// cogs bring native code has their libraries loaded and bound first
+/// (`load_natives`); a failure is reported, the program not run.
 pub fn run_with(
     checked: Checked,
     files: &[SourceFile],
@@ -44,7 +46,54 @@ pub fn run_with(
     argv: Vec<String>,
 ) -> i32 {
     let module = quarz_lower::lower_checked_with(lowerer, &checked, files);
+    if let Err(e) = load_natives(&module.world) {
+        eprintln!("quarz: {e}");
+        return 1;
+    }
     quarz_vm::run(module, argv)
+}
+
+/// The cogs of the movement being run that bring native code (#677):
+/// each one's name and the directory of its native package, recorded when
+/// the movement is opened (`set_native_cogs`).
+static NATIVE_COGS: std::sync::Mutex<Vec<(String, std::path::PathBuf)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Record the native cogs of the movement opened (`NATIVE_COGS`).
+pub fn set_native_cogs(cogs: &[quarz_cog::CogEntry]) {
+    *NATIVE_COGS.lock().expect("the native cogs") = cogs
+        .iter()
+        .filter_map(|c| Some((c.name.clone(), c.native.clone()?)))
+        .collect();
+}
+
+/// Load the libraries of `world`'s native cogs and bind their entries
+/// (`quarz_vm::native_ext`): an error naming the cog when a library is
+/// missing (it is built from the cog's native package with `cargo build
+/// --release`), cannot be loaded, or does not define what the cog
+/// declares.
+pub fn load_natives(world: &quarz_ir::RtWorld) -> Result<(), String> {
+    if world.native_cogs.is_empty() {
+        return Ok(());
+    }
+    let cogs = NATIVE_COGS.lock().expect("the native cogs").clone();
+    for name in &world.native_cogs {
+        let Some((_, dir)) = cogs.iter().find(|(n, _)| n == name) else {
+            return Err(format!(
+                "cog `{name}` brings native code, but its package is not known"
+            ));
+        };
+        let lib = quarz_cog::native::library(dir).map_err(|e| e.to_string())?;
+        if !lib.is_file() {
+            return Err(format!(
+                "cog `{name}` brings native code, but its library is not built: no {} (build its package in {} with `cargo build --release`)",
+                lib.display(),
+                dir.display()
+            ));
+        }
+        quarz_vm::native_ext::load(name, &lib)?;
+    }
+    quarz_vm::native_ext::check(world)
 }
 
 /// Run a lowered program (for tests that change its QIR first).

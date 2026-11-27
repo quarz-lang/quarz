@@ -1,0 +1,8 @@
+# The fixture of tests/native.rs, which writes native/Cargo.toml (with
+# quarz-ext's absolute path) in a copy of this directory and builds it.
+[cog]
+name = "demo"
+version = "0.1.0"
+
+[native]
+crate = "native"

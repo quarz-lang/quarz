@@ -34,6 +34,18 @@ pub struct Manifest {
     pub dev_dependencies: BTreeMap<String, Dependency>,
     #[serde(default)]
     pub patch: BTreeMap<String, Patch>,
+    /// Native code the cog brings (#677, docs/15): a cargo package whose
+    /// library implements its `native def`s.
+    pub native: Option<NativeSection>,
+}
+
+/// `[native]`: the directory of the cog's cargo package, relative to its
+/// root (`crate = "native"`).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeSection {
+    #[serde(rename = "crate")]
+    pub crate_dir: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -354,6 +366,26 @@ impl Manifest {
             }
         }
         Ok(())
+    }
+
+    /// The directory of the cog's native package (`[native] crate`) in
+    /// the cog at `dir`: a relative path inside the cog, else an error.
+    pub fn native_dir(&self, dir: &Path) -> Result<Option<PathBuf>, Error> {
+        let Some(n) = &self.native else {
+            return Ok(None);
+        };
+        let inside = !n.crate_dir.starts_with('/')
+            && n.crate_dir.split('/').all(|p| p != "..")
+            && normal_subdir(&n.crate_dir).is_some();
+        if !inside {
+            return Err(Error::new(format!(
+                "{}: `[native] crate = {:?}` must name a directory inside the cog",
+                self.cog.name, n.crate_dir
+            )));
+        }
+        Ok(Some(
+            dir.join(normal_subdir(&n.crate_dir).expect("a directory")),
+        ))
     }
 
     /// The module the cog's declarations live in.

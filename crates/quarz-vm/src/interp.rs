@@ -669,6 +669,8 @@ pub struct ExcClasses {
     /// `IO::LineTooLong`: a line read past its `limit:` (#1135).
     pub line_too_long: ClassId,
     pub not_implemented: ClassId,
+    /// `NativePanic` (#677).
+    pub native_panic: ClassId,
     pub system_exit: ClassId,
     pub range_error: ClassId,
     pub float_domain_error: ClassId,
@@ -784,6 +786,7 @@ impl Program {
 /// `crate::methods`).
 struct Derived {
     natives: Vec<Option<NativeFn>>,
+    ext_natives: Vec<Option<crate::native_ext::Entry>>,
     fast_natives: Vec<Option<FastNativeFn>>,
     natives_owned: Vec<Option<OwnedNativeFn>>,
     owned: OwnedIds,
@@ -811,6 +814,9 @@ impl Derived {
             // SAFETY: the tables hold functions of their kinds, which the
             // program's build listed by the natives' symbols.
             return Derived {
+                // (A compiled program brings no cog's native code: `quarz
+                // build` refuses one, #677.)
+                ext_natives: vec![None; n as usize],
                 natives: (0..n)
                     .map(|id| {
                         at(natives::PLAIN)(id)
@@ -854,21 +860,27 @@ impl Derived {
             .expect("a program without its natives");
         let (plain, fast, owned_reg) = (&all.plain, &all.fast, &all.owned);
         let (plain_map, fast_map, owned_map) = (plain.map(), fast.map(), owned_reg.map());
+        // (A cog's native is bound to its cog's entry only, never to a
+        // standard native of its key: `RtMethod::ext`, #677.)
+        fn std_key(m: &quarz_ir::RtMethod) -> Option<&str> {
+            m.native_key.as_deref().filter(|_| m.ext.is_none())
+        }
         let natives = world
             .methods
             .iter()
-            .map(|m| plain_map.get(m.native_key.as_deref()?).copied())
+            .map(|m| plain_map.get(std_key(m)?).copied())
             .collect();
         let fast_natives = world
             .methods
             .iter()
-            .map(|m| fast_map.get(m.native_key.as_deref()?).copied())
+            .map(|m| fast_map.get(std_key(m)?).copied())
             .collect();
         let natives_owned = world
             .methods
             .iter()
-            .map(|m| owned_map.get(m.native_key.as_deref()?).copied())
+            .map(|m| owned_map.get(std_key(m)?).copied())
             .collect();
+        let ext_natives = crate::native_ext::bind(world);
         let owned_id = |key: &str| -> Option<MethodId> {
             world
                 .methods
@@ -904,6 +916,7 @@ impl Derived {
             .collect();
         Derived {
             natives,
+            ext_natives,
             fast_natives,
             natives_owned,
             owned: OwnedIds {
@@ -936,6 +949,9 @@ pub struct Program {
     /// Compilation units in execution order.
     pub units: Vec<Unit>,
     pub natives: Vec<Option<NativeFn>>,
+    /// The cogs' natives (#677), by method id: their modules' entries
+    /// (`native_ext::bind`).
+    pub ext_natives: Vec<Option<crate::native_ext::Entry>>,
     /// By-reference versions of some natives, by method id.
     pub fast_natives: Vec<Option<FastNativeFn>>,
     /// The symbols of the program (`RtWorld::symbols`, #1129): what a
@@ -1218,6 +1234,7 @@ impl Interp {
             eof_error: class_by_name("EOFError"),
             line_too_long: class_by_name("IO::LineTooLong"),
             not_implemented: class_by_name("NotImplementedError"),
+            native_panic: class_by_name("NativePanic"),
             system_exit: class_by_name("SystemExit"),
             range_error: class_by_name("RangeError"),
             float_domain_error: class_by_name("FloatDomainError"),
@@ -1290,6 +1307,7 @@ impl Interp {
         let repl_frame = state.repl_frame.clone();
         let Derived {
             natives,
+            ext_natives,
             fast_natives,
             natives_owned,
             owned,
@@ -1304,6 +1322,7 @@ impl Interp {
             lazy,
             units,
             natives,
+            ext_natives,
             fast_natives,
             natives_owned,
             owned,
@@ -3614,6 +3633,26 @@ impl Interp {
             self.check_deadline()?;
         }
         let m = self.program.method(mid);
+        if m.ext.is_some() {
+            // A cog's native never runs at compile time (#677): refused by
+            // its kind, whatever its key or its owner, and whether or not
+            // its library is loaded (`check` loads none).
+            if self.deadline.get().is_some() {
+                return Err(self.err_compile_time(&format!(
+                    "`{}` is a cog's native method, which cannot run at compile time",
+                    m.native_key.as_deref().unwrap_or(&m.name)
+                )));
+            }
+            let Some(entry) = self.program.ext_natives[mid as usize] else {
+                // (The command loads and checks the cogs' libraries before
+                // it runs: `native_ext::check`.)
+                return Err(self.err_runtime(&format!(
+                    "internal error: `{}` is a cog's native method whose library is not loaded",
+                    m.native_key.as_deref().unwrap_or(&m.name)
+                )));
+            };
+            return crate::native_ext::call(self, mid, entry, recv, args, kw, block);
+        }
         if let Some(native) = self.program.natives[mid as usize] {
             // A compile-time run refuses the natives that act on the
             // outside world, whatever the analysis before it missed.
@@ -3928,6 +3967,19 @@ impl Interp {
         Ok(values)
     }
 
+    /// A native's skipped parameter's value: its literal default
+    /// (`RtParam::default`), or `None` for any other constant.
+    pub(crate) fn literal_default(&self, c: &Constant) -> Option<Value> {
+        Some(match c {
+            Constant::Nil => Value::Nil,
+            Constant::Bool(b) => Value::Bool(*b),
+            Constant::Int(n) => Value::Int(*n),
+            Constant::Float(f) => Value::Float(*f),
+            Constant::Symbol(s) => Value::Symbol(self.intern(s)),
+            _ => return None,
+        })
+    }
+
     /// For a native: the keyword arguments that name positional
     /// parameters, moved to their positions, a skipped optional parameter
     /// before one taking its literal default (`RtParam::default`); the
@@ -3954,18 +4006,15 @@ impl Interp {
                 continue;
             }
             for skipped in &positional[args.len()..i] {
-                let value = match &skipped.default {
-                    Some(Constant::Nil) => Value::Nil,
-                    Some(Constant::Bool(b)) => Value::Bool(*b),
-                    Some(Constant::Int(n)) => Value::Int(*n),
-                    Some(Constant::Float(f)) => Value::Float(*f),
-                    Some(Constant::Symbol(s)) => Value::Symbol(self.intern(s)),
-                    _ => {
-                        return Err(self.err_runtime(&format!(
-                            "`{}` takes `{}` by keyword, but its parameter `{}` before it has no literal default to pass",
-                            m.name, p.name, skipped.name
-                        )))
-                    }
+                let Some(value) = skipped
+                    .default
+                    .as_ref()
+                    .and_then(|c| self.literal_default(c))
+                else {
+                    return Err(self.err_runtime(&format!(
+                        "`{}` takes `{}` by keyword, but its parameter `{}` before it has no literal default to pass",
+                        m.name, p.name, skipped.name
+                    )));
                 };
                 args.push(value);
             }

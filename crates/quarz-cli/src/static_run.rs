@@ -2121,7 +2121,8 @@ impl Runner {
         }
     }
 
-    /// `compile_time_allowed(key)` for method `m`, kept (`allowed_kept`).
+    /// `compile_time_allowed(key)` for method `m`, false for a cog's
+    /// native, kept (`allowed_kept`).
     fn allowed(&self, m: MethodId, key: &str) -> bool {
         let mut kept = self.allowed_kept.borrow_mut();
         let i = m as usize;
@@ -2130,7 +2131,14 @@ impl Runner {
                 return *ok;
             }
         }
-        let ok = compile_time_allowed(key);
+        // A cog's native never runs at compile time (#677): refused by its
+        // kind (`RtMethod::ext`), whatever its key or its owner's name.
+        let cog_native = self
+            .world
+            .as_ref()
+            .and_then(|w| w.methods.get(i))
+            .is_some_and(|m| m.ext.is_some());
+        let ok = !cog_native && compile_time_allowed(key);
         if kept.len() <= i {
             kept.resize(i + 1, None);
         }

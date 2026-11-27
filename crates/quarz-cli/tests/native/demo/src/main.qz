@@ -1,0 +1,70 @@
+p Demo.add(2, 40)
+p Demo.describe(nil), Demo.describe(1), Demo.describe(1.5), Demo.describe("s"), Demo.describe(:s), Demo.describe([1]), Demo.describe({"a" => 1}), Demo.describe(Demo)
+p Demo.reverse("héllo")
+p Demo.bytes_sum("abc".to_bytes)
+p Demo.zeros(4)
+p Demo.squares(5)
+p Demo.sum([1, 2, 3, 4])
+p Demo.invert({"a" => 1, "b" => 2})
+p Demo.sym("abc")
+p Demo.scale(1.5), Demo.scale(1.5, by: 3.0)
+p Demo.nothing
+begin
+  Demo.fail("bad input")
+rescue ArgumentError => e
+  p e.class, e.message
+end
+begin
+  Demo.fail_with("DemoError")
+rescue DemoError => e
+  p e.class, e.message
+end
+begin
+  Demo.fail_with("FancyError")
+rescue ArgumentError => e
+  p e.message
+end
+begin
+  Demo.fail_with("AbstractError")
+rescue ArgumentError => e
+  p e.message
+end
+begin
+  Demo.fail_with("GenericError")
+rescue ArgumentError => e
+  p e.message
+end
+begin
+  Demo.panic
+rescue NativePanic => e
+  p e.class, e.message
+end
+begin
+  Demo.push_lent([1])
+rescue TypeError => e
+  p e.message
+end
+p "quiet".shout
+p Demo.keep(5)
+begin
+  Demo.use_kept
+rescue TypeError => e
+  p e.message
+end
+p Demo.released(["hi", "a long string, longer than any kept inline in its value"])
+p Demo.released_bytes(["ab".to_bytes, "a long string, longer than any kept inline in its value".to_bytes])
+p Demo.released_made(40)
+m = Demo.int_map(3)
+p m, m[1], m == {0 => 0, 1 => 10, 2 => 20}, m.merge({5 => 50})
+total = 0
+m.each do |k, v|
+  total += k + v
+end
+p total
+f = Demo.floats(3)
+doubled = f.map { |x| x * 2.0 }
+p f, f[2], f == [0.0, 0.5, 1.0], doubled
+bl = Demo.byte_list(2)
+sizes = bl.map { |b| b.size }
+p bl.size, bl[1] == bl[1], sizes
+p :done

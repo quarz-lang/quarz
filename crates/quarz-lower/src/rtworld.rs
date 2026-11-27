@@ -389,6 +389,7 @@ pub fn class_row(world: &World, out: &types::Output, id: ClassId) -> RtClass {
         // extensions' modules with the own includes, #681.)
         class_side: world.class_dispatch_order(c.id),
         built_by_runtime: world.built_by_runtime(c.id),
+        raisable_by_native: world.raisable_by_native(c.id),
         members,
         variants: c.variants.clone(),
         variant_of: c.variant_of,
@@ -527,6 +528,11 @@ pub fn method_row(world: &World, id: MethodId, overrides: &[MethodId]) -> RtMeth
                 result_test: results.0,
                 result_union: results.1,
                 result_self: results.2,
+                ext: m
+                    .is_native
+                    .then(|| world.native_cog(m.file))
+                    .flatten()
+                    .map(|cog| native_cog_index(world, cog)),
             };
     row.shape = RtMethod::shape_of(&row.params, row.has_block);
     row
@@ -634,6 +640,12 @@ fn declared_rest(
     }
     let mut rt = RtWorld {
         native_results: true,
+        native_cogs: world
+            .cogs
+            .iter()
+            .filter(|c| c.native)
+            .map(|c| c.name.clone())
+            .collect(),
         classes,
         methods,
         consts: Vec::new(),
@@ -851,16 +863,23 @@ fn later_positional(m: &types::MethodInfo, name: &str) -> bool {
 /// what a `data` construction fills in for its omitted fields
 /// (`func::default_at_call`, #921, #940).
 pub(crate) fn literal_constant(e: &quarz_syntax::ast::Expr) -> Option<Constant> {
-    use quarz_syntax::ast::ExprKind;
-    Some(match &e.kind {
-        ExprKind::Nil => Constant::Nil,
-        ExprKind::True => Constant::Bool(true),
-        ExprKind::False => Constant::Bool(false),
-        ExprKind::Int(i) => Constant::Int(i.value?),
-        ExprKind::Float(f) => Constant::Float(*f),
-        ExprKind::Symbol(s) => Constant::Symbol(s.clone()),
-        _ => return None,
+    use types::LiteralDefault as L;
+    Some(match types::literal_default(e)? {
+        L::Nil => Constant::Nil,
+        L::Bool(b) => Constant::Bool(b),
+        L::Int(i) => Constant::Int(i),
+        L::Float(f) => Constant::Float(f),
+        L::Symbol(s) => Constant::Symbol(s),
     })
+}
+
+/// Cog `cog`'s place in `RtWorld::native_cogs` (the world's cogs that
+/// bring native code, in order).
+fn native_cog_index(world: &World, cog: u32) -> u32 {
+    world.cogs[..cog as usize]
+        .iter()
+        .filter(|c| c.native)
+        .count() as u32
 }
 
 /// A parameter's machine kind (`RtParam::ty`), from the class id: `Int`,

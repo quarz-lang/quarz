@@ -1554,6 +1554,10 @@ pub struct RtClass {
     /// (`World::built_by_runtime`, #535).
     #[serde(default)]
     pub built_by_runtime: bool,
+    /// Whether a cog's native code may raise it with a message alone
+    /// (`World::raisable_by_native`, #677).
+    #[serde(default)]
+    pub raisable_by_native: bool,
     /// Nested classes by short name.
     #[serde(serialize_with = "sorted")]
     pub members: HashMap<String, ClassId>,
@@ -1711,6 +1715,11 @@ pub struct RtMethod {
     /// owner-based `result_test` stays for what has no receiver.
     #[serde(default)]
     pub result_self: Option<RtType>,
+    /// For a cog's native (#677): its cog, an index into
+    /// `RtWorld::native_cogs`, whose module's entry of `native_key` it
+    /// runs. Never bound to a standard native.
+    #[serde(default)]
+    pub ext: Option<u32>,
 }
 
 /// The shape of a method with a parameter other than a positional one.
@@ -1872,6 +1881,11 @@ pub struct RtWorld {
     /// its other checks, and is not checked otherwise.
     #[serde(default)]
     pub native_results: bool,
+    /// The cogs that bring native code (#677), by name: what
+    /// `RtMethod::ext` indexes. The runtime loads each one's module and
+    /// binds their natives to its entries, an error when one is missing.
+    #[serde(default)]
+    pub native_cogs: Vec<String>,
     pub classes: Vec<RtClass>,
     #[serde(with = "dropped")]
     pub methods: Vec<RtMethod>,
@@ -2638,6 +2652,7 @@ impl Droppable for RtMethod {
             result_test: None,
             result_union: None,
             result_self: None,
+            ext: None,
         }
     }
 }

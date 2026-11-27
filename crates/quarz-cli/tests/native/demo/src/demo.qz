@@ -1,0 +1,48 @@
+# The methods `native/src/lib.rs` implements (docs/15).
+module Demo
+  native def self.add(a: Int, b: Int) -> Int
+  native def self.describe(x: Object) -> String
+  native def self.reverse(s: String) -> String
+  native def self.bytes_sum(b: Bytes) -> Int
+  native def self.zeros(n: Int) -> Bytes
+  native def self.squares(n: Int) -> Array[Int]
+  native def self.sum(xs: Array[Int]) -> Int
+  native def self.invert(h: Hash[String, Int]) -> Hash[Int, String]
+  native def self.sym(s: String) -> Symbol
+  native def self.scale(x: Float, *, by: Float = 2.0) -> Float
+  native def self.fail(message: String) -> Int
+  native def self.fail_with(name: String) -> Int
+  native def self.panic -> Int
+  native def self.push_lent(xs: Array[Int]) -> Array[Int]
+  native def self.wrong -> Int
+  native def self.nothing -> Void
+  native def self.keep(x: Int) -> Int
+  native def self.use_kept -> Int
+  # Releases each string or bytes after reading it, then reads it again.
+  native def self.released(xs: Array[String]) -> String
+  native def self.released_bytes(bs: Array[Bytes]) -> Int
+  native def self.released_made(n: Int) -> String
+  # Collections whose representation follows their elements.
+  native def self.int_map(n: Int) -> Hash[Int, Int]
+  native def self.floats(n: Int) -> Array[Float]
+  native def self.byte_list(n: Int) -> Array[Bytes]
+end
+
+extension String
+  native def shout -> String
+end
+
+class DemoError < StandardError
+end
+
+class FancyError < StandardError
+  def initialize(message: String)
+    super("fancy " + message)
+  end
+end
+
+abstract class AbstractError < StandardError
+end
+
+class GenericError[T] < StandardError
+end
