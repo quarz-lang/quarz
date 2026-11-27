@@ -46,3 +46,8 @@ end
 
 class GenericError[T] < StandardError
 end
+
+class Crate
+  # Returns a String: refused against its declared `Self`.
+  native def self.make -> Self
+end

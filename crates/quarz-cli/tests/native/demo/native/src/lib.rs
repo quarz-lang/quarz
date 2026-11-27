@@ -192,6 +192,10 @@ fn byte_list<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'
     Ok(xs)
 }
 
+fn make<'c>(cx: &Call<'c>, _: Value<'c>, _: &[Value<'c>]) -> Result<Value<'c>> {
+    cx.string("not a crate")
+}
+
 quarz_ext::module! {
     cog: "demo",
     "Demo.add" => add,
@@ -209,6 +213,7 @@ quarz_ext::module! {
     "Demo.panic" => panic,
     "Demo.push_lent" => push_lent,
     "Demo.wrong" => wrong,
+    "Crate.make" => make,
     "Demo.nothing" => nothing,
     "Demo.keep" => keep,
     "Demo.use_kept" => use_kept,

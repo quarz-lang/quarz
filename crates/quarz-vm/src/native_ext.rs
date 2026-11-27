@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use quarz_ext::sys::*;
 use quarz_ir::{MethodId, RtParamKind, RtWorld};
 
-use crate::interp::{ArgVec, EvalResult, Flow, Interp};
+use crate::interp::{ArgVec, EvalResult, Flow, Interp, NativeResult};
 use crate::rc::Rc;
 use crate::value::{ArrayData, HashData, Symbol, Value};
 
@@ -282,8 +282,9 @@ impl Frame<'_> {
 
 /// Call the cog's native `mid` (its `entry`) on `recv` and the arguments,
 /// bound to the declared parameters' positions (the defaults of those
-/// left out filled in): its result, or what it raised. Its result is
-/// checked against its declaration under `QUARZ_VERIFY`.
+/// left out filled in): its result, or what it raised. Its result's
+/// class is tested against its declaration on every call
+/// (`Interp::native_result_test`), a mismatch raising `TypeError`.
 pub fn call(
     interp: &Interp,
     mid: MethodId,
@@ -361,8 +362,18 @@ pub fn call(
             "native `{key}` returned the status {s}, neither QZ_OK nor QZ_RAISED"
         ))),
     };
+    // A cog's native is trusted for nothing: its result's class is tested
+    // on every call (decided on #677), by the test `QUARZ_VERIFY` runs for
+    // the standard natives, and a mismatch is the program's `TypeError`.
     if let Ok(v) = &result {
-        interp.check_native_result(mid, v, &frame.lent[0]);
+        let self_class = interp.self_class(mid, &frame.lent[0]);
+        match interp.native_result_test(mid, v, self_class) {
+            Ok(()) => {}
+            Err(NativeResult::Mismatch(what)) => return Err(interp.err_type(&what)),
+            Err(NativeResult::NoTest(what)) => {
+                return Err(interp.err_runtime(&format!("internal error: {what}")))
+            }
+        }
     }
     result
 }

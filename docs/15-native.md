@@ -68,14 +68,14 @@ const QzModule *qz_cog_init_<cog>(const QzApi *api);
 - Every API function that can fail returns a `QzStatus`. On `QZ_RAISED`, an exception is pending in `cx` and the entry should return `QZ_RAISED` at once. The wrapper's `?` does this.
 - An entry that returns `QZ_RAISED` with no exception pending is a contract error: `RuntimeError`, with a message naming the key. So is one returning `QZ_OK` without setting `*out` when its result is not `Void` (or `Nil`), and one returning a status that is neither `QZ_OK` nor `QZ_RAISED`.
 - An entry that returns `QZ_OK` with an exception pending raises that exception.
-- The result is checked against the declaration under `QUARZ_VERIFY` (`Interp::check_native_result`), as for standard natives.
+- The result's class is always tested against the declaration, on every call (`Interp::native_result_test`, the test `QUARZ_VERIFY` runs for standard natives). A mismatch raises `TypeError`: "native `Demo.wrong` returned a value of class String, but its declared result is Int".
 - A wrong kind (`int_get` on a `String`) raises `TypeError`, naming what was expected. An `Int` that does not fit 64 bits (`Integer`) raises `RangeError` in `int_get`.
 - Makers (`int_new` ...) cannot fail; out of memory aborts, as the runtime does.
 - **With an exception pending,** every status function returns `QZ_RAISED` without acting, every maker returns 0, and `raise` keeps the first exception. A cog that ignores a status can neither overwrite nor lose the exception. `release` on an invalid or already released handle does nothing.
 - A panic is caught by the wrapper at every entry and raised as `NativePanic` (a `StandardError`, decided on #677), with the panic's message. The cog is built with `panic = "unwind"`.
 
 **What the cog is trusted for.** Every misuse of a handle or a value through the API is refused with an exception: a wrong kind, a stale or foreign handle, a change to a value the call did not make, a key or a class the ABI does not take. Two things are not checked:
-- The result's type beyond its top level. The result's own class is tested against the declaration under `QUARZ_VERIFY` only, and nothing tests the elements of a returned collection (an `Array[Int]` holding a `String`).
+- The result's type beyond its top level. The result's own class is tested on every call, but nothing tests the elements of a returned collection (an `Array[Int]` holding a `String`).
 - Anything kept past the call's return: a `QzCall`, a handle or a lent pointer. Using one afterwards is undefined behaviour, as is a cog's own memory error.
 
 ## The API, ABI 1.0 (`QzApi`, `#[repr(C)]`, append-only)
