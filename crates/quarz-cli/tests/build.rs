@@ -365,12 +365,13 @@ fn frame_word_is_set_before_it_is_read() {
         "{}",
         String::from_utf8_lossy(&built.stderr)
     );
-    // (The kept IR: each partition's, in `<exe>.quarz-build/`.)
+    // (The kept IR: each partition's, in `<exe>.quarz-build/p<NNN>/`.)
     let mut build_dir = exe.as_os_str().to_owned();
     build_dir.push(".quarz-build");
     let mut lls: Vec<_> = fs::read_dir(&build_dir)
         .unwrap()
         .flatten()
+        .flat_map(|e| fs::read_dir(e.path()).into_iter().flatten().flatten())
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "ll"))
         .collect();
@@ -584,7 +585,7 @@ fn a_failing_partition_fails_the_build_and_leaves_nothing() {
         let fake = dir.join(format!("clang-{name}"));
         fs::write(
             &fake,
-            format!("#!/bin/sh\ncase \"$*\" in *p001.ll*) {act};; esac\nexec {real} \"$@\"\n"),
+            format!("#!/bin/sh\ncase \"$*\" in */p001/*) {act};; esac\nexec {real} \"$@\"\n"),
         )
         .unwrap();
         Command::new("chmod").arg("+x").arg(&fake).status().unwrap();
@@ -619,10 +620,19 @@ fn a_failing_partition_fails_the_build_and_leaves_nothing() {
     let err = String::from_utf8_lossy(&built.stderr);
     let mut build_dir = exe.as_os_str().to_owned();
     build_dir.push(".quarz-build");
+    // (Each partition's directory and its files, `<key>.ll`, #1182.)
     let kept: Vec<String> = fs::read_dir(&build_dir)
         .map(|d| {
             d.flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .flat_map(|e| {
+                    let sub = e.file_name().to_string_lossy().into_owned();
+                    fs::read_dir(e.path())
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                        .map(move |f| format!("{sub}/{}", f.file_name().to_string_lossy()))
+                        .collect::<Vec<_>>()
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -633,7 +643,11 @@ fn a_failing_partition_fails_the_build_and_leaves_nothing() {
         "{err}"
     );
     assert!(
-        kept.iter().any(|f| f == "p000.ll") && kept.iter().any(|f| f == "p001.ll"),
+        kept.iter()
+            .any(|f| f.starts_with("p000/") && f.ends_with(".ll"))
+            && kept
+                .iter()
+                .any(|f| f.starts_with("p001/") && f.ends_with(".ll")),
         "{kept:?}"
     );
     assert!(!kept.iter().any(|f| f.ends_with(".o")), "{kept:?}");
@@ -662,9 +676,11 @@ fn partition_texts(dir: &Path, name: &str, source: &str) -> (Vec<String>, String
     );
     let mut build_dir = exe.as_os_str().to_owned();
     build_dir.push(".quarz-build");
+    // (Partition `p`'s IR is `p<NNN>/<key>.ll`.)
     let mut files: Vec<PathBuf> = fs::read_dir(&build_dir)
         .unwrap()
         .flatten()
+        .flat_map(|e| fs::read_dir(e.path()).into_iter().flatten().flatten())
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "ll"))
         .collect();
@@ -974,6 +990,157 @@ fn llvm_objcopy_gives_the_same_section() {
     assert!(!a.is_empty());
     assert_eq!(a, b, "the sections differ");
     assert_eq!(ra.stderr, rb.stderr, "the backtraces differ");
+}
+
+/// #1182: `quarz build` of `STABLE` split at every method, with the
+/// objects' cache in `cache` (none: `QUARZ_NO_CACHE`) and `envs`: the
+/// executable, and how many partitions the cache gave (`cached=`).
+fn cached_build(
+    dir: &Path,
+    name: &str,
+    cache: Option<&Path>,
+    envs: &[(&str, &str)],
+) -> (Vec<u8>, usize, usize) {
+    let path = dir.join("prog.qz");
+    if !path.exists() {
+        fs::write(&path, STABLE).unwrap();
+    }
+    let exe = dir.join(name);
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_quarz"));
+    cmd.arg("build").arg(&path).arg("-o").arg(&exe);
+    cmd.env("QUARZ_BUILD_PARTITION_BYTES", "1")
+        .env("QUARZ_BUILD_TIMINGS", "1");
+    cmd.env_remove("QUARZ_NO_STRIP")
+        .env_remove("QUARZ_NO_CACHE");
+    match cache {
+        Some(c) => cmd.env("QUARZ_CACHE_DIR", c),
+        None => cmd.env("QUARZ_NO_CACHE", "1"),
+    };
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "{name}: {err}");
+    let clang = err
+        .lines()
+        .find(|l| l.contains("stage=clang "))
+        .unwrap_or("");
+    let field = |k: &str| -> usize {
+        clang
+            .split_whitespace()
+            .find_map(|w| w.strip_prefix(k))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("no {k} in {clang:?}"))
+    };
+    (
+        fs::read(&exe).unwrap(),
+        field("partitions="),
+        field("cached="),
+    )
+}
+
+/// #1182: the objects' cache changes nothing in the executable: built
+/// with the cache cold, warm and off, at one job and eight, stripped and
+/// not, it is the same; a warm build compiles nothing but the tables'
+/// partition, which is never kept.
+#[test]
+fn the_object_cache_gives_the_same_executable_cold_warm_and_off() {
+    let dir = std::env::temp_dir().join(format!("quarz-objcache-same-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    for (strip, envs) in [(true, vec![]), (false, vec![("QUARZ_NO_STRIP", "1")])] {
+        let cache = dir.join(format!("cache-{strip}"));
+        let j1: Vec<(&str, &str)> = [envs.clone(), vec![("QUARZ_BUILD_JOBS", "1")]].concat();
+        let j8: Vec<(&str, &str)> = [envs.clone(), vec![("QUARZ_BUILD_JOBS", "8")]].concat();
+        let (cold, n, hits) = cached_build(&dir, "cold", Some(&cache), &j1);
+        assert!(n > 4, "{n} partitions");
+        assert_eq!(hits, 0, "cold");
+        for (name, c, envs, want) in [
+            ("warm8", Some(cache.as_path()), &j8, n - 1),
+            ("warm1", Some(cache.as_path()), &j1, n - 1),
+            ("off8", None, &j8, 0),
+            ("off1", None, &j1, 0),
+        ] {
+            let (exe, _, hits) = cached_build(&dir, name, c, envs);
+            assert_eq!(hits, want, "{name}, stripped: {strip}");
+            assert!(exe == cold, "{name}, stripped: {strip}: another executable");
+        }
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// #1182: an entry whose object or sum is damaged is a miss: the
+/// partition is compiled again, the entry replaced, and the executable
+/// is the same.
+#[test]
+fn a_damaged_cached_object_is_compiled_again() {
+    let dir = std::env::temp_dir().join(format!("quarz-objcache-damage-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let cache = dir.join("cache");
+    let (cold, n, _) = cached_build(&dir, "cold", Some(&cache), &[]);
+    let mut objects: Vec<PathBuf> = fs::read_dir(cache.join("objects"))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .flat_map(|e| fs::read_dir(e.path()).unwrap().flatten())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "o"))
+        .collect();
+    objects.sort();
+    // (All but the tables' partition.)
+    assert_eq!(objects.len(), n - 1);
+    // One object cut short, one sum changed.
+    let bytes = fs::read(&objects[0]).unwrap();
+    fs::write(&objects[0], &bytes[..bytes.len() / 2]).unwrap();
+    fs::write(objects[1].with_extension("sum"), "0".repeat(64)).unwrap();
+    let (again, _, hits) = cached_build(&dir, "again", Some(&cache), &[]);
+    assert_eq!(hits, n - 3);
+    assert!(again == cold, "another executable");
+    // Replaced: all hits now.
+    let (_, _, hits) = cached_build(&dir, "warm", Some(&cache), &[]);
+    assert_eq!(hits, n - 1);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// #1182: two builds at once on one cache both succeed, with the same
+/// executable, and leave it whole.
+#[test]
+fn two_builds_at_once_share_the_object_cache() {
+    let dir = std::env::temp_dir().join(format!("quarz-objcache-two-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("prog.qz"), STABLE).unwrap();
+    let cache = dir.join("cache");
+    let (a, b) = std::thread::scope(|s| {
+        let a = s.spawn(|| cached_build(&dir, "a", Some(&cache), &[]));
+        let b = s.spawn(|| cached_build(&dir, "b", Some(&cache), &[]));
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    assert!(a.0 == b.0, "another executable");
+    let (warm, n, hits) = cached_build(&dir, "warm", Some(&cache), &[]);
+    assert_eq!(hits, n - 1);
+    assert!(warm == a.0);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// #1182: `QUARZ_NO_CACHE` turns the objects' cache off with the
+/// checker's: nothing is written under `QUARZ_CACHE_DIR`.
+#[test]
+fn quarz_no_cache_keeps_no_objects() {
+    let dir = std::env::temp_dir().join(format!("quarz-objcache-off-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let cache = dir.join("cache");
+    let cache_dir = cache.to_str().unwrap().to_string();
+    let (_, _, hits) = cached_build(&dir, "off", None, &[("QUARZ_CACHE_DIR", &cache_dir)]);
+    assert_eq!(hits, 0);
+    assert!(
+        !cache.join("objects").exists(),
+        "objects kept with the cache off"
+    );
+    let _ = fs::remove_dir_all(&dir);
 }
 
 /// `QUARZ_AOT_OPT` picks clang's level (0 and 2 both build a program

@@ -19,6 +19,7 @@ pub type FileGroups = std::collections::HashMap<u32, u64>;
 mod builder;
 mod gen;
 mod llvm;
+pub mod objcache;
 mod unbox;
 
 // ----- building executables ----------------------------------------------------------
@@ -211,20 +212,29 @@ pub fn build_jobs(jobs: Option<&str>) -> Result<usize, String> {
 }
 
 /// Compile a module and link it into the executable `output`, with the
-/// jobs `build_jobs(None)` gives and no file groups.
+/// jobs `build_jobs(None)` gives, no file groups and no cache of objects.
 pub fn build(module: &Module, output: &Path) -> Result<(), String> {
-    build_with_jobs(module, &FileGroups::default(), output, build_jobs(None)?)
+    build_with_jobs(
+        module,
+        &FileGroups::default(),
+        output,
+        build_jobs(None)?,
+        None,
+    )
 }
 
-/// `build` by `jobs` clang processes at once. The program's partitions
-/// are compiled in a directory next to `output` (`<output>.quarz-build`),
-/// removed after the link, or when the build fails; `QUARZ_KEEP_IR` keeps
-/// it, with each partition's IR, and says where.
+/// `build` by `jobs` clang processes at once, with the objects' cache in
+/// `cache` (`objcache`; none: every partition is compiled). The program's
+/// partitions are compiled in a directory next to `output`
+/// (`<output>.quarz-build`), removed after the link, or when the build
+/// fails; `QUARZ_KEEP_IR` keeps it, with each partition's IR, and says
+/// where.
 pub fn build_with_jobs(
     module: &Module,
     groups: &FileGroups,
     output: &Path,
     jobs: usize,
+    cache: Option<&Path>,
 ) -> Result<(), String> {
     // What the program cannot run is neither compiled nor decoded at
     // start-up (`QUARZ_NO_SHAKE` keeps everything, for comparison).
@@ -266,11 +276,19 @@ pub fn build_with_jobs(
     // (Fresh: what an earlier build left is not linked in.)
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let built = llvm::compile(module, groups, &dir, jobs).and_then(|c| link(&c, &dir, output));
+    let built =
+        llvm::compile(module, groups, &dir, jobs, cache).and_then(|c| link(&c, &dir, output));
     if std::env::var_os("QUARZ_KEEP_IR").is_some() {
-        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-            if entry.path().extension().is_some_and(|e| e == "o") {
-                let _ = std::fs::remove_file(entry.path());
+        // (Each partition's directory keeps its `.ll`.)
+        for sub in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            for entry in std::fs::read_dir(sub.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                if entry.path().extension().is_some_and(|e| e == "o") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
             }
         }
         eprintln!("quarz: the IR is kept in {}", dir.display());

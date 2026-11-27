@@ -308,9 +308,11 @@ public def total(xs: Array[Shape]) -> Int = xs.sum { |s| s.area }
         assert!(out.ok, "{name}: {}", out.stderr);
         let mut dir = exe.as_os_str().to_owned();
         dir.push(".quarz-build");
+        // (Partition `p`'s IR is `p<NNN>/<key>.ll`.)
         let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
             .unwrap()
             .flatten()
+            .flat_map(|e| std::fs::read_dir(e.path()).into_iter().flatten().flatten())
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|e| e == "ll"))
             .collect();

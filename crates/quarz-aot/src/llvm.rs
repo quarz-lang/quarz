@@ -1069,7 +1069,7 @@ impl Ll<'_> {
 
 /// The `clang` to compile with: `$QUARZ_CLANG`, or the first of `clang`
 /// and the versioned names on `PATH`; with its major version.
-fn find_clang() -> Result<(String, u32), String> {
+fn find_clang() -> Result<(String, u32, String), String> {
     let candidates: Vec<String> = match std::env::var("QUARZ_CLANG") {
         Ok(c) => vec![c],
         Err(_) => std::iter::once("clang".to_string())
@@ -1094,7 +1094,7 @@ fn find_clang() -> Result<(String, u32), String> {
         if major < 14 {
             return Err(format!("{c} is too old (clang 14 or later is needed)"));
         }
-        return Ok((c.clone(), major));
+        return Ok((c.clone(), major, text.into_owned()));
     }
     Err("cannot find clang (install clang 14 or later, or set QUARZ_CLANG)".to_string())
 }
@@ -1137,22 +1137,30 @@ fn opt_level() -> Result<&'static str, String> {
 }
 
 /// Compile a module to object files in the directory `dir`, one per
-/// partition (`p000.o`, ...), by at most `jobs` clang processes at once
-/// (#786); the objects in partition order. Each partition's IR is written
-/// next to its object (`p000.ll`) and removed after, unless
-/// `QUARZ_KEEP_IR` is set. When a clang fails, the ones running are
-/// waited for, no other starts, and every failure is reported. With the
-/// objects: what `link` needs of the names (`Compiled`).
+/// partition, by at most `jobs` clang processes at once (#786); the
+/// objects in partition order. Partition `p`'s IR is written as
+/// `p<NNN>/<key>.ll` and compiled to `<key>.o` beside it, `key` being
+/// its object's key (`objcache::key`): clang records the input's file
+/// name in the object, so the name is the key's, and the object is the
+/// same wherever it is made. With `cache` (the objects' cache,
+/// `objcache`), a partition whose object the cache holds is not
+/// compiled, and each one compiled is kept there, but for the tables'
+/// partition of a program of several, always compiled. The IR is removed
+/// after, unless `QUARZ_KEEP_IR` is set. When a clang fails, the ones
+/// running are waited for, no other starts, and every failure is
+/// reported. With the objects: what `link` needs of the names
+/// (`Compiled`).
 pub fn compile(
     module: &Module,
     groups: &FileGroups,
     dir: &Path,
     jobs: usize,
+    cache: Option<&Path>,
 ) -> Result<Compiled, String> {
     let opt = opt_level()?;
     // (`find_clang` runs `clang --version`: a process of its own.)
     let start = std::time::Instant::now();
-    let (clang, major) = find_clang()?;
+    let (clang, major, version) = find_clang()?;
     crate::report("clang_version", start, &[]);
     let opaque = major >= 15;
     let start = std::time::Instant::now();
@@ -1161,11 +1169,19 @@ pub fn compile(
         map,
         typed_names,
     } = emit(module, groups, opaque)?;
+    let flags = [opt, "-c", "-x", "ir", "-Wno-override-module"];
+    let identity = crate::objcache::clang_identity(&clang, &version);
+    let cache = cache.map(crate::objcache::Cache::new);
     let mut lls: Vec<PathBuf> = Vec::with_capacity(parts.len());
+    let mut keys: Vec<String> = Vec::with_capacity(parts.len());
     for (p, ir) in parts.iter().enumerate() {
-        let ll = dir.join(format!("p{p:03}.ll"));
+        let key = crate::objcache::key(&identity, &flags.join(" "), ir);
+        let sub = dir.join(format!("p{p:03}"));
+        std::fs::create_dir_all(&sub).map_err(|e| format!("{}: {e}", sub.display()))?;
+        let ll = sub.join(format!("{key}.ll"));
         std::fs::write(&ll, ir).map_err(|e| format!("{}: {e}", ll.display()))?;
         lls.push(ll);
+        keys.push(key);
     }
     crate::report(
         "emit",
@@ -1182,23 +1198,40 @@ pub fn compile(
     let start = std::time::Instant::now();
     let cpu_before = children_cpu_ms();
     let objects: Vec<PathBuf> = lls.iter().map(|ll| ll.with_extension("o")).collect();
+    // The partitions the cache holds, their objects written in place. (The
+    // tables' partition of a program of several, last, is always compiled
+    // and never kept: its text, which holds every number and the embedded
+    // module, changes with nearly every edit, and it compiles in a few
+    // hundredths of a second; kept, it would be most of what each build
+    // adds to the cache.)
+    let tables = (lls.len() > 1).then(|| lls.len() - 1);
+    let cached = |p: usize| cache.as_ref().filter(|_| Some(p) != tables);
+    let mut todo: Vec<usize> = Vec::with_capacity(lls.len());
+    for p in 0..lls.len() {
+        match cached(p).and_then(|c| c.fetch(&keys[p])) {
+            Some(bytes) if std::fs::write(&objects[p], &bytes).is_ok() => {}
+            _ => todo.push(p),
+        }
+    }
+    let hits = lls.len() - todo.len();
     // (A queue of partitions taken by `jobs` threads, each running one
     // clang at a time; the failures by partition.)
     let next = std::sync::atomic::AtomicUsize::new(0);
     let failed = std::sync::atomic::AtomicBool::new(false);
     let errors: std::sync::Mutex<Vec<(usize, String)>> = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|s| {
-        for _ in 0..jobs.clamp(1, lls.len().max(1)) {
+        for _ in 0..jobs.clamp(1, todo.len().max(1)) {
             s.spawn(|| loop {
                 if failed.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
-                let p = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some(ll) = lls.get(p) else { break };
+                let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(&p) = todo.get(at) else { break };
                 let result = Command::new(&clang)
-                    .args([opt, "-c", "-x", "ir", "-Wno-override-module", "-o"])
+                    .args(flags)
+                    .arg("-o")
                     .arg(&objects[p])
-                    .arg(ll)
+                    .arg(&lls[p])
                     .output();
                 let error = match result {
                     Err(e) => Some(format!("cannot run {clang}: {e}")),
@@ -1212,6 +1245,10 @@ pub fn compile(
                 if let Some(e) = error {
                     failed.store(true, std::sync::atomic::Ordering::Relaxed);
                     errors.lock().expect("the errors").push((p, e));
+                } else if let Some(c) = cached(p) {
+                    if let Ok(bytes) = std::fs::read(&objects[p]) {
+                        c.store(&keys[p], &bytes);
+                    }
                 }
             });
         }
@@ -1230,13 +1267,19 @@ pub fn compile(
             .collect::<Vec<_>>()
             .join("\n"));
     }
+    if let Some(c) = &cache {
+        if todo.iter().any(|&p| Some(p) != tables) {
+            c.sweep(crate::objcache::bound());
+        }
+    }
     crate::report(
         "clang",
         start,
         &[
             ("cpu_ms", format!("{:.3}", children_cpu_ms() - cpu_before)),
             ("partitions", objects.len().to_string()),
-            ("jobs", jobs.clamp(1, objects.len().max(1)).to_string()),
+            ("cached", hits.to_string()),
+            ("jobs", jobs.clamp(1, todo.len().max(1)).to_string()),
             ("level", opt.trim_start_matches("-O").to_string()),
         ],
     );
