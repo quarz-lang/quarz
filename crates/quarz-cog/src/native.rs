@@ -71,6 +71,16 @@ pub fn check_package(who: &str, declared: &str, dir: &Path) -> Result<Package, E
             dir.display()
         )));
     }
+    // The toolchain is quarz's (#677): rustup's proxies obey such a file
+    // in the directory they run in, and would install what it names
+    // before the comparison refuses it.
+    for file in ["rust-toolchain", "rust-toolchain.toml"] {
+        if dir.join(file).exists() {
+            return Err(Error::new(format!(
+                "{who}: its native package holds {declared}/{file}: it is built by the rustc that built quarz, so it names no toolchain (remove the file)"
+            )));
+        }
+    }
     let doc = read_toml(&manifest)?;
     if !doc.contains_key("workspace") {
         return Err(Error::new(format!(
@@ -135,10 +145,12 @@ pub fn check_package(who: &str, declared: &str, dir: &Path) -> Result<Package, E
     })
 }
 
-/// How cargo is run: as found (`$CARGO`, else `cargo` on `PATH`), or
-/// through rustup with the toolchain of `QUARZ_RUSTC`'s release.
+/// How cargo is run: as found (`$CARGO`, else `cargo` on `PATH`), given
+/// the rustc compared as its `RUSTC`, so that it builds with that one by
+/// construction; or through rustup with the toolchain of `QUARZ_RUSTC`'s
+/// release.
 pub enum Cargo {
-    Found,
+    Found(OsString),
     Rustup(String),
 }
 
@@ -186,7 +198,7 @@ pub fn toolchain(who: &str, dir: &Path) -> Result<Cargo, Error> {
     let here = version_of(cmd, dir);
     if let Some((_, commit)) = &here {
         if !want.commit.is_empty() && *commit == want.commit {
-            return Ok(Cargo::Found);
+            return Ok(Cargo::Found(rustc));
         }
     }
     let rustup = runs(&OsString::from("rustup"));
@@ -271,9 +283,15 @@ fn cleared(name: &str) -> bool {
 /// key, so that a profile or a linker of the user's never serves a build
 /// made without it.
 ///
-/// Approximation: a configuration file's (unstable) `include` is not
-/// followed, so a change in an included file keeps the key: the error is
-/// a stale build (#1204).
+/// Approximations, each erring towards a stale build (`QUARZ_NO_CACHE=1`
+/// rebuilds):
+/// - a configuration file's (unstable) `include` is not followed, so a
+///   change in an included file keeps the key (#1204);
+/// - what a build script reads is not in the key: the variables it
+///   likes (`CC`, `CFLAGS`, `PKG_CONFIG_PATH`, any other), files outside
+///   the package, the system's libraries. A kept library can be stale
+///   against those; making the key cover them would mean knowing what
+///   each build script reads, which nothing declares.
 pub fn environment(dir: &Path) -> String {
     let mut vars: Vec<(String, String)> = std::env::vars_os()
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.to_string_lossy().into_owned())))
@@ -330,7 +348,11 @@ pub fn build(
     rebuilding: &mut dyn FnMut(),
 ) -> Result<PathBuf, Error> {
     let mut cmd = match cargo {
-        Cargo::Found => Command::new(cargo_program()),
+        Cargo::Found(rustc) => {
+            let mut c = Command::new(cargo_program());
+            c.env("RUSTC", rustc);
+            c
+        }
         Cargo::Rustup(toolchain) => {
             let mut c = Command::new("rustup");
             c.args(["run", toolchain, "cargo"]);

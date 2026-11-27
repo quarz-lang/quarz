@@ -148,12 +148,65 @@ pub fn build_all(cogs: &[NativeCog], offline: bool) -> Result<Vec<(String, Built
         .collect()
 }
 
-static SCRATCH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// A new directory under `parent` that only this process made: its name
+/// unpredictable (`what-` and 16 hex digits from a randomly keyed hash),
+/// created exclusively (an existing one is never used: another name is
+/// tried) and, on Unix, with mode 0700. A library is copied into it and
+/// loaded from it: in a directory others can write (the system's
+/// temporary directory, with the cache off), one made by someone else
+/// first could have its file swapped between the copy and the load, and
+/// their code would run as the user of `quarz`.
+pub fn private_dir(parent: &Path, what: &str) -> std::io::Result<PathBuf> {
+    use std::hash::{BuildHasher, Hasher};
+    std::fs::create_dir_all(parent)?;
+    let mut last = None;
+    for attempt in 0..16u32 {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u32(std::process::id());
+        h.write_u32(attempt);
+        if let Ok(t) = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+            h.write_u128(t.as_nanos());
+        }
+        let dir = parent.join(format!("{what}-{:016x}", h.finish()));
+        match new_private(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("no directory")))
+}
 
-/// A directory of this process's, new, under `parent`.
-fn scratch(parent: &Path, what: &str) -> PathBuf {
-    let n = SCRATCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    parent.join(format!("{what}-{}-{n}", std::process::id()))
+/// Create `dir` itself (not its parents), failing if it exists; mode 0700
+/// on Unix.
+fn new_private(dir: &Path) -> std::io::Result<()> {
+    let mut b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
+    }
+    b.create(dir)
+}
+
+/// Remove what builds killed before their end left in `builds`
+/// (`native/build`): directories older than a day.
+fn sweep_builds(builds: &Path) {
+    let now = SystemTime::now();
+    let Ok(entries) = std::fs::read_dir(builds) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|age| age > std::time::Duration::from_secs(24 * 60 * 60));
+        if old {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
 }
 
 fn build_one(cog: &NativeCog, root: Option<&Path>, offline: bool) -> Result<Built, String> {
@@ -167,8 +220,10 @@ fn build_one(cog: &NativeCog, root: Option<&Path>, offline: bool) -> Result<Buil
         )
     };
     let Some(root) = root else {
-        // The cache off: a temporary build, loaded from a copy.
-        let tmp = scratch(&std::env::temp_dir(), "quarz-native");
+        // The cache off: a temporary build, loaded from a copy, in a
+        // directory of this process's own (`private_dir`).
+        let tmp = private_dir(&std::env::temp_dir(), "quarz-native")
+            .map_err(|e| format!("{who}: a directory to build in: {e}"))?;
         let cargo = cog_native::toolchain(&who, &package.dir).map_err(|e| e.to_string())?;
         let mut told = false;
         let built = cog_native::build(
@@ -227,7 +282,10 @@ fn build_one(cog: &NativeCog, root: Option<&Path>, offline: bool) -> Result<Buil
         }
         let cargo = cog_native::toolchain(&who, &package.dir).map_err(|e| e.to_string())?;
         say();
-        let target = scratch(&root.join("build"), &cog.name);
+        let builds = root.join("build");
+        sweep_builds(&builds);
+        let target = private_dir(&builds, &cog.name)
+            .map_err(|e| format!("{who}: a directory to build in: {e}"))?;
         let built = cog_native::build(&who, &package, &cargo, &target, offline, &mut || {});
         let bytes = built
             .map_err(|e| e.to_string())
@@ -284,5 +342,37 @@ fn sweep_targets(targets: &Path) {
             let _ = std::fs::remove_dir_all(p.with_extension(""));
             let _ = std::fs::remove_file(&p);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A directory that exists is never taken: `new_private` refuses it,
+    /// and `private_dir` makes another, its own, with mode 0700.
+    #[test]
+    fn a_private_dir_is_never_one_that_exists() {
+        let parent =
+            std::env::temp_dir().join(format!("quarz-private-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(&parent).unwrap();
+        let taken = parent.join("taken");
+        std::fs::create_dir(&taken).unwrap();
+        assert_eq!(
+            new_private(&taken).unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        let a = private_dir(&parent, "x").unwrap();
+        let b = private_dir(&parent, "x").unwrap();
+        assert_ne!(a, b);
+        assert!(a.is_dir() && a.file_name().unwrap().to_str().unwrap().len() == 18);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&a).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700);
+        }
+        let _ = std::fs::remove_dir_all(&parent);
     }
 }

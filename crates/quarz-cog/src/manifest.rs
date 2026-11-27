@@ -384,7 +384,15 @@ impl Manifest {
                 self.cog.name, n.crate_dir
             )));
         }
-        Ok(normal_subdir(&n.crate_dir))
+        let d = normal_subdir(&n.crate_dir).expect("a directory");
+        // (Installed and hashed beside `src/`, never inside it.)
+        if d == "src" || d.starts_with("src/") {
+            return Err(Error::new(format!(
+                "{}: `[native] crate = {:?}` must name a directory outside `src/`, which holds the cog's Quarz files",
+                self.cog.name, n.crate_dir
+            )));
+        }
+        Ok(Some(d))
     }
 
     /// The directory of the cog's native package in the cog at `dir`

@@ -93,7 +93,7 @@ native  = true                                       # it brings native code (§
 - A cog is identified by its `source` (the URL, with the `subdir` when there is one); the keys the manifests use for it are not recorded, since each manifest has its own. Two spellings of one source are one cog: a `subdir` of `a`, `a/` or `./a`, and URLs that differ only in the case of the scheme and host or in a trailing `/` or `.git`.
 - `inputs` is a digest of the dependency tables of the manifests that can change: the application's and the patched cogs' (every other manifest is pinned by its commit). The lock is the resolution of those inputs: while the digest matches, it is used as it is; when the manifests list other dependencies, it is resolved again.
 - `rev` is the key for fetching, `hash` the key for verification: a hash of the cog's files at that commit (`Cog.toml`, everything under `src/`, and its native package when it declares one, §11): one line per file in path order, its SHA-256 in hex, two spaces and its path, and the base64 of the SHA-256 of those lines (as Go's module hashes). The two are kept apart because a git commit id is a SHA-1 of the repository's history, not of the files Quarz compiles: after fetching, a tree whose hash differs from the lock (a rewritten history, a force-pushed tag, a tampered mirror) is refused. The `h1:` prefix names the algorithm so it can change.
-- `native = true` marks a cog that brings native code (§11), so that an update adding one shows in the lock's diff. It is written only then, and derived from the cog's manifest, which `hash` pins: a lock that disagrees with the manifest is refused ("run `quarz cog update`"). A quarz older than native cogs refuses such a lock ("unknown field `native`").
+- `native = true` marks a cog that brings native code (§11), so that an update adding one shows in the lock's diff. It is written only then, and derived from the cog's manifest, which `hash` pins: a lock that disagrees with the manifest is refused ("run `quarz cog update`"). A quarz that predates native cogs refuses such a lock ("unknown field `native`").
 - The lock lists only what the resolution chose: one entry per cog, whatever the manifests asked for. `[patch]` entries are not recorded. `Cog.local.toml` takes no part in the lock at all (§2): `inputs` and the entries are what `Cog.toml` alone resolves to.
 
 ## 4. Version Resolution
@@ -267,11 +267,13 @@ crate = "native"            # a directory inside the cog
   - Its `Cargo.toml` is a workspace of its own: an empty `[workspace]` table. Otherwise cargo would look for one above it.
   - `[lib] crate-type` includes `"cdylib"` and `"staticlib"`.
   - Its `Cargo.lock` is committed: it is built with `--locked`.
+  - It holds no `rust-toolchain` or `rust-toolchain.toml`: the toolchain is quarz's.
+  - Its directory is outside `src/`.
   - Until `quarz-ext`'s distribution is decided, it depends on that crate by path.
 - **What `native def` may declare** (docs/15): positional and keyword-only parameters with literal defaults, and a block. It is never overloaded, and never run at compile time. Elsewhere than in such a cog, `native def` is an error.
 - **When it is built.** `quarz run` and `quarz test` build every native cog of the movement before running, with `cargo build --release --locked --lib`; `quarz check` builds nothing. `quarz build` refuses a program with a native cog for now (#677). A build says so on stderr: `quarz: building the native code of cog zlib (app → zlib) with cargo`. cargo's own output is shown only when it fails.
-- **The toolchain.** The package is built by the rustc that built `quarz`, for every command (decided on #677). quarz uses the first of these whose rustc has that commit:
-  1. the `cargo` found (`$CARGO`, else on `PATH`), with its rustc (`$RUSTC`, else `rustc`);
+- **The toolchain.** The package is built by the rustc that built `quarz`, for every command. quarz uses the first of these whose rustc has that commit:
+  1. the `cargo` found (`$CARGO`, else on `PATH`), given as its `RUSTC` the rustc compared (`$RUSTC`, else `rustc`);
   2. rustup's toolchain of that release.
 
   Otherwise it stops with an error that names the cog, the dependency path that brought it, and what to install ("run `rustup toolchain install 1.100.0`").
@@ -283,5 +285,6 @@ crate = "native"            # a directory inside the cog
   - **A cog the lock pins** (fetched, or in `vendor/`), whose package has no path dependency, is keyed by the lock's hash of its tree, the rustc, the ABI's major version and that environment. Once built, it needs no cargo: offline, or on a machine without Rust.
   - **Any other cog** is built by cargo on every run, which skips what did not change. That covers the application's own package, a `[patch]`, and a package with a path dependency (which no hash covers).
   - `QUARZ_NO_CACHE=1` builds every time.
+  - The key does not cover what a build script reads on its own (`CC`, `CFLAGS`, `PKG_CONFIG_PATH`, files outside the package): after changing those, `QUARZ_NO_CACHE=1` rebuilds.
 - **Offline** (`--offline`): cargo runs offline too. A build then needs its crates in cargo's own cache. `quarz cog vendor` copies the package, not its crates.io dependencies (#1205).
 - **Trust.** A native cog runs code outside the checker's guarantees, and its build scripts run at build time. There is no opt-in list. Instead, the lock's `native = true` shows a dependency that brings native code, and every error about the build names the dependency path that brought the cog.

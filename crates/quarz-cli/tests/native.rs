@@ -312,7 +312,7 @@ true
 fn a_wrong_native_package_is_refused() {
     // (name, what spoils the package, the error wanted)
     type Case<'a> = (&'a str, &'a dyn Fn(&Path), &'a str);
-    let cases: [Case; 5] = [
+    let cases: [Case; 7] = [
         (
             "no-dir",
             &|d| {
@@ -346,6 +346,19 @@ fn a_wrong_native_package_is_refused() {
             "no-lock",
             &|d| std::fs::remove_file(d.join("native/Cargo.lock")).unwrap(),
             "has no Cargo.lock, which must be committed (built with `--locked`)",
+        ),
+        (
+            "toolchain-file",
+            &|d| std::fs::write(d.join("native/rust-toolchain.toml"), "[toolchain]\nchannel = \"1.80.0\"\n").unwrap(),
+            "cog `demo`: its native package holds native/rust-toolchain.toml: it is built by the rustc that built quarz, so it names no toolchain (remove the file)",
+        ),
+        (
+            "in-src",
+            &|d| {
+                let m = std::fs::read_to_string(d.join("Cog.toml")).unwrap();
+                std::fs::write(d.join("Cog.toml"), m.replace("crate = \"native\"", "crate = \"src/native\"")).unwrap();
+            },
+            "demo: `[native] crate = \"src/native\"` must name a directory outside `src/`, which holds the cog's Quarz files",
         ),
     ];
     for (name, spoil, want) in cases {
