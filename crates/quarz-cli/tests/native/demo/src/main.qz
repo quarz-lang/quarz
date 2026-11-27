@@ -54,6 +54,10 @@ end
 p Demo.released(["hi", "a long string, longer than any kept inline in its value"])
 p Demo.released_bytes(["ab".to_bytes, "a long string, longer than any kept inline in its value".to_bytes])
 p Demo.released_made(40)
+p Demo.released_many(80)
+# Through a procedure: the general binder, the default filled in.
+scale = Demo.:scale
+p scale.call(1.5)
 m = Demo.int_map(3)
 p m, m[1], m == {0 => 0, 1 => 10, 2 => 20}, m.merge({5 => 50})
 total = 0

@@ -146,6 +146,8 @@ NativePanic
 \"hi|a long string, longer than any kept inline in its value\"
 5320
 \"40 ok\"
+\"80 texts, the last v79\"
+3.0
 {0 => 0, 1 => 10, 2 => 20}
 10
 true

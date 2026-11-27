@@ -168,6 +168,32 @@ fn released_made<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Val
     cx.string(&format!("{} {}", s.len(), std::str::from_utf8(tail).unwrap_or("?")))
 }
 
+/// `n` short strings made, their text read and each released, then more
+/// values made (more chunks boxed): every text read stays valid, inline
+/// or in a chunk (docs/15, rule 5).
+fn released_many<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c>> {
+    let n = cx.get_int(a[0])? as usize;
+    let mut texts = Vec::new();
+    for i in 0..n {
+        let v = cx.string(&format!("v{i}"))?;
+        let s = cx.get_str(v)?;
+        cx.release(v);
+        if cx.kind(v) == Kind::Invalid {
+            return Err(cx.raise("RuntimeError", "released while its text was lent"));
+        }
+        texts.push(s);
+    }
+    for i in 0..100 {
+        cx.int(i);
+    }
+    for (i, s) in texts.iter().enumerate() {
+        if *s != format!("v{i}") {
+            return Err(cx.raise("RuntimeError", "a lent text changed"));
+        }
+    }
+    cx.string(&format!("{} texts, the last {}", texts.len(), texts.last().copied().unwrap_or("")))
+}
+
 fn int_map<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c>> {
     let h = cx.hash();
     for i in 0..cx.get_int(a[0])? {
@@ -220,6 +246,7 @@ quarz_ext::module! {
     "Demo.released" => released,
     "Demo.released_bytes" => released_bytes,
     "Demo.released_made" => released_made,
+    "Demo.released_many" => released_many,
     "Demo.int_map" => int_map,
     "Demo.floats" => floats,
     "Demo.byte_list" => byte_list,

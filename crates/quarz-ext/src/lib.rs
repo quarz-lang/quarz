@@ -42,6 +42,7 @@ pub type Result<T> = std::result::Result<T, Raised>;
 /// A value of the call `'c`: a handle that is not valid once the call
 /// returns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
 pub struct Value<'c> {
     handle: QzValue,
     _call: PhantomData<&'c ()>,
@@ -76,6 +77,12 @@ impl<'c> Value<'c> {
         Value::new(handle)
     }
 }
+
+// `entry` reads the handles as values: the same size and alignment.
+const _: () = {
+    assert!(std::mem::size_of::<Value<'static>>() == std::mem::size_of::<QzValue>());
+    assert!(std::mem::align_of::<Value<'static>>() == std::mem::align_of::<QzValue>());
+};
 
 /// What a value is (`Call::kind`). Later minor versions may add kinds;
 /// until the wrapper knows one, it is `Other`.
@@ -366,9 +373,12 @@ pub mod __private {
         } else {
             std::slice::from_raw_parts(args, nargs)
         };
-        let values: Vec<Value<'_>> = raw.iter().map(|h| Value::new(*h)).collect();
+        // SAFETY: `Value` is a `QzValue` (`repr(transparent)`, its
+        // `PhantomData` zero-sized: asserted below), so the handles are
+        // the values, with no copy.
+        let values: &[Value<'_>] = std::slice::from_raw_parts(raw.as_ptr().cast(), raw.len());
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            method(&call, Value::new(recv), &values)
+            method(&call, Value::new(recv), values)
         }));
         match result {
             Ok(Ok(v)) => {
