@@ -208,6 +208,13 @@ never use `pgrep -f` with a plain pattern).
   first run and on the second: run the tests twice, the second with a
   warm `target/quarz-cache`, and `rm -rf` it after a change to the
   encoding without a new build id.
+- `quarz build` keeps the objects clang makes under the same directory
+  (`target/quarz-cache/objects` for `cargo test`), keyed by each
+  partition's text, clang and its flags: a change to `gen.rs` needs
+  nothing, as it reaches an object only through the text; one to what an
+  object depends on outside the text bumps `objcache::KEY_VERSION`. A
+  stale object is ruled out by `QUARZ_NO_CACHE=1` or by removing
+  `objects/`.
 - `QUARZ_VERIFY=moves` (set by `.cargo/config.toml`) makes the interpreter
   check the facts compiled code trusts and the moves; a debug build
   checks the facts by default (`QUARZ_VERIFY=0` turns that off) and
