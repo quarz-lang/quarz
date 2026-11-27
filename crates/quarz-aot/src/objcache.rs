@@ -227,8 +227,8 @@ impl Cache {
     }
 }
 
-/// The objects' bound: `BOUND`, or `QUARZ_OBJECT_CACHE_BOUND` bytes (for
-/// tests).
+/// The objects' bound: `BOUND`, or `QUARZ_OBJECT_CACHE_BOUND` bytes.
+/// That variable is for tests, not a setting: the bound is 2 GB.
 pub fn bound() -> u64 {
     std::env::var("QUARZ_OBJECT_CACHE_BOUND")
         .ok()

@@ -1144,7 +1144,8 @@ fn opt_level() -> Result<&'static str, String> {
 /// name in the object, so the name is the key's, and the object is the
 /// same wherever it is made. With `cache` (the objects' cache,
 /// `objcache`), a partition whose object the cache holds is not
-/// compiled, and each one compiled is kept there. The IR is removed
+/// compiled, and each one compiled is kept there, but for the tables'
+/// partition of a program of several, always compiled. The IR is removed
 /// after, unless `QUARZ_KEEP_IR` is set. When a clang fails, the ones
 /// running are waited for, no other starts, and every failure is
 /// reported. With the objects: what `link` needs of the names
@@ -1197,10 +1198,17 @@ pub fn compile(
     let start = std::time::Instant::now();
     let cpu_before = children_cpu_ms();
     let objects: Vec<PathBuf> = lls.iter().map(|ll| ll.with_extension("o")).collect();
-    // The partitions the cache holds, their objects written in place.
+    // The partitions the cache holds, their objects written in place. (The
+    // tables' partition of a program of several, last, is always compiled
+    // and never kept: its text, which holds every number and the embedded
+    // module, changes with nearly every edit, and it compiles in a few
+    // hundredths of a second; kept, it would be most of what each build
+    // adds to the cache.)
+    let tables = (lls.len() > 1).then(|| lls.len() - 1);
+    let cached = |p: usize| cache.as_ref().filter(|_| Some(p) != tables);
     let mut todo: Vec<usize> = Vec::with_capacity(lls.len());
     for p in 0..lls.len() {
-        match cache.as_ref().and_then(|c| c.fetch(&keys[p])) {
+        match cached(p).and_then(|c| c.fetch(&keys[p])) {
             Some(bytes) if std::fs::write(&objects[p], &bytes).is_ok() => {}
             _ => todo.push(p),
         }
@@ -1237,7 +1245,7 @@ pub fn compile(
                 if let Some(e) = error {
                     failed.store(true, std::sync::atomic::Ordering::Relaxed);
                     errors.lock().expect("the errors").push((p, e));
-                } else if let Some(c) = &cache {
+                } else if let Some(c) = cached(p) {
                     if let Ok(bytes) = std::fs::read(&objects[p]) {
                         c.store(&keys[p], &bytes);
                     }
@@ -1260,7 +1268,7 @@ pub fn compile(
             .join("\n"));
     }
     if let Some(c) = &cache {
-        if !todo.is_empty() {
+        if todo.iter().any(|&p| Some(p) != tables) {
             c.sweep(crate::objcache::bound());
         }
     }

@@ -1042,7 +1042,8 @@ fn cached_build(
 
 /// #1182: the objects' cache changes nothing in the executable: built
 /// with the cache cold, warm and off, at one job and eight, stripped and
-/// not, it is the same; a warm build compiles nothing.
+/// not, it is the same; a warm build compiles nothing but the tables'
+/// partition, which is never kept.
 #[test]
 fn the_object_cache_gives_the_same_executable_cold_warm_and_off() {
     let dir = std::env::temp_dir().join(format!("quarz-objcache-same-{}", std::process::id()));
@@ -1056,8 +1057,8 @@ fn the_object_cache_gives_the_same_executable_cold_warm_and_off() {
         assert!(n > 4, "{n} partitions");
         assert_eq!(hits, 0, "cold");
         for (name, c, envs, want) in [
-            ("warm8", Some(cache.as_path()), &j8, n),
-            ("warm1", Some(cache.as_path()), &j1, n),
+            ("warm8", Some(cache.as_path()), &j8, n - 1),
+            ("warm1", Some(cache.as_path()), &j1, n - 1),
             ("off8", None, &j8, 0),
             ("off1", None, &j1, 0),
         ] {
@@ -1088,17 +1089,18 @@ fn a_damaged_cached_object_is_compiled_again() {
         .filter(|p| p.extension().is_some_and(|e| e == "o"))
         .collect();
     objects.sort();
-    assert_eq!(objects.len(), n);
+    // (All but the tables' partition.)
+    assert_eq!(objects.len(), n - 1);
     // One object cut short, one sum changed.
     let bytes = fs::read(&objects[0]).unwrap();
     fs::write(&objects[0], &bytes[..bytes.len() / 2]).unwrap();
     fs::write(objects[1].with_extension("sum"), "0".repeat(64)).unwrap();
     let (again, _, hits) = cached_build(&dir, "again", Some(&cache), &[]);
-    assert_eq!(hits, n - 2);
+    assert_eq!(hits, n - 3);
     assert!(again == cold, "another executable");
     // Replaced: all hits now.
     let (_, _, hits) = cached_build(&dir, "warm", Some(&cache), &[]);
-    assert_eq!(hits, n);
+    assert_eq!(hits, n - 1);
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -1118,7 +1120,7 @@ fn two_builds_at_once_share_the_object_cache() {
     });
     assert!(a.0 == b.0, "another executable");
     let (warm, n, hits) = cached_build(&dir, "warm", Some(&cache), &[]);
-    assert_eq!(hits, n);
+    assert_eq!(hits, n - 1);
     assert!(warm == a.0);
     let _ = fs::remove_dir_all(&dir);
 }
