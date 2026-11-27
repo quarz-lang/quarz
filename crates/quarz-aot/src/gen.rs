@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use quarz_ir::*;
 use quarz_vm::layout as L;
 
-use crate::builder::{Builder, FloatCC, IntCC, Ty};
+use crate::builder::{Builder, FloatCC, IdKind, IntCC, Ty};
 use crate::unbox::{self, Num, State};
 
 // The layout constants compiled code shares with the runtime, from their
@@ -1201,13 +1201,13 @@ fn emit_typed_activation<B: Builder>(
     owned: bool,
 ) {
     let zero = b.iconst(Ty::I64, 0);
-    let fid_v = b.iconst(Ty::I32, i64::from(fid));
+    let fid_v = b.world_id(IdKind::Func, fid);
     b.store(fid_v, own_act, L::ACT_FID as i32);
     let task = b.load(Ty::I32, rt, L::CURRENT_TASK as i32);
     b.store(task, own_act, L::ACT_TASK as i32);
     let zero32 = b.iconst(Ty::I32, 0);
     b.store(zero32, own_act, L::ACT_LINE as i32);
-    let file_v = b.iconst(Ty::I32, i64::from(file));
+    let file_v = b.world_id(IdKind::File, file);
     b.store(file_v, own_act, L::ACT_FILE as i32);
     let self_dst = b.iadd_imm(own_act, L::ACT_SELF as i64);
     b.store(zero, self_dst, 0);
@@ -1672,13 +1672,13 @@ impl<B: Builder> Gen<'_, B> {
         self.b.jump(unwind, &[status]);
         self.b.switch_to_block(build);
         // The activation.
-        let fid_v = self.b.iconst(Ty::I32, i64::from(callee));
+        let fid_v = self.b.world_id(IdKind::Func, callee);
         self.b.store(fid_v, act, L::ACT_FID as i32);
         let task = self.b.load(Ty::I32, self.rt, L::CURRENT_TASK as i32);
         self.b.store(task, act, L::ACT_TASK as i32);
         let zero32 = self.b.iconst(Ty::I32, 0);
         self.b.store(zero32, act, L::ACT_LINE as i32);
-        let file_v = self.b.iconst(Ty::I32, i64::from(file));
+        let file_v = self.b.world_id(IdKind::File, file);
         self.b.store(file_v, act, L::ACT_FILE as i32);
         let self_dst = self.b.iadd_imm(act, L::ACT_SELF as i64);
         match recv {
@@ -2003,7 +2003,7 @@ impl<B: Builder> Gen<'_, B> {
         let cid = self
             .b
             .uload32(rc, OBJECT_FIELDS_PTR_OFF + L::OBJECT_CLASS_OFF as i32);
-        let same = self.b.icmp_imm(IntCC::Equal, cid, i64::from(class));
+        let same = self.class_test(cid, class);
         let other = self.b.create_block();
         let ask = self.b.create_block();
         let on = self.b.create_block();
@@ -2018,7 +2018,7 @@ impl<B: Builder> Gen<'_, B> {
         self.b.switch_to_block(ask);
         self.b.set_cold(ask);
         let o = self.i32(obj);
-        let c = self.i32(class);
+        let c = self.b.world_id(IdKind::Class, class);
         let s = self.i32(u32::from(set));
         self.b.call(h, &[self.rt, self.regs, o, c, s, cell]);
         self.b.jump(on, &[]);
@@ -2276,7 +2276,7 @@ impl<B: Builder> Gen<'_, B> {
         self.flush_live_aside(&live);
         self.materialize();
         let k = self.b.iconst(Ty::I32, i64::from(kind));
-        let fid = self.b.iconst(Ty::I32, i64::from(self.fid));
+        let fid = self.b.world_id(IdKind::Func, self.fid);
         let line = self
             .b
             .iconst(Ty::I32, i64::from(self.line_at(block, index)));
@@ -2312,7 +2312,7 @@ impl<B: Builder> Gen<'_, B> {
         }
         self.materialize();
         let k = self.b.iconst(Ty::I32, i64::from(L::RAISE_UNSOUND));
-        let fid = self.b.iconst(Ty::I32, i64::from(self.fid));
+        let fid = self.b.world_id(IdKind::Func, self.fid);
         let line = self
             .b
             .iconst(Ty::I32, i64::from(self.line_at(block, index)));
@@ -2548,6 +2548,30 @@ impl<B: Builder> Gen<'_, B> {
         self.b.iconst(Ty::I32, i64::from(v))
     }
 
+    /// Whether the class id `cid` (an object's) is `class`: the one place
+    /// a class's number is a constant in the code, not loaded from the
+    /// partition's table (#1182). Its sites: `ClassIs`, on an object and
+    /// on a value of unknown state (the tests the lowering splits a
+    /// dispatch into, before direct calls), and the facts check's field
+    /// guard (`verify_field_class`). In a hot loop a load there cost 4.7%
+    /// of `bench/dispatch`'s cycles split into partitions. A renumbered class cannot leave a
+    /// stale constant in a reused object: the constant is in the
+    /// partition's text, whose hash is its key, so the text and the key
+    /// change and the partition is built again. Classes are numbered in
+    /// the order units are loaded (the standard library, then the cogs,
+    /// dependencies first, the application last: `load_cogs`), so a class
+    /// the application adds renumbers no class a cog or the standard
+    /// library tests; one a cog adds renumbers that cog's later classes
+    /// and those of the cogs loaded after it.
+    fn class_test(&mut self, cid: B::Value, class: ClassId) -> B::Value {
+        self.b.icmp_imm(IntCC::Equal, cid, i64::from(class))
+    }
+
+    /// `id`, a number of the world of kind `kind` (`Builder::world_id`).
+    fn wid(&mut self, kind: IdKind, id: u32) -> B::Value {
+        self.b.world_id(kind, id)
+    }
+
     /// Branch to `unwind` when a status is not OK.
     fn check(&mut self, status: B::Value, unwind: B::Block) {
         let cont = self.b.create_block();
@@ -2717,7 +2741,7 @@ impl<B: Builder> Gen<'_, B> {
             }
             slots += 1;
         }
-        let mid_v = self.i32(mid);
+        let mid_v = self.wid(IdKind::Method, mid);
         let recv_v = self.i32(recv.unwrap_or(u32::MAX));
         let nparams_v = self.i32(nparams as u32);
         let blk_v = self.i32(blk.unwrap_or(u32::MAX));
@@ -2843,7 +2867,7 @@ impl<B: Builder> Gen<'_, B> {
                 self.ensure_home(r);
             }
         }
-        let mid_v = self.i32(mid);
+        let mid_v = self.wid(IdKind::Method, mid);
         let recv_v = self.i32(match recv {
             Some(r) if take_recv => r | L::RECV_TAKE,
             Some(r) => r,
@@ -2857,9 +2881,9 @@ impl<B: Builder> Gen<'_, B> {
             (target.frame_size, target.file)
         };
         let body = self.callees[&callee];
-        let callee_v = self.i32(callee);
+        let callee_v = self.wid(IdKind::Func, callee);
         let frame_v = self.i32(frame_size);
-        let file_v = self.i32(file);
+        let file_v = self.wid(IdKind::File, file);
         let (nparams, has_block) = {
             let m = &self.methods[mid as usize];
             (m.params.len(), m.has_block)
@@ -3084,11 +3108,11 @@ impl<B: Builder> Gen<'_, B> {
             return;
         }
         let none = self.i32(u32::MAX);
-        let callee_v = self.i32(fid);
+        let callee_v = self.wid(IdKind::Func, fid);
         let recv_v = self.i32(obj);
         let zero32 = self.i32(0);
         let frame_v = self.i32(frame_size);
-        let file_v = self.i32(file);
+        let file_v = self.wid(IdKind::File, file);
         let provided_v = self.b.iconst(Ty::I64, 0);
         let status = self.b.call(
             self.h.enter,
@@ -3391,7 +3415,7 @@ impl<B: Builder> Gen<'_, B> {
             let v = self.i32(*r);
             self.b.store(v, self.scratch, 4 * k as i32);
         }
-        let mid_v = self.i32(mid);
+        let mid_v = self.wid(IdKind::Method, mid);
         let recv_v = self.i32(recv.unwrap_or(u32::MAX));
         let nargs = self.i32(args.len() as u32);
         let blk_v = self.i32(blk.unwrap_or(u32::MAX));
@@ -3553,6 +3577,8 @@ impl<B: Builder> Gen<'_, B> {
     fn emit_op(&mut self, inst: &Inst, block: u32, index: u32, dead: bool, unwind: B::Block) {
         let w = |g: &mut Self, v: u32| g.b.iconst(Ty::I32, i64::from(v));
         let opt = |r: Option<u32>| r.unwrap_or(u32::MAX);
+        // (A number of the world, `u32::MAX` when none.)
+        let id = |g: &mut Self, kind: IdKind, v: u32| g.b.world_id(kind, v);
         let (name, extra): (&str, Vec<B::Value>) = match inst {
             Inst::FieldTake {
                 dst, obj, index, ..
@@ -3577,10 +3603,13 @@ impl<B: Builder> Gen<'_, B> {
                     w(self, *name),
                 ],
             ),
-            Inst::ConstGet { dst, id } => ("qz_op_const_get", vec![w(self, *dst), w(self, *id)]),
+            Inst::ConstGet { dst, id: c } => (
+                "qz_op_const_get",
+                vec![w(self, *dst), id(self, IdKind::Const, *c)],
+            ),
             Inst::VariantSingleton { dst, class } => (
                 "qz_op_variant_singleton",
-                vec![w(self, *dst), w(self, *class)],
+                vec![w(self, *dst), id(self, IdKind::Class, *class)],
             ),
             Inst::Call {
                 dst,
@@ -3685,7 +3714,7 @@ impl<B: Builder> Gen<'_, B> {
                     w(self, op.index()),
                     w(self, *lhs),
                     w(self, *rhs),
-                    w(self, opt(*method)),
+                    id(self, IdKind::Method, opt(*method)),
                 ],
             ),
             Inst::CaseEq {
@@ -3702,7 +3731,11 @@ impl<B: Builder> Gen<'_, B> {
             ),
             Inst::ClassIsA { dst, src, class } => (
                 "qz_op_class_is_a",
-                vec![w(self, *dst), w(self, *src), w(self, *class)],
+                vec![
+                    w(self, *dst),
+                    w(self, *src),
+                    id(self, IdKind::Class, *class),
+                ],
             ),
             Inst::IsA { dst, src, ty } => {
                 let mut words = Vec::new();
@@ -3741,7 +3774,7 @@ impl<B: Builder> Gen<'_, B> {
                 "qz_op_make_block",
                 vec![
                     w(self, *dst),
-                    w(self, *func),
+                    id(self, IdKind::Func, *func),
                     w(self, opt(*destructure)),
                     w(self, u32::from(*is_lambda)),
                 ],
@@ -3757,7 +3790,7 @@ impl<B: Builder> Gen<'_, B> {
                     w(self, *dst),
                     w(self, *recv),
                     w(self, *name),
-                    w(self, opt(*method)),
+                    id(self, IdKind::Method, opt(*method)),
                 ],
             ),
             Inst::SymbolProc {
@@ -3775,7 +3808,7 @@ impl<B: Builder> Gen<'_, B> {
                     vec![
                         w(self, *dst),
                         w(self, *name),
-                        w(self, opt(*method)),
+                        id(self, IdKind::Method, opt(*method)),
                         w(self, u32::from(*discard)),
                         t,
                         n,
@@ -3889,7 +3922,7 @@ impl<B: Builder> Gen<'_, B> {
                     w(self, *dst),
                     w(self, *bytes),
                     w(self, *index),
-                    w(self, *method),
+                    id(self, IdKind::Method, *method),
                 ],
             ),
             Inst::ArrayNewWords {
@@ -3988,7 +4021,7 @@ impl<B: Builder> Gen<'_, B> {
     fn op_status(&mut self, name: &str, block: u32, index: u32, extra: &[B::Value]) -> B::Value {
         self.materialize();
         let entry = self.h.ops[op_index(name)];
-        let fid = self.b.iconst(Ty::I32, i64::from(self.fid));
+        let fid = self.b.world_id(IdKind::Func, self.fid);
         let line = self
             .b
             .iconst(Ty::I32, i64::from(self.line_at(block, index)));
@@ -4137,7 +4170,7 @@ impl<B: Builder> Gen<'_, B> {
                 }
                 // A longer string or a symbol: cloned from the function's pool.
                 Constant::Str(_) | Constant::Symbol(_) => {
-                    let fid = self.i32(self.fid);
+                    let fid = self.wid(IdKind::Func, self.fid);
                     let i = self.i32(*idx);
                     let d = self.i32(*dst);
                     self.b
@@ -5021,7 +5054,7 @@ impl<B: Builder> Gen<'_, B> {
                         let cid = self
                             .b
                             .uload32(rc, OBJECT_FIELDS_PTR_OFF + L::OBJECT_CLASS_OFF as i32);
-                        self.b.icmp_imm(IntCC::Equal, cid, i64::from(*class))
+                        self.class_test(cid, *class)
                     }
                     State::Unknown => {
                         let check = self.b.create_block();
@@ -5041,7 +5074,7 @@ impl<B: Builder> Gen<'_, B> {
                         let cid = self
                             .b
                             .uload32(rc, OBJECT_FIELDS_PTR_OFF + L::OBJECT_CLASS_OFF as i32);
-                        let same = self.b.icmp_imm(IntCC::Equal, cid, i64::from(*class));
+                        let same = self.class_test(cid, *class);
                         self.b.jump(join, &[same]);
                         self.b.switch_to_block(join);
                         self.b.block_params(join)[0]
@@ -5206,7 +5239,7 @@ impl<B: Builder> Gen<'_, B> {
             Inst::ClassRef { dst, class } => {
                 self.release(*dst);
                 self.store_tag(*dst, TAG_CLASS);
-                let v = self.b.iconst(Ty::I32, i64::from(*class));
+                let v = self.b.world_id(IdKind::Class, *class);
                 self.b.store(v, self.regs, reg_off(*dst) + CLASS_OFF);
             }
             Inst::FieldGet {
@@ -5389,7 +5422,7 @@ impl<B: Builder> Gen<'_, B> {
                             self.clone_reg_to_ptr(p, *r);
                         }
                     }
-                    let class_v = self.i32(*class);
+                    let class_v = self.wid(IdKind::Class, *class);
                     let n = self.i32(args.len() as u32);
                     let d = self.i32(*dst);
                     self.b.call(
@@ -5409,7 +5442,7 @@ impl<B: Builder> Gen<'_, B> {
                     // (The line a backtrace shows for this frame, as a
                     // direct method call records it.)
                     self.set_call_line(block, index);
-                    let class_v = self.i32(*class);
+                    let class_v = self.wid(IdKind::Class, *class);
                     let d = self.i32(*dst);
                     let status = self
                         .b
@@ -5441,8 +5474,11 @@ impl<B: Builder> Gen<'_, B> {
                     let v = self.i32(*r);
                     self.b.store(v, self.scratch, 4 * k as i32);
                 }
-                let class_v = self.i32(*class);
-                let init_v = self.i32(init.unwrap_or(u32::MAX));
+                let class_v = self.wid(IdKind::Class, *class);
+                let init_v = match init {
+                    Some(m) => self.wid(IdKind::Method, *m),
+                    None => self.i32(u32::MAX),
+                };
                 let nargs = self.i32(args.len() as u32);
                 let d = self.i32(*dst);
                 let status = self.b.call(
@@ -5580,7 +5616,7 @@ impl<B: Builder> Gen<'_, B> {
                     VarLoc::Field { obj, index } => (2, *obj, *index),
                 };
                 self.materialize();
-                let mid_v = self.i32(*method);
+                let mid_v = self.wid(IdKind::Method, *method);
                 let kind_v = self.i32(kind);
                 let a_v = self.i32(a);
                 let b_v = self.i32(bb);
@@ -5677,11 +5713,13 @@ impl<B: Builder> Gen<'_, B> {
                     }
                     // (A function's call carries `STATIC_FUNCTION` in its
                     // id: called as is.)
-                    let mid_v = self.i32(if function {
-                        mid | quarz_vm::ffi::STATIC_FUNCTION
+                    let mid_v = self.wid(IdKind::Method, mid);
+                    let mid_v = if function {
+                        let flag = self.i32(quarz_vm::ffi::STATIC_FUNCTION);
+                        self.b.bor(mid_v, flag)
                     } else {
-                        mid
-                    });
+                        mid_v
+                    };
                     let recv_v = self.i32(recv.unwrap_or(u32::MAX));
                     let nargs = self.i32(args.len() as u32);
                     let blk_v = self.i32(blk.unwrap_or(u32::MAX));

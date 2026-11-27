@@ -76,15 +76,32 @@ pub fn report(stage: &str, start: std::time::Instant, extra: &[(&str, String)]) 
 /// Link the object files (the program's partitions, in order) with the
 /// runtime into the executable `output`, dropping the runtime's code the
 /// program cannot reach (the runtime is one codegen unit, each function in
-/// a section of its own).
-fn link(objects: &[PathBuf], output: &Path) -> Result<(), String> {
+/// a section of its own). The names partitions call each other's functions
+/// by are equated with the functions' own by `--defsym`, in a response
+/// file in `dir` (#1182): the one form GNU ld, gold, lld and mold all
+/// document (GNU ld and lld are tested; gold and mold are taken from
+/// their documentation). The names are `llvm::localize`'s (letters,
+/// digits and `_`), so the file needs no quoting.
+fn link(compiled: &llvm::Compiled, dir: &Path, output: &Path) -> Result<(), String> {
     let runtime = find_runtime_lib()?;
     let start = std::time::Instant::now();
-    let status = Command::new("cc")
-        .arg("-o")
+    let mut cc = Command::new("cc");
+    cc.arg("-o")
         .arg(output)
-        .args(objects)
-        .arg(&runtime)
+        .args(&compiled.objects)
+        .arg(&runtime);
+    if !compiled.map.is_empty() {
+        let mut rsp = String::new();
+        for (from, to) in &compiled.map {
+            rsp.push_str(&format!("-Wl,--defsym={from}={to}\n"));
+        }
+        let path = dir.join("names.rsp");
+        std::fs::write(&path, rsp).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut arg = std::ffi::OsString::from("@");
+        arg.push(&path);
+        cc.arg(arg);
+    }
+    let status = cc
         .arg("-Wl,--gc-sections")
         // The unwinder (backtraces walk the native stack with it) linked
         // in: one shared library fewer to load at start-up.
@@ -93,45 +110,83 @@ fn link(objects: &[PathBuf], output: &Path) -> Result<(), String> {
         .status()
         .map_err(|e| format!("cannot run cc: {e}"))?;
     if !status.success() {
+        if !compiled.map.is_empty() {
+            return Err(format!(
+                "linking failed ({status})\n\
+                 quarz: the partitions call each other through names the linker equates \
+                 (`--defsym`, {} of them); a linker that refuses them builds one partition \
+                 with QUARZ_BUILD_PARTITION_BYTES=1000000000",
+                compiled.map.len()
+            ));
+        }
         return Err(format!("linking failed ({status})"));
     }
-    report("link", start, &[]);
-    if std::env::var_os("QUARZ_NO_STRIP").is_none() {
-        let start = std::time::Instant::now();
-        strip(output)?;
-        report("strip", start, &[]);
-    }
+    report("link", start, &[("names", compiled.map.len().to_string())]);
+    let start = std::time::Instant::now();
+    strip(
+        output,
+        &compiled.typed_names,
+        std::env::var_os("QUARZ_NO_STRIP").is_none(),
+    )?;
+    report("strip", start, &[]);
     Ok(())
 }
 
-/// Strip the executable `output` of its symbols and debug information
-/// (most of its size: the standard library's), keeping what backtraces
-/// need of them in a section of its own (`quarz_vm::native_bt::table`).
-/// Without `objcopy` the executable stays as it is, and its backtraces
-/// read the symbols and the DWARF line table.
-fn strip(output: &Path) -> Result<(), String> {
+/// Give the executable `output` what backtraces need in a section of its
+/// own (`quarz_vm::native_bt::table`: the typed entries, by their names in
+/// `typed_names`, and the line table), and with `strip` strip it of its
+/// symbols and debug information (most of its size: the standard
+/// library's), by `objcopy`, else `llvm-objcopy` (which takes the same
+/// arguments). With neither, the executable stays as it is and a warning
+/// says so: its backtraces show no compiled function, as the symbols'
+/// names do not say which function they are (#1182).
+fn strip(
+    output: &Path,
+    typed_names: &[(String, quarz_ir::FuncId)],
+    strip: bool,
+) -> Result<(), String> {
     let exe = std::fs::read(output).map_err(|e| format!("{}: {e}", output.display()))?;
-    let table = quarz_vm::native_bt::table(&exe)?;
+    let names: std::collections::HashMap<&str, quarz_ir::FuncId> =
+        typed_names.iter().map(|(n, f)| (n.as_str(), *f)).collect();
+    let table = quarz_vm::native_bt::table(&exe, &|name| names.get(name).copied())?;
     let table_path = output.with_extension("quarz_bt");
     std::fs::write(&table_path, &table).map_err(|e| format!("{}: {e}", table_path.display()))?;
-    let status = Command::new("objcopy")
-        .arg("--strip-all")
-        .arg("--add-section")
-        .arg(format!(
-            "{}={}",
-            quarz_vm::native_bt::SECTION,
-            table_path.display()
-        ))
-        .arg(output)
-        .status();
-    let _ = std::fs::remove_file(&table_path);
-    match status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(format!("stripping failed ({s})")),
-        // No objcopy: left unstripped.
-        Err(_) => Ok(()),
+    let mut result = None;
+    for tool in OBJCOPY {
+        let mut objcopy = Command::new(tool);
+        if strip {
+            objcopy.arg("--strip-all");
+        }
+        let status = objcopy
+            .arg("--add-section")
+            .arg(format!(
+                "{}={}",
+                quarz_vm::native_bt::SECTION,
+                table_path.display()
+            ))
+            .arg(output)
+            .status();
+        match status {
+            Ok(s) if s.success() => result = Some(Ok(())),
+            Ok(s) => result = Some(Err(format!("{tool} failed on {} ({s})", output.display()))),
+            // Not there: the next.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => result = Some(Err(format!("cannot run {tool}: {e}"))),
+        }
+        break;
     }
+    let _ = std::fs::remove_file(&table_path);
+    result.unwrap_or_else(|| {
+        eprintln!(
+            "quarz: warning: neither objcopy nor llvm-objcopy runs here: {} is left unstripped, and its backtraces will show no compiled function; install binutils or LLVM's llvm-objcopy",
+            output.display()
+        );
+        Ok(())
+    })
 }
+
+/// The tools `strip` tries, in order.
+const OBJCOPY: [&str; 2] = ["objcopy", "llvm-objcopy"];
 
 /// The clang processes `quarz build` runs at once (#786): `jobs` when
 /// given (`quarz build -j N`), else `QUARZ_BUILD_JOBS`, else the
@@ -211,8 +266,7 @@ pub fn build_with_jobs(
     // (Fresh: what an earlier build left is not linked in.)
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let built =
-        llvm::compile(module, groups, &dir, jobs).and_then(|objects| link(&objects, output));
+    let built = llvm::compile(module, groups, &dir, jobs).and_then(|c| link(&c, &dir, output));
     if std::env::var_os("QUARZ_KEEP_IR").is_some() {
         for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
             if entry.path().extension().is_some_and(|e| e == "o") {

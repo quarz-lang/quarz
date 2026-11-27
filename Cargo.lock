@@ -936,6 +936,7 @@ dependencies = [
  "libc",
  "quarz-ir",
  "quarz-vm",
+ "sha2",
 ]
 
 [[package]]

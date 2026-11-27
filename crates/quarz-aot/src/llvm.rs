@@ -14,7 +14,7 @@ use crate::FileGroups;
 use quarz_ir::*;
 use quarz_vm::layout as L;
 
-use crate::builder::{Builder, FloatCC, IntCC, Ty};
+use crate::builder::{Builder, FloatCC, IdKind, IntCC, Ty};
 use crate::gen::{self, Helpers};
 use crate::unbox;
 
@@ -78,8 +78,18 @@ struct Ll<'a> {
     line: Option<u32>,
     /// Intrinsics used (declared by the module).
     intrinsics: Vec<&'static str>,
-    /// The definitions of the function's data (`data_words` and so on).
+    /// The definitions of the function's data (`data_bytes`,
+    /// `data_cell`), named by `data_ref`s.
     data: Vec<String>,
+    /// The function these entries belong to, which makes the names of
+    /// its data and descriptors distinct in the module.
+    owner: FuncId,
+    /// The data named so far by the function's entries (`data_ref`).
+    ndata: u32,
+    /// The function's descriptors (`data_words`), by their number after
+    /// `desc_base`: defined outside the partition (`localize`).
+    descs: Vec<Vec<u32>>,
+    desc_base: u32,
 }
 
 /// Where a body's `define` linkage goes: `internal` in a program of one
@@ -99,6 +109,19 @@ const ENTRY_LINKAGE: &str = "\x04";
 /// them (`\01`).
 fn meta_ref(local: u32) -> String {
     format!("!\x01{local}\x02")
+}
+
+/// A marker of the IR text (#1182): `kind` and its operand between
+/// `\x05` and `\x06`, which `localize` replaces in each partition by
+/// what is local to it. The kinds:
+/// - `F`, `T`, `E` and a function id: the name of its body, its typed
+///   entry, its early entry;
+/// - an `IdKind`'s letter and an id: the address of that number, a
+///   constant of the partition's own (`@qz_i_<key>_<k>`);
+/// - `W` and `owner.n`: the name of a descriptor (`data_words`);
+/// - `D` and `owner.n`: the name of a datum (`data_bytes`, `data_cell`).
+fn marker(kind: char, operand: &str) -> String {
+    format!("\x05{kind}{operand}\x06")
 }
 
 /// `text` with each `meta_ref` numbered from `base`, each `LINKAGE`
@@ -199,6 +222,10 @@ impl<'a> Ll<'a> {
             line: None,
             intrinsics: Vec::new(),
             data: Vec::new(),
+            owner: 0,
+            ndata: 0,
+            descs: Vec::new(),
+            desc_base: 0,
         };
         for (i, p) in params.iter().enumerate() {
             ll.vals.push(Val {
@@ -478,10 +505,12 @@ impl Ll<'_> {
     /// A new datum of the function, defined by `def` given its name, as a
     /// pointer value (`ty` is its type, for the typed-pointer syntax).
     fn datum(&mut self, def: impl FnOnce(&str) -> String, ty: &str) -> u32 {
-        // Unique in the module (names need only be distinct).
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let name = format!("@qz_data_{n}");
+        // (Numbered in its partition by `localize`.)
+        let name = format!(
+            "@{}",
+            marker('D', &format!("{}.{}", self.owner, self.ndata))
+        );
+        self.ndata += 1;
         self.data.push(def(&name));
         let text = if self.opaque {
             name
@@ -497,18 +526,26 @@ impl Builder for Ll<'_> {
         if words.is_empty() {
             return self.iconst(Ty::Ptr, 0);
         }
-        let items: Vec<String> = words.iter().map(|w| format!("i32 {}", *w as i32)).collect();
-        let ty = format!("[{} x i32]", words.len());
-        let t2 = ty.clone();
-        self.datum(
-            move |name| {
-                format!(
-                    "{name} = private unnamed_addr constant {t2} [{}], align 4",
-                    items.join(", ")
-                )
-            },
-            &ty,
-        )
+        // A descriptor: defined outside the partition, as it may hold
+        // numbers of the world (`localize`).
+        let n = self.desc_base + self.descs.len() as u32;
+        self.descs.push(words.to_vec());
+        let name = format!("@{}", marker('W', &format!("{}.{n}", self.owner)));
+        let text = if self.opaque {
+            name
+        } else {
+            format!("bitcast ([{} x i32]* {name} to i8*)", words.len())
+        };
+        self.new_val(text, Ty::Ptr)
+    }
+
+    fn world_id(&mut self, kind: IdKind, id: u32) -> u32 {
+        if id == u32::MAX {
+            return self.iconst(Ty::I32, -1);
+        }
+        let at = marker(kind.letter(), &id.to_string());
+        let pt = if self.opaque { "ptr" } else { "i32*" };
+        self.def(Ty::I32, format!("load i32, {pt} {at}, align 4"))
     }
 
     fn data_bytes(&mut self, bytes: &[u8]) -> u32 {
@@ -1104,13 +1141,14 @@ fn opt_level() -> Result<&'static str, String> {
 /// (#786); the objects in partition order. Each partition's IR is written
 /// next to its object (`p000.ll`) and removed after, unless
 /// `QUARZ_KEEP_IR` is set. When a clang fails, the ones running are
-/// waited for, no other starts, and every failure is reported.
+/// waited for, no other starts, and every failure is reported. With the
+/// objects: what `link` needs of the names (`Compiled`).
 pub fn compile(
     module: &Module,
     groups: &FileGroups,
     dir: &Path,
     jobs: usize,
-) -> Result<Vec<PathBuf>, String> {
+) -> Result<Compiled, String> {
     let opt = opt_level()?;
     // (`find_clang` runs `clang --version`: a process of its own.)
     let start = std::time::Instant::now();
@@ -1118,7 +1156,11 @@ pub fn compile(
     crate::report("clang_version", start, &[]);
     let opaque = major >= 15;
     let start = std::time::Instant::now();
-    let parts = emit(module, groups, opaque)?;
+    let Emitted {
+        parts,
+        map,
+        typed_names,
+    } = emit(module, groups, opaque)?;
     let mut lls: Vec<PathBuf> = Vec::with_capacity(parts.len());
     for (p, ir) in parts.iter().enumerate() {
         let ll = dir.join(format!("p{p:03}.ll"));
@@ -1198,7 +1240,24 @@ pub fn compile(
             ("level", opt.trim_start_matches("-O").to_string()),
         ],
     );
-    Ok(objects)
+    Ok(Compiled {
+        objects,
+        map,
+        typed_names,
+    })
+}
+
+/// A compiled program before linking: its objects in partition order; the
+/// names one partition calls another's functions by, each with the name
+/// the function is defined by, which the linker equates (`--defsym`); and
+/// each typed entry's name with its function, which backtraces map an
+/// address by (`quarz_vm::native_bt::table`). The names are made by
+/// `localize` alone (`qz_x_`/`qz_d_`, a key in hexadecimal, numbers):
+/// nothing of the program's text reaches them.
+pub struct Compiled {
+    pub objects: Vec<PathBuf>,
+    pub map: Vec<(String, String)>,
+    pub typed_names: Vec<(String, FuncId)>,
 }
 
 /// The user and system time of this process's waited-for children, in
@@ -1223,7 +1282,7 @@ struct RtIdx {
 }
 
 /// The module as LLVM IR text.
-fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String>, String> {
+fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Emitted, String> {
     let (p, i32_, i64_) = (Ty::Ptr, Ty::I32, Ty::I64);
     let mut decls: Vec<FnDecl> = Vec::new();
     fn push(decls: &mut Vec<FnDecl>, name: &str, params: &[Ty], rets: &[Ty]) -> u32 {
@@ -1318,7 +1377,7 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
     };
     let body_params = [p, p, p];
     let funcs: Vec<u32> = (0..module.functions.len())
-        .map(|i| declare(&format!("qz_fn_{i}"), &body_params, &[i32_]))
+        .map(|i| declare(&marker('F', &i.to_string()), &body_params, &[i32_]))
         .collect();
     let typed = unbox::typed_sigs(&module.functions, &module.world.methods);
     let typed_funcs: Vec<Option<u32>> = typed
@@ -1327,7 +1386,7 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
         .map(|(i, t)| {
             t.as_ref().map(|sig| {
                 let (params, rets) = typed_signature(sig);
-                declare(&format!("qz_fn_{i}_t"), &params, &rets)
+                declare(&marker('T', &i.to_string()), &params, &rets)
             })
         })
         .collect();
@@ -1347,7 +1406,7 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
                 sig,
             )?;
             let (params, rets) = typed_signature(sig);
-            Some(declare(&format!("qz_fn_{i}_e"), &params, &rets))
+            Some(declare(&marker('E', &i.to_string()), &params, &rets))
         })
         .collect();
     let nrt = rt.main as usize + 1;
@@ -1406,6 +1465,10 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
         meta: Vec<String>,
         nmeta: u32,
         calls: Vec<FuncId>,
+        /// The function's descriptors (`Ll::descs`) and the number of its
+        /// data.
+        descs: Vec<Vec<u32>>,
+        ndata: u32,
     }
     let mut gens: Vec<Gen> = Vec::with_capacity(module.functions.len());
     for (i, f) in module.functions.iter().enumerate() {
@@ -1416,6 +1479,8 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
             calls: gen::direct_callees(f, methods, &module.world.classes)
                 .into_iter()
                 .collect(),
+            descs: Vec::new(),
+            ndata: 0,
         };
         let mut entries = vec![(None, funcs[i], None)];
         if let (Some(sig), Some(tf)) = (&typed[i], typed_funcs[i]) {
@@ -1430,6 +1495,10 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
                 None => (body_params.to_vec(), vec![i32_]),
             };
             let mut b = Ll::new(&decls, &sigs, opaque, &params, &rets, g.nmeta);
+            // (The function's data and descriptors so far, numbered on.)
+            b.owner = i as FuncId;
+            b.ndata = g.ndata;
+            b.desc_base = g.descs.len() as u32;
             let mut callees: HashMap<FuncId, u32> = HashMap::new();
             let mut callees_typed: HashMap<FuncId, u32> = HashMap::new();
             for &c in &g.calls {
@@ -1502,6 +1571,8 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
                 "uwtable \"disable-tail-calls\"=\"true\""
             };
             let name = decls[target as usize].name.clone();
+            g.descs.append(&mut b.descs);
+            g.ndata = b.ndata;
             let (mut fn_text, fn_meta) = b.finish(&name, attrs, &params);
             if sig.is_some() {
                 // (A typed or early entry: its own linkage, `ENTRY_LINKAGE`.)
@@ -1536,7 +1607,10 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
             _ => None,
         }
     };
-    let total: usize = gens.iter().map(|g| g.text.len()).sum();
+    // (Sizes that do not depend on the numbers in markers: a partition's
+    // cuts must not move when functions elsewhere are renumbered.)
+    let sizes: Vec<usize> = gens.iter().map(|g| stable_len(&g.text)).collect();
+    let total: usize = sizes.iter().sum();
     let target = partition_bytes();
     let mut order: Vec<usize> = (0..gens.len()).collect();
     let mut parts: Vec<Vec<usize>> = Vec::new();
@@ -1572,8 +1646,8 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
                 class_acc = 0;
             }
             parts.last_mut().expect("a partition").push(i);
-            acc += gens[i].text.len();
-            class_acc += gens[i].text.len();
+            acc += sizes[i];
+            class_acc += sizes[i];
             prev = Some((g, o.or(prev.and_then(|(_, po)| po))));
         }
     }
@@ -1595,7 +1669,10 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
             }
         }
     }
-    let mut outs: Vec<String> = Vec::with_capacity(parts.len() + 1);
+    let descs_of =
+        |owner: FuncId, n: u32| -> Vec<u32> { gens[owner as usize].descs[n as usize].clone() };
+    let mut keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut locals: Vec<Local> = Vec::with_capacity(parts.len());
     for (p, fs) in parts.iter().enumerate() {
         let mut out = prelude.clone();
         // The functions of other partitions this one calls (each of its
@@ -1630,24 +1707,277 @@ fn emit(module: &Module, groups: &FileGroups, opaque: bool) -> Result<Vec<String
             }
             base += gens[i].nmeta;
         }
-        if one {
-            tables(&mut out, module, opaque, &body_params);
-        }
         out.push_str(meta_head);
         out.push_str(&meta);
-        outs.push(out);
+        locals.push(localize(&out, p, &part_of, &descs_of, one, &mut keys));
     }
-    // The tables, the blobs and `main`: a partition of their own, last,
-    // declaring every function the table names.
-    if !one {
-        let mut out = prelude.clone();
-        for i in 0..module.functions.len() {
-            out.push_str(&declare_text(&decls[funcs[i] as usize]));
+    // Each function's names: its partition's key and its number there.
+    let mut def_of: Vec<Option<(String, usize)>> = vec![None; gens.len()];
+    for (p, loc) in locals.iter().enumerate() {
+        for (k, &f) in loc.funcs.iter().enumerate() {
+            if part_of[f as usize] == p {
+                def_of[f as usize] = Some((loc.key.clone(), k));
+            }
         }
-        tables(&mut out, module, opaque, &body_params);
+    }
+    let def_name = |f: usize, sfx: &str| -> String {
+        let (key, k) = def_of[f]
+            .as_ref()
+            .expect("every function is defined in a partition");
+        format!("qz_d_{key}_{k}{sfx}")
+    };
+    // The calls between partitions, for the linker (`Emitted::map`), and
+    // the typed entries' names, for backtraces.
+    let mut map: Vec<(String, String)> = Vec::new();
+    for loc in &locals {
+        for &(k, sfx) in &loc.foreign {
+            let f = loc.funcs[k] as usize;
+            map.push((format!("qz_x_{}_{k}{sfx}", loc.key), def_name(f, sfx)));
+        }
+    }
+    let typed_names: Vec<(String, FuncId)> = (0..gens.len())
+        .filter(|&f| typed_funcs[f].is_some())
+        .map(|f| (def_name(f, "_t"), f as FuncId))
+        .collect();
+    let body_names: Vec<String> = (0..gens.len()).map(|f| def_name(f, "")).collect();
+    let mut outs: Vec<String> = locals.iter().map(|l| l.text.clone()).collect();
+    if one {
+        let mut t = String::new();
+        tables(&mut t, module, opaque, &body_params, &body_names);
+        let at = outs[0].find(META_START).expect("the metadata");
+        outs[0].insert_str(at, &t);
+    } else {
+        // The tables, the blobs and `main`: a partition of their own,
+        // last, declaring every function the table names, and defining
+        // each partition's ids and descriptors (#1182).
+        let mut out = prelude.clone();
+        let ptr = ty_str(Ty::Ptr, opaque);
+        for name in &body_names {
+            let _ = writeln!(out, "declare hidden i32 @{name}({ptr}, {ptr}, {ptr})");
+        }
+        for loc in &locals {
+            for (k, &(_, v)) in loc.ids.iter().enumerate() {
+                let _ = writeln!(
+                    out,
+                    "@qz_i_{}_{k} = hidden constant i32 {}, align 4",
+                    loc.key, v as i32
+                );
+            }
+            for (k, &(owner, n)) in loc.descs.iter().enumerate() {
+                let words = descs_of(owner, n);
+                let items: Vec<String> =
+                    words.iter().map(|w| format!("i32 {}", *w as i32)).collect();
+                let _ = writeln!(
+                    out,
+                    "@qz_dd_{}_{k} = hidden constant [{} x i32] [{}], align 4",
+                    loc.key,
+                    items.len(),
+                    items.join(", ")
+                );
+            }
+        }
+        tables(&mut out, module, opaque, &body_params, &body_names);
         outs.push(out);
     }
-    Ok(outs)
+    Ok(Emitted {
+        parts: outs,
+        map,
+        typed_names,
+    })
+}
+
+/// What `emit` makes: the partitions' IR (the tables last, when there are
+/// several), the names one partition calls another's functions by, with
+/// the names they are defined by (given to the linker: `link`), and each
+/// typed entry's name with its function, for backtraces.
+pub(crate) struct Emitted {
+    pub(crate) parts: Vec<String>,
+    pub(crate) map: Vec<(String, String)>,
+    pub(crate) typed_names: Vec<(String, FuncId)>,
+}
+
+/// Where a partition's metadata starts: what `localize` defines goes
+/// before it.
+const META_START: &str = "\n!llvm.dbg.cu";
+
+/// The length of `text` with each `marker` counted as 8 bytes, whatever
+/// its numbers.
+fn stable_len(text: &str) -> usize {
+    let mut n = 0;
+    let mut rest = text;
+    while let Some(at) = rest.find('\x05') {
+        let end = rest[at..].find('\x06').expect("a marker's end") + at;
+        n += at + 8;
+        rest = &rest[end + 1..];
+    }
+    n + rest.len()
+}
+
+/// A partition's text with its markers made local (#1182): its key (the
+/// hash of that text, `key`), which names what it defines and declares;
+/// the numbers of the world it reads, by their place in its table of ids
+/// (`@qz_i_<key>_<k>`); its functions, defined (`qz_d_<key>_<k>`) or of
+/// another partition (`qz_x_<key>_<k>`), by their place in `funcs`; its
+/// descriptors (`@qz_dd_<key>_<k>`) and data (`@qz_data_<k>`). Nothing in
+/// the text depends on how the rest of the program is numbered: a
+/// partition whose functions did not change keeps its text.
+struct Local {
+    text: String,
+    key: String,
+    ids: Vec<(IdKind, u32)>,
+    descs: Vec<(FuncId, u32)>,
+    funcs: Vec<FuncId>,
+    /// The names of other partitions' functions used, by `k` and suffix.
+    foreign: Vec<(usize, &'static str)>,
+}
+
+/// The `Local` of partition `p`'s text (`text`, with markers): with
+/// `one` (a program of one partition) its ids and descriptors are defined
+/// in it, else declared (the tables' partition defines them). `keys`
+/// holds the keys of the partitions made so far: two partitions with the
+/// same text are told apart by a comment, which keeps each key a function
+/// of its text alone.
+fn localize(
+    text: &str,
+    p: usize,
+    part_of: &[usize],
+    descs_of: &dyn Fn(FuncId, u32) -> Vec<u32>,
+    one: bool,
+    keys: &mut std::collections::HashSet<String>,
+) -> Local {
+    // The markers, in order: (start, end, kind, operand).
+    let mut marks: Vec<(usize, usize, char, &str)> = Vec::new();
+    let mut from = 0;
+    while let Some(at) = text[from..].find('\x05') {
+        let at = from + at;
+        let end = at + text[at..].find('\x06').expect("a marker's end");
+        let kind = text[at + 1..].chars().next().expect("a marker's kind");
+        marks.push((at, end + 1, kind, &text[at + 1 + kind.len_utf8()..end]));
+        from = end + 1;
+    }
+    let pair = |s: &str| -> (u32, u32) {
+        let (a, b) = s.split_once('.').expect("a marker's pair");
+        (a.parse().expect("a number"), b.parse().expect("a number"))
+    };
+    let mut ids: Vec<(IdKind, u32)> = Vec::new();
+    let mut id_k: HashMap<(IdKind, u32), usize> = HashMap::new();
+    let mut funcs: Vec<FuncId> = Vec::new();
+    let mut func_k: HashMap<FuncId, usize> = HashMap::new();
+    let mut descs: Vec<(FuncId, u32)> = Vec::new();
+    let mut desc_k: HashMap<(FuncId, u32), usize> = HashMap::new();
+    let mut data_k: HashMap<(FuncId, u32), usize> = HashMap::new();
+    let mut foreign: Vec<(usize, &'static str)> = Vec::new();
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for &(at, end, kind, operand) in &marks {
+        out.push_str(&text[last..at]);
+        last = end;
+        match kind {
+            'F' | 'T' | 'E' => {
+                let f: FuncId = operand.parse().expect("a function id");
+                let k = *func_k.entry(f).or_insert_with(|| {
+                    funcs.push(f);
+                    funcs.len() - 1
+                });
+                let sfx = match kind {
+                    'F' => "",
+                    'T' => "_t",
+                    _ => "_e",
+                };
+                if part_of[f as usize] == p {
+                    let _ = write!(out, "qz_d_\x07_{k}{sfx}");
+                } else {
+                    if !foreign.contains(&(k, sfx)) {
+                        foreign.push((k, sfx));
+                    }
+                    let _ = write!(out, "qz_x_\x07_{k}{sfx}");
+                }
+            }
+            'W' => {
+                let key = pair(operand);
+                let k = *desc_k.entry(key).or_insert_with(|| {
+                    descs.push(key);
+                    descs.len() - 1
+                });
+                let _ = write!(out, "qz_dd_\x07_{k}");
+            }
+            'D' => {
+                let key = pair(operand);
+                let n = data_k.len();
+                let k = *data_k.entry(key).or_insert(n);
+                let _ = write!(out, "qz_data_{k}");
+            }
+            c => {
+                let kind = IdKind::from_letter(c).expect("a marker's kind");
+                let id: u32 = operand.parse().expect("an id");
+                let k = *id_k.entry((kind, id)).or_insert_with(|| {
+                    ids.push((kind, id));
+                    ids.len() - 1
+                });
+                let _ = write!(out, "@qz_i_\x07_{k}");
+            }
+        }
+    }
+    out.push_str(&text[last..]);
+    // What the partition reads: defined here in a program of one
+    // partition (each id then folds into the code), else declared.
+    let mut globals = String::new();
+    for (k, &(_, v)) in ids.iter().enumerate() {
+        if one {
+            let _ = writeln!(
+                globals,
+                "@qz_i_\x07_{k} = internal constant i32 {}, align 4",
+                v as i32
+            );
+        } else {
+            let _ = writeln!(
+                globals,
+                "@qz_i_\x07_{k} = external hidden constant i32, align 4"
+            );
+        }
+    }
+    for (k, &(owner, d)) in descs.iter().enumerate() {
+        let words = descs_of(owner, d);
+        if one {
+            let items: Vec<String> = words.iter().map(|w| format!("i32 {}", *w as i32)).collect();
+            let _ = writeln!(
+                globals,
+                "@qz_dd_\x07_{k} = private unnamed_addr constant [{} x i32] [{}], align 4",
+                words.len(),
+                items.join(", ")
+            );
+        } else {
+            let _ = writeln!(
+                globals,
+                "@qz_dd_\x07_{k} = external hidden constant [{} x i32], align 4",
+                words.len()
+            );
+        }
+    }
+    if !globals.is_empty() {
+        let at = out.find(META_START).expect("the metadata");
+        out.insert_str(at, &format!("\n{globals}"));
+    }
+    // The key: the hash of the text with `\x07` for itself.
+    let mut copy = 0;
+    let key = loop {
+        use sha2::Digest as _;
+        let digest = sha2::Sha256::digest(out.as_bytes());
+        let key: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+        if keys.insert(key.clone()) {
+            break key;
+        }
+        copy += 1;
+        let _ = writeln!(out, "; copy {copy}");
+    };
+    Local {
+        text: out.replace('\x07', &key),
+        key,
+        ids,
+        descs,
+        funcs,
+        foreign,
+    }
 }
 
 /// The IR of one partition's functions above which a program is split
@@ -1668,7 +1998,13 @@ fn partition_bytes() -> usize {
 /// The serialized program, the natives' and the compiled bodies' tables and
 /// `main`, appended to `out` (`declared`: the bodies are declared, in a
 /// partition of their own).
-fn tables(out: &mut String, module: &Module, opaque: bool, body_params: &[Ty]) {
+fn tables(
+    out: &mut String,
+    module: &Module,
+    opaque: bool,
+    body_params: &[Ty],
+    body_names: &[String],
+) {
     let i32_ = Ty::I32;
     let ptr = ty_str(Ty::Ptr, opaque);
     // The serialized program (the functions without their bodies, which
@@ -1771,11 +2107,12 @@ fn tables(out: &mut String, module: &Module, opaque: bool, body_params: &[Ty]) {
     let n = module.functions.len();
     let entries: Vec<String> = (0..n)
         .map(|i| {
+            let name = &body_names[i];
             if opaque {
-                format!("ptr @qz_fn_{i}")
+                format!("ptr @{name}")
             } else {
                 let ft = fn_type(body_params, &[i32_], false);
-                format!("i8* bitcast ({ft}* @qz_fn_{i} to i8*)")
+                format!("i8* bitcast ({ft}* @{name} to i8*)")
             }
         })
         .collect();

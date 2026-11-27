@@ -37,6 +37,44 @@ pub enum FloatCC {
     GreaterThanOrEqual,
 }
 
+/// What a number of the program's world names: a function, a method, a
+/// class, a constant of the program or a source file. Code takes these
+/// through `Builder::world_id`, never as constants: adding a class or a
+/// function renumbers those after it, and a partition whose own code did
+/// not change must keep its text (#1182).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum IdKind {
+    Func,
+    Method,
+    Class,
+    Const,
+    File,
+}
+
+impl IdKind {
+    /// The letter of the kind in a marker of the IR text.
+    pub fn letter(self) -> char {
+        match self {
+            IdKind::Func => 'f',
+            IdKind::Method => 'm',
+            IdKind::Class => 'c',
+            IdKind::Const => 'k',
+            IdKind::File => 's',
+        }
+    }
+
+    pub fn from_letter(c: char) -> Option<IdKind> {
+        Some(match c {
+            'f' => IdKind::Func,
+            'm' => IdKind::Method,
+            'c' => IdKind::Class,
+            'k' => IdKind::Const,
+            's' => IdKind::File,
+            _ => return None,
+        })
+    }
+}
+
 /// The instruction builder of one function. Blocks take parameters;
 /// variables are mutable locals the backend turns into SSA values.
 pub trait Builder {
@@ -144,8 +182,13 @@ pub trait Builder {
     /// the native stack (a backend without them ignores it).
     fn set_line(&mut self, _line: u32) {}
 
+    /// The `i32` value of `id`, a number of kind `kind` of the program's
+    /// world (`u32::MAX`, "none", is a constant).
+    fn world_id(&mut self, kind: IdKind, id: u32) -> Self::Value;
+
     /// The address of `words`, constant data of the executable (null
-    /// when there are none).
+    /// when there are none). The words may hold numbers of the world
+    /// (`IdKind`): the data is kept outside the function's partition.
     fn data_words(&mut self, words: &[u32]) -> Self::Value;
     /// The address of `bytes`, constant data (null when empty).
     fn data_bytes(&mut self, bytes: &[u8]) -> Self::Value;
