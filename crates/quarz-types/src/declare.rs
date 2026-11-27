@@ -6891,6 +6891,16 @@ impl<'ast> Declarer<'ast> {
         class_self: &Type,
     ) {
         self.check_sealed(self.file, &def.name, def.span);
+        // A native's code is the runtime's, bound by its key (`Int#to_s`)
+        // whoever declares it: a program's `native def` would run a
+        // standard native under the program's own types (#1198). Only the
+        // prelude (file 0) and the standard library's modules declare one.
+        if def.is_native && self.file != 0 && !self.world.std_files.contains(&self.file) {
+            self.error(
+                "`native def` is for the standard library: a method of a program or a cog is written in Quarz, with a body",
+                def.span,
+            );
+        }
         // An extension's `initialize` would make objects its target's
         // `new` in an inherited class method does not (docs/01 §7).
         if def.name == "initialize" && !def.singleton && extension.is_some() {
