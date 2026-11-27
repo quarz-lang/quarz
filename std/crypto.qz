@@ -44,7 +44,9 @@ module Crypto
   native def self.random_bytes(n: Int) -> Bytes
 
   # Whether `a` and `b` hold the same bytes, a [String] compared as its
-  # UTF-8 bytes (so `"ab"` equals `b"ab"`). For a token, a MAC or a digest
+  # UTF-8 bytes (so `"ab"` equals `b"ab"`) and a [Bytes::Secret] as its
+  # bytes (read without a copy that stays; a wiped one raises
+  # [Bytes::Secret::WipedError]). For a token, a MAC or a digest
   # received, compared with the one expected.
   #
   # When the lengths are equal, the time taken does not depend on the
@@ -58,8 +60,9 @@ module Crypto
   # Crypto.secure_compare("token", "tokeN")    # => false
   # Crypto.secure_compare("ab", b"ab")         # => true
   # Crypto.secure_compare("ab", "abc")         # => false
+  # Crypto.secure_compare(Bytes::Secret.of(b"ab"), "ab")   # => true
   # ```
-  native def self.secure_compare(a: Bytes | String, b: Bytes | String) -> Bool
+  native def self.secure_compare(a: Bytes | String | Bytes::Secret, b: Bytes | String | Bytes::Secret) -> Bool
 
   # [n] bytes (0 to 1 MiB, [ArgumentError] otherwise) from the
   # operating system's cryptographic random source, as [random_bytes]

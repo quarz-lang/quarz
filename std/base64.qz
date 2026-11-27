@@ -7,16 +7,20 @@
 # Base64.urlsafe_encode(b"\xfb\xff")    # => "-_8="
 # ```
 #
-# Each encoder takes [Bytes] or a [String] (its UTF-8 bytes) and gives a
-# [String] without line breaks; each decoder gives [Bytes] and raises
+# Each encoder takes [Bytes], a [String] (its UTF-8 bytes) or a
+# [Bytes::Secret] and gives a [String] without line breaks (of a secret,
+# a String that holds the secret, which nothing clears: as
+# `expose_bytes`, asked for when a secret must be kept as text); each decoder gives [Bytes] and raises
 # [ArgumentError] on a character outside its alphabet or a malformed end.
 module Base64
-  # `data` in the standard alphabet (`+` and `/`), padded with `=`.
+  # `data` in the standard alphabet (`+` and `/`), padded with `=`. Of a
+  # [Bytes::Secret], the String holds the secret, uncleared; a wiped one
+  # raises [Bytes::Secret::WipedError].
   #
   # ```
   # Base64.encode("ab")   # => "YWI="
   # ```
-  native def self.encode(data: Bytes | String) -> String
+  native def self.encode(data: Bytes | String | Bytes::Secret) -> String
 
   # The bytes `text` encodes in the standard alphabet. The padding may be
   # left out, but not cut short; whitespace is not allowed.
@@ -35,7 +39,7 @@ module Base64
   # ```
   # Base64.urlsafe_encode("ab", padding: false)   # => "YWI"
   # ```
-  native def self.urlsafe_encode(data: Bytes | String, *, padding: Bool = true) -> String
+  native def self.urlsafe_encode(data: Bytes | String | Bytes::Secret, *, padding: Bool = true) -> String
 
   # The bytes `text` encodes in the URL-safe alphabet, padded or not.
   #

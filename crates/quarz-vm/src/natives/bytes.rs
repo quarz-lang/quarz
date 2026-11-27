@@ -356,6 +356,60 @@ fn register_secret(m: &mut super::Registry<NativeFn>) {
             i.class_name(v)
         ))),
     });
+    native!(m, "Bytes::Secret.join", |i, _, a| {
+        // quarz#1015: the parts' sizes summed first, then one buffer of
+        // the final size written once, so that no buffer outgrown stays
+        // uncleared. Plain parts are read as they are (not cleared).
+        let Value::Array(items) = a.arg(0) else {
+            return Err(i.err_type(&format!(
+                "Bytes::Secret.join takes an Array, got {}",
+                i.class_name(a.arg(0))
+            )));
+        };
+        let parts: Vec<Value> = items.iter().collect();
+        let mut total = 0usize;
+        for v in &parts {
+            total += match v {
+                Value::Secret(_) => {
+                    let s = secret_of(i, v)?;
+                    if s.wiped() {
+                        return Err(wiped(i));
+                    }
+                    s.size()
+                }
+                Value::Bytes(b) => b.len(),
+                v => match v.as_str() {
+                    Some(t) => t.len(),
+                    None => {
+                        return Err(i.err_type(&format!(
+                            "a part of Bytes::Secret.join must be Bytes, a String or a Bytes::Secret, got {}",
+                            i.class_name(v)
+                        )))
+                    }
+                },
+            };
+        }
+        let mut buf = Vec::with_capacity(total);
+        for v in &parts {
+            match v {
+                Value::Secret(_) => {
+                    // (Wiped by another task since the check above: the
+                    // buffer written so far is cleared.)
+                    if secret_of(i, v)?
+                        .with(|b| buf.extend_from_slice(b))
+                        .is_none()
+                    {
+                        clear_bytes(&mut buf);
+                        return Err(wiped(i));
+                    }
+                }
+                Value::Bytes(b) => buf.extend_from_slice(b),
+                v => buf.extend_from_slice(v.as_str().unwrap_or("").as_bytes()),
+            }
+        }
+        debug_assert_eq!(buf.len(), total);
+        Ok(secret(buf))
+    });
     native!(m, "Bytes::Secret#size", |i, r, _| {
         Ok(Value::Int(secret_of(i, r)?.size() as i64))
     });
