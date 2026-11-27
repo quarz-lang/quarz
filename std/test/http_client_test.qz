@@ -10,10 +10,15 @@ class HttpClientTest < Test::Case
   @peers: Atom[Array[Int]] = Atom[Array[Int]].new([])
   # What the server saw of each request: "METHOD path headers... body".
   @seen: Atom[Array[String]] = Atom[Array[String]].new([])
+  # What `/slow` and `/slow-body` wait for: a value the test sends once
+  # it has seen the timeout it expects, so that no pause of the server's
+  # decides the outcome (#1208).
+  @gate: Channel[Int] = Channel[Int].new(capacity: 4)
 
   def handler -> HTTP::Handler
     peers = @peers
     seen = @seen
+    gate = @gate
     HTTP.handler do |req|
       port = req.remote_address&.port || 0
       peers.update { |a| a.include?(port) ? a : a.push(port) }
@@ -36,13 +41,13 @@ class HttpClientTest < Test::Case
       when "/not-modified" then HTTP::Server::Response.empty(304)
       when "/missing" then HTTP::Server::Response.text("no such thing", 404)
       when "/slow"
-        Task.sleep(2.seconds)
+        gate.receive
         HTTP::Server::Response.text("late")
       when "/slow-body"
         HTTP::Server::Response.stream do |w|
           w.write("first;")
           w.flush
-          Task.sleep(2.seconds)
+          gate.receive
           w.write("second")
         end
       when "/loop" then HTTP::Server::Response.redirect("/loop", 302)
@@ -223,12 +228,22 @@ class HttpClientTest < Test::Case
     end
   end
 
+  # The server answers only once the test opens its gate, after the
+  # timeouts it expects: those are certain, whatever the load (#1208).
+  # The one bound left is the read timeout on the response's head and
+  # first chunk, which the server sends at once: 2 s, ten times the
+  # 200 ms a loaded CI runner once exceeded. (The gate opens in `ensure`,
+  # so that a failing assertion leaves no handler waiting.)
   def test_timeouts
     serving do |base|
-      assert_raise(HTTP::Client::TimeoutError) { client(timeout: 200.ms).get("#{base}/slow") }
-      res = client(read_timeout: 200.ms).get("#{base}/slow-body")
-      assert_equal(b"first;", res.body.read_chunk)
-      assert_raise(HTTP::Client::TimeoutError) { res.body.read_chunk }
+      begin
+        assert_raise(HTTP::Client::TimeoutError) { client(timeout: 200.ms).get("#{base}/slow") }
+        res = client(read_timeout: 2.seconds).get("#{base}/slow-body")
+        assert_equal(b"first;", res.body.read_chunk)
+        assert_raise(HTTP::Client::TimeoutError) { res.body.read_chunk }
+      ensure
+        2.times { @gate.send(1) }
+      end
     end
   end
 
