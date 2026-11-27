@@ -4,6 +4,7 @@
 
 pub mod complete;
 pub mod highlight;
+pub mod native;
 pub mod session;
 pub mod static_run;
 pub mod std_set;
@@ -37,61 +38,69 @@ pub fn run(checked: Checked, files: &[SourceFile], argv: Vec<String>) -> i32 {
 
 /// `run` continuing `lowerer`, the one the program's `static` statements
 /// ran with (docs/14 §5): what the `quarz` command does. A program whose
-/// cogs bring native code has their libraries loaded and bound first
-/// (`load_natives`); a failure is reported, the program not run.
+/// cogs bring native code (`natives`) has their libraries built or found
+/// kept, loaded and bound first (`load_natives`); a failure is reported,
+/// the program not run.
 pub fn run_with(
     checked: Checked,
     files: &[SourceFile],
     lowerer: Lowerer,
     argv: Vec<String>,
+    natives: &Natives,
 ) -> i32 {
     let module = quarz_lower::lower_checked_with(lowerer, &checked, files);
-    if let Err(e) = load_natives(&module.world) {
+    if let Err(e) = load_natives(&module.world, natives) {
         eprintln!("quarz: {e}");
         return 1;
     }
     quarz_vm::run(module, argv)
 }
 
-/// The cogs of the movement being run that bring native code (#677):
-/// each one's name and the directory of its native package, recorded when
-/// the movement is opened (`set_native_cogs`).
-static NATIVE_COGS: std::sync::Mutex<Vec<(String, std::path::PathBuf)>> =
-    std::sync::Mutex::new(Vec::new());
-
-/// Record the native cogs of the movement opened (`NATIVE_COGS`).
-pub fn set_native_cogs(cogs: &[quarz_cog::CogEntry]) {
-    *NATIVE_COGS.lock().expect("the native cogs") = cogs
-        .iter()
-        .filter_map(|c| Some((c.name.clone(), c.native.clone()?)))
-        .collect();
+/// The cogs of the movement a program comes from that bring native code
+/// (#677), and whether cargo runs offline (as the cogs were resolved:
+/// `quarz_cog::Options::offline`).
+#[derive(Clone, Debug, Default)]
+pub struct Natives {
+    pub cogs: Vec<native::NativeCog>,
+    pub offline: bool,
 }
 
-/// Load the libraries of `world`'s native cogs and bind their entries
-/// (`quarz_vm::native_ext`): an error naming the cog when a library is
-/// missing (it is built from the cog's native package with `cargo build
-/// --release`), cannot be loaded, or does not define what the cog
-/// declares.
-pub fn load_natives(world: &quarz_ir::RtWorld) -> Result<(), String> {
+impl Natives {
+    /// Those of `cogs`, a movement's (the application first).
+    pub fn of(cogs: &[quarz_cog::CogEntry], opts: &quarz_cog::Options) -> Natives {
+        Natives {
+            cogs: native::of(cogs),
+            offline: opts.offline,
+        }
+    }
+}
+
+/// Build (or find kept) the libraries of `world`'s native cogs
+/// (`native::build_all`), load them and bind their entries
+/// (`quarz_vm::native_ext`): an error naming the cog when its package
+/// cannot be built, its library cannot be loaded, or it does not define
+/// what the cog declares.
+pub fn load_natives(world: &quarz_ir::RtWorld, natives: &Natives) -> Result<(), String> {
     if world.native_cogs.is_empty() {
         return Ok(());
     }
-    let cogs = NATIVE_COGS.lock().expect("the native cogs").clone();
+    let mut cogs = Vec::new();
     for name in &world.native_cogs {
-        let Some((_, dir)) = cogs.iter().find(|(n, _)| n == name) else {
+        let Some(c) = natives.cogs.iter().find(|c| &c.name == name) else {
             return Err(format!(
-                "cog `{name}` brings native code, but its package is not known"
+                "internal error: cog `{name}` brings native code, but its package is not known"
             ));
         };
-        let lib = quarz_cog::native::library(dir).map_err(|e| e.to_string())?;
-        if !lib.is_file() {
-            return Err(format!(
-                "cog `{name}` brings native code, but its library is not built: no {} (build its package in {} with `cargo build --release`)",
-                lib.display(),
-                dir.display()
-            ));
+        cogs.push(c.clone());
+    }
+    for (name, built) in native::build_all(&cogs, natives.offline)? {
+        let loaded = quarz_vm::native_ext::load(&name, &built.library);
+        if built.remove_after {
+            if let Some(dir) = built.library.parent() {
+                let _ = std::fs::remove_dir_all(dir);
+            }
         }
-        quarz_vm::native_ext::load(name, &lib)?;
+        loaded?;
     }
     quarz_vm::native_ext::check(world)
 }

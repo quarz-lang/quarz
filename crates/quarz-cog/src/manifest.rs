@@ -368,9 +368,10 @@ impl Manifest {
         Ok(())
     }
 
-    /// The directory of the cog's native package (`[native] crate`) in
-    /// the cog at `dir`: a relative path inside the cog, else an error.
-    pub fn native_dir(&self, dir: &Path) -> Result<Option<PathBuf>, Error> {
+    /// The directory of the cog's native package (`[native] crate`),
+    /// relative to the cog and `/`-separated (`native`): a path inside
+    /// the cog, else an error.
+    pub fn native_subdir(&self) -> Result<Option<String>, Error> {
         let Some(n) = &self.native else {
             return Ok(None);
         };
@@ -383,9 +384,13 @@ impl Manifest {
                 self.cog.name, n.crate_dir
             )));
         }
-        Ok(Some(
-            dir.join(normal_subdir(&n.crate_dir).expect("a directory")),
-        ))
+        Ok(normal_subdir(&n.crate_dir))
+    }
+
+    /// The directory of the cog's native package in the cog at `dir`
+    /// (`native_subdir`).
+    pub fn native_dir(&self, dir: &Path) -> Result<Option<PathBuf>, Error> {
+        Ok(self.native_subdir()?.map(|d| dir.join(d)))
     }
 
     /// The module the cog's declarations live in.

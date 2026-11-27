@@ -122,6 +122,11 @@ pub struct CogEntry {
     pub rev: Option<String>,
     /// The directory of its native package (`[native] crate`, #677).
     pub native: Option<PathBuf>,
+    /// For a cog the lock pins (fetched, or in `vendor/`), the lock's hash
+    /// of its tree, which its native package is part of: what its native
+    /// build is keyed by. `None` for the application and a `[patch]`,
+    /// whose files can change.
+    pub hash: Option<String>,
 }
 
 /// The cache: `$QUARZ_CACHE`, else `$XDG_CACHE_HOME/quarz`, else
@@ -556,6 +561,7 @@ impl<'a> Ctx<'a> {
             local_patch: false,
             locked_version: None,
             native: manifest.native_dir(self.root).map_err(LockProblem::Fatal)?,
+            hash: None,
         }];
         let mut manifests = vec![manifest.clone()];
         let mut index: HashMap<Source, usize> = HashMap::new();
@@ -603,6 +609,7 @@ impl<'a> Ctx<'a> {
                                 local_patch: self.local_patches.contains(&source),
                                 locked_version: self.locked_version(&source),
                                 native: m.native_dir(&dir).map_err(LockProblem::Fatal)?,
+                                hash: None,
                                 dir,
                             };
                             manifests.push(m);
@@ -624,6 +631,15 @@ impl<'a> Ctx<'a> {
                                 ))));
                             }
                             check_local_deps(&source, &m)?;
+                            if m.native.is_some() != locked.native {
+                                return Err(LockProblem::Fatal(Error::new(format!(
+                                    "Cog.lock says `{}` {} brings {}native code, but its Cog.toml {}: run `quarz cog update`",
+                                    locked.name,
+                                    locked.version,
+                                    if locked.native { "" } else { "no " },
+                                    if locked.native { "declares no `[native]`" } else { "declares `[native]`" },
+                                ))));
+                            }
                             reached.insert(source.clone());
                             let entry = CogEntry {
                                 name: m.cog.name.clone(),
@@ -636,6 +652,7 @@ impl<'a> Ctx<'a> {
                                 local_patch: false,
                                 locked_version: None,
                                 native: m.native_dir(&dir).map_err(LockProblem::Fatal)?,
+                                hash: Some(locked.hash.clone()),
                                 dir,
                             };
                             manifests.push(m);
@@ -1189,6 +1206,7 @@ impl<'a> Ctx<'a> {
                 rev: node.rev.clone(),
                 hash,
                 dependencies,
+                native: node.manifest.native.is_some(),
             });
         }
         Ok(Lock {

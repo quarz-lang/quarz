@@ -36,6 +36,11 @@ pub struct LockedCog {
     /// The sources of its dependencies.
     #[serde(default)]
     pub dependencies: Vec<String>,
+    /// Whether it brings native code (`[native]`, #677): derived from its
+    /// manifest, which `hash` pins, and written so that an update adding
+    /// native code shows in the lock's diff. Written only when true.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub native: bool,
 }
 
 impl Lock {

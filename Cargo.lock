@@ -946,6 +946,7 @@ dependencies = [
  "pulldown-cmark",
  "quarz-aot",
  "quarz-cog",
+ "quarz-ext",
  "quarz-ir",
  "quarz-lower",
  "quarz-syntax",
@@ -955,6 +956,7 @@ dependencies = [
  "rustls",
  "rustyline",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

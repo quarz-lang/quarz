@@ -290,7 +290,12 @@ impl Target {
 fn load_and_check(
     target: &Target,
     library: bool,
-) -> Option<(quarz_types::Checked, Vec<SourceFile>, quarz_lower::Lowerer)> {
+) -> Option<(
+    quarz_types::Checked,
+    Vec<SourceFile>,
+    quarz_lower::Lowerer,
+    quarz_cli::Natives,
+)> {
     load_and_check_timed(target, library, false)
 }
 
@@ -302,7 +307,12 @@ fn load_and_check_timed(
     target: &Target,
     library: bool,
     timed: bool,
-) -> Option<(quarz_types::Checked, Vec<SourceFile>, quarz_lower::Lowerer)> {
+) -> Option<(
+    quarz_types::Checked,
+    Vec<SourceFile>,
+    quarz_lower::Lowerer,
+    quarz_cli::Natives,
+)> {
     let report = |stage: &str, start: std::time::Instant, extra: &[(&str, String)]| {
         if timed {
             quarz_aot::report(stage, start, extra);
@@ -316,6 +326,7 @@ fn load_and_check_timed(
         eprint!("{}", diag.render(&prelude_file));
         failed |= diag.is_error();
     }
+    let mut natives = quarz_cli::Natives::default();
     let (units, cogs, diagnostics) = match target {
         Target::Script(path) => {
             let (units, diagnostics) = quarz_types::load(std::path::Path::new(path));
@@ -331,7 +342,7 @@ fn load_and_check_timed(
             };
             // Not the cogs only dev-dependencies reach (`quarz test`'s).
             let cogs = &movement.cogs[..movement.dev_from];
-            quarz_cli::set_native_cogs(cogs);
+            natives = quarz_cli::Natives::of(cogs, opts);
             let is_library = library && !root.join("src").join("main.qz").is_file();
             // A library is cog 1, under a root of its own that imports it
             // (and its dependencies, for their keys' sake), as `quarz test`
@@ -435,19 +446,19 @@ fn load_and_check_timed(
         };
         eprint!("{}", diag.render(f));
     }
-    checked.map(|c| (c, files, lowerer))
+    checked.map(|c| (c, files, lowerer, natives))
 }
 
 fn run_file(target: &Target, argv: Vec<String>) -> ExitCode {
-    let Some((checked, files, lowerer)) = load_and_check(target, false) else {
+    let Some((checked, files, lowerer, natives)) = load_and_check(target, false) else {
         return ExitCode::FAILURE;
     };
-    let code = quarz_cli::run_with(checked, &files, lowerer, argv);
+    let code = quarz_cli::run_with(checked, &files, lowerer, argv, &natives);
     ExitCode::from(code.clamp(0, 255) as u8)
 }
 
 fn ir_file(target: &Target) -> ExitCode {
-    let Some((checked, files, lowerer)) = load_and_check(target, false) else {
+    let Some((checked, files, lowerer, _)) = load_and_check(target, false) else {
         return ExitCode::FAILURE;
     };
     let mut module = quarz_cli::lower_with(&checked, &files, lowerer);
@@ -464,7 +475,7 @@ fn build_file(target: &Target, out: &std::path::Path, jobs: usize) -> ExitCode {
     // (`total`, last: the whole build's wall time, against which the
     // stages' sum shows what no stage holds, #785.)
     let start = std::time::Instant::now();
-    let Some((checked, files, lowerer)) = load_and_check_timed(target, false, true) else {
+    let Some((checked, files, lowerer, _)) = load_and_check_timed(target, false, true) else {
         return ExitCode::FAILURE;
     };
     let built = quarz_cli::build_with_jobs(checked, &files, lowerer, out, jobs);
@@ -497,7 +508,7 @@ fn check_file(target: &Target, mode: CheckOutput) -> ExitCode {
         }
     }
     match load_and_check(target, true) {
-        Some((checked, sources, _)) => {
+        Some((checked, sources, _, _)) => {
             match mode {
                 CheckOutput::Tree => println!("{}", quarz_cli::tree::tree(&checked)),
                 CheckOutput::Expand => print!("{}", expand::expand(&checked.world, &sources)),

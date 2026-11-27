@@ -2,7 +2,7 @@
 
 A cog can implement some of its methods in Rust (#677): it declares them `native def` in Quarz, and its native package implements them against a stable C ABI. Rust code uses the safe wrapper crate `quarz-ext`, whose major version is the ABI's; C code uses `quarz_ext.h`. Values cross as opaque handles, never as the runtime's own values, so the ABI does not change when the runtime does.
 
-**Status:** this is work in progress, not yet a way to use cogs. The interpreter (`quarz run`, `quarz test`) loads a native cog's library, built from its package with `cargo build --release`; `quarz build` refuses such a program for now. How a cog's manifest declares its native code, and how `quarz` builds it, will be described in docs/10 with the next step. This page is the ABI: what a cog's native code sees, a promise from its first release.
+**Status:** the interpreter (`quarz run`, `quarz test`) builds and loads a native cog's package; `quarz build` refuses such a program for now (#677). How a cog declares its native code, and how `quarz` builds and keeps it, is [10-cogs.md](10-cogs.md) §11. This page is the ABI: what a cog's native code sees, a promise from its first release.
 
 ## What a cog's `native def` may declare
 
