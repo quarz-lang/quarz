@@ -45,10 +45,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
     });
     native!(m, "Crypto.secure_compare", |i, _, a| {
         use subtle::ConstantTimeEq;
+        // Either may be a `Bytes::Secret` (quarz#1015): read through a
+        // copy cleared when dropped; a wiped one raises `WipedError`.
         let x = compared(i, a.arg(0))?;
         let y = compared(i, a.arg(1))?;
         // `ct_eq` on slices answers false at once for different lengths.
-        Ok(Value::Bool(x.ct_eq(y).into()))
+        Ok(Value::Bool((*x).ct_eq(&*y).into()))
     });
     native!(m, "Crypto::RSA.public_der", |i, _, a| {
         let key = public_from_der(bytes(i, a.arg(0), "der")?).map_err(|e| error(i, e))?;
@@ -801,13 +803,10 @@ fn message<'a>(interp: &Interp, v: &'a Value) -> Result<&'a [u8], Flow> {
     }
 }
 
-/// A string compared by `Crypto.secure_compare`: `Bytes`, or a `String`'s
-/// UTF-8 bytes.
-fn compared<'a>(interp: &Interp, v: &'a Value) -> Result<&'a [u8], Flow> {
-    match v {
-        Value::Bytes(b) => Ok(b),
-        v => Ok(string(interp, v, "secure_compare")?.as_bytes()),
-    }
+/// What `Crypto.secure_compare` compares: `Bytes`, a `String`'s UTF-8
+/// bytes, or a `Bytes::Secret`'s.
+fn compared<'a>(interp: &Interp, v: &'a Value) -> Result<super::bytes::SecretInput<'a>, Flow> {
+    super::bytes::secret_input(interp, v, "secure_compare")
 }
 
 fn symbol(interp: &Interp, v: &Value, what: &str) -> Result<String, Flow> {

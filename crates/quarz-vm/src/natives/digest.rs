@@ -15,25 +15,36 @@ use crate::value::*;
 use super::{int, string};
 
 pub fn register(m: &mut super::Registry<NativeFn>) {
+    // The digests' data may be a `Bytes::Secret` (quarz#1015): read
+    // through a copy cleared when dropped; the digest itself is plain.
     native!(m, "Digest::SHA256.digest", |i, _, a| {
-        Ok(Value::bytes(
-            Sha256::digest(data(i, a.arg(0), "data")?).to_vec(),
-        ))
+        let d = secret_data(i, a.arg(0))?;
+        Ok(Value::bytes(Sha256::digest(&*d).to_vec()))
     });
     native!(m, "Digest::SHA256.hexdigest", |i, _, a| {
-        Ok(Value::string(hex(&Sha256::digest(data(
-            i,
-            a.arg(0),
-            "data",
-        )?))))
+        let d = secret_data(i, a.arg(0))?;
+        Ok(Value::string(hex(&Sha256::digest(&*d))))
     });
     native!(m, "Digest::MD5.digest", |i, _, a| {
-        Ok(Value::bytes(
-            Md5::digest(data(i, a.arg(0), "data")?).to_vec(),
-        ))
+        let d = secret_data(i, a.arg(0))?;
+        Ok(Value::bytes(Md5::digest(&*d).to_vec()))
     });
     native!(m, "Digest::MD5.hexdigest", |i, _, a| {
-        Ok(Value::string(hex(&Md5::digest(data(i, a.arg(0), "data")?))))
+        let d = secret_data(i, a.arg(0))?;
+        Ok(Value::string(hex(&Md5::digest(&*d))))
+    });
+    native!(m, "Digest::MD5.hexdigest_secret", |i, _, a| {
+        // The hex digits straight into a secret (PostgreSQL's md5
+        // response hashes this one again: it is a credential).
+        let d = secret_data(i, a.arg(0))?;
+        let mut digest: [u8; 16] = Md5::digest(&*d).into();
+        let mut out = Vec::with_capacity(32);
+        for b in digest {
+            out.push(HEX[(b >> 4) as usize]);
+            out.push(HEX[(b & 15) as usize]);
+        }
+        clear_bytes(&mut digest);
+        Ok(super::bytes::secret(out))
     });
     native!(m, "Digest::HMAC.sha256", |i, _, a| {
         let mut tag = hmac_sha256(i, &a)?;
@@ -58,19 +69,22 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         Ok(super::bytes::secret(pbkdf2_sha256(i, &a)?))
     });
 
+    // A `Bytes::Secret` is encoded too (quarz#1015): the String made
+    // holds the secret, uncleared (as `expose_bytes` does).
     native!(m, "Base64.encode", |i, _, a| {
-        Ok(Value::string(STANDARD.encode(data(i, a.arg(0), "data")?)))
+        let d = secret_data(i, a.arg(0))?;
+        Ok(Value::string(STANDARD.encode(&*d)))
     });
     native!(m, "Base64.decode", |i, _, a| {
         decode(i, &alphabet::STANDARD, string(i, a.arg(0), "text")?)
     });
     native!(m, "Base64.urlsafe_encode", |i, _, a| {
-        let bytes = data(i, a.arg(0), "data")?;
+        let bytes = secret_data(i, a.arg(0))?;
         let padding = !matches!(a.kw(i, "padding"), Some(Value::Bool(false)));
         Ok(Value::string(if padding {
-            URL_SAFE.encode(bytes)
+            URL_SAFE.encode(&*bytes)
         } else {
-            URL_SAFE_NO_PAD.encode(bytes)
+            URL_SAFE_NO_PAD.encode(&*bytes)
         }))
     });
     native!(m, "Base64.urlsafe_decode", |i, _, a| {
@@ -107,7 +121,8 @@ fn hmac_sha256(i: &Interp, a: &crate::interp::Args) -> Result<[u8; 32], Flow> {
     // HMAC takes a key of any length; its state is cleared when dropped
     // (`hmac`'s `zeroize` feature).
     let mut mac = Hmac::<Sha256>::new_from_slice(&key).unwrap();
-    mac.update(data(i, a.arg(1), "data")?);
+    // (The data may be a secret too, quarz#1015.)
+    mac.update(&secret_data(i, a.arg(1))?);
     Ok(mac.finalize().into_bytes().into())
 }
 
@@ -189,6 +204,15 @@ fn data<'a>(interp: &Interp, v: &'a Value, what: &str) -> Result<&'a [u8], Flow>
         },
     }
 }
+
+/// The bytes of a `Bytes | String | Bytes::Secret` data argument: a
+/// secret's copied under its lock into a buffer cleared when dropped (a
+/// wiped one raises `WipedError`), the others borrowed.
+fn secret_data<'a>(interp: &Interp, v: &'a Value) -> Result<super::bytes::SecretInput<'a>, Flow> {
+    super::bytes::secret_input(interp, v, "data")
+}
+
+const HEX: &[u8; 16] = b"0123456789abcdef";
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()

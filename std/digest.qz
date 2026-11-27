@@ -6,9 +6,13 @@
 # Digest::HMAC.sha256("key", "message").size   # => 32
 # ```
 #
-# Each function takes its data as [Bytes] or as a [String] (its UTF-8
-# bytes) and gives the digest as [Bytes], or as lowercase hexadecimal from
-# `hexdigest`.
+# Each function takes its data as [Bytes], a [String] (its UTF-8 bytes)
+# or a [Bytes::Secret] (read through a copy that is cleared; a wiped one
+# raises [Bytes::Secret::WipedError]) and gives the digest as [Bytes], or
+# as lowercase hexadecimal from `hexdigest`. A digest of a secret is
+# plain: a checksum, a tag or a signature input usually is; where it is a
+# credential itself, [MD5.hexdigest_secret] and [HMAC.sha256_secret] give
+# a secret.
 module Digest
   # SHA-256 (FIPS 180-4).
   module SHA256
@@ -17,14 +21,14 @@ module Digest
     # ```
     # Digest::SHA256.digest("").hex[0, 8]   # => "e3b0c442"
     # ```
-    native def self.digest(data: Bytes | String) -> Bytes
+    native def self.digest(data: Bytes | String | Bytes::Secret) -> Bytes
 
     # The SHA-256 digest of `data` in lowercase hexadecimal (64 digits).
     #
     # ```
     # Digest::SHA256.hexdigest("abc")[-8, 8]   # => "f20015ad"
     # ```
-    native def self.hexdigest(data: Bytes | String) -> String
+    native def self.hexdigest(data: Bytes | String | Bytes::Secret) -> String
   end
 
   # MD5 (RFC 1321). Broken as a cryptographic hash: here for protocols
@@ -35,27 +39,36 @@ module Digest
     # ```
     # Digest::MD5.digest("abc").size   # => 16
     # ```
-    native def self.digest(data: Bytes | String) -> Bytes
+    native def self.digest(data: Bytes | String | Bytes::Secret) -> Bytes
 
     # The MD5 digest of `data` in lowercase hexadecimal (32 digits).
     #
     # ```
     # Digest::MD5.hexdigest("abc")   # => "900150983cd24fb0d6963f7d28e17f72"
     # ```
-    native def self.hexdigest(data: Bytes | String) -> String
+    native def self.hexdigest(data: Bytes | String | Bytes::Secret) -> String
+    # As [hexdigest], the 32 hexadecimal digits as a [Bytes::Secret]: for
+    # a digest that is a credential itself (PostgreSQL's `md5`
+    # authentication hashes `md5(password + user)` again: knowing it is
+    # enough to log in).
+    #
+    # ```
+    # Digest::MD5.hexdigest_secret("abc") == Bytes::Secret.of(b"900150983cd24fb0d6963f7d28e17f72")   # => true
+    # ```
+    native def self.hexdigest_secret(data: Bytes | String | Bytes::Secret) -> Bytes::Secret
   end
 
   # HMAC (RFC 2104).
   module HMAC
     # The HMAC-SHA-256 of `data` under `key`: 32 bytes. A
-    # [Bytes::Secret] key is read without a copy that stays (a wiped one
+    # [Bytes::Secret] key is read through a copy that is cleared (a wiped one
     # raises [Bytes::Secret::WipedError]).
     #
     # ```
     # Digest::HMAC.sha256("key", "The quick brown fox jumps over the lazy dog").hex[0, 16]
     # # => "f7bc83f430538424"
     # ```
-    native def self.sha256(key: Bytes | String | Bytes::Secret, data: Bytes | String) -> Bytes
+    native def self.sha256(key: Bytes | String | Bytes::Secret, data: Bytes | String | Bytes::Secret) -> Bytes
 
     # As [sha256], the 32 bytes as a [Bytes::Secret]: for a key derived
     # from another, as a chain of HMACs derives signing keys.
@@ -64,7 +77,7 @@ module Digest
     # k = Digest::HMAC.sha256_secret(Bytes::Secret.of(b"key"), "date")
     # Digest::HMAC.sha256(k, "message") == Digest::HMAC.sha256(Digest::HMAC.sha256("key", "date"), "message")   # => true
     # ```
-    native def self.sha256_secret(key: Bytes | String | Bytes::Secret, data: Bytes | String) -> Bytes::Secret
+    native def self.sha256_secret(key: Bytes | String | Bytes::Secret, data: Bytes | String | Bytes::Secret) -> Bytes::Secret
   end
 
   # PBKDF2 (RFC 8018), the key derivation of SCRAM and of password storage.
@@ -79,7 +92,7 @@ module Digest
     # Digest::PBKDF2.sha256("password", "salt", 0, 32)              # raises ArgumentError
     # ```
     #
-    # A [Bytes::Secret] password is read without a copy that stays (a
+    # A [Bytes::Secret] password is read through a copy that is cleared (a
     # wiped one raises [Bytes::Secret::WipedError]).
     native def self.sha256(password: Bytes | String | Bytes::Secret, salt: Bytes | String, iterations: Int, length: Int) -> Bytes
 

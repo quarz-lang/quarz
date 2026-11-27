@@ -154,7 +154,7 @@ fn static_calls_any_method_or_function() {
     write(
         &d.0,
         "util.qz",
-        "class Util\n  def self.slug(s: String) -> String = s.downcase.gsub(\" \", \"-\")\n  def self.read_it -> String = File.read(\"x\")\n  def self.random_it -> Int = Crypto.random_bytes(4).size\n  def self.now_it -> Int = Time.now.year\nend\nclass Post\n  def initialize; end\nend\n",
+        "class Util\n  def self.slug(s: String) -> String = s.downcase.gsub(\" \", \"-\")\n  def self.read_it -> String = File.read(\"x\")\n  def self.random_it -> Int = Crypto.random_bytes(4).size\n  def self.now_it -> Int = Time.now.year\n  def self.secret_it -> Int = File.read_secret(\"x\").size\nend\nclass Post\n  def initialize; end\nend\n",
     );
     write(
         &d.0,
@@ -179,6 +179,12 @@ fn static_calls_any_method_or_function() {
         (
             "Util.now_it",
             "`Time.now`, which cannot run at compile time",
+        ),
+        // quarz#1015: a secret read from a file at compile time, denied
+        // as `File` is.
+        (
+            "Util.secret_it",
+            "`File.read_secret`, which cannot run at compile time",
         ),
         (
             "Post.methods",

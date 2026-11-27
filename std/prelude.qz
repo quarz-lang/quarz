@@ -2158,8 +2158,18 @@ class Bytes
   # Made without passing through a [Bytes] where it can be:
   # `Crypto.random_secret` draws it from the system's random source
   # (`require "crypto"`), `Base64.decode_secret` decodes it from a text
-  # (`require "base64"`); [of] takes a [Bytes] (which stays, and is not
-  # cleared) or a [Bytes::Builder] (whose contents it takes and clears).
+  # (`require "base64"`), [File.read_secret] reads it from a file, and
+  # [join] joins secrets to other bytes (`"AWS4"` and a key); [of] takes
+  # a [Bytes] (which stays, and is not cleared) or a [Bytes::Builder]
+  # (whose contents it takes and clears). A secret from an environment
+  # variable is `Bytes::Secret.of(ENV["NAME"].to_bytes)`: a secret by
+  # type, but `ENV` holds every variable as a [String] from its first
+  # use, and the process's environment keeps it too; for one that must
+  # not stay in memory, read it from a file with [File.read_secret].
+  #
+  # The digests (`Digest::SHA256`, `Digest::MD5`, `Digest::HMAC`'s data),
+  # `Base64.encode` and `Crypto.secure_compare` take a secret as they take
+  # bytes, reading it through a copy that is cleared.
   #
   # Immutable but for [wipe], and [Shareable]: tasks, on any worker, and
   # [Task.blocking]'s helper thread hold the same buffer, never a copy;
@@ -2175,10 +2185,13 @@ class Bytes
   #
   # What it cannot do: clear what held the secret before it was made (an
   # HTTP response body, TLS's buffers, a JSON or Base64 text, a [String]
-  # or [Bytes] of the program, an [expose_bytes] copy), what the
-  # operating system keeps (swap, core dumps), or a secret in a constant
-  # initialized at run time before it is wiped (a constant lives as long
-  # as the program).
+  # or [Bytes] of the program, an [expose_bytes] copy, the plain parts
+  # given to [join], `ENV` and the process's environment, the file
+  # [File.read_secret] read and the operating system's cache of it), what
+  # is made of it on request (`Base64.encode`'s [String], which holds the
+  # secret), what the operating system keeps (swap, core dumps), or a
+  # secret in a constant initialized at run time before it is wiped (a
+  # constant lives as long as the program).
   #
   # ```
   # key = Bytes::Secret.of(b"a key")
@@ -2212,6 +2225,19 @@ class Bytes
     # b.size                       # => 0
     # ```
     native def self.of(builder: Bytes::Builder) -> Bytes::Secret
+
+    # The bytes of `parts`, in order, as one secret: a [String] part
+    # gives its UTF-8 bytes. Written once into a buffer of the final size
+    # (no buffer outgrown stays uncleared); the plain parts stay as they
+    # are, not cleared. Raises [WipedError] when a part is a wiped secret,
+    # before anything is written.
+    #
+    # ```
+    # key = Bytes::Secret.of(b"secret")
+    # Bytes::Secret.join(["AWS4", key]) == Bytes::Secret.of(b"AWS4secret")   # => true
+    # Bytes::Secret.join([]).size                                         # => 0
+    # ```
+    native def self.join(parts: Array[Bytes | String | Bytes::Secret]) -> Bytes::Secret
 
     # Its size in bytes, wiped or not.
     native def size -> Int
@@ -7382,6 +7408,25 @@ class File
   native def self.read(path: String) -> String
   # The whole content of the file at `path`, as bytes.
   native def self.read_bytes(path: String) -> Bytes
+  # The whole content of the file at `path` as a [Bytes::Secret], read
+  # straight into it: no [Bytes] of it is made (a key or password file).
+  # Its bytes exactly, a trailing newline included; with `chomp: true`,
+  # without one trailing line ending (`\n` or `\r\n`), for a password
+  # file, which usually ends with one (the secret is then made at the
+  # shorter size, the longer buffer cleared). Read into a buffer of the file's
+  # size; a file that grows while read, or one that is not regular (a
+  # FIFO), into larger ones, each one replaced cleared first. Raises
+  # what [read_bytes] raises ([SystemCallError] for a missing or
+  # unreadable path, a directory), and [IOError] for a file of more than
+  # 1 MiB (whatever is read of it cleared). What it cannot clear: the
+  # file itself and the operating system's cache of it.
+  #
+  # ```quarz no_run
+  # File.write("password", "hunter2\n")
+  # File.read_secret("password").size                # => 8
+  # File.read_secret("password", chomp: true).size   # => 7
+  # ```
+  native def self.read_secret(path: String, *, chomp: Bool = false) -> Bytes::Secret
   # Replaces the content of the file at `path` (creating it) with
   # `content`, and returns the number of bytes written. `perm:` gives a
   # file it creates those mode bits, the umask applied, as [.open] does;
