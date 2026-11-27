@@ -10,5 +10,7 @@ repository.workspace = true
 [dependencies]
 quarz-ir = { workspace = true }
 quarz-vm = { workspace = true }
+quarz-ext = { workspace = true }
+object = { version = "0.41", default-features = false, features = ["read_core", "elf", "archive", "std"] }
 libc = "0.2"
 sha2 = "0.11"

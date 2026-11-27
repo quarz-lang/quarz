@@ -152,7 +152,7 @@ pub fn command(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
         let exe = dir.join("test");
-        let built = quarz_cli::build_with(checked, &sources, lowerer, &exe);
+        let built = quarz_cli::build_with(checked, &sources, lowerer, &exe, &natives);
         let code = match built {
             Ok(()) => match std::process::Command::new(&exe).args(&argv).status() {
                 Ok(status) => ExitCode::from(status.code().unwrap_or(1).clamp(0, 255) as u8),

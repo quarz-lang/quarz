@@ -475,10 +475,10 @@ fn build_file(target: &Target, out: &std::path::Path, jobs: usize) -> ExitCode {
     // (`total`, last: the whole build's wall time, against which the
     // stages' sum shows what no stage holds, #785.)
     let start = std::time::Instant::now();
-    let Some((checked, files, lowerer, _)) = load_and_check_timed(target, false, true) else {
+    let Some((checked, files, lowerer, natives)) = load_and_check_timed(target, false, true) else {
         return ExitCode::FAILURE;
     };
-    let built = quarz_cli::build_with_jobs(checked, &files, lowerer, out, jobs);
+    let built = quarz_cli::build_with_jobs(checked, &files, lowerer, out, jobs, &natives);
     quarz_aot::report("total", start, &[]);
     match built {
         Ok(()) => ExitCode::SUCCESS,
