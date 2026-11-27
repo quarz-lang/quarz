@@ -331,6 +331,7 @@ fn load_and_check_timed(
             };
             // Not the cogs only dev-dependencies reach (`quarz test`'s).
             let cogs = &movement.cogs[..movement.dev_from];
+            quarz_cli::set_native_cogs(cogs);
             let is_library = library && !root.join("src").join("main.qz").is_file();
             // A library is cog 1, under a root of its own that imports it
             // (and its dependencies, for their keys' sake), as `quarz test`
@@ -347,6 +348,7 @@ fn load_and_check_timed(
                     .iter()
                     .map(|(k, j)| (k.clone(), *j as u32 + shift))
                     .collect(),
+                native: c.native.is_some(),
             };
             let mut specs: Vec<quarz_types::CogSpec> = Vec::new();
             if is_library {
@@ -368,6 +370,7 @@ fn load_and_check_timed(
                     // No src/: the root has no files.
                     src: std::path::PathBuf::new(),
                     imports,
+                    native: false,
                 });
             }
             specs.extend(cogs.iter().enumerate().map(|(i, c)| spec(i, c)));

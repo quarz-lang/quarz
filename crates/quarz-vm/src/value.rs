@@ -4558,6 +4558,7 @@ mod tests {
             singleton_methods: Default::default(),
             class_side: Vec::new(),
             built_by_runtime: false,
+            raisable_by_native: false,
             members: Default::default(),
             variants: Vec::new(),
             variant_of: None,

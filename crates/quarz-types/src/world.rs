@@ -530,6 +530,38 @@ pub struct CogInfo {
     /// Its dependencies by the keys of its manifest, bound to their root
     /// modules in its scope.
     pub imports: HashMap<String, ClassId>,
+    /// Whether it brings native code (`[native]`, #677): its `native def`s
+    /// are bound to its own native module's entries, never to a standard
+    /// native.
+    pub native: bool,
+}
+
+/// A parameter's default as a native's call fills it in when the caller
+/// leaves the parameter out: a literal (`literal_default`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum LiteralDefault {
+    Nil,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Symbol(String),
+}
+
+/// `e` as a literal default (nil, a Bool, an Int that fits a machine
+/// word, a Float, a Symbol), or `None`: what a native's skipped parameter
+/// can take (`RtParam::default`, `quarz_lower::rtworld::literal_constant`),
+/// and what a cog's native may declare (#677).
+pub fn literal_default(e: &quarz_syntax::ast::Expr) -> Option<LiteralDefault> {
+    use quarz_syntax::ast::ExprKind;
+    Some(match &e.kind {
+        ExprKind::Nil => LiteralDefault::Nil,
+        ExprKind::True => LiteralDefault::Bool(true),
+        ExprKind::False => LiteralDefault::Bool(false),
+        ExprKind::Int(i) => LiteralDefault::Int(i.value?),
+        ExprKind::Float(f) => LiteralDefault::Float(*f),
+        ExprKind::Symbol(s) => LiteralDefault::Symbol(s.clone()),
+        _ => return None,
+    })
 }
 
 impl ClassInfo {
@@ -1182,6 +1214,30 @@ impl Drop for AncestorsMemo {
 type ModuleCache = HashMap<(ClassId, Vec<Type>), Vec<(ClassId, Vec<Type>)>>;
 
 impl World {
+    /// The cog whose native code a method of file `file` declared `native`
+    /// is (#677): a cog whose manifest declares native code (`[native]`),
+    /// its index, when `file` is one of its files; `None` for the
+    /// prelude, the standard library's modules and every other file. The
+    /// one place that tells a cog's native from a standard one: the
+    /// declarer allows the `native def` by it, the lowering binds the
+    /// method to the cog's entry by it (`RtMethod::ext`), and the
+    /// compile-time runs refuse the method by it.
+    pub fn native_cog(&self, file: u32) -> Option<u32> {
+        if file == 0 || self.std_files.contains(&file) {
+            return None;
+        }
+        let cog = match self.file_groups.get(&file)? {
+            UnitGroup::Cog(i) => *i,
+            // (The application is cog 0 of a movement.)
+            UnitGroup::App => 0,
+            UnitGroup::Std(_) => return None,
+        };
+        self.cogs
+            .get(cog as usize)
+            .filter(|c| c.native)
+            .map(|_| cog)
+    }
+
     pub fn new() -> World {
         World::default()
     }
@@ -6951,6 +7007,33 @@ impl World {
 
     pub fn is_exception_class(&self, id: ClassId) -> bool {
         self.class_is_a(id, self.builtin.exception)
+    }
+
+    /// Whether a cog's native code may raise class `id` with a message
+    /// alone (#677, docs/15): an exception class whose classes up to the
+    /// nearest built-in one (the prelude's or the standard library's)
+    /// declare no `initialize` and add no field, so that the runtime's
+    /// construction (`Interp::make_exception`) runs no Quarz code and
+    /// leaves no field unset (`RtClass::raisable_by_native`).
+    pub fn raisable_by_native(&self, id: ClassId) -> bool {
+        if !self.is_exception_class(id) {
+            return false;
+        }
+        let builtin = |c: ClassId| {
+            let f = self.class(c).file;
+            f == 0 || self.std_files.contains(&f)
+        };
+        let mut c = id;
+        while !builtin(c) {
+            if self.class(c).methods.contains_key("initialize") {
+                return false;
+            }
+            match &self.class(c).superclass {
+                Some(Type::Class(s, _)) => c = *s,
+                _ => return false,
+            }
+        }
+        self.all_fields(id).len() == self.all_fields(c).len()
     }
 
     /// Whether class `id` has type parameters: its own (a generic class,

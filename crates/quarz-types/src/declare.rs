@@ -220,6 +220,8 @@ pub struct CogDecl {
     pub module: Option<String>,
     /// Dependencies: the key of the manifest and the index of the cog.
     pub imports: Vec<(String, u32)>,
+    /// Whether its manifest declares native code (`CogSpec::native`).
+    pub native: bool,
 }
 
 /// A file's top-level: its pseudo-class for top-level methods, its
@@ -314,6 +316,7 @@ impl<'ast> Declarer<'ast> {
                 version: cog.version.clone(),
                 root,
                 imports: HashMap::default(),
+                native: cog.native,
             });
         }
         for (i, cog) in cogs.iter().enumerate() {
@@ -6881,6 +6884,32 @@ impl<'ast> Declarer<'ast> {
         );
     }
 
+    /// What a cog's `native def` may declare in ABI 1.0 (docs/15):
+    /// positional and keyword-only parameters, each default a literal
+    /// (`world::literal_default`, which the runtime fills in), and a
+    /// block; no `*rest`, no `**rest`.
+    fn check_cog_native(&mut self, def: &MethodDef) {
+        for p in &def.params.list {
+            if matches!(p.kind, ParamKind::Rest | ParamKind::KeywordRest) {
+                self.error(
+                    "a cog's native method takes no `*rest` or `**rest` (docs/15)",
+                    p.span,
+                );
+            }
+            if let Some(d) = &p.default {
+                if crate::world::literal_default(d).is_none() {
+                    self.error(
+                        format!(
+                            "a cog's native method's default is a literal (nil, true, false, an Int, a Float or a Symbol): `{}`'s is not (docs/15)",
+                            p.name
+                        ),
+                        p.span,
+                    );
+                }
+            }
+        }
+    }
+
     fn declare_method(
         &mut self,
         owner: ClassId,
@@ -6895,9 +6924,44 @@ impl<'ast> Declarer<'ast> {
         // whoever declares it: a program's `native def` would run a
         // standard native under the program's own types (#1198). Only the
         // prelude (file 0) and the standard library's modules declare one.
-        if def.is_native && self.file != 0 && !self.world.std_files.contains(&self.file) {
+        // A cog whose manifest declares native code (#677) declares its
+        // own, bound to its own module's entries (`World::native_cog`).
+        let cog_native = def.is_native && self.world.native_cog(self.file).is_some();
+        if def.is_native
+            && !cog_native
+            && self.file != 0
+            && !self.world.std_files.contains(&self.file)
+        {
             self.error(
                 "`native def` is for the standard library: a method of a program or a cog is written in Quarz, with a body",
+                def.span,
+            );
+        }
+        if cog_native {
+            self.check_cog_native(def);
+        }
+        // A cog's native has no overload (#677): its entry is found by its
+        // key, which overloads share.
+        let class = self.world.class(owner);
+        let same_side = if def.singleton {
+            &class.singleton_methods
+        } else {
+            &class.methods
+        };
+        let overloaded = same_side.get(&def.name).is_some_and(|ms| {
+            ms.iter().any(|m| {
+                let m = self.world.method(*m);
+                cog_native || (m.is_native && self.world.native_cog(m.file).is_some())
+            })
+        });
+        if overloaded {
+            let sep = if def.singleton { "." } else { "#" };
+            self.error(
+                format!(
+                    "a cog's native method has no overloads: `{}{sep}{}` is declared twice",
+                    self.world.class(owner).name,
+                    def.name
+                ),
                 def.span,
             );
         }

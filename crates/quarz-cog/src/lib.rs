@@ -9,6 +9,7 @@ pub mod git;
 pub mod hash;
 pub mod lock;
 pub mod manifest;
+pub mod native;
 pub mod version;
 
 /// The commit `quarz` was built from (its build script), if built from a
@@ -119,6 +120,8 @@ pub struct CogEntry {
     /// For such a cog, the version `Cog.lock` holds for its source.
     pub locked_version: Option<String>,
     pub rev: Option<String>,
+    /// The directory of its native package (`[native] crate`, #677).
+    pub native: Option<PathBuf>,
 }
 
 /// The cache: `$QUARZ_CACHE`, else `$XDG_CACHE_HOME/quarz`, else
@@ -552,6 +555,7 @@ impl<'a> Ctx<'a> {
             rev: None,
             local_patch: false,
             locked_version: None,
+            native: manifest.native_dir(self.root).map_err(LockProblem::Fatal)?,
         }];
         let mut manifests = vec![manifest.clone()];
         let mut index: HashMap<Source, usize> = HashMap::new();
@@ -592,13 +596,14 @@ impl<'a> Ctx<'a> {
                                 name: m.cog.name.clone(),
                                 version: m.cog.version.clone(),
                                 module: m.module(),
-                                dir,
                                 imports: Vec::new(),
                                 dev_imports: Vec::new(),
                                 source: None,
                                 rev: None,
                                 local_patch: self.local_patches.contains(&source),
                                 locked_version: self.locked_version(&source),
+                                native: m.native_dir(&dir).map_err(LockProblem::Fatal)?,
+                                dir,
                             };
                             manifests.push(m);
                             entry
@@ -624,13 +629,14 @@ impl<'a> Ctx<'a> {
                                 name: m.cog.name.clone(),
                                 version: locked.version.clone(),
                                 module: m.module(),
-                                dir,
                                 imports: Vec::new(),
                                 dev_imports: Vec::new(),
                                 source: Some(source.clone()),
                                 rev: Some(locked.rev.clone()),
                                 local_patch: false,
                                 locked_version: None,
+                                native: m.native_dir(&dir).map_err(LockProblem::Fatal)?,
+                                dir,
                             };
                             manifests.push(m);
                             entry

@@ -1,0 +1,13 @@
+[package]
+name = "quarz-ext"
+# The major version is the native ABI's (docs/15): a cog built against
+# 1.x runs on every quarz whose ABI is 1.y with y at least x's minor.
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Write a Quarz cog's native methods in Rust: the native ABI and a safe wrapper over it"
+
+[dependencies]
+quarz-ext-macros = { path = "../quarz-ext-macros", version = "1.0.0" }

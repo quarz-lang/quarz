@@ -153,6 +153,9 @@ pub struct CogSpec {
     /// The dependency keys of its manifest and the cogs they name (indices
     /// into the movement's cogs).
     pub imports: Vec<(String, u32)>,
+    /// Whether its manifest declares native code (`[native]`, #677): only
+    /// then may its files declare a `native def`.
+    pub native: bool,
 }
 
 /// Diagnostics attached to the file they were found in.
@@ -373,6 +376,7 @@ fn load_cogs(cogs: &[CogSpec], load: Load) -> (Vec<LoadedUnit>, Vec<CogDecl>, Ve
             version: c.version.clone(),
             module: c.module.clone(),
             imports: c.imports.clone(),
+            native: c.native,
         })
         .collect();
     std_first(&mut loader.units);

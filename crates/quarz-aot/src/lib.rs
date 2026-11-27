@@ -236,6 +236,13 @@ pub fn build_with_jobs(
     jobs: usize,
     cache: Option<&Path>,
 ) -> Result<(), String> {
+    // A cog's native code is loaded by what interprets (`quarz run`,
+    // `test`, the REPL); linking it into an executable comes later (#677).
+    if let Some(cog) = module.world.native_cogs.first() {
+        return Err(format!(
+            "cog `{cog}` brings native code, which `quarz build` cannot build into an executable yet (#677); `quarz run` runs the program"
+        ));
+    }
     // What the program cannot run is neither compiled nor decoded at
     // start-up (`QUARZ_NO_SHAKE` keeps everything, for comparison).
     let start = std::time::Instant::now();

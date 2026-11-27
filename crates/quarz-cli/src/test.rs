@@ -224,6 +224,7 @@ pub(crate) fn test_specs(
     opts: &quarz_cog::Options,
 ) -> Result<Vec<quarz_types::CogSpec>, String> {
     let movement = quarz_cog::open(root, opts).map_err(|e| e.to_string())?;
+    quarz_cli::set_native_cogs(&movement.cogs);
     Ok(specs_of(&movement))
 }
 
@@ -242,6 +243,7 @@ pub(crate) fn specs_of(movement: &quarz_cog::Movement) -> Vec<quarz_types::CogSp
             .iter()
             .map(|(k, j)| (k.clone(), *j as u32 + shift))
             .collect(),
+        native: c.native.is_some(),
     };
     let app = &movement.cogs[0];
     if app.dir.join("src").join("main.qz").is_file() {
@@ -272,6 +274,7 @@ pub(crate) fn specs_of(movement: &quarz_cog::Movement) -> Vec<quarz_types::CogSp
         // No src/: the root has only the test files.
         src: PathBuf::new(),
         imports,
+        native: false,
     }];
     specs.extend(
         movement
