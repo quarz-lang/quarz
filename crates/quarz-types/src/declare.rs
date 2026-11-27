@@ -6944,11 +6944,14 @@ impl<'ast> Declarer<'ast> {
         // key (`Owner#name`), which overloads share. Refused: a method of
         // that name and side beside a cog's native, in the class's own
         // methods (a standard one too: `extension String; native def
-        // upcase(x: Int)` would overload `String#upcase`), or in the same
+        // upcase(x: Int)` would overload `String#upcase`), in the same
         // cog's extensions of the class (one block or several, one file or
-        // several). Another cog's or the application's method of the name
-        // stays allowed: it is bound on its own (its own module's entry,
-        // or its body), so it shares no entry.
+        // several), or in the standard library's extensions of it (the
+        // prelude's `extension Range[T]; native def size` holds the key
+        // `Range#size`, which a built program binds by key). Another cog's
+        // or the application's method of the name stays allowed: it is
+        // bound on its own (its own module's entry, or its body), so it
+        // shares no entry.
         let world = &self.world;
         let mine = world.native_cog(self.file);
         let cog_native_of = |m: &MethodInfo| m.is_native && world.native_cog(m.file).is_some();
@@ -6972,7 +6975,17 @@ impl<'ast> Declarer<'ast> {
                 .map(|m| world.method(*m))
                 .filter(|m| m.singleton == def.singleton && world.native_cog(m.file) == mine)
                 .any(|m| cog_native || m.is_native);
-        let overloaded = in_class || in_extensions;
+        let standard = |f: u32| f == 0 || world.std_files.contains(&f);
+        let in_standard_extensions = cog_native
+            && world
+                .extensions
+                .iter()
+                .filter(|e| e.target == owner)
+                .filter_map(|e| e.methods.get(&def.name))
+                .flatten()
+                .map(|m| world.method(*m))
+                .any(|m| m.singleton == def.singleton && standard(m.file));
+        let overloaded = in_class || in_extensions || in_standard_extensions;
         if overloaded {
             let sep = if def.singleton { "." } else { "#" };
             self.error(

@@ -790,6 +790,15 @@ fn a_cogs_native_def_is_checked() {
             &[("bad.qz", "extension String\n  native def upcase(x: Int) -> Int\nend\n")],
             "a cog's native method has no overloads: `String#upcase` is declared twice",
         ),
+        // The standard library's extensions hold keys too.
+        (
+            &[("bad.qz", "extension Range[T]\n  native def size -> Int\nend\n")],
+            "a cog's native method has no overloads: `Range#size` is declared twice",
+        ),
+        (
+            &[("bad.qz", "extension Array[T]\n  native def <=>(other: Int) -> Int\nend\n")],
+            "a cog's native method has no overloads: `Array#<=>` is declared twice",
+        ),
     ] {
         let dir = fixture("ext", files);
         let (ok, _, err) = quarz(&dir, &["check"], &[]);
