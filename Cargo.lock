@@ -934,6 +934,7 @@ name = "quarz-aot"
 version = "0.0.1"
 dependencies = [
  "libc",
+ "object",
  "quarz-ext",
  "quarz-ir",
  "quarz-vm",

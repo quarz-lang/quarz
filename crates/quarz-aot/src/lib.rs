@@ -17,6 +17,7 @@ use quarz_ir::Module;
 pub type FileGroups = std::collections::HashMap<u32, u64>;
 
 mod builder;
+pub mod clash;
 mod gen;
 mod llvm;
 pub mod objcache;
@@ -87,7 +88,7 @@ fn link(
     compiled: &llvm::Compiled,
     dir: &Path,
     output: &Path,
-    archives: &[(String, PathBuf)],
+    archives: &[Archive],
 ) -> Result<(), String> {
     let runtime = find_runtime_lib()?;
     let start = std::time::Instant::now();
@@ -99,7 +100,7 @@ fn link(
         .arg(output)
         .args(&compiled.objects)
         .arg(&runtime)
-        .args(archives.iter().map(|(_, a)| a));
+        .args(archives.iter().map(|a| &a.path));
     if !compiled.map.is_empty() {
         let mut rsp = String::new();
         for (from, to) in &compiled.map {
@@ -233,6 +234,14 @@ pub fn build(module: &Module, output: &Path) -> Result<(), String> {
     )
 }
 
+/// A cog's archive to link (#677): its name, how errors name it
+/// (``cog `zlib` (app → zlib)``) and the file.
+pub struct Archive {
+    pub cog: String,
+    pub who: String,
+    pub path: PathBuf,
+}
+
 /// `build` by `jobs` clang processes at once, with the objects' cache in
 /// `cache` (`objcache`; none: every partition is compiled). The program's
 /// partitions are compiled in a directory next to `output`
@@ -245,7 +254,7 @@ pub fn build_with_jobs(
     output: &Path,
     jobs: usize,
     cache: Option<&Path>,
-    archives: &[(String, PathBuf)],
+    archives: &[Archive],
 ) -> Result<(), String> {
     // A cog's native code is linked from its archive (`archives`: each
     // native cog's, by name). Two or more wait for the check that refuses
@@ -264,7 +273,7 @@ pub fn build_with_jobs(
         ));
     }
     for cog in &module.world.native_cogs {
-        if !archives.iter().any(|(name, _)| *name == cog.name) {
+        if !archives.iter().any(|a| a.cog == cog.name) {
             return Err(format!(
                 "internal error: cog `{}` brings native code, but no archive of it was given",
                 cog.name
@@ -312,6 +321,19 @@ pub fn build_with_jobs(
     // (Fresh: what an earlier build left is not linked in.)
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // Before anything is compiled: a cog defining a symbol of the
+    // runtime's with other code (`clash`).
+    if !archives.is_empty() {
+        let start = std::time::Instant::now();
+        let runtime = clash::read(&find_runtime_lib()?)?;
+        let mut shared = 0;
+        for a in archives {
+            let cog = clash::read(&a.path)?;
+            clash::check(&runtime, &a.who, &cog)?;
+            shared += clash::shared(&runtime, &cog);
+        }
+        report("clash", start, &[("shared", shared.to_string())]);
+    }
     let built = llvm::compile(module, groups, &dir, jobs, cache)
         .and_then(|c| link(&c, &dir, output, archives));
     if std::env::var_os("QUARZ_KEEP_IR").is_some() {

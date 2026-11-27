@@ -741,6 +741,32 @@ fn a_kept_build_without_its_archive_is_built_again() {
     assert_eq!(out, "42\n");
 }
 
+/// A package `csys-<k>` in `dir` whose build script compiles `c` (C
+/// source) with `cc`, and whose `call(x)` calls the C function
+/// `shared_c(x)` it must define.
+fn c_package(dir: &Path, k: &str, c: &str) -> PathBuf {
+    let csys = dir.join(format!("csys-{k}"));
+    std::fs::create_dir_all(csys.join("src")).unwrap();
+    std::fs::create_dir_all(csys.join("c")).unwrap();
+    std::fs::write(
+        csys.join("Cargo.toml"),
+        format!("[package]\nname = \"csys-{k}\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = \"build.rs\"\n\n[build-dependencies]\ncc = \"=1.2.30\"\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        csys.join("build.rs"),
+        "fn main() { cc::Build::new().file(\"c/shared.c\").compile(\"shared\"); }\n",
+    )
+    .unwrap();
+    std::fs::write(csys.join("c/shared.c"), c).unwrap();
+    std::fs::write(
+        csys.join("src/lib.rs"),
+        "extern \"C\" { fn shared_c(x: i32) -> i32; }\npub fn call(x: i32) -> i64 { i64::from(unsafe { shared_c(x) }) }\n",
+    )
+    .unwrap();
+    csys
+}
+
 /// Two cogs whose packages each compile C code defining the same symbol
 /// with different code (a library each brings at its own version):
 /// `quarz run` loads each library on its own (`dlopen`, local), so each
@@ -753,29 +779,11 @@ fn two_cogs_with_the_same_c_symbol_each_run_their_own() {
     let dir = std::env::temp_dir().join(format!("quarz-native-csym-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     for (k, factor) in [("a", 10), ("b", 20)] {
-        let csys = dir.join(format!("csys-{k}"));
-        std::fs::create_dir_all(csys.join("src")).unwrap();
-        std::fs::create_dir_all(csys.join("c")).unwrap();
-        std::fs::write(
-            csys.join("Cargo.toml"),
-            format!("[package]\nname = \"csys-{k}\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = \"build.rs\"\n\n[build-dependencies]\ncc = \"=1.2.30\"\n"),
-        )
-        .unwrap();
-        std::fs::write(
-            csys.join("build.rs"),
-            "fn main() { cc::Build::new().file(\"c/shared.c\").compile(\"shared\"); }\n",
-        )
-        .unwrap();
-        std::fs::write(
-            csys.join("c/shared.c"),
-            format!("int shared_c(int x) {{ return x * {factor}; }}\n"),
-        )
-        .unwrap();
-        std::fs::write(
-            csys.join("src/lib.rs"),
-            "extern \"C\" { fn shared_c(x: i32) -> i32; }\npub fn call(x: i32) -> i64 { i64::from(unsafe { shared_c(x) }) }\n",
-        )
-        .unwrap();
+        let csys = c_package(
+            &dir,
+            k,
+            &format!("int shared_c(int x) {{ return x * {factor}; }}\n"),
+        );
         raw_cog_named(
             &dir.join(format!("raw{k}")),
             &format!("raw{k}"),
@@ -811,6 +819,96 @@ fn two_cogs_with_the_same_c_symbol_each_run_their_own() {
     assert!(!ok);
     assert!(
         err.contains("bring native code: `quarz build` cannot link more than one yet (#677)"),
+        "{err}"
+    );
+}
+
+/// `quarz build` of a cog whose C code defines `mi_version`, a strong
+/// symbol of quarz's runtime (mimalloc's), with code of its own: the
+/// linker would take the runtime's, silently, so the build is refused,
+/// naming the cog and the symbol. A weak definition of it is the C way
+/// of offering a default that another overrides: allowed.
+#[test]
+fn a_cog_defining_a_runtime_symbol_is_refused_by_quarz_build() {
+    let dir = std::env::temp_dir().join(format!("quarz-native-clash-{}", std::process::id()));
+    for (k, def, refused) in [
+        ("strong", "int mi_version(void) { return 1; }\n", true),
+        (
+            "weak",
+            "__attribute__((weak)) int mi_version(void) { return 1; }\n",
+            false,
+        ),
+    ] {
+        let _ = std::fs::remove_dir_all(&dir);
+        let csys = c_package(
+            &dir,
+            k,
+            &format!("{def}int shared_c(int x) {{ return x + mi_version(); }}\n"),
+        );
+        raw_cog_named(
+            &dir.join("raw"),
+            "raw",
+            &format!("csys_{k}::call(1)"),
+            &format!("csys-{k} = {{ path = {csys:?} }}\n"),
+            "",
+        );
+        let app = app_on(&dir, "Raw", &dir.join("raw"), "p Raw::Calc.answer\n");
+        let envs = own_caches(&dir);
+        let exe = dir.join("app-bin");
+        let (ok, _, err) = quarz(
+            &app,
+            &["build", "-o", exe.to_str().unwrap()],
+            &as_refs(&envs),
+        );
+        if refused {
+            assert!(!ok, "{k}");
+            assert!(
+                err.contains("quarz: cog `raw` (app → raw) defines the symbol `mi_version`, which quarz's runtime also defines, with other code: an executable holds one, and the cog would run the runtime's"),
+                "{k}: {err}"
+            );
+            assert!(!exe.exists());
+        } else {
+            assert!(ok, "{k}: {err}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A cog whose crates set a `#[global_allocator]`: refused by `quarz
+/// build` with its own error (quarz's runtime has its allocator).
+#[test]
+fn a_cog_setting_a_global_allocator_is_refused_by_quarz_build() {
+    let dir = std::env::temp_dir().join(format!("quarz-native-galloc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let galloc = dir.join("galloc");
+    std::fs::create_dir_all(galloc.join("src")).unwrap();
+    std::fs::write(
+        galloc.join("Cargo.toml"),
+        "[package]\nname = \"galloc\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        galloc.join("src/lib.rs"),
+        "use std::alloc::{GlobalAlloc, Layout, System};\npub struct A;\nunsafe impl GlobalAlloc for A {\n    unsafe fn alloc(&self, l: Layout) -> *mut u8 { System.alloc(l) }\n    unsafe fn dealloc(&self, p: *mut u8, l: Layout) { System.dealloc(p, l) }\n}\n#[global_allocator]\nstatic G: A = A;\npub fn value() -> i64 { 5 }\n",
+    )
+    .unwrap();
+    raw_cog(
+        &dir.join("raw"),
+        "galloc::value()",
+        &format!("galloc = {{ path = {galloc:?} }}\n"),
+    );
+    let app = app_on(&dir, "Raw", &dir.join("raw"), "p Raw::Calc.answer\n");
+    let envs = own_caches(&dir);
+    let exe = dir.join("app-bin");
+    let (ok, _, err) = quarz(
+        &app,
+        &["build", "-o", exe.to_str().unwrap()],
+        &as_refs(&envs),
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!ok);
+    assert!(
+        err.contains("quarz: cog `raw` (app → raw) sets a global allocator (`#[global_allocator]` in its crates), which a built program cannot hold: quarz's runtime has its own"),
         "{err}"
     );
 }

@@ -1722,7 +1722,9 @@ pub struct RtMethod {
     pub ext: Option<u32>,
     /// Whether every parameter is positional (no keyword-only one, no
     /// splat): a call passing exactly its parameters positionally binds
-    /// them as they are (`native_ext`'s binder, #1203).
+    /// them as they are (`native_ext`'s binder, #1203). The block is not
+    /// among `params` (`has_block`), so a method taking one is as
+    /// positional as its other parameters make it.
     #[serde(default)]
     pub positional_only: bool,
 }

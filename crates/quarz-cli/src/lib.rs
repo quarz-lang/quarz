@@ -106,7 +106,7 @@ pub fn load_natives(world: &quarz_ir::RtWorld, natives: &Natives) -> Result<(), 
 }
 
 /// The archives to link, by cog, and the directories to remove after.
-type Archives = (Vec<(String, std::path::PathBuf)>, Vec<std::path::PathBuf>);
+type Archives = (Vec<quarz_aot::Archive>, Vec<std::path::PathBuf>);
 
 /// The archives `quarz build` links of `world`'s native cogs, by cog
 /// (built, or found kept: `native::build_all`), and the directories to
@@ -123,11 +123,19 @@ fn archives(world: &quarz_ir::RtWorld, natives: &Natives) -> Result<Archives, St
     }
     let mut out = Vec::new();
     let mut remove = Vec::new();
-    for (name, built) in native::build_all(&cogs, natives.offline, native::Use::Link)? {
+    for (c, (name, built)) in cogs.iter().zip(native::build_all(
+        &cogs,
+        natives.offline,
+        native::Use::Link,
+    )?) {
         if built.remove_after {
             remove.extend(built.file.parent().map(|p| p.to_path_buf()));
         }
-        out.push((name, built.file));
+        out.push(quarz_aot::Archive {
+            cog: name,
+            who: c.who(),
+            path: built.file,
+        });
     }
     Ok((out, remove))
 }

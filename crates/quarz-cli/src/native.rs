@@ -50,7 +50,7 @@ pub struct NativeCog {
 
 impl NativeCog {
     /// How errors name it: ``cog `zlib` (app → web → zlib)``.
-    fn who(&self) -> String {
+    pub fn who(&self) -> String {
         if self.path.is_empty() {
             format!("cog `{}`", self.name)
         } else {
