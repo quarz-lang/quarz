@@ -156,6 +156,23 @@ fn prelude_kernel_takes_only_native_defs() {
     );
 }
 
+/// #1198: a program declares no `native def`: the runtime binds a native
+/// by its key whoever declares it, so a program's would run a standard
+/// native under the program's own types (here `Int#to_s`, a `String`,
+/// typed `Int`). A class's, a function's and an extension's alike.
+#[test]
+fn a_program_declares_no_native_def() {
+    let refused = "`native def` is for the standard library: a method of a program or a cog is written in Quarz, with a body";
+    for src in [
+        "extension Int\n  native def to_s(base: Int, extra: Int) -> Int\nend\np 255.to_s(16, 0) + 1\n",
+        "class Foo\n  native def bar(x: Int) -> Int\nend\n",
+        "class Foo\n  native def self.make -> Foo\nend\n",
+        "native def twice(n: Int) -> Int\n",
+    ] {
+        err(src, refused);
+    }
+}
+
 /// `World::user_method` (what a value is compared and hashed by, and so
 /// whether a `data` type is held in place, #809) walks the classes' own
 /// tables only: the runtime's lookup tries the prelude's extensions
