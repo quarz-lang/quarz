@@ -60,7 +60,20 @@ pub fn build(
 ) -> Result<(), String> {
     let module = quarz_lower::lower_checked(&checked, files);
     let jobs = quarz_aot::build_jobs(None)?;
-    quarz_aot::build_with_jobs(&module, &file_groups(&checked), output, jobs)
+    quarz_aot::build_with_jobs(
+        &module,
+        &file_groups(&checked),
+        output,
+        jobs,
+        object_cache().as_deref(),
+    )
+}
+
+/// The objects' cache of `quarz build` (#1182): `objects/` in the
+/// checker's cache directory (`quarz_types::cache::dir`), none when the
+/// cache is off (`QUARZ_NO_CACHE`).
+fn object_cache() -> Option<std::path::PathBuf> {
+    quarz_types::cache::dir().map(|d| d.join("objects"))
 }
 
 /// The checked program's files by group, as `quarz build` partitions them
@@ -94,7 +107,13 @@ pub fn build_with_jobs(
     let start = std::time::Instant::now();
     let module = quarz_lower::lower_checked_with(lowerer, &checked, files);
     quarz_aot::report("lower", start, &[]);
-    quarz_aot::build_with_jobs(&module, &file_groups(&checked), output, jobs)
+    quarz_aot::build_with_jobs(
+        &module,
+        &file_groups(&checked),
+        output,
+        jobs,
+        object_cache().as_deref(),
+    )
 }
 
 /// `build` continuing `lowerer` (see `run_with`).
@@ -108,7 +127,13 @@ pub fn build_with(
     let module = quarz_lower::lower_checked_with(lowerer, &checked, files);
     quarz_aot::report("lower", start, &[]);
     let jobs = quarz_aot::build_jobs(None)?;
-    quarz_aot::build_with_jobs(&module, &file_groups(&checked), output, jobs)
+    quarz_aot::build_with_jobs(
+        &module,
+        &file_groups(&checked),
+        output,
+        jobs,
+        object_cache().as_deref(),
+    )
 }
 
 /// Lower and run a checked program capturing its standard output.
