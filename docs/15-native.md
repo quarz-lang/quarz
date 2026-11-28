@@ -188,6 +188,8 @@ typedef struct { const uint8_t *name; size_t name_len; QzDrop drop; uint32_t fla
 - An index past the list is a `TypeError`.
 - On an error, `data` is still the cog's.
 
+**A native class's `new`.** `Name.new` works as for any class when the class defines `self.new`: a `native def self.new(...) -> Self` (`Self` is the class, which is final), or a Quarz-written `def self.new` that returns what one of its natives made. `Self.new` stays the constructor path (docs/01 §9), which a native class does not have.
+
 **`object_data(cx, v, cls, out)`** gives the data of `v`, an object of exactly the module's class `cls`, and raises `TypeError` otherwise ("a native method expected an object of Counter, got Pool"). The pointer is valid while `v` is: the call's handle keeps it.
 
 **The drop.** The class's `drop` runs once, on whichever worker releases the object's last reference. It runs where a `deinitialize` would (docs/03 §4):

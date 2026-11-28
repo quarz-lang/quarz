@@ -381,6 +381,16 @@ true
 42
 true
 false
+5
+7
+10
+5
+1
+7
+Counter
+8
+9
+32
 \"cannot dup Counter: a native class's data is its cog's, with no copy of it (docs/15)\"
 0
 1
@@ -1385,6 +1395,82 @@ fn a_static_statement_does_not_give_a_native_class_fields() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A library cog's native class made by its `native def self.new`, from
+/// the application, interpreted and built: `new` is the class's only
+/// maker there, and `shake` keeps the class's methods from it (its
+/// declared result, `Self`, is the class).
+#[test]
+fn another_cogs_native_class_is_made_by_new() {
+    let dir = std::env::temp_dir().join(format!("quarz-native-newcog-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let repo = dir.join("boxes");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::create_dir_all(repo.join("native/src")).unwrap();
+    std::fs::write(
+        repo.join("Cog.toml"),
+        "[cog]\nname = \"boxes\"\nversion = \"0.1.0\"\n\n[native]\ncrate = \"native\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("src/boxes.qz"),
+        "native class Box\n  native def self.new(v: Int) -> Self\n  native def get -> Int\nend\n",
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("native/Cargo.toml"),
+        package_manifest("boxes-native", ""),
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("native/src/lib.rs"),
+        r#"use quarz_ext::{Call, Result, Value};
+
+struct Held(i64);
+
+fn new<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c>> {
+    cx.object(Held(cx.get_int(a[0])?))
+}
+
+fn get<'c>(cx: &Call<'c>, recv: Value<'c>, _: &[Value<'c>]) -> Result<Value<'c>> {
+    Ok(cx.int(cx.data::<Held>(recv)?.0))
+}
+
+quarz_ext::module! {
+    cog: "boxes",
+    classes: { "Boxes::Box" => Held },
+    "Boxes::Box.new" => new,
+    "Boxes::Box#get" => get,
+}
+"#,
+    )
+    .unwrap();
+    // Its lock, committed: a fetched cog builds with `--locked`.
+    let ok = Command::new("cargo")
+        .args(["generate-lockfile", "--offline", "--quiet"])
+        .current_dir(repo.join("native"))
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok, "cargo generate-lockfile");
+    commit_tagged(&repo);
+    let app = app_on(&dir, "Boxes", &repo, "b = Boxes::Box.new(4)\np b.get, b\n");
+    let envs = own_caches(&dir);
+    let (ok, out, err) = quarz(&app, &["run"], &as_refs(&envs));
+    assert!(ok, "{err}");
+    assert_eq!(out, "4\n#<Boxes::Box>\n");
+    let exe = dir.join("app-bin");
+    let (ok, _, err) = quarz(
+        &app,
+        &["build", "-o", exe.to_str().unwrap()],
+        &as_refs(&envs),
+    );
+    assert!(ok, "{err}");
+    let (ok, out, err) = run_exe(&exe);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ok, "{err}");
+    assert_eq!(out, "4\n#<Boxes::Box>\n");
+}
+
 /// A native object cannot cross `Task.blocking` (its data is the cog's,
 /// with no copy for the helper's program): `ArgumentError`, as for a
 /// `Channel`, even of a shareable class.
@@ -1622,8 +1708,12 @@ fn a_cogs_native_def_is_checked() {
             "`Sub` cannot be a subclass of `Counter`: a native class has no subclasses",
         ),
         (
-            &[("bad.qz", "class Maker\n  def self.make -> Counter = Counter.new\nend\n")],
-            "cannot instantiate `Counter`: a native class's objects are made by its cog's native methods (docs/15)",
+            &[("bad.qz", "class Maker\n  def self.make -> Bomb = Bomb.new\nend\n")],
+            "cannot instantiate `Bomb`: a native class's objects are made by its cog's native methods (it may declare `native def self.new`; docs/15)",
+        ),
+        (
+            &[("bad.qz", "extension Counter\n  def fresh -> Self = Self.new(0)\nend\n")],
+            "cannot instantiate `Counter` with `Self.new`: a native class has no `initialize`; call its `new` (`Counter.new`, docs/15)",
         ),
         (
             &[("bad.qz", "class Spawner\n  def self.go(c: Counter) -> Task[Int] = Task.spawn { c.value }\nend\n")],

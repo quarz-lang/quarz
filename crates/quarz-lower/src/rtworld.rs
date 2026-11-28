@@ -513,10 +513,16 @@ pub fn method_row(world: &World, id: MethodId, overrides: &[MethodId]) -> RtMeth
                 },
                 overrides: overrides.to_vec(),
                 makes: if m.is_native {
+                    // A cog's native makes objects of its `native class`es
+                    // only, which are final: `Self` in its declaration is
+                    // the owner (`Counter.new -> Self`, docs/15). A
+                    // standard native's `Self` (`dup`, `tap`) gives back
+                    // the receiver's class, already live.
+                    let own = world.native_cog(m.file).is_some().then_some(m.owner);
                     let mut out = Vec::new();
-                    classes_in(&m.ret, &mut out);
+                    classes_in(&m.ret, own, &mut out);
                     if let Some((_, t)) = &m.block {
-                        classes_in(t, &mut out);
+                        classes_in(t, own, &mut out);
                     }
                     out.sort_unstable();
                     out.dedup();
@@ -973,30 +979,32 @@ fn field_classes(t: &Type) -> Option<Vec<ClassId>> {
     Some(out)
 }
 
-/// The classes `t` names (as instances or as class objects).
-fn classes_in(t: &Type, out: &mut Vec<ClassId>) {
+/// The classes `t` names (as instances or as class objects), and
+/// `self_class` for `Self` when it is given.
+fn classes_in(t: &Type, self_class: Option<ClassId>, out: &mut Vec<ClassId>) {
     match t {
         Type::Class(c, args) | Type::ClassObject(c, args) => {
             out.push(*c);
             for a in args {
-                classes_in(a, out);
+                classes_in(a, self_class, out);
             }
         }
-        Type::TypeOf(t) => classes_in(t, out),
+        Type::TypeOf(t) => classes_in(t, self_class, out),
         Type::Union(ts) | Type::Tuple(ts) => {
             for t in ts {
-                classes_in(t, out);
+                classes_in(t, self_class, out);
             }
         }
         Type::Proc(recv, params, ret, _, kws) => {
             if let Some(r) = recv {
-                classes_in(r, out);
+                classes_in(r, self_class, out);
             }
             for p in params.iter().chain(kws.iter().map(|k| &k.ty)) {
-                classes_in(p, out);
+                classes_in(p, self_class, out);
             }
-            classes_in(ret, out);
+            classes_in(ret, self_class, out);
         }
+        Type::Param(p) if *p == types::declare::SELF_PARAM => out.extend(self_class),
         Type::Nothing | Type::Void | Type::Param(_) | Type::Var(_) => {}
     }
 }
