@@ -13,7 +13,7 @@
 /// The ABI's major version: a module of another is refused.
 pub const QZ_ABI_MAJOR: u32 = 1;
 /// The ABI's minor version: a module needing a greater one is refused.
-pub const QZ_ABI_MINOR: u32 = 0;
+pub const QZ_ABI_MINOR: u32 = 1;
 
 /// An opaque handle on a value; 0 is no value.
 pub type QzValue = u64;
@@ -126,6 +126,12 @@ pub struct QzApi {
     pub raise: unsafe extern "C" fn(*mut QzCall, QzValue, *const u8, usize) -> QzStatus,
 
     pub release: unsafe extern "C" fn(*mut QzCall, QzValue),
+
+    // ABI 1.1.
+    /// Call the method's block (`blk`) with `nargs` arguments: its value
+    /// in `*out`, a handle of the call's (docs/15).
+    pub call_block:
+        unsafe extern "C" fn(*mut QzCall, QzValue, *const QzValue, usize, *mut QzValue) -> QzStatus,
 }
 
 /// A cog's init: `qz_cog_init_<cog>` (`init_symbol`), its only export.

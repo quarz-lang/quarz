@@ -71,4 +71,22 @@ p f, f[2], f == [0.0, 0.5, 1.0], doubled
 bl = Demo.byte_list(2)
 sizes = bl.map { |b| b.size }
 p bl.size, bl[1] == bl[1], sizes
+# Blocks called by native code (ABI 1.1).
+p Demo.twice(3) { |v| v * 2 }
+p Demo.twice(3) { |v| break 42 }
+begin
+  Demo.twice(3) { |v| raise DemoError.new("from the block") }
+rescue DemoError => e
+  p e.message
+end
+def down(n: Int) -> Int = Demo.depth(n) { |k| k > 0 ? down(k - 1) : 0 }
+p down(2)
+# A block that suspends its task (a channel receive) inside the native.
+ch = Channel[Int].new(capacity: 1)
+sender = Task.spawn do
+  ch.send(5)
+  ch.send(5)
+  0
+end
+p Demo.twice(1) { |v| v + ch.receive * 0 + 1 }
 p :done

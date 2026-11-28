@@ -145,6 +145,31 @@ impl<'c> Call<'c> {
         (self.block != 0).then(|| Value::new(self.block))
     }
 
+    /// Call the method's block with `args` (ABI 1.1): its value. What
+    /// the block raises, and a `break` or `return` out of it, comes back
+    /// as `Err(Raised)`, to return at once (`?`). The block may suspend
+    /// the task and may enter this cog's natives again: hold no lock and
+    /// no `RefCell` borrow across the call (docs/15). Raises `ArgumentError`
+    /// when the method was given no block.
+    pub fn call_block(&self, args: &[Value<'c>]) -> Result<Value<'c>> {
+        if self.block == 0 {
+            return Err(self.raise("ArgumentError", "the native method was given no block"));
+        }
+        let mut out: QzValue = 0;
+        // SAFETY: `Value` is a `QzValue` (`repr(transparent)`).
+        let st = unsafe {
+            (self.api.call_block)(
+                self.cx,
+                self.block,
+                args.as_ptr().cast(),
+                args.len(),
+                &mut out,
+            )
+        };
+        status(st)?;
+        Ok(Value::new(out))
+    }
+
     pub fn nil(&self) -> Value<'c> {
         Value::new(unsafe { (self.api.nil)(self.cx) })
     }

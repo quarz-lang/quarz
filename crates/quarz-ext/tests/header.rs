@@ -26,7 +26,7 @@ fn the_header_matches_the_rust_definitions() {
     layout!(QzApi: abi_major, abi_minor, size, kind, nil, bool_new, bool_get, int_new, int_get,
         float_new, float_get, string_new, string_get, bytes_new, bytes_new_uninit, bytes_get,
         symbol_new, symbol_get, array_len, array_get, array_new, array_push, hash_len, hash_get,
-        hash_entry, hash_new, hash_put, exception_class, raise, release);
+        hash_entry, hash_new, hash_put, exception_class, raise, release, call_block);
     for (name, size) in [
         ("QzValue", size_of::<QzValue>()),
         ("QzStatus", size_of::<QzStatus>()),
