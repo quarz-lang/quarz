@@ -5,6 +5,31 @@ require "http"
 require "trace"
 require "test"
 
+# A subscriber whose inject gives a valid field, an invalid name, a value
+# with a newline, and fields that frame the message; only in the tasks
+# that bind its mark.
+class BadInject
+  include Trace::Subscriber
+
+  @mark: Task::Local[Bool] = Task::Local[Bool].new(false)
+
+  def mark -> Task::Local[Bool] = @mark
+
+  def start(name: String, kind: Symbol, payload: Trace::Payload, extract: Hash[String, String]?) -> Shareable?
+    @mark.value ? 1 : nil
+  end
+
+  def finish(token: Shareable?, payload: Trace::Payload, error: Exception?) -> Void = nil
+
+  def event(name: String, payload: Trace::Payload) -> Void = nil
+
+  def inject(token: Shareable?) -> Hash[String, String]
+    return {} if token.nil?
+    {"x-ok" => "1", "bad name" => "x", "x-newline" => "a\r\nx-evil: 1", "host" => "evil.example",
+     "te" => "trailers", "connection" => "close"}
+  end
+end
+
 class HttpTraceTest < Test::Case
   @gate: Channel[Int] = Channel[Int].new(capacity: 4)
 
@@ -20,6 +45,10 @@ class HttpTraceTest < Test::Case
       end
       r.get("/boom") { |_| raise ArgumentError.new("secret detail") }
       r.get("/hop") { |_| HTTP::Server::Response.redirect("/users/9", 302) }
+      r.get("/headers") do |req|
+        h = req.headers
+        HTTP::Server::Response.text("x-ok=#{h["x-ok"] || "-"} host=#{(h["host"] || "-").partition(":")[0]} te=#{h["te"] || "-"} connection=#{h["connection"] || "-"}")
+      end
       r.get("/slow") do |_|
         gate.receive
         HTTP::Server::Response.text("late")
@@ -147,6 +176,38 @@ class HttpTraceTest < Test::Case
     c = records.select { |r| r.name == "http.client.request" }[0]
     assert_false(c.error.nil?)
     assert_nil(attrs(c.last)["status"]?)
+  end
+
+  # An absolute-form target: the path alone, never the user information
+  # or the host.
+  def test_an_absolute_form_target
+    records = Trace::Testing.record do
+      serving do |base|
+        port = base.rpartition(":")[2].to_i
+        sock = TCPSocket.new("127.0.0.1", port)
+        sock.write("GET http://alice:s3cret@127.0.0.1:#{port}/users/5?x=1 HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        assert_true(sock.read.start_with?("HTTP/1.1 200"))
+        sock.close
+      end
+    end
+    s = records.select { |r| r.name == "http.server.request" }[0]
+    assert_equal("/users/5", attrs(s.last)["path"])
+    assert_true(records.all? { |r| r.last.attributes.values.none? { |v| v.to_s.include?("s3cret") } })
+  end
+
+  # A subscriber's bad headers are left out: the request is sent, without
+  # them.
+  def test_injected_headers_are_filtered
+    bad = BadInject.new
+    Trace.subscribe(bad)
+    begin
+      serving do |base|
+        res = bad.mark.with(true) { HTTP::Client.new.get("#{base}/headers") }
+        assert_equal("x-ok=1 host=127.0.0.1 te=- connection=-", res.body.read)
+      end
+    ensure
+      Trace.unsubscribe(bad)
+    end
   end
 
   # Nothing attached: no span, and requests work as before.

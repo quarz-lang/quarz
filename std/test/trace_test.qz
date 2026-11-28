@@ -48,8 +48,10 @@ end
 class TraceTest < Test::Case
   def empty -> Trace::Empty = Trace::Empty.new
 
-  def test_nothing_attached
-    assert_false(Trace.on?)
+  # Outside any recorder's task (other tests' subscribers may be attached
+  # meanwhile, as tests run in parallel: none records this task), the span
+  # records nothing and injects nothing.
+  def test_nothing_recorded
     got = Trace.span("x", empty) do |span|
       assert_false(span.recording?)
       assert_equal(Hash[String, String].new, span.inject)
@@ -240,6 +242,58 @@ class TraceTest < Test::Case
     end
     assert_equal(1, records.size)
     assert_false(records[0].error.nil?)
+  end
+
+  # A kind outside KINDS is refused, where a subscriber listens.
+  def test_an_unknown_kind
+    Trace::Testing.record do
+      assert_raise(ArgumentError) { Trace.span("x", empty, kind: :clinet) { |_| nil } }
+    end
+  end
+
+  # Quiet covers the events and the inject of a span started before it.
+  def test_quiet_covers_an_open_span
+    records = Trace::Testing.record do
+      Trace.span("a", empty) do |span|
+        Trace.quiet do
+          span.event("hidden")
+          assert_equal(Hash[String, String].new, span.inject)
+        end
+        span.event("seen")
+      end
+    end
+    assert_equal(["seen"], records[0].events.map { |e| e[0] })
+  end
+
+  def test_the_shared_none_span_keeps_nothing
+    Trace::Span::NONE.set(Q.new("x", 1))
+    assert_false(Trace::Span::NONE.recording?)
+    assert_equal(Hash[String, Trace::Value].new, Trace::Span::NONE.payload.attributes)
+  end
+
+  # A span handle that outlives its operation (kept, or sent to another
+  # task) does nothing: finish had the last payload, and no event or
+  # header follows.
+  def test_a_span_used_after_its_operation
+    kept: Trace::Span = Trace::Span::NONE
+    records = Trace::Testing.record do
+      Trace.span("a", Q.new("x", 1)) do |span|
+        kept = span
+        span.set(Q.new("x", 2))
+      end
+      k = kept
+      injected = Task.scope do |scope|
+        scope.spawn do
+          k.set(Q.new("x", 3))
+          k.event("late")
+          k.inject
+        end.await
+      end
+      assert_equal(Hash[String, String].new, injected)
+    end
+    assert_equal({"sql" => "x", "rows" => 2}.as(Hash[String, Trace::Value]), records[0].last.attributes)
+    assert_equal(0, records[0].events.size)
+    assert_false(kept.recording? && !kept.ended?)
   end
 
   def test_current

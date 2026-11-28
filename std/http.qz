@@ -1202,8 +1202,21 @@ module HTTP
 
       # :nodoc:
       def self.of(req: Request, status: Int?, error: String?) -> RequestEvent
-        RequestEvent.new(req.method, req.target.partition("?")[0], req.scheme, req.version, req.remote_ip,
+        RequestEvent.new(req.method, RequestEvent.path_of(req.target), req.scheme, req.version, req.remote_ip,
                          status, req.content_length, error)
+      end
+
+      # :nodoc:
+      # The target's path as sent, without its query; of an absolute-form
+      # target (`http://user:pass@host/p`), its path only, never the user
+      # information or the host.
+      def self.path_of(target: String) -> String
+        return target.partition("?")[0] if target.start_with?("/") || target == "*"
+        begin
+          URI.parse(target).path
+        rescue ArgumentError
+          ""
+        end
       end
 
       def attributes -> Hash[String, Trace::Value]
@@ -1231,15 +1244,6 @@ module HTTP
       include Trace::Payload
 
       def attributes -> Hash[String, Trace::Value] = {"status" => status}
-    end
-
-    # :nodoc:
-    # One request, from the handler to the written response, as a
-    # `http.server.request` operation when anything listens.
-    def self.traced(req: Request, &blk: (Trace::Span) -> Bool) -> Bool
-      return blk.call(Trace::Span.none) unless Trace.on?
-      Trace.span("http.server.request", RequestEvent.of(req, nil, nil), kind: :server,
-                 extract: Server.carrier(req.headers)) { |span| blk.call(span) }
     end
 
     # :nodoc:
@@ -1811,7 +1815,7 @@ module HTTP
           rescue Task::Cancelled
             return nil
           rescue Task::Timeout, IOError, SystemCallError
-            Trace.event("http.server.tls_failed")
+            Trace.event("http.server.tls_failed") if Trace.on?
             return nil
           ensure
             @handshakes.update { |h| h.delete(id) }
@@ -1861,40 +1865,12 @@ module HTTP
           current = req
           first = false
           reader.read_timeout = opts.read_timeout
-          keep = Server.traced(req) do |span|
-            failed: String? = nil
-            res = begin
-              @handler.call(req)
-            rescue Error => e
-              error_response(e)
-            # (A handler that recursed without end ends its request only:
-            # not a `StandardError`, but nothing for the server's other
-            # connections to share. A `NoMemoryError` only if raised: the
-            # runtime aborts when an allocation fails.)
-            rescue StandardError, SystemStackError, NoMemoryError => e
-              report(e, req)
-              failed = e.class.name
-              Response.empty(500)
-            end
-            unless HTTP.valid_status?(res.status)
-              report(ArgumentError.new("invalid response status #{res.status}"), req)
-              res = Response.empty(500)
-            end
-            unless HTTP.valid_headers?(res.headers)
-              report(ArgumentError.new("invalid response header (a control character or a bad name)"), req)
-              res = Response.empty(500)
-            end
-            keep = req.keep_alive? && !res.headers.token?("connection", "close") && !stopping?
-            if req.version == "HTTP/1.0"
-              # Kept only with a Content-Length; never after a
-              # Transfer-Encoding (RFC 9112 §6.1).
-              keep = false if res.body.is_a?(Content::Stream) || req.headers.key?("transfer-encoding")
-            end
-            keep = drain(req) if keep
-            span.set(RequestEvent.of(req, res.status, failed)) if span.recording?
-            # (A streamed body is written inside the operation.)
-            HTTP.write_response(conn, req, res, keep, opts.write_timeout)
-            keep
+          # (With nothing listening, no block and no allocation: #1226.)
+          keep = if Trace.on?
+            Trace.span("http.server.request", RequestEvent.of(req, nil, nil), kind: :server,
+                       extract: Server.carrier(req.headers)) { |span| answer(conn, req, span) }
+          else
+            answer(conn, req, Trace::Span::NONE)
           end
           break unless keep
         end
@@ -1915,6 +1891,46 @@ module HTTP
           end
         end
       end
+    end
+
+    # One request answered on `conn`, from the handler to the written
+    # response, under `span` ([Trace::Span::NONE] when nothing listens):
+    # whether the connection is kept.
+    private def answer(conn: IO, req: Request, span: Trace::Span) -> Bool
+      opts = @options
+      failed: String? = nil
+      res = begin
+        @handler.call(req)
+      rescue Error => e
+        error_response(e)
+      # (A handler that recursed without end ends its request only:
+      # not a `StandardError`, but nothing for the server's other
+      # connections to share. A `NoMemoryError` only if raised: the
+      # runtime aborts when an allocation fails.)
+      rescue StandardError, SystemStackError, NoMemoryError => e
+        report(e, req)
+        failed = e.class.name
+        Response.empty(500)
+      end
+      unless HTTP.valid_status?(res.status)
+        report(ArgumentError.new("invalid response status #{res.status}"), req)
+        res = Response.empty(500)
+      end
+      unless HTTP.valid_headers?(res.headers)
+        report(ArgumentError.new("invalid response header (a control character or a bad name)"), req)
+        res = Response.empty(500)
+      end
+      keep = req.keep_alive? && !res.headers.token?("connection", "close") && !stopping?
+      if req.version == "HTTP/1.0"
+        # Kept only with a Content-Length; never after a
+        # Transfer-Encoding (RFC 9112 §6.1).
+        keep = false if res.body.is_a?(Content::Stream) || req.headers.key?("transfer-encoding")
+      end
+      keep = drain(req) if keep
+      span.set(RequestEvent.of(req, res.status, failed)) if span.recording?
+      # (A streamed body is written inside the operation.)
+      HTTP.write_response(conn, req, res, keep, opts.write_timeout)
+      keep
     end
 
     # Read what the handler left of the body, if little; whether the
@@ -3160,14 +3176,25 @@ module HTTP
       end
     end
 
+    # Headers a subscriber's `inject` may not set: they frame the message
+    # or route it, which the client decides.
+    INJECT_REFUSED = ["content-length", "transfer-encoding", "host", "connection", "keep-alive", "te", "trailer",
+                      "upgrade", "expect", "proxy-connection", "proxy-authorization", "authorization", "cookie"]
+
     # A round trip as a `http.client.request` operation when anything
     # listens, with the subscribers' headers (`traceparent`) added to the
-    # hop's, never replacing one the caller set.
+    # hop's, never replacing one the caller set. An injected field that is
+    # not a valid one (a name that is not a token, a value with a control
+    # character) or that frames the message ([INJECT_REFUSED]) is left
+    # out: a subscriber cannot fail or alter the request.
     private def traced_round_trip(req: Request, hop: Int) -> Response
       return round_trip(req) unless Trace.on?
       Trace.span("http.client.request", RequestEvent.of(req, nil, hop), kind: :client) do |span|
         sent = req
-        span.inject.each { |k, v| sent = sent.header(k, v) unless sent.headers.key?(k) }
+        span.inject.each do |k, v|
+          ok = k.match?(HTTP::TOKEN) && !v.match?(HTTP::CONTROL) && !INJECT_REFUSED.include?(k.downcase)
+          sent = sent.header(k, v) if ok && !sent.headers.key?(k)
+        end
         res = round_trip(sent)
         span.set(RequestEvent.of(req, res.status, hop))
         res
@@ -3189,7 +3216,7 @@ module HTTP
         begin
           return exchange(req, head, chunked, io, key, true)
         rescue Stale
-          Trace.event("http.client.retry")
+          Trace.event("http.client.retry") if Trace.on?
           nil
         end
       end

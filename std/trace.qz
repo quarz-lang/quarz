@@ -25,6 +25,10 @@
 # Words are tracing's general ones; what is OpenTelemetry's own (its
 # semantic conventions, OTLP, sampling, `traceparent`) is the `otel`
 # cog's.
+#
+# [Task.blocking]'s helper sees no binding of the caller's: an operation
+# started inside a helper is a root, and is not quiet even under a quiet
+# caller. A library reports around the helper, not from inside it.
 module Trace
   # An attribute's scalar value.
   type Scalar = String | Int | Float | Bool
@@ -60,6 +64,10 @@ module Trace
     def attributes -> Hash[String, Value] = {}
   end
 
+  # The one [Empty] value, the default payload of an event (so that a call
+  # with nothing listening allocates nothing).
+  NOTHING = Empty.new
+
   # What consumes operations: one value for the program, called from
   # every task. Its methods must not wait (a `finish` may run in a
   # cancelled task's `ensure`): queue the work, do not do it. One that
@@ -82,7 +90,12 @@ module Trace
     abstract def start(name: String, kind: Symbol, payload: Payload, extract: Hash[String, String]?) -> Shareable?
 
     # The operation ended: the token [#start] gave, its last payload, and
-    # what it raised (nil when it returned).
+    # what it raised (nil when it returned). That is any [Exception] that
+    # left the operation's block, among them a [Task::Cancelled] (the
+    # task was cancelled: a shutdown, a scope that ended) and a
+    # [SystemExit] (an `exit` inside it): the subscriber decides what is a
+    # failure. Its message is the raiser's text and may quote values: a
+    # subscriber that exports the error exports its class only.
     abstract def finish(token: Shareable?, payload: Payload, error: Exception?) -> Void
 
     # An instant: inside the current operation ([Trace.current] with
@@ -96,46 +109,77 @@ module Trace
 
   # :nodoc:
   # The current operation: the subscribers that started it (their `start`
-  # returned), aligned with their tokens. A subscriber attached during the
+  # returned), aligned with their tokens, and whether any token is not nil
+  # (some subscriber records it). A subscriber attached during the
   # operation is not in it, so it gets no `finish` without its `start`.
-  data Frame = (subscribers: Array[Subscriber], tokens: Array[Shareable?])
+  data Frame = (subscribers: Array[Subscriber], tokens: Array[Shareable?], recording: Bool)
 
   # The handle an operation's block gets.
   class Span
+    include Shareable
+
     @frame: Frame?
-    var @payload: Payload
+    # The payload [#set] last gave; nil once the operation ended (and
+    # always for [NONE], which records nothing).
+    @payload: Atom[Payload?]?
 
     # :nodoc:
-    def initialize(@frame: Frame?, @payload: Payload); end
+    # Made by [Trace.span] only: a library never makes one, and gives
+    # [NONE] to its helper's block when nothing listens.
+    def initialize(@frame: Frame?, payload: Payload?)
+      @payload = payload ? Atom[Payload?].new(payload) : nil
+    end
 
     # :nodoc:
-    def payload -> Payload = @payload
+    # Ends the span: the last payload, after which [#set], [#event] and
+    # [#inject] do nothing (a handle kept or sent to another task outlives
+    # the operation, whose subscribers have had their `finish`).
+    def close -> Payload?
+      a = @payload
+      return nil if a.nil?
+      last: Payload? = nil
+      a.update do |p|
+        last = p
+        nil
+      end
+      last
+    end
 
-    # A span that records nothing: what a library's helper gives its
-    # block when [Trace.on?] is false, so the block is the same on both
-    # paths.
-    def self.none -> Span = Span.new(nil, Empty.new)
+    # :nodoc:
+    def ended? -> Bool = (a = @payload) ? a.get.nil? : true
+
+    # A span that records nothing, shared: what a library's helper gives
+    # its block when [Trace.on?] is false, so the block is the same on
+    # both paths and nothing is allocated.
+    NONE = Span.new(nil, nil)
+
+    # :nodoc:
+    def payload -> Payload = @payload&.get || NOTHING
 
     # Replaces the payload (a status or a row count learned while
-    # running): [Subscriber#finish] gets the last one.
+    # running): [Subscriber#finish] gets the last one. Nothing on a span
+    # that records nothing, or once its operation ended.
     def set(payload: Payload) -> Void
-      @payload = payload
+      @payload&.update { |p| p.nil? ? nil : payload }
       nil
     end
 
-    # An event inside this operation.
-    def event(name: String, payload: Payload = Empty.new) -> Void
+    # An event inside this operation (nothing in [Trace.quiet], or once
+    # the operation ended).
+    def event(name: String, payload: Payload = NOTHING) -> Void
       if (f = @frame)
-        CURRENT.with(f) { Trace.deliver(f.subscribers, name, payload) }
+        CURRENT.with(f) { Trace.deliver(f.subscribers, name, payload) } unless QUIET.value || ended?
       end
       nil
     end
 
     # The headers this operation's subscribers want sent with a request
-    # made now; `{}` when none records it.
+    # made now; `{}` when none records it, in [Trace.quiet], and once the
+    # operation ended.
     def inject -> Hash[String, String]
       out: Hash[String, String] = {}
       if (f = @frame)
+        return out if QUIET.value || ended?
         f.subscribers.each_with_index do |s, i|
           h = Trace.guarded(s, "inject") { s.inject(f.tokens[i]) }
           out = out.merge(h) if h
@@ -144,9 +188,10 @@ module Trace
       out
     end
 
-    # Whether any subscriber records this operation: a library skips the
-    # work that only a payload needs (counting, formatting) when not.
-    def recording? -> Bool = !@frame.nil?
+    # Whether any subscriber records this operation (its `start` gave a
+    # token): a library skips the work that only a payload needs
+    # (counting, formatting) when not.
+    def recording? -> Bool = @frame&.recording || false
   end
 
   # :nodoc:
@@ -164,39 +209,44 @@ module Trace
 
   # Runs the block as one operation named `name` (`pg.query`), and gives
   # its value. What the block raises passes through, after each
-  # subscriber's [Subscriber#finish] saw it. `kind` is one of [KINDS];
+  # subscriber's [Subscriber#finish] saw it. `kind` is one of [KINDS]
+  # (another raises [ArgumentError], when a subscriber is attached);
   # `extract`, the incoming context (a server's request headers).
   #
-  # With no subscriber, or in [.quiet], the block gets a span that
-  # records nothing.
+  # With no subscriber, or in [.quiet], the block gets [Span::NONE].
   def self.span[R](name: String, payload: Payload, *, kind: Symbol = :internal,
                    extract: Hash[String, String]? = nil, &blk: (Span) -> R) -> R
     subs = SUBSCRIBERS.get
-    return blk.call(Span.new(nil, payload)) if subs.empty? || QUIET.value
+    return blk.call(Span::NONE) if subs.empty? || QUIET.value
+    raise ArgumentError.new("unknown kind #{kind.inspect} (one of #{KINDS.map(&:inspect).join(", ")})") unless KINDS.include?(kind)
     started: Array[Subscriber] = []
     tokens: Array[Shareable?] = []
-    subs.each do |s|
-      ok = false
-      t = Trace.guarded(s, "start") do
-        r = s.start(name, kind, payload, extract)
-        ok = true
-        r
-      end
-      if ok
-        started = started.push(s)
-        tokens = tokens.push(t)
-      end
-    end
-    frame = Frame.new(started, tokens)
-    span = Span.new(frame, payload)
+    span: Span? = nil
     error: Exception? = nil
     begin
-      CURRENT.with(frame) { blk.call(span) }
+      # (Inside the `ensure`: a start that raises what is not rescued, a
+      # cancellation, still ends those started before it.)
+      subs.each do |s|
+        ok = false
+        t = Trace.guarded(s, "start") do
+          r = s.start(name, kind, payload, extract)
+          ok = true
+          r
+        end
+        if ok
+          started = started.push(s)
+          tokens = tokens.push(t)
+        end
+      end
+      frame = Frame.new(started, tokens, tokens.any? { |t| !t.nil? })
+      sp = Span.new(frame, payload)
+      span = sp
+      CURRENT.with(frame) { blk.call(sp) }
     rescue Exception => e
       error = e
       raise e
     ensure
-      last = span.payload
+      last = span&.close || payload
       started.each_with_index do |s, i|
         Trace.guarded(s, "finish") { s.finish(tokens[i], last, error) }
       end
@@ -206,7 +256,7 @@ module Trace
   # An instant, inside the current operation if there is one (a retry, a
   # route matched), else outside any (a malformed request). Every
   # subscriber gets it.
-  def self.event(name: String, payload: Payload = Empty.new) -> Void
+  def self.event(name: String, payload: Payload = NOTHING) -> Void
     subs = SUBSCRIBERS.get
     Trace.deliver(subs, name, payload) unless subs.empty? || QUIET.value
     nil
