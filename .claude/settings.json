@@ -8,6 +8,7 @@
     }
   },
   "enabledPlugins": {
-    "long-jobs@quarz-lang": true
+    "long-jobs@quarz-lang": true,
+    "cog@quarz-lang": true
   }
 }
