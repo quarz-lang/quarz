@@ -74,9 +74,10 @@ const QzModule *qz_cog_init_<cog>(const QzApi *api);
 - **With an exception pending,** every status function returns `QZ_RAISED` without acting, every maker returns 0, and `raise` keeps the first exception. A cog that ignores a status can neither overwrite nor lose the exception. `release` on an invalid or already released handle does nothing.
 - A panic is caught by the wrapper at every entry and raised as `NativePanic` (a `StandardError`, decided on #677), with the panic's message. The cog is built with `panic = "unwind"`.
 
-**What the cog is trusted for.** Every misuse of a handle or a value through the API is refused with an exception: a wrong kind, a stale or foreign handle, a change to a value the call did not make, a key or a class the ABI does not take. Two things are not checked:
+**What the cog is trusted for.** Every misuse of a handle or a value through the API is refused with an exception: a wrong kind, a stale or foreign handle, a change to a value the call did not make, a key or a class the ABI does not take. Three things are not checked:
 - The result's type beyond its top level. The result's own class is tested on every call, but nothing tests the elements of a returned collection (an `Array[Int]` holding a `String`).
 - Anything kept past the call's return: a `QzCall`, a handle or a lent pointer. Using one afterwards is undefined behaviour, as is a cog's own memory error.
+- A write through `bytes_new_uninit`'s pointer after the value was first used (given to `call_block`, put into a collection, or the call returned): undefined behaviour (below).
 
 ## The API, ABI 1.0 (`QzApi`, `#[repr(C)]`, append-only)
 
@@ -98,7 +99,7 @@ typedef struct QzApi {
   QzStatus (*string_new)(QzCall*, const uint8_t *p, size_t n, QzValue *out); /* ArgumentError unless UTF-8 */
   QzStatus (*string_get)(QzCall*, QzValue v, const uint8_t **p, size_t *n);
   QzValue  (*bytes_new)(QzCall*, const uint8_t *p, size_t n);
-  QzValue  (*bytes_new_uninit)(QzCall*, size_t n, uint8_t **p); /* n zeroed bytes to write in place */
+  QzValue  (*bytes_new_uninit)(QzCall*, size_t n, uint8_t **p); /* n zeroed bytes, writable until first used */
   QzStatus (*bytes_get)(QzCall*, QzValue v, const uint8_t **p, size_t *n);
   QzStatus (*symbol_new)(QzCall*, const uint8_t *p, size_t n, QzValue *out); /* UTF-8 */
   QzStatus (*symbol_get)(QzCall*, QzValue v, const uint8_t **p, size_t *n);
@@ -129,7 +130,7 @@ Notes on the functions:
 - `hash_entry(i)` is O(1) for every hash: both representations (`ValueMap`, and `IntMap` for `Int` to `Int`) are `IndexMap`s, dense after removals. Iterating `0..len` is linear.
 - `exception_class` resolves a class by its full name in the program (`"ArgumentError"`, `"Zlib::DataError"`). It accepts only an exception class that the built-in path can construct from a message alone. The class is concrete and not generic: an abstract class has no instances, and a generic one's would carry no type arguments. No class from it up to the nearest built-in exception class declares an `initialize` or a field, since running one would be Quarz code and skipping it would leave a field uninitialized. Only a class body can declare either: a module and an extension can declare neither an `initialize` nor a field. Otherwise it raises `ArgumentError`, naming the class and the reason. Its handle is the call's.
 - `raise` makes the exception by that path, with `msg` as its message (UTF-8; invalid bytes are replaced).
-- `bytes_new_uninit` gives `n` zeroed bytes to write through `*p` until the entry returns. Quarz sees them only once the entry has returned, whether as the result or inside a collection. What is left unwritten stays zero.
+- `bytes_new_uninit` gives `n` zeroed bytes to write through `*p`. They may be written until the value is first used as anything but the result to be: passed to `call_block`, pushed or put into a collection (`array_push`, `hash_put`, as an element, key or value), or the entry returns, whichever comes first. From then on, Quarz may see the bytes, keep them, or send them to another worker, and holds them as immutable. Writing through `*p` after that is undefined behaviour (a data race once they cross workers). What is left unwritten stays zero. The wrapper's `bytes_with` cannot break this rule: `fill` ends before the value exists.
 - `kind`:
   - an `Integer` beyond 64 bits is `QZ_INT`, and `int_get` on it raises `RangeError`;
   - a class value (the receiver of an `Owner.name` method) is `QZ_OTHER`;
@@ -142,7 +143,7 @@ Notes on the functions:
 2. **Made handles** (every `_new`, `array_get`, `hash_get`, `hash_entry`, `exception_class`) belong to the call. All are released when the entry returns, except the one in `*out`, which the runtime takes. `release` lets go of one early (a long loop of `array_get`s), unless bytes of it were lent (rule 5): that one is kept until the entry returns, and `release` on it does nothing.
 3. **No handle outlives its call or leaves its thread.** `QzCall` is not `Send`; a handle from another call is detected (the call's serial in the handle, unique in the process from 1.1, so that a handle carried to another call on any thread is refused) and raises `TypeError`, never undefined behaviour. A value kept across calls is a native-data object, in the second scope.
 4. **Values are immutable.** `array_push` and `hash_put` accept only a collection this call made and has not yet given away (put into another collection, or set as `*out`); on anything else they raise `TypeError`. Nothing mutates a lent value.
-5. **Borrowed pointers** (`string_get`, `bytes_get`, `symbol_get`, and `bytes_new_uninit`'s) stay valid until the entry returns, whatever is released: a made value whose bytes were lent is kept to the end of the call. The bytes are not NUL-terminated, and `string_get`'s are UTF-8. `symbol_get` keeps one name per symbol for the call, so asking for the same symbols in a loop does not grow the call's memory.
+5. **Borrowed pointers** (`string_get`, `bytes_get`, `symbol_get`, and `bytes_new_uninit`'s) stay valid until the entry returns, whatever is released (`bytes_new_uninit`'s may be written only until the value is first used, above): a made value whose bytes were lent is kept to the end of the call. The bytes are not NUL-terminated, and `string_get`'s are UTF-8. `symbol_get` keeps one name per symbol for the call, so asking for the same symbols in a loop does not grow the call's memory.
 6. **Lent values are the call's own arguments**, moved into its frame: no copy. A made handle holds a counted reference in the call's frame.
 7. **The values a cog can make:** the literal classes and exceptions (always live under `shake`). Objects of its own classes come in the second scope, by a class the method declares in its result type (`RtMethod::makes`).
 
