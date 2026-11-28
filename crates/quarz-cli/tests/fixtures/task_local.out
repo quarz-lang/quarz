@@ -1,0 +1,21 @@
+["none", 0]
+["b", 1]
+["a", 1]
+["a", 0]
+["none", 0]
+"v"
+["raise", "outer"]
+["break", "outer"]
+["ret", "outer"]
+["next", "outer"]
+["from ensure: ensure", "outer"]
+"deep"
+"parent"
+["c1", "parent", "parent", "parent"]
+"parent"
+["x", "y", "none"]
+:cancelled
+["none", "local none"]
+["after cancel: cancelled", "deinitialize: none"]
+[true, false, "#<Task::Local>", true]
+at_exit: none

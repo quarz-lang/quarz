@@ -326,17 +326,24 @@ pub fn export_block(
 pub type Bindings = Vec<(i64, Transfer)>;
 
 /// One binding for the helper: its value exported, or `None` for the
-/// helper to read the key's default instead. The rule (quarz-manager's
-/// recommendation on #1213, pending the maintainer's answer): a value
-/// `Task.blocking` can copy (`crosses`) is copied; one it cannot (a
-/// `Channel`, an `Atom`, a native object, an instance with
-/// `deinitialize`, or a value holding one) is left out, the helper
-/// reading the default. Any other rule is a change of this function.
-pub fn export_binding(interp: &Interp, _key: i64, value: &Value) -> Result<Option<Transfer>, Flow> {
-    if !crosses(interp, value) {
-        return Ok(None);
-    }
-    export(interp, value.clone()).map(Some)
+/// helper to read the key's default instead.
+///
+/// For now every binding is left out: the helper reads every key's
+/// default, whether the block captured the key or the key is a
+/// constant's. Which bindings the helper sees is the maintainer's
+/// question on #1213. A key's identity on the helper must be sound,
+/// never another key's of another type: a key the block captures is
+/// copied with its id; a constant's key is made again there. The
+/// alternative under decision copies the bindings of keys the helper
+/// can be shown to share, and only values `Task.blocking` can copy
+/// (`crosses`); it is a change of this function and of how a key gets
+/// its id.
+pub fn export_binding(
+    _interp: &Interp,
+    _key: i64,
+    _value: &Value,
+) -> Result<Option<Transfer>, Flow> {
+    Ok(None)
 }
 
 /// The current task's bindings for `Task.blocking`'s helper

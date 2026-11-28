@@ -89,6 +89,13 @@ fn channels_and_select_between_workers() {
     prints_its_out("channels.qz");
 }
 
+/// `Task::Local` (#1213): spawned tasks on four workers start with their
+/// spawner's bindings, whatever worker runs them (`fixtures/task_local.qz`).
+#[test]
+fn task_locals_follow_spawns_across_workers() {
+    prints_its_out("task_local.qz");
+}
+
 #[test]
 fn scopes_cancellation_and_exceptions_between_workers() {
     prints_its_out("scopes.qz");

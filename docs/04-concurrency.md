@@ -51,7 +51,7 @@ REQUEST_ID.value            # => nil, the default
 - A binding made in a child is its own: the parent and the siblings never see it.
 - A task the standard library starts once for the whole program (`Signal`'s dispatcher) starts with the defaults, as do the main task, `at_exit` blocks, the REPL's inputs and the compile-time runs of `static`.
 - `deinitialize` runs with the defaults: it runs when the object goes, where no binding of the releasing task's means anything to it.
-- `Task.blocking`'s block sees the caller's bindings. A bound value `Task.blocking` cannot copy (a `Channel`, an `Atom`, a native object, an instance with `deinitialize`, or a value holding one) is not sent: the helper reads that key's default. *(This rule is pending the maintainer's decision on #1213.)*
+- `Task.blocking`'s block reads every key's default: its helper runs a copy of the program, where a key is the same key only in some cases. A block that needs a value binds it itself: `id = ID.value; Task.blocking { ID.with(id) { ... } }`. *(Pending the maintainer's decision on #1213, which may give the helper some of the caller's bindings.)*
 
 **Compile time.** A compile-time run may make keys, bind and read them, as at run time. A key made at compile time is never baked into the program: its identity is the compiler's.
 
