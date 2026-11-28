@@ -155,6 +155,15 @@ never use `pgrep -f` with a plain pattern).
 - A pull request that fixes an issue says `Closes #N` in its description.
   A decision taken about an issue is recorded as a comment on it.
 
+## Creating a cog
+
+Follow the `new-cog` skill (the `cog` plugin of quarz-lang/claude-plugins:
+the steps from the empty repository the maintainer created to the cog's
+first real pull request, with the skeleton's files as templates), and
+start from its templates, not from another cog's files. A cog defines no
+version constant (`Foo::VERSION`): its version is `Cog.toml`'s, and a
+fetched cog's is its tag's (docs/10).
+
 ## Tests
 
 - `crates/quarz-cli/tests/fixtures/**/*.qz` with `.out` files: the VM's
