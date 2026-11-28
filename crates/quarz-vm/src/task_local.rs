@@ -28,11 +28,11 @@ pub struct Bind {
 /// default).
 pub type Bindings = Option<Rc<Bind>>;
 
-/// `head` with `key` bound to `value` in front. The node is shared from
-/// the start (`Rc::new_shared`): a child task may hold it on another
-/// worker.
+/// `head` with `key` bound to `value` in front: the task's own node (a
+/// count of its own), marked shared when a spawned task inherits it
+/// (`inherit`).
 pub fn bind(head: &Bindings, key: i64, value: Value) -> Bindings {
-    Some(Rc::new_shared(Bind {
+    Some(Rc::new(Bind {
         key,
         value,
         next: head.clone(),
@@ -51,14 +51,18 @@ pub fn lookup(head: &Bindings, key: i64) -> Option<&Value> {
     None
 }
 
-/// The bindings a spawned task starts with: `head`, its values marked
-/// shared as a spawned block's captures are (`Value::share`), the walk
-/// stopping at what is shared already.
+/// The bindings a spawned task starts with: `head`, its nodes and their
+/// values marked shared (the child may run on another worker), as a
+/// spawned block's captures are (`Value::share`). The walk stops at a
+/// node shared already: everything below it was marked with it.
 pub fn inherit(head: &Bindings) -> Bindings {
-    let mut at = head.as_deref();
-    while let Some(b) = at {
-        b.value.share();
-        at = b.next.as_deref();
+    let mut at = head.as_ref();
+    while let Some(node) = at {
+        if !Rc::mark_shared(node) {
+            break;
+        }
+        node.value.share();
+        at = node.next.as_ref();
     }
     head.clone()
 }

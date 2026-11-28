@@ -1905,7 +1905,7 @@ impl Interp {
                 sink,
                 is_sink,
             );
-            *sched::lock(&handle.bindings) = inherited;
+            set_bindings(&handle, inherited);
             contain(&handle);
             return handle;
         }
@@ -1917,7 +1917,7 @@ impl Interp {
             sink,
             is_sink,
         );
-        *sched::lock(&handle.bindings) = inherited;
+        set_bindings(&handle, inherited);
         contain(&handle);
         workers.post_spawn(
             target,
@@ -1946,9 +1946,17 @@ impl Interp {
             *self.rescuing.borrow_mut() = stack;
         }
         // Its bindings in the worker's cell while it runs (#1213).
-        self.bindings.set(sched::lock(&task.bindings).take());
+        if task.has_bindings.load(std::sync::atomic::Ordering::Relaxed) {
+            self.bindings.set(sched::lock(&task.bindings).take());
+        }
         let result = sched::resume(&task, &mut co);
-        *sched::lock(&task.bindings) = self.bindings.take();
+        let bindings = self.bindings.take();
+        let some = bindings.is_some();
+        if some {
+            *sched::lock(&task.bindings) = bindings;
+        }
+        task.has_bindings
+            .store(some, std::sync::atomic::Ordering::Relaxed);
         let stack = {
             let mut r = self.rescuing.borrow_mut();
             (!r.is_empty()).then(|| std::mem::take(&mut *r))
@@ -5312,4 +5320,14 @@ pub(crate) enum NativeResult {
     Mismatch(String),
     /// The lowering shipped no test for the native: an internal error.
     NoTest(String),
+}
+
+/// A new task's `Task::Local` bindings, before it first runs (#1213).
+fn set_bindings(handle: &TaskHandle, bindings: crate::task_local::Bindings) {
+    if bindings.is_some() {
+        *sched::lock(&handle.bindings) = bindings;
+        handle
+            .has_bindings
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }

@@ -278,6 +278,9 @@ pub struct TaskHandle {
     /// it yields or ends (`Interp::resume_task`); set once before it
     /// first runs (`Interp::spawn_task`, the helper of `Task.blocking`).
     pub bindings: Mutex<crate::task_local::Bindings>,
+    /// Whether `bindings` holds any: the switch takes the lock only then
+    /// (a task that never binds pays a load and a store per switch).
+    pub has_bindings: AtomicBool,
     /// Whether the `exit`s of the tasks it spawns (and theirs) go to it: a
     /// root task, the task of a `Task.timeout` block (its caller's code).
     is_sink: AtomicBool,
@@ -343,6 +346,7 @@ impl TaskHandle {
             uncancellable: std::sync::atomic::AtomicU32::new(0),
             in_native: std::sync::atomic::AtomicU32::new(0),
             bindings: Mutex::new(None),
+            has_bindings: AtomicBool::new(false),
             is_sink: AtomicBool::new(is_sink),
             sink: Mutex::new(sink),
             exit_request: std::sync::atomic::AtomicI64::new(NO_EXIT),

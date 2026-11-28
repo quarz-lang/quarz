@@ -31,9 +31,16 @@ pub fn register(m: &mut impl super::Sink) {
     // (its second field, `@default`).
     fast!(m, "Task::Local#value", |i, r, a| match a {
         [] => {
-            let id = super::concurrency::local_id(r)?;
             let head = i.bindings.take();
-            let bound = crate::task_local::lookup(&head, id).cloned();
+            // (Nothing bound on the task, the common case: the default,
+            // without reading the key's id.)
+            let bound = match &head {
+                None => None,
+                Some(_) => {
+                    let id = super::concurrency::local_id(r);
+                    id.and_then(|id| crate::task_local::lookup(&head, id).cloned())
+                }
+            };
             i.bindings.set(head);
             match bound {
                 Some(v) => Some(v),
