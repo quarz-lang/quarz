@@ -3,9 +3,11 @@
 //! the linker takes the first definition of a symbol, silently. A cog
 //! whose archive defines a symbol of the runtime's (its own copy of a C
 //! library the runtime holds, a C file defining `stack_init`) would run
-//! the runtime's code in its place. So before linking, each cog's
-//! definitions are compared with the runtime's: a symbol both define, in
-//! members whose bytes differ, is refused, naming the cog and the symbol.
+//! the runtime's code in its place; two cogs, each other's. So before
+//! linking, each cog's definitions are compared with the runtime's and
+//! with those of the cogs before it: a symbol two of them define, in
+//! members whose bytes differ, is refused, naming the cogs and the
+//! symbol.
 //! Members that are byte-identical (std's and compiler-builtins' from the
 //! same rustc, a shared crate built alike) are one definition, allowed.
 //!
@@ -120,35 +122,44 @@ pub fn read(path: &Path) -> Result<Table, String> {
     })
 }
 
-/// Refuse a cog whose archive (`cog`'s table, `who` naming it as errors
-/// do) defines a symbol the runtime's archive (`runtime`) defines with
-/// other bytes, or sets a global allocator.
-pub fn check(runtime: &Table, who: &str, cog: &Table) -> Result<(), String> {
-    if cog.global_allocator {
-        return Err(format!(
-            "{who} sets a global allocator (`#[global_allocator]` in its crates), which a built program cannot hold: quarz's runtime has its own"
-        ));
+/// Refuse a link of `cogs` (each one's table, and how errors name it,
+/// in the movement's order) beside `runtime`'s archive when a symbol two
+/// of them define, or a cog and the runtime, is defined in members whose
+/// bytes differ (the linker would take the first, silently), or when a
+/// cog sets a global allocator. One merge: each cog's definitions against
+/// the runtime's and those of the cogs before it (decided on #677: no
+/// hiding, no single cargo build; identical copies are one).
+pub fn check(runtime: &Table, cogs: &[(&str, &Table)]) -> Result<(), String> {
+    for (who, cog) in cogs {
+        if cog.global_allocator {
+            return Err(format!(
+                "{who} sets a global allocator (`#[global_allocator]` in its crates), which a built program cannot hold: quarz's runtime has its own"
+            ));
+        }
     }
-    let mut clashes: Vec<&String> = cog
-        .symbols
-        .iter()
-        .filter(|(name, i)| {
-            runtime
-                .symbols
-                .get(*name)
-                .is_some_and(|r| runtime.hash(*r) != cog.hash(**i))
-        })
-        .map(|(name, _)| name)
-        .collect();
-    clashes.sort();
-    if let Some(name) = clashes.first() {
-        let more = match clashes.len() - 1 {
-            0 => String::new(),
-            n => format!(" (and {n} more)"),
-        };
-        return Err(format!(
-            "{who} defines the symbol `{name}`{more}, which quarz's runtime also defines, with other code: an executable holds one, and the cog would run the runtime's (built from other sources, or with debug info that differs)"
-        ));
+    for (k, (who, cog)) in cogs.iter().enumerate() {
+        let mut names: Vec<&String> = cog.symbols.keys().collect();
+        names.sort();
+        for name in names {
+            let mine = cog.hash(cog.symbols[name]);
+            if let Some(&r) = runtime.symbols.get(name) {
+                if runtime.hash(r) != mine {
+                    return Err(format!(
+                        "{who} defines the symbol `{name}`, which quarz's runtime also defines, with other code: an executable holds one, and the cog would run the runtime's (built from other sources, or with debug info that differs)"
+                    ));
+                }
+                continue;
+            }
+            for (other, table) in &cogs[..k] {
+                if let Some(&o) = table.symbols.get(name) {
+                    if table.hash(o) != mine {
+                        return Err(format!(
+                            "{other} and {who} both define the symbol `{name}`, each with its own code: an executable holds one (each brings its own copy of a library: give them one version, built from the same source)"
+                        ));
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
