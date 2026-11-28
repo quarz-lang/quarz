@@ -1248,27 +1248,46 @@ fn a_cogs_native_classes_are_checked_against_its_library() {
 
 /// `module!` ties each Rust type to one class: a type listed for two is
 /// refused when the cog's native code is compiled (two implementations of
-/// `NativeClass`), never a run-time confusion of the two classes.
+/// `NativeClass`), never a run-time confusion of the two classes. Nor
+/// can a cog implement `NativeClass` itself without `unsafe`: an index of
+/// another type's class would have that class's drop drop it.
 #[test]
 fn a_rust_type_listed_for_two_native_classes_does_not_compile() {
-    let dir = fixture("two-classes", &[("main.qz", "p 1\n")]);
-    let lib = dir.join("native/src/lib.rs");
-    let text = std::fs::read_to_string(&lib).unwrap();
     let listed = "\"Pool\" => Pool: shareable,";
-    assert!(text.contains(listed));
-    std::fs::write(&lib, text.replace(listed, "\"Pool\" => Counter,")).unwrap();
-    // Its own cache: another test's build of the demo, in the shared
-    // target directory of cogs named `demo`, could stand for this one's
-    // (#1220).
-    let envs = own_caches(&dir);
-    let (ok, out, err) = quarz(&dir, &["run"], &as_refs(&envs));
-    let _ = std::fs::remove_dir_all(&dir);
-    assert!(!ok, "{out}");
-    assert!(
-        err.contains("conflicting implementations of trait `NativeClass`")
-            || err.contains("conflicting implementations of trait `quarz_ext::NativeClass`"),
-        "{err}"
-    );
+    let evil = "\nstruct Evil;\nimpl quarz_ext::NativeClass for Evil {\n    const INDEX: u32 = 0;\n    const NAME: &'static str = \"Counter\";\n}\n";
+    for (name, edit, wants) in [
+        (
+            "two-classes",
+            Box::new(|t: &str| t.replace(listed, "\"Pool\" => Counter,"))
+                as Box<dyn Fn(&str) -> String>,
+            [
+                "conflicting implementations of trait `NativeClass`",
+                "conflicting implementations of trait `quarz_ext::NativeClass`",
+            ],
+        ),
+        (
+            "safe-impl",
+            Box::new(move |t: &str| format!("{t}{evil}")),
+            [
+                "the trait `NativeClass` requires an `unsafe impl` declaration",
+                "the trait `quarz_ext::NativeClass` requires an `unsafe impl` declaration",
+            ],
+        ),
+    ] {
+        let dir = fixture(name, &[("main.qz", "p 1\n")]);
+        let lib = dir.join("native/src/lib.rs");
+        let text = std::fs::read_to_string(&lib).unwrap();
+        assert!(text.contains(listed));
+        std::fs::write(&lib, edit(&text)).unwrap();
+        // Its own cache: another test's build of the demo, in the shared
+        // target directory of cogs named `demo`, could stand for this
+        // one's (#1220).
+        let envs = own_caches(&dir);
+        let (ok, out, err) = quarz(&dir, &["run"], &as_refs(&envs));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!ok, "{name}: {out}");
+        assert!(wants.iter().any(|w| err.contains(w)), "{name}: {err}");
+    }
 }
 
 /// A `static` statement does not give a native class what its

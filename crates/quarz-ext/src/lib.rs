@@ -408,7 +408,14 @@ pub type Method = for<'c> fn(&Call<'c>, Value<'c>, &[Value<'c>]) -> Result<Value
 /// list and its name. `module!`'s `classes` implements it for each type it
 /// lists, so a type listed for two classes is two implementations, a
 /// compile-time error.
-pub trait NativeClass: 'static {
+///
+/// # Safety
+///
+/// Only `module!` implements it. `INDEX` and `NAME` are the module's own
+/// class for this type: `Call::object` makes an object of class `INDEX`
+/// holding a `T`, which that class's drop drops as its own type, so an
+/// index of another type's class would drop one type as another.
+pub unsafe trait NativeClass: 'static {
     const INDEX: u32;
     const NAME: &'static str;
 }
@@ -604,7 +611,9 @@ macro_rules! module {
     (@count $($x:tt)*) => { 0usize $(+ $crate::module!(@one $x))* };
     (@impls $n:expr;) => {};
     (@impls $n:expr; $class:literal => $ty:ty $(, $rc:literal => $rt:ty)*) => {
-        impl $crate::NativeClass for $ty {
+        // SAFETY: the index and name of `$ty`'s own class in this
+        // module's list, whose drop drops a `Tagged<$ty>`.
+        unsafe impl $crate::NativeClass for $ty {
             const INDEX: u32 = $n;
             const NAME: &'static str = $class;
         }

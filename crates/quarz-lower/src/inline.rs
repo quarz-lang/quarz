@@ -19,16 +19,23 @@ const MAX_INSTS: usize = 40;
 
 /// Inline the eligible calls of every function in `functions` (indexed
 /// by `FuncId`), `passes` levels deep.
-pub fn inline_calls(functions: &mut [Function], methods: &[RtMethod], passes: usize) {
-    // In a program with a `deinitialize`, or with a cog's native code
-    // (whose `native class`es' data is dropped by the cog's code, docs/15),
-    // what an inlined callee's registers hold is released at its return,
-    // as its activation would be (elsewhere that changes nothing the
-    // program can see, and the clear would keep `sroa` from replacing the
-    // callee's objects).
-    let release = methods
-        .iter()
-        .any(|m| (m.name == "deinitialize" && m.func.is_some()) || m.ext.is_some());
+pub fn inline_calls(
+    functions: &mut [Function],
+    methods: &[RtMethod],
+    native_objects: bool,
+    passes: usize,
+) {
+    // In a program with a `deinitialize`, or with a cog's `native class`
+    // (`native_objects`: its objects' data is dropped by the cog's code,
+    // docs/15), what an inlined callee's registers hold is released at
+    // its return, as its activation would be (elsewhere that changes
+    // nothing the program can see, and the clear would keep `sroa` from
+    // replacing the callee's objects). A cog's native methods alone make
+    // only the runtime's values, whose release no program sees.
+    let release = native_objects
+        || methods
+            .iter()
+            .any(|m| m.name == "deinitialize" && m.func.is_some());
     for _ in 0..passes {
         inline_pass(functions, methods, release);
     }

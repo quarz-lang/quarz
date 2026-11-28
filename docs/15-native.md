@@ -201,6 +201,7 @@ It does not run in two cases:
 **The wrapper.**
 - `module!` takes `classes: { "Zlib::Deflater" => Deflater, "Zlib::Pool" => Pool: shareable }`, naming the Rust type of each class.
 - It implements `quarz_ext::NativeClass` for each type, with the class's index and name. So a type listed for two classes is a compile-time error: two implementations of `NativeClass`.
+- `NativeClass` is an `unsafe trait`: only `module!` implements it. An index of another type's class would have that class's drop drop the value as its own type, so a cog's own `impl` without `unsafe` does not compile.
 - `Call::object(value)` takes the class from the value's type and boxes the value with its `TypeId` first.
 - `Call::data::<T>(v) -> &T` asks for the class of `T`, then compares the stored `TypeId` before any cast, as a second check.
 - It gives `&T` only, never `&mut T`. The block can call another method on the same object, and two values can name it, so mutation goes through `Cell`, `RefCell` or a lock.
