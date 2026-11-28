@@ -667,7 +667,7 @@ impl<'src> Parser<'src> {
     fn parse_statement_head(&mut self) -> PResult<Expr> {
         let start = self.peek().span;
         match self.kind().clone() {
-            T::Keyword(K::Class) => return self.parse_class(false),
+            T::Keyword(K::Class) => return self.parse_class(false, false),
             T::Keyword(K::Module) => return self.parse_module(),
             T::Keyword(K::Def) => return self.parse_def(None, false, false, false),
             T::Keyword(K::Alias) => return self.parse_alias(),
@@ -827,7 +827,8 @@ impl<'src> Parser<'src> {
     }
 
     /// `abstract def`, `private def`, `native def`, `static def`,
-    /// `abstract class`, and combinations such as `private abstract def`.
+    /// `abstract class`, `native class`, and combinations such as
+    /// `private abstract def`.
     fn parse_modified_declaration(&mut self) -> PResult<Option<Expr>> {
         let mark = self.mark();
         let mut is_abstract = false;
@@ -851,7 +852,19 @@ impl<'src> Parser<'src> {
                     return Ok(Some(def));
                 }
                 T::Keyword(K::Class) if is_abstract && !is_native && !is_static => {
-                    return Ok(Some(self.parse_class(true)?));
+                    return Ok(Some(self.parse_class(true, false)?));
+                }
+                T::Keyword(K::Class)
+                    if is_native && !is_abstract && !is_static && visibility.is_none() =>
+                {
+                    return Ok(Some(self.parse_class(false, true)?));
+                }
+                T::Keyword(K::Class) if is_native && is_abstract => {
+                    let span = self.peek().span;
+                    return Err(self.error_at(
+                        "a native class cannot be abstract: its cog's native methods make its objects (docs/15)",
+                        span,
+                    ));
                 }
                 _ => {
                     // Not a declaration after all (e.g. `private` used as a
@@ -3081,7 +3094,7 @@ impl<'src> Parser<'src> {
             K::Case => self.without_pipe_end(Self::parse_case),
             K::Begin => self.parse_begin(),
             K::Def => self.parse_def(None, false, false, false),
-            K::Class => self.parse_class(false),
+            K::Class => self.parse_class(false, false),
             K::Module => self.parse_module(),
             K::Return | K::Break | K::Next => {
                 if kw == K::Break && self.in_comprehension {
@@ -4264,7 +4277,7 @@ impl<'src> Parser<'src> {
 
     // ----- declarations ----------------------------------------------------
 
-    fn parse_class(&mut self, is_abstract: bool) -> PResult<Expr> {
+    fn parse_class(&mut self, is_abstract: bool, is_native: bool) -> PResult<Expr> {
         let start = self.expect_kw(K::Class)?.span;
         let name = self.parse_const_path()?;
         let type_params = self.parse_type_params_opt()?;
@@ -4286,6 +4299,7 @@ impl<'src> Parser<'src> {
                 superclass,
                 body,
                 is_abstract,
+                is_native,
             })),
         ))
     }

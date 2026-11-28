@@ -10690,6 +10690,12 @@ impl Checker {
                 format!("cannot dup {name}: its class defines `deinitialize`, which would run for the copy too"),
                 expr.span,
             );
+        } else if self.world.class(cid).is_native {
+            let name = self.world.class(cid).name.clone();
+            self.error(
+                format!("cannot dup {name}: a native class's data is its cog's, with no copy of it (docs/15)"),
+                expr.span,
+            );
         }
     }
 
@@ -13643,6 +13649,17 @@ impl Checker {
         // first, so that a construction among its arguments is checked as
         // any.)
         let constructing_self = std::mem::take(&mut self.constructing_self);
+        if class.is_native {
+            self.error(
+                format!(
+                    "cannot instantiate `{}`: a native class's objects are made by its cog's native methods (docs/15)",
+                    class.name
+                ),
+                expr.span,
+            );
+            self.check_args_blindly(call);
+            return Type::Nothing;
+        }
         if ((class.is_abstract || class.kind == ClassKind::Module) && !constructing_self)
             || class.kind == ClassKind::Enum
         {

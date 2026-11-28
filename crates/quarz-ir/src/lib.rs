@@ -1886,6 +1886,11 @@ pub struct RtNativeCog {
     pub name: String,
     /// Its `native def`s: the method and its key (`Owner#name`).
     pub methods: Vec<(MethodId, String)>,
+    /// Its `native class`es (ABI 1.1): the class, its full name, and
+    /// whether it is declared `Shareable` (checked against the module's
+    /// class list both ways).
+    #[serde(default)]
+    pub classes: Vec<(ClassId, String, bool)>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

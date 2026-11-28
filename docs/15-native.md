@@ -34,6 +34,9 @@ typedef struct { const char *key; size_t key_len; QzEntry entry; } QzMethod;
 typedef struct { uint32_t abi_major, abi_minor;
                  const QzMethod *methods; size_t n_methods;
                  size_t method_size;      /* sizeof(QzMethod) as the cog knows it: the array's stride */
+                 /* ABI 1.1, read only from a module whose abi_minor is 1 or more: */
+                 const QzClass *classes; size_t n_classes;
+                 size_t class_size;       /* sizeof(QzClass) as the cog knows it */
                } QzModule;
 
 /* The cog's only export, named by the wrapper's macro. */
@@ -122,6 +125,8 @@ typedef struct QzApi {
 
   /* ABI 1.1 */
   QzStatus (*call_block)(QzCall*, QzValue blk, const QzValue *args, size_t nargs, QzValue *out);
+  QzStatus (*object_new)(QzCall*, uint32_t cls, void *data, QzValue *out);
+  QzStatus (*object_data)(QzCall*, QzValue v, uint32_t cls, void **out);
 } QzApi;
 ```
 
@@ -161,9 +166,61 @@ The source is the Rust `quarz_ext::sys` module (`crates/quarz-ext/src/sys.rs`). 
 - **Re-entrancy.** While a native waits in `call_block`, the same cog's natives (the same one included) can be entered again, each call with a frame of its own: on the same thread (by the block, or by another task of that worker while the block waits), and on other workers. A cog's global and thread-local state must allow it: hold no lock and no `RefCell` borrow across `call_block`, and assume no "one call at a time". A lock held across it can deadlock with another task of the same worker.
 - **A program that ends while a task waits in a native's block.** The task is not resumed and its stack is not unwound, so the destructors of the cog's frames on it do not run, as at a process's `exit`. Flush and unlock before `call_block`, not in a destructor across it. Nothing aborts: an interpreter dropped with such a task forgets its stack instead of unwinding it.
 
+## Native objects (ABI 1.1)
+
+A cog's `native class` (docs/01) has objects that hold the cog's data. Only the cog's natives make them.
+
+```c
+typedef void (*QzDrop)(void *data);
+typedef struct { const uint8_t *name; size_t name_len; QzDrop drop; uint32_t flags; } QzClass;
+#define QZ_CLASS_SHAREABLE 1u
+```
+
+**The module's class list.**
+- The module lists each `native class`: its full name as the cog declares it, the drop of its data, and its flags.
+- A class is named in the API by its index in this list, `cls`.
+- When the library is loaded, the list is checked against the cog's declarations both ways. A declared class the module does not list, and a listed class the cog does not declare, are errors naming the cog.
+- The same check covers `Shareable`: a class declared `include Shareable` must be marked `QZ_CLASS_SHAREABLE`, and only such a class may be marked. The wrapper marks a class only if its data is `Send + Sync`, which it checks at compile time.
+- The runtime binds each cog's list to its classes once, where it binds the methods. A call then indexes that table, with no lock, search or allocation.
+
+**`object_new(cx, cls, data, out)`** makes an object of the module's class `cls`, holding `data`. The result is a handle of the call.
+- It accepts only a class the calling method's declaration returns, in its result or block type (`RtMethod::makes`), so `shake` keeps its methods. Any other class is refused with `TypeError`: "a native method made an object of `Counter`, which its declaration does not return".
+- An index past the list is a `TypeError`.
+- On an error, `data` is still the cog's.
+
+**`object_data(cx, v, cls, out)`** gives the data of `v`, an object of exactly the module's class `cls`, and raises `TypeError` otherwise ("a native method expected an object of Counter, got Pool"). The pointer is valid while `v` is: the call's handle keeps it.
+
+**The drop.** The class's `drop` runs once, on whichever worker releases the object's last reference. It runs where a `deinitialize` would (docs/03 §4):
+- at the end of a scope or statement, or where a variable holding the object is reassigned;
+- for a reference released elsewhere (an element dropped from a collection), when the method that released it returns, or at the next end of a scope.
+
+It does not run in two cases:
+- for objects still referenced when the program exits, a constant's included (a constant lives as long as the program);
+- for objects in the frames of a task parked inside a native when the program ends ("Calling the block", above).
+
+**The wrapper.**
+- `module!` takes `classes: { "Zlib::Deflater" => Deflater, "Zlib::Pool" => Pool: shareable }`, naming the Rust type of each class.
+- It implements `quarz_ext::NativeClass` for each type, with the class's index and name. So a type listed for two classes is a compile-time error: two implementations of `NativeClass`.
+- `NativeClass` is an `unsafe trait`: only `module!` implements it. An index of another type's class would have that class's drop drop the value as its own type, so a cog's own `impl` without `unsafe` does not compile.
+- `Call::object(value)` takes the class from the value's type and boxes the value with its `TypeId` first.
+- `Call::data::<T>(v) -> &T` asks for the class of `T`, then compares the stored `TypeId` before any cast, as a second check.
+- It gives `&T` only, never `&mut T`. The block can call another method on the same object, and two values can name it, so mutation goes through `Cell`, `RefCell` or a lock.
+- An unshareable class's `T` needs neither `Send` nor `Sync`. Its objects stay on one task: the checker refuses them in `Task.spawn`'s captures and in a `Channel`, and a task does not change workers.
+- **A drop that panics:** the wrapper catches the panic, since a panic cannot cross into the runtime. It reports it once per cog, under `quarz run` and in a built program alike ("quarz: the drop of a native object of class Bomb panicked: … (its data leaked; reported once per cog)"), and leaks the data.
+
+**Where native objects may go.**
+- `==` and `hash` are identity, unless the class defines its own. `inspect` and `to_s` are `#<Name>`.
+- `is_a?`, `case`/`in`, unions, `Object`-typed values, collections and interpolation treat them as any object.
+- `frozen?` is true, as for every value but a Builder (docs/07).
+- A shareable class's objects cross `Task.spawn` and channels by reference. `shareable?` is true for them and false for the others.
+- None crosses `Task.blocking`, whose helper runs a copy of the program and so has no copy of the data: an `ArgumentError`, as for a `Channel`.
+- `dup` is refused: there is no copy of the data to make. It is a compile-time error where the receiver's type is the class ("cannot dup Counter: a native class's data is its cog's, with no copy of it"), and a `TypeError` otherwise.
+- `JSON.generate` raises `JSON::GeneratorError`, as for any object it cannot write.
+- A `static` statement cannot add to a native class what its declaration may not have: `def_field`, `def_initialize` and `def_method(:deinitialize)` raise in the statement.
+
 ## Versioning
 
 - quarz refuses a module whose `abi_major` is not its own, or whose `abi_minor` is greater than its own. The error names the cog and both versions.
 - `QzApi` only grows: a minor version appends fields, and `size` tells a cog how much exists.
 - The wrapper crate's major version is the ABI major, and its minor at least the ABI minor it uses.
-- 1.1 (the second scope) adds `call_block`, native-data objects (`object_new`, `object_data`, with a drop function in `QzModule`'s class list) and `blocking`. `call_block` is in; the rest come with the same minor, before a release.
+- 1.1 (the second scope) adds `call_block`, native-data objects (`object_new`, `object_data`, with a drop function in `QzModule`'s class list) and `blocking`. `call_block` and the objects are in; `blocking` comes with the same minor, before a release.

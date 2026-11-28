@@ -244,8 +244,81 @@ fn depth<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c>> 
     Ok(cx.int(cx.get_int(r?)? * 10 + d))
 }
 
+/// A `Counter`'s data: unshareable (a `Cell`).
+struct Counter(std::cell::Cell<i64>);
+
+/// A `Pool`'s data: shareable (`Send + Sync`).
+struct Pool(std::sync::atomic::AtomicI64);
+
+/// A `Bomb`'s data, whose drop panics.
+struct Bomb;
+impl Drop for Bomb {
+    fn drop(&mut self) {
+        panic!("the bomb went off");
+    }
+}
+
+fn counter_open<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c>> {
+    cx.object(Counter(std::cell::Cell::new(cx.get_int(a[0])?)))
+}
+
+fn counter_value<'c>(cx: &Call<'c>, recv: Value<'c>, _: &[Value<'c>]) -> Result<Value<'c>> {
+    Ok(cx.int(cx.data::<Counter>(recv)?.0.get()))
+}
+
+fn counter_bump<'c>(cx: &Call<'c>, recv: Value<'c>, _: &[Value<'c>]) -> Result<Value<'c>> {
+    let c = cx.data::<Counter>(recv)?;
+    c.0.set(c.0.get() + 1);
+    Ok(cx.int(c.0.get()))
+}
+
+fn pool_open<'c>(cx: &Call<'c>, _: Value<'c>, _: &[Value<'c>]) -> Result<Value<'c>> {
+    cx.object(Pool(std::sync::atomic::AtomicI64::new(7)))
+}
+
+fn pool_size<'c>(cx: &Call<'c>, recv: Value<'c>, _: &[Value<'c>]) -> Result<Value<'c>> {
+    let p = cx.data::<Pool>(recv)?;
+    Ok(cx.int(p.0.load(std::sync::atomic::Ordering::Relaxed)))
+}
+
+fn bomb_open<'c>(cx: &Call<'c>, _: Value<'c>, _: &[Value<'c>]) -> Result<Value<'c>> {
+    cx.object(Bomb)
+}
+
+fn smuggle<'c>(cx: &Call<'c>, _: Value<'c>, _: &[Value<'c>]) -> Result<Value<'c>> {
+    cx.object(Counter(std::cell::Cell::new(0)))?;
+    Ok(cx.int(0))
+}
+
+fn peek<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c>> {
+    Ok(cx.int(cx.data::<Counter>(a[0])?.0.get()))
+}
+
+/// A `Probe`'s data: its drop is counted.
+struct Probe;
+static DROPS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+impl Drop for Probe {
+    fn drop(&mut self) {
+        DROPS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn probe_open<'c>(cx: &Call<'c>, _: Value<'c>, _: &[Value<'c>]) -> Result<Value<'c>> {
+    cx.object(Probe)
+}
+
+fn drops<'c>(cx: &Call<'c>, _: Value<'c>, _: &[Value<'c>]) -> Result<Value<'c>> {
+    Ok(cx.int(DROPS.load(std::sync::atomic::Ordering::SeqCst)))
+}
+
 quarz_ext::module! {
     cog: "demo",
+    classes: {
+        "Counter" => Counter,
+        "Pool" => Pool: shareable,
+        "Bomb" => Bomb,
+        "Probe" => Probe: shareable,
+    },
     "Demo.add" => add,
     "Demo.describe" => describe,
     "Demo.reverse" => reverse,
@@ -274,5 +347,15 @@ quarz_ext::module! {
     "Demo.byte_list" => byte_list,
     "Demo.twice" => twice,
     "Demo.depth" => depth,
+    "Demo.smuggle" => smuggle,
+    "Demo.peek" => peek,
+    "Demo.drops" => drops,
+    "Probe.open" => probe_open,
+    "Counter.open" => counter_open,
+    "Counter#value" => counter_value,
+    "Counter#bump" => counter_bump,
+    "Pool.open" => pool_open,
+    "Pool#size" => pool_size,
+    "Bomb.open" => bomb_open,
     "String#shout" => shout,
 }

@@ -153,6 +153,52 @@ impl<'c> Call<'c> {
         (self.block != 0).then(|| Value::new(self.block))
     }
 
+    /// An object of the cog's native class whose Rust type is `T` (the
+    /// class `module!`'s `classes` lists with it) holding `value` (ABI
+    /// 1.1): a value of the call's. The method's declaration must return
+    /// the class (docs/15); else a `TypeError`, and `value` is dropped.
+    pub fn object<T: NativeClass>(&self, value: T) -> Result<Value<'c>> {
+        let data = Box::into_raw(Box::new(__private::Tagged {
+            type_id: std::any::TypeId::of::<T>(),
+            value,
+        }));
+        let mut out: QzValue = 0;
+        let st = unsafe { (self.api.object_new)(self.cx, T::INDEX, data.cast(), &mut out) };
+        if st != QZ_OK {
+            // SAFETY: refused, so still ours.
+            drop(unsafe { Box::from_raw(data) });
+            return Err(Raised(()));
+        }
+        Ok(Value::new(out))
+    }
+
+    /// The data of `v`, an object of the cog's native class whose Rust
+    /// type is `T` (ABI 1.1); else a `TypeError`. Shared only (`&T`): the
+    /// block may call another method on the same object, and two values
+    /// can name it; mutate through `Cell`, `RefCell` or a lock.
+    pub fn data<T: NativeClass>(&self, v: Value<'c>) -> Result<&'c T> {
+        let mut data: *mut std::ffi::c_void = std::ptr::null_mut();
+        let st = unsafe { (self.api.object_data)(self.cx, v.handle, T::INDEX, &mut data) };
+        status(st)?;
+        // A second check, cheap: the runtime gave an object of the class
+        // at `T::INDEX`, which this wrapper boxed as a `Tagged<T>`, its
+        // `TypeId` at offset 0 (a C cog's object of the class would not
+        // be).
+        // SAFETY: the data of an object of this cog's class.
+        let type_id = unsafe { *(data as *const std::any::TypeId) };
+        if type_id != std::any::TypeId::of::<T>() {
+            return Err(self.raise(
+                "TypeError",
+                &format!(
+                    "a native method asked for the data of a `{}` as another Rust type",
+                    T::NAME
+                ),
+            ));
+        }
+        // SAFETY: a `Tagged<T>`, alive while `v` is (the call holds it).
+        Ok(unsafe { &(*(data as *const __private::Tagged<T>)).value })
+    }
+
     /// Call the method's block with `args` (ABI 1.1): its value. What
     /// the block raises, and a `break` or `return` out of it, comes back
     /// as `Err(Raised)`, to return at once (`?`). The block may suspend
@@ -358,6 +404,22 @@ impl<'c> Call<'c> {
 /// declared order (positional, then keyword-only).
 pub type Method = for<'c> fn(&Call<'c>, Value<'c>, &[Value<'c>]) -> Result<Value<'c>>;
 
+/// A cog's `native class`'s Rust type: the class's index in the module's
+/// list and its name. `module!`'s `classes` implements it for each type it
+/// lists, so a type listed for two classes is two implementations, a
+/// compile-time error.
+///
+/// # Safety
+///
+/// Only `module!` implements it. `INDEX` and `NAME` are the module's own
+/// class for this type: `Call::object` makes an object of class `INDEX`
+/// holding a `T`, which that class's drop drops as its own type, so an
+/// index of another type's class would drop one type as another.
+pub unsafe trait NativeClass: 'static {
+    const INDEX: u32;
+    const NAME: &'static str;
+}
+
 #[doc(hidden)]
 pub mod __private {
     use super::*;
@@ -435,6 +497,49 @@ pub mod __private {
     /// are to statics).
     pub struct Static<T>(pub T);
     unsafe impl<T> Sync for Static<T> {}
+
+    /// A native object's data as the wrapper boxes it: the Rust type's
+    /// `TypeId` first (`#[repr(C)]`, at offset 0 whatever `T`), so that
+    /// `Call::data` compares it before any cast (ABI 1.1).
+    #[repr(C)]
+    pub struct Tagged<T> {
+        pub type_id: std::any::TypeId,
+        pub value: T,
+    }
+
+    /// Drop a `Tagged<T>` the runtime no longer holds (`QzDrop`): a panic
+    /// in `T`'s drop is caught (it cannot cross into the runtime),
+    /// reported once per cog (`reported` is `module!`'s, one per cog in
+    /// any build) and the rest leaked (decided on #677).
+    ///
+    /// # Safety
+    /// `data` is a `Box<Tagged<T>>` this wrapper made, dropped once.
+    pub unsafe fn drop_tagged<T>(
+        data: *mut std::ffi::c_void,
+        class: &str,
+        reported: &std::sync::atomic::AtomicBool,
+    ) {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drop(Box::from_raw(data as *mut Tagged<T>));
+        }));
+        if let Err(panic) = r {
+            if !reported.swap(true, Ordering::Relaxed) {
+                let message = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "a panic".to_string());
+                eprintln!(
+                    "quarz: the drop of a native object of class {class} panicked: {message} (its data leaked; reported once per cog)"
+                );
+            }
+            std::mem::forget(panic);
+        }
+    }
+
+    /// A shareable class's data is `Send + Sync` (checked at compile
+    /// time by `module!`).
+    pub const fn shareable<T: Send + Sync>() {}
 }
 
 /// The cog's module: its name (as in its `Cog.toml`) and its methods by
@@ -443,6 +548,9 @@ pub mod __private {
 #[macro_export]
 macro_rules! module {
     (cog: $cog:literal, $($key:literal => $method:path),* $(,)?) => {
+        $crate::module! { cog: $cog, classes: {}, $($key => $method),* }
+    };
+    (cog: $cog:literal, classes: { $($class:literal => $ty:ty $(: $share:ident)?),* $(,)? }, $($key:literal => $method:path),* $(,)?) => {
         const _: () = {
             use $crate::sys::*;
             static METHODS: $crate::__private::Static<[QzMethod; $crate::module!(@count $($key)*)]> =
@@ -465,6 +573,24 @@ macro_rules! module {
                         },
                     },
                 )*]);
+            static CLASSES: $crate::__private::Static<[QzClass; $crate::module!(@count $($class)*)]> =
+                $crate::__private::Static([$(
+                    QzClass {
+                        name: $class.as_ptr(),
+                        name_len: $class.len(),
+                        drop: {
+                            unsafe extern "C" fn drop(data: *mut ::std::ffi::c_void) {
+                                $crate::__private::drop_tagged::<$ty>(data, $class, &DROP_REPORTED)
+                            }
+                            drop
+                        },
+                        flags: $crate::module!(@flag $ty $(, $share)?),
+                    },
+                )*]);
+            // A panicking drop is reported once per cog.
+            static DROP_REPORTED: ::std::sync::atomic::AtomicBool =
+                ::std::sync::atomic::AtomicBool::new(false);
+            $crate::module!(@impls 0u32; $($class => $ty),*);
             static MODULE: $crate::__private::Static<QzModule> =
                 $crate::__private::Static(QzModule {
                     abi_major: QZ_ABI_MAJOR,
@@ -472,6 +598,9 @@ macro_rules! module {
                     methods: METHODS.0.as_ptr() as *const QzMethod,
                     n_methods: $crate::module!(@count $($key)*),
                     method_size: ::std::mem::size_of::<QzMethod>(),
+                    classes: CLASSES.0.as_ptr() as *const QzClass,
+                    n_classes: $crate::module!(@count $($class)*),
+                    class_size: ::std::mem::size_of::<QzClass>(),
                 });
             #[export_name = $crate::__private::init_symbol!($cog)]
             unsafe extern "C" fn init(api: *const QzApi) -> *const QzModule {
@@ -480,5 +609,20 @@ macro_rules! module {
         };
     };
     (@count $($x:tt)*) => { 0usize $(+ $crate::module!(@one $x))* };
+    (@impls $n:expr;) => {};
+    (@impls $n:expr; $class:literal => $ty:ty $(, $rc:literal => $rt:ty)*) => {
+        // SAFETY: the index and name of `$ty`'s own class in this
+        // module's list, whose drop drops a `Tagged<$ty>`.
+        unsafe impl $crate::NativeClass for $ty {
+            const INDEX: u32 = $n;
+            const NAME: &'static str = $class;
+        }
+        $crate::module!(@impls $n + 1; $($rc => $rt),*);
+    };
+    (@flag $ty:ty) => { 0u32 };
+    (@flag $ty:ty, shareable) => {{
+        const _: () = $crate::__private::shareable::<$ty>();
+        $crate::sys::QZ_CLASS_SHAREABLE
+    }};
     (@one $x:tt) => { 1usize };
 }

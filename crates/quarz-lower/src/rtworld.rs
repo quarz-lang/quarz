@@ -648,6 +648,7 @@ fn declared_rest(
             .map(|c| quarz_ir::RtNativeCog {
                 name: c.name.clone(),
                 methods: Vec::new(),
+                classes: Vec::new(),
             })
             .collect(),
         classes,
@@ -677,6 +678,19 @@ fn declared_rest(
         // (Per round, `fill`.)
         deferred_conformance: Vec::new(),
     };
+    // Each native cog's classes (`native class`).
+    for (id, c) in world.classes.iter().enumerate() {
+        if !c.is_native {
+            continue;
+        }
+        if let Some(cog) = world.native_cog(c.file) {
+            let k = native_cog_index(world, cog) as usize;
+            if let Some(nc) = rt.native_cogs.get_mut(k) {
+                let shareable = world.class_is_a(id as ClassId, world.builtin.shareable);
+                nc.classes.push((id as ClassId, c.name.clone(), shareable));
+            }
+        }
+    }
     // Each native cog's declarations (before any shake: ids stay).
     for (id, m) in rt.methods.iter().enumerate() {
         if let (Some(cog), Some(key)) = (m.ext, &m.native_key) {

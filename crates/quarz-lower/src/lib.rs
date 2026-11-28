@@ -1892,7 +1892,13 @@ pub fn lower_checked_with(mut lw: Lowerer, checked: &Checked, files: &[SourceFil
     devirt::devirtualize(&mut functions, &delta.world);
     devirt::negate_eq(&mut functions, &delta.world);
     check(&functions, verify::Stage::Devirt);
-    inline::inline_calls(&mut functions, &delta.world.methods, 2);
+    // (A cog's native class's objects are dropped by the cog's code.)
+    let native_objects = delta
+        .world
+        .native_cogs
+        .iter()
+        .any(|c| !c.classes.is_empty());
+    inline::inline_calls(&mut functions, &delta.world.methods, native_objects, 2);
     check(&functions, verify::Stage::Inline);
     sroa::scalar_replace(&mut functions, &delta.world.methods, &delta.world.classes);
     check(&functions, verify::Stage::Sroa);

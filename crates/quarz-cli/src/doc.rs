@@ -777,6 +777,9 @@ fn class_signature(world: &World, id: ClassId, kind: Kind) -> String {
     if c.is_abstract && kind == Kind::Class {
         s.push_str("abstract ");
     }
+    if c.is_native && kind == Kind::Class {
+        s.push_str("native ");
+    }
     s.push_str(kind.word());
     s.push(' ');
     s.push_str(&c.name);

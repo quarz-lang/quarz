@@ -665,6 +665,8 @@ pub fn expr_to_sexp(expr: &Expr, out: &mut String) {
             out,
             if c.is_abstract {
                 "abstract-class"
+            } else if c.is_native {
+                "native-class"
             } else {
                 "class"
             },

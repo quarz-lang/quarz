@@ -787,6 +787,7 @@ impl Program {
 struct Derived {
     natives: Vec<Option<NativeFn>>,
     ext_natives: Vec<Option<crate::native_ext::Entry>>,
+    ext_classes: crate::native_ext::ClassTable,
     fast_natives: Vec<Option<FastNativeFn>>,
     natives_owned: Vec<Option<OwnedNativeFn>>,
     owned: OwnedIds,
@@ -817,6 +818,7 @@ impl Derived {
                 // (A built program's cogs' modules are registered from the
                 // inits it was linked with before it runs: `qz_main`.)
                 ext_natives: crate::native_ext::bind(world, n as usize),
+                ext_classes: crate::native_ext::bind_classes(world),
                 natives: (0..n)
                     .map(|id| {
                         at(natives::PLAIN)(id)
@@ -881,6 +883,7 @@ impl Derived {
             .map(|m| owned_map.get(std_key(m)?).copied())
             .collect();
         let ext_natives = crate::native_ext::bind(world, world.methods.len());
+        let ext_classes = crate::native_ext::bind_classes(world);
         let owned_id = |key: &str| -> Option<MethodId> {
             world
                 .methods
@@ -917,6 +920,7 @@ impl Derived {
         Derived {
             natives,
             ext_natives,
+            ext_classes,
             fast_natives,
             natives_owned,
             owned: OwnedIds {
@@ -952,6 +956,9 @@ pub struct Program {
     /// The cogs' natives (#677), by method id: their modules' entries
     /// (`native_ext::bind`).
     pub ext_natives: Vec<Option<crate::native_ext::Entry>>,
+    /// The cogs' native classes (#677), by cog and module index
+    /// (`native_ext::bind_classes`).
+    pub ext_classes: crate::native_ext::ClassTable,
     /// By-reference versions of some natives, by method id.
     pub fast_natives: Vec<Option<FastNativeFn>>,
     /// The symbols of the program (`RtWorld::symbols`, #1129): what a
@@ -1308,6 +1315,7 @@ impl Interp {
         let Derived {
             natives,
             ext_natives,
+            ext_classes,
             fast_natives,
             natives_owned,
             owned,
@@ -1323,6 +1331,7 @@ impl Interp {
             units,
             natives,
             ext_natives,
+            ext_classes,
             fast_natives,
             natives_owned,
             owned,
@@ -2687,6 +2696,7 @@ impl Interp {
             Value::BytesBuilder(_) => b.bytes_builder,
             Value::Time(_) => b.time,
             Value::Random(_) => self.program.rt.random,
+            Value::Native(o) => o.class,
             Value::Secret(s) => match &**s {
                 crate::value::SecretVal::Bytes(_) => self.program.rt.secret,
                 crate::value::SecretVal::Key(k) => match k.kind() {
@@ -4698,6 +4708,10 @@ impl Interp {
                 IoKind::Child(st) => natives::process::inspect_child(st),
             },
             Value::Random(r) => format!("#<Random seed={}>", r.borrow().seed),
+            // A cog's native object: its class (docs/15).
+            Value::Native(o) => {
+                format!("#<{}>", self.program.world.classes[o.class as usize].name)
+            }
             // Nothing of it, not even its size (#963).
             Value::Secret(s) => match &**s {
                 crate::value::SecretVal::Bytes(_) => "#<Bytes::Secret>".to_string(),

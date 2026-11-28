@@ -11,7 +11,7 @@ declaration    = class_decl | module_decl | data_decl | enum_decl | extension_de
                | require_stmt ;
 
 (* ---- classes and modules ---- *)
-class_decl     = [ "abstract" ] "class" const_path [ type_params ] [ "<" type ] NEWLINE
+class_decl     = [ "abstract" | "native" ] "class" const_path [ type_params ] [ "<" type ] NEWLINE
                  class_body "end" ;
 module_decl    = "module" const_path [ type_params ] NEWLINE class_body "end" ;
 class_body     = { class_member } ;
@@ -43,7 +43,7 @@ using_decl     = "using" const_path ;
 method_decl    = { modifier } "def" [ "self" "." ] method_name [ type_params ]
                  [ "(" [ param_list ] ")" ] [ "->" type ]
                  ( "=" expression | NEWLINE body "end" ) ;
-modifier       = "abstract" | "private" | "protected" | "public" ;
+modifier       = "abstract" | "native" | "private" | "protected" | "public" ;
 method_name    = IDENT [ "?" | "!" | "=" ] | operator ;
 operator       = "+" | "-" | "*" | "/" | "%" | "**" | "==" | "!=" | "<" | "<=" | ">" | ">="
                | "<=>" | "===" | "=~" | "<<" | ">>" | "&" | "|" | "^" | "~" | "!"
@@ -123,5 +123,5 @@ extern_decl    = "extern" STRING NEWLINE { "def" IDENT "(" [ param_list ] ")" "-
 - **The two meanings of `->`**: `->` in a `def` signature is the return type; `->` in expression position is a lambda. In `->(x: Int) -> Int { }`, the first is the lambda and the second is the return type. Right after a block's parameters (or its `{`/`do`), `->` is the block's result type when a type starts there (a constant, `::`, `cog`, `[`, `shareable (`, a `(` followed by a constant, `::`, `cog`, `[`, `(` or `shareable`, or `() -> R` not followed by `{` or `do`), and otherwise a lambda beginning the body (`do ->(y) { y } end`, `do -> x { x } end`). The result type is on the line of the parameters (or of `{`/`do`): a `->` that begins a line begins the body. It is read greedily, so a body that would continue it (`::Foo`, `.(...)`) goes on the next line.
 - **`Const[...]`**: in type position, type arguments. In expression position, a type expression (`Array[Int].new`) if the contents of `[` can be interpreted as types, otherwise a call to `Const.[](...)` (a user-defined `self.[]`). The built-in `Array`/`Hash`/`Set` have no `self.[]`, so they are always type expressions.
 - **`{ }` as block vs. hash**: the same rule as Ruby.
-- **Contextual keywords**: `data`/`enum`/`var`/`abstract`/`extension`/`using`/`type`/`extern`/`variant`/`for` are keywords only in the declaration positions above, when the following tokens take the form of a declaration.
+- **Contextual keywords**: `data`/`enum`/`var`/`abstract`/`native`/`extension`/`using`/`type`/`extern`/`variant`/`for` are keywords only in the declaration positions above, when the following tokens take the form of a declaration.
 - **`data` with and without a body**: as with `enum`, the form with `=` (`data P = (x: Int)`) has no body and no `end`; without `=` a body follows and `end` closes it. A forgotten `=` takes the rest of the file for the body, and the missing `end` is reported at the `data` with that hint.

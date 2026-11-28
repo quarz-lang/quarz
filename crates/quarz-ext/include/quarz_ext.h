@@ -52,7 +52,24 @@ typedef struct QzModule {
     const QzMethod *methods;
     size_t n_methods;
     size_t method_size;
+    /* ABI 1.1 (read only from a module whose abi_minor is 1 or more) */
+    const struct QzClass *classes;
+    size_t n_classes;
+    size_t class_size;
 } QzModule;
+
+/* ABI 1.1: drop a native object's data, once. */
+typedef void (*QzDrop)(void *data);
+
+/* ABI 1.1: a native class of the cog. */
+typedef struct QzClass {
+    const uint8_t *name;
+    size_t name_len;
+    QzDrop drop;
+    uint32_t flags;
+} QzClass;
+
+#define QZ_CLASS_SHAREABLE 1u
 
 typedef struct QzApi {
     uint32_t abi_major;
@@ -95,6 +112,8 @@ typedef struct QzApi {
 
     /* ABI 1.1 */
     QzStatus (*call_block)(QzCall *, QzValue, const QzValue *, size_t, QzValue *);
+    QzStatus (*object_new)(QzCall *, uint32_t, void *, QzValue *);
+    QzStatus (*object_data)(QzCall *, QzValue, uint32_t, void **);
 } QzApi;
 
 /* A cog's only export is its init, `qz_cog_init_<cog>`, the cog's name

@@ -3084,6 +3084,10 @@ pub enum Value {
     Secret(Rc<SecretVal>),
     /// Internal: a flow in transit through an `ensure` handler.
     Flow(Rc<FlowBox>),
+    /// An object of a cog's `native class` (#677, docs/15): the cog's data
+    /// and how to drop it (`native_ext::object_new`). Last, so that no
+    /// other variant's tag moves.
+    Native(Rc<crate::native_ext::NativeObject>),
 }
 
 /// A pseudo-random generator (xoshiro256**), seeded with splitmix64.
@@ -3433,6 +3437,10 @@ impl Value {
                     }
                     // Holds no value: nothing further to mark.
                     Value::Secret(r) => {
+                        mark_rc(immortal, r);
+                    }
+                    // A cog's data, no value of Quarz's.
+                    Value::Native(r) => {
                         mark_rc(immortal, r);
                     }
                     Value::StringBuilder(r) => {
@@ -4080,6 +4088,7 @@ impl Value {
             (Value::Regexp(a), Value::Regexp(b)) => Rc::ptr_eq(a, b),
             (Value::MatchData(a), Value::MatchData(b)) => Rc::ptr_eq(a, b),
             (Value::Object(a), Value::Object(b)) => Rc::ptr_eq(a, b),
+            (Value::Native(a), Value::Native(b)) => Rc::ptr_eq(a, b),
             (Value::Proc(a), Value::Proc(b)) => Rc::ptr_eq(a, b),
             (Value::ArrayBuilder(a), Value::ArrayBuilder(b)) => Rc::ptr_eq(a, b),
             (Value::HashBuilder(a), Value::HashBuilder(b)) => Rc::ptr_eq(a, b),
@@ -4454,6 +4463,7 @@ impl Hash for Value {
                     Value::Atom(p) => (Rc::as_ptr(p) as usize).hash(state),
                     Value::BytesBuilder(p) => (Rc::as_ptr(p) as usize).hash(state),
                     Value::Random(p) => (Rc::as_ptr(p) as usize).hash(state),
+                    Value::Native(p) => (Rc::as_ptr(p) as usize).hash(state),
                     // Nothing of its contents: equal secrets hash alike by
                     // their tag alone.
                     Value::Secret(_) => {}
