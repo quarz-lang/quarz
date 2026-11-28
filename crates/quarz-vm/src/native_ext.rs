@@ -238,7 +238,9 @@ struct Frame<'a> {
     made: Made,
     /// (Allocated by the first `symbol_get`, #1203.)
     names: Option<Box<Names>>,
-    pending: Option<Value>,
+    /// What the call raised, or a block's `break`/`return` it carries
+    /// (`call_block`), pending until the entry returns.
+    pending: Option<Flow>,
 }
 
 /// The symbols' names a call lent, one per symbol (`symbol_get`).
@@ -405,16 +407,21 @@ impl Made {
     }
 }
 
-thread_local! {
-    static SERIAL: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-}
+/// The calls' serials, process-wide (ABI 1.1): a handle carries its
+/// call's, so that one from any other call (on this thread or another
+/// worker's, where a cog may have smuggled it) is refused, never taken
+/// for a value of this call's. (0 is never a serial: wrapping skips it.)
+static SERIAL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 fn next_serial() -> u32 {
-    SERIAL.with(|s| {
-        let n = s.get().wrapping_add(1).max(1);
-        s.set(n);
-        n
-    })
+    loop {
+        let n = SERIAL
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .wrapping_add(1);
+        if n != 0 {
+            return n;
+        }
+    }
 }
 
 impl Frame<'_> {
@@ -475,12 +482,11 @@ impl Frame<'_> {
         self.made.get_mut(i)
     }
 
-    /// Raise `flow`'s exception: pending, `QZ_RAISED`.
+    /// Keep `flow` (an exception, or a block's `break`/`return`) pending,
+    /// the first only: `QZ_RAISED`.
     fn raise(&mut self, flow: Flow) -> QzStatus {
         if self.pending.is_none() {
-            if let Flow::Raise(e) = flow {
-                self.pending = Some(e);
-            }
+            self.pending = Some(flow);
         }
         QZ_RAISED
     }
@@ -559,7 +565,7 @@ pub fn call(
         )
     };
     let result = match status {
-        QZ_OK if frame.pending.is_some() => Err(Flow::Raise(frame.pending.take().unwrap())),
+        QZ_OK if frame.pending.is_some() => Err(frame.pending.take().unwrap()),
         QZ_OK if out == 0 => {
             if m.result == interp.program.world.builtin.nil {
                 Ok(Value::Nil)
@@ -579,7 +585,7 @@ pub fn call(
             ))),
         },
         QZ_RAISED => match frame.pending.take() {
-            Some(e) => Err(Flow::Raise(e)),
+            Some(flow) => Err(flow),
             None => Err(interp.err_runtime(&format!(
                 "native `{}` returned QZ_RAISED with no exception pending",
                 key()
@@ -1253,8 +1259,58 @@ unsafe extern "C" fn raise(cx: *mut QzCall, cls: QzValue, p: *const u8, n: usize
         None => return f.stale(),
     };
     let message = String::from_utf8_lossy(bytes_at(p, n)).into_owned();
-    f.pending = Some(f.interp.make_exception(c, &message));
+    f.pending = Some(Flow::Raise(f.interp.make_exception(c, &message)));
     QZ_RAISED
+}
+
+/// Call the method's block with `nargs` handles of this call's (ABI
+/// 1.1): its value a handle of this call's. The block runs on the calling
+/// task, through the block call a standard native's `yield` makes
+/// (`Interp::call_block`: `next` gives its value). It may suspend the
+/// task (a `Channel` receive): the native's frames stay where they are on
+/// the task's stack, and the task resumes on the same worker (docs/15).
+/// The block may enter natives again, this one included (each a frame of
+/// its own). What it raises, and a `break` or `return` out of it, is
+/// pending: `QZ_RAISED`, and the entry's caller gets it when the entry
+/// returns.
+unsafe extern "C" fn call_block(
+    cx: *mut QzCall,
+    blk: QzValue,
+    args: *const QzValue,
+    nargs: usize,
+    out: *mut QzValue,
+) -> QzStatus {
+    let f = frame(cx);
+    pending_status!(f);
+    let block = match f.value(blk) {
+        Some(b @ Value::Proc(_)) => b.clone(),
+        Some(other) => {
+            let m = expected(f, "a block", other);
+            return f.type_error(&m);
+        }
+        None => return f.stale(),
+    };
+    let mut argv = ArgVec::new();
+    for i in 0..nargs {
+        match f.value(*args.add(i)) {
+            Some(v) => argv.push(v.clone()),
+            None => return f.stale(),
+        }
+    }
+    let interp = f.interp;
+    // (While the block runs, the task may suspend inside this native: its
+    // coroutine is then never unwound, `Scheduler`'s `Drop`.)
+    let task = interp.current_task();
+    task.set_in_native(true);
+    let result = interp.call_block(&block, argv);
+    task.set_in_native(false);
+    match result {
+        Ok(v) => {
+            *out = f.make(v);
+            QZ_OK
+        }
+        Err(flow) => f.raise(flow),
+    }
 }
 
 unsafe extern "C" fn release(cx: *mut QzCall, v: QzValue) {
@@ -1302,4 +1358,5 @@ static API: QzApi = QzApi {
     exception_class,
     raise,
     release,
+    call_block,
 };

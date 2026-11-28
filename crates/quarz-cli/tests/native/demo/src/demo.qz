@@ -18,6 +18,11 @@ module Demo
   native def self.nothing -> Void
   native def self.keep(x: Int) -> Int
   native def self.use_kept -> Int
+  # The block, called by native code (ABI 1.1): on `x`, then on its value.
+  native def self.twice(x: Int, &blk: (Int) -> Int) -> Int
+  # Calls the block on `n`; the depth of such calls under way, kept in a
+  # thread-local `RefCell` released around the call, is in the result.
+  native def self.depth(n: Int, &blk: (Int) -> Int) -> Int
   # Releases each string or bytes after reading it, then reads it again.
   native def self.released(xs: Array[String]) -> String
   native def self.released_bytes(bs: Array[Bytes]) -> Int

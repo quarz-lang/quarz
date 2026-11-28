@@ -269,6 +269,10 @@ pub struct TaskHandle {
     cancel_delivered: AtomicBool,
     /// How deep the task is in `Task.uncancellable` blocks.
     uncancellable: std::sync::atomic::AtomicU32,
+    /// How many cog natives (#677) wait on its stack for a block they
+    /// called (`native_ext::call_block`): while any does, its coroutine is
+    /// never unwound (`Scheduler`'s `Drop`).
+    in_native: std::sync::atomic::AtomicU32,
     /// Whether the `exit`s of the tasks it spawns (and theirs) go to it: a
     /// root task, the task of a `Task.timeout` block (its caller's code).
     is_sink: AtomicBool,
@@ -332,6 +336,7 @@ impl TaskHandle {
             cancel_requested: AtomicBool::new(false),
             cancel_delivered: AtomicBool::new(false),
             uncancellable: std::sync::atomic::AtomicU32::new(0),
+            in_native: std::sync::atomic::AtomicU32::new(0),
             is_sink: AtomicBool::new(is_sink),
             sink: Mutex::new(sink),
             exit_request: std::sync::atomic::AtomicI64::new(NO_EXIT),
@@ -543,6 +548,16 @@ impl TaskHandle {
     pub fn cancel_due(&self) -> bool {
         self.cancel_requested.load(Ordering::Acquire)
             && self.uncancellable.load(Ordering::Relaxed) == 0
+    }
+
+    /// A cog's native calls a block on this task (`on`), or that call
+    /// returned (the task's own worker only).
+    pub fn set_in_native(&self, on: bool) {
+        if on {
+            self.in_native.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.in_native.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 
     /// Enter or leave `Task.uncancellable` (the task's own worker only).
@@ -1090,6 +1105,31 @@ pub enum Next {
     Stop,
     /// A task called `exit` (the main worker).
     Exit(i32),
+}
+
+/// A worker's scheduler goes (its interpreter dropped: a REPL reset, a
+/// `static` run's interpreter, a test harness's, a program's end where
+/// its interpreter is dropped): its tasks never resumed go with it.
+/// Dropping a suspended coroutine unwinds its stack (corosensei's
+/// `force_unwind`); a task waiting inside a cog's native for a block
+/// (`TaskHandle::in_native`) would unwind through the cog's `extern "C"`
+/// entry, where Rust aborts. Such a task's coroutine is forgotten: its
+/// stack is not unwound, and the destructors on it do not run, as at a
+/// process's exit (docs/15). Every other task is dropped as before.
+impl Drop for Scheduler {
+    fn drop(&mut self) {
+        for (id, co) in std::mem::take(&mut self.coroutines) {
+            let parked_in_native = self
+                .tasks
+                .get(&id)
+                .is_some_and(|t| t.in_native.load(Ordering::Relaxed) > 0);
+            if parked_in_native {
+                std::mem::forget(co);
+            } else {
+                drop(co);
+            }
+        }
+    }
 }
 
 pub struct Scheduler {
@@ -2009,4 +2049,48 @@ mod debug_hooks {
 
     #[cfg(not(debug_assertions))]
     pub(super) fn skipped() {}
+}
+
+#[cfg(test)]
+mod teardown_tests {
+    use super::*;
+
+    /// A frame as a cog's entry is: `extern "C"`, which a Rust unwind may
+    /// not cross (it aborts). The task suspends inside it, as a task does
+    /// in a block a cog's native called (`native_ext::call_block`).
+    extern "C" fn parked_in_extern_c() {
+        suspend_raw();
+    }
+
+    /// A scheduler holding `task`, suspended inside `parked_in_extern_c`,
+    /// marked as waiting in a native when `in_native`, then dropped.
+    fn drop_with_a_parked_task(in_native: bool) {
+        let mut sched = Scheduler::new(0, Workers::new(1));
+        let task = TaskHandle::new(0, 1, None, "parked".to_string());
+        sched.adopt(
+            task.clone(),
+            Box::new(|| {
+                parked_in_extern_c();
+                TaskExit::Exit(0)
+            }),
+            256 * 1024,
+        );
+        let mut co = sched.coroutines.remove(&1).expect("the coroutine");
+        assert!(matches!(resume(&task, &mut co), CoroutineResult::Yield(())));
+        if in_native {
+            task.set_in_native(true);
+        }
+        sched.coroutines.insert(1, co);
+        drop(sched);
+    }
+
+    /// A task parked inside a cog's native is not unwound when its
+    /// scheduler goes (the unwind would abort at the `extern "C"` frame):
+    /// the test returns. (With `in_native` false, or the forget of
+    /// `Scheduler`'s `Drop` removed, the process aborts: checked by hand,
+    /// as a test cannot survive it.)
+    #[test]
+    fn a_task_parked_in_a_native_is_not_unwound() {
+        drop_with_a_parked_task(true);
+    }
 }

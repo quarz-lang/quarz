@@ -13,7 +13,7 @@
 #include <stdint.h>
 
 #define QZ_ABI_MAJOR 1u
-#define QZ_ABI_MINOR 0u
+#define QZ_ABI_MINOR 1u
 
 typedef uint64_t QzValue;   /* a handle; 0 is no value */
 typedef int32_t QzStatus;
@@ -92,6 +92,9 @@ typedef struct QzApi {
     QzStatus (*raise)(QzCall *, QzValue, const uint8_t *, size_t);
 
     void (*release)(QzCall *, QzValue);
+
+    /* ABI 1.1 */
+    QzStatus (*call_block)(QzCall *, QzValue, const QzValue *, size_t, QzValue *);
 } QzApi;
 
 /* A cog's only export is its init, `qz_cog_init_<cog>`, the cog's name

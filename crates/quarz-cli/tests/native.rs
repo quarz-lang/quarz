@@ -335,6 +335,11 @@ true
 2
 true
 [2, 2]
+12
+42
+\"from the block\"
+321
+3
 :done
 ";
     assert_eq!(out, want);
@@ -1009,6 +1014,35 @@ fn a_cog_setting_a_global_allocator_is_refused_by_quarz_build() {
         err.contains("quarz: cog `raw` (app → raw) sets a global allocator (`#[global_allocator]` in its crates), which a built program cannot hold: quarz's runtime has its own"),
         "{err}"
     );
+}
+
+/// A program that ends while a task waits inside a block a cog's native
+/// called (ABI 1.1): it ends, its output whole, exit 0, interpreted and
+/// built, on one worker and on four. The task is not resumed and not
+/// unwound (docs/15): never an abort.
+#[test]
+fn a_program_ends_with_a_task_parked_in_a_natives_block() {
+    let main = "ch = Channel[Int].new\nTask.spawn do\n  Demo.twice(1) { |v| ch.receive }\nend\nTask.sleep(10.ms)\np :main_done\n";
+    let dir = fixture("parked", &[("main.qz", main)]);
+    let exe = dir.join("demo-bin");
+    let (ok, _, err) = quarz(&dir, &["build", "-o", exe.to_str().unwrap()], &[]);
+    assert!(ok, "{err}");
+    for threads in ["1", "4"] {
+        let (ok, out, err) = quarz(&dir, &["run"], &[("QUARZ_THREADS", threads)]);
+        assert!(ok, "run, {threads} workers: {err}");
+        assert_eq!(out, ":main_done\n");
+        let built = Command::new(&exe)
+            .env("QUARZ_THREADS", threads)
+            .output()
+            .unwrap();
+        assert!(
+            built.status.success(),
+            "built, {threads} workers: {:?}",
+            built.status
+        );
+        assert_eq!(String::from_utf8_lossy(&built.stdout), ":main_done\n");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// What a cog's native returns is tested against its declared result's

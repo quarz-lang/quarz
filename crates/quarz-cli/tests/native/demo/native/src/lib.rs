@@ -222,6 +222,28 @@ fn make<'c>(cx: &Call<'c>, _: Value<'c>, _: &[Value<'c>]) -> Result<Value<'c>> {
     cx.string("not a crate")
 }
 
+fn twice<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c>> {
+    let once = cx.call_block(&[a[0]])?;
+    cx.call_block(&[once])
+}
+
+thread_local! {
+    static DEPTH: std::cell::RefCell<i64> = const { std::cell::RefCell::new(0) };
+}
+
+/// Entered again by its own block: no borrow held across `call_block`
+/// (docs/15).
+fn depth<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c>> {
+    let d = DEPTH.with(|d| {
+        let mut d = d.borrow_mut();
+        *d += 1;
+        *d
+    });
+    let r = cx.call_block(&[a[0]]);
+    DEPTH.with(|d| *d.borrow_mut() -= 1);
+    Ok(cx.int(cx.get_int(r?)? * 10 + d))
+}
+
 quarz_ext::module! {
     cog: "demo",
     "Demo.add" => add,
@@ -250,5 +272,7 @@ quarz_ext::module! {
     "Demo.int_map" => int_map,
     "Demo.floats" => floats,
     "Demo.byte_list" => byte_list,
+    "Demo.twice" => twice,
+    "Demo.depth" => depth,
     "String#shout" => shout,
 }
