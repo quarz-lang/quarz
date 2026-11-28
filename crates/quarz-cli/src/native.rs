@@ -18,9 +18,10 @@
 //!   kept.
 //! - Any other cog (the application's own package, a `[patch]`, a package
 //!   with a path dependency) is built by cargo on every run, which judges
-//!   what changed, in `target/<cog>` (its use stamp `target/<cog>.used`;
-//!   unused for the object cache's `UNUSED`, it is removed), and its
-//!   library is kept by the SHA-256 of its bytes.
+//!   what changed, in `target/<cog>-<hash of the package's path>`, one
+//!   per package (`local_target_name`; its use stamp beside it,
+//!   `<that>.used`; unused for the object cache's `UNUSED`, it is
+//!   removed), and its library is kept by the SHA-256 of its bytes.
 //!
 //! With the cache off (`QUARZ_NO_CACHE=1`), each build is made in a
 //! temporary directory, and its library is loaded from a copy removed
@@ -343,20 +344,22 @@ fn build_one(
         let (library, archive) = files?;
         return keep(&library, &archive, &k);
     }
-    // Any other: cargo on every run, in the cog's own target directory;
-    // the file the command uses kept by the SHA-256 of its bytes.
+    // Any other: cargo on every run, in the package's own target
+    // directory; the file the command uses kept by the SHA-256 of its
+    // bytes.
     let cargo = cog_native::toolchain(&who, &package.dir).map_err(|e| e.to_string())?;
     let targets = root.join("target");
     let _ = std::fs::create_dir_all(&targets);
     sweep_targets(&targets);
-    let stamp = targets.join(format!("{}.used", cog.name));
+    let target = local_target_name(&cog.name, &package.dir);
+    let stamp = targets.join(format!("{target}.used"));
     let _ = std::fs::write(&stamp, "");
     let mut told = false;
     let lib = cog_native::build(
         &who,
         &package,
         &cargo,
-        &targets.join(&cog.name),
+        &targets.join(&target),
         offline,
         &mut || {
             if !told {
@@ -379,6 +382,20 @@ fn build_one(
         file,
         remove_after: false,
     })
+}
+
+/// The target directory's name for the local native package at `dir`
+/// of cog `cog`: the cog's name and a hash of the package's canonical
+/// path. Two packages of one cog's name elsewhere (two applications, two
+/// checkouts) each get their own: cargo fingerprints a path package by
+/// its place in its own workspace, the same for both, and judges
+/// freshness by the sources' times, so in one directory one's build
+/// could be taken for the other's (#1220).
+fn local_target_name(cog: &str, dir: &Path) -> String {
+    let path = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let digest = Sha256::digest(path.as_os_str().as_encoded_bytes());
+    let hex: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+    format!("{cog}-{hex}")
 }
 
 /// Remove the target directories of local cogs not built for the object

@@ -872,6 +872,47 @@ fn a_built_program_checks_its_cogs_native_code_at_start() {
     );
 }
 
+/// Two applications with a local cog of one name, on one cache, run
+/// alternately: each runs its own native code (#1220). Their sources are
+/// older than either's build, so cargo, given one target directory for
+/// both, took the other's build for fresh.
+#[test]
+fn two_local_cogs_of_one_name_each_run_their_own() {
+    let cache = std::env::temp_dir().join(format!("quarz-native-samename-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cache);
+    let main = "p Demo.add(1, 2)\n";
+    let a = fixture("samename-a", &[("main.qz", main)]);
+    let b = fixture("samename-b", &[("main.qz", main)]);
+    let lib = b.join("native/src/lib.rs");
+    let text = std::fs::read_to_string(&lib).unwrap();
+    let sum = "cx.get_int(a[0])? + cx.get_int(a[1])?";
+    assert!(text.contains(sum));
+    std::fs::write(&lib, text.replace(sum, &format!("{sum} + 100"))).unwrap();
+    let an_hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    for dir in [&a, &b] {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join("native/src/lib.rs"))
+            .unwrap()
+            .set_modified(an_hour_ago)
+            .unwrap();
+    }
+    let cache_dir = cache.display().to_string();
+    let envs = [("QUARZ_CACHE_DIR", cache_dir.as_str())];
+    let mut seen = Vec::new();
+    for (dir, want) in [(&a, "3\n"), (&b, "103\n"), (&a, "3\n"), (&b, "103\n")] {
+        let (ok, out, err) = quarz(dir, &["run"], &envs);
+        assert!(ok, "{err}");
+        seen.push((out.clone(), want));
+    }
+    let _ = std::fs::remove_dir_all(&a);
+    let _ = std::fs::remove_dir_all(&b);
+    let _ = std::fs::remove_dir_all(&cache);
+    for (out, want) in seen {
+        assert_eq!(out, want);
+    }
+}
+
 /// A key's build is a pair, the dynamic library and the archive: a
 /// command needs the one it uses. With the archive gone (removed, or
 /// kept by an older quarz), `quarz build` builds again, never fails.
@@ -1279,11 +1320,7 @@ fn a_rust_type_listed_for_two_native_classes_does_not_compile() {
         let text = std::fs::read_to_string(&lib).unwrap();
         assert!(text.contains(listed));
         std::fs::write(&lib, edit(&text)).unwrap();
-        // Its own cache: another test's build of the demo, in the shared
-        // target directory of cogs named `demo`, could stand for this
-        // one's (#1220).
-        let envs = own_caches(&dir);
-        let (ok, out, err) = quarz(&dir, &["run"], &as_refs(&envs));
+        let (ok, out, err) = quarz(&dir, &["run"], &[]);
         let _ = std::fs::remove_dir_all(&dir);
         assert!(!ok, "{name}: {out}");
         assert!(wants.iter().any(|w| err.contains(w)), "{name}: {err}");
