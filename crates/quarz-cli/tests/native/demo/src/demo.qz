@@ -68,6 +68,15 @@ end
 # Native classes (ABI 1.1): objects holding the cog's data.
 native class Counter
   native def self.open(start: Int) -> Counter
+  # `new` as any class's: a native, here with a default and a keyword,
+  # its result `Self` (docs/15).
+  native def self.new(start: Int = 7, *, by: Int = 0) -> Self
+  # `Self` in a block type: the block is given a new Counter.
+  native def self.lend(start: Int, &blk: (Self) -> Int) -> Int
+  # Another maker returning `Self`.
+  native def twin -> Self
+  # `new` in a class method is the class's own.
+  def self.build -> Counter = new(1)
   native def value -> Int
   native def bump -> Int
 
@@ -91,6 +100,8 @@ native class Pool
   include Shareable
   include Sized
   native def self.open -> Pool
+  # A `new` written in Quarz: it can only give what a native made.
+  def self.new -> Pool = open
   native def size -> Int
 end
 

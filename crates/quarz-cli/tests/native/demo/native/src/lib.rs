@@ -311,6 +311,21 @@ fn drops<'c>(cx: &Call<'c>, _: Value<'c>, _: &[Value<'c>]) -> Result<Value<'c>> 
     Ok(cx.int(DROPS.load(std::sync::atomic::Ordering::SeqCst)))
 }
 
+fn counter_new<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c>> {
+    let start = cx.get_int(a[0])? + cx.get_int(a[1])?;
+    cx.object(Counter(std::cell::Cell::new(start)))
+}
+
+fn counter_lend<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c>> {
+    let c = cx.object(Counter(std::cell::Cell::new(cx.get_int(a[0])?)))?;
+    cx.call_block(&[c])
+}
+
+fn counter_twin<'c>(cx: &Call<'c>, recv: Value<'c>, _: &[Value<'c>]) -> Result<Value<'c>> {
+    let v = cx.data::<Counter>(recv)?.0.get();
+    cx.object(Counter(std::cell::Cell::new(v)))
+}
+
 quarz_ext::module! {
     cog: "demo",
     classes: {
@@ -352,6 +367,9 @@ quarz_ext::module! {
     "Demo.drops" => drops,
     "Probe.open" => probe_open,
     "Counter.open" => counter_open,
+    "Counter.new" => counter_new,
+    "Counter.lend" => counter_lend,
+    "Counter#twin" => counter_twin,
     "Counter#value" => counter_value,
     "Counter#bump" => counter_bump,
     "Pool.open" => pool_open,

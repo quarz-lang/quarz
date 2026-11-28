@@ -155,6 +155,14 @@ sz: Sized = Pool.open
 p sz.doubled, sz.size
 p k.twice_bumped, k.same_as?(k), k.same_as?(Counter.open(0))
 
+# `new` as any class's (docs/15).
+p Counter.new(5).value, Counter.new.value, Counter.new(by: 3).value, Counter.new(2, by: 3).value
+p Counter.build.value, Pool.new.size, Counter.new(1).class
+tw = Counter.new(8)
+tw2 = tw.twin
+tw2.bump
+p tw.value, tw2.value, Counter.lend(30) { |c| c.bump + 1 }
+
 # No copy of a native object: `dup` refuses it, at run time too.
 def copy_of(o: Object) -> Object = o.dup
 begin

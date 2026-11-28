@@ -13650,13 +13650,20 @@ impl Checker {
         // any.)
         let constructing_self = std::mem::take(&mut self.constructing_self);
         if class.is_native {
-            self.error(
+            // (`Self.new` is the constructor path whatever `self.new` the
+            // class defines, docs/01 §9, and a native class has none.)
+            let message = if constructing_self && class.singleton_methods.contains_key("new") {
                 format!(
-                    "cannot instantiate `{}`: a native class's objects are made by its cog's native methods (docs/15)",
+                    "cannot instantiate `{0}` with `Self.new`: a native class has no `initialize`; call its `new` (`{0}.new`, docs/15)",
                     class.name
-                ),
-                expr.span,
-            );
+                )
+            } else {
+                format!(
+                    "cannot instantiate `{}`: a native class's objects are made by its cog's native methods (it may declare `native def self.new`; docs/15)",
+                    class.name
+                )
+            };
+            self.error(message, expr.span);
             self.check_args_blindly(call);
             return Type::Nothing;
         }
