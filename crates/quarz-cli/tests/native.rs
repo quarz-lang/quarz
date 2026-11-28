@@ -11,6 +11,15 @@
 //! - a cog written here whose package has no dependency at all, which
 //!   implements the ABI by hand: a fetched cog the lock pins, kept by its
 //!   key.
+//!
+//! **The rule for the packages these tests build:** each depends only on
+//! path packages (`quarz-ext`, and packages a test writes, a C library
+//! compiled by a build script that runs `cc` and `ar` itself), so that
+//! its lock is made and its build runs with no registry: on a cold cargo
+//! cache, offline, in any order and in any shard. The one exception is
+//! the proof cog `zlib`, whose point is crates from crates.io: its lock is
+//! committed and its build is not offline, so cargo fetches its crates
+//! (in any order, on a cold cache) and it needs the network once there.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -742,20 +751,21 @@ fn a_kept_build_without_its_archive_is_built_again() {
 }
 
 /// A package `csys-<k>` in `dir` whose build script compiles `c` (C
-/// source) with `cc`, and whose `call(x)` calls the C function
-/// `shared_c(x)` it must define.
+/// source) with `cc` and archives it with `ar`, and whose `call(x)` calls
+/// the C function `shared_c(x)` it must define.
 fn c_package(dir: &Path, k: &str, c: &str) -> PathBuf {
     let csys = dir.join(format!("csys-{k}"));
     std::fs::create_dir_all(csys.join("src")).unwrap();
     std::fs::create_dir_all(csys.join("c")).unwrap();
     std::fs::write(
         csys.join("Cargo.toml"),
-        format!("[package]\nname = \"csys-{k}\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = \"build.rs\"\n\n[build-dependencies]\ncc = \"=1.2.30\"\n"),
+        format!("[package]\nname = \"csys-{k}\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = \"build.rs\"\n"),
     )
     .unwrap();
     std::fs::write(
         csys.join("build.rs"),
-        "fn main() { cc::Build::new().file(\"c/shared.c\").compile(\"shared\"); }\n",
+        // (`cc` and `ar` run by hand: no `cc` crate, no registry.)
+        "fn main() {\n    let out = std::env::var(\"OUT_DIR\").unwrap();\n    let run = |c: &mut std::process::Command| assert!(c.status().unwrap().success());\n    run(std::process::Command::new(\"cc\").args([\"-c\", \"-fPIC\", \"-O2\", \"c/shared.c\", \"-o\"]).arg(format!(\"{out}/shared.o\")));\n    run(std::process::Command::new(\"ar\").arg(\"crs\").arg(format!(\"{out}/libshared.a\")).arg(format!(\"{out}/shared.o\")));\n    println!(\"cargo:rustc-link-search=native={out}\");\n    println!(\"cargo:rustc-link-lib=static=shared\");\n    println!(\"cargo:rerun-if-changed=c/shared.c\");\n}\n",
     )
     .unwrap();
     std::fs::write(csys.join("c/shared.c"), c).unwrap();
@@ -826,21 +836,33 @@ fn two_cogs_with_the_same_c_symbol_each_run_their_own() {
 }
 
 /// Two native cogs linked into one program, beside each other: sharing a
-/// crate at one version (`miniz_oxide`, the same members in both
-/// archives, linked once), or each with its own version of a crate (two
-/// crates to the linker, their symbols apart): both build, and each cog
-/// runs its own code.
+/// crate at one version (a path package both name, the same members in
+/// both archives, linked once), or each with its own version of a crate
+/// (two crates to the linker, their symbols apart): both build, and each
+/// cog runs its own code.
 #[test]
 fn two_native_cogs_are_linked_into_one_program() {
     let dir = std::env::temp_dir().join(format!("quarz-native-two-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    // One crate, one version, in both.
-    for (k, level) in [("a", 1), ("b", 9)] {
+    // One crate, one version, in both (a path package both name).
+    let same = dir.join("same");
+    std::fs::create_dir_all(same.join("src")).unwrap();
+    std::fs::write(
+        same.join("Cargo.toml"),
+        "[package]\nname = \"shared-same\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        same.join("src/lib.rs"),
+        "pub fn value(x: i64) -> i64 { x * x }\n",
+    )
+    .unwrap();
+    for (k, x) in [("a", 1), ("b", 3)] {
         raw_cog_named(
             &dir.join(format!("zip{k}")),
             &format!("zip{k}"),
-            &format!("miniz_oxide::deflate::compress_to_vec(&[7u8; 1000], {level}).len() as i64 * 0 + {level}"),
-            "miniz_oxide = \"=0.8.9\"\n",
+            &format!("shared_same::value({x})"),
+            &format!("shared-same = {{ path = {same:?} }}\n"),
             "",
         );
     }
