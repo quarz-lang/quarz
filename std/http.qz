@@ -2046,9 +2046,9 @@ module HTTP
   #   .add("GET", "/users/{id}", :show)
   #   .add("GET", "/users/me", :me)
   # routes.find("GET", ["users", "me"])
-  # # => HTTP::Routes::Found::Match(value: :me, params: {})
+  # # => HTTP::Routes::Found::Match(value: :me, params: {}, pattern: "/users/me")
   # routes.find("GET", ["users", "7"])
-  # # => HTTP::Routes::Found::Match(value: :show, params: {"id" => "7"})
+  # # => HTTP::Routes::Found::Match(value: :show, params: {"id" => "7"}, pattern: "/users/{id}")
   # routes.find("POST", ["users", "7"])
   # # => HTTP::Routes::Found::NotAllowed(allow: ["GET", "HEAD"])
   # routes.find("GET", ["posts"])           # => HTTP::Routes::Found::NotFound
@@ -2068,8 +2068,11 @@ module HTTP
 
     # What [Routes#find] found.
     enum Found[U <: Shareable]
-      # The route's value, and the parameters its pattern matched.
-      variant Match(value: U, params: Hash[String, String])
+      # The route's value, the parameters its pattern matched, and the
+      # pattern as written (`/users/{id}`: what a request's route is
+      # named by in logs and traces, not the path, which holds the
+      # values; quarz#1213).
+      variant Match(value: U, params: Hash[String, String], pattern: String)
       # Only other methods have a route for the path: those methods,
       # sorted, as a 405's Allow header lists them.
       variant NotAllowed(allow: Array[String])
@@ -2131,7 +2134,7 @@ module HTTP
         end
       end
       chosen = found
-      return Found::Match[T].new(chosen.value, found_params) if chosen
+      return Found::Match[T].new(chosen.value, found_params, chosen.pattern.source) if chosen
       return Found::NotFound[T].new if allowed.empty?
       methods = allowed.uniq
       methods = methods.push("HEAD") if methods.include?("GET") && !methods.include?("HEAD")
