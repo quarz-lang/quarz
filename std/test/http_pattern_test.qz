@@ -123,6 +123,23 @@ class HttpPatternTest < Test::Case
     assert_equal(6, routes.size)
   end
 
+  # quarz#1213: a match gives the pattern as written, not the path: the
+  # more specific route's, and the GET route's for a HEAD it serves.
+  def test_find_gives_the_pattern
+    pattern = ->(method: String, target: String) {
+      case routes.find(method, segs(target) || [])
+      in HTTP::Routes::Found::Match(pattern:) then pattern
+      else "none"
+      end
+    }
+    assert_equal("/users/{id}", pattern.call("GET", "/users/7"))
+    assert_equal("/users/me", pattern.call("GET", "/users/me"))
+    assert_equal("/users/{id}", pattern.call("HEAD", "/users/7"))
+    assert_equal("/files/{p...}", pattern.call("HEAD", "/files/a/b"))
+    assert_equal("/files/{name}", pattern.call("DELETE", "/files/x"))
+    assert_equal("none", pattern.call("POST", "/users/7"))
+  end
+
   def test_add_refuses_a_conflict
     e = assert_raise(ArgumentError) { routes.add("GET", "/users/{name}", "other") }
     assert_equal("GET /users/{name} conflicts with /users/{id}", e.message)
