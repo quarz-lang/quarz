@@ -1,0 +1,14 @@
+[33, 11, 12, 12, 102, -1, 42, 99, -4, 121, 224, 5, "inside"]
+[7, 8]
+[1, 2, 3]
+[7, 10, 9]
+1
+["inl:inl", "inl:caller"]
+["ensure after return", "after break 6", "after next 7", "ensure 7", "loop ensure", "outer ensure", "drop block"]
+[33, 11, 12, 12, 102, -1, 42, 99, -4, 121, 224, 5, "inside"]
+[7, 8]
+[1, 2, 3]
+[7, 10, 9]
+1
+["ref:ref", "ref:caller"]
+["ensure after return", "after break 6", "after next 7", "ensure 7", "loop ensure", "outer ensure", "drop block"]

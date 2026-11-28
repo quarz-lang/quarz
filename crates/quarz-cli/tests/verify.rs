@@ -1189,3 +1189,125 @@ fn an_abstract_method_reached_without_verify_is_a_type_error() {
         "{err}"
     );
 }
+
+/// Whether function `name` of the program still makes a block: a call
+/// with a literal block the inliner left a call (#1223).
+fn makes_block(src: &str, name: &str) -> bool {
+    let module = common::lower(src);
+    let f = module
+        .functions
+        .iter()
+        .find(|f| f.name == name)
+        .unwrap_or_else(|| panic!("no function {name}"));
+    f.blocks
+        .iter()
+        .flat_map(|b| b.insts.iter())
+        .any(|i| matches!(i, Inst::MakeBlock { .. }))
+}
+
+/// #1223: a call giving a literal block to a method that yields is
+/// inlined with the block where `inline`'s rules allow it (the module's
+/// doc), and stays a call for each form they refuse.
+#[test]
+fn a_literal_block_is_inlined_only_where_the_rules_allow() {
+    let helpers = "class W
+  def with(&blk: () -> Int) -> Int
+    yield
+  end
+  def two(&blk: (Int, Int) -> Int) -> Int
+    yield 1, 2
+  end
+  def kept(&blk: () -> Int) -> Int
+    blk.call
+  end
+  def guarded(&blk: () -> Int) -> Int
+    begin
+      yield
+    rescue => e
+      0
+    end
+  end
+  def four(&blk: () -> Int) -> Int
+    yield + yield + yield + yield
+  end
+  def thrice(&blk: () -> Int) -> Int
+    yield + yield + yield
+  end
+  def pair(&blk: ([Int, Int]) -> Int) -> Int
+    yield [1, 2]
+  end
+  def walk(n: Int, &blk: () -> Int) -> Int
+    n == 0 ? yield : walk(n - 1) { yield }
+  end
+end
+class A
+  def with(&blk: () -> Int) -> Int
+    yield
+  end
+end
+class B < A
+  def with(&blk: () -> Int) -> Int
+    yield + 1
+  end
+end
+";
+    let big = (0..36)
+        .map(|k| format!("x = x * 3 + {k}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let cases: Vec<(&str, String, bool)> = vec![
+        ("inlined", "w.with { 1 }".into(), false),
+        (
+            "a block returning from its method",
+            "w.with { return 1 }".into(),
+            false,
+        ),
+        (
+            "a block returning from its method under a handler",
+            "begin; w.with { return 1 }; ensure; nil; end".into(),
+            true,
+        ),
+        (
+            "a block breaking under a handler",
+            "begin; w.with { break 1 }; ensure; nil; end".into(),
+            false,
+        ),
+        ("dynamic dispatch", "a.with { 1 }".into(), true),
+        // (Nested uses are inlined level by level, `inline_calls`'s
+        // passes bounding the depth.)
+        ("nested", "w.with { w.with { 1 } }".into(), false),
+        (
+            "recursive through the block",
+            "w.walk(2) { 1 }".into(),
+            true,
+        ),
+        ("the block used as a value", "w.kept { 1 }".into(), true),
+        ("a rescue in the callee", "w.guarded { 1 }".into(), true),
+        ("more yields than allowed", "w.four { 1 }".into(), true),
+        (
+            "the block with a frame",
+            "w.with { x = 1; f = -> { x }; f.call }".into(),
+            true,
+        ),
+        (
+            "two parameters, two arguments",
+            "w.two { |a, b| a + b }".into(),
+            false,
+        ),
+        (
+            "a destructuring block",
+            "w.pair { |a, b| a + b }".into(),
+            true,
+        ),
+        ("an arity mismatch", "w.two { |a| a }".into(), true),
+        (
+            "over the size bound",
+            format!("w.thrice {{ x = 1; {big}; x }}"),
+            true,
+        ),
+    ];
+    for (what, call, stays) in cases {
+        let src = format!("{helpers}def site(w: W, a: A) -> Int = {call}\np site(W.new, B.new)\n");
+        assert_eq!(makes_block(&src, "main#site"), stays, "{what}: {call}");
+    }
+}
