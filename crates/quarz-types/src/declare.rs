@@ -594,6 +594,7 @@ impl<'ast> Declarer<'ast> {
                     return true;
                 };
                 self.world.class_mut(id).is_abstract = def.is_abstract;
+                self.world.class_mut(id).is_native = def.is_native;
                 self.collect_body(id, &def.body, prelude);
                 self.pending.push(PendingClass {
                     id,
@@ -1343,6 +1344,7 @@ impl<'ast> Declarer<'ast> {
             self.check_include_overrides(p.id);
             self.check_class_include_overrides(p.id);
             self.check_class_side_overrides(p.id);
+            self.check_native_class(p.id);
             self.check_copied_deinitialize(p.id);
             // (A class whose conformance waits for the statements is
             // warned once they ran: they may generate the other one.)
@@ -3833,6 +3835,59 @@ impl<'ast> Declarer<'ast> {
             self.override_as_std = false;
         }
         self.file = saved_file;
+    }
+
+    /// What a `native class` may be (#677, docs/15): declared in a cog
+    /// that brings native code, with no type parameter, no superclass but
+    /// `Object`, no field and no `initialize` (its state is its native
+    /// data, and its objects are made by the cog's natives); and no class
+    /// is a subclass of one. (`new` on it is refused where it is called,
+    /// `check_constructor`.)
+    fn check_native_class(&mut self, id: ClassId) {
+        let class = self.world.class(id).clone();
+        if let Some(Type::Class(s, _)) = &class.superclass {
+            if self.world.class(*s).is_native {
+                self.error(
+                    format!(
+                        "`{}` cannot be a subclass of `{}`: a native class has no subclasses (its objects' data is its own Rust type, docs/15)",
+                        class.name,
+                        self.world.class(*s).name
+                    ),
+                    class.span,
+                );
+            }
+        }
+        if !class.is_native {
+            return;
+        }
+        let refuse = |this: &mut Self, why: &str| {
+            this.error(
+                format!("native class `{}` {why} (docs/15)", class.name),
+                class.span,
+            )
+        };
+        if self.world.native_cog(class.file).is_none() {
+            refuse(
+                self,
+                "is in no cog that brings native code: `native class` is for a cog whose Cog.toml declares `[native]`",
+            );
+        }
+        if !class.type_params.is_empty() {
+            refuse(self, "has type parameters: its objects' data is one Rust type, and a class value carries no type arguments at run time");
+        }
+        let object = self.world.builtin.object;
+        if matches!(&class.superclass, Some(Type::Class(s, _)) if *s != object) {
+            refuse(self, "has a superclass: it is a subclass of `Object` only (another's fields and `initialize` would be unset)");
+        }
+        if !class.fields.is_empty() {
+            refuse(self, "declares fields: its state is its native data");
+        }
+        if class.methods.contains_key("initialize") {
+            refuse(
+                self,
+                "declares `initialize`: its objects are made by its cog's native methods",
+            );
+        }
     }
 
     /// A class method of the name and signature of a `Type[Self]` method

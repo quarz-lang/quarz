@@ -495,6 +495,10 @@ pub struct ClassInfo {
     #[serde(default)]
     pub lexical: Option<ClassId>,
     pub is_abstract: bool,
+    /// `native class` (#677, docs/15): objects holding a cog's native
+    /// data, made only by the cog's natives.
+    #[serde(default)]
+    pub is_native: bool,
     pub variants: Vec<ClassId>,
     pub variant_of: Option<ClassId>,
     pub extensions: Vec<ExtensionId>,
@@ -1467,6 +1471,7 @@ impl World {
             parent,
             lexical: parent,
             is_abstract: false,
+            is_native: false,
             variants: Vec::new(),
             variant_of: None,
             extensions: Vec::new(),

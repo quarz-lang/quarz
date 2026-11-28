@@ -22,11 +22,13 @@ fn the_header_matches_the_rust_definitions() {
         };
     }
     layout!(QzMethod: key, key_len, entry);
-    layout!(QzModule: abi_major, abi_minor, methods, n_methods, method_size);
+    layout!(QzModule: abi_major, abi_minor, methods, n_methods, method_size, classes, n_classes, class_size);
+    layout!(QzClass: name, name_len, drop, flags);
     layout!(QzApi: abi_major, abi_minor, size, kind, nil, bool_new, bool_get, int_new, int_get,
         float_new, float_get, string_new, string_get, bytes_new, bytes_new_uninit, bytes_get,
         symbol_new, symbol_get, array_len, array_get, array_new, array_push, hash_len, hash_get,
-        hash_entry, hash_new, hash_put, exception_class, raise, release, call_block);
+        hash_entry, hash_new, hash_put, exception_class, raise, release, call_block,
+        object_new, object_data);
     for (name, size) in [
         ("QzValue", size_of::<QzValue>()),
         ("QzStatus", size_of::<QzStatus>()),
@@ -38,6 +40,7 @@ fn the_header_matches_the_rust_definitions() {
     for (name, value) in [
         ("QZ_ABI_MAJOR", QZ_ABI_MAJOR as usize),
         ("QZ_ABI_MINOR", QZ_ABI_MINOR as usize),
+        ("QZ_CLASS_SHAREABLE", QZ_CLASS_SHAREABLE as usize),
         ("QZ_OK", QZ_OK as usize),
         ("QZ_RAISED", QZ_RAISED as usize),
         ("QZ_NIL", QZ_NIL as usize),

@@ -89,4 +89,44 @@ sender = Task.spawn do
   0
 end
 p Demo.twice(1) { |v| v + ch.receive * 0 + 1 }
+# Native classes (ABI 1.1).
+c = Counter.open(5)
+p c.value, c.bump, c.bump, c.value, c
+pool = Pool.open
+pool_sizes = Channel[Int].new(capacity: 1)
+Task.spawn do
+  pool_sizes.send(pool.size)
+  0
+end
+p pool_sizes.receive
+begin
+  Demo.counter_as_text(c)
+rescue TypeError => e
+  p e.message
+end
+begin
+  Demo.smuggle
+rescue TypeError => e
+  p e.message
+end
+begin
+  Demo.no_such(c)
+rescue TypeError => e
+  p e.message
+end
+begin
+  Demo.peek(pool)
+rescue TypeError => e
+  p e.message
+end
+begin
+  Demo.wrong_type
+rescue TypeError => e
+  p e.message
+end
+def boom -> Int
+  b = Bomb.open
+  1
+end
+p boom, boom
 p :done

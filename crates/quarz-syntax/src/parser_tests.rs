@@ -341,6 +341,11 @@ fn declarations() {
         sexp("abstract class A\nabstract def f -> Int\nend"),
         "(abstract-class A (def abstract f (params) -> Int))"
     );
+    // `native class` (#677); `native` stays a name elsewhere.
+    assert_eq!(
+        sexp("native class Box\nnative def size -> Int\nend"),
+        "(native-class Box (def native size (params) -> Int))"
+    );
     assert_eq!(
         sexp("private def f -> Int = 1"),
         "(def Private f (params) -> Int 1)"

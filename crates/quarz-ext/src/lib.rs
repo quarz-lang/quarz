@@ -153,6 +153,57 @@ impl<'c> Call<'c> {
         (self.block != 0).then(|| Value::new(self.block))
     }
 
+    /// An object of the cog's native class `class` (its full name, as
+    /// `module!`'s `classes` lists it with its Rust type) holding `value`
+    /// (ABI 1.1): a value of the call's. `T` must be the class's type,
+    /// and the method's declaration must return the class (docs/15);
+    /// else a `TypeError`, and `value` is dropped.
+    pub fn object<T: 'static>(&self, class: &str, value: T) -> Result<Value<'c>> {
+        if __private::class_type(class) != Some(std::any::TypeId::of::<T>()) {
+            return Err(self.raise(
+                "TypeError",
+                &format!("a native method made an object of `{class}` from another Rust type than the class's"),
+            ));
+        }
+        let data = Box::into_raw(Box::new(__private::Tagged {
+            type_id: std::any::TypeId::of::<T>(),
+            value,
+        }));
+        let mut out: QzValue = 0;
+        let st = unsafe {
+            (self.api.object_new)(self.cx, class.as_ptr(), class.len(), data.cast(), &mut out)
+        };
+        if st != QZ_OK {
+            // SAFETY: refused, so still ours.
+            drop(unsafe { Box::from_raw(data) });
+            return Err(Raised(()));
+        }
+        Ok(Value::new(out))
+    }
+
+    /// The data of `v`, an object of the cog's native class `class` whose
+    /// Rust type is `T` (ABI 1.1); else a `TypeError`. Shared only (`&T`):
+    /// the block may call another method on the same object, and two
+    /// values can name it; mutate through `Cell`, `RefCell` or a lock.
+    pub fn data<T: 'static>(&self, v: Value<'c>, class: &str) -> Result<&'c T> {
+        let mut data: *mut std::ffi::c_void = std::ptr::null_mut();
+        let st = unsafe {
+            (self.api.object_data)(self.cx, v.handle, class.as_ptr(), class.len(), &mut data)
+        };
+        status(st)?;
+        // SAFETY: the runtime gave an object of `class`, which this
+        // wrapper boxed as a `Tagged<_>`, its `TypeId` at offset 0.
+        let type_id = unsafe { *(data as *const std::any::TypeId) };
+        if type_id != std::any::TypeId::of::<T>() {
+            return Err(self.raise(
+                "TypeError",
+                &format!("a native method asked for the data of a `{class}` as another Rust type"),
+            ));
+        }
+        // SAFETY: a `Tagged<T>`, alive while `v` is (the call holds it).
+        Ok(unsafe { &(*(data as *const __private::Tagged<T>)).value })
+    }
+
     /// Call the method's block with `args` (ABI 1.1): its value. What
     /// the block raises, and a `break` or `return` out of it, comes back
     /// as `Err(Raised)`, to return at once (`?`). The block may suspend
@@ -435,6 +486,70 @@ pub mod __private {
     /// are to statics).
     pub struct Static<T>(pub T);
     unsafe impl<T> Sync for Static<T> {}
+
+    /// A native object's data as the wrapper boxes it: the Rust type's
+    /// `TypeId` first (`#[repr(C)]`, at offset 0 whatever `T`), so that
+    /// `Call::data` compares it before any cast (ABI 1.1).
+    #[repr(C)]
+    pub struct Tagged<T> {
+        pub type_id: std::any::TypeId,
+        pub value: T,
+    }
+
+    /// A native class: its name and its Rust type's `TypeId`.
+    pub type ClassEntry = (&'static str, fn() -> std::any::TypeId);
+
+    /// The cog's native classes: each one's name and Rust type, set by
+    /// `module!`'s init (`set_classes`).
+    pub static CLASSES: AtomicPtr<ClassEntry> = AtomicPtr::new(std::ptr::null_mut());
+    pub static N_CLASSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    pub fn set_classes(classes: &'static [ClassEntry]) {
+        N_CLASSES.store(classes.len(), Ordering::Release);
+        CLASSES.store(classes.as_ptr() as *mut _, Ordering::Release);
+    }
+
+    /// The Rust type of the cog's class `name`, when it has one.
+    pub fn class_type(name: &str) -> Option<std::any::TypeId> {
+        let p = CLASSES.load(Ordering::Acquire);
+        if p.is_null() {
+            return None;
+        }
+        // SAFETY: `set_classes` stored a static slice of this length.
+        let classes = unsafe { std::slice::from_raw_parts(p, N_CLASSES.load(Ordering::Acquire)) };
+        classes.iter().find(|(n, _)| *n == name).map(|(_, t)| t())
+    }
+
+    static DROP_REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// Drop a `Tagged<T>` the runtime no longer holds (`QzDrop`): a panic
+    /// in `T`'s drop is caught (it cannot cross into the runtime),
+    /// reported once and the rest leaked (decided on #677).
+    ///
+    /// # Safety
+    /// `data` is a `Box<Tagged<T>>` this wrapper made, dropped once.
+    pub unsafe fn drop_tagged<T>(data: *mut std::ffi::c_void, class: &str) {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drop(Box::from_raw(data as *mut Tagged<T>));
+        }));
+        if let Err(panic) = r {
+            if !DROP_REPORTED.swap(true, Ordering::Relaxed) {
+                let message = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "a panic".to_string());
+                eprintln!(
+                    "quarz: the drop of a native object of class {class} panicked: {message} (its data leaked; reported once)"
+                );
+            }
+            std::mem::forget(panic);
+        }
+    }
+
+    /// A shareable class's data is `Send + Sync` (checked at compile
+    /// time by `module!`).
+    pub const fn shareable<T: Send + Sync>() {}
 }
 
 /// The cog's module: its name (as in its `Cog.toml`) and its methods by
@@ -443,6 +558,9 @@ pub mod __private {
 #[macro_export]
 macro_rules! module {
     (cog: $cog:literal, $($key:literal => $method:path),* $(,)?) => {
+        $crate::module! { cog: $cog, classes: {}, $($key => $method),* }
+    };
+    (cog: $cog:literal, classes: { $($class:literal => $ty:ty $(: $share:ident)?),* $(,)? }, $($key:literal => $method:path),* $(,)?) => {
         const _: () = {
             use $crate::sys::*;
             static METHODS: $crate::__private::Static<[QzMethod; $crate::module!(@count $($key)*)]> =
@@ -465,6 +583,22 @@ macro_rules! module {
                         },
                     },
                 )*]);
+            static CLASSES: $crate::__private::Static<[QzClass; $crate::module!(@count $($class)*)]> =
+                $crate::__private::Static([$(
+                    QzClass {
+                        name: $class.as_ptr(),
+                        name_len: $class.len(),
+                        drop: {
+                            unsafe extern "C" fn drop(data: *mut ::std::ffi::c_void) {
+                                $crate::__private::drop_tagged::<$ty>(data, $class)
+                            }
+                            drop
+                        },
+                        flags: $crate::module!(@flag $ty $(, $share)?),
+                    },
+                )*]);
+            static TYPES: [$crate::__private::ClassEntry; $crate::module!(@count $($class)*)] =
+                [$(($class, ::std::any::TypeId::of::<$ty>)),*];
             static MODULE: $crate::__private::Static<QzModule> =
                 $crate::__private::Static(QzModule {
                     abi_major: QZ_ABI_MAJOR,
@@ -472,13 +606,22 @@ macro_rules! module {
                     methods: METHODS.0.as_ptr() as *const QzMethod,
                     n_methods: $crate::module!(@count $($key)*),
                     method_size: ::std::mem::size_of::<QzMethod>(),
+                    classes: CLASSES.0.as_ptr() as *const QzClass,
+                    n_classes: $crate::module!(@count $($class)*),
+                    class_size: ::std::mem::size_of::<QzClass>(),
                 });
             #[export_name = $crate::__private::init_symbol!($cog)]
             unsafe extern "C" fn init(api: *const QzApi) -> *const QzModule {
+                $crate::__private::set_classes(&TYPES);
                 $crate::__private::init(api, &MODULE.0)
             }
         };
     };
     (@count $($x:tt)*) => { 0usize $(+ $crate::module!(@one $x))* };
+    (@flag $ty:ty) => { 0u32 };
+    (@flag $ty:ty, shareable) => {{
+        const _: () = $crate::__private::shareable::<$ty>();
+        $crate::sys::QZ_CLASS_SHAREABLE
+    }};
     (@one $x:tt) => { 1usize };
 }

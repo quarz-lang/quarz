@@ -2687,6 +2687,7 @@ impl Interp {
             Value::BytesBuilder(_) => b.bytes_builder,
             Value::Time(_) => b.time,
             Value::Random(_) => self.program.rt.random,
+            Value::Native(o) => o.class,
             Value::Secret(s) => match &**s {
                 crate::value::SecretVal::Bytes(_) => self.program.rt.secret,
                 crate::value::SecretVal::Key(k) => match k.kind() {
@@ -4698,6 +4699,10 @@ impl Interp {
                 IoKind::Child(st) => natives::process::inspect_child(st),
             },
             Value::Random(r) => format!("#<Random seed={}>", r.borrow().seed),
+            // A cog's native object: its class (docs/15).
+            Value::Native(o) => {
+                format!("#<{}>", self.program.world.classes[o.class as usize].name)
+            }
             // Nothing of it, not even its size (#963).
             Value::Secret(s) => match &**s {
                 crate::value::SecretVal::Bytes(_) => "#<Bytes::Secret>".to_string(),

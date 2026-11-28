@@ -15,7 +15,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use quarz_ext::sys::*;
-use quarz_ir::{MethodId, RtParamKind, RtWorld};
+use quarz_ir::{ClassId, MethodId, RtParamKind, RtWorld};
 
 use crate::interp::{ArgVec, EvalResult, Flow, Interp, NativeResult};
 use crate::rc::Rc;
@@ -28,6 +28,9 @@ pub type Entry = QzEntry;
 struct Module {
     cog: String,
     entries: HashMap<String, Entry>,
+    /// Its `native class`es (ABI 1.1): by name, the drop of their data
+    /// and their flags (`QZ_CLASS_SHAREABLE`).
+    classes: HashMap<String, (QzDrop, u32)>,
 }
 
 /// The modules loaded so far; a library is never unloaded.
@@ -133,9 +136,35 @@ pub fn register(cog: &str, init: QzInit, where_: &str) -> Result<(), String> {
             return Err(format!("{where_} defines `{key}` twice"));
         }
     }
+    // The classes (ABI 1.1): read only from a module of minor 1 or more,
+    // which has the fields.
+    let mut classes = HashMap::new();
+    if module.abi_minor >= 1 && module.n_classes > 0 {
+        if module.classes.is_null() || module.class_size < std::mem::size_of::<QzClass>() {
+            return Err(format!("{where_}: its classes are malformed"));
+        }
+        for i in 0..module.n_classes {
+            // SAFETY: `n_classes` classes `class_size` apart.
+            let c = unsafe {
+                &*((module.classes as *const u8).add(i * module.class_size) as *const QzClass)
+            };
+            // SAFETY: `name_len` bytes at `name`.
+            let name = unsafe { bytes_at(c.name, c.name_len) };
+            let Ok(name) = std::str::from_utf8(name) else {
+                return Err(format!("{where_}: a class's name is not UTF-8"));
+            };
+            if classes
+                .insert(name.to_string(), (c.drop, c.flags))
+                .is_some()
+            {
+                return Err(format!("{where_} lists the class `{name}` twice"));
+            }
+        }
+    }
     modules.push(Module {
         cog: cog.to_string(),
         entries,
+        classes,
     });
     Ok(())
 }
@@ -179,6 +208,33 @@ pub fn check(world: &RtWorld) -> Result<(), String> {
                 "cog `{name}`'s native library defines `{key}`, which the cog does not declare `native def`"
             ));
         }
+        // Its classes, both ways, and whether each is shareable.
+        for (_, class, shareable) in &cog.classes {
+            let Some((_, flags)) = module.classes.get(class) else {
+                return Err(format!(
+                    "cog `{name}` declares `native class {class}`, which its native library does not list"
+                ));
+            };
+            let listed = flags & QZ_CLASS_SHAREABLE != 0;
+            if listed != *shareable {
+                return Err(if *shareable {
+                    format!("cog `{name}` declares `{class}` Shareable, but its native library does not mark it shareable (its data must be `Send + Sync`)")
+                } else {
+                    format!("cog `{name}`'s native library marks `{class}` shareable, but the cog does not declare it `Shareable`")
+                });
+            }
+        }
+        let mut unlisted: Vec<&String> = module
+            .classes
+            .keys()
+            .filter(|k| !cog.classes.iter().any(|(_, c, _)| c == *k))
+            .collect();
+        unlisted.sort();
+        if let Some(class) = unlisted.first() {
+            return Err(format!(
+                "cog `{name}`'s native library lists the class `{class}`, which the cog does not declare `native class`"
+            ));
+        }
     }
     Ok(())
 }
@@ -204,6 +260,45 @@ pub fn bind(world: &RtWorld, n: usize) -> Vec<Option<Entry>> {
         }
     }
     out
+}
+
+// ----- native objects ------------------------------------------------------------
+
+/// The data of an object of a cog's `native class` (ABI 1.1): its class,
+/// the cog's pointer, and the cog's drop for it, run when the last
+/// reference goes, on whichever worker drops it (a shareable class's data
+/// is `Send + Sync`, the wrapper's bound; an unshareable one's never
+/// leaves its task, the checker's rule).
+pub struct NativeObject {
+    pub class: ClassId,
+    data: *mut c_void,
+    drop: QzDrop,
+}
+
+// SAFETY: see the type's doc: what crosses threads is a shareable
+// class's data, `Send + Sync` by the wrapper's bound, or a C cog's word.
+unsafe impl Send for NativeObject {}
+unsafe impl Sync for NativeObject {}
+
+impl std::fmt::Debug for NativeObject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NativeObject(class {})", self.class)
+    }
+}
+
+impl NativeObject {
+    pub fn data(&self) -> *mut c_void {
+        self.data
+    }
+}
+
+impl Drop for NativeObject {
+    fn drop(&mut self) {
+        // (A panic in the cog's drop is caught by its wrapper, reported
+        // once and the data leaked: decided on #677.)
+        // SAFETY: the cog's drop for this data, called once.
+        unsafe { (self.drop)(self.data) }
+    }
 }
 
 // ----- a call ------------------------------------------------------------------------
@@ -233,6 +328,8 @@ const CHUNK: usize = 32;
 /// - `release` leaves a value whose bytes were lent (`Made::pin`).
 struct Frame<'a> {
     interp: &'a Interp,
+    /// The cog's native this call runs (what `object_new` may make).
+    mid: MethodId,
     serial: u32,
     lent: Lent,
     made: Made,
@@ -522,6 +619,7 @@ pub fn call(
     // called: never pushed to after.)
     let mut frame = Frame {
         interp,
+        mid,
         serial: next_serial(),
         lent: Lent {
             recv,
@@ -1313,6 +1411,99 @@ unsafe extern "C" fn call_block(
     }
 }
 
+/// The `native class` named `p[..n]` of this call's cog (ABI 1.1), with
+/// the drop its module lists: else what is wrong, for a `TypeError`.
+fn native_class(f: &Frame, p: *const u8, n: usize) -> Result<(ClassId, QzDrop), String> {
+    // SAFETY: `n` bytes at `p` (the API's contract).
+    let name = String::from_utf8_lossy(unsafe { bytes_at(p, n) }).into_owned();
+    let world = &f.interp.program.world;
+    let ext = f.interp.program.method(f.mid).ext;
+    let cog = ext.and_then(|i| world.native_cogs.get(i as usize));
+    let Some(cog) = cog else {
+        return Err(format!(
+            "a native method named the class `{name}`, but it is no cog's"
+        ));
+    };
+    let Some((class, _, _)) = cog.classes.iter().find(|(_, c, _)| *c == name) else {
+        return Err(format!(
+            "a native method named `{name}`, which is not a native class of cog `{}`",
+            cog.name
+        ));
+    };
+    let modules = MODULES.lock().expect("the modules");
+    let drop = modules
+        .iter()
+        .find(|m| m.cog == cog.name)
+        .and_then(|m| m.classes.get(&name))
+        .map(|(d, _)| *d);
+    match drop {
+        Some(d) => Ok((*class, d)),
+        None => Err(format!(
+            "cog `{}`'s native library does not list the class `{name}`",
+            cog.name
+        )),
+    }
+}
+
+/// An object of the native class named, holding `data` (ABI 1.1): a
+/// handle of this call's. Only a class the calling method's declaration
+/// returns (`RtMethod::makes`: what `shake` keeps live), else `TypeError`;
+/// on an error the data is still the cog's.
+unsafe extern "C" fn object_new(
+    cx: *mut QzCall,
+    p: *const u8,
+    n: usize,
+    data: *mut c_void,
+    out: *mut QzValue,
+) -> QzStatus {
+    let f = frame(cx);
+    pending_status!(f);
+    let (class, drop) = match native_class(f, p, n) {
+        Ok(c) => c,
+        Err(m) => return f.type_error(&m),
+    };
+    let m = f.interp.program.method(f.mid);
+    if !m.makes.contains(&class) {
+        let msg = format!(
+            "a native method made an object of `{}`, which its declaration does not return (docs/15)",
+            f.interp.program.world.classes[class as usize].name
+        );
+        return f.type_error(&msg);
+    }
+    *out = f.make(Value::Native(Rc::new(NativeObject { class, data, drop })));
+    QZ_OK
+}
+
+/// The data of `v`, an object of exactly the native class named (ABI
+/// 1.1): else `TypeError`. Valid while `v` is (the call's handle keeps
+/// it).
+unsafe extern "C" fn object_data(
+    cx: *mut QzCall,
+    v: QzValue,
+    p: *const u8,
+    n: usize,
+    out: *mut *mut c_void,
+) -> QzStatus {
+    let f = frame(cx);
+    pending_status!(f);
+    let (class, _) = match native_class(f, p, n) {
+        Ok(c) => c,
+        Err(m) => return f.type_error(&m),
+    };
+    match f.value(v) {
+        Some(Value::Native(o)) if o.class == class => {
+            *out = o.data();
+            QZ_OK
+        }
+        Some(other) => {
+            let name = f.interp.program.world.classes[class as usize].name.clone();
+            let m = expected(f, &format!("an object of {name}"), other);
+            f.type_error(&m)
+        }
+        None => f.stale(),
+    }
+}
+
 unsafe extern "C" fn release(cx: *mut QzCall, v: QzValue) {
     let f = frame(cx);
     if (v >> 32) as u32 != f.serial || v & 0xFFFF_FFFF == 0 {
@@ -1359,4 +1550,6 @@ static API: QzApi = QzApi {
     raise,
     release,
     call_block,
+    object_new,
+    object_data,
 };

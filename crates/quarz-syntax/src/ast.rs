@@ -680,6 +680,10 @@ pub struct ClassDef {
     pub superclass: Option<TypeExpr>,
     pub body: Vec<Expr>,
     pub is_abstract: bool,
+    /// `native class`: its objects hold a cog's native data (#677,
+    /// docs/15), made only by the cog's natives.
+    #[serde(default)]
+    pub is_native: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

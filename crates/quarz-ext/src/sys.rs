@@ -10,6 +10,8 @@
 
 #![allow(non_camel_case_types)]
 
+use std::ffi::c_void;
+
 /// The ABI's major version: a module of another is refused.
 pub const QZ_ABI_MAJOR: u32 = 1;
 /// The ABI's minor version: a module needing a greater one is refused.
@@ -77,7 +79,30 @@ pub struct QzModule {
     pub methods: *const QzMethod,
     pub n_methods: usize,
     pub method_size: usize,
+    // ABI 1.1 (read only from a module whose `abi_minor` is 1 or more).
+    /// The cog's `native class`es: `n_classes` of them, `class_size` apart.
+    pub classes: *const QzClass,
+    pub n_classes: usize,
+    pub class_size: usize,
 }
+
+/// Drop a native object's data (ABI 1.1): the cog's, run once, when the
+/// object's last reference goes.
+pub type QzDrop = unsafe extern "C" fn(data: *mut c_void);
+
+/// A `native class` of the cog (ABI 1.1): its name as the cog declares it
+/// (`Zlib::Deflater`), how its objects' data is dropped, and its flags.
+#[repr(C)]
+pub struct QzClass {
+    pub name: *const u8,
+    pub name_len: usize,
+    pub drop: QzDrop,
+    pub flags: u32,
+}
+
+/// A class whose objects may be shared between tasks (its data is `Send +
+/// Sync`): its declaration must include `Shareable`, and only then.
+pub const QZ_CLASS_SHAREABLE: u32 = 1;
 
 /// The functions quarz gives a cog, ABI 1.0.
 #[repr(C)]
@@ -132,6 +157,16 @@ pub struct QzApi {
     /// in `*out`, a handle of the call's (docs/15).
     pub call_block:
         unsafe extern "C" fn(*mut QzCall, QzValue, *const QzValue, usize, *mut QzValue) -> QzStatus,
+    /// Make an object of the native class named (`Zlib::Deflater`, one of
+    /// the module's classes, and one the calling method's declaration
+    /// returns) holding `data`, dropped by the class's `QzDrop` when its
+    /// last reference goes: a handle of the call's (docs/15).
+    pub object_new:
+        unsafe extern "C" fn(*mut QzCall, *const u8, usize, *mut c_void, *mut QzValue) -> QzStatus,
+    /// The data of `v`, an object of the native class named: else
+    /// `TypeError`.
+    pub object_data:
+        unsafe extern "C" fn(*mut QzCall, QzValue, *const u8, usize, *mut *mut c_void) -> QzStatus,
 }
 
 /// A cog's init: `qz_cog_init_<cog>` (`init_symbol`), its only export.

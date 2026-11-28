@@ -23,6 +23,16 @@ module Demo
   # Calls the block on `n`; the depth of such calls under way, kept in a
   # thread-local `RefCell` released around the call, is in the result.
   native def self.depth(n: Int, &blk: (Int) -> Int) -> Int
+  # Asks for a Counter's data as another Rust type: a TypeError.
+  native def self.counter_as_text(c: Counter) -> Int
+  # Makes a Counter its declaration does not return: a TypeError.
+  native def self.smuggle -> Int
+  # Names a class that is not the cog's: a TypeError.
+  native def self.no_such(c: Counter) -> Int
+  # Reads a Pool as a Counter: a TypeError.
+  native def self.peek(x: Object) -> Int
+  # Makes a Counter from another Rust type: a TypeError.
+  native def self.wrong_type -> Counter
   # Releases each string or bytes after reading it, then reads it again.
   native def self.released(xs: Array[String]) -> String
   native def self.released_bytes(bs: Array[Bytes]) -> Int
@@ -57,4 +67,22 @@ end
 class Crate
   # Returns a String: refused against its declared `Self`.
   native def self.make -> Self
+end
+
+# Native classes (ABI 1.1): objects holding the cog's data.
+native class Counter
+  native def self.open(start: Int) -> Counter
+  native def value -> Int
+  native def bump -> Int
+end
+
+native class Pool
+  include Shareable
+  native def self.open -> Pool
+  native def size -> Int
+end
+
+# Its data's drop panics.
+native class Bomb
+  native def self.open -> Bomb
 end

@@ -118,7 +118,12 @@ impl Completions {
                         .collect::<Vec<_>>()
                 })
                 .collect();
-            if matches!(class.kind, ClassKind::Class | ClassKind::Data) && !class.is_abstract {
+            // (A native class has no `new`: its cog's natives make its
+            // objects, docs/15.)
+            if matches!(class.kind, ClassKind::Class | ClassKind::Data)
+                && !class.is_abstract
+                && !class.is_native
+            {
                 singles.push("new".to_string());
             }
             // A library cog's root module: its public functions

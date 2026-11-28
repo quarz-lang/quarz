@@ -344,6 +344,19 @@ true
 \"from the block\"
 321
 3
+5
+6
+7
+7
+#<Counter>
+7
+\"a native method asked for the data of a `Counter` as another Rust type\"
+\"a native method made an object of `Counter`, which its declaration does not return (docs/15)\"
+\"a native method named `Nope`, which is not a native class of cog `demo`\"
+\"a native method expected an object of Counter, got Pool\"
+\"a native method made an object of `Counter` from another Rust type than the class's\"
+1
+1
 :done
 ";
     assert_eq!(out, want);
@@ -1161,6 +1174,63 @@ fn a_program_ends_with_a_task_parked_in_a_natives_block() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A cog's native classes are checked against its library's list when
+/// the library is loaded, both ways, and their shareability with them.
+#[test]
+fn a_cogs_native_classes_are_checked_against_its_library() {
+    let demo = std::fs::read_to_string(fixture_src("demo").join("src/demo.qz")).unwrap();
+    let bomb = "native class Bomb\n  native def self.open -> Bomb\nend\n";
+    assert!(demo.contains(bomb));
+    for (name, text, want) in [
+        (
+            "unlisted",
+            format!("{demo}\nnative class Extra\nend\n"),
+            "cog `demo` declares `native class Extra`, which its native library does not list",
+        ),
+        (
+            "undeclared",
+            demo.replace(bomb, &bomb.replace("native class", "class")),
+            "cog `demo`'s native library lists the class `Bomb`, which the cog does not declare `native class`",
+        ),
+        (
+            "shareable",
+            demo.replace("native class Counter\n", "native class Counter\n  include Shareable\n"),
+            "cog `demo` declares `Counter` Shareable, but its native library does not mark it shareable (its data must be `Send + Sync`)",
+        ),
+        (
+            "unshareable",
+            demo.replace("native class Pool\n  include Shareable\n", "native class Pool\n"),
+            "cog `demo`'s native library marks `Pool` shareable, but the cog does not declare it `Shareable`",
+        ),
+    ] {
+        assert_ne!(text, demo, "{name}");
+        let dir = fixture(
+            &format!("classes-{name}"),
+            &[("demo.qz", &text), ("main.qz", "p 1\n")],
+        );
+        let (ok, out, err) = quarz(&dir, &["run"], &[]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!ok, "{name}: {out}");
+        assert!(err.contains(want), "{name}: {err}");
+    }
+}
+
+/// A native object cannot cross `Task.blocking` (its data is the cog's,
+/// with no copy for the helper's program): `ArgumentError`, as for a
+/// `Channel`, even of a shareable class.
+#[test]
+fn a_native_object_does_not_cross_task_blocking() {
+    let main = "pool = Pool.open\nbegin\n  Task.blocking { pool.size }\nrescue ArgumentError => e\n  p e.message\nend\n";
+    let dir = fixture("blocking", &[("main.qz", main)]);
+    let (ok, out, err) = quarz(&dir, &["run"], &[]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ok, "{err}");
+    assert!(
+        out.contains("Pool") && out.contains("Task.blocking"),
+        "{out}"
+    );
+}
+
 /// What a cog's native returns is tested against its declared result's
 /// class on every call, `QUARZ_VERIFY` or not (decided on #677), by the
 /// test `QUARZ_VERIFY` runs for the standard natives: a mismatch is a
@@ -1343,6 +1413,35 @@ fn a_cogs_native_def_is_checked() {
         (
             &[("bad.qz", "extension String\n  native def upcase(x: Int) -> Int\nend\n")],
             "a cog's native method has no overloads: `String#upcase` is declared twice",
+        ),
+        // What a native class may not be (docs/15).
+        (
+            &[("bad.qz", "native class Box\n  @x: Int\nend\n")],
+            "native class `Box` declares fields: its state is its native data (docs/15)",
+        ),
+        (
+            &[("bad.qz", "native class Box\n  def initialize\n  end\nend\n")],
+            "native class `Box` declares `initialize`: its objects are made by its cog's native methods (docs/15)",
+        ),
+        (
+            &[("bad.qz", "native class Box[T]\nend\n")],
+            "native class `Box` has type parameters",
+        ),
+        (
+            &[("bad.qz", "class Base\nend\nnative class Box < Base\nend\n")],
+            "native class `Box` has a superclass: it is a subclass of `Object` only",
+        ),
+        (
+            &[("bad.qz", "class Sub < Counter\nend\n")],
+            "`Sub` cannot be a subclass of `Counter`: a native class has no subclasses",
+        ),
+        (
+            &[("bad.qz", "class Maker\n  def self.make -> Counter = Counter.new\nend\n")],
+            "cannot instantiate `Counter`: a native class's objects are made by its cog's native methods (docs/15)",
+        ),
+        (
+            &[("bad.qz", "class Spawner\n  def self.go(c: Counter) -> Task[Int] = Task.spawn { c.value }\nend\n")],
+            "`c` has the non-shareable type Counter and cannot be captured by a `Task.spawn` block",
         ),
         // The standard library's extensions hold keys too.
         (
