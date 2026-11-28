@@ -58,7 +58,8 @@ REQUEST_ID.value            # => nil, the default
 **Cost.** In a compiled program:
 - `value` is a call of the runtime's by-reference entry and a walk of the bindings: tens of instructions.
 - `with` costs what a native method called with a block costs (#1223).
-- A task switch moves one reference each way, and a spawn copies one.
+- A task switch moves one reference each way only for a task that has bindings.
+- A spawn costs a program that binds nothing about 1.5% (86 instructions of about 5,700), and each binding the new task inherits about 100 more.
 
 ## 2. Structured Concurrency (`Task.scope`)
 

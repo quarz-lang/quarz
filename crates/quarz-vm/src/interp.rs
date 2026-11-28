@@ -1946,7 +1946,8 @@ impl Interp {
             *self.rescuing.borrow_mut() = stack;
         }
         // Its bindings in the worker's cell while it runs (#1213).
-        if task.has_bindings.load(std::sync::atomic::Ordering::Relaxed) {
+        let had = task.has_bindings.load(std::sync::atomic::Ordering::Relaxed);
+        if had {
             self.bindings.set(sched::lock(&task.bindings).take());
         }
         let result = sched::resume(&task, &mut co);
@@ -1955,8 +1956,10 @@ impl Interp {
         if some {
             *sched::lock(&task.bindings) = bindings;
         }
-        task.has_bindings
-            .store(some, std::sync::atomic::Ordering::Relaxed);
+        if some != had {
+            task.has_bindings
+                .store(some, std::sync::atomic::Ordering::Relaxed);
+        }
         let stack = {
             let mut r = self.rescuing.borrow_mut();
             (!r.is_empty()).then(|| std::mem::take(&mut *r))
@@ -5322,12 +5325,20 @@ pub(crate) enum NativeResult {
     NoTest(String),
 }
 
-/// A new task's `Task::Local` bindings, before it first runs (#1213).
+/// A new task's `Task::Local` bindings, before it first runs (#1213):
+/// nothing to do, and no call, when there are none (every program that
+/// binds nothing spawns through here).
+#[inline(always)]
 fn set_bindings(handle: &TaskHandle, bindings: crate::task_local::Bindings) {
     if bindings.is_some() {
-        *sched::lock(&handle.bindings) = bindings;
-        handle
-            .has_bindings
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        set_some_bindings(handle, bindings);
     }
+}
+
+#[inline(never)]
+fn set_some_bindings(handle: &TaskHandle, bindings: crate::task_local::Bindings) {
+    *sched::lock(&handle.bindings) = bindings;
+    handle
+        .has_bindings
+        .store(true, std::sync::atomic::Ordering::Relaxed);
 }
