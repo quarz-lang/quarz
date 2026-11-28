@@ -1865,13 +1865,10 @@ module HTTP
           current = req
           first = false
           reader.read_timeout = opts.read_timeout
-          # (With nothing listening, no block and no allocation: #1226.)
-          keep = if Trace.on?
-            Trace.span("http.server.request", RequestEvent.of(req, nil, nil), kind: :server,
-                       extract: Server.carrier(req.headers)) { |span| answer(conn, req, span) }
-          else
-            answer(conn, req, Trace::Span::NONE)
-          end
+          # (With nothing listening, no block and no allocation: the
+          # block is in `traced_answer`, a method of its own, so that this
+          # loop captures nothing for it, #1226.)
+          keep = Trace.on? ? traced_answer(conn, req) : answer(conn, req, Trace::Span::NONE)
           break unless keep
         end
       rescue Task::Timeout, IOError, SystemCallError
@@ -1891,6 +1888,12 @@ module HTTP
           end
         end
       end
+    end
+
+    # [#answer] as a `http.server.request` operation.
+    private def traced_answer(conn: IO, req: Request) -> Bool
+      Trace.span("http.server.request", RequestEvent.of(req, nil, nil), kind: :server,
+                 extract: Server.carrier(req.headers)) { |span| answer(conn, req, span) }
     end
 
     # One request answered on `conn`, from the handler to the written
@@ -3114,7 +3117,9 @@ module HTTP
       req = first
       count = 0
       loop do
-        res = traced_round_trip(req, count)
+        # (The block is in `traced_round_trip`, entered only when something
+        # listens: a method with a block pays for it when it is entered.)
+        res = Trace.on? ? traced_round_trip(req, count) : round_trip(req)
         return res unless res.redirect? && @max_redirects > 0
         location = res.headers["location"]
         return res if location.nil?
@@ -3188,7 +3193,6 @@ module HTTP
     # character) or that frames the message ([INJECT_REFUSED]) is left
     # out: a subscriber cannot fail or alter the request.
     private def traced_round_trip(req: Request, hop: Int) -> Response
-      return round_trip(req) unless Trace.on?
       Trace.span("http.client.request", RequestEvent.of(req, nil, hop), kind: :client) do |span|
         sent = req
         span.inject.each do |k, v|
