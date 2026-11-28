@@ -1,0 +1,158 @@
+# HTTP::Server, HTTP::Router and HTTP::Client reporting through Trace:
+# the spans, their payloads and parents, the events, and the context a
+# client's request carries to a server in the same program.
+require "http"
+require "trace"
+require "test"
+
+class HttpTraceTest < Test::Case
+  @gate: Channel[Int] = Channel[Int].new(capacity: 4)
+
+  def router -> HTTP::Router
+    gate = @gate
+    HTTP::Router.build do |r|
+      r.get("/users/{id}") { |req| HTTP::Server::Response.text("user #{req.params["id"]}") }
+      r.get("/stream") do |_|
+        HTTP::Server::Response.stream do |w|
+          w.write("a")
+          w.write("b")
+        end
+      end
+      r.get("/boom") { |_| raise ArgumentError.new("secret detail") }
+      r.get("/hop") { |_| HTTP::Server::Response.redirect("/users/9", 302) }
+      r.get("/slow") do |_|
+        gate.receive
+        HTTP::Server::Response.text("late")
+      end
+    end
+  end
+
+  # Serves `router` while the block runs; the server's tasks are spawned
+  # inside the block's task, so the recorder sees them.
+  def serving(&: (String) -> Void) -> Void
+    server = HTTP::Server.new(router, host: "127.0.0.1", port: 0)
+    Task.scope do |scope|
+      scope.spawn { server.serve }
+      begin
+        yield "http://127.0.0.1:#{server.local_address.port}"
+      ensure
+        4.times { @gate.try_send(1) }
+        server.shutdown
+      end
+    end
+    nil
+  end
+
+  # The attributes as text, to compare.
+  def attrs(p: Trace::Payload) -> Hash[String, String]
+    out: Hash[String, String] = {}
+    p.attributes.each { |k, v| out = out.put(k, v.to_s) }
+    out
+  end
+
+  def test_a_server_span_with_its_route
+    records = Trace::Testing.record do
+      serving do |base|
+        res = HTTP::Client.new.get("#{base}/users/7?token=abc")
+        assert_equal("user 7", res.body.read)
+      end
+    end
+    client = records.select { |r| r.name == "http.client.request" }
+    server = records.select { |r| r.name == "http.server.request" }
+    assert_equal(1, client.size)
+    assert_equal(1, server.size)
+    s = server[0]
+    assert_equal(:server, s.kind)
+    a = attrs(s.last)
+    assert_equal("GET", a["method"])
+    # The path without its query: the token never leaves.
+    assert_equal("/users/7", a["path"])
+    assert_equal("http", a["scheme"])
+    assert_equal("HTTP/1.1", a["version"])
+    assert_equal("127.0.0.1", a["peer"])
+    assert_equal("200", a["status"])
+    assert_equal(["http.server.route"], s.events.map { |e| e[0] })
+    assert_equal({"pattern" => "/users/{id}"}, attrs(s.events[0][1]))
+    # The client's context reached the server: its span is the server's
+    # parent.
+    assert_equal(records.index { |r| r.name == "http.client.request" }, s.parent)
+    c = attrs(client[0].last)
+    assert_equal("GET http 127.0.0.1 /users/7 200 0",
+                 [c["method"], c["scheme"], c["host"], c["path"], c["status"], c["resend"]].join(" "))
+    assert_true(records.all? { |r| r.payload.attributes.values.none? { |v| v.to_s.include?("token") } })
+  end
+
+  def test_a_streamed_body_and_two_requests_on_one_connection
+    records = Trace::Testing.record do
+      serving do |base|
+        c = HTTP::Client.new
+        assert_equal("ab", c.get("#{base}/stream").body.read)
+        assert_equal("user 1", c.get("#{base}/users/1").body.read)
+      end
+    end
+    server = records.select { |r| r.name == "http.server.request" }
+    assert_equal(["/stream", "/users/1"], server.map { |r| attrs(r.last)["path"] })
+    assert_true(server.all? { |r| r.error.nil? })
+  end
+
+  # A handler that raises: 500, the exception's class, never its message.
+  def test_a_failing_handler
+    records = Trace::Testing.record do
+      serving do |base|
+        assert_equal(500, HTTP::Client.new.get("#{base}/boom").status)
+      end
+    end
+    s = records.select { |r| r.name == "http.server.request" }[0]
+    assert_equal("500", attrs(s.last)["status"])
+    assert_equal("ArgumentError", attrs(s.last)["error"])
+    assert_true(records.all? { |r| r.last.attributes.values.none? { |v| v.to_s.include?("secret") } })
+  end
+
+  # Each redirect hop is a span of its own, `resend` its index.
+  def test_a_client_span_per_redirect_hop
+    records = Trace::Testing.record do
+      serving do |base|
+        assert_equal("user 9", HTTP::Client.new.get("#{base}/hop").body.read)
+      end
+    end
+    hops = records.select { |r| r.name == "http.client.request" }
+    assert_equal(["/hop 302 0", "/users/9 200 1"], hops.map { |r| a = attrs(r.last); "#{a["path"]} #{a["status"]} #{a["resend"]}" })
+  end
+
+  # A request the server cannot read: an event, no span.
+  def test_a_bad_request_is_an_event
+    result = Trace::Testing.record_all do
+      serving do |base|
+        port = base.rpartition(":")[2].to_i
+        sock = TCPSocket.new("127.0.0.1", port)
+        sock.write("NOT HTTP\r\n\r\n")
+        assert_true(sock.read.start_with?("HTTP/1.1 400"))
+        sock.close
+      end
+    end
+    assert_equal(0, result[0].count { |r| r.name == "http.server.request" })
+    bad = result[1].select { |e| e[0] == "http.server.bad_request" }
+    assert_equal(1, bad.size)
+    assert_equal({"status" => "400"}, attrs(bad[0][1]))
+  end
+
+  # A client timeout ends the client's span with the timeout.
+  def test_a_client_timeout
+    records = Trace::Testing.record do
+      serving do |base|
+        assert_raise(HTTP::Client::TimeoutError) { HTTP::Client.new(timeout: 200.ms).get("#{base}/slow") }
+        @gate.send(1)
+      end
+    end
+    c = records.select { |r| r.name == "http.client.request" }[0]
+    assert_false(c.error.nil?)
+    assert_nil(attrs(c.last)["status"]?)
+  end
+
+  # Nothing attached: no span, and requests work as before.
+  def test_nothing_attached
+    serving do |base|
+      assert_equal("user 3", HTTP::Client.new.get("#{base}/users/3").body.read)
+    end
+  end
+end

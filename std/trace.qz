@@ -1,0 +1,394 @@
+# Tracing's general vocabulary for libraries: an operation (a span) or an
+# instant (an event), named, with a typed payload that says what leaves
+# the process. What consumes them is a subscriber attached at start-up
+# (the `otel` cog's, or a test's recorder). With no subscriber, a call
+# costs one check ([Trace.on?]) and nothing else.
+#
+# A library reports its operations, usually through one private helper
+# per operation, so that the operation's code is written once:
+#
+# ```
+# data Fetch(path: String)
+#   include Trace::Payload
+#   def attributes -> Hash[String, Trace::Value] = {"path" => path}
+# end
+#
+# def fetch(path: String) -> Int
+#   return 0 unless Trace.on?
+#   Trace.span("demo.fetch", Fetch.new(path), kind: :client) { |span| 200 }
+# end
+#
+# records = Trace::Testing.record { fetch("/a") }
+# records.map(&:name)       # => ["demo.fetch"]
+# ```
+#
+# Words are tracing's general ones; what is OpenTelemetry's own (its
+# semantic conventions, OTLP, sampling, `traceparent`) is the `otel`
+# cog's.
+module Trace
+  # An attribute's scalar value.
+  type Scalar = String | Int | Float | Bool
+
+  # An attribute's value: a scalar, or an array of scalars. An array's
+  # element type is not kept at run time, so a subscriber tests the
+  # array (`as?(Array[Scalar])`) and then each element's class; a library
+  # passes its `Array[String]` or `Array[Int]` as it is.
+  type Value = Scalar | Array[Scalar]
+
+  # The kinds of an operation, by whom it talks to: `:internal` (no one),
+  # `:server` (it answers a request), `:client` (it makes one),
+  # `:producer` (it hands work over: a job enqueued), `:consumer` (it
+  # takes such work).
+  KINDS = [:internal, :server, :client, :producer, :consumer]
+
+  # What a library reports: a `data` type including it, whose
+  # [#attributes] are what leaves the process. They hold no parameter
+  # values, no header values, no secret, and no exception message: the
+  # library's documentation says which attributes it gives.
+  module Payload
+    include Shareable
+
+    # The attributes, by name (`"http.request.method"` style names are a
+    # subscriber's mapping; a library's own are short: `"method"`).
+    abstract def attributes -> Hash[String, Value]
+  end
+
+  # A payload of nothing: an event that says only its name.
+  data Empty()
+    include Payload
+
+    def attributes -> Hash[String, Value] = {}
+  end
+
+  # What consumes operations: one value for the program, called from
+  # every task. Its methods must not wait (a `finish` may run in a
+  # cancelled task's `ensure`): queue the work, do not do it. One that
+  # raises (a `StandardError`) is reported once on standard error and then
+  # counted ([Trace.errors]); the library's operation never sees it.
+  #
+  # `Trace` reads no clock: a subscriber that times operations reads the
+  # wall clock ([Time.now]) once in [#start], and the monotonic clock
+  # ([Time.monotonic]) in [#start] and [#finish], giving the end as the
+  # start plus the monotonic time elapsed, so that a step of the wall
+  # clock cannot make a span negative.
+  module Subscriber
+    include Shareable
+
+    # The subscriber's token for a new operation (its span), or nil for
+    # one it does not record. `extract` is the incoming context (a
+    # request's headers) when the library gave one: a server always gives
+    # it, and then the operation's parent is what it says alone, never
+    # the task's current operation ([Trace.current]).
+    abstract def start(name: String, kind: Symbol, payload: Payload, extract: Hash[String, String]?) -> Shareable?
+
+    # The operation ended: the token [#start] gave, its last payload, and
+    # what it raised (nil when it returned).
+    abstract def finish(token: Shareable?, payload: Payload, error: Exception?) -> Void
+
+    # An instant: inside the current operation ([Trace.current] with
+    # `self`), or outside any (then nil).
+    abstract def event(name: String, payload: Payload) -> Void
+
+    # The headers this subscriber wants sent with a request made under
+    # `token` (`traceparent`): `{}` for none.
+    abstract def inject(token: Shareable?) -> Hash[String, String]
+  end
+
+  # :nodoc:
+  # The current operation: the subscribers that started it (their `start`
+  # returned), aligned with their tokens. A subscriber attached during the
+  # operation is not in it, so it gets no `finish` without its `start`.
+  data Frame = (subscribers: Array[Subscriber], tokens: Array[Shareable?])
+
+  # The handle an operation's block gets.
+  class Span
+    @frame: Frame?
+    var @payload: Payload
+
+    # :nodoc:
+    def initialize(@frame: Frame?, @payload: Payload); end
+
+    # :nodoc:
+    def payload -> Payload = @payload
+
+    # A span that records nothing: what a library's helper gives its
+    # block when [Trace.on?] is false, so the block is the same on both
+    # paths.
+    def self.none -> Span = Span.new(nil, Empty.new)
+
+    # Replaces the payload (a status or a row count learned while
+    # running): [Subscriber#finish] gets the last one.
+    def set(payload: Payload) -> Void
+      @payload = payload
+      nil
+    end
+
+    # An event inside this operation.
+    def event(name: String, payload: Payload = Empty.new) -> Void
+      if (f = @frame)
+        CURRENT.with(f) { Trace.deliver(f.subscribers, name, payload) }
+      end
+      nil
+    end
+
+    # The headers this operation's subscribers want sent with a request
+    # made now; `{}` when none records it.
+    def inject -> Hash[String, String]
+      out: Hash[String, String] = {}
+      if (f = @frame)
+        f.subscribers.each_with_index do |s, i|
+          h = Trace.guarded(s, "inject") { s.inject(f.tokens[i]) }
+          out = out.merge(h) if h
+        end
+      end
+      out
+    end
+
+    # Whether any subscriber records this operation: a library skips the
+    # work that only a payload needs (counting, formatting) when not.
+    def recording? -> Bool = !@frame.nil?
+  end
+
+  # :nodoc:
+  # The current operation of each task (bound only while a subscriber is
+  # attached), and whether the task is quiet.
+  CURRENT = Task::Local[Frame?].new(nil)
+  # :nodoc:
+  QUIET = Task::Local[Bool].new(false)
+  # :nodoc:
+  SUBSCRIBERS = Atom[Array[Subscriber]].new([])
+  # :nodoc:
+  # Each raising subscriber's count, and whether its first error was
+  # written.
+  ERRORS = Atom[Array[[Subscriber, Int]]].new([])
+
+  # Runs the block as one operation named `name` (`pg.query`), and gives
+  # its value. What the block raises passes through, after each
+  # subscriber's [Subscriber#finish] saw it. `kind` is one of [KINDS];
+  # `extract`, the incoming context (a server's request headers).
+  #
+  # With no subscriber, or in [.quiet], the block gets a span that
+  # records nothing.
+  def self.span[R](name: String, payload: Payload, *, kind: Symbol = :internal,
+                   extract: Hash[String, String]? = nil, &blk: (Span) -> R) -> R
+    subs = SUBSCRIBERS.get
+    return blk.call(Span.new(nil, payload)) if subs.empty? || QUIET.value
+    started: Array[Subscriber] = []
+    tokens: Array[Shareable?] = []
+    subs.each do |s|
+      ok = false
+      t = Trace.guarded(s, "start") do
+        r = s.start(name, kind, payload, extract)
+        ok = true
+        r
+      end
+      if ok
+        started = started.push(s)
+        tokens = tokens.push(t)
+      end
+    end
+    frame = Frame.new(started, tokens)
+    span = Span.new(frame, payload)
+    error: Exception? = nil
+    begin
+      CURRENT.with(frame) { blk.call(span) }
+    rescue Exception => e
+      error = e
+      raise e
+    ensure
+      last = span.payload
+      started.each_with_index do |s, i|
+        Trace.guarded(s, "finish") { s.finish(tokens[i], last, error) }
+      end
+    end
+  end
+
+  # An instant, inside the current operation if there is one (a retry, a
+  # route matched), else outside any (a malformed request). Every
+  # subscriber gets it.
+  def self.event(name: String, payload: Payload = Empty.new) -> Void
+    subs = SUBSCRIBERS.get
+    Trace.deliver(subs, name, payload) unless subs.empty? || QUIET.value
+    nil
+  end
+
+  # Whether any subscriber is attached and the task is not quiet: for a
+  # library whose payload costs to build, which skips it when not.
+  def self.on? -> Bool = !SUBSCRIBERS.get.empty? && !QUIET.value
+
+  # Runs the block with nothing reported, in this task and the tasks it
+  # spawns (an exporter's own requests, a poller's queries). Keep it
+  # narrow: around a library's own statements, not around a loop that
+  # starts other work, which would be quiet too.
+  def self.quiet[R](&blk: () -> R) -> R = QUIET.with(true) { blk.call }
+
+  # Attaches `subscriber` for the operations that start from now on (once:
+  # attaching it again does nothing).
+  def self.subscribe(subscriber: Subscriber) -> Void
+    SUBSCRIBERS.update { |a| a.any? { |s| s.equal?(subscriber) } ? a : a.push(subscriber) }
+    nil
+  end
+
+  # Detaches it. The operations it started still get their `finish`.
+  def self.unsubscribe(subscriber: Subscriber) -> Void
+    SUBSCRIBERS.update { |a| a.reject { |s| s.equal?(subscriber) } }
+    nil
+  end
+
+  # `subscriber`'s token for the operation the current task is in, or nil
+  # (outside any, or one `subscriber` did not start).
+  def self.current(subscriber: Subscriber) -> Shareable?
+    f = CURRENT.value
+    return nil if f.nil?
+    i = f.subscribers.index { |s| s.equal?(subscriber) }
+    i ? f.tokens[i] : nil
+  end
+
+  # How many times `subscriber`'s methods have raised.
+  def self.errors(subscriber: Subscriber) -> Int
+    ERRORS.get.each { |e| return e[1] if e[0].equal?(subscriber) }
+    0
+  end
+
+  # :nodoc:
+  def self.deliver(subs: Array[Subscriber], name: String, payload: Payload) -> Void
+    subs.each { |s| Trace.guarded(s, "event") { s.event(name, payload) } }
+    nil
+  end
+
+  # :nodoc:
+  # Calls a subscriber's method: what it raises (a `StandardError`, or a
+  # `SystemStackError`) is counted and the first written on standard
+  # error, and the call gives nil. A cancellation passes through.
+  def self.guarded[T](s: Subscriber, method: String, &blk: () -> T) -> T?
+    begin
+      blk.call
+    rescue StandardError => e
+      Trace.failed(s, method, e)
+      nil
+    rescue SystemStackError => e
+      Trace.failed(s, method, e)
+      nil
+    end
+  end
+
+  # :nodoc:
+  def self.failed(s: Subscriber, method: String, e: Exception) -> Void
+    first = false
+    ERRORS.update do |a|
+      i = a.index { |x| x[0].equal?(s) }
+      if i
+        first = false
+        a.set(i, [s, a[i][1] + 1])
+      else
+        first = true
+        a.push([s, 1])
+      end
+    end
+    STDERR.puts("Trace: #{s.class.name}##{method} raised #{e.class.name}: #{e.message}") if first
+    nil
+  end
+end
+
+# A recorder for a library's tests: the operations a block reports, with
+# their payloads, errors, events and parents.
+#
+# ```
+# records = Trace::Testing.record do
+#   Trace.span("outer", Trace::Empty.new) { |_| Trace.span("inner", Trace::Empty.new) { |_| nil } }
+# end
+# records.map { |r| [r.name, r.parent] }   # => [["outer", nil], ["inner", 0]]
+# ```
+module Trace::Testing
+  # One operation: its name and kind, the payload it started with and its
+  # last, the class of what it raised, its events, and its parent's index
+  # in the list (nil for a root).
+  data Record = (name: String, kind: Symbol, payload: Payload, last: Payload, error: String?,
+                 events: Array[[String, Payload]], parent: Int?)
+
+  # The header the recorder's `inject` writes and its `start` reads from
+  # `extract`: the record's index, so that a test sees a client's context
+  # reach a server in the same program.
+  HEADER = "x-trace-test"
+
+  # :nodoc:
+  # Which recorder the task (and the tasks it spawns) records for.
+  MARK = Task::Local[Int?].new(nil)
+  # :nodoc:
+  NEXT = Atom[Int].new(0)
+
+  # :nodoc:
+  class Recorder
+    include Subscriber
+
+    @id: Int
+    @records: Atom[Array[Record]]
+    @outside: Atom[Array[[String, Payload]]]
+
+    def initialize(@id: Int)
+      @records = Atom[Array[Record]].new([])
+      @outside = Atom[Array[[String, Payload]]].new([])
+    end
+
+    def records -> Array[Record] = @records.get
+
+    def start(name: String, kind: Symbol, payload: Payload, extract: Hash[String, String]?) -> Shareable?
+      return nil unless MARK.value == @id
+      parent: Int? = nil
+      if (h = extract)
+        v = h[HEADER]?
+        parent = v.to_i if v && v.match?(/\A[0-9]+\z/)
+      else
+        parent = Trace.current(self).as?(Int)
+      end
+      index = 0
+      @records.update do |a|
+        index = a.size
+        a.push(Record.new(name, kind, payload, payload, nil, [], parent))
+      end
+      index
+    end
+
+    def finish(token: Shareable?, payload: Payload, error: Exception?) -> Void
+      if (i = token.as?(Int))
+        @records.update { |a| a.set(i, a[i].with(last: payload, error: error&.class&.name)) }
+      end
+      nil
+    end
+
+    def event(name: String, payload: Payload) -> Void
+      return nil unless MARK.value == @id
+      if (i = Trace.current(self).as?(Int))
+        @records.update { |a| a.set(i, a[i].with(events: a[i].events.push([name, payload]))) }
+      else
+        @outside.update { |a| a.push([name, payload]) }
+      end
+      nil
+    end
+
+    def events_outside -> Array[[String, Payload]] = @outside.get
+
+    def inject(token: Shareable?) -> Hash[String, String]
+      (i = token.as?(Int)) ? {HEADER => i.to_s} : {}
+    end
+  end
+
+  # The operations the block's task, and the tasks it spawns, report, in
+  # the order they started. Other tasks' operations are not recorded, so
+  # tests running in parallel do not see each other's.
+  def self.record(&blk: () -> Void) -> Array[Record] = Testing.record_all { blk.call }[0]
+
+  # [.record], and the events reported outside any operation (a malformed
+  # request's), by name and payload.
+  def self.record_all(&blk: () -> Void) -> [Array[Record], Array[[String, Payload]]]
+    id = NEXT.update { |n| n + 1 }
+    r = Recorder.new(id)
+    Trace.subscribe(r)
+    begin
+      MARK.with(id) { blk.call }
+    ensure
+      Trace.unsubscribe(r)
+    end
+    [r.records, r.events_outside]
+  end
+end

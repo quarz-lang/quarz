@@ -4,6 +4,7 @@ require "tls"
 require "uri"
 require "base64"
 require "digest"
+require "trace"
 
 # HTTP: `require "http"` (docs/11-http.md). An HTTP/1.1 server, for use
 # behind a reverse proxy or with `tls:`: a handler takes a
@@ -1187,6 +1188,72 @@ module HTTP
   class Server
     include Shareable
 
+    # What [Trace] gets for a request the server answers
+    # (`http.server.request`, kind `:server`): the method, the path as
+    # sent without its query, the scheme, the version, the client's
+    # address ([Request#remote_ip]), the status once known, the request's
+    # Content-Length, and the class of what a handler raised. No header's
+    # value, and never the query (it may carry tokens). The path (which
+    # may hold ids) and the address are personal data in some
+    # jurisdictions: a subscriber can drop them.
+    data RequestEvent(method: String, path: String, scheme: String, version: String, peer: String?,
+                      status: Int?, size: Int?, error: String?)
+      include Trace::Payload
+
+      # :nodoc:
+      def self.of(req: Request, status: Int?, error: String?) -> RequestEvent
+        RequestEvent.new(req.method, req.target.partition("?")[0], req.scheme, req.version, req.remote_ip,
+                         status, req.content_length, error)
+      end
+
+      def attributes -> Hash[String, Trace::Value]
+        h: Hash[String, Trace::Value] = {"method" => method, "path" => path, "scheme" => scheme, "version" => version}
+        if (p = peer)
+          h = h.put("peer", p)
+        end
+        if (st = status)
+          h = h.put("status", st)
+        end
+        if (n = size)
+          h = h.put("size", n)
+        end
+        if (e = error)
+          h = h.put("error", e)
+        end
+        h
+      end
+    end
+
+    # What [Trace] gets for a request the server could not read
+    # (`http.server.bad_request`, an event: no span, as there is no
+    # request to describe): the status it answered with (400, 413, 431).
+    data BadRequestEvent(status: Int)
+      include Trace::Payload
+
+      def attributes -> Hash[String, Trace::Value] = {"status" => status}
+    end
+
+    # :nodoc:
+    # One request, from the handler to the written response, as a
+    # `http.server.request` operation when anything listens.
+    def self.traced(req: Request, &blk: (Trace::Span) -> Bool) -> Bool
+      return blk.call(Trace::Span.none) unless Trace.on?
+      Trace.span("http.server.request", RequestEvent.of(req, nil, nil), kind: :server,
+                 extract: Server.carrier(req.headers)) { |span| blk.call(span) }
+    end
+
+    # :nodoc:
+    # The headers as [Trace]'s `extract` takes them: names in lower case,
+    # a field sent twice joined with `,`.
+    def self.carrier(headers: Headers) -> Hash[String, String]
+      out: Hash[String, String] = {}
+      headers.each do |name, value|
+        k = name.downcase
+        out = out.put(k, (old = out[k]?) ? "#{old},#{value}" : value)
+      end
+      out
+    end
+
     # A request, as the server read it or as a test builds it
     # ([HTTP::Server::Request.get]). A `data` value: [with] makes a
     # changed copy. It is not Shareable, since its [Body] is not: copy the
@@ -1741,7 +1808,10 @@ module HTTP
               end
             end
           # `Task::Cancelled`: the handshake, by `#shutdown`.
-          rescue Task::Timeout, Task::Cancelled, IOError, SystemCallError
+          rescue Task::Cancelled
+            return nil
+          rescue Task::Timeout, IOError, SystemCallError
+            Trace.event("http.server.tls_failed")
             return nil
           ensure
             @handshakes.update { |h| h.delete(id) }
@@ -1782,41 +1852,50 @@ module HTTP
                                 opts.proxies, trusted, continue, !tls.nil?)
             end
           rescue Error => e
-            HTTP.write_response(conn, nil, error_response(e), false, opts.write_timeout)
+            refused = error_response(e)
+            Trace.event("http.server.bad_request", BadRequestEvent.new(refused.status)) if Trace.on?
+            HTTP.write_response(conn, nil, refused, false, opts.write_timeout)
             break
           end
           break if req.nil?
           current = req
           first = false
           reader.read_timeout = opts.read_timeout
-          res = begin
-            @handler.call(req)
-          rescue Error => e
-            error_response(e)
-          # (A handler that recursed without end ends its request only:
-          # not a `StandardError`, but nothing for the server's other
-          # connections to share. A `NoMemoryError` only if raised: the
-          # runtime aborts when an allocation fails.)
-          rescue StandardError, SystemStackError, NoMemoryError => e
-            report(e, req)
-            Response.empty(500)
+          keep = Server.traced(req) do |span|
+            failed: String? = nil
+            res = begin
+              @handler.call(req)
+            rescue Error => e
+              error_response(e)
+            # (A handler that recursed without end ends its request only:
+            # not a `StandardError`, but nothing for the server's other
+            # connections to share. A `NoMemoryError` only if raised: the
+            # runtime aborts when an allocation fails.)
+            rescue StandardError, SystemStackError, NoMemoryError => e
+              report(e, req)
+              failed = e.class.name
+              Response.empty(500)
+            end
+            unless HTTP.valid_status?(res.status)
+              report(ArgumentError.new("invalid response status #{res.status}"), req)
+              res = Response.empty(500)
+            end
+            unless HTTP.valid_headers?(res.headers)
+              report(ArgumentError.new("invalid response header (a control character or a bad name)"), req)
+              res = Response.empty(500)
+            end
+            keep = req.keep_alive? && !res.headers.token?("connection", "close") && !stopping?
+            if req.version == "HTTP/1.0"
+              # Kept only with a Content-Length; never after a
+              # Transfer-Encoding (RFC 9112 §6.1).
+              keep = false if res.body.is_a?(Content::Stream) || req.headers.key?("transfer-encoding")
+            end
+            keep = drain(req) if keep
+            span.set(RequestEvent.of(req, res.status, failed)) if span.recording?
+            # (A streamed body is written inside the operation.)
+            HTTP.write_response(conn, req, res, keep, opts.write_timeout)
+            keep
           end
-          unless HTTP.valid_status?(res.status)
-            report(ArgumentError.new("invalid response status #{res.status}"), req)
-            res = Response.empty(500)
-          end
-          unless HTTP.valid_headers?(res.headers)
-            report(ArgumentError.new("invalid response header (a control character or a bad name)"), req)
-            res = Response.empty(500)
-          end
-          keep = req.keep_alive? && !res.headers.token?("connection", "close") && !stopping?
-          if req.version == "HTTP/1.0"
-            # Kept only with a Content-Length; never after a
-            # Transfer-Encoding (RFC 9112 §6.1).
-            keep = false if res.body.is_a?(Content::Stream) || req.headers.key?("transfer-encoding")
-          end
-          keep = drain(req) if keep
-          HTTP.write_response(conn, req, res, keep, opts.write_timeout)
           break unless keep
         end
       rescue Task::Timeout, IOError, SystemCallError
@@ -2184,7 +2263,8 @@ module HTTP
       segments = req.path_segments
       return fallback.call(req) if segments.nil?
       case routes.find(req.method, segments)
-      in Routes::Found::Match(value:, params:)
+      in Routes::Found::Match(value:, params:, pattern:)
+        Trace.event("http.server.route", RouteEvent.new(pattern)) if Trace.on?
         value.call(req.with(params: req.params.merge(params)))
       in Routes::Found::NotAllowed(allow:)
         Server::Response.text("Method Not Allowed", 405).header("allow", allow.join(", "))
@@ -2192,6 +2272,15 @@ module HTTP
         fallback.call(req)
       end
     end
+  end
+
+  # What [Trace] gets when a [Router] matched a route
+  # (`http.server.route`, an event inside the request's operation): the
+  # route's pattern as written (`/users/{id}`), never the path.
+  data RouteEvent(pattern: String)
+    include Trace::Payload
+
+    def attributes -> Hash[String, Trace::Value] = {"pattern" => pattern}
   end
 
   # Collects routes for [Router.build]: patterns as [Pattern] reads them.
@@ -3009,7 +3098,7 @@ module HTTP
       req = first
       count = 0
       loop do
-        res = round_trip(req)
+        res = traced_round_trip(req, count)
         return res unless res.redirect? && @max_redirects > 0
         location = res.headers["location"]
         return res if location.nil?
@@ -3049,6 +3138,42 @@ module HTTP
       Request.new(method, target, headers: headers, body: body)
     end
 
+    # What [Trace] gets for a round trip (`http.client.request`, kind
+    # `:client`; each redirect hop its own, `resend` its index): the
+    # method, the URL's scheme, host, port and path (never its query or
+    # user information), and the status once the response's headers are
+    # read, where the operation ends (the body is the caller's to read).
+    # No header's value.
+    data RequestEvent(method: String, scheme: String, host: String, port: Int, path: String, status: Int?, resend: Int)
+      include Trace::Payload
+
+      # :nodoc:
+      def self.of(req: Request, status: Int?, resend: Int) -> RequestEvent
+        u = req.url
+        RequestEvent.new(req.method, u.scheme.downcase, u.host || "", u.port || u.default_port || 0, u.path, status, resend)
+      end
+
+      def attributes -> Hash[String, Trace::Value]
+        h: Hash[String, Trace::Value] = {"method" => method, "scheme" => scheme, "host" => host, "port" => port,
+                                         "path" => path, "resend" => resend}
+        (st = status) ? h.put("status", st) : h
+      end
+    end
+
+    # A round trip as a `http.client.request` operation when anything
+    # listens, with the subscribers' headers (`traceparent`) added to the
+    # hop's, never replacing one the caller set.
+    private def traced_round_trip(req: Request, hop: Int) -> Response
+      return round_trip(req) unless Trace.on?
+      Trace.span("http.client.request", RequestEvent.of(req, nil, hop), kind: :client) do |span|
+        sent = req
+        span.inject.each { |k, v| sent = sent.header(k, v) unless sent.headers.key?(k) }
+        res = round_trip(sent)
+        span.set(RequestEvent.of(req, res.status, hop))
+        res
+      end
+    end
+
     # One request and its response's headers, on a kept connection or a
     # new one; a kept connection found closed is replaced once. The head
     # is made (and checked) before any connection is taken.
@@ -3064,6 +3189,7 @@ module HTTP
         begin
           return exchange(req, head, chunked, io, key, true)
         rescue Stale
+          Trace.event("http.client.retry")
           nil
         end
       end

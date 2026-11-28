@@ -31,6 +31,7 @@ pub const STD_MODULES: &[(&str, &str)] = &[
     ("socket", include_str!("../../../std/socket.qz")),
     ("uri", include_str!("../../../std/uri.qz")),
     ("tls", include_str!("../../../std/tls.qz")),
+    ("trace", include_str!("../../../std/trace.qz")),
     ("http", include_str!("../../../std/http.qz")),
     ("logger", include_str!("../../../std/logger.qz")),
     ("decimal", include_str!("../../../std/decimal.qz")),
