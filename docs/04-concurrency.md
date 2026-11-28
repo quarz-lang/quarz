@@ -25,6 +25,41 @@ Task.current                          # the current Task
 - Tasks switch cooperatively, as in Kotlin: only at operations that wait (a channel operation that must wait, `sleep`, `await`, IO) and at `Task.yield`. A loop that does neither, `loop` or `while` alike, keeps its worker until it finishes; the other workers go on running their own tasks (§7). The compiler inserts no safepoints. Switching at safepoints (method entry, loop back-edges, allocation), so that a computational loop cannot hold its worker, is planned as preemption (#340, §7).
 - Each task has its own stack (§7), so Ruby methods can be called recursively as usual. There is no function coloring like `async`/`await`. Blocking operations (channels, IO, `sleep`) can be called from anywhere, and only the calling task stops.
 
+### Task-local values (`Task::Local`)
+
+A value that follows the flow of control without being a parameter of every method in between: the span a request is in, its id, a deadline (#1213).
+
+```crystal
+REQUEST_ID = Task::Local[String?].new(nil)     # the key, and its default
+
+REQUEST_ID.with("r-42") do
+  REQUEST_ID.value          # => "r-42"
+  handle(request)           # everything it calls, and the tasks it spawns, read "r-42"
+end
+REQUEST_ID.value            # => nil, the default
+```
+
+**Keys, binding and reading.**
+- `Task::Local[T <: Shareable].new(default)` makes a key. A key is a Shareable value, usually a constant. Keys are equal when they are the same key. A key's `inspect` is `#<Task::Local>`, never what is bound.
+- `key.with(value) { ... }` binds the key to `value` for the block, on the current task, and gives the block's value. The binding ends when the block is left, however it is left: a value, an exception, `break`, `return`, a cancellation. The bindings are then exactly those found at the call.
+- `key.value` is the innermost binding on the current task, else the default.
+- There is no assignment. A nested `with` rebinds a key for its own block only, so a method never leaves a binding behind for its caller.
+- `T` is Shareable, so a bound value is immutable or an identity type (`Atom`, `Channel`), as a constant's is.
+
+**Tasks.**
+- A spawned task starts with its spawner's bindings, as they are at the spawn: `Task.spawn`, `Task::Scope#spawn`, `Task.timeout`'s block, and the tasks the standard library starts for its caller (an HTTP server's task for a connection starts with the bindings of the task that called `serve`).
+- A binding made in a child is its own: the parent and the siblings never see it.
+- A task the standard library starts once for the whole program (`Signal`'s dispatcher) starts with the defaults, as do the main task, `at_exit` blocks, the REPL's inputs and the compile-time runs of `static`.
+- `deinitialize` runs with the defaults: it runs when the object goes, where no binding of the releasing task's means anything to it.
+- `Task.blocking`'s block sees the caller's bindings. A bound value `Task.blocking` cannot copy (a `Channel`, an `Atom`, a native object, an instance with `deinitialize`, or a value holding one) is not sent: the helper reads that key's default. *(This rule is pending the maintainer's decision on #1213.)*
+
+**Compile time.** A compile-time run may make keys, bind and read them, as at run time. A key made at compile time is never baked into the program: its identity is the compiler's.
+
+**Cost.** In a compiled program:
+- `value` is a call of the runtime's by-reference entry and a walk of the bindings: tens of instructions.
+- `with` costs what a native method called with a block costs (#1223).
+- A task switch moves one reference each way, and a spawn copies one.
+
 ## 2. Structured Concurrency (`Task.scope`)
 
 In practice, most concurrent work is "throw out some jobs and wait for all of them." `Task.scope` is the basic form for writing that safely.
@@ -258,4 +293,5 @@ Each item says what the runtime does today, checked against `quarz-vm`'s code, t
 - **Locks and shared mutable memory (Java/Go's Mutex)**: even Go relies on detection tools for data races. Confining mutable objects to tasks and sharing only immutable values and `Atom`s eradicates "forgot the lock" bugs, for Ruby programmers too.
 - **async/await (function coloring)**: requires marking the call sites of blocking operations, making naive Ruby-style code (just calling `gets`) impossible. Lightweight tasks with their own stacks are cheap and preserve the Ruby feel.
 - **Erlang-style per-process heaps**: given that immutable values can be shared, the reason to separate heaps is not to avoid message copying but GC independence; with reference counting there are no GC pauses in the first place.
+- **Mutable task-local storage** (Ruby's `Thread.current[:x] =`, Crystal's fiber properties): a callee could change what its caller reads next, and a pooled or reused task would carry one request's value into the next. `Task::Local` takes Java's `ScopedValue` rule instead: no assignment, a rebinding scoped to a block (§1).
 - **Ruby's Ractor**: the goals are close, but Quarz checks Shareable statically as a type rather than turning it into a runtime error.
