@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "The macros of quarz-ext"
+# Not on crates.io, as quarz-ext (decided on #677).
+publish = false
 
 [lib]
 proc-macro = true

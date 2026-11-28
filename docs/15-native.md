@@ -1,6 +1,6 @@
 # 15. Native code in cogs: the ABI
 
-A cog can implement some of its methods in Rust (#677): it declares them `native def` in Quarz, and its native package implements them against a stable C ABI. Rust code uses the safe wrapper crate `quarz-ext`, whose major version is the ABI's; C code uses `quarz_ext.h`. Values cross as opaque handles, never as the runtime's own values, so the ABI does not change when the runtime does.
+A cog can implement some of its methods in Rust (#677): it declares them `native def` in Quarz, and its native package implements them against a stable C ABI. Rust code uses the safe wrapper crate `quarz-ext`, whose major version is the ABI's, as a git dependency on the quarz repository ([10-cogs.md](10-cogs.md) §11); C code uses `quarz_ext.h`. Values cross as opaque handles, never as the runtime's own values, so the ABI does not change when the runtime does.
 
 **Status:** `quarz run` and `quarz test` build and load a native cog's package; `quarz build` links them into the executable. How a cog declares its native code, and how `quarz` builds and keeps it, is [10-cogs.md](10-cogs.md) §11. This page is the ABI: what a cog's native code sees, a promise from its first release.
 
@@ -149,7 +149,7 @@ Notes on the functions:
 
 ## The header and the Rust definitions
 
-The source is the Rust `quarz_ext::sys` module (`crates/quarz-ext/src/sys.rs`). `crates/quarz-ext/include/quarz_ext.h` is written by hand beside it. A test compiles the header with `_Static_assert`s on every struct's size and every field's offset, the values Rust computes (`size_of`, `offset_of!`), and on every constant, so the two cannot drift.
+The source is the Rust `quarz_ext::sys` module (`crates/quarz-ext/src/sys.rs`). `crates/quarz-ext/include/quarz_ext.h` is written by hand beside it. A test compiles the header with `_Static_assert`s on every struct's size and every field's offset, the values Rust computes (`size_of`, `offset_of!`), and on every constant, so the two cannot drift. Another test pins ABI 1.0's layout by numbers (`tests/abi10.rs`: the constants, every struct's offsets, `QzApi`'s functions in their order), so that a change that is not append-only fails even when both sides change together: cogs depend on `quarz-ext` by git at any commit.
 
 ## Calling the block (ABI 1.1)
 

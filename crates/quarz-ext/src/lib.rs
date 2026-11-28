@@ -3,7 +3,15 @@
 //! A cog whose `Cog.toml` declares native code (`[native] crate =
 //! "native"`) declares its methods `native def` in Quarz and implements
 //! them in a crate of its own, a `cdylib` and `staticlib` depending on
-//! this one:
+//! this one by git, on the quarz repository (it is not on crates.io):
+//!
+//! ```toml
+//! [dependencies]
+//! quarz-ext = { git = "https://github.com/quarz-lang/quarz", tag = "v0.1.0" }
+//! ```
+//!
+//! The ABI's version (this crate's major and minor), not the commit
+//! pinned, decides whether a cog runs on a given quarz. Then:
 //!
 //! ```ignore
 //! use quarz_ext::{Call, Result, Value};
