@@ -141,8 +141,10 @@ pub(super) fn local_id(r: &Value) -> Option<i64> {
     }
 }
 
-/// The next `Task::Local` key's id: unique in the process (a key copied
-/// to `Task.blocking`'s helper keeps its id, so it is the same key there).
+/// The next `Task::Local` key's id: unique in the process, so two keys
+/// never share one, the helpers of `Task.blocking` included. (A key the
+/// block captures is copied with its id, the same key there; no binding
+/// crosses, decided on #1213.)
 static NEXT_LOCAL_ID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
 
 pub fn register(m: &mut super::Registry<NativeFn>) {

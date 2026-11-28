@@ -275,8 +275,9 @@ pub struct TaskHandle {
     in_native: std::sync::atomic::AtomicU32,
     /// Its `Task::Local` bindings while it is not running (#1213): moved
     /// into its worker's `Interp::bindings` when it resumes and back when
-    /// it yields or ends (`Interp::resume_task`); set once before it
-    /// first runs (`Interp::spawn_task`, the helper of `Task.blocking`).
+    /// it yields or ends (`Interp::resume_task`); set before it first runs
+    /// by `Interp::spawn_task` only (a root, `Task.blocking`'s helper
+    /// among them, starts with none).
     pub bindings: Mutex<crate::task_local::Bindings>,
     /// Whether `bindings` holds any: the switch takes the lock only then
     /// (a task that never binds pays a load and a store per switch).
