@@ -2,7 +2,7 @@
 
 `require "http"` gives the `HTTP` module: an HTTP/1.1 server written in Quarz on top of the sockets ([06-stdlib.md](06-stdlib.md) §9), for use as an application server behind a reverse proxy, as Puma is used. The proxy terminates TLS and speaks HTTP/2 to the clients; the server speaks HTTP/1.1 to the proxy (or, with `tls:`, HTTPS over HTTP/1.1 to the clients themselves), with keep-alive and chunked bodies. The client, `HTTP::Client` (§9), has request and response types of its own (the server's are `HTTP::Server::Request` and `HTTP::Server::Response`) and shares `Headers`, `Body` and `Content` with the server; neither follows Ruby's `net/http`.
 
-This is implemented in `std/http.qz` (and `Signal` in the prelude, with a few natives), except what §10 leaves for later.
+This is implemented in `std/http.qz` (and `Signal` in the prelude, with a few natives), except what §11 leaves for later.
 
 ## 1. Shape
 
@@ -353,14 +353,24 @@ What the client adds to a request: `Host` (from the URL; a request's own is repl
 
 **Errors.** `HTTP::Client::Error < StandardError` (not `HTTP::Error`, whose status is for a server to answer with): `ConnectError` (the name has no address, refused, unreachable, the TLS handshake, the connection failing under a request; the message carries the cause's), `ForbiddenAddress` (`allow_address` refused every address), `TimeoutError` (`Task::Timeout` of `timeout`, `connect_timeout`, `read_timeout` and `write_timeout`), `ProtocolError` (a bad status line, header or framing, headers over `max_header_bytes`, a connection closed without a response), `ResponseTooLarge`, `RedirectError`, `TooManyRedirects`, `ProxyError` (`status`), `StatusError`. An exception is Shareable and a response's body is not, so `StatusError` carries the response's `status`, `headers`, `url` and its `body` as `Bytes` (read by `ensure_success`, nil when it could not be; the message names the status and the URL, never the body), and `TooManyRedirects` the last redirect's `status`, `headers` and `url`.
 
-## 10. Later
+## 10. Tracing
+
+The server, the router and the client report through `Trace` (the `trace` module, [06-stdlib.md](06-stdlib.md)); with no subscriber, each costs one check (`Trace.on?`) and builds no payload.
+
+- **`http.server.request`** (kind `:server`): one operation per request, from the parsed request to the written response (a streamed body included); the idle wait between requests and the TLS handshake are outside it. It passes the request's headers as `extract` (names in lower case, a field sent twice joined with `,`), so a subscriber takes the parent from them alone. Its payload, `HTTP::Server::RequestEvent`: the method, the path as sent without its query, the scheme, the version, the client's address (`remote_ip`), the status, the Content-Length, and, for a handler that raised (answered 500), the exception's class, never its message. No header's value. The path and the address may be personal data: a subscriber can drop them.
+- **`http.server.route`**: an event, when the router matched a route, with its pattern (`HTTP::RouteEvent`).
+- **`http.server.bad_request`** (`HTTP::Server::BadRequestEvent`, the status answered) and **`http.server.tls_failed`**: events outside any operation, as there is no request to describe (unless `serve` itself was called inside one: a connection's tasks are spawned under it, and these events then land in that operation).
+- The path of an absolute-form target (`GET http://host/p`) is its path alone, never the user information or the host.
+- **`http.client.request`** (kind `:client`): one operation per round trip, each redirect hop its own (`resend` its index), ending when the response's headers are read (the body is the caller's). The subscribers' headers (`traceparent`) are added to the hop's, never replacing one the caller set; a field that is not valid, or one that frames or routes the message (`Content-Length`, `Host`, `Connection`, `Authorization`, … : `HTTP::Client::INJECT_REFUSED`), is left out, so a subscriber cannot fail or alter the request. Its payload, `HTTP::Client::RequestEvent`: the method, the URL's scheme, host, port and path (never its query or user information), the status. A kept connection found closed and the request sent again is an event, `http.client.retry`.
+
+## 11. Later
 
 - **HTTP/2**, **WebSocket**, compression, static files with ranges and caching headers, an automatic `OPTIONS` answer in the router, request logging in a standard format.
 - A `Supervisor` for restarting a server with other long-lived tasks ([04-concurrency.md](04-concurrency.md) §5) is designed separately.
 - The client's: compression (`Accept-Encoding`), cookies, HTTP/2, `Expect: 100-continue`, and UNIX-socket targets.
 - `HTTP.parse_query` and the percent-decoding could become thin wrappers over `uri` ([06-stdlib.md](06-stdlib.md) §10).
 
-## 11. Alternatives Not Adopted
+## 12. Alternatives Not Adopted
 
 - **A response writer (Go)**: a handler that writes into a `ResponseWriter` streams naturally and needs no body types, but it ties a handler to a connection: testing one needs a fake writer, middleware must wrap the writer to see the status, and a handler can start writing before it knows it will fail. Returning a value keeps handlers functions; `Content::Stream` covers the streaming cases.
 - **A thread pool with a connection queue (Puma)**: tasks are cheap and M:N scheduled, so each connection is a task and the scheduler is the pool; `max_connections` bounds them.

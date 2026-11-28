@@ -26,6 +26,30 @@ fn declined(i: &crate::interp::Interp, key: &str) -> crate::interp::Flow {
 /// registers its generic form (into the plain registry) and its twin (into
 /// the fast one) from the same line (#1035).
 pub fn register(m: &mut impl super::Sink) {
+    // ----- Task::Local (#1213) -----
+    // The innermost binding on the current task, else the key's default
+    // (its second field, `@default`).
+    fast!(m, "Task::Local#value", |i, r, a| match a {
+        [] => {
+            let id = super::concurrency::local_id(r)?;
+            let head = i.bindings.take();
+            let bound = crate::task_local::lookup(&head, id).cloned();
+            i.bindings.set(head);
+            match bound {
+                Some(v) => Some(v),
+                None => match r {
+                    Value::Object(o) => o.field(1),
+                    _ => None,
+                },
+            }
+        }
+        _ => None,
+    },
+        generic: |i, r, _| Err(i.err_type(&format!(
+            "Task::Local#value on what is not a key: {}",
+            i.class_name(r)
+        )))
+    );
     // ----- String -----
     fast!(m, "String#size", |_, r, a| match (r.as_str(), a) {
         (Some(s), []) => Some(Value::Int(super::string::char_count(r, s) as i64)),

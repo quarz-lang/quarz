@@ -13,7 +13,10 @@ const STD_SETS: &[&[&str]] = &[
     &["json"],
     &["time"],
     &["socket"],
-    &["json", "digest", "base64", "socket", "uri", "tls", "http"],
+    &[
+        "json", "digest", "base64", "socket", "uri", "tls", "trace", "http",
+    ],
+    &["trace"],
     &["json", "logger"],
     &["crypto"],
     &["command_line"],

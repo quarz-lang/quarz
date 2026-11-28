@@ -3462,6 +3462,14 @@ fn bake(
             let class = interp.program.world.class(o.class);
             match class.kind {
                 RtClassKind::Variant if o.field_count() == 0 => Baked::Variant(o.class),
+                // A key's id is the compiler's: a key the program makes
+                // could get the same one (#1213).
+                _ if class.name == "Task::Local" => {
+                    return Err(
+                        "a `Task::Local` key: its identity is the compiler's, which a key made at run time could also get; make the key at run time"
+                            .to_string(),
+                    )
+                }
                 // A field handle (docs/14 §5): what it names, made again
                 // where it is baked (its `get`/`set` lowered in place).
                 _ if class.name == "Meta::FieldRef" || class.name == "Meta::Method" => Baked::Data(

@@ -4639,6 +4639,17 @@ impl<'ast> Declarer<'ast> {
                 span,
             );
         }
+        // A key's identity is its `@id`, which only `Task::Local.new`
+        // gives: a subclass's own `initialize` could take another key's
+        // and read or shadow its bindings (#1213).
+        let task_local = self.world.builtin.task_local;
+        if matches!(&self.world.class(id).superclass, Some(Type::Class(c, _)) if *c == task_local) {
+            let span = self.world.class(id).span;
+            self.error(
+                "`Task::Local` cannot be subclassed: a key is made by `Task::Local.new`, which gives it its identity",
+                span,
+            );
+        }
         let class = self.world.class(id);
         let mine: Vec<MethodId> = class
             .methods
@@ -6052,6 +6063,13 @@ impl<'ast> Declarer<'ast> {
                 _ => panic!("prelude does not define `Meta`"),
             }
         };
+        let task_local = match w.top.get("Task") {
+            Some(Member::Class(task)) => match w.class(*task).members.get("Local") {
+                Some(Member::Class(id)) => *id,
+                _ => panic!("prelude does not define `Task::Local`"),
+            },
+            _ => panic!("prelude does not define `Task`"),
+        };
         let meta_classdef = meta("ClassDef");
         let meta_expr = meta("Expr");
         let meta_method_ref = meta("MethodRef");
@@ -6065,6 +6083,7 @@ impl<'ast> Declarer<'ast> {
             meta_expr,
             meta_method_ref,
             quoted: get(w, "Quoted"),
+            task_local,
             cog: get(w, "Cog"),
             object: get(w, "Object"),
             nil: get(w, "Nil"),

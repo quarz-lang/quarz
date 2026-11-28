@@ -1,0 +1,305 @@
+# Trace: operations and events, the recorder, quiet, and subscribers that
+# raise.
+require "trace"
+require "test"
+
+data Q(sql: String, rows: Int)
+  include Trace::Payload
+
+  def attributes -> Hash[String, Trace::Value] = {"sql" => sql, "rows" => rows}
+end
+
+# A subscriber whose methods raise, counting its calls; only in the
+# tasks that bind its mark (a subscriber is the whole program's: other
+# tests running in parallel must not reach it).
+class Broken
+  include Trace::Subscriber
+
+  @calls: Atom[Int] = Atom[Int].new(0)
+  @mark: Task::Local[Bool] = Task::Local[Bool].new(false)
+
+  def mark -> Task::Local[Bool] = @mark
+
+  def calls -> Int = @calls.get
+
+  def start(name: String, kind: Symbol, payload: Trace::Payload, extract: Hash[String, String]?) -> Shareable?
+    return nil unless @mark.value
+    @calls.update { |n| n + 1 }
+    raise IOError.new("start failed")
+  end
+
+  def finish(token: Shareable?, payload: Trace::Payload, error: Exception?) -> Void
+    return nil unless @mark.value
+    @calls.update { |n| n + 1 }
+    raise IOError.new("finish failed")
+  end
+
+  def event(name: String, payload: Trace::Payload) -> Void
+    return nil unless @mark.value
+    raise IOError.new("event failed")
+  end
+
+  def inject(token: Shareable?) -> Hash[String, String]
+    return {} unless @mark.value
+    raise IOError.new("inject failed")
+  end
+end
+
+class TraceTest < Test::Case
+  def empty -> Trace::Empty = Trace::Empty.new
+
+  # Outside any recorder's task (other tests' subscribers may be attached
+  # meanwhile, as tests run in parallel: none records this task), the span
+  # records nothing and injects nothing.
+  def test_nothing_recorded
+    got = Trace.span("x", empty) do |span|
+      assert_false(span.recording?)
+      assert_equal(Hash[String, String].new, span.inject)
+      span.event("e")
+      7
+    end
+    assert_equal(7, got)
+  end
+
+  def test_nesting_and_parents
+    records = Trace::Testing.record do
+      assert_true(Trace.on?)
+      Trace.span("a", empty, kind: :server) do |_|
+        Trace.span("b", empty) { |_| nil }
+        Trace.span("c", empty, kind: :client) { |_| Trace.span("d", empty) { |_| nil } }
+      end
+      Trace.span("e", empty) { |_| nil }
+    end
+    assert_equal("a server -, b internal 0, c client 0, d internal 2, e internal -",
+                 records.map { |r| "#{r.name} #{r.kind} #{r.parent || "-"}" }.join(", "))
+  end
+
+  def test_an_exception_passes_through_after_finish
+    records = Trace::Testing.record do
+      assert_raise(ArgumentError) do
+        Trace.span("a", empty) { |_| raise ArgumentError.new("no") }
+      end
+    end
+    assert_equal("ArgumentError", records[0].error)
+  end
+
+  def test_set_and_events
+    records = Trace::Testing.record do
+      Trace.span("q", Q.new("SELECT 1", 0), kind: :client) do |span|
+        assert_true(span.recording?)
+        span.event("retried")
+        Trace.event("from.inside", Q.new("x", 1))
+        span.set(Q.new("SELECT 1", 3))
+      end
+    end
+    r = records[0]
+    assert_equal({"sql" => "SELECT 1", "rows" => 0}.as(Hash[String, Trace::Value]), r.payload.attributes)
+    assert_equal({"sql" => "SELECT 1", "rows" => 3}.as(Hash[String, Trace::Value]), r.last.attributes)
+    assert_equal(["retried", "from.inside"], r.events.map { |e| e[0] })
+    assert_nil(r.error)
+  end
+
+  def test_events_outside_any_operation
+    result = Trace::Testing.record_all { Trace.event("lonely") }
+    assert_equal(0, result[0].size)
+    assert_equal(["lonely"], result[1].map { |e| e[0] })
+  end
+
+  def test_quiet
+    records = Trace::Testing.record do
+      Trace.span("a", empty) do |_|
+        Trace.quiet do
+          assert_false(Trace.on?)
+          Trace.span("hidden", empty) { |span| assert_false(span.recording?) }
+          Trace.event("hidden.event")
+        end
+        Trace.span("b", empty) { |_| nil }
+      end
+    end
+    assert_equal(["a", "b"], records.map(&:name))
+    assert_equal(0, records[0].events.size)
+  end
+
+  def test_inject_and_extract
+    records = Trace::Testing.record do
+      Trace.span("client", empty, kind: :client) do |span|
+        headers = span.inject
+        assert_equal({"x-trace-test" => "0"}, headers)
+        # A server given the headers takes its parent from them alone.
+        Trace.span("server", empty, kind: :server, extract: headers) { |_| nil }
+        Trace.span("root", empty, kind: :server, extract: Hash[String, String].new) { |_| nil }
+      end
+    end
+    assert_equal(["-", "0", "-"], records.map { |r| r.parent&.to_s || "-" })
+  end
+
+  # A raising subscriber: written once, counted, and the operation is
+  # unaffected (the recorder beside it still records).
+  def test_a_raising_subscriber
+    broken = Broken.new
+    Trace.subscribe(broken)
+    begin
+      records = Trace::Testing.record do
+        broken.mark.with(true) { run_through(broken) }
+      end
+      assert_equal(["a", "b"], records.map(&:name))
+      # Two starts and no finish: a subscriber whose start raised is not
+      # in that operation, so it gets neither its finish, its events nor
+      # its inject. Two errors counted.
+      assert_equal(2, broken.calls)
+      assert_equal(2, Trace.errors(broken))
+      # Outside an operation, its event raises too.
+      broken.mark.with(true) { Trace.event("e") }
+      assert_equal(3, Trace.errors(broken))
+    ensure
+      Trace.unsubscribe(broken)
+    end
+  end
+
+  def run_through(broken: Broken) -> Void
+    got = Trace.span("a", empty) do |span|
+      span.event("e")
+      assert_equal({"x-trace-test" => "0"}, span.inject)
+      1
+    end
+    assert_equal(1, got)
+    Trace.span("b", empty) { |_| nil }
+    nil
+  end
+
+  # A subscriber attached during an operation gets no finish for it.
+  def test_subscribing_during_an_operation
+    broken = Broken.new
+    Trace::Testing.record do
+      broken.mark.with(true) do
+        Trace.span("a", empty) do |_|
+          Trace.subscribe(broken)
+        end
+      end
+    end
+    Trace.unsubscribe(broken)
+    assert_equal(0, broken.calls)
+  end
+
+  # A task spawned inside an operation is in it.
+  def test_spawned_tasks_inherit_the_operation
+    records = Trace::Testing.record do
+      Trace.span("parent", empty) do |_|
+        Task.scope do |scope|
+          scope.spawn { Trace.span("child", Trace::Empty.new) { |_| nil } }
+          scope.spawn { Trace.event("child.event") }
+        end
+      end
+    end
+    assert_equal("parent -, child 0", records.map { |r| "#{r.name} #{r.parent&.to_s || "-"}" }.join(", "))
+    assert_equal(["child.event"], records[0].events.map { |e| e[0] })
+  end
+
+  # Quiet holds in the tasks a quiet block spawns, and not in the task
+  # beside it.
+  def test_quiet_across_tasks
+    records = Trace::Testing.record do
+      Task.scope do |scope|
+        scope.spawn do
+          Trace.quiet do
+            Task.scope { |inner| inner.spawn { Trace.span("hidden", Trace::Empty.new) { |_| nil } } }
+          end
+        end
+        scope.spawn { Trace.span("seen", Trace::Empty.new) { |_| nil } }
+      end
+    end
+    assert_equal(["seen"], records.map(&:name))
+  end
+
+  # Two recorders in two tasks at once record only their own task's
+  # operations.
+  def test_recorders_in_parallel_tasks_are_apart
+    gate = Channel[Int].new(capacity: 2)
+    results = Task.scope do |scope|
+      tasks = ["a", "b"].map do |name|
+        n: String = name
+        scope.spawn do
+          Trace::Testing.record do
+            gate.send(1)
+            # Both recorders are attached while each records.
+            Task.sleep(50.ms)
+            3.times { |i| Trace.span("#{n}#{i}", Trace::Empty.new) { |_| Task.yield } }
+          end
+        end
+      end
+      tasks.map(&:await)
+    end
+    assert_equal(["a0", "a1", "a2"], results[0].map(&:name))
+    assert_equal(["b0", "b1", "b2"], results[1].map(&:name))
+  end
+
+  # A cancelled operation still ends, with the cancellation.
+  def test_a_cancelled_operation_ends
+    records = Trace::Testing.record do
+      assert_raise(Task::Timeout) do
+        Task.timeout(20.ms) { Trace.span("slow", empty) { |_| Task.sleep(5.seconds) } }
+      end
+    end
+    assert_equal(1, records.size)
+    assert_false(records[0].error.nil?)
+  end
+
+  # A kind outside KINDS is refused, where a subscriber listens.
+  def test_an_unknown_kind
+    Trace::Testing.record do
+      assert_raise(ArgumentError) { Trace.span("x", empty, kind: :clinet) { |_| nil } }
+    end
+  end
+
+  # Quiet covers the events and the inject of a span started before it.
+  def test_quiet_covers_an_open_span
+    records = Trace::Testing.record do
+      Trace.span("a", empty) do |span|
+        Trace.quiet do
+          span.event("hidden")
+          assert_equal(Hash[String, String].new, span.inject)
+        end
+        span.event("seen")
+      end
+    end
+    assert_equal(["seen"], records[0].events.map { |e| e[0] })
+  end
+
+  def test_the_shared_none_span_keeps_nothing
+    Trace::Span::NONE.set(Q.new("x", 1))
+    assert_false(Trace::Span::NONE.recording?)
+    assert_equal(Hash[String, Trace::Value].new, Trace::Span::NONE.payload.attributes)
+  end
+
+  # A span handle that outlives its operation (kept, or sent to another
+  # task) does nothing: finish had the last payload, and no event or
+  # header follows.
+  def test_a_span_used_after_its_operation
+    kept: Trace::Span = Trace::Span::NONE
+    records = Trace::Testing.record do
+      Trace.span("a", Q.new("x", 1)) do |span|
+        kept = span
+        span.set(Q.new("x", 2))
+      end
+      k = kept
+      injected = Task.scope do |scope|
+        scope.spawn do
+          k.set(Q.new("x", 3))
+          k.event("late")
+          k.inject
+        end.await
+      end
+      assert_equal(Hash[String, String].new, injected)
+    end
+    assert_equal({"sql" => "x", "rows" => 2}.as(Hash[String, Trace::Value]), records[0].last.attributes)
+    assert_equal(0, records[0].events.size)
+    assert_false(kept.recording? && !kept.ended?)
+  end
+
+  def test_current
+    r = Trace::Testing.record do
+      Trace.span("a", empty) { |_| nil }
+    end
+    assert_equal(1, r.size)
+  end
+end

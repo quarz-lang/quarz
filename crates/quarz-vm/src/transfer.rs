@@ -1181,6 +1181,8 @@ impl Interp {
     /// rebuilding a captured hash or set calls its keys' own `hash` and
     /// `==` (`crate::keys`), which may need a task (and what they raise is
     /// the block's to raise).
+    /// (The block reads every `Task::Local`'s default: the root task
+    /// starts with no bindings, decided on #1213.)
     pub fn run_closure(self: &std::rc::Rc<Interp>, closure: Transfer) -> Result<Value, Flow> {
         let me = self.clone();
         let body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {

@@ -5496,6 +5496,49 @@ fn a_field_handle_is_made_by_def_field_or_field_ref_only() {
     );
 }
 
+/// #1213: a `Task::Local` key's identity is its `@id`, which only
+/// `Task::Local.new` gives. Each way a program could give a key another's
+/// is refused.
+#[test]
+fn a_task_local_key_is_made_by_new_only() {
+    err(
+        "class Mine[T <: Shareable] < Task::Local[T]\nend",
+        "`Task::Local` cannot be subclassed: a key is made by `Task::Local.new`, which gives it its identity",
+    );
+    // An extension writes no field, declares no `initialize`, runs no
+    // `static` statement; nothing reopens the prelude's class.
+    err(
+        "extension Task::Local[T]\n  def forge(i: Int) -> Void\n    @id = i\n  end\nend",
+        "field `@id` is immutable; declare it with `var` or assign it in `initialize`",
+    );
+    err(
+        "extension Task::Local[T]\n  def initialize(@default: T, x: Int)\n    @id = x\n  end\nend",
+        "an extension cannot define `initialize`: objects are made by their class's own",
+    );
+    err(
+        "extension Task::Local[T]\n  static def_field(:extra, Int, 0)\nend",
+        "only methods and `include` are allowed in an extension",
+    );
+    err(
+        "class Task::Local[T]\nend",
+        "cannot declare in `Task`: it is built in, and a qualified declaration adds only to this cog's own classes and modules",
+    );
+}
+
+/// The natives read a key's `@id` and `@default` as its first and second
+/// fields (`natives::concurrency::local_id`, `Task::Local#value`).
+#[test]
+fn task_local_key_fields() {
+    let prelude = parse(PRELUDE_SOURCE);
+    let empty = parse("");
+    let (checked, _) = check(&prelude.program, &empty.program);
+    let world = checked.expect("the prelude checks").world;
+    let key = world.builtin.task_local;
+    assert_eq!(world.field_index(key, "id"), Some(0));
+    assert_eq!(world.field_index(key, "default"), Some(1));
+    assert_eq!(world.all_fields(key).len(), 2);
+}
+
 #[test]
 fn a_method_handle_is_made_by_classdef_only() {
     // docs/14 §5: a handle is bound only where it is baked.
