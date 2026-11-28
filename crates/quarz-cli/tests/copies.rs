@@ -172,6 +172,14 @@ fn a_native_with_borrowed_arguments_copies_no_more_than_before() {
     check("borrowed_args.qz", 201);
 }
 
+/// #1223: an array updated in place through a helper that yields, inlined
+/// with its literal block, copies nothing, interpreted and compiled (main:
+/// 0 on both, the block a call).
+#[test]
+fn an_update_through_an_inlined_yield_copies_nothing() {
+    check("yield_helper.qz", 0);
+}
+
 /// #939: a construction compiled inline copies what the runtime's did: an
 /// argument kept in a field once when the caller's variable is updated
 /// after, and a fresh last value of `initialize` none.

@@ -1,0 +1,15 @@
+# #1223: an array updated in place through a helper that yields, which
+# is inlined with its literal block, copies nothing: the block's
+# argument is the array the loop holds alone, as without the helper.
+class Step
+  def apply(a: Array[Int], &blk: (Array[Int]) -> Array[Int]) -> Array[Int] = yield a
+end
+
+st = Step.new
+xs: Array[Int] = []
+i = 0
+while i < 1000
+  xs = st.apply(xs) { |a| a.push(i) }
+  i += 1
+end
+p xs.size

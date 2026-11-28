@@ -1,0 +1,148 @@
+# A method that yields, inlined with its literal block (#1223): each case
+# through `Inl` (inlined) and `Ref` (its twin calling the block, which
+# stays a call) prints the same, interpreted and compiled.
+class Inl
+  def with(&blk: () -> Int) -> Int
+    yield
+  end
+
+  def add(x: Int, &blk: (Int) -> Int) -> Int
+    x + yield(x)
+  end
+
+  def each3(&blk: (Int) -> Int) -> Int
+    i = 0
+    s = 0
+    while i < 3
+      s += yield i
+      i += 1
+    end
+    s
+  end
+end
+
+class Ref
+  def with(&blk: () -> Int) -> Int
+    blk.call
+  end
+
+  def add(x: Int, &blk: (Int) -> Int) -> Int
+    x + blk.call(x)
+  end
+
+  def each3(&blk: (Int) -> Int) -> Int
+    i = 0
+    s = 0
+    while i < 3
+      s += blk.call(i)
+      i += 1
+    end
+    s
+  end
+end
+
+LOG = Atom[Array[String]].new([])
+
+class Held
+  @name: String
+
+  def initialize(@name: String)
+  end
+
+  def deinitialize -> Void
+    LOG.update { |a| a + ["drop #{@name}"] }
+  end
+end
+
+# (Each function twice, its receiver typed by one class: a union
+# receiver is dispatched dynamically, which the inliner leaves a call.)
+def cases_inl(w: Inl) -> Array[Int | String]
+  out: Array[Int | String] = []
+  n = 1
+  # The arguments are evaluated before the block runs; the block sees
+  # what they did to its captures.
+  out = out + [w.add(n += 10) { |v| v + n }, n]
+  out = out + [w.with { n += 1; n }, n]
+  out = out + [w.each3 { |v| next 100 if v == 1; v }]
+  out = out + [w.each3 { |v| break -1 if v == 2; v }]
+  out = out + [w.with { break 42 }]
+  begin
+    w.with { raise ArgumentError, "inside" }
+  rescue ArgumentError => e
+    out = out + [e.message]
+  end
+  out
+end
+
+def returned_inl(w: Inl) -> Int
+  w.with { return 7 }
+  0
+end
+
+def returned_two_down_inl(w: Inl) -> Int
+  [1].each { |_| w.with { return 8 } }
+  0
+end
+
+def drops_inl(w: Inl) -> Int
+  w.with do
+    h = Held.new("block")
+    1
+  end
+end
+
+def cases_ref(w: Ref) -> Array[Int | String]
+  out: Array[Int | String] = []
+  n = 1
+  # The arguments are evaluated before the block runs; the block sees
+  # what they did to its captures.
+  out = out + [w.add(n += 10) { |v| v + n }, n]
+  out = out + [w.with { n += 1; n }, n]
+  out = out + [w.each3 { |v| next 100 if v == 1; v }]
+  out = out + [w.each3 { |v| break -1 if v == 2; v }]
+  out = out + [w.with { break 42 }]
+  begin
+    w.with { raise ArgumentError, "inside" }
+  rescue ArgumentError => e
+    out = out + [e.message]
+  end
+  out
+end
+
+def returned_ref(w: Ref) -> Int
+  w.with { return 7 }
+  0
+end
+
+def returned_two_down_ref(w: Ref) -> Int
+  [1].each { |_| w.with { return 8 } }
+  0
+end
+
+def drops_ref(w: Ref) -> Int
+  w.with do
+    h = Held.new("block")
+    1
+  end
+end
+
+def run_inl -> Void
+  w = Inl.new
+  p cases_inl(w)
+  p [returned_inl(w), returned_two_down_inl(w)]
+  p drops_inl(w)
+  p LOG.value
+  LOG.set([])
+end
+
+def run_ref -> Void
+  w = Ref.new
+  p cases_ref(w)
+  p [returned_ref(w), returned_two_down_ref(w)]
+  p drops_ref(w)
+  p LOG.value
+  LOG.set([])
+end
+
+run_inl
+run_ref

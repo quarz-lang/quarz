@@ -9,6 +9,44 @@
 //! code grows by one level only (a recursive method gets one level of
 //! itself). The lines of the copied instructions point at the function's
 //! `inlined` table, so backtraces still show the callee's frame.
+//!
+//! **A method that yields, with the literal block it is given (#1223).**
+//! A call passing a literal block (`MakeBlock`, its register read by the
+//! call alone) to a method that yields is inlined with the block: each
+//! `yield` becomes a copy of the block's body, and the `MakeBlock` goes.
+//! Neither a closure nor a block call is left. It is done only when:
+//! - the callee is bound statically (`Dispatch::Static`: no dynamic
+//!   dispatch, no module-typed receiver), as for any inlined call;
+//! - the callee uses its block only by `yield` (`yield_callee`: its
+//!   `BlockParam` read by nothing but the `Release` that ends its scope,
+//!   so its block is neither passed on nor stored nor tested), has no
+//!   handler (`rescue`, `ensure`), no frame, at most `MAX_YIELDS`
+//!   yields, each with plain positional arguments;
+//! - the block (`block_inlinable`) is no lambda and does not destructure,
+//!   takes exactly as many positional parameters as each `yield` gives
+//!   (so binding them is a move each: arity adaptation, destructuring,
+//!   defaults and splats stay a block call, `BlockCaller`), has no frame
+//!   of its own, no handler, no `MakeBlock`, `BlockParam`, `yield` or
+//!   `super` of its own, and does not call the callee again (a callee
+//!   recursive through its block makes a block itself, refused above; a
+//!   nested use, `w.with { w.with { 1 } }`, is inlined level by level,
+//!   the passes of `inline_calls` bounding the depth);
+//! - the callee's size plus the block's once per `yield` is at most
+//!   `MAX_WITH_BLOCKS`, the block alone at most `MAX_BLOCK_INSTS`.
+//!
+//! The block's body runs in the caller's context, as its closure would
+//! have: its `self` and method block are the caller's (`SelfRef`,
+//! implicit-self calls kept as they are), and its `FrameGet`/`FrameSet`
+//! read the caller's frame at the same depth. A block's depth 0 is the
+//! frame its closure holds (`Closure::frame`, `act.frame` where the
+//! `MakeBlock` ran), which is the depth 0 of the code around the
+//! `MakeBlock`, the caller's. Its `return v` (`Term::Return`, `next v`
+//! included) is the `yield`'s value; its `break v` (`BreakOut`) ends
+//! the call with `v`; its `return` from its own method (`ReturnOut`) is
+//! the caller's `Return` when the caller is that method, and stays a
+//! `ReturnOut` in a caller that is a block itself. Its lines chain
+//! through the `yield`'s, so a backtrace shows the block, the callee and
+//! the caller, as the calls did.
 
 use rustc_hash::FxHashMap as HashMap;
 
@@ -16,6 +54,12 @@ use quarz_ir::*;
 
 /// The largest body (in instructions) worth inlining.
 const MAX_INSTS: usize = 40;
+/// The largest block inlined at a `yield`, the most `yield`s of a callee
+/// inlined with its block, and the largest callee and block together
+/// (the block counted once per `yield`).
+const MAX_BLOCK_INSTS: usize = 40;
+const MAX_YIELDS: usize = 3;
+const MAX_WITH_BLOCKS: usize = 100;
 
 /// Inline the eligible calls of every function in `functions` (indexed
 /// by `FuncId`), `passes` levels deep.
@@ -44,8 +88,9 @@ pub fn inline_calls(
 fn inline_pass(functions: &mut [Function], methods: &[RtMethod], release: bool) {
     let orig: Vec<Function> = functions.to_vec();
     let eligible: Vec<bool> = orig.iter().map(eligible_callee).collect();
+    let yields: Vec<bool> = orig.iter().map(yield_callee).collect();
     for g in functions.iter_mut() {
-        inline_into(g, &orig, &eligible, methods, release);
+        inline_into(g, &orig, &eligible, &yields, methods, release);
     }
 }
 
@@ -85,17 +130,152 @@ fn eligible_callee(f: &Function) -> bool {
     })
 }
 
+fn size(f: &Function) -> usize {
+    f.blocks.iter().map(|b| b.insts.len()).sum()
+}
+
+/// The `yield`s of `f`.
+fn yield_calls(f: &Function) -> impl Iterator<Item = &Inst> {
+    f.blocks.iter().flat_map(|b| b.insts.iter()).filter(|i| {
+        matches!(
+            i,
+            Inst::Call {
+                kind: CallKind::Yield,
+                ..
+            }
+        )
+    })
+}
+
+/// Whether a method that yields can be copied into a caller with the
+/// literal block it is given (the module's doc): `eligible_callee`'s
+/// rules, a `yield` allowed, with plain positional arguments.
+fn yield_callee(f: &Function) -> bool {
+    if !matches!(f.kind, FuncKind::Method(_)) || f.frame_size != 0 || size(f) > MAX_INSTS {
+        return false;
+    }
+    let n = yield_calls(f).count();
+    if n == 0 || n > MAX_YIELDS {
+        return false;
+    }
+    // Its block parameter, and the registers it is copied into (the
+    // `&blk` variable), are read by these copies and their scope's
+    // `Release` only: the block is used by `yield` alone.
+    let mut params: Vec<Reg> = f
+        .blocks
+        .iter()
+        .flat_map(|b| b.insts.iter())
+        .filter_map(|i| match i {
+            Inst::BlockParam { dst } => Some(*dst),
+            _ => None,
+        })
+        .collect();
+    loop {
+        let before = params.len();
+        for i in f.blocks.iter().flat_map(|b| b.insts.iter()) {
+            if let Inst::Move { dst, src } | Inst::Take { dst, src } = i {
+                if params.contains(src) && !params.contains(dst) {
+                    params.push(*dst);
+                }
+            }
+        }
+        if params.len() == before {
+            break;
+        }
+    }
+    let only_released = f.blocks.iter().all(|b| {
+        b.insts.iter().all(|i| match i {
+            Inst::Release { .. } => true,
+            Inst::Move { dst, src } | Inst::Take { dst, src } if params.contains(src) => {
+                params.contains(dst)
+            }
+            _ => i.uses().iter().all(|r| !params.contains(r)),
+        }) && b.term.uses().is_none_or(|r| !params.contains(&r))
+    });
+    if !only_released {
+        return false;
+    }
+    f.blocks.iter().all(|b| {
+        b.handler.is_none()
+            && !matches!(
+                b.term,
+                Term::BreakOut(_) | Term::ReturnOut(_) | Term::Resume(_)
+            )
+            && b.insts.iter().all(|i| match i {
+                Inst::Call {
+                    kind: CallKind::Yield,
+                    splat,
+                    kw,
+                    kw_splat,
+                    block,
+                    ..
+                } => !splat && kw.is_empty() && kw_splat.is_none() && block.is_none(),
+                _ => !matches!(
+                    i,
+                    Inst::MakeBlock { .. }
+                        | Inst::FrameGet { .. }
+                        | Inst::FrameSet { .. }
+                        | Inst::CatchException { .. }
+                        | Inst::CatchAny { .. }
+                        | Inst::FieldGetByName { .. }
+                        | Inst::HashGetSym { .. }
+                        | Inst::HashRest { .. }
+                        | Inst::Call {
+                            kind: CallKind::Super(_),
+                            ..
+                        }
+                ),
+            })
+    })
+}
+
+/// Whether block `b` can be copied at each `yield` of callee `f`
+/// (method `callee`): the module's doc.
+fn block_inlinable(b: &Function, f: &Function, callee: MethodId) -> bool {
+    let nparams = b.param_kinds.len();
+    b.kind == FuncKind::Block
+        && b.frame_size == 0
+        && size(b) <= MAX_BLOCK_INSTS
+        && size(f) + yield_calls(f).count() * size(b) <= MAX_WITH_BLOCKS
+        && b.param_kinds.iter().all(|k| *k == RtParamKind::Positional)
+        && yield_calls(f).all(|y| matches!(y, Inst::Call { args, .. } if args.len() == nparams))
+        && b.blocks.iter().all(|blk| {
+            blk.handler.is_none()
+                && !matches!(blk.term, Term::Resume(_))
+                && blk.insts.iter().all(|i| {
+                    !matches!(
+                        i,
+                        Inst::MakeBlock { .. }
+                            | Inst::BlockParam { .. }
+                            | Inst::HasArg { .. }
+                            | Inst::CatchException { .. }
+                            | Inst::CatchAny { .. }
+                            | Inst::FieldGetByName { .. }
+                            | Inst::HashGetSym { .. }
+                            | Inst::HashRest { .. }
+                            | Inst::Call {
+                                kind: CallKind::Yield | CallKind::Super(_),
+                                ..
+                            }
+                    ) && !matches!(i, Inst::Call { kind: CallKind::Method(m), .. } if *m == callee)
+                })
+        })
+}
+
 /// The callee of a call that can be inlined: its function, receiver
 /// register (`None` = the caller's `self`), argument registers and
 /// destination.
 struct Site {
     fid: FuncId,
+    mid: MethodId,
     recv: Option<Reg>,
     args: Vec<Reg>,
     dst: Reg,
+    /// The block the call gives, for a callee that yields.
+    block: Option<Reg>,
 }
 
-fn site(inst: &Inst, eligible: &[bool], methods: &[RtMethod]) -> Option<Site> {
+fn site(inst: &Inst, eligible: &[bool], yields: &[bool], methods: &[RtMethod]) -> Option<Site> {
     let Inst::Call {
         dst,
         kind: CallKind::Method(mid),
@@ -104,7 +284,7 @@ fn site(inst: &Inst, eligible: &[bool], methods: &[RtMethod]) -> Option<Site> {
         splat: false,
         kw,
         kw_splat: None,
-        block: None,
+        block,
         ..
     } = inst
     else {
@@ -115,24 +295,34 @@ fn site(inst: &Inst, eligible: &[bool], methods: &[RtMethod]) -> Option<Site> {
     }
     let m = methods.get(*mid as usize)?;
     let fid = m.func?;
+    // (The block parameter is not a positional one: a method that yields
+    // declares it, `&blk`.)
+    let params: Vec<&RtParam> = m
+        .params
+        .iter()
+        .filter(|p| p.kind != RtParamKind::Block)
+        .collect();
     let bound = m.synth == RtSynth::None
         && !m.is_abstract
-        && !m.has_block
+        && m.has_block == block.is_some()
         && m.native_key.is_none()
         && m.dispatch() == Dispatch::Static
-        && m.params.len() >= args.len()
-        && m.params.iter().all(|p| p.kind == RtParamKind::Positional)
+        && params.len() >= args.len()
+        && params.iter().all(|p| p.kind == RtParamKind::Positional)
         // (A parameter the call leaves out takes its default, which the
         // body runs where `HasArg` says it was not given, #938.)
-        && m.params[args.len()..].iter().all(|p| p.has_default);
-    if !bound || !eligible.get(fid as usize).copied().unwrap_or(false) {
+        && params[args.len()..].iter().all(|p| p.has_default);
+    let callee_ok = if block.is_some() { yields } else { eligible };
+    if !bound || !callee_ok.get(fid as usize).copied().unwrap_or(false) {
         return None;
     }
     Some(Site {
         fid,
+        mid: *mid,
         recv: *recv,
         args: args.clone(),
         dst: *dst,
+        block: *block,
     })
 }
 
@@ -140,10 +330,26 @@ fn inline_into(
     g: &mut Function,
     orig: &[Function],
     eligible: &[bool],
+    yields: &[bool],
     methods: &[RtMethod],
     release: bool,
 ) {
     let blocks = std::mem::take(&mut g.blocks);
+    // The blocks reading each register: a literal block's register read
+    // after its call must be written first in the call's block, or be
+    // read nowhere else (`dead_after`).
+    let mut read_in: HashMap<Reg, Vec<usize>> = HashMap::default();
+    for (bi, b) in blocks.iter().enumerate() {
+        let mut regs: Vec<Reg> = b.insts.iter().flat_map(|i| i.uses()).collect();
+        regs.extend(b.term.uses());
+        for r in regs {
+            let at = read_in.entry(r).or_default();
+            if at.last() != Some(&bi) {
+                at.push(bi);
+            }
+        }
+    }
+    let caller_is_method = matches!(g.kind, FuncKind::Method(_));
     let n = blocks.len();
     let mut out: Vec<Block> = vec![Block::default(); n];
     let mut extra: Vec<Option<Block>> = Vec::new();
@@ -155,15 +361,52 @@ fn inline_into(
             ..Default::default()
         };
         let mut cur_id = bi;
+        // The literal blocks made in `cur` so far, by register: the
+        // `MakeBlock`'s index in `cur.insts` and the block's function.
+        let mut made: HashMap<Reg, (usize, FuncId)> = HashMap::default();
         let lines = blk.lines;
-        for (i, inst) in blk.insts.into_iter().enumerate() {
+        let insts = blk.insts;
+        for (i, inst) in insts.iter().cloned().enumerate() {
             let line = lines[i];
-            let Some(s) = site(&inst, eligible, methods) else {
+            let keep = |cur: &mut Block, made: &mut HashMap<Reg, (usize, FuncId)>, inst: Inst| {
+                // (Read or written again: no longer this call's alone.)
+                for r in inst.uses().into_iter().chain(inst.defs()) {
+                    made.remove(&r);
+                }
+                if let Inst::MakeBlock {
+                    dst,
+                    func,
+                    destructure: None,
+                    is_lambda: false,
+                } = &inst
+                {
+                    made.insert(*dst, (cur.insts.len(), *func));
+                }
                 cur.insts.push(inst);
                 cur.lines.push(line);
+            };
+            let Some(s) = site(&inst, eligible, yields, methods) else {
+                keep(&mut cur, &mut made, inst);
                 continue;
             };
             let f = &orig[s.fid as usize];
+            // A literal block, made here and read by this call alone, which
+            // can be copied at the callee's `yield`s (the module's doc).
+            let literal = match s.block {
+                None => None,
+                Some(br) => match made.get(&br).copied() {
+                    Some((at, bf))
+                        if dead_after(br, &insts[i + 1..], &blk.term, &read_in, bi)
+                            && block_inlinable(&orig[bf as usize], f, s.mid) =>
+                    {
+                        Some((br, at, bf))
+                    }
+                    _ => {
+                        keep(&mut cur, &mut made, inst);
+                        continue;
+                    }
+                },
+            };
             // (A call leaving parameters out is inlined only when the
             // callee binds them as the lowering does, `defaults_shape`.)
             if !defaults_shape(f, s.args.len()) {
@@ -172,24 +415,29 @@ fn inline_into(
                     "`{}` binds a defaulted parameter in another shape than the lowering's: the inliner's mapping of `HasArg` would not hold (#938)",
                     f.name
                 );
-                cur.insts.push(inst);
-                cur.lines.push(line);
+                keep(&mut cur, &mut made, inst);
                 continue;
+            }
+            // The block is copied at the `yield`s: its closure is not made.
+            if let Some((br, at, _)) = literal {
+                let nil = const_index(g, &Constant::Nil);
+                cur.insts[at] = Inst::LoadConst { dst: br, idx: nil };
             }
             let base_reg = g.nregs;
             g.nregs += f.nregs;
             let cont_id = n + extra.len();
             extra.push(None);
             let base_blk = n + extra.len();
+            // A `yield`'s block copy and the rest of its callee block go
+            // after the callee's blocks (`later`), which keep their places.
+            let later_base = base_blk + f.blocks.len();
+            let mut later: Vec<Option<Block>> = Vec::new();
             let const_map: Vec<u32> = f.consts.iter().map(|c| const_index(g, c)).collect();
             // (`HasArg`'s answers here, below.)
             let has = [
                 const_index(g, &Constant::Bool(false)),
                 const_index(g, &Constant::Bool(true)),
             ];
-            // A line of the callee becomes an origin entry here; a line
-            // the callee itself inlined (flagged) becomes a chain of them.
-            let mut origin = |l: u32| -> u32 { map_line(g, &mut origins, f, s.fid, l, line) };
             // The callee's registers start as nil, as in a fresh
             // activation (and a previous pass through this code leaves
             // nothing behind).
@@ -199,9 +447,12 @@ fn inline_into(
             });
             cur.lines.push(line);
             for cb in &f.blocks {
+                // A line of the callee becomes an origin entry here; a line
+                // the callee itself inlined (flagged) becomes a chain of them.
+                let term_line = map_line(g, &mut origins, f, s.fid, cb.term_line, line);
                 let mut nb = Block {
                     handler,
-                    term_line: origin(cb.term_line),
+                    term_line,
                     ..Default::default()
                 };
                 // A block reading a parameter the call leaves out is the
@@ -218,7 +469,130 @@ fn inline_into(
                     extra.push(Some(nb));
                     continue;
                 }
+                // Where `nb` goes: the callee block's own place (`None`),
+                // or a continuation after a `yield` (`later[k]`).
+                let mut slot: Option<usize> = None;
                 for (k, ci) in cb.insts.iter().enumerate() {
+                    let l = map_line(g, &mut origins, f, s.fid, cb.lines[k], line);
+                    if let (
+                        Some((_, _, bf)),
+                        Inst::Call {
+                            kind: CallKind::Yield,
+                            dst: ydst,
+                            args: yargs,
+                            ..
+                        },
+                    ) = (literal, ci)
+                    {
+                        let b = &orig[bf as usize];
+                        let bb = g.nregs;
+                        g.nregs += b.nregs;
+                        let bconsts: Vec<u32> =
+                            b.consts.iter().map(|c| const_index(g, c)).collect();
+                        // The `yield`'s continuation, then the block's body.
+                        let ycont = later.len();
+                        later.push(None);
+                        let ycont_id = (later_base + ycont) as BlockId;
+                        let bentry = (later_base + later.len()) as BlockId;
+                        // The block's registers start as nil, as in its
+                        // own activation.
+                        nb.insts.push(Inst::ClearRegs {
+                            from: bb,
+                            to: bb + b.nregs,
+                        });
+                        nb.lines.push(l);
+                        nb.term = Term::Jump(bentry);
+                        nb.term_line = l;
+                        place(&mut extra, &mut later, slot, nb);
+                        for bblk in &b.blocks {
+                            let bterm_line = map_line(g, &mut origins, b, bf, bblk.term_line, l);
+                            let mut nb2 = Block {
+                                handler,
+                                term_line: bterm_line,
+                                ..Default::default()
+                            };
+                            for (q, bi) in bblk.insts.iter().enumerate() {
+                                let copied = match bi {
+                                    // (One parameter per argument:
+                                    // `block_inlinable`.)
+                                    Inst::Arg { dst, index } => Inst::Move {
+                                        dst: bb + dst,
+                                        src: base_reg + yargs[*index as usize],
+                                    },
+                                    // The caller's `self`, method block and
+                                    // frame are the block's (the module's
+                                    // doc): kept as they are.
+                                    other => {
+                                        rewrite_with(other, &|x| bb + x, &|c| bconsts[c as usize])
+                                    }
+                                };
+                                nb2.insts.push(copied);
+                                let bl = map_line(g, &mut origins, b, bf, bblk.lines[q], l);
+                                nb2.lines.push(bl);
+                            }
+                            nb2.term = match &bblk.term {
+                                // The block's value (`next v` too): the
+                                // `yield`'s.
+                                Term::Return(r) => {
+                                    nb2.insts.push(Inst::Move {
+                                        dst: base_reg + ydst,
+                                        src: bb + r,
+                                    });
+                                    nb2.lines.push(bterm_line);
+                                    if release {
+                                        nb2.insts.push(Inst::ClearRegs {
+                                            from: bb,
+                                            to: bb + b.nregs,
+                                        });
+                                        nb2.lines.push(bterm_line);
+                                    }
+                                    Term::Jump(ycont_id)
+                                }
+                                // `break v`: the call's value.
+                                Term::BreakOut(r) => {
+                                    nb2.insts.push(Inst::Move {
+                                        dst: s.dst,
+                                        src: bb + r,
+                                    });
+                                    nb2.lines.push(bterm_line);
+                                    if release {
+                                        nb2.insts.push(Inst::ClearRegs {
+                                            from: bb,
+                                            to: bb + b.nregs,
+                                        });
+                                        nb2.lines.push(bterm_line);
+                                        nb2.insts.push(Inst::ClearRegs {
+                                            from: base_reg,
+                                            to: base_reg + f.nregs,
+                                        });
+                                        nb2.lines.push(bterm_line);
+                                    }
+                                    Term::Jump(cont_id as BlockId)
+                                }
+                                // `return v` from the block's own method:
+                                // the caller's, when the caller is it.
+                                Term::ReturnOut(r) if caller_is_method => Term::Return(bb + r),
+                                Term::ReturnOut(r) => Term::ReturnOut(bb + r),
+                                Term::Jump(t) => Term::Jump(bentry + t),
+                                Term::Branch { cond, then, els } => Term::Branch {
+                                    cond: bb + cond,
+                                    then: bentry + then,
+                                    els: bentry + els,
+                                },
+                                Term::Raise(r) => Term::Raise(bb + r),
+                                Term::Unreachable => Term::Unreachable,
+                                Term::Resume(_) => unreachable!("refused by `block_inlinable`"),
+                            };
+                            later.push(Some(nb2));
+                        }
+                        nb = Block {
+                            handler,
+                            term_line,
+                            ..Default::default()
+                        };
+                        slot = Some(ycont);
+                        continue;
+                    }
                     let copied = match ci {
                         Inst::Arg { dst, index } => Inst::Move {
                             dst: base_reg + dst,
@@ -231,6 +605,12 @@ fn inline_into(
                         Inst::HasArg { dst, index } => Inst::LoadConst {
                             dst: base_reg + dst,
                             idx: has[usize::from((*index as usize) < given)],
+                        },
+                        // The callee's block, which is not made: its
+                        // parameter (read by its `Release` alone) is nil.
+                        Inst::BlockParam { dst } if literal.is_some() => Inst::LoadConst {
+                            dst: base_reg + dst,
+                            idx: const_index(g, &Constant::Nil),
                         },
                         Inst::SelfRef { dst } => match s.recv {
                             Some(r) => Inst::Move {
@@ -263,7 +643,7 @@ fn inline_into(
                         }
                     };
                     nb.insts.push(copied);
-                    nb.lines.push(origin(cb.lines[k]));
+                    nb.lines.push(l);
                 }
                 nb.term = match &cb.term {
                     Term::Return(r) => {
@@ -271,7 +651,7 @@ fn inline_into(
                             dst: s.dst,
                             src: base_reg + r,
                         });
-                        nb.lines.push(origin(cb.term_line));
+                        nb.lines.push(term_line);
                         // What the callee's registers hold goes at its
                         // return (a receiver it was the last to use, a
                         // temporary, finalized there).
@@ -280,7 +660,7 @@ fn inline_into(
                                 from: base_reg,
                                 to: base_reg + f.nregs,
                             });
-                            nb.lines.push(origin(cb.term_line));
+                            nb.lines.push(term_line);
                         }
                         Term::Jump(cont_id as BlockId)
                     }
@@ -294,8 +674,13 @@ fn inline_into(
                     Term::Unreachable => Term::Unreachable,
                     Term::BreakOut(_) | Term::ReturnOut(_) | Term::Resume(_) => unreachable!(),
                 };
-                extra.push(Some(nb));
+                place(&mut extra, &mut later, slot, nb);
             }
+            extra.extend(
+                later
+                    .into_iter()
+                    .map(|b| Some(b.expect("continuation filled"))),
+            );
             cur.term = Term::Jump(base_blk as BlockId);
             cur.term_line = line;
             store(&mut out, &mut extra, cur_id, cur);
@@ -304,6 +689,7 @@ fn inline_into(
                 ..Default::default()
             };
             cur_id = cont_id;
+            made.clear();
         }
         cur.term = blk.term;
         cur.term_line = blk.term_line;
@@ -311,6 +697,43 @@ fn inline_into(
     }
     out.extend(extra.into_iter().map(|b| b.expect("block filled")));
     g.blocks = out;
+}
+
+/// Whether the value register `r` holds is read by nothing after
+/// `rest` begins (the rest of block `bi`, then its terminator): the
+/// block's next mention of `r` writes it without reading it, or nothing
+/// in the block reads it and no other block does.
+fn dead_after(
+    r: Reg,
+    rest: &[Inst],
+    term: &Term,
+    read_in: &HashMap<Reg, Vec<usize>>,
+    bi: usize,
+) -> bool {
+    for inst in rest {
+        if inst.uses().contains(&r) {
+            return false;
+        }
+        if inst.defs().contains(&r) {
+            return true;
+        }
+    }
+    term.uses() != Some(r) && read_in.get(&r).is_none_or(|at| at.iter().all(|b| *b == bi))
+}
+
+/// A copied callee block `b` in its place: the callee block's own
+/// (`slot` `None`, next in `extra`), or a continuation after a `yield`
+/// (`later[k]`).
+fn place(
+    extra: &mut Vec<Option<Block>>,
+    later: &mut [Option<Block>],
+    slot: Option<usize>,
+    b: Block,
+) {
+    match slot {
+        None => extra.push(Some(b)),
+        Some(k) => later[k] = Some(b),
+    }
 }
 
 fn map_line(
