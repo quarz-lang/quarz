@@ -772,8 +772,7 @@ fn c_package(dir: &Path, k: &str, c: &str) -> PathBuf {
 /// `quarz run` loads each library on its own (`dlopen`, local), so each
 /// cog runs its own code, in either order. `quarz build`, which would
 /// link them into one executable (where the first definition is taken
-/// silently), refuses more than one native cog until it checks for that
-/// (#677).
+/// silently), refuses the pair, naming both cogs and the symbol.
 #[test]
 fn two_cogs_with_the_same_c_symbol_each_run_their_own() {
     let dir = std::env::temp_dir().join(format!("quarz-native-csym-{}", std::process::id()));
@@ -818,9 +817,86 @@ fn two_cogs_with_the_same_c_symbol_each_run_their_own() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(!ok);
     assert!(
-        err.contains("bring native code: `quarz build` cannot link more than one yet (#677)"),
+        err.contains("both define the symbol `shared_c`, each with its own code: an executable holds one (each brings its own copy of a library: give them one version, built from the same source)")
+            && err.contains("cog `rawa` (app → rawa)")
+            && err.contains("cog `rawb` (app → rawb)"),
         "{err}"
     );
+    assert!(!exe.exists());
+}
+
+/// Two native cogs linked into one program, beside each other: sharing a
+/// crate at one version (`miniz_oxide`, the same members in both
+/// archives, linked once), or each with its own version of a crate (two
+/// crates to the linker, their symbols apart): both build, and each cog
+/// runs its own code.
+#[test]
+fn two_native_cogs_are_linked_into_one_program() {
+    let dir = std::env::temp_dir().join(format!("quarz-native-two-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    // One crate, one version, in both.
+    for (k, level) in [("a", 1), ("b", 9)] {
+        raw_cog_named(
+            &dir.join(format!("zip{k}")),
+            &format!("zip{k}"),
+            &format!("miniz_oxide::deflate::compress_to_vec(&[7u8; 1000], {level}).len() as i64 * 0 + {level}"),
+            "miniz_oxide = \"=0.8.9\"\n",
+            "",
+        );
+    }
+    // One crate, two versions (path packages of one name).
+    for (k, v) in [("c", 1), ("d", 2)] {
+        let ver = dir.join(format!("ver{v}"));
+        std::fs::create_dir_all(ver.join("src")).unwrap();
+        std::fs::write(
+            ver.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"shared-ver\"\nversion = \"0.{v}.0\"\nedition = \"2021\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            ver.join("src/lib.rs"),
+            format!("pub fn value() -> i64 {{ {} }}\n", v * 100),
+        )
+        .unwrap();
+        raw_cog_named(
+            &dir.join(format!("ver{k}")),
+            &format!("ver{k}"),
+            "shared_ver::value()",
+            &format!("shared-ver = {{ path = {ver:?} }}\n"),
+            "",
+        );
+    }
+    let repos: Vec<(String, PathBuf)> = ["Zipa", "Zipb", "Verc", "Verd"]
+        .iter()
+        .map(|k| (k.to_string(), dir.join(k.to_lowercase())))
+        .collect();
+    let deps: Vec<(&str, &Path)> = repos
+        .iter()
+        .map(|(k, p)| (k.as_str(), p.as_path()))
+        .collect();
+    let app = app_on_all(
+        &dir,
+        &deps,
+        "p Zipa::Calc.answer\np Zipb::Calc.answer\np Verc::Calc.answer\np Verd::Calc.answer\n",
+    );
+    let envs = own_caches(&dir);
+    let want = "1\n9\n100\n200\n";
+    let (ok, out, err) = quarz(&app, &["run"], &as_refs(&envs));
+    assert!(ok, "{err}");
+    assert_eq!(out, want);
+    let exe = dir.join("app-bin");
+    let (ok, _, err) = quarz(
+        &app,
+        &["build", "-o", exe.to_str().unwrap()],
+        &as_refs(&envs),
+    );
+    assert!(ok, "{err}");
+    let (ok, out, err) = run_exe(&exe);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ok, "{err}");
+    assert_eq!(out, want);
 }
 
 /// `quarz build` of a cog whose C code defines `mi_version`, a strong

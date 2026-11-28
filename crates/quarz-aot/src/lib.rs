@@ -92,6 +92,21 @@ fn link(
 ) -> Result<(), String> {
     let runtime = find_runtime_lib()?;
     let start = std::time::Instant::now();
+    // The cogs' archives under names that carry the cog (`lib<cog>.a`,
+    // links in the build's directory), so that what the linker still
+    // says of one names it, not a key of the store.
+    let named_dir = dir.join("cogs");
+    let mut named = Vec::new();
+    if !archives.is_empty() {
+        std::fs::create_dir_all(&named_dir).map_err(|e| format!("{}: {e}", named_dir.display()))?;
+    }
+    for a in archives {
+        let link = named_dir.join(format!("lib{}.a", a.cog));
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&a.path, &link)
+            .map_err(|e| format!("{}: {e}", link.display()))?;
+        named.push(link);
+    }
     let mut cc = Command::new("cc");
     // The runtime before the cogs' archives: its definitions (std, the
     // allocator, the personality routine) are the ones taken, and a cog's
@@ -100,7 +115,7 @@ fn link(
         .arg(output)
         .args(&compiled.objects)
         .arg(&runtime)
-        .args(archives.iter().map(|a| &a.path));
+        .args(&named);
     if !compiled.map.is_empty() {
         let mut rsp = String::new();
         for (from, to) in &compiled.map {
@@ -257,21 +272,8 @@ pub fn build_with_jobs(
     archives: &[Archive],
 ) -> Result<(), String> {
     // A cog's native code is linked from its archive (`archives`: each
-    // native cog's, by name). Two or more wait for the check that refuses
-    // a symbol two of them define differently (#677): linking takes the
-    // first definition silently.
-    if module.world.native_cogs.len() > 1 {
-        let names: Vec<String> = module
-            .world
-            .native_cogs
-            .iter()
-            .map(|c| format!("`{}`", c.name))
-            .collect();
-        return Err(format!(
-            "cogs {} bring native code: `quarz build` cannot link more than one yet (#677); `quarz run` runs the program",
-            names.join(", ")
-        ));
-    }
+    // native cog's, by name, in the movement's order), once `clash` found
+    // no symbol two of them, or one and the runtime, define differently.
     for cog in &module.world.native_cogs {
         if !archives.iter().any(|a| a.cog == cog.name) {
             return Err(format!(
@@ -326,12 +328,17 @@ pub fn build_with_jobs(
     if !archives.is_empty() {
         let start = std::time::Instant::now();
         let runtime = clash::read(&find_runtime_lib()?)?;
-        let mut shared = 0;
-        for a in archives {
-            let cog = clash::read(&a.path)?;
-            clash::check(&runtime, &a.who, &cog)?;
-            shared += clash::shared(&runtime, &cog);
-        }
+        let tables = archives
+            .iter()
+            .map(|a| clash::read(&a.path))
+            .collect::<Result<Vec<_>, _>>()?;
+        let cogs: Vec<(&str, &clash::Table)> = archives
+            .iter()
+            .zip(&tables)
+            .map(|(a, t)| (a.who.as_str(), t))
+            .collect();
+        clash::check(&runtime, &cogs)?;
+        let shared: usize = tables.iter().map(|t| clash::shared(&runtime, t)).sum();
         report("clash", start, &[("shared", shared.to_string())]);
     }
     let built = llvm::compile(module, groups, &dir, jobs, cache)
