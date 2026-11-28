@@ -20,6 +20,10 @@
 //! the proof cog `zlib`, whose point is crates from crates.io: its lock is
 //! committed and its build is not offline, so cargo fetches its crates
 //! (in any order, on a cold cache) and it needs the network once there.
+//! A git dependency on a `file://` repository a test makes (`quarz-ext`
+//! as a cog outside this repository has it, by git) needs no network
+//! either, but a fetch: such a test is never run with
+//! `CARGO_NET_OFFLINE`, which forbids even a local one.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -483,6 +487,118 @@ fn a_native_build_needs_quarzs_rustc() {
         err.contains(", the version this quarz was built with, but that toolchain is not installed: run `rustup toolchain install "),
         "{err}"
     );
+}
+
+/// A git repository in `dir` holding `quarz-ext` and `quarz-ext-macros`
+/// as this checkout has them, under a root that gives the workspace's
+/// `[workspace.package]` (which their manifests inherit), tagged `v1`:
+/// what a cog outside this repository depends on (decided on #677: by
+/// git, on this repository).
+fn quarz_ext_repo(dir: &Path) -> PathBuf {
+    let repo = dir.join("quarz-ext-repo");
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    copy_dir(&crates.join("quarz-ext"), &repo.join("quarz-ext"));
+    copy_dir(
+        &crates.join("quarz-ext-macros"),
+        &repo.join("quarz-ext-macros"),
+    );
+    let root = std::fs::read_to_string(crates.join("../Cargo.toml")).unwrap();
+    let at = root
+        .find("[workspace.package]")
+        .expect("the workspace's package table");
+    let end = root[at + 1..]
+        .find("\n[")
+        .map_or(root.len(), |e| at + 1 + e);
+    std::fs::write(
+        repo.join("Cargo.toml"),
+        format!(
+            "[workspace]\nmembers = [\"quarz-ext\", \"quarz-ext-macros\"]\nresolver = \"2\"\n\n{}\n",
+            &root[at..end]
+        ),
+    )
+    .unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "quarz-ext"]);
+    git(&repo, &["tag", "v1"]);
+    repo
+}
+
+/// A fetched cog whose package depends on `quarz-ext` by git, as a cog
+/// outside this repository does: locked by its commit (`git+file://…#`),
+/// so no path package and the cog's build is kept by its key, run and
+/// then found kept with no cargo at all; and built into an executable.
+#[test]
+fn a_cog_on_quarz_ext_by_git_is_kept_by_its_key() {
+    let dir = std::env::temp_dir().join(format!("quarz-native-extgit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let ext = quarz_ext_repo(&dir);
+    let cog = dir.join("gext");
+    std::fs::create_dir_all(cog.join("src")).unwrap();
+    std::fs::create_dir_all(cog.join("native/src")).unwrap();
+    std::fs::write(
+        cog.join("Cog.toml"),
+        "[cog]\nname = \"gext\"\nversion = \"0.1.0\"\n\n[native]\ncrate = \"native\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        cog.join("src/gext.qz"),
+        "class Calc\n  native def self.add(a: Int, b: Int) -> Int\nend\n",
+    )
+    .unwrap();
+    std::fs::write(
+        cog.join("native/Cargo.toml"),
+        format!(
+            "[package]\nname = \"gext-native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\", \"staticlib\"]\n\n[dependencies]\nquarz-ext = {{ git = \"file://{}\", tag = \"v1\" }}\n\n[workspace]\n",
+            ext.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        cog.join("native/src/lib.rs"),
+        "use quarz_ext::{Call, Result, Value};\n\nfn add<'c>(cx: &Call<'c>, _: Value<'c>, a: &[Value<'c>]) -> Result<Value<'c>> {\n    Ok(cx.int(cx.get_int(a[0])? + cx.get_int(a[1])?))\n}\n\nquarz_ext::module! {\n    cog: \"gext\",\n    \"Gext::Calc.add\" => add,\n}\n",
+    )
+    .unwrap();
+    // (A local fetch: no `--offline`, which forbids it.)
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let ok = Command::new(&cargo)
+        .args(["generate-lockfile", "--quiet"])
+        .current_dir(cog.join("native"))
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok, "cargo generate-lockfile");
+    let lock = std::fs::read_to_string(cog.join("native/Cargo.lock")).unwrap();
+    assert!(lock.contains("source = \"git+file://"), "{lock}");
+    commit_tagged(&cog);
+    let app = app_on(&dir, "Gext", &cog, "p Gext::Calc.add(40, 2)\n");
+    let envs = own_caches(&dir);
+    let (ok, out, err) = quarz(&app, &["run"], &as_refs(&envs));
+    assert!(ok, "{err}");
+    assert_eq!(out, "42\n");
+    assert!(
+        err.contains("quarz: building the native code of cog gext (app → gext) with cargo"),
+        "{err}"
+    );
+    let missing = dir.join("no-such-program").display().to_string();
+    let mut no_cargo = envs.clone();
+    no_cargo.push(("CARGO", missing.clone()));
+    no_cargo.push(("RUSTC", missing));
+    let (ok, out, err) = quarz(&app, &["run"], &as_refs(&no_cargo));
+    assert!(ok, "{err}");
+    assert_eq!(out, "42\n");
+    assert!(!err.contains("building"), "{err}");
+    let exe = dir.join("app-bin");
+    let (ok, _, err) = quarz(
+        &app,
+        &["build", "-o", exe.to_str().unwrap()],
+        &as_refs(&envs),
+    );
+    assert!(ok, "{err}");
+    let (ok, out, err) = run_exe(&exe);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ok, "{err}");
+    assert_eq!(out, "42\n");
 }
 
 /// A fetched cog's native code: its package installed with its tree

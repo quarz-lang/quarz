@@ -7,7 +7,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Write a Quarz cog's native methods in Rust: the native ABI and a safe wrapper over it"
+description = "Write a Quarz cog's native methods in Rust: the native ABI and a safe wrapper over it. A cog depends on it by git, on the quarz repository (docs/15)"
+# Not on crates.io: a cog depends on it by git (decided on #677).
+publish = false
 
 [dependencies]
 quarz-ext-macros = { path = "../quarz-ext-macros", version = "1.0.0" }
