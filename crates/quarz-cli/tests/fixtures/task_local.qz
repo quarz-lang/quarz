@@ -1,0 +1,133 @@
+# `Task::Local` (#1213, docs/04 §1): the bindings, every way out of `with`,
+# and every way a task starts. The expected output is derived from the
+# rules. Skipped: `Signal`'s dispatcher (a service, which starts with the
+# defaults: no signal is sent in a fixture) and an HTTP server's
+# connection task (std/test).
+ID = Task::Local[String].new("none")
+N = Task::Local[Int].new(0)
+SEEN = Atom[Array[String]].new([])
+
+def note(s: String) -> Void
+  SEEN.update { |a| a + [s] }
+end
+
+# Defaults, nesting, two keys, the same key twice.
+p [ID.value, N.value]
+ID.with("a") do
+  N.with(1) do
+    ID.with("b") { p [ID.value, N.value] }
+    p [ID.value, N.value]
+  end
+  p [ID.value, N.value]
+end
+p [ID.value, N.value]
+
+# Every way out of `with`: the bindings are those of the call after it.
+def returned -> String
+  ID.with("ret") { return ID.value }
+  "not reached"
+end
+ID.with("outer") do
+  p ID.with("v") { ID.value }
+  begin
+    ID.with("raise") { raise ArgumentError, ID.value }
+  rescue ArgumentError => e
+    p [e.message, ID.value]
+  end
+  # (`break` leaves `with`, the method the block was given to, with its value.)
+  p [ID.with("break") { break ID.value }, ID.value]
+  p [returned, ID.value]
+  p [ID.with("next") { next ID.value }, ID.value]
+  begin
+    ID.with("ensure") do
+      begin
+        1
+      ensure
+        raise ArgumentError, "from ensure: #{ID.value}"
+      end
+    end
+  rescue ArgumentError => e
+    p [e.message, ID.value]
+  end
+  nil
+end
+
+# Deep recursion overflowing inside `with`.
+def deep(n: Int) -> Int = deep(n + 1) + 1
+ID.with("deep") do
+  begin
+    ID.with("deeper") { deep(0) }
+  rescue SystemStackError
+    p ID.value
+  end
+  nil
+end
+
+# A spawned task starts with the bindings at its spawn; a later binding,
+# and a child's own, stay where they are made.
+ID.with("parent") do
+  t = Task.spawn { ID.value }
+  ID.with("later") { p t.await }
+  Task.scope do |s|
+    c1 = s.spawn { ID.with("c1") { Task.yield; ID.value } }
+    c2 = s.spawn { Task.yield; ID.value }
+    nested = s.spawn { Task.scope { |s2| s2.spawn { ID.value }.await } }
+    p [c1.await, c2.await, nested.await, ID.value]
+  end
+  p Task.timeout(1.second) { ID.value }
+end
+
+# A task suspended inside `with` while another binds the same key.
+ch = Channel[Int].new
+a = Task.spawn { ID.with("x") { ch.receive; ID.value } }
+b = Task.spawn { ID.with("y") { ch.send(1); ID.value } }
+p [a.await, b.await, ID.value]
+
+# A cancellation leaving `with`.
+ready = Channel[Int].new(capacity: 1)
+cancelled = Task.spawn do
+  ID.with("cancelled") do
+    begin
+      ID.with("inner") do
+        ready.send(1)
+        Task.sleep(10.seconds)
+      end
+    ensure
+      note("after cancel: #{ID.value}")
+    end
+  end
+end
+ready.receive
+cancelled.cancel
+begin
+  cancelled.await
+rescue Task::Cancelled
+  p :cancelled
+end
+
+# `Task.blocking`'s block reads the defaults, a captured key's too.
+id = Task::Local[String].new("local none")
+ID.with("caller") do
+  id.with("local caller") do
+    p Task.blocking { [ID.value, id.value] }
+  end
+end
+
+# `deinitialize` and `at_exit` run with the defaults.
+class Held
+  def deinitialize -> Void
+    note("deinitialize: #{ID.value}")
+  end
+end
+
+def hold -> Int
+  h = Held.new
+  1
+end
+
+ID.with("held") do
+  hold
+  at_exit { puts "at_exit: #{ID.value}" }
+end
+p SEEN.value
+p [ID == ID, ID == N, ID.inspect, ID.hash == ID.hash]

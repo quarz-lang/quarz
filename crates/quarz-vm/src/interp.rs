@@ -1047,6 +1047,10 @@ pub struct Interp {
     /// activation lives on the Rust stack for the duration of its call.
     /// The task being run by the scheduler.
     pub current_task_id: Cell<TaskId>,
+    /// The current task's `Task::Local` bindings (#1213, `task_local`):
+    /// moved in from its handle when it resumes, back when it yields or
+    /// ends (`resume_task`).
+    pub bindings: Cell<crate::task_local::Bindings>,
     /// The exceptions the current task is handling (`Inst::Rescuing`),
     /// innermost last: the last one is its `$!`, the cause of an exception
     /// it raises.
@@ -1370,6 +1374,7 @@ impl Interp {
             case_eq_methods: RefCell::new(FxHashMap::default()),
             next_tag: state.next_tag,
             current_task_id: Cell::new(0),
+            bindings: Cell::new(None),
             rescuing: RefCell::new(Vec::new()),
             deadline: Cell::new(None),
             local_utc: Cell::new(false),
@@ -1424,6 +1429,10 @@ impl Interp {
     #[cold]
     #[inline(never)]
     pub fn run_deinitializers(&self) {
+        // `deinitialize` runs with every key's default (#1213): it runs
+        // when the object goes, where no binding of the releasing task's
+        // means anything to it.
+        let bindings = self.bindings.take();
         crate::deinit::run(|obj| {
             let Some(mid) = self.deinitializer(obj.class) else {
                 return;
@@ -1438,6 +1447,7 @@ impl Interp {
                 );
             }
         });
+        self.bindings.set(bindings);
     }
 
     pub fn rc(&self) -> std::rc::Rc<Interp> {
@@ -1830,6 +1840,13 @@ impl Interp {
         scope: Option<Rc<ScopeInner>>,
         name: &str,
     ) -> Rc<TaskHandle> {
+        // It starts with its spawner's bindings as they are now (#1213).
+        let inherited = {
+            let head = self.bindings.take();
+            let inherited = crate::task_local::inherit(&head);
+            self.bindings.set(head);
+            inherited
+        };
         let (here, workers) = {
             let s = self.sched.borrow();
             (s.worker, s.workers.clone())
@@ -1888,6 +1905,7 @@ impl Interp {
                 sink,
                 is_sink,
             );
+            set_bindings(&handle, inherited);
             contain(&handle);
             return handle;
         }
@@ -1899,6 +1917,7 @@ impl Interp {
             sink,
             is_sink,
         );
+        set_bindings(&handle, inherited);
         contain(&handle);
         workers.post_spawn(
             target,
@@ -1926,7 +1945,21 @@ impl Interp {
         if let Some(stack) = parked {
             *self.rescuing.borrow_mut() = stack;
         }
+        // Its bindings in the worker's cell while it runs (#1213).
+        let had = task.has_bindings.load(std::sync::atomic::Ordering::Relaxed);
+        if had {
+            self.bindings.set(sched::lock(&task.bindings).take());
+        }
         let result = sched::resume(&task, &mut co);
+        let bindings = self.bindings.take();
+        let some = bindings.is_some();
+        if some {
+            *sched::lock(&task.bindings) = bindings;
+        }
+        if some != had {
+            task.has_bindings
+                .store(some, std::sync::atomic::Ordering::Relaxed);
+        }
         let stack = {
             let mut r = self.rescuing.borrow_mut();
             (!r.is_empty()).then(|| std::mem::take(&mut *r))
@@ -5290,4 +5323,22 @@ pub(crate) enum NativeResult {
     Mismatch(String),
     /// The lowering shipped no test for the native: an internal error.
     NoTest(String),
+}
+
+/// A new task's `Task::Local` bindings, before it first runs (#1213):
+/// nothing to do, and no call, when there are none (every program that
+/// binds nothing spawns through here).
+#[inline(always)]
+fn set_bindings(handle: &TaskHandle, bindings: crate::task_local::Bindings) {
+    if bindings.is_some() {
+        set_some_bindings(handle, bindings);
+    }
+}
+
+#[inline(never)]
+fn set_some_bindings(handle: &TaskHandle, bindings: crate::task_local::Bindings) {
+    *sched::lock(&handle.bindings) = bindings;
+    handle
+        .has_bindings
+        .store(true, std::sync::atomic::Ordering::Relaxed);
 }

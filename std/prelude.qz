@@ -6952,6 +6952,60 @@ class Task[out T <: Shareable]
   class Timeout < StandardError
   end
 
+  # A task-local value (#1213): a key with a default, bound for a block on
+  # the current task by [#with], read by [#value]. Nothing assigns a
+  # binding: a nested [#with] rebinds the key for its own block only, so a
+  # method never leaves one behind for its caller. A task spawned
+  # ([Task.spawn], [Task::Scope#spawn], [Task.timeout]'s block) starts with
+  # its spawner's bindings as they are at the spawn. [Task.blocking]'s
+  # block reads every key's default: no binding crosses to its helper. A
+  # block that needs a value binds it itself:
+  # `id = ID.value; Task.blocking { ID.with(id) { ... } }`. Keys are
+  # usually constants.
+  #
+  # ```
+  # REQUEST_ID = Task::Local[String?].new(nil)
+  # REQUEST_ID.with("r-42") { REQUEST_ID.value }    # => "r-42"
+  # REQUEST_ID.value                                # => nil
+  # ```
+  class Local[T <: Shareable]
+    include Shareable
+
+    @id: Int
+    @default: T
+
+    # A key whose value is [default] wherever nothing binds it.
+    def initialize(@default: T)
+      @id = Local.__next_id
+    end
+
+    # The innermost binding of the key on the current task, else its
+    # default.
+    native def value -> T
+
+    # Runs the block with the key bound to [value] on the current task,
+    # and returns the block's value. The binding ends when the block is
+    # left, however it is left (a value, an exception, `break`, `return`,
+    # a cancellation): the bindings are then those found at the call.
+    native def with[R](value: T, &blk: () -> R) -> R
+
+    # Keys are equal when they are the same key. A key [Task.blocking]'s
+    # block captures is the same key in its helper (so the block's own
+    # [#with] binds it there); a key held in a constant is another key
+    # there, made again by the helper's copy of the program. No binding
+    # crosses either way.
+    native def ==(other: Object) -> Bool
+    def hash -> Int = @id.hash
+
+    # Nothing of what is bound: `#<Task::Local>`.
+    def inspect -> String = "#<Task::Local>"
+    def to_s -> String = inspect
+
+    # :nodoc:
+    # A new key's identity, unique in the process.
+    native def self.__next_id -> Int
+  end
+
   # The scope a [Task.scope] block is given: the tasks started with [#spawn]
   # are waited for when the block ends.
   class Scope

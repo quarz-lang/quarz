@@ -129,6 +129,24 @@ fn copy_captures(interp: &Interp, b: &Value, shareable: bool) -> Value {
     }))
 }
 
+/// A `Task::Local` key's id: its first field, `@id` (the prelude
+/// declares `@id`, then `@default`; `task_local_key_fields` checks it).
+pub(super) fn local_id(r: &Value) -> Option<i64> {
+    match r {
+        Value::Object(o) => match o.field(0) {
+            Some(Value::Int(id)) => Some(id),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The next `Task::Local` key's id: unique in the process, so two keys
+/// never share one, the helpers of `Task.blocking` included. (A key the
+/// block captures is copied with its id, the same key there; no binding
+/// crosses, decided on #1213.)
+static NEXT_LOCAL_ID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
+
 pub fn register(m: &mut super::Registry<NativeFn>) {
     native!(m, "Task.spawn", |i, _, a| {
         let b = snapshot(i, &block(i, &a)?);
@@ -203,9 +221,43 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
         let b = snapshot(i, &block(i, &a)?);
         let me = i.current_task();
         let was = me.set_container(None);
+        // A service outlives the call that happens to start it: it starts
+        // with every key's default, not that caller's bindings (#1213).
+        let bindings = i.bindings.take();
         let t = i.spawn_task(b, None, "task");
+        i.bindings.set(bindings);
         me.set_container(was);
         Ok(Value::Task(t))
+    });
+    // `Task::Local` (#1213): `with` keeps the head it found in a local
+    // and puts it back whatever the block's `Flow` (a value, a raise, a
+    // `break`, a `return`, an `exit`): no Quarz code runs in between, so
+    // the bindings are exactly those of the call.
+    native!(m, "Task::Local#with", |i, r, a| {
+        let b = block(i, &a)?;
+        let Some(id) = local_id(r) else {
+            return Err(i.err_type("Task::Local#with on what is not a key"));
+        };
+        let saved = i.bindings.take();
+        i.bindings
+            .set(crate::task_local::bind(&saved, id, a.arg(0).clone()));
+        let out = i.call_block(&b, smallvec![]);
+        i.bindings.set(saved);
+        out
+    });
+    native!(m, "Task::Local#==", |_, r, a| {
+        let same = match (r, a.arg(0)) {
+            (Value::Object(x), Value::Object(y)) if x.class == y.class => {
+                local_id(r).is_some() && local_id(r) == local_id(a.arg(0))
+            }
+            _ => false,
+        };
+        Ok(Value::Bool(same))
+    });
+    native!(m, "Task::Local.__next_id", |_, _, _| {
+        Ok(Value::Int(
+            NEXT_LOCAL_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ))
     });
     native!(m, "Task.uncancellable", |i, _, a| {
         let b = block(i, &a)?;

@@ -404,6 +404,15 @@ const PURITY_BY_CLASS: &[(&str, Purity)] = &[
     ("Process::Output", Denied),
     ("Task", Denied),
     ("Task::Scope", Denied),
+    // `Pure` here means "may run at compile time", not referential
+    // transparency: `value` reads the running task's bindings and `with`
+    // binds them (#1213). A compile-time run has bindings of its own, so a
+    // run may make keys, bind and read them as at run time (decided on
+    // #1213). This table feeds only that allowance: no lowering or AOT
+    // pass reads it, so nothing folds or hoists a read across a `with`.
+    // A key made at compile time is never baked (`static_run`'s `bake`):
+    // its id is the compiler's.
+    ("Task::Local", Pure),
     ("Channel", Denied),
     ("Channel::Selector", Denied),
     ("Atom", Denied),

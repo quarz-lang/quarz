@@ -273,6 +273,15 @@ pub struct TaskHandle {
     /// called (`native_ext::call_block`): while any does, its coroutine is
     /// never unwound (`Scheduler`'s `Drop`).
     in_native: std::sync::atomic::AtomicU32,
+    /// Its `Task::Local` bindings while it is not running (#1213): moved
+    /// into its worker's `Interp::bindings` when it resumes and back when
+    /// it yields or ends (`Interp::resume_task`); set before it first runs
+    /// by `Interp::spawn_task` only (a root, `Task.blocking`'s helper
+    /// among them, starts with none).
+    pub bindings: Mutex<crate::task_local::Bindings>,
+    /// Whether `bindings` holds any: the switch takes the lock only then
+    /// (a task that never binds pays a load and a store per switch).
+    pub has_bindings: AtomicBool,
     /// Whether the `exit`s of the tasks it spawns (and theirs) go to it: a
     /// root task, the task of a `Task.timeout` block (its caller's code).
     is_sink: AtomicBool,
@@ -337,6 +346,8 @@ impl TaskHandle {
             cancel_delivered: AtomicBool::new(false),
             uncancellable: std::sync::atomic::AtomicU32::new(0),
             in_native: std::sync::atomic::AtomicU32::new(0),
+            bindings: Mutex::new(None),
+            has_bindings: AtomicBool::new(false),
             is_sink: AtomicBool::new(is_sink),
             sink: Mutex::new(sink),
             exit_request: std::sync::atomic::AtomicI64::new(NO_EXIT),

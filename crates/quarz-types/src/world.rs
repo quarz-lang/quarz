@@ -608,6 +608,8 @@ pub struct Builtin {
     pub meta_expr: ClassId,
     pub meta_method_ref: ClassId,
     pub quoted: ClassId,
+    /// `Task::Local` (#1213): a key, whose identity only its `new` gives.
+    pub task_local: ClassId,
     /// `Meta::FieldRef`, a handle to a field (docs/14 §5).
     pub meta_field_ref: ClassId,
     /// `Meta::Method`, a handle to a method (docs/14 §5).
