@@ -196,15 +196,12 @@ pub fn register(m: &mut super::Registry<NativeFn>) {
             Some((frame, taken)) => transfer::export_block(i, b.clone(), frame, taken)?,
             None => transfer::export(i, b.clone())?,
         };
-        // The caller's `Task::Local` bindings, as `export_binding` says.
-        let bindings = transfer::export_bindings(i)?;
         let image = i.image();
         let argv = i.program.argv.clone();
         // What was printed before goes out first (an `exit!` on the helper
         // thread writes its own output straight away).
         i.flush();
-        let outcome =
-            i.block_on(move || transfer::run_on_thread(image, argv, closure, bindings))?;
+        let outcome = i.block_on(move || transfer::run_on_thread(image, argv, closure))?;
         i.write_out_bytes(&outcome.output);
         match outcome.exit {
             WorkerExit::Value(t) => Ok(transfer::import(i, t)),

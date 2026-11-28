@@ -62,22 +62,3 @@ pub fn inherit(head: &Bindings) -> Bindings {
     }
     head.clone()
 }
-
-/// The `(key, value)` pairs of `head`, innermost first.
-pub fn pairs(head: &Bindings) -> Vec<(i64, Value)> {
-    let mut out = Vec::new();
-    let mut at = head.as_deref();
-    while let Some(b) = at {
-        out.push((b.key, b.value.clone()));
-        at = b.next.as_deref();
-    }
-    out
-}
-
-/// The bindings of `pairs` (innermost first), as `pairs` gave them.
-pub fn from_pairs(pairs: Vec<(i64, Value)>) -> Bindings {
-    pairs
-        .into_iter()
-        .rev()
-        .fold(None, |head, (key, value)| bind(&head, key, value))
-}

@@ -321,46 +321,6 @@ pub fn export_block(
     export_taking(interp, block, Some((frame, taken)))
 }
 
-/// The caller's `Task::Local` bindings for `Task.blocking`'s helper
-/// (#1213): each that `export_binding` gives, innermost first.
-pub type Bindings = Vec<(i64, Transfer)>;
-
-/// One binding for the helper: its value exported, or `None` for the
-/// helper to read the key's default instead.
-///
-/// For now every binding is left out: the helper reads every key's
-/// default, whether the block captured the key or the key is a
-/// constant's. Which bindings the helper sees is the maintainer's
-/// question on #1213. A key's identity on the helper must be sound,
-/// never another key's of another type: a key the block captures is
-/// copied with its id; a constant's key is made again there. The
-/// alternative under decision copies the bindings of keys the helper
-/// can be shown to share, and only values `Task.blocking` can copy
-/// (`crosses`); it is a change of this function and of how a key gets
-/// its id.
-pub fn export_binding(
-    _interp: &Interp,
-    _key: i64,
-    _value: &Value,
-) -> Result<Option<Transfer>, Flow> {
-    Ok(None)
-}
-
-/// The current task's bindings for `Task.blocking`'s helper
-/// (`export_binding` for each).
-pub fn export_bindings(interp: &Interp) -> Result<Bindings, Flow> {
-    let head = interp.bindings.take();
-    let pairs = crate::task_local::pairs(&head);
-    interp.bindings.set(head);
-    let mut out = Vec::new();
-    for (key, value) in pairs {
-        if let Some(t) = export_binding(interp, key, &value)? {
-            out.push((key, t));
-        }
-    }
-    Ok(out)
-}
-
 /// A block's frame, with the values taken out of its slots (#478).
 pub type Taken = (Rc<Frame>, Vec<(u32, Value)>);
 
@@ -1129,7 +1089,6 @@ pub fn run_on_thread(
     image: Arc<ProgramImage>,
     argv: Vec<String>,
     closure: Transfer,
-    bindings: Bindings,
 ) -> WorkerOutcome {
     // Another image's interpreter goes first (out of the borrow): what it
     // releases is queued under its own classes, not the next program's
@@ -1172,7 +1131,7 @@ pub fn run_on_thread(
             }
         }
     };
-    let exit = interp.run_closure(closure, bindings);
+    let exit = interp.run_closure(closure);
     let exit = match exit {
         // The block's result and exception are given up: what only they
         // refer to moves to the caller's thread (#468).
@@ -1222,20 +1181,12 @@ impl Interp {
     /// rebuilding a captured hash or set calls its keys' own `hash` and
     /// `==` (`crate::keys`), which may need a task (and what they raise is
     /// the block's to raise).
-    pub fn run_closure(
-        self: &std::rc::Rc<Interp>,
-        closure: Transfer,
-        bindings: Bindings,
-    ) -> Result<Value, Flow> {
+    /// (The block reads every `Task::Local`'s default: the root task
+    /// starts with no bindings, decided on #1213.)
+    pub fn run_closure(self: &std::rc::Rc<Interp>, closure: Transfer) -> Result<Value, Flow> {
         let me = self.clone();
         let body: Box<dyn FnOnce() -> TaskExit> = Box::new(move || {
             let closure = import(&me, closure);
-            // The caller's bindings (#1213), in this task's cell.
-            let pairs = bindings
-                .into_iter()
-                .map(|(key, t)| (key, import(&me, t)))
-                .collect();
-            me.bindings.set(crate::task_local::from_pairs(pairs));
             match me.call_block(&closure, smallvec::smallvec![]) {
                 // A `SystemExit` goes back to the caller of `Task.blocking`,
                 // to be raised there (its `ensure`s, its `rescue`).
