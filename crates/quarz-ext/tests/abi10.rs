@@ -96,3 +96,56 @@ fn the_abi_1_0_layout_never_changes() {
     assert_eq!(functions.to_vec(), expected);
     assert!(size_of::<QzApi>() >= 16 + 8 * functions.len());
 }
+
+/// ABI 1.0's function types, pinned at compile time: each of `QzApi`'s
+/// 1.0 functions, `QzMethod::entry` (`QzEntry`) and `QzInit` must coerce
+/// to the type written here, so that a parameter added, removed or
+/// retyped (a `usize` turned `u32`, a pointer turned a value) fails to
+/// compile even when the header changes with it. The aliases are spelled
+/// out (`QzValue` as `u64`, `QzStatus` as `i32`, `QzKind` as `u32`,
+/// `QzBool` as `u8`), so that an alias changed underneath fails too.
+#[allow(dead_code)]
+fn the_abi_1_0_signatures_never_change(api: &QzApi, method: &QzMethod, init: QzInit) {
+    type Cx = *mut QzCall;
+    let _: unsafe extern "C" fn(Cx, u64) -> u32 = api.kind;
+    let _: unsafe extern "C" fn(Cx) -> u64 = api.nil;
+    let _: unsafe extern "C" fn(Cx, u8) -> u64 = api.bool_new;
+    let _: unsafe extern "C" fn(Cx, u64, *mut u8) -> i32 = api.bool_get;
+    let _: unsafe extern "C" fn(Cx, i64) -> u64 = api.int_new;
+    let _: unsafe extern "C" fn(Cx, u64, *mut i64) -> i32 = api.int_get;
+    let _: unsafe extern "C" fn(Cx, f64) -> u64 = api.float_new;
+    let _: unsafe extern "C" fn(Cx, u64, *mut f64) -> i32 = api.float_get;
+    let _: unsafe extern "C" fn(Cx, *const u8, usize, *mut u64) -> i32 = api.string_new;
+    let _: unsafe extern "C" fn(Cx, u64, *mut *const u8, *mut usize) -> i32 = api.string_get;
+    let _: unsafe extern "C" fn(Cx, *const u8, usize) -> u64 = api.bytes_new;
+    let _: unsafe extern "C" fn(Cx, usize, *mut *mut u8) -> u64 = api.bytes_new_uninit;
+    let _: unsafe extern "C" fn(Cx, u64, *mut *const u8, *mut usize) -> i32 = api.bytes_get;
+    let _: unsafe extern "C" fn(Cx, *const u8, usize, *mut u64) -> i32 = api.symbol_new;
+    let _: unsafe extern "C" fn(Cx, u64, *mut *const u8, *mut usize) -> i32 = api.symbol_get;
+    let _: unsafe extern "C" fn(Cx, u64, *mut usize) -> i32 = api.array_len;
+    let _: unsafe extern "C" fn(Cx, u64, usize, *mut u64) -> i32 = api.array_get;
+    let _: unsafe extern "C" fn(Cx, usize) -> u64 = api.array_new;
+    let _: unsafe extern "C" fn(Cx, u64, u64) -> i32 = api.array_push;
+    let _: unsafe extern "C" fn(Cx, u64, *mut usize) -> i32 = api.hash_len;
+    let _: unsafe extern "C" fn(Cx, u64, u64, *mut u64, *mut u8) -> i32 = api.hash_get;
+    let _: unsafe extern "C" fn(Cx, u64, usize, *mut u64, *mut u64) -> i32 = api.hash_entry;
+    let _: unsafe extern "C" fn(Cx) -> u64 = api.hash_new;
+    let _: unsafe extern "C" fn(Cx, u64, u64, u64) -> i32 = api.hash_put;
+    let _: unsafe extern "C" fn(Cx, *const u8, usize, *mut u64) -> i32 = api.exception_class;
+    let _: unsafe extern "C" fn(Cx, u64, *const u8, usize) -> i32 = api.raise;
+    let _: unsafe extern "C" fn(Cx, u64) = api.release;
+    let _: unsafe extern "C" fn(Cx, u64, *const u64, usize, u64, *mut u64) -> i32 = method.entry;
+    let _: unsafe extern "C" fn(*const QzApi) -> *const QzModule = init;
+    let _: (*const u8, usize) = (method.key, method.key_len);
+    let _: (u32, u32, *const QzMethod, usize, usize) = {
+        let m: &QzModule = unsafe { &*init(api) };
+        (
+            m.abi_major,
+            m.abi_minor,
+            m.methods,
+            m.n_methods,
+            m.method_size,
+        )
+    };
+    let _: (u32, u32, usize) = (api.abi_major, api.abi_minor, api.size);
+}
