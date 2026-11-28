@@ -435,6 +435,13 @@ fn obj_dup(interp: &Interp, recv: &Value, _: Args) -> EvalResult {
             )));
         }
     }
+    if let Value::Native(_) = recv {
+        // Its data is the cog's: there is no copy of it to make.
+        return Err(interp.err_type(&format!(
+            "cannot dup {}: a native class's data is its cog's, with no copy of it (docs/15)",
+            interp.class_name(recv)
+        )));
+    }
     Ok(match recv {
         Value::ArrayBuilder(a) => Value::ArrayBuilder(Value::array_builder(a.borrow().clone())),
         Value::HashBuilder(h) => Value::HashBuilder(Value::hash_builder(

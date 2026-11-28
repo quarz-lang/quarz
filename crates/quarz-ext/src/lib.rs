@@ -153,26 +153,17 @@ impl<'c> Call<'c> {
         (self.block != 0).then(|| Value::new(self.block))
     }
 
-    /// An object of the cog's native class `class` (its full name, as
-    /// `module!`'s `classes` lists it with its Rust type) holding `value`
-    /// (ABI 1.1): a value of the call's. `T` must be the class's type,
-    /// and the method's declaration must return the class (docs/15);
-    /// else a `TypeError`, and `value` is dropped.
-    pub fn object<T: 'static>(&self, class: &str, value: T) -> Result<Value<'c>> {
-        if __private::class_type(class) != Some(std::any::TypeId::of::<T>()) {
-            return Err(self.raise(
-                "TypeError",
-                &format!("a native method made an object of `{class}` from another Rust type than the class's"),
-            ));
-        }
+    /// An object of the cog's native class whose Rust type is `T` (the
+    /// class `module!`'s `classes` lists with it) holding `value` (ABI
+    /// 1.1): a value of the call's. The method's declaration must return
+    /// the class (docs/15); else a `TypeError`, and `value` is dropped.
+    pub fn object<T: NativeClass>(&self, value: T) -> Result<Value<'c>> {
         let data = Box::into_raw(Box::new(__private::Tagged {
             type_id: std::any::TypeId::of::<T>(),
             value,
         }));
         let mut out: QzValue = 0;
-        let st = unsafe {
-            (self.api.object_new)(self.cx, class.as_ptr(), class.len(), data.cast(), &mut out)
-        };
+        let st = unsafe { (self.api.object_new)(self.cx, T::INDEX, data.cast(), &mut out) };
         if st != QZ_OK {
             // SAFETY: refused, so still ours.
             drop(unsafe { Box::from_raw(data) });
@@ -181,23 +172,27 @@ impl<'c> Call<'c> {
         Ok(Value::new(out))
     }
 
-    /// The data of `v`, an object of the cog's native class `class` whose
-    /// Rust type is `T` (ABI 1.1); else a `TypeError`. Shared only (`&T`):
-    /// the block may call another method on the same object, and two
-    /// values can name it; mutate through `Cell`, `RefCell` or a lock.
-    pub fn data<T: 'static>(&self, v: Value<'c>, class: &str) -> Result<&'c T> {
+    /// The data of `v`, an object of the cog's native class whose Rust
+    /// type is `T` (ABI 1.1); else a `TypeError`. Shared only (`&T`): the
+    /// block may call another method on the same object, and two values
+    /// can name it; mutate through `Cell`, `RefCell` or a lock.
+    pub fn data<T: NativeClass>(&self, v: Value<'c>) -> Result<&'c T> {
         let mut data: *mut std::ffi::c_void = std::ptr::null_mut();
-        let st = unsafe {
-            (self.api.object_data)(self.cx, v.handle, class.as_ptr(), class.len(), &mut data)
-        };
+        let st = unsafe { (self.api.object_data)(self.cx, v.handle, T::INDEX, &mut data) };
         status(st)?;
-        // SAFETY: the runtime gave an object of `class`, which this
-        // wrapper boxed as a `Tagged<_>`, its `TypeId` at offset 0.
+        // A second check, cheap: the runtime gave an object of the class
+        // at `T::INDEX`, which this wrapper boxed as a `Tagged<T>`, its
+        // `TypeId` at offset 0 (a C cog's object of the class would not
+        // be).
+        // SAFETY: the data of an object of this cog's class.
         let type_id = unsafe { *(data as *const std::any::TypeId) };
         if type_id != std::any::TypeId::of::<T>() {
             return Err(self.raise(
                 "TypeError",
-                &format!("a native method asked for the data of a `{class}` as another Rust type"),
+                &format!(
+                    "a native method asked for the data of a `{}` as another Rust type",
+                    T::NAME
+                ),
             ));
         }
         // SAFETY: a `Tagged<T>`, alive while `v` is (the call holds it).
@@ -409,6 +404,15 @@ impl<'c> Call<'c> {
 /// declared order (positional, then keyword-only).
 pub type Method = for<'c> fn(&Call<'c>, Value<'c>, &[Value<'c>]) -> Result<Value<'c>>;
 
+/// A cog's `native class`'s Rust type: the class's index in the module's
+/// list and its name. `module!`'s `classes` implements it for each type it
+/// lists, so a type listed for two classes is two implementations, a
+/// compile-time error.
+pub trait NativeClass: 'static {
+    const INDEX: u32;
+    const NAME: &'static str;
+}
+
 #[doc(hidden)]
 pub mod __private {
     use super::*;
@@ -496,51 +500,30 @@ pub mod __private {
         pub value: T,
     }
 
-    /// A native class: its name and its Rust type's `TypeId`.
-    pub type ClassEntry = (&'static str, fn() -> std::any::TypeId);
-
-    /// The cog's native classes: each one's name and Rust type, set by
-    /// `module!`'s init (`set_classes`).
-    pub static CLASSES: AtomicPtr<ClassEntry> = AtomicPtr::new(std::ptr::null_mut());
-    pub static N_CLASSES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-    pub fn set_classes(classes: &'static [ClassEntry]) {
-        N_CLASSES.store(classes.len(), Ordering::Release);
-        CLASSES.store(classes.as_ptr() as *mut _, Ordering::Release);
-    }
-
-    /// The Rust type of the cog's class `name`, when it has one.
-    pub fn class_type(name: &str) -> Option<std::any::TypeId> {
-        let p = CLASSES.load(Ordering::Acquire);
-        if p.is_null() {
-            return None;
-        }
-        // SAFETY: `set_classes` stored a static slice of this length.
-        let classes = unsafe { std::slice::from_raw_parts(p, N_CLASSES.load(Ordering::Acquire)) };
-        classes.iter().find(|(n, _)| *n == name).map(|(_, t)| t())
-    }
-
-    static DROP_REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
     /// Drop a `Tagged<T>` the runtime no longer holds (`QzDrop`): a panic
     /// in `T`'s drop is caught (it cannot cross into the runtime),
-    /// reported once and the rest leaked (decided on #677).
+    /// reported once per cog (`reported` is `module!`'s, one per cog in
+    /// any build) and the rest leaked (decided on #677).
     ///
     /// # Safety
     /// `data` is a `Box<Tagged<T>>` this wrapper made, dropped once.
-    pub unsafe fn drop_tagged<T>(data: *mut std::ffi::c_void, class: &str) {
+    pub unsafe fn drop_tagged<T>(
+        data: *mut std::ffi::c_void,
+        class: &str,
+        reported: &std::sync::atomic::AtomicBool,
+    ) {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             drop(Box::from_raw(data as *mut Tagged<T>));
         }));
         if let Err(panic) = r {
-            if !DROP_REPORTED.swap(true, Ordering::Relaxed) {
+            if !reported.swap(true, Ordering::Relaxed) {
                 let message = panic
                     .downcast_ref::<&str>()
                     .map(|s| s.to_string())
                     .or_else(|| panic.downcast_ref::<String>().cloned())
                     .unwrap_or_else(|| "a panic".to_string());
                 eprintln!(
-                    "quarz: the drop of a native object of class {class} panicked: {message} (its data leaked; reported once)"
+                    "quarz: the drop of a native object of class {class} panicked: {message} (its data leaked; reported once per cog)"
                 );
             }
             std::mem::forget(panic);
@@ -590,15 +573,17 @@ macro_rules! module {
                         name_len: $class.len(),
                         drop: {
                             unsafe extern "C" fn drop(data: *mut ::std::ffi::c_void) {
-                                $crate::__private::drop_tagged::<$ty>(data, $class)
+                                $crate::__private::drop_tagged::<$ty>(data, $class, &DROP_REPORTED)
                             }
                             drop
                         },
                         flags: $crate::module!(@flag $ty $(, $share)?),
                     },
                 )*]);
-            static TYPES: [$crate::__private::ClassEntry; $crate::module!(@count $($class)*)] =
-                [$(($class, ::std::any::TypeId::of::<$ty>)),*];
+            // A panicking drop is reported once per cog.
+            static DROP_REPORTED: ::std::sync::atomic::AtomicBool =
+                ::std::sync::atomic::AtomicBool::new(false);
+            $crate::module!(@impls 0u32; $($class => $ty),*);
             static MODULE: $crate::__private::Static<QzModule> =
                 $crate::__private::Static(QzModule {
                     abi_major: QZ_ABI_MAJOR,
@@ -612,12 +597,19 @@ macro_rules! module {
                 });
             #[export_name = $crate::__private::init_symbol!($cog)]
             unsafe extern "C" fn init(api: *const QzApi) -> *const QzModule {
-                $crate::__private::set_classes(&TYPES);
                 $crate::__private::init(api, &MODULE.0)
             }
         };
     };
     (@count $($x:tt)*) => { 0usize $(+ $crate::module!(@one $x))* };
+    (@impls $n:expr;) => {};
+    (@impls $n:expr; $class:literal => $ty:ty $(, $rc:literal => $rt:ty)*) => {
+        impl $crate::NativeClass for $ty {
+            const INDEX: u32 = $n;
+            const NAME: &'static str = $class;
+        }
+        $crate::module!(@impls $n + 1; $($rc => $rt),*);
+    };
     (@flag $ty:ty) => { 0u32 };
     (@flag $ty:ty, shareable) => {{
         const _: () = $crate::__private::shareable::<$ty>();

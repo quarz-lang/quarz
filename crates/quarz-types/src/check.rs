@@ -10690,6 +10690,12 @@ impl Checker {
                 format!("cannot dup {name}: its class defines `deinitialize`, which would run for the copy too"),
                 expr.span,
             );
+        } else if self.world.class(cid).is_native {
+            let name = self.world.class(cid).name.clone();
+            self.error(
+                format!("cannot dup {name}: a native class's data is its cog's, with no copy of it (docs/15)"),
+                expr.span,
+            );
         }
     }
 

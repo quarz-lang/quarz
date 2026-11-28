@@ -125,8 +125,8 @@ typedef struct QzApi {
 
   /* ABI 1.1 */
   QzStatus (*call_block)(QzCall*, QzValue blk, const QzValue *args, size_t nargs, QzValue *out);
-  QzStatus (*object_new)(QzCall*, const uint8_t *cls, size_t n, void *data, QzValue *out);
-  QzStatus (*object_data)(QzCall*, QzValue v, const uint8_t *cls, size_t n, void **out);
+  QzStatus (*object_new)(QzCall*, uint32_t cls, void *data, QzValue *out);
+  QzStatus (*object_data)(QzCall*, QzValue v, uint32_t cls, void **out);
 } QzApi;
 ```
 
@@ -177,30 +177,45 @@ typedef struct { const uint8_t *name; size_t name_len; QzDrop drop; uint32_t fla
 ```
 
 **The module's class list.**
-- The module lists each `native class` (its full name, as the cog declares it), the drop of its data, and its flags.
-- When the library is loaded, it is checked against the cog's declarations both ways: a declared class the module does not list, and a listed class the cog does not declare, are errors naming the cog.
+- The module lists each `native class`: its full name as the cog declares it, the drop of its data, and its flags.
+- A class is named in the API by its index in this list, `cls`.
+- When the library is loaded, the list is checked against the cog's declarations both ways. A declared class the module does not list, and a listed class the cog does not declare, are errors naming the cog.
 - The same check covers `Shareable`: a class declared `include Shareable` must be marked `QZ_CLASS_SHAREABLE`, and only such a class may be marked. The wrapper marks a class only if its data is `Send + Sync`, which it checks at compile time.
+- The runtime binds each cog's list to its classes once, where it binds the methods. A call then indexes that table, with no lock, search or allocation.
 
-**`object_new(cx, cls, n, data, out)`** makes an object of the class named, holding `data`. The result is a handle of the call.
-- It accepts only a class the calling method's declaration returns, its result or block type (`RtMethod::makes`), so `shake` keeps its methods. Any other class is refused: "a native method made an object of `Counter`, which its declaration does not return".
+**`object_new(cx, cls, data, out)`** makes an object of the module's class `cls`, holding `data`. The result is a handle of the call.
+- It accepts only a class the calling method's declaration returns, in its result or block type (`RtMethod::makes`), so `shake` keeps its methods. Any other class is refused with `TypeError`: "a native method made an object of `Counter`, which its declaration does not return".
+- An index past the list is a `TypeError`.
 - On an error, `data` is still the cog's.
-- The class's `drop` runs once, when the object's last reference goes, on whichever worker drops it.
 
-**`object_data(cx, v, cls, n, out)`** gives the data of `v`, an object of exactly the class named, and raises `TypeError` otherwise. The pointer is valid while `v` is: the call's handle keeps it.
+**`object_data(cx, v, cls, out)`** gives the data of `v`, an object of exactly the module's class `cls`, and raises `TypeError` otherwise ("a native method expected an object of Counter, got Pool"). The pointer is valid while `v` is: the call's handle keeps it.
+
+**The drop.** The class's `drop` runs once, on whichever worker releases the object's last reference. It runs where a `deinitialize` would (docs/03 §4):
+- at the end of a scope or statement, or where a variable holding the object is reassigned;
+- for a reference released elsewhere (an element dropped from a collection), when the method that released it returns, or at the next end of a scope.
+
+It does not run in two cases:
+- for objects still referenced when the program exits, a constant's included (a constant lives as long as the program);
+- for objects in the frames of a task parked inside a native when the program ends ("Calling the block", above).
 
 **The wrapper.**
 - `module!` takes `classes: { "Zlib::Deflater" => Deflater, "Zlib::Pool" => Pool: shareable }`, naming the Rust type of each class.
-- `Call::object::<T>(cls, value)` boxes the value with `T`'s `TypeId` first.
-- `Call::data::<T>(v, cls) -> &T` compares that `TypeId` before any cast. A mismatch raises `TypeError` ("a native method asked for the data of a `Counter` as another Rust type"); it is never a cast.
+- It implements `quarz_ext::NativeClass` for each type, with the class's index and name. So a type listed for two classes is a compile-time error: two implementations of `NativeClass`.
+- `Call::object(value)` takes the class from the value's type and boxes the value with its `TypeId` first.
+- `Call::data::<T>(v) -> &T` asks for the class of `T`, then compares the stored `TypeId` before any cast, as a second check.
 - It gives `&T` only, never `&mut T`. The block can call another method on the same object, and two values can name it, so mutation goes through `Cell`, `RefCell` or a lock.
 - An unshareable class's `T` needs neither `Send` nor `Sync`. Its objects stay on one task: the checker refuses them in `Task.spawn`'s captures and in a `Channel`, and a task does not change workers.
-- **A drop that panics:** the wrapper catches the panic (a panic cannot cross into the runtime). It reports it once, "quarz: the drop of a native object of class Bomb panicked: … (its data leaked; reported once)", and leaks the data.
+- **A drop that panics:** the wrapper catches the panic, since a panic cannot cross into the runtime. It reports it once per cog, under `quarz run` and in a built program alike ("quarz: the drop of a native object of class Bomb panicked: … (its data leaked; reported once per cog)"), and leaks the data.
 
-**Where native objects may go.** As values, they behave as follows:
-- `==` and `hash` are identity, unless the class defines its own.
-- `inspect` is `#<Name>`.
-- A shareable class's objects cross `Task.spawn` by reference.
-- None crosses `Task.blocking`, whose helper runs a copy of the program and so has no copy of the data: that is an `ArgumentError`, as for a `Channel`.
+**Where native objects may go.**
+- `==` and `hash` are identity, unless the class defines its own. `inspect` and `to_s` are `#<Name>`.
+- `is_a?`, `case`/`in`, unions, `Object`-typed values, collections and interpolation treat them as any object.
+- `frozen?` is true, as for every value but a Builder (docs/07).
+- A shareable class's objects cross `Task.spawn` and channels by reference. `shareable?` is true for them and false for the others.
+- None crosses `Task.blocking`, whose helper runs a copy of the program and so has no copy of the data: an `ArgumentError`, as for a `Channel`.
+- `dup` is refused: there is no copy of the data to make. It is a compile-time error where the receiver's type is the class ("cannot dup Counter: a native class's data is its cog's, with no copy of it"), and a `TypeError` otherwise.
+- `JSON.generate` raises `JSON::GeneratorError`, as for any object it cannot write.
+- A `static` statement cannot add to a native class what its declaration may not have: `def_field`, `def_initialize` and `def_method(:deinitialize)` raise in the statement.
 
 ## Versioning
 

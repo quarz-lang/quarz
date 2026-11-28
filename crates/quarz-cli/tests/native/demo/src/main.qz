@@ -100,17 +100,7 @@ Task.spawn do
 end
 p pool_sizes.receive
 begin
-  Demo.counter_as_text(c)
-rescue TypeError => e
-  p e.message
-end
-begin
   Demo.smuggle
-rescue TypeError => e
-  p e.message
-end
-begin
-  Demo.no_such(c)
 rescue TypeError => e
   p e.message
 end
@@ -119,14 +109,91 @@ begin
 rescue TypeError => e
   p e.message
 end
-begin
-  Demo.wrong_type
-rescue TypeError => e
-  p e.message
-end
 def boom -> Int
   b = Bomb.open
   1
 end
 p boom, boom
+# Native objects as values: in unions, typed Object, in collections, through a module.
+class Plain
+end
+
+def describe(x: Int | String | Counter | Plain | Nil) -> String
+  case x
+  in nil then "nil"
+  in Int then "int"
+  in String then "string"
+  in Counter then "counter #{x.value}"
+  in Plain then "plain"
+  end
+end
+
+def look(o: Object) -> Void
+  p o.is_a?(Counter), o.is_a?(Plain), o.to_s, o.inspect, o == o, o.hash == o.hash
+end
+
+k = Counter.open(40)
+xs: Array[Int | String | Counter | Plain | Nil] = [1, "s", k, Plain.new, nil]
+xs.each { |x| p describe(x) }
+p xs.map { |x| x.is_a?(Counter) }
+look(k)
+p k == Counter.open(40), k == k
+h = {k => 1}
+h = h.put(Counter.open(1), 2)
+p h[k], h.size
+cs = [k, Counter.open(2)]
+p cs.include?(k), cs.index(k), cs[1].value, cs.map(&:value)
+total = 0
+i = 0
+while i < cs.size
+  total += cs[i].value
+  i += 1
+end
+p total
+p "k is #{k}, at #{k.value}"
+sz: Sized = Pool.open
+p sz.doubled, sz.size
+p k.twice_bumped, k.same_as?(k), k.same_as?(Counter.open(0))
+
+# No copy of a native object: `dup` refuses it, at run time too.
+def copy_of(o: Object) -> Object = o.dup
+begin
+  copy_of(k)
+rescue TypeError => e
+  p e.message
+end
+
+# Drops: at a scope's end, and for a value dropped from a collection
+# when the method that dropped it returns (docs/03 §4, as for
+# `deinitialize`); a shareable one on whichever worker drops it.
+def probe_once -> Int
+  pr = Probe.open
+  Demo.drops
+end
+
+def shrink -> Int
+  ps = [Probe.open, Probe.open, Probe.open]
+  ps.pop!
+  ps.set!(0, Probe.open)
+  ps.pop!
+  ps.pop!
+  ps.size
+end
+
+def hand_over -> Int
+  probes = Channel[Probe].new(capacity: 1)
+  taker = Task.spawn do
+    pr = probes.receive
+    0
+  end
+  probes.send(Probe.open)
+  taker.await
+end
+
+d0 = Demo.drops
+p probe_once - d0, Demo.drops - d0
+d1 = Demo.drops
+p shrink, Demo.drops - d1
+d2 = Demo.drops
+p hand_over, Demo.drops - d2
 p :done

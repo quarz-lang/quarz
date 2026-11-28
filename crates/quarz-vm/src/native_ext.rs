@@ -28,9 +28,10 @@ pub type Entry = QzEntry;
 struct Module {
     cog: String,
     entries: HashMap<String, Entry>,
-    /// Its `native class`es (ABI 1.1): by name, the drop of their data
-    /// and their flags (`QZ_CLASS_SHAREABLE`).
-    classes: HashMap<String, (QzDrop, u32)>,
+    /// Its `native class`es (ABI 1.1), in the module's order (the index
+    /// `object_new` and `object_data` take): each one's name, the drop of
+    /// its data and its flags (`QZ_CLASS_SHAREABLE`).
+    classes: Vec<(String, QzDrop, u32)>,
 }
 
 /// The modules loaded so far; a library is never unloaded.
@@ -138,7 +139,7 @@ pub fn register(cog: &str, init: QzInit, where_: &str) -> Result<(), String> {
     }
     // The classes (ABI 1.1): read only from a module of minor 1 or more,
     // which has the fields.
-    let mut classes = HashMap::new();
+    let mut classes: Vec<(String, QzDrop, u32)> = Vec::new();
     if module.abi_minor >= 1 && module.n_classes > 0 {
         if module.classes.is_null() || module.class_size < std::mem::size_of::<QzClass>() {
             return Err(format!("{where_}: its classes are malformed"));
@@ -153,12 +154,13 @@ pub fn register(cog: &str, init: QzInit, where_: &str) -> Result<(), String> {
             let Ok(name) = std::str::from_utf8(name) else {
                 return Err(format!("{where_}: a class's name is not UTF-8"));
             };
-            if classes
-                .insert(name.to_string(), (c.drop, c.flags))
-                .is_some()
-            {
+            if classes.iter().any(|(n, _, _)| n == name) {
                 return Err(format!("{where_} lists the class `{name}` twice"));
             }
+            if u32::try_from(i).is_err() {
+                return Err(format!("{where_} lists too many classes"));
+            }
+            classes.push((name.to_string(), c.drop, c.flags));
         }
     }
     modules.push(Module {
@@ -210,7 +212,7 @@ pub fn check(world: &RtWorld) -> Result<(), String> {
         }
         // Its classes, both ways, and whether each is shareable.
         for (_, class, shareable) in &cog.classes {
-            let Some((_, flags)) = module.classes.get(class) else {
+            let Some((_, _, flags)) = module.classes.iter().find(|(n, _, _)| n == class) else {
                 return Err(format!(
                     "cog `{name}` declares `native class {class}`, which its native library does not list"
                 ));
@@ -226,7 +228,8 @@ pub fn check(world: &RtWorld) -> Result<(), String> {
         }
         let mut unlisted: Vec<&String> = module
             .classes
-            .keys()
+            .iter()
+            .map(|(k, _, _)| k)
             .filter(|k| !cog.classes.iter().any(|(_, c, _)| c == *k))
             .collect();
         unlisted.sort();
@@ -260,6 +263,39 @@ pub fn bind(world: &RtWorld, n: usize) -> Vec<Option<Entry>> {
         }
     }
     out
+}
+
+/// Each native cog's classes, by `RtWorld::native_cogs` index and then by
+/// the index in its module's list (what `object_new` and `object_data`
+/// take): the class and the drop of its data. Bound once, as the methods
+/// are; `check` has matched both sides, so an entry is `None` only for a
+/// cog whose module is not registered (whose calls never run).
+pub type ClassTable = Vec<Vec<Option<(ClassId, QzDrop)>>>;
+
+pub fn bind_classes(world: &RtWorld) -> ClassTable {
+    if world.native_cogs.is_empty() {
+        return Vec::new();
+    }
+    let modules = MODULES.lock().expect("the modules");
+    world
+        .native_cogs
+        .iter()
+        .map(|cog| {
+            let Some(module) = modules.iter().find(|m| m.cog == cog.name) else {
+                return Vec::new();
+            };
+            module
+                .classes
+                .iter()
+                .map(|(name, drop, _)| {
+                    cog.classes
+                        .iter()
+                        .find(|(_, c, _)| c == name)
+                        .map(|(id, _, _)| (*id, *drop))
+                })
+                .collect()
+        })
+        .collect()
 }
 
 // ----- native objects ------------------------------------------------------------
@@ -1411,54 +1447,36 @@ unsafe extern "C" fn call_block(
     }
 }
 
-/// The `native class` named `p[..n]` of this call's cog (ABI 1.1), with
-/// the drop its module lists: else what is wrong, for a `TypeError`.
-fn native_class(f: &Frame, p: *const u8, n: usize) -> Result<(ClassId, QzDrop), String> {
-    // SAFETY: `n` bytes at `p` (the API's contract).
-    let name = String::from_utf8_lossy(unsafe { bytes_at(p, n) }).into_owned();
-    let world = &f.interp.program.world;
-    let ext = f.interp.program.method(f.mid).ext;
-    let cog = ext.and_then(|i| world.native_cogs.get(i as usize));
-    let Some(cog) = cog else {
-        return Err(format!(
-            "a native method named the class `{name}`, but it is no cog's"
-        ));
-    };
-    let Some((class, _, _)) = cog.classes.iter().find(|(_, c, _)| *c == name) else {
-        return Err(format!(
-            "a native method named `{name}`, which is not a native class of cog `{}`",
-            cog.name
-        ));
-    };
-    let modules = MODULES.lock().expect("the modules");
-    let drop = modules
-        .iter()
-        .find(|m| m.cog == cog.name)
-        .and_then(|m| m.classes.get(&name))
-        .map(|(d, _)| *d);
-    match drop {
-        Some(d) => Ok((*class, d)),
-        None => Err(format!(
-            "cog `{}`'s native library does not list the class `{name}`",
-            cog.name
-        )),
-    }
+/// The class `cls` of this call's cog (ABI 1.1: the index in its
+/// module's list) with the drop of its data, from the table bound at
+/// start (`bind_classes`): no lock, no search. Else what is wrong, for a
+/// `TypeError`.
+fn native_class(f: &Frame, cls: u32) -> Result<(ClassId, QzDrop), String> {
+    let program = &f.interp.program;
+    let ext = program.method(f.mid).ext;
+    let entry = ext
+        .and_then(|k| program.ext_classes.get(k as usize))
+        .and_then(|t| t.get(cls as usize))
+        .copied()
+        .flatten();
+    entry.ok_or_else(|| {
+        format!("a native method named the class {cls}, which its cog's module does not list")
+    })
 }
 
-/// An object of the native class named, holding `data` (ABI 1.1): a
-/// handle of this call's. Only a class the calling method's declaration
+/// An object of the cog's class `cls` (its index), holding `data` (ABI
+/// 1.1): a handle of this call's. Only a class the calling method's declaration
 /// returns (`RtMethod::makes`: what `shake` keeps live), else `TypeError`;
 /// on an error the data is still the cog's.
 unsafe extern "C" fn object_new(
     cx: *mut QzCall,
-    p: *const u8,
-    n: usize,
+    cls: u32,
     data: *mut c_void,
     out: *mut QzValue,
 ) -> QzStatus {
     let f = frame(cx);
     pending_status!(f);
-    let (class, drop) = match native_class(f, p, n) {
+    let (class, drop) = match native_class(f, cls) {
         Ok(c) => c,
         Err(m) => return f.type_error(&m),
     };
@@ -1474,19 +1492,18 @@ unsafe extern "C" fn object_new(
     QZ_OK
 }
 
-/// The data of `v`, an object of exactly the native class named (ABI
-/// 1.1): else `TypeError`. Valid while `v` is (the call's handle keeps
+/// The data of `v`, an object of exactly the cog's class `cls` (its
+/// index, ABI 1.1): else `TypeError`. Valid while `v` is (the call's handle keeps
 /// it).
 unsafe extern "C" fn object_data(
     cx: *mut QzCall,
     v: QzValue,
-    p: *const u8,
-    n: usize,
+    cls: u32,
     out: *mut *mut c_void,
 ) -> QzStatus {
     let f = frame(cx);
     pending_status!(f);
-    let (class, _) = match native_class(f, p, n) {
+    let (class, _) = match native_class(f, cls) {
         Ok(c) => c,
         Err(m) => return f.type_error(&m),
     };

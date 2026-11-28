@@ -7071,6 +7071,11 @@ impl World {
     /// without a tag test (`RtClass::objects`).
     pub fn instances_are_objects(&self, id: ClassId) -> bool {
         let class = self.class(id);
+        // A native class's values hold the cog's data (`Value::Native`),
+        // with no object header (docs/15).
+        if class.is_native {
+            return false;
+        }
         match class.kind {
             ClassKind::Data | ClassKind::Enum | ClassKind::Variant => true,
             ClassKind::Class => {

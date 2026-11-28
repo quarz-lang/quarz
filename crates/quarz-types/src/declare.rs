@@ -3839,8 +3839,9 @@ impl<'ast> Declarer<'ast> {
 
     /// What a `native class` may be (#677, docs/15): declared in a cog
     /// that brings native code, with no type parameter, no superclass but
-    /// `Object`, no field and no `initialize` (its state is its native
-    /// data, and its objects are made by the cog's natives); and no class
+    /// `Object`, no field, no `initialize` and no `deinitialize` (its state
+    /// is its native data, made by the cog's natives and ended by the cog's
+    /// drop); and no class
     /// is a subclass of one. (`new` on it is refused where it is called,
     /// `check_constructor`.)
     fn check_native_class(&mut self, id: ClassId) {
@@ -3886,6 +3887,12 @@ impl<'ast> Declarer<'ast> {
             refuse(
                 self,
                 "declares `initialize`: its objects are made by its cog's native methods",
+            );
+        }
+        if class.methods.contains_key("deinitialize") {
+            refuse(
+                self,
+                "declares `deinitialize`: its data's end is its cog's drop of it",
             );
         }
     }

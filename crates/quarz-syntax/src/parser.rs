@@ -859,6 +859,13 @@ impl<'src> Parser<'src> {
                 {
                     return Ok(Some(self.parse_class(false, true)?));
                 }
+                T::Keyword(K::Class) if is_native && is_abstract => {
+                    let span = self.peek().span;
+                    return Err(self.error_at(
+                        "a native class cannot be abstract: its cog's native methods make its objects (docs/15)",
+                        span,
+                    ));
+                }
                 _ => {
                     // Not a declaration after all (e.g. `private` used as a
                     // method call with arguments).

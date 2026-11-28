@@ -436,7 +436,34 @@ impl Runner {
         let mut carried_gen: Vec<bool> = vec![false; pending.len()];
         for (index, g) in pending.into_iter().enumerate() {
             let g = match g {
-                Pending::Method(g) => g,
+                Pending::Method(g) => {
+                    // What `check_native_class` refuses as written, refused
+                    // when generated too.
+                    let world = host.world();
+                    let class = world.class(g.class);
+                    if class.is_native && !g.singleton {
+                        let why = if g.initialize || g.initializes.is_some() {
+                            Some((
+                                "`def_initialize`".to_string(),
+                                "its objects are made by its cog's native methods",
+                            ))
+                        } else if g.name == "deinitialize" {
+                            Some((
+                                "`def_method(:deinitialize)`".to_string(),
+                                "its data's end is its cog's drop of it",
+                            ))
+                        } else {
+                            None
+                        };
+                        if let Some((at, why)) = why {
+                            return Err(fail(format!(
+                                "{at}: native class `{}` has none: {why} (docs/15)",
+                                class.name
+                            )));
+                        }
+                    }
+                    g
+                }
                 // Checked with the class it names (the statement's own).
                 Pending::Handle(h) => {
                     let world = host.world();
@@ -467,6 +494,14 @@ impl Runner {
                 Pending::Field(f) => {
                     let at = format!("`def_field(:{})`", f.name);
                     let world = host.world();
+                    // (`check_native_class` saw the class as written; a
+                    // statement must not add what it refuses there.)
+                    if world.class(f.class).is_native {
+                        return Err(fail(format!(
+                            "{at}: native class `{}` has no fields: its state is its native data (docs/15)",
+                            world.class(f.class).name
+                        )));
+                    }
                     if !world.class(f.ty).type_params.is_empty() {
                         return Err(fail(format!(
                             "{at}: `{}` takes type arguments, which a `Type` value does not carry: a generated field's type is a class without them",

@@ -350,12 +350,43 @@ true
 7
 #<Counter>
 7
-\"a native method asked for the data of a `Counter` as another Rust type\"
 \"a native method made an object of `Counter`, which its declaration does not return (docs/15)\"
-\"a native method named `Nope`, which is not a native class of cog `demo`\"
 \"a native method expected an object of Counter, got Pool\"
-\"a native method made an object of `Counter` from another Rust type than the class's\"
 1
+1
+\"int\"
+\"string\"
+\"counter 40\"
+\"plain\"
+\"nil\"
+[false, false, true, false, false]
+true
+false
+\"#<Counter>\"
+\"#<Counter>\"
+true
+true
+false
+true
+1
+2
+true
+0
+2
+[40, 2]
+42
+\"k is #<Counter>, at 40\"
+14
+7
+42
+true
+false
+\"cannot dup Counter: a native class's data is its cog's, with no copy of it (docs/15)\"
+0
+1
+0
+4
+0
 1
 :done
 ";
@@ -1215,6 +1246,89 @@ fn a_cogs_native_classes_are_checked_against_its_library() {
     }
 }
 
+/// `module!` ties each Rust type to one class: a type listed for two is
+/// refused when the cog's native code is compiled (two implementations of
+/// `NativeClass`), never a run-time confusion of the two classes.
+#[test]
+fn a_rust_type_listed_for_two_native_classes_does_not_compile() {
+    let dir = fixture("two-classes", &[("main.qz", "p 1\n")]);
+    let lib = dir.join("native/src/lib.rs");
+    let text = std::fs::read_to_string(&lib).unwrap();
+    let listed = "\"Pool\" => Pool: shareable,";
+    assert!(text.contains(listed));
+    std::fs::write(&lib, text.replace(listed, "\"Pool\" => Counter,")).unwrap();
+    // Its own cache: another test's build of the demo, in the shared
+    // target directory of cogs named `demo`, could stand for this one's
+    // (#1220).
+    let envs = own_caches(&dir);
+    let (ok, out, err) = quarz(&dir, &["run"], &as_refs(&envs));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!ok, "{out}");
+    assert!(
+        err.contains("conflicting implementations of trait `NativeClass`")
+            || err.contains("conflicting implementations of trait `quarz_ext::NativeClass`"),
+        "{err}"
+    );
+}
+
+/// A `static` statement does not give a native class what its
+/// declaration may not have (docs/15): a macro of another cog, applied in
+/// its body, adding a field, an `initialize` or a `deinitialize`.
+#[test]
+fn a_static_statement_does_not_give_a_native_class_fields() {
+    let dir = std::env::temp_dir().join(format!("quarz-native-macros-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let lib = dir.join("macros");
+    std::fs::create_dir_all(lib.join("src")).unwrap();
+    std::fs::write(
+        lib.join("Cog.toml"),
+        "[cog]\nname = \"macros\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        lib.join("src/macros.qz"),
+        "module Grow[T <: Object]\n  static def self.add_count -> Void\n    def_field(:count, Int, 0)\n  end\n  static def self.add_init -> Void\n    def_initialize { }\n  end\n  static def self.add_end -> Void\n    def_method(:deinitialize) { }\n  end\nend\n",
+    )
+    .unwrap();
+    commit_tagged(&lib);
+    let envs = own_caches(&dir);
+    for (call, want) in [
+        (
+            "add_count",
+            "`def_field(:count)`: native class `Gen` has no fields: its state is its native data (docs/15)",
+        ),
+        (
+            "add_init",
+            "`def_initialize`: native class `Gen` has none: its objects are made by its cog's native methods (docs/15)",
+        ),
+        (
+            "add_end",
+            "`def_method(:deinitialize)`: native class `Gen` has none: its data's end is its cog's drop of it (docs/15)",
+        ),
+    ] {
+        let app = fixture(&format!("macros-{call}"), &[("main.qz", "p 1\n")]);
+        let toml = std::fs::read_to_string(app.join("Cog.toml")).unwrap();
+        std::fs::write(
+            app.join("Cog.toml"),
+            format!(
+                "{toml}\n[dependencies]\nMacros = {{ git = \"file://{}\", tag = \"v0.1.0\" }}\n",
+                lib.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            app.join("src/gen.qz"),
+            format!("native class Gen\n  include Macros::Grow[Gen]\n  {call}\nend\n"),
+        )
+        .unwrap();
+        let (ok, out, err) = quarz(&app, &["check"], &as_refs(&envs));
+        let _ = std::fs::remove_dir_all(&app);
+        assert!(!ok, "{call}: {out}");
+        assert!(err.contains(want), "{call}: {err}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A native object cannot cross `Task.blocking` (its data is the cog's,
 /// with no copy for the helper's program): `ArgumentError`, as for a
 /// `Channel`, even of a shareable class.
@@ -1422,6 +1536,22 @@ fn a_cogs_native_def_is_checked() {
         (
             &[("bad.qz", "native class Box\n  def initialize\n  end\nend\n")],
             "native class `Box` declares `initialize`: its objects are made by its cog's native methods (docs/15)",
+        ),
+        (
+            &[("bad.qz", "native class Box\n  def deinitialize -> Void\n  end\nend\n")],
+            "native class `Box` declares `deinitialize`: its data's end is its cog's drop of it (docs/15)",
+        ),
+        (
+            &[("bad.qz", "class Dupper\n  def self.d(c: Counter) -> Counter = c.dup\nend\n")],
+            "cannot dup Counter: a native class's data is its cog's, with no copy of it (docs/15)",
+        ),
+        (
+            &[("bad.qz", "abstract native class Box\nend\n")],
+            "a native class cannot be abstract: its cog's native methods make its objects (docs/15)",
+        ),
+        (
+            &[("bad.qz", "native abstract class Box\nend\n")],
+            "a native class cannot be abstract: its cog's native methods make its objects (docs/15)",
         ),
         (
             &[("bad.qz", "native class Box[T]\nend\n")],

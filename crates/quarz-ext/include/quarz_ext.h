@@ -112,8 +112,8 @@ typedef struct QzApi {
 
     /* ABI 1.1 */
     QzStatus (*call_block)(QzCall *, QzValue, const QzValue *, size_t, QzValue *);
-    QzStatus (*object_new)(QzCall *, const uint8_t *, size_t, void *, QzValue *);
-    QzStatus (*object_data)(QzCall *, QzValue, const uint8_t *, size_t, void **);
+    QzStatus (*object_new)(QzCall *, uint32_t, void *, QzValue *);
+    QzStatus (*object_data)(QzCall *, QzValue, uint32_t, void **);
 } QzApi;
 
 /* A cog's only export is its init, `qz_cog_init_<cog>`, the cog's name

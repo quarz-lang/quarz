@@ -157,16 +157,14 @@ pub struct QzApi {
     /// in `*out`, a handle of the call's (docs/15).
     pub call_block:
         unsafe extern "C" fn(*mut QzCall, QzValue, *const QzValue, usize, *mut QzValue) -> QzStatus,
-    /// Make an object of the native class named (`Zlib::Deflater`, one of
-    /// the module's classes, and one the calling method's declaration
-    /// returns) holding `data`, dropped by the class's `QzDrop` when its
-    /// last reference goes: a handle of the call's (docs/15).
-    pub object_new:
-        unsafe extern "C" fn(*mut QzCall, *const u8, usize, *mut c_void, *mut QzValue) -> QzStatus,
-    /// The data of `v`, an object of the native class named: else
-    /// `TypeError`.
-    pub object_data:
-        unsafe extern "C" fn(*mut QzCall, QzValue, *const u8, usize, *mut *mut c_void) -> QzStatus,
+    /// Make an object of the module's class `cls` (its index in
+    /// `QzModule::classes`; one the calling method's declaration returns)
+    /// holding `data`, dropped by the class's `QzDrop` when its last
+    /// reference goes: a handle of the call's (docs/15).
+    pub object_new: unsafe extern "C" fn(*mut QzCall, u32, *mut c_void, *mut QzValue) -> QzStatus,
+    /// The data of `v`, an object of exactly the module's class `cls`
+    /// (its index): else `TypeError`.
+    pub object_data: unsafe extern "C" fn(*mut QzCall, QzValue, u32, *mut *mut c_void) -> QzStatus,
 }
 
 /// A cog's init: `qz_cog_init_<cog>` (`init_symbol`), its only export.
