@@ -205,7 +205,14 @@ pub fn native_calls(key: &str) -> &'static [&'static str] {
 ///   compares it by identity (`Value::identical`), and `update` calls the
 ///   procedure it is given with it;
 /// - `Proc`'s natives: its count (`arity`) and copies of its captured
-///   frames (`__copy_captures`, `__snapshot`, `natives/concurrency.rs`).
+///   frames (`__copy_captures`, `__snapshot`, `natives/concurrency.rs`);
+/// - `Task::Local` (#1213, `natives/concurrency.rs`, `natives/fast.rs`):
+///   `value` gives back the bound value or the key's default, cloned;
+///   `with` calls only the block it is given; `==` compares two keys'
+///   `@id`s (integers), never calling the other value's `==`;
+///   `__next_id` takes no value. (`value` is both a generic native and a
+///   by-reference twin of one `fast!` line, #1035: one key in two
+///   registries.)
 const CALLS_NONE_CLASSES: &[&str] = &[
     "Crypto",
     "Crypto::RSA",
@@ -229,6 +236,7 @@ const CALLS_NONE_CLASSES: &[&str] = &[
     "Bytes::Builder",
     "Atom",
     "Proc",
+    "Task::Local",
 ];
 
 /// Single natives of that kind in classes that also have others (#394):
