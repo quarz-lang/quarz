@@ -42,9 +42,20 @@
 //! `MakeBlock` ran), which is the depth 0 of the code around the
 //! `MakeBlock`, the caller's. Its `return v` (`Term::Return`, `next v`
 //! included) is the `yield`'s value; its `break v` (`BreakOut`) ends
-//! the call with `v`; its `return` from its own method (`ReturnOut`) is
-//! the caller's `Return` when the caller is that method, and stays a
-//! `ReturnOut` in a caller that is a block itself. Its lines chain
+//! the call with `v`. Its `return` from its own method (`ReturnOut`) is
+//! the caller's `Return` when the caller is that method and the call is
+//! in no handler's block, and stays a `ReturnOut` in a caller that is a
+//! block itself (the block's closure carries the same method's tag, and
+//! a block's `ReturnOut` unwinds through its handlers as any). A block
+//! with a `return` is not inlined anywhere else:
+//! - under a handler (`rescue`, `ensure`) in the method: the lowering
+//!   runs an `ensure` on a plain `return` by copying its code before the
+//!   `Return`, never through the handler, so a `Return` there would skip
+//!   it; and a `ReturnOut` is no method's own terminator (compiled code's
+//!   direct call of a method does not catch a return aimed at it);
+//! - in a file's top level or an initializer.
+//!
+//! Its lines chain
 //! through the `yield`'s, so a backtrace shows the block, the callee and
 //! the caller, as the calls did.
 
@@ -350,6 +361,7 @@ fn inline_into(
         }
     }
     let caller_is_method = matches!(g.kind, FuncKind::Method(_));
+    let caller_is_block = g.kind == FuncKind::Block;
     let n = blocks.len();
     let mut out: Vec<Block> = vec![Block::default(); n];
     let mut extra: Vec<Option<Block>> = Vec::new();
@@ -362,29 +374,31 @@ fn inline_into(
         };
         let mut cur_id = bi;
         // The literal blocks made in `cur` so far, by register: the
-        // `MakeBlock`'s index in `cur.insts` and the block's function.
-        let mut made: HashMap<Reg, (usize, FuncId)> = HashMap::default();
+        // `MakeBlock`'s index in `cur.insts`, the block's function, and its
+        // index in the original block.
+        let mut made: HashMap<Reg, (usize, FuncId, usize)> = HashMap::default();
         let lines = blk.lines;
         let insts = blk.insts;
         for (i, inst) in insts.iter().cloned().enumerate() {
             let line = lines[i];
-            let keep = |cur: &mut Block, made: &mut HashMap<Reg, (usize, FuncId)>, inst: Inst| {
-                // (Read or written again: no longer this call's alone.)
-                for r in inst.uses().into_iter().chain(inst.defs()) {
-                    made.remove(&r);
-                }
-                if let Inst::MakeBlock {
-                    dst,
-                    func,
-                    destructure: None,
-                    is_lambda: false,
-                } = &inst
-                {
-                    made.insert(*dst, (cur.insts.len(), *func));
-                }
-                cur.insts.push(inst);
-                cur.lines.push(line);
-            };
+            let keep =
+                |cur: &mut Block, made: &mut HashMap<Reg, (usize, FuncId, usize)>, inst: Inst| {
+                    // (Read or written again: no longer this call's alone.)
+                    for r in inst.uses().into_iter().chain(inst.defs()) {
+                        made.remove(&r);
+                    }
+                    if let Inst::MakeBlock {
+                        dst,
+                        func,
+                        destructure: None,
+                        is_lambda: false,
+                    } = &inst
+                    {
+                        made.insert(*dst, (cur.insts.len(), *func, i));
+                    }
+                    cur.insts.push(inst);
+                    cur.lines.push(line);
+                };
             let Some(s) = site(&inst, eligible, yields, methods) else {
                 keep(&mut cur, &mut made, inst);
                 continue;
@@ -395,9 +409,18 @@ fn inline_into(
             let literal = match s.block {
                 None => None,
                 Some(br) => match made.get(&br).copied() {
-                    Some((at, bf))
-                        if dead_after(br, &insts[i + 1..], &blk.term, &read_in, bi)
-                            && block_inlinable(&orig[bf as usize], f, s.mid) =>
+                    Some((at, bf, made_at))
+                        if read_only_by(
+                            br,
+                            &insts[..made_at],
+                            &insts[i + 1..],
+                            &blk.term,
+                            &read_in,
+                            bi,
+                        ) && block_inlinable(&orig[bf as usize], f, s.mid)
+                            && (!returns_out(&orig[bf as usize])
+                                || caller_is_block
+                                || (caller_is_method && handler.is_none())) =>
                     {
                         Some((br, at, bf))
                     }
@@ -571,6 +594,8 @@ fn inline_into(
                                 }
                                 // `return v` from the block's own method:
                                 // the caller's, when the caller is it.
+                                // (A method caller here has no handler at
+                                // the call: the condition above.)
                                 Term::ReturnOut(r) if caller_is_method => Term::Return(bb + r),
                                 Term::ReturnOut(r) => Term::ReturnOut(bb + r),
                                 Term::Jump(t) => Term::Jump(bentry + t),
@@ -699,18 +724,23 @@ fn inline_into(
     g.blocks = out;
 }
 
-/// Whether the value register `r` holds is read by nothing after
-/// `rest` begins (the rest of block `bi`, then its terminator): the
-/// block's next mention of `r` writes it without reading it, or nothing
-/// in the block reads it and no other block does.
-fn dead_after(
+/// Whether a literal block's register `r`, written by the `MakeBlock`
+/// that `before` (the block's instructions before it) leads up to, is
+/// read by its call alone: by nothing between the two (`made` drops it
+/// at any read), and by nothing after the call (`after`, then the
+/// block's terminator): the block's next mention of `r` writes it
+/// without reading it, or nothing in the block reads it (before the
+/// `MakeBlock` either, where a loop's back edge would bring the previous
+/// pass's closure) and no other block does.
+fn read_only_by(
     r: Reg,
-    rest: &[Inst],
+    before: &[Inst],
+    after: &[Inst],
     term: &Term,
     read_in: &HashMap<Reg, Vec<usize>>,
     bi: usize,
 ) -> bool {
-    for inst in rest {
+    for inst in after {
         if inst.uses().contains(&r) {
             return false;
         }
@@ -718,7 +748,16 @@ fn dead_after(
             return true;
         }
     }
-    term.uses() != Some(r) && read_in.get(&r).is_none_or(|at| at.iter().all(|b| *b == bi))
+    term.uses() != Some(r)
+        && before.iter().all(|inst| !inst.uses().contains(&r))
+        && read_in.get(&r).is_none_or(|at| at.iter().all(|b| *b == bi))
+}
+
+/// Whether block `b` returns from its method (`return` in it).
+fn returns_out(b: &Function) -> bool {
+    b.blocks
+        .iter()
+        .any(|blk| matches!(blk.term, Term::ReturnOut(_)))
 }
 
 /// A copied callee block `b` in its place: the callee block's own

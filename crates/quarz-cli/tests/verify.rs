@@ -1257,6 +1257,21 @@ end
         .join("; ");
     let cases: Vec<(&str, String, bool)> = vec![
         ("inlined", "w.with { 1 }".into(), false),
+        (
+            "a block returning from its method",
+            "w.with { return 1 }".into(),
+            false,
+        ),
+        (
+            "a block returning from its method under a handler",
+            "begin; w.with { return 1 }; ensure; nil; end".into(),
+            true,
+        ),
+        (
+            "a block breaking under a handler",
+            "begin; w.with { break 1 }; ensure; nil; end".into(),
+            false,
+        ),
         ("dynamic dispatch", "a.with { 1 }".into(), true),
         // (Nested uses are inlined level by level, `inline_calls`'s
         // passes bounding the depth.)
